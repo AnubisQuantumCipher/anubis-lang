@@ -1,7 +1,9 @@
 fn main() {
-    research {
-        let x: tainted<u32> = symbolic();
-        assume(x < 100);
-        assert(x > 0);
-    }
+    let secret: u32 = symbolic("secret");
+    assume(secret > 10);
+    assume(secret < 10000);
+    let derived = secret + 42;
+    let masked = derived & 255;
+    let result = secret * 3 + masked;
+    assert(result > 30);
 }
