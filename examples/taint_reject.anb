@@ -1,5 +1,5 @@
 // Example that must be rejected in safe mode (GATE 4)
 fn main() {
-    let secret: tainted<u32> = symbolic();
+    let secret = taint_source("password");
     sink(secret);
 }

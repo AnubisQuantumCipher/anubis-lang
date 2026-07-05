@@ -1,6 +1,6 @@
 // Must pass only with explicit policy + reason (GATE 5)
 fn main() {
-    let secret: tainted<u32> = symbolic();
-    let public = declassify(secret, policy: "redacted-proof", reason: "only hash leaves boundary for bug-bounty");
+    let secret = taint_source("password");
+    let public = declassify(secret, "redacted-proof", "only redacted proof may leave boundary");
     sink(public);
 }
