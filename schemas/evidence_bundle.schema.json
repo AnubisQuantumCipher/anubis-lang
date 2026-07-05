@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Anubis Evidence Bundle Manifest",
+  "type": "object",
+  "required": ["timestamp", "tool", "mode", "source_hash", "checks", "verdict"],
+  "properties": {
+    "timestamp": { "type": "string" },
+    "tool": { "type": "string" },
+    "mode": { "type": "string" },
+    "source_hash": { "type": "string" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "detail"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "verdict": { "type": "string" }
+  }
+}
