@@ -1,0 +1,130 @@
+# Anubis A+ Acceptance Criteria
+
+Anubis is **A+ only** when **all mandatory gates** below pass with reproducible artifacts and A15 hostile audit produces no mandatory failures.
+
+## GATE 1 — Clean build
+```bash
+cargo fmt --check
+cargo test --all
+cargo clippy --all-targets -- -D warnings
+cargo build --release
+```
+Evidence: command output + release binary.
+
+## GATE 2 — Real language core
+Must support at minimum (with tests + examples):
+- functions
+- local bindings
+- integer and boolean types
+- strings
+- arrays or vectors
+- structs
+- enums or tagged unions
+- modules/imports
+- if/else
+- loops
+- return values
+- result/error handling
+- comments
+- attributes for mode/effect/policy
+- at least one useful example CLI program that runs
+
+## GATE 3 — Parser/HIR/MIR
+≥20 fixture programs:
+- parse succeeds/fails correctly
+- AST/HIR/MIR emitted with exact source spans
+- diagnostics show exact source spans
+- no panic on malformed source
+
+## GATE 4 — Safe taint hard enforcement
+This **must fail in safe mode** (exact diagnostic, SARIF finding, evidence rejected-flow trace, no native artifact unless metadata-only failure record):
+```anubis
+fn main() {
+    let secret = taint_source("password");
+    sink(secret);
+}
+```
+
+## GATE 5 — Declassification policy
+Passes **only** with explicit policy + reason. Trace, evidence, SARIF clean for approved path.
+```anubis
+fn main() {
+    let secret = taint_source("token");
+    let public = declassify(secret, policy: "hash-only", reason: "bug-bounty proof redaction");
+    sink(public);
+}
+```
+
+## GATE 6 — Research boundary
+- Research mode requires explicit opt-in.
+- Unsafe memory, raw pointers, exploit/PoC, shell, network, sensitive file reads rejected outside approved boundaries.
+- Evidence records research mode + reason when used.
+
+## GATE 7 — Solver correctness
+Every symbolic assertion:
+- SMT encodes actual program relationships
+- counterexamples execute or are replayable against source semantics
+- no free variables pretending to be program values
+- bitvector widths and overflow explicit
+
+## GATE 8 — Evidence schema
+Every build (success or fail) produces bundle with:
+- manifest.json
+- MANIFEST.sha256
+- source copy + hash
+- command log + build log
+- compiler version/commit
+- environment JSON
+- AST/HIR/MIR (when applicable)
+- taint traces
+- solver output
+- SARIF
+- artifact hash
+- backend sidecars
+- human report
+- verification script
+
+## GATE 9 — Tamper check
+- Fresh bundle: verify true
+- After modifying any hashed file: verify false
+
+## GATE 10 — RISC0 receipt (end-to-end)
+Minimal example:
+- guest source generated
+- guest ELF generated
+- image ID generated
+- receipt generated
+- receipt.verify(ANUBIS_ID) (or equivalent) passes
+- sidecars in evidence
+- reproducible from documented command (timeout-aware)
+
+## GATE 11 — Metal parity
+≥3 deterministic kernels/workloads:
+- CPU output == Metal output
+- fallback works when Metal disabled
+- evidence records backend used
+- benchmarks disclose hardware + variance
+
+## GATE 12 — Reproducibility
+Two clean builds of same source produce identical **core** source/artifact hashes.
+Nondeterminism (timestamps etc.) isolated and documented.
+
+## GATE 13 — CI
+GitHub Actions or local equivalent covering:
+- fmt + clippy + tests
+- evidence validation smoke
+- taint rejection smoke
+- SARIF JSON validation
+- optional Metal/RISC0 jobs (guarded)
+
+## GATE 14 — Docs honesty
+Docs clearly separate: implemented / partial / experimental / planned / unsupported.
+No unbacked hype.
+
+## GATE 15 — Final hostile audit
+A15 (red team) produces adversarial audit with final grade.
+A+ requires **no mandatory gate failures**.
+
+---
+
+Run `bash scripts/audit_a_plus.sh` to execute the full sealed gate suite and produce `implementer/a_plus_audit_run/<STAMP>/`.
