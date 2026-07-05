@@ -1,0 +1,7 @@
+fn main() {
+    research {
+        let x: tainted<u32> = symbolic();
+        assume(x < 100);
+        assert(x > 0);
+    }
+}
