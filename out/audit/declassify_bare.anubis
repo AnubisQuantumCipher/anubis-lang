@@ -1,0 +1,6 @@
+fn main() {
+    research {
+        let t: tainted<u32> = symbolic();
+        let c = declassify(t);
+    }
+}

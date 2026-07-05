@@ -1,0 +1,7 @@
+fn hybrid_demo() {
+    hybrid {
+        gpu(metal) { let b = unified Buffer<u32>; }
+        cpu { let x = 42; }
+        prove(risc0) { spec { forall x . x >= 0 } }
+    }
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "effects": [
+      "research-boundary",
+      "taint-source",
+      "assume",
+      "assume",
+      "assert"
+    ],
+    "function": "trigger",
+    "mode": "research",
+    "statement_count": 8
+  }
+]

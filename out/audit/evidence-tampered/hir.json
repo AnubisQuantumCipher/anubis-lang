@@ -1,0 +1,49 @@
+{
+  "functions": [
+    {
+      "effects": [
+        "research-boundary",
+        "taint-source",
+        "assume",
+        "assume",
+        "assert"
+      ],
+      "mode": "research",
+      "module": null,
+      "name": "trigger",
+      "params": [],
+      "span": [
+        0,
+        143
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "research",
+          "name": "buf",
+          "span": [
+            26,
+            49
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": "*mutu8"
+        },
+        {
+          "declassified": false,
+          "mode": "research",
+          "name": "x",
+          "span": [
+            59,
+            92
+          ],
+          "taint_source": "x",
+          "tainted": true,
+          "ty": "tainted<u32>"
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

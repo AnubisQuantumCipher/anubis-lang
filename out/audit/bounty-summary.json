@@ -1,0 +1,60 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/audit/evidence-20260705-202422-research",
+  "checks": [
+    {
+      "detail": "ok",
+      "name": "parse",
+      "status": "PASS"
+    },
+    {
+      "detail": "mode=research symbols=2 functions=1",
+      "name": "typecheck",
+      "status": "PASS"
+    },
+    {
+      "detail": "labels=2 traces=0",
+      "name": "taint",
+      "status": "PASS"
+    },
+    {
+      "detail": "constraints=3",
+      "name": "symbolic",
+      "status": "PASS"
+    },
+    {
+      "detail": "assert:(> x 0)=PASS",
+      "name": "solver",
+      "status": "PASS"
+    },
+    {
+      "detail": "87b3208901c78d707039d6b4bbcf5ee5a4a08485d83eab1164016715521bcf56",
+      "name": "source_hash",
+      "status": "PASS"
+    },
+    {
+      "detail": "20c4fe5aa8817f6e2e8a6df0f548e7cc0dd32b8b429e243347d687fc10073360",
+      "name": "build_log_hash",
+      "status": "PASS"
+    },
+    {
+      "detail": "native emitted",
+      "name": "artifact",
+      "status": "PASS"
+    },
+    {
+      "detail": "3e65aa9980674a8fa9e6f392c349f60635ae2ac77d5b4bcbf32c278858d89ee5",
+      "name": "artifact_hash",
+      "status": "PASS"
+    }
+  ],
+  "lane": "research",
+  "reports": {
+    "markdown": "out/audit/evidence-20260705-202422-research/bounty-report.md",
+    "sarif": "out/audit/evidence-20260705-202422-research/checks.sarif",
+    "solver": "out/audit/evidence-20260705-202422-research/solver.json",
+    "taint": "out/audit/evidence-20260705-202422-research/taint-traces.json"
+  },
+  "source_hash": "87b3208901c78d707039d6b4bbcf5ee5a4a08485d83eab1164016715521bcf56",
+  "verdict": "PASS"
+}

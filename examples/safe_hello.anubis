@@ -1,0 +1,4 @@
+fn main() {
+    // Safe mode hello world
+    let msg = "hello from anubis safe";
+}

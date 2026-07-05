@@ -1,0 +1,20 @@
+name: anubis-ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt -- --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+  reproducibility:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run -- --help
+      - run: cargo run -- build examples/research_poc.anubis --bounty -o ci-out
+      - run: cargo run -- verify "$(find ci-out -maxdepth 1 -type d -name 'evidence-*' | sort | tail -1)"

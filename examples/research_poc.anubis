@@ -1,0 +1,12 @@
+// Bounty-style research POC example (buffer trigger shape)
+fn trigger() {
+    research {
+        // intent: "simple overflow trigger for demo - not for prod use"
+        let buf: *mut u8 = 0 as *mut u8;
+        // raw write would be here in full POC
+        let x: tainted<u32> = symbolic();
+        assume(x < 191);
+        assume(x > 0);
+        assert(x > 0);
+    }
+}
