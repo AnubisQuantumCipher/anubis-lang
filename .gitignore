@@ -1,0 +1,26 @@
+# Build artifacts
+target/
+**/*/target/
+**/*-real-hybrid/target/
+**/*-fast-hybrid/target/
+*.rlib
+*.rmeta
+*.d
+
+# Large generated
+out/*/target/
+out/audit/hybrid/*target/
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+
+# Env / secrets (never commit)
+.env
+*.pem
+secrets/
+
+# Temporary
+tmp/
+*.tmp
