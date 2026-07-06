@@ -271,7 +271,7 @@ pub fn build_evidence_bundle(
     std::fs::write(dir.join("bounty-report.md"), &report).map_err(|e| e.to_string())?;
     std::fs::write(
         dir.join("validate.sh"),
-        "#!/usr/bin/env sh\nset -eu\nanubis verify \"$(dirname \"$0\")\"\n",
+        "#!/usr/bin/env sh\nset -eu\n# Self-contained bundle validation (no 'anubis' CLI dependency to avoid arg parsing errors).\n# Checks that all files listed in MANIFEST.sha256 still match their recorded hashes.\nDIR=$(dirname \"$0\")\nif [ ! -f \"$DIR/MANIFEST.sha256\" ]; then\n  echo 'MISSING MANIFEST.sha256' >&2\n  exit 1\nfi\nwhile read -r line; do\n  [ -z \"$line\" ] && continue\n  hash=$(echo \"$line\" | cut -d' ' -f1)\n  file=$(echo \"$line\" | cut -d' ' -f2- | xargs)\n  if [ -f \"$DIR/$file\" ]; then\n    actual=$(shasum -a 256 \"$DIR/$file\" | cut -d' ' -f1)\n    if [ \"$actual\" != \"$hash\" ]; then\n      echo \"TAMPER: $file hash mismatch\" >&2\n      exit 1\n    fi\n  else\n    echo \"MISSING: $file\" >&2\n    exit 1\n  fi\ndone < \"$DIR/MANIFEST.sha256\"\necho 'validate.sh: OK'\n",
     )
     .map_err(|e| e.to_string())?;
     #[cfg(unix)]
