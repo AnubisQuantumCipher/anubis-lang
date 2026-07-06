@@ -1,0 +1,12 @@
+step	status	detail
+safety	PASS	bash tools/grok-safety-check.sh
+fmt	PASS	cargo fmt --check
+prove	PASS	verdict: PASS, real ID
+guest-elf	PASS	test -s
+image-id	PASS	real, printed, no placeholder
+receipt	PASS	real
+risc0-meta	PASS	jq -e fresh=true, cache=false, dev=false, mock=false, verify=passed
+standalone-verify	PASS	receipt.verify PASSED (real API)
+schema	PASS	check_evidence_schema.sh PASS
+bundle-verify	PASS	verify_bundle.sh SUCCESS RC=0
+tamper	PASS	all 5 patterns cause mechanical failure in verify_bundle (TAMPER or non-zero)
