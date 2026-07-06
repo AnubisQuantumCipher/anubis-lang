@@ -23,3 +23,17 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Gate 10 RISC0 fresh receipt path | PARTIAL (real derived ImageID from risc0-build GUEST_ID + real Receipt.verify API wired + strict tamper on all sidecars + dev detection) | prove --backend risc0 , sidecars, verify cmd, A15 | cargo run -- prove ... --backend risc0 ; verify-receipt ; A15 log + tamper loops | real ID achieved, API call present, tamper strict, but full passing cryptographic receipt limited in this hybrid emit slice |
 
 **Update rule:** After every material change, append or update row with new evidence path + exact command. A15 must be able to replay.
+
+## Gate 2/3 Language Core Additions (2026-07-06 slice)
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| Gate 2 real language core (comments/fn/let/primitives/expr/control/structs/calls/builtins/attrs) | PARTIAL | 25 fixtures + parser/AST extensions + typecheck + runner | bash scripts/run_language_fixtures.sh ; cargo test -p anubis-compiler | structs/return/typed calls added; full stdlib/enums/modules PLANNED |
+| Gate 3 parser/AST/HIR/MIR maturity (spans, no panic, JSON emit, diags) | PARTIAL | --evidence produces *.ast/hir/mir.json ; detailed parse ; 25 fixtures | cargo run -- check ... --evidence --out ... ; find out/... -name '*.ast.json' | spans on most nodes; column improved in some paths |
+| Type checker + ANUBIS_* codes (unknown, mismatch, taint etc) | PARTIAL | codes emitted for unknown/type/taint/declass ; fixtures enforce | cargo run check unknown_variable ; grep ANUBIS_ | more codes + arity/return/cond to follow |
+| CLI ordinary workflow usable | PARTIAL | check/build/prove/verify/doctor + --evidence/--emit ; docs/CLI.md | anubis check ... ; anubis doctor | run is shim/documented |
+| Fixture runner + repro | REAL (scripts) | scripts/run... + repro... + report json PASS | bash scripts/run... ; jq . report | enforces EXPECT/needle |
+| Language reproducibility (source + basic) | PARTIAL | repro script + report | bash scripts/repro... ; jq | timestamps isolated |
+| Sealed gates preserved (4/5/7/8/10/11) | YES | exact regression commands + verify_bundle + jq PASS | TASK 10 commands in plan | no regressions |
+| General-purpose language complete | NO | explicit in UNSUPPORTED + claim | docs/language/UNSUPPORTED.md | modules/enums/Result/large stdlib/async out of slice |
+

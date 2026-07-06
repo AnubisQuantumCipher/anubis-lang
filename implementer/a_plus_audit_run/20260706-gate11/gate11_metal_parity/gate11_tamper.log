@@ -1,0 +1,5 @@
+tamper correctly detected for receipt.bin
+tamper correctly detected for image_id.txt
+tamper correctly detected for risc0_metadata.json
+tamper correctly detected for reports/parity_report.json
+tamper correctly detected for guest.elf

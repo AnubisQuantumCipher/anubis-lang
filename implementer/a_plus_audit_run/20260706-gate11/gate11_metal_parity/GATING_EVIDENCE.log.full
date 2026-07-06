@@ -1,0 +1,1344 @@
+=== FULL VERBATIM A15 BLOCK Mon Jul  6 05:30:20 UTC 2026 ===
+safety-check: OK
+   Compiling anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-633bb714f63c580b)
+
+running 1 test
+test tests::gate11_metal_parity_observed_lane_contract ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-633bb714f63c580b)
+
+running 4 tests
+test tests::hybrid_full_template_uses_risc0_305_receipt_shape ... ok
+test tests::risc0_receipt_fixture ... ok
+test tests::evidence_bundle_fails_when_risc0_metadata_reports_failed_verify ... ok
+test tests::validate_bundle_rejects_nested_risc0_sidecar_tamper ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.07s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+    Checking anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.62s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+=== Gate 11 Metal Parity Check ===
+Mon Jul  6 01:30:30 EDT 2026
+host: Darwin MacBook-Pro.local 25.0.0 Darwin Kernel Version 25.0.0: Mon Aug 25 21:17:54 PDT 2025; root:xnu-12377.1.9~3/RELEASE_ARM64_T6041 arm64
+require_metal=1
+reference: /Users/sicarii/Desktop/metal-hybrid-prover
+=== Fixture: metal_parity_hello ===
+Prove CPU (R0_DISABLE_METAL=1 --lane cpu)...
+   Compiling anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+   Compiling anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `release` profile [optimized] target(s) in 2.93s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis prove examples/metal_parity_hello.anb --backend risc0 --lane cpu --evidence --out out/a15_gate11_parity/metal_parity_hello_cpu`
+anubis prove examples/metal_parity_hello.anb --backend risc0 --lane cpu (evidence=true)
+lowered artifact: out/a15_gate11_parity/metal_parity_hello_cpu/risc0_receipt
+Building risc0 methods (risc0-build will compute real ImageID from ELF)...
+    Updating crates.io index
+warning: patch `risc0-circuit-rv32im v4.0.4 (/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+     Locking 205 packages to latest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling version_check v0.9.5
+   Compiling ident_case v1.0.1
+   Compiling strsim v0.11.1
+   Compiling serde v1.0.228
+   Compiling const-oid v0.9.6
+   Compiling equivalent v1.0.2
+   Compiling typenum v1.20.1
+   Compiling hashbrown v0.17.1
+   Compiling once_cell v1.21.4
+   Compiling zerocopy v0.8.52
+   Compiling winnow v1.0.3
+   Compiling subtle v2.6.1
+   Compiling libm v0.2.16
+   Compiling autocfg v1.5.1
+   Compiling paste v1.0.15
+   Compiling rustversion v1.0.22
+   Compiling zeroize v1.9.0
+   Compiling generic-array v0.14.7
+   Compiling thiserror v2.0.18
+   Compiling base64ct v1.8.3
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling num-traits v0.2.19
+   Compiling indexmap v2.14.0
+   Compiling pem-rfc7468 v0.7.0
+   Compiling cfg_aliases v0.2.1
+   Compiling fnv v1.0.7
+   Compiling bitflags v2.13.0
+   Compiling der v0.7.10
+   Compiling borsh v1.7.0
+   Compiling spin v0.9.8
+   Compiling core-foundation-sys v0.8.7
+   Compiling lazy_static v1.5.0
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling num-bigint-dig v0.8.6
+   Compiling getrandom v0.4.3
+   Compiling bitflags v1.3.2
+   Compiling foreign-types-shared v0.3.1
+   Compiling rustix v1.1.4
+   Compiling log v0.4.33
+   Compiling toml_edit v0.25.12+spec-1.1.0
+   Compiling spki v0.7.3
+   Compiling foldhash v0.1.5
+   Compiling anyhow v1.0.103
+   Compiling zmij v1.0.21
+   Compiling pkcs8 v0.10.2
+   Compiling syn v2.0.118
+   Compiling hashbrown v0.15.5
+   Compiling getrandom v0.2.17
+   Compiling proc-macro-crate v3.5.0
+   Compiling core-foundation v0.9.4
+   Compiling rand_core v0.6.4
+   Compiling malloc_buf v0.0.6
+   Compiling cpufeatures v0.2.17
+   Compiling objc v0.2.7
+   Compiling core-graphics-types v0.1.3
+   Compiling errno v0.3.14
+   Compiling semver v1.0.28
+   Compiling tracing-core v0.1.36
+   Compiling camino v1.2.4
+   Compiling heck v0.5.0
+   Compiling toml_write v0.1.2
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling risc0-zkp v3.0.4
+   Compiling digest v0.10.7
+   Compiling pin-project-lite v0.2.17
+   Compiling winnow v0.7.15
+   Compiling block v0.1.6
+   Compiling unicode-xid v0.2.6
+   Compiling hex v0.4.3
+   Compiling sha2 v0.10.9
+   Compiling rand_core v0.9.5
+   Compiling serde_json v1.0.150
+   Compiling smallvec v1.15.2
+   Compiling signature v2.2.0
+   Compiling blake2 v0.10.6
+   Compiling hashlink v0.10.0
+   Compiling pkcs1 v0.7.5
+   Compiling encoding_rs v0.8.35
+   Compiling hex-literal v0.4.1
+   Compiling fastrand v2.4.1
+   Compiling arraydeque v0.5.1
+   Compiling option-ext v0.2.0
+   Compiling memchr v2.8.2
+   Compiling ruint-macro v1.2.1
+   Compiling itoa v1.0.18
+   Compiling darling_core v0.23.0
+   Compiling darling_core v0.20.11
+   Compiling num-integer v0.1.46
+   Compiling dirs-sys v0.5.0
+   Compiling no_std_strings v0.1.3
+   Compiling num-iter v0.1.45
+   Compiling include_bytes_aligned v0.1.4
+   Compiling elf v0.7.4
+   Compiling dirs v6.0.0
+   Compiling docker-generate v0.1.3
+   Compiling yaml-rust2 v0.10.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling num_enum_derive v0.7.6
+   Compiling stability v0.2.1
+   Compiling foreign-types-macros v0.2.3
+   Compiling borsh-derive v1.7.0
+   Compiling rand_chacha v0.3.1
+   Compiling bytemuck_derive v1.10.2
+   Compiling rand v0.8.6
+   Compiling tracing-attributes v0.1.31
+   Compiling foreign-types v0.5.0
+   Compiling derive_more-impl v2.1.1
+   Compiling strum_macros v0.27.2
+   Compiling num_enum v0.7.6
+   Compiling darling_macro v0.20.11
+   Compiling bytemuck v1.25.0
+   Compiling darling_macro v0.23.0
+   Compiling tracing v0.1.44
+   Compiling tempfile v3.27.0
+   Compiling darling v0.20.11
+   Compiling rsa v0.9.10
+   Compiling darling v0.23.0
+   Compiling derive_more v2.1.1
+   Compiling metal v0.29.0
+   Compiling strum v0.27.2
+   Compiling ruint v1.19.0
+   Compiling cobs v0.3.0
+   Compiling risc0-core v3.0.1
+   Compiling derive_builder_core v0.20.2
+   Compiling serde_with_macros v3.21.0
+   Compiling derive_builder_macro v0.20.2
+   Compiling derive_builder v0.20.2
+   Compiling serde_with v3.21.0
+   Compiling risc0-zkvm-platform v2.2.2
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling cargo-platform v0.1.9
+   Compiling postcard v1.1.3
+   Compiling risc0-zkos-v1compat v2.2.2
+   Compiling cargo_metadata v0.19.2
+   Compiling toml_edit v0.22.27
+   Compiling toml v0.8.23
+   Compiling risc0-binfmt v3.0.4
+   Compiling rzup v0.5.1
+   Compiling risc0-build v3.0.5
+   Compiling methods v0.1.0 (/Users/sicarii/anubis-lang/out/a15_gate11_parity/metal_parity_hello_cpu/methods)
+    Finished `release` profile [optimized] target(s) in 28.19s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+risc0 sidecars (REAL derived ID: 2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471)
+evidence bundle: out/a15_gate11_parity/metal_parity_hello_cpu/evidence-20260706-053105-safe
+verdict: PASS
+prove complete
+Prove Metal-hybrid (no R0_DISABLE --lane metal-hybrid)...
+    Finished `release` profile [optimized] target(s) in 0.37s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis prove examples/metal_parity_hello.anb --backend risc0 --lane metal-hybrid --evidence --out out/a15_gate11_parity/metal_parity_hello_metal`
+anubis prove examples/metal_parity_hello.anb --backend risc0 --lane metal-hybrid (evidence=true)
+lowered artifact: out/a15_gate11_parity/metal_parity_hello_metal/risc0_receipt
+Building risc0 methods (risc0-build will compute real ImageID from ELF)...
+    Updating crates.io index
+warning: patch `risc0-circuit-rv32im v4.0.4 (/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+    Blocking waiting for file lock on package cache
+     Locking 205 packages to latest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling version_check v0.9.5
+   Compiling serde v1.0.228
+   Compiling strsim v0.11.1
+   Compiling ident_case v1.0.1
+   Compiling const-oid v0.9.6
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling typenum v1.20.1
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling winnow v1.0.3
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling zerocopy v0.8.52
+   Compiling thiserror v2.0.18
+   Compiling paste v1.0.15
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling generic-array v0.14.7
+   Compiling zeroize v1.9.0
+   Compiling rustversion v1.0.22
+   Compiling base64ct v1.8.3
+   Compiling num-traits v0.2.19
+   Compiling indexmap v2.14.0
+   Compiling pem-rfc7468 v0.7.0
+   Compiling fnv v1.0.7
+   Compiling cfg_aliases v0.2.1
+   Compiling bitflags v2.13.0
+   Compiling borsh v1.7.0
+   Compiling der v0.7.10
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling core-foundation-sys v0.8.7
+   Compiling spin v0.9.8
+   Compiling lazy_static v1.5.0
+   Compiling anyhow v1.0.103
+   Compiling syn v2.0.118
+   Compiling bitflags v1.3.2
+   Compiling log v0.4.33
+   Compiling toml_edit v0.25.12+spec-1.1.0
+   Compiling zmij v1.0.21
+   Compiling getrandom v0.4.3
+   Compiling rustix v1.1.4
+   Compiling foreign-types-shared v0.3.1
+   Compiling spki v0.7.3
+   Compiling foldhash v0.1.5
+   Compiling getrandom v0.2.17
+   Compiling malloc_buf v0.0.6
+   Compiling core-foundation v0.9.4
+   Compiling rand_core v0.6.4
+   Compiling cpufeatures v0.2.17
+   Compiling num-bigint-dig v0.8.6
+   Compiling proc-macro-crate v3.5.0
+   Compiling objc v0.2.7
+   Compiling core-graphics-types v0.1.3
+   Compiling hashbrown v0.15.5
+   Compiling pkcs8 v0.10.2
+   Compiling errno v0.3.14
+   Compiling tracing-core v0.1.36
+   Compiling semver v1.0.28
+   Compiling risc0-zkp v3.0.4
+   Compiling winnow v0.7.15
+   Compiling rand_core v0.9.5
+   Compiling unicode-xid v0.2.6
+   Compiling block v0.1.6
+   Compiling camino v1.2.4
+   Compiling smallvec v1.15.2
+   Compiling heck v0.5.0
+   Compiling pin-project-lite v0.2.17
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling hex v0.4.3
+   Compiling serde_json v1.0.150
+   Compiling digest v0.10.7
+   Compiling toml_write v0.1.2
+   Compiling sha2 v0.10.9
+   Compiling blake2 v0.10.6
+   Compiling signature v2.2.0
+   Compiling hashlink v0.10.0
+   Compiling pkcs1 v0.7.5
+   Compiling num-integer v0.1.46
+   Compiling encoding_rs v0.8.35
+   Compiling hex-literal v0.4.1
+   Compiling memchr v2.8.2
+   Compiling itoa v1.0.18
+   Compiling num-iter v0.1.45
+   Compiling arraydeque v0.5.1
+   Compiling darling_core v0.20.11
+   Compiling darling_core v0.23.0
+   Compiling ruint-macro v1.2.1
+   Compiling fastrand v2.4.1
+   Compiling option-ext v0.2.0
+   Compiling dirs-sys v0.5.0
+   Compiling elf v0.7.4
+   Compiling include_bytes_aligned v0.1.4
+   Compiling no_std_strings v0.1.3
+   Compiling dirs v6.0.0
+   Compiling docker-generate v0.1.3
+   Compiling yaml-rust2 v0.10.4
+   Compiling tempfile v3.27.0
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling num_enum_derive v0.7.6
+   Compiling bytemuck_derive v1.10.2
+   Compiling borsh-derive v1.7.0
+   Compiling stability v0.2.1
+   Compiling foreign-types-macros v0.2.3
+   Compiling tracing-attributes v0.1.31
+   Compiling strum_macros v0.27.2
+   Compiling ppv-lite86 v0.2.21
+   Compiling derive_more-impl v2.1.1
+   Compiling rand_chacha v0.3.1
+   Compiling foreign-types v0.5.0
+   Compiling rand v0.8.6
+   Compiling metal v0.29.0
+   Compiling num_enum v0.7.6
+   Compiling darling_macro v0.20.11
+   Compiling bytemuck v1.25.0
+   Compiling tracing v0.1.44
+   Compiling darling_macro v0.23.0
+   Compiling darling v0.20.11
+   Compiling strum v0.27.2
+   Compiling derive_more v2.1.1
+   Compiling darling v0.23.0
+   Compiling rsa v0.9.10
+   Compiling ruint v1.19.0
+   Compiling risc0-core v3.0.1
+   Compiling cobs v0.3.0
+   Compiling risc0-zkvm-platform v2.2.2
+   Compiling risc0-zkos-v1compat v2.2.2
+   Compiling derive_builder_core v0.20.2
+   Compiling derive_builder_macro v0.20.2
+   Compiling derive_builder v0.20.2
+   Compiling serde_with_macros v3.21.0
+   Compiling serde_with v3.21.0
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling postcard v1.1.3
+   Compiling cargo-platform v0.1.9
+   Compiling cargo_metadata v0.19.2
+   Compiling toml_edit v0.22.27
+   Compiling toml v0.8.23
+   Compiling risc0-binfmt v3.0.4
+   Compiling rzup v0.5.1
+   Compiling risc0-build v3.0.5
+   Compiling methods v0.1.0 (/Users/sicarii/anubis-lang/out/a15_gate11_parity/metal_parity_hello_metal/methods)
+    Finished `release` profile [optimized] target(s) in 20.03s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+risc0 sidecars (REAL derived ID: 2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471)
+evidence bundle: out/a15_gate11_parity/metal_parity_hello_metal/evidence-20260706-053127-safe
+verdict: PASS
+prove complete
+    Finished `release` profile [optimized] target(s) in 0.38s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/image_id.txt`
+anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/image_id.txt
+receipt.verify(ANUBIS_ID) PASSED (real RISC0 API path: risc0_zkvm::Receipt::verify)
+journal extracted: out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin (sha256 e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc)
+    Finished `release` profile [optimized] target(s) in 0.16s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_hello_metal/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_hello_metal/backend/risc0/image_id.txt`
+anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_hello_metal/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_hello_metal/backend/risc0/image_id.txt
+receipt.verify(ANUBIS_ID) PASSED (real RISC0 API path: risc0_zkvm::Receipt::verify)
+journal extracted: out/a15_gate11_parity/metal_parity_hello_metal/backend/risc0/journal.bin (sha256 e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc)
+Fixture metal_parity_hello verdict=PASS cpu_lane=cpu metal_lane=metal-hybrid
+=== Fixture: metal_parity_arithmetic ===
+Prove CPU (R0_DISABLE_METAL=1 --lane cpu)...
+    Finished `release` profile [optimized] target(s) in 0.15s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane cpu --evidence --out out/a15_gate11_parity/metal_parity_arithmetic_cpu`
+anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane cpu (evidence=true)
+lowered artifact: out/a15_gate11_parity/metal_parity_arithmetic_cpu/risc0_receipt
+Building risc0 methods (risc0-build will compute real ImageID from ELF)...
+    Updating crates.io index
+warning: patch `risc0-circuit-rv32im v4.0.4 (/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+     Locking 205 packages to latest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling version_check v0.9.5
+   Compiling strsim v0.11.1
+   Compiling const-oid v0.9.6
+   Compiling serde v1.0.228
+   Compiling ident_case v1.0.1
+   Compiling equivalent v1.0.2
+   Compiling typenum v1.20.1
+   Compiling hashbrown v0.17.1
+   Compiling once_cell v1.21.4
+   Compiling libm v0.2.16
+   Compiling zerocopy v0.8.52
+   Compiling subtle v2.6.1
+   Compiling winnow v1.0.3
+   Compiling autocfg v1.5.1
+   Compiling base64ct v1.8.3
+   Compiling paste v1.0.15
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling generic-array v0.14.7
+   Compiling thiserror v2.0.18
+   Compiling zeroize v1.9.0
+   Compiling rustversion v1.0.22
+   Compiling num-traits v0.2.19
+   Compiling indexmap v2.14.0
+   Compiling pem-rfc7468 v0.7.0
+   Compiling bitflags v2.13.0
+   Compiling cfg_aliases v0.2.1
+   Compiling fnv v1.0.7
+   Compiling borsh v1.7.0
+   Compiling der v0.7.10
+   Compiling core-foundation-sys v0.8.7
+   Compiling spin v0.9.8
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling lazy_static v1.5.0
+   Compiling anyhow v1.0.103
+   Compiling zmij v1.0.21
+   Compiling log v0.4.33
+   Compiling getrandom v0.4.3
+   Compiling toml_edit v0.25.12+spec-1.1.0
+   Compiling bitflags v1.3.2
+   Compiling num-bigint-dig v0.8.6
+   Compiling foreign-types-shared v0.3.1
+   Compiling spki v0.7.3
+   Compiling rustix v1.1.4
+   Compiling syn v2.0.118
+   Compiling foldhash v0.1.5
+   Compiling pkcs8 v0.10.2
+   Compiling hashbrown v0.15.5
+   Compiling proc-macro-crate v3.5.0
+   Compiling getrandom v0.2.17
+   Compiling core-foundation v0.9.4
+   Compiling malloc_buf v0.0.6
+   Compiling rand_core v0.6.4
+   Compiling cpufeatures v0.2.17
+   Compiling objc v0.2.7
+   Compiling semver v1.0.28
+   Compiling core-graphics-types v0.1.3
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling errno v0.3.14
+   Compiling digest v0.10.7
+   Compiling tracing-core v0.1.36
+   Compiling smallvec v1.15.2
+   Compiling camino v1.2.4
+   Compiling sha2 v0.10.9
+   Compiling rand_core v0.9.5
+   Compiling unicode-xid v0.2.6
+   Compiling heck v0.5.0
+   Compiling block v0.1.6
+   Compiling hex v0.4.3
+   Compiling risc0-zkp v3.0.4
+   Compiling serde_json v1.0.150
+   Compiling winnow v0.7.15
+   Compiling toml_write v0.1.2
+   Compiling pin-project-lite v0.2.17
+   Compiling blake2 v0.10.6
+   Compiling signature v2.2.0
+   Compiling hashlink v0.10.0
+   Compiling pkcs1 v0.7.5
+   Compiling encoding_rs v0.8.35
+   Compiling hex-literal v0.4.1
+   Compiling num-integer v0.1.46
+   Compiling option-ext v0.2.0
+   Compiling arraydeque v0.5.1
+   Compiling ruint-macro v1.2.1
+   Compiling fastrand v2.4.1
+   Compiling num-iter v0.1.45
+   Compiling memchr v2.8.2
+   Compiling itoa v1.0.18
+   Compiling dirs-sys v0.5.0
+   Compiling include_bytes_aligned v0.1.4
+   Compiling no_std_strings v0.1.3
+   Compiling elf v0.7.4
+   Compiling dirs v6.0.0
+   Compiling docker-generate v0.1.3
+   Compiling darling_core v0.20.11
+   Compiling darling_core v0.23.0
+   Compiling yaml-rust2 v0.10.4
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling num_enum_derive v0.7.6
+   Compiling foreign-types-macros v0.2.3
+   Compiling stability v0.2.1
+   Compiling bytemuck_derive v1.10.2
+   Compiling borsh-derive v1.7.0
+   Compiling tracing-attributes v0.1.31
+   Compiling derive_more-impl v2.1.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling strum_macros v0.27.2
+   Compiling tempfile v3.27.0
+   Compiling foreign-types v0.5.0
+   Compiling rand_chacha v0.3.1
+   Compiling rand v0.8.6
+   Compiling metal v0.29.0
+   Compiling num_enum v0.7.6
+   Compiling bytemuck v1.25.0
+   Compiling darling_macro v0.23.0
+   Compiling tracing v0.1.44
+   Compiling darling_macro v0.20.11
+   Compiling derive_more v2.1.1
+   Compiling darling v0.23.0
+   Compiling darling v0.20.11
+   Compiling strum v0.27.2
+   Compiling rsa v0.9.10
+   Compiling ruint v1.19.0
+   Compiling risc0-core v3.0.1
+   Compiling cobs v0.3.0
+   Compiling serde_with_macros v3.21.0
+   Compiling derive_builder_core v0.20.2
+   Compiling serde_with v3.21.0
+   Compiling risc0-zkvm-platform v2.2.2
+   Compiling risc0-zkos-v1compat v2.2.2
+   Compiling derive_builder_macro v0.20.2
+   Compiling derive_builder v0.20.2
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling postcard v1.1.3
+   Compiling cargo-platform v0.1.9
+   Compiling cargo_metadata v0.19.2
+   Compiling toml_edit v0.22.27
+   Compiling toml v0.8.23
+   Compiling risc0-binfmt v3.0.4
+   Compiling rzup v0.5.1
+   Compiling risc0-build v3.0.5
+   Compiling methods v0.1.0 (/Users/sicarii/anubis-lang/out/a15_gate11_parity/metal_parity_arithmetic_cpu/methods)
+    Finished `release` profile [optimized] target(s) in 20.03s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+risc0 sidecars (REAL derived ID: 2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471)
+evidence bundle: out/a15_gate11_parity/metal_parity_arithmetic_cpu/evidence-20260706-053154-safe
+verdict: FAIL
+prove complete
+Prove Metal-hybrid (no R0_DISABLE --lane metal-hybrid)...
+    Finished `release` profile [optimized] target(s) in 0.21s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane metal-hybrid --evidence --out out/a15_gate11_parity/metal_parity_arithmetic_metal`
+anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane metal-hybrid (evidence=true)
+lowered artifact: out/a15_gate11_parity/metal_parity_arithmetic_metal/risc0_receipt
+Building risc0 methods (risc0-build will compute real ImageID from ELF)...
+    Updating crates.io index
+warning: patch `risc0-circuit-rv32im v4.0.4 (/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+     Locking 205 packages to latest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling version_check v0.9.5
+   Compiling const-oid v0.9.6
+   Compiling strsim v0.11.1
+   Compiling ident_case v1.0.1
+   Compiling serde v1.0.228
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling typenum v1.20.1
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling libm v0.2.16
+   Compiling autocfg v1.5.1
+   Compiling zerocopy v0.8.52
+   Compiling winnow v1.0.3
+   Compiling thiserror v2.0.18
+   Compiling rustversion v1.0.22
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling generic-array v0.14.7
+   Compiling base64ct v1.8.3
+   Compiling num-traits v0.2.19
+   Compiling zeroize v1.9.0
+   Compiling indexmap v2.14.0
+   Compiling paste v1.0.15
+   Compiling pem-rfc7468 v0.7.0
+   Compiling fnv v1.0.7
+   Compiling bitflags v2.13.0
+   Compiling cfg_aliases v0.2.1
+   Compiling borsh v1.7.0
+   Compiling der v0.7.10
+   Compiling spin v0.9.8
+   Compiling core-foundation-sys v0.8.7
+   Compiling lazy_static v1.5.0
+   Compiling rustix v1.1.4
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling log v0.4.33
+   Compiling num-bigint-dig v0.8.6
+   Compiling anyhow v1.0.103
+   Compiling bitflags v1.3.2
+   Compiling foreign-types-shared v0.3.1
+   Compiling zmij v1.0.21
+   Compiling foldhash v0.1.5
+   Compiling toml_edit v0.25.12+spec-1.1.0
+   Compiling getrandom v0.4.3
+   Compiling spki v0.7.3
+   Compiling pkcs8 v0.10.2
+   Compiling syn v2.0.118
+   Compiling hashbrown v0.15.5
+   Compiling proc-macro-crate v3.5.0
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling core-foundation v0.9.4
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling malloc_buf v0.0.6
+   Compiling cpufeatures v0.2.17
+   Compiling digest v0.10.7
+   Compiling objc v0.2.7
+   Compiling errno v0.3.14
+   Compiling core-graphics-types v0.1.3
+   Compiling tracing-core v0.1.36
+   Compiling pin-project-lite v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling risc0-zkp v3.0.4
+   Compiling smallvec v1.15.2
+   Compiling serde_json v1.0.150
+   Compiling winnow v0.7.15
+   Compiling block v0.1.6
+   Compiling semver v1.0.28
+   Compiling toml_write v0.1.2
+   Compiling heck v0.5.0
+   Compiling unicode-xid v0.2.6
+   Compiling camino v1.2.4
+   Compiling rand_core v0.9.5
+   Compiling hex v0.4.3
+   Compiling blake2 v0.10.6
+   Compiling signature v2.2.0
+   Compiling hashlink v0.10.0
+   Compiling pkcs1 v0.7.5
+   Compiling num-integer v0.1.46
+   Compiling encoding_rs v0.8.35
+   Compiling arraydeque v0.5.1
+   Compiling option-ext v0.2.0
+   Compiling num-iter v0.1.45
+   Compiling itoa v1.0.18
+   Compiling fastrand v2.4.1
+   Compiling ruint-macro v1.2.1
+   Compiling memchr v2.8.2
+   Compiling hex-literal v0.4.1
+   Compiling dirs-sys v0.5.0
+   Compiling elf v0.7.4
+   Compiling no_std_strings v0.1.3
+   Compiling include_bytes_aligned v0.1.4
+   Compiling dirs v6.0.0
+   Compiling docker-generate v0.1.3
+   Compiling darling_core v0.23.0
+   Compiling darling_core v0.20.11
+   Compiling yaml-rust2 v0.10.4
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling num_enum_derive v0.7.6
+   Compiling foreign-types-macros v0.2.3
+   Compiling bytemuck_derive v1.10.2
+   Compiling stability v0.2.1
+   Compiling borsh-derive v1.7.0
+   Compiling tracing-attributes v0.1.31
+   Compiling derive_more-impl v2.1.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling strum_macros v0.27.2
+   Compiling foreign-types v0.5.0
+   Compiling rand_chacha v0.3.1
+   Compiling rand v0.8.6
+   Compiling num_enum v0.7.6
+   Compiling metal v0.29.0
+   Compiling tempfile v3.27.0
+   Compiling bytemuck v1.25.0
+   Compiling tracing v0.1.44
+   Compiling darling_macro v0.23.0
+   Compiling darling_macro v0.20.11
+   Compiling derive_more v2.1.1
+   Compiling ruint v1.19.0
+   Compiling risc0-zkvm-platform v2.2.2
+   Compiling darling v0.23.0
+   Compiling rsa v0.9.10
+   Compiling strum v0.27.2
+   Compiling darling v0.20.11
+   Compiling risc0-zkos-v1compat v2.2.2
+   Compiling risc0-core v3.0.1
+   Compiling cobs v0.3.0
+   Compiling serde_with_macros v3.21.0
+   Compiling serde_with v3.21.0
+   Compiling derive_builder_core v0.20.2
+   Compiling derive_builder_macro v0.20.2
+   Compiling derive_builder v0.20.2
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling postcard v1.1.3
+   Compiling cargo-platform v0.1.9
+   Compiling toml_edit v0.22.27
+   Compiling cargo_metadata v0.19.2
+   Compiling risc0-binfmt v3.0.4
+   Compiling toml v0.8.23
+   Compiling rzup v0.5.1
+   Compiling risc0-build v3.0.5
+   Compiling methods v0.1.0 (/Users/sicarii/anubis-lang/out/a15_gate11_parity/metal_parity_arithmetic_metal/methods)
+    Finished `release` profile [optimized] target(s) in 21.02s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+risc0 sidecars (REAL derived ID: 2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471)
+evidence bundle: out/a15_gate11_parity/metal_parity_arithmetic_metal/evidence-20260706-053218-safe
+verdict: FAIL
+prove complete
+    Finished `release` profile [optimized] target(s) in 0.20s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_arithmetic_cpu/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_arithmetic_cpu/backend/risc0/image_id.txt`
+anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_arithmetic_cpu/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_arithmetic_cpu/backend/risc0/image_id.txt
+receipt.verify(ANUBIS_ID) PASSED (real RISC0 API path: risc0_zkvm::Receipt::verify)
+journal extracted: out/a15_gate11_parity/metal_parity_arithmetic_cpu/backend/risc0/journal.bin (sha256 e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc)
+    Finished `release` profile [optimized] target(s) in 0.16s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_arithmetic_metal/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_arithmetic_metal/backend/risc0/image_id.txt`
+anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_arithmetic_metal/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_arithmetic_metal/backend/risc0/image_id.txt
+receipt.verify(ANUBIS_ID) PASSED (real RISC0 API path: risc0_zkvm::Receipt::verify)
+journal extracted: out/a15_gate11_parity/metal_parity_arithmetic_metal/backend/risc0/journal.bin (sha256 e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc)
+Fixture metal_parity_arithmetic verdict=PASS cpu_lane=cpu metal_lane=metal-hybrid
+=== Fixture: metal_parity_symbolic_safe ===
+Prove CPU (R0_DISABLE_METAL=1 --lane cpu)...
+    Finished `release` profile [optimized] target(s) in 0.15s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane cpu --evidence --out out/a15_gate11_parity/metal_parity_symbolic_safe_cpu`
+anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane cpu (evidence=true)
+lowered artifact: out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/risc0_receipt
+Building risc0 methods (risc0-build will compute real ImageID from ELF)...
+    Updating crates.io index
+warning: patch `risc0-circuit-rv32im v4.0.4 (/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+     Locking 205 packages to latest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling version_check v0.9.5
+   Compiling ident_case v1.0.1
+   Compiling strsim v0.11.1
+   Compiling const-oid v0.9.6
+   Compiling serde v1.0.228
+   Compiling hashbrown v0.17.1
+   Compiling typenum v1.20.1
+   Compiling equivalent v1.0.2
+   Compiling once_cell v1.21.4
+   Compiling zerocopy v0.8.52
+   Compiling libm v0.2.16
+   Compiling winnow v1.0.3
+   Compiling autocfg v1.5.1
+   Compiling subtle v2.6.1
+   Compiling rustversion v1.0.22
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling paste v1.0.15
+   Compiling generic-array v0.14.7
+   Compiling base64ct v1.8.3
+   Compiling num-traits v0.2.19
+   Compiling thiserror v2.0.18
+   Compiling zeroize v1.9.0
+   Compiling pem-rfc7468 v0.7.0
+   Compiling indexmap v2.14.0
+   Compiling cfg_aliases v0.2.1
+   Compiling fnv v1.0.7
+   Compiling bitflags v2.13.0
+   Compiling borsh v1.7.0
+   Compiling der v0.7.10
+   Compiling spin v0.9.8
+   Compiling core-foundation-sys v0.8.7
+   Compiling lazy_static v1.5.0
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling anyhow v1.0.103
+   Compiling rustix v1.1.4
+   Compiling foreign-types-shared v0.3.1
+   Compiling toml_edit v0.25.12+spec-1.1.0
+   Compiling getrandom v0.4.3
+   Compiling zmij v1.0.21
+   Compiling log v0.4.33
+   Compiling foldhash v0.1.5
+   Compiling syn v2.0.118
+   Compiling spki v0.7.3
+   Compiling bitflags v1.3.2
+   Compiling num-bigint-dig v0.8.6
+   Compiling hashbrown v0.15.5
+   Compiling proc-macro-crate v3.5.0
+   Compiling pkcs8 v0.10.2
+   Compiling getrandom v0.2.17
+   Compiling cpufeatures v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling malloc_buf v0.0.6
+   Compiling core-foundation v0.9.4
+   Compiling errno v0.3.14
+   Compiling objc v0.2.7
+   Compiling semver v1.0.28
+   Compiling core-graphics-types v0.1.3
+   Compiling tracing-core v0.1.36
+   Compiling camino v1.2.4
+   Compiling smallvec v1.15.2
+   Compiling heck v0.5.0
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling unicode-xid v0.2.6
+   Compiling pin-project-lite v0.2.17
+   Compiling risc0-zkp v3.0.4
+   Compiling digest v0.10.7
+   Compiling toml_write v0.1.2
+   Compiling hex v0.4.3
+   Compiling winnow v0.7.15
+   Compiling sha2 v0.10.9
+   Compiling block v0.1.6
+   Compiling rand_core v0.9.5
+   Compiling serde_json v1.0.150
+   Compiling blake2 v0.10.6
+   Compiling signature v2.2.0
+   Compiling hashlink v0.10.0
+   Compiling num-integer v0.1.46
+   Compiling pkcs1 v0.7.5
+   Compiling encoding_rs v0.8.35
+   Compiling num-iter v0.1.45
+   Compiling memchr v2.8.2
+   Compiling option-ext v0.2.0
+   Compiling ruint-macro v1.2.1
+   Compiling hex-literal v0.4.1
+   Compiling arraydeque v0.5.1
+   Compiling itoa v1.0.18
+   Compiling fastrand v2.4.1
+   Compiling dirs-sys v0.5.0
+   Compiling elf v0.7.4
+   Compiling include_bytes_aligned v0.1.4
+   Compiling no_std_strings v0.1.3
+   Compiling dirs v6.0.0
+   Compiling docker-generate v0.1.3
+   Compiling darling_core v0.23.0
+   Compiling darling_core v0.20.11
+   Compiling yaml-rust2 v0.10.4
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling num_enum_derive v0.7.6
+   Compiling stability v0.2.1
+   Compiling bytemuck_derive v1.10.2
+   Compiling foreign-types-macros v0.2.3
+   Compiling borsh-derive v1.7.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling tracing-attributes v0.1.31
+   Compiling rand_chacha v0.3.1
+   Compiling strum_macros v0.27.2
+   Compiling derive_more-impl v2.1.1
+   Compiling foreign-types v0.5.0
+   Compiling rand v0.8.6
+   Compiling tempfile v3.27.0
+   Compiling num_enum v0.7.6
+   Compiling metal v0.29.0
+   Compiling bytemuck v1.25.0
+   Compiling tracing v0.1.44
+   Compiling darling_macro v0.20.11
+   Compiling darling_macro v0.23.0
+   Compiling darling v0.20.11
+   Compiling rsa v0.9.10
+   Compiling derive_more v2.1.1
+   Compiling strum v0.27.2
+   Compiling darling v0.23.0
+   Compiling ruint v1.19.0
+   Compiling cobs v0.3.0
+   Compiling risc0-core v3.0.1
+   Compiling risc0-zkvm-platform v2.2.2
+   Compiling risc0-zkos-v1compat v2.2.2
+   Compiling derive_builder_core v0.20.2
+   Compiling derive_builder_macro v0.20.2
+   Compiling derive_builder v0.20.2
+   Compiling serde_with_macros v3.21.0
+   Compiling serde_with v3.21.0
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling cargo-platform v0.1.9
+   Compiling postcard v1.1.3
+   Compiling cargo_metadata v0.19.2
+   Compiling toml_edit v0.22.27
+   Compiling toml v0.8.23
+   Compiling risc0-binfmt v3.0.4
+   Compiling rzup v0.5.1
+   Compiling risc0-build v3.0.5
+   Compiling methods v0.1.0 (/Users/sicarii/anubis-lang/out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/methods)
+    Finished `release` profile [optimized] target(s) in 20.13s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+risc0 sidecars (REAL derived ID: 2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471)
+evidence bundle: out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/evidence-20260706-053244-safe
+verdict: FAIL
+prove complete
+Prove Metal-hybrid (no R0_DISABLE --lane metal-hybrid)...
+    Finished `release` profile [optimized] target(s) in 0.20s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane metal-hybrid --evidence --out out/a15_gate11_parity/metal_parity_symbolic_safe_metal`
+anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane metal-hybrid (evidence=true)
+lowered artifact: out/a15_gate11_parity/metal_parity_symbolic_safe_metal/risc0_receipt
+Building risc0 methods (risc0-build will compute real ImageID from ELF)...
+    Updating crates.io index
+warning: patch `risc0-circuit-rv32im v4.0.4 (/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+     Locking 205 packages to latest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling version_check v0.9.5
+   Compiling strsim v0.11.1
+   Compiling const-oid v0.9.6
+   Compiling ident_case v1.0.1
+   Compiling serde v1.0.228
+   Compiling typenum v1.20.1
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling once_cell v1.21.4
+   Compiling winnow v1.0.3
+   Compiling zerocopy v0.8.52
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling subtle v2.6.1
+   Compiling base64ct v1.8.3
+   Compiling paste v1.0.15
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling generic-array v0.14.7
+   Compiling rustversion v1.0.22
+   Compiling thiserror v2.0.18
+   Compiling zeroize v1.9.0
+   Compiling num-traits v0.2.19
+   Compiling indexmap v2.14.0
+   Compiling pem-rfc7468 v0.7.0
+   Compiling cfg_aliases v0.2.1
+   Compiling fnv v1.0.7
+   Compiling bitflags v2.13.0
+   Compiling der v0.7.10
+   Compiling borsh v1.7.0
+   Compiling spin v0.9.8
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling core-foundation-sys v0.8.7
+   Compiling lazy_static v1.5.0
+   Compiling log v0.4.33
+   Compiling bitflags v1.3.2
+   Compiling foreign-types-shared v0.3.1
+   Compiling rustix v1.1.4
+   Compiling foldhash v0.1.5
+   Compiling toml_edit v0.25.12+spec-1.1.0
+   Compiling spki v0.7.3
+   Compiling num-bigint-dig v0.8.6
+   Compiling syn v2.0.118
+   Compiling zmij v1.0.21
+   Compiling getrandom v0.4.3
+   Compiling getrandom v0.2.17
+   Compiling core-foundation v0.9.4
+   Compiling cpufeatures v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling proc-macro-crate v3.5.0
+   Compiling malloc_buf v0.0.6
+   Compiling anyhow v1.0.103
+   Compiling objc v0.2.7
+   Compiling core-graphics-types v0.1.3
+   Compiling errno v0.3.14
+   Compiling semver v1.0.28
+   Compiling pkcs8 v0.10.2
+   Compiling hashbrown v0.15.5
+   Compiling tracing-core v0.1.36
+   Compiling rand_core v0.9.5
+   Compiling smallvec v1.15.2
+   Compiling heck v0.5.0
+   Compiling pin-project-lite v0.2.17
+   Compiling toml_write v0.1.2
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling unicode-xid v0.2.6
+   Compiling block v0.1.6
+   Compiling digest v0.10.7
+   Compiling risc0-zkp v3.0.4
+   Compiling camino v1.2.4
+   Compiling serde_json v1.0.150
+   Compiling winnow v0.7.15
+   Compiling sha2 v0.10.9
+   Compiling hex v0.4.3
+   Compiling blake2 v0.10.6
+   Compiling signature v2.2.0
+   Compiling hashlink v0.10.0
+   Compiling pkcs1 v0.7.5
+   Compiling encoding_rs v0.8.35
+   Compiling num-integer v0.1.46
+   Compiling memchr v2.8.2
+   Compiling option-ext v0.2.0
+   Compiling num-iter v0.1.45
+   Compiling itoa v1.0.18
+   Compiling fastrand v2.4.1
+   Compiling ruint-macro v1.2.1
+   Compiling hex-literal v0.4.1
+   Compiling arraydeque v0.5.1
+   Compiling dirs-sys v0.5.0
+   Compiling elf v0.7.4
+   Compiling no_std_strings v0.1.3
+   Compiling include_bytes_aligned v0.1.4
+   Compiling dirs v6.0.0
+   Compiling docker-generate v0.1.3
+   Compiling darling_core v0.23.0
+   Compiling darling_core v0.20.11
+   Compiling yaml-rust2 v0.10.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.3.1
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling num_enum_derive v0.7.6
+   Compiling bytemuck_derive v1.10.2
+   Compiling foreign-types-macros v0.2.3
+   Compiling stability v0.2.1
+   Compiling borsh-derive v1.7.0
+   Compiling tracing-attributes v0.1.31
+   Compiling rand v0.8.6
+   Compiling derive_more-impl v2.1.1
+   Compiling strum_macros v0.27.2
+   Compiling foreign-types v0.5.0
+   Compiling num_enum v0.7.6
+   Compiling metal v0.29.0
+   Compiling bytemuck v1.25.0
+   Compiling tempfile v3.27.0
+   Compiling rsa v0.9.10
+   Compiling tracing v0.1.44
+   Compiling darling_macro v0.23.0
+   Compiling darling_macro v0.20.11
+   Compiling derive_more v2.1.1
+   Compiling darling v0.23.0
+   Compiling risc0-zkvm-platform v2.2.2
+   Compiling darling v0.20.11
+   Compiling strum v0.27.2
+   Compiling risc0-zkos-v1compat v2.2.2
+   Compiling risc0-core v3.0.1
+   Compiling cobs v0.3.0
+   Compiling ruint v1.19.0
+   Compiling serde_with_macros v3.21.0
+   Compiling derive_builder_core v0.20.2
+   Compiling serde_with v3.21.0
+   Compiling derive_builder_macro v0.20.2
+   Compiling derive_builder v0.20.2
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling cargo-platform v0.1.9
+   Compiling postcard v1.1.3
+   Compiling cargo_metadata v0.19.2
+   Compiling toml_edit v0.22.27
+   Compiling toml v0.8.23
+   Compiling risc0-binfmt v3.0.4
+   Compiling rzup v0.5.1
+   Compiling risc0-build v3.0.5
+   Compiling methods v0.1.0 (/Users/sicarii/anubis-lang/out/a15_gate11_parity/metal_parity_symbolic_safe_metal/methods)
+    Finished `release` profile [optimized] target(s) in 21.26s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+risc0 sidecars (REAL derived ID: 2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471)
+evidence bundle: out/a15_gate11_parity/metal_parity_symbolic_safe_metal/evidence-20260706-053308-safe
+verdict: FAIL
+prove complete
+    Finished `release` profile [optimized] target(s) in 0.19s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/backend/risc0/image_id.txt`
+anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/backend/risc0/image_id.txt
+receipt.verify(ANUBIS_ID) PASSED (real RISC0 API path: risc0_zkvm::Receipt::verify)
+journal extracted: out/a15_gate11_parity/metal_parity_symbolic_safe_cpu/backend/risc0/journal.bin (sha256 e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc)
+    Finished `release` profile [optimized] target(s) in 0.15s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_symbolic_safe_metal/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_symbolic_safe_metal/backend/risc0/image_id.txt`
+anubis verify-receipt --receipt out/a15_gate11_parity/metal_parity_symbolic_safe_metal/backend/risc0/receipt.bin --image-id out/a15_gate11_parity/metal_parity_symbolic_safe_metal/backend/risc0/image_id.txt
+receipt.verify(ANUBIS_ID) PASSED (real RISC0 API path: risc0_zkvm::Receipt::verify)
+journal extracted: out/a15_gate11_parity/metal_parity_symbolic_safe_metal/backend/risc0/journal.bin (sha256 e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc)
+Fixture metal_parity_symbolic_safe verdict=PASS cpu_lane=cpu metal_lane=metal-hybrid
+=== DONE ===
+Report: out/a15_gate11_parity/parity_report.json
+{
+  "schema_version": "1.0",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64",
+    "apple_silicon": true,
+    "tier2_metal_available": true
+  },
+  "reference": {
+    "repo": "https://github.com/AnubisQuantumCipher/risc0-metal-hybrid",
+    "local_path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+    "vendor_path": "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im"
+  },
+  "fixtures": [
+    {
+      "name": "metal_parity_hello",
+      "cpu": {
+        "bundle": "out/a15_gate11_parity/metal_parity_hello_cpu",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "metal": {
+        "bundle": "out/a15_gate11_parity/metal_parity_hello_metal",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "parity": {
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true,
+        "both_receipts_verify": true
+      },
+      "verdict": "PASS"
+    }
+,
+    {
+      "name": "metal_parity_arithmetic",
+      "cpu": {
+        "bundle": "out/a15_gate11_parity/metal_parity_arithmetic_cpu",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "metal": {
+        "bundle": "out/a15_gate11_parity/metal_parity_arithmetic_metal",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "parity": {
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true,
+        "both_receipts_verify": true
+      },
+      "verdict": "PASS"
+    }
+,
+    {
+      "name": "metal_parity_symbolic_safe",
+      "cpu": {
+        "bundle": "out/a15_gate11_parity/metal_parity_symbolic_safe_cpu",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "metal": {
+        "bundle": "out/a15_gate11_parity/metal_parity_symbolic_safe_metal",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "parity": {
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true,
+        "both_receipts_verify": true
+      },
+      "verdict": "PASS"
+    }
+  ],
+  "overall_verdict": "PASS"
+}
+Canonicalizing report via gate11-metal-parity subcommand...
+    Finished `release` profile [optimized] target(s) in 0.15s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis gate11-metal-parity --cpu out/a15_gate11_parity --metal out/a15_gate11_parity --out out/a15_gate11_parity --require-metal`
+gate11-metal-parity --cpu out/a15_gate11_parity --metal out/a15_gate11_parity --out out/a15_gate11_parity (require_metal=true)
+wrote canonical out/a15_gate11_parity/parity_report.json
+Final canonical overall_verdict=PASS
+=== post parity checks ===
+{
+  "fixtures": [
+    {
+      "cpu": {
+        "bundle": "out/a15_gate11_parity/metal_parity_hello_cpu",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed"
+      },
+      "metal": {
+        "bundle": "out/a15_gate11_parity/metal_parity_hello_metal",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed"
+      },
+      "name": "metal_parity_hello",
+      "parity": {
+        "both_receipts_verify": true,
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true
+      },
+      "verdict": "PASS"
+    },
+    {
+      "cpu": {
+        "bundle": "out/a15_gate11_parity/metal_parity_arithmetic_cpu",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed"
+      },
+      "metal": {
+        "bundle": "out/a15_gate11_parity/metal_parity_arithmetic_metal",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed"
+      },
+      "name": "metal_parity_arithmetic",
+      "parity": {
+        "both_receipts_verify": true,
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true
+      },
+      "verdict": "PASS"
+    },
+    {
+      "cpu": {
+        "bundle": "out/a15_gate11_parity/metal_parity_symbolic_safe_cpu",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed"
+      },
+      "metal": {
+        "bundle": "out/a15_gate11_parity/metal_parity_symbolic_safe_metal",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed"
+      },
+      "name": "metal_parity_symbolic_safe",
+      "parity": {
+        "both_receipts_verify": true,
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true
+      },
+      "verdict": "PASS"
+    }
+  ],
+  "host": {
+    "apple_silicon": true,
+    "machine": "aarch64",
+    "os": "macos",
+    "tier2_metal_available": true
+  },
+  "overall_verdict": "PASS",
+  "reference": {
+    "local_path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+    "repo": "https://github.com/AnubisQuantumCipher/risc0-metal-hybrid",
+    "vendor_path": "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im"
+  },
+  "schema_version": "1.0"
+}
+true
+out/a15_gate11_parity/metal_parity_arithmetic_cpu/risc0_metadata.json:    "lane_observed": "cpu",
+out/a15_gate11_parity/metal_parity_arithmetic_cpu/backend/risc0/receipt.verify.log:lane_observed=cpu
+out/a15_gate11_parity/metal_parity_arithmetic_cpu/backend/risc0/risc0_metadata.json:    "lane_observed": "cpu",
+out/a15_gate11_parity/metal_parity_arithmetic_cpu/risc0_receipt.verify.log:lane_observed=cpu
+out/a15_gate11_parity/metal_parity_arithmetic_cpu/evidence-20260706-053154-safe/risc0_metadata.json:    "lane_observed": "cpu",
+out/a15_gate11_parity/metal_parity_hello_metal/evidence-20260706-053127-safe/risc0_metadata.json:    "lane_observed": "metal-hybrid",
+out/a15_gate11_parity/metal_parity_hello_metal/evidence-20260706-053127-safe/backend/risc0/receipt.verify.log:lane_observed=metal-hybrid
+out/a15_gate11_parity/metal_parity_hello_metal/evidence-20260706-053127-safe/backend/risc0/risc0_metadata.json:    "lane_observed": "metal-hybrid",
+out/a15_gate11_parity/metal_parity_hello_metal/evidence-20260706-053127-safe/risc0_receipt.verify.log:lane_observed=metal-hybrid
+out/a15_gate11_parity/metal_parity_hello_metal/evidence-20260706-053127-safe/risc0_risc0_metadata.json:    "lane_observed": "metal-hybrid",
+out/a15_gate11_parity/metal_parity_symbolic_safe_metal/evidence-20260706-053308-safe/MANIFEST.sha256:f2625b11c5f275ff43aee3c7702f9b5cf95aeb471d9c24f444a8d3e82760c26d  backend/risc0/receipt.verify.log
+out/a15_gate11_parity/metal_parity_symbolic_safe_metal/evidence-20260706-053308-safe/MANIFEST.sha256:f2625b11c5f275ff43aee3c7702f9b5cf95aeb471d9c24f444a8d3e82760c26d  risc0_receipt.verify.log
+out/a15_gate11_parity/metal_parity_arithmetic_cpu/evidence-20260706-053154-safe/source-tree.json:    "path": "risc0_receipt.verify.log",
+out/a15_gate11_parity/metal_parity_arithmetic_cpu/evidence-20260706-053154-safe/risc0_metadata.json:    "observation_source": "env+receipt.verify.log+prove.log",
+out/a15_gate11_parity/metal_parity_hello_cpu/risc0_receipt.verify.log:receipt.verify(ANUBIS_ID) PASSED (real risc0_zkvm::Receipt::verify)
+zsh:24: no matches found: out/a15_gate11_parity/evidence-*
+zsh:25: no matches found: out/a15_gate11_parity/evidence-*
+  files hashed: 8
+  MANIFEST.sha256 sha256: d561623a66f4f231d9d880dec6c2165e2b5861e2c8c4deaa2759a3313aacfaea   <- the single bundle anchor
+verify with: scripts/verify-evidence-manifest.sh /Users/sicarii/Desktop/metal-hybrid-prover/evidence/20260706T050144Z
+logs/patch-consistency.log: OK
+logs/risc0-zkp-invariants.log: OK
+OK: all files match MANIFEST.sha256
+=== FULL VERBATIM A15 BLOCK END Mon Jul  6 05:34:22 UTC 2026 ===

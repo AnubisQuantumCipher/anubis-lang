@@ -71,6 +71,7 @@ pub struct SolverCheck {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SemanticDiagnostic {
+    pub code: Option<String>,
     pub message: String,
     pub span: Option<(usize, usize)>,
 }
@@ -110,6 +111,7 @@ struct SemanticContext {
     has_research: bool,
     symbolic_defs: Vec<String>,
     symbolic_widths: BTreeMap<String, u32>,
+    known_bindings: BTreeSet<String>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -129,7 +131,13 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
         let messages = ctx
             .diagnostics
             .iter()
-            .map(|diag| diag.message.as_str())
+            .map(|diag| {
+                if let Some(c) = &diag.code {
+                    format!("{}: {}", c, diag.message)
+                } else {
+                    diag.message.clone()
+                }
+            })
             .collect::<Vec<_>>()
             .join("; ");
         return Err(messages);
@@ -180,6 +188,10 @@ fn collect_items(
                     *mode
                 };
                 analyze_function(name, module, params, body, effective_mode, *span, ctx);
+            }
+            Item::Struct { .. } => {
+                // Minimal support for this slice: structs are parsed and preserved in AST;
+                // full type registration and field typing added in typechecker work.
             }
         }
     }
@@ -270,6 +282,7 @@ fn analyze_stmts(
             } => {
                 if mode == Mode::Safe && type_has_raw_pointer(ty.as_deref()) {
                     ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_RAW_POINTER_IN_SAFE".into()),
                         message: format!(
                             "safe mode raw pointer binding `{}` requires a research/exploit boundary",
                             name
@@ -277,8 +290,48 @@ fn analyze_stmts(
                         span: Some((span.start, span.end)),
                     });
                 }
+
+                // Gate 2/3: minimal unknown variable detection (covers let y = x; and simple x + 1 cases)
+                fn note_unknown(v: &str, ctx: &mut SemanticContext) {
+                    if !ctx.known_bindings.contains(v) {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_UNKNOWN_VARIABLE".into()),
+                            message: format!("unknown variable `{}`", v),
+                            span: None,
+                        });
+                    }
+                }
+                match init {
+                    Expr::Var(v) => note_unknown(v, ctx),
+                    Expr::Binary { lhs, rhs, .. } => {
+                        if let Expr::Var(v) = &**lhs {
+                            note_unknown(v, ctx);
+                        }
+                        if let Expr::Var(v) = &**rhs {
+                            note_unknown(v, ctx);
+                        }
+                    }
+                    _ => {}
+                }
+
                 let init_taint = expr_taint_source(init, scope);
                 let declass_source = declassify_source(init, scope);
+                // mark known after unknown check so later stmts see it
+                ctx.known_bindings.insert(name.clone());
+
+                // Minimal type mismatch for Gate2/3 (u32 vs bool literal etc)
+                if let Some(t) = ty.as_deref() {
+                    let looks_bool =
+                        matches!(init, Expr::Literal(s) if s == "true" || s == "false");
+                    if (t == "u32" || t == "u8" || t == "u64") && looks_bool {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                            message: format!("type mismatch: expected {}, got bool", t),
+                            span: Some((span.start, span.end)),
+                        });
+                    }
+                }
+
                 if let Some(source) = &declass_source {
                     ctx.taint_traces.push(TaintTrace {
                         source: source.clone(),
@@ -458,6 +511,7 @@ fn analyze_expr_effect(
                     });
                     if mode == Mode::Safe && !declassified {
                         ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
                             message: format!(
                                 "safe mode tainted flow from `{}` to sink `{}` requires declassify() or research boundary",
                                 source, callee
@@ -491,6 +545,7 @@ fn analyze_expr_effect(
                 effects.push("declassify".into());
                 if mode == Mode::Safe && !has_policy {
                     ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_DECLASSIFY_MISSING_POLICY_REASON".into()),
                         message: "declassify in safe mode requires policy and reason: declassify(value, policy: \"...\", reason: \"...\")".into(),
                         span: None,
                     });
@@ -784,6 +839,7 @@ fn first_fn_body(items: &[Item]) -> Option<Vec<Stmt>> {
                 }
             }
             Item::Import { .. } => {}
+            Item::Struct { .. } => {}
         }
     }
     None

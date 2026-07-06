@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// Must pass only with explicit policy + reason (GATE 5)\nfn main() {\n    let secret = taint_source(\"password\");\n    let "
+}

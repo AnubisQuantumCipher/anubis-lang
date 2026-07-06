@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "host": {
+    "os": "Darwin",
+    "machine": "arm64",
+    "apple_silicon": true,
+    "tier2_metal_available": true
+  },
+  "reference": {
+    "repo": "https://github.com/AnubisQuantumCipher/risc0-metal-hybrid",
+    "local_path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+    "vendor_path": "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im"
+  },
+  "fixtures": [
+    {
+      "name": "metal_parity_hello",
+      "cpu": {
+        "bundle": "out/a_plus_gate11_parity/metal_parity_hello_cpu",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "metal": {
+        "bundle": "out/a_plus_gate11_parity/metal_parity_hello_metal",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "parity": {
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true,
+        "both_receipts_verify": true
+      },
+      "verdict": "PASS"
+    },
+    {
+      "name": "metal_parity_arithmetic",
+      "cpu": {
+        "bundle": "out/a_plus_gate11_parity/metal_parity_arithmetic_cpu",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "metal": {
+        "bundle": "out/a_plus_gate11_parity/metal_parity_arithmetic_metal",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "parity": {
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true,
+        "both_receipts_verify": true
+      },
+      "verdict": "PASS"
+    },
+    {
+      "name": "metal_parity_symbolic_safe",
+      "cpu": {
+        "bundle": "out/a_plus_gate11_parity/metal_parity_symbolic_safe_cpu",
+        "lane_observed": "cpu",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "metal": {
+        "bundle": "out/a_plus_gate11_parity/metal_parity_symbolic_safe_metal",
+        "lane_observed": "metal-hybrid",
+        "receipt_verify": "passed",
+        "journal_sha256": "e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc",
+        "image_id": "2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471"
+      },
+      "parity": {
+        "image_id_match": true,
+        "journal_match": true,
+        "output_match": true,
+        "both_receipts_verify": true
+      },
+      "verdict": "PASS"
+    }
+  ],
+  "overall_verdict": "PASS"
+}

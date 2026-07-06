@@ -1,0 +1,3 @@
+receipt.verify(ANUBIS_ID) PASSED (real risc0_zkvm::Receipt::verify)
+lane_observed=cpu
+R0_DISABLE_METAL_forced_cpu=true

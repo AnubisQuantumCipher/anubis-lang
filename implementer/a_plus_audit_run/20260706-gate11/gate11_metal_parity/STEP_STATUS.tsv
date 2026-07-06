@@ -1,0 +1,11 @@
+STEP	STATUS	DETAIL
+TASK1	map doc created + greps	PASS
+TASK2	metal_hybrid metadata + observed	PASS
+TASK3	3 deterministic fixtures	PASS
+TASK4	--lane cpu/metal-hybrid CLI	PASS
+TASK5	parity checker + report	PASS (overall PASS)
+TASK6	full evidence bundle + schema + verify + 5 tamper	PASS
+TASK7	reference hash+manifest	OK (captured)
+TASK8	fmt/test/clippy + basic lane tests	PASS
+TASK9	docs truth boundaries	updated
+TASK10	A15 reproduction + 13 verdicts	complete

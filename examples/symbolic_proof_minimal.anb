@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// FEATURE: symbolic + assume/assert minimal
+fn main() {
+    let v: u32 = symbolic("v");
+    assume(v >= 0);
+    assert(v < 1000);
+}

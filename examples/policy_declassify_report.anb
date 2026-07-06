@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// FEATURE: declassify with full policy for report
+fn main() {
+    let secret = taint_source("user-data");
+    let safe = declassify(secret, "audit-redact-v1", "redact PII for public report");
+    sink(safe);
+}

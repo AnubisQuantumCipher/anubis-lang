@@ -1,0 +1,38 @@
+=== Gate 11 A15 reproduce start Mon Jul  6 01:26:33 EDT 2026 ===
+branch=a-plus-maturity/20260705-1649
+safety-check: OK
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-633bb714f63c580b)
+
+running 1 test
+test tests::gate11_metal_parity_observed_lane_contract ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-633bb714f63c580b)
+
+running 4 tests
+test tests::hybrid_full_template_uses_risc0_305_receipt_shape ... ok
+test tests::risc0_receipt_fixture ... ok
+test tests::evidence_bundle_fails_when_risc0_metadata_reports_failed_verify ... ok
+test tests::validate_bundle_rejects_nested_risc0_sidecar_tamper ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.07s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+    Checking anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.77s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+=== A15 Gate 11 reproduce complete Mon Jul  6 01:26:47 EDT 2026 ===
+total 24
+-rw-r--r--@ 1 sicarii  staff   729 Jul  6 01:26 command.log
+-rw-r--r--@ 1 sicarii  staff  1631 Jul  6 01:26 GATING_EVIDENCE.log
+drwxr-xr-x@ 4 sicarii  staff   128 Jul  6 01:26 journals
+-rw-r--r--@ 1 sicarii  staff  3386 Jul  6 01:26 parity_report.json

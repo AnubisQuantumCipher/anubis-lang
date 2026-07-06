@@ -95,6 +95,11 @@ pub enum Item {
         intent: Option<String>,
         span: Span,
     },
+    Struct {
+        name: String,
+        fields: Vec<(String, String)>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +177,16 @@ pub enum Expr {
     },
     RawPtr {
         mutable: bool,
+    },
+    StructLiteral {
+        name: String,
+        fields: Vec<(String, Box<Expr>)>,
+        span: Span,
+    },
+    FieldAccess {
+        base: Box<Expr>,
+        field: String,
+        span: Span,
     },
     Other(String),
 }
@@ -463,6 +478,10 @@ impl Parser {
                 if let Some(item) = self.parse_module() {
                     items.push(item);
                 }
+            } else if self.check_keyword("struct") {
+                if let Some(item) = self.parse_struct() {
+                    items.push(item);
+                }
             } else {
                 let span = self.current_span();
                 self.diagnostic("expected item", span);
@@ -501,6 +520,33 @@ impl Parser {
         };
         Some(Item::Import {
             path,
+            span: Span {
+                start: start.start,
+                end,
+            },
+        })
+    }
+
+    fn parse_struct(&mut self) -> Option<Item> {
+        let start = self.expect_keyword("struct")?.span;
+        let (name, _) = self.expect_ident("expected struct name")?;
+        let _ = self.expect_token(Token::LBrace, "expected `{` after struct name");
+        let mut fields = vec![];
+        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            if let Some((fname, _)) = self.expect_ident("expected field name") {
+                let _ = self.expect_token(Token::Colon, "expected `:` after field");
+                let fty = self.collect_type_until(&[Token::Comma, Token::RBrace, Token::Semi]);
+                fields.push((fname, fty));
+            }
+            if self.check_token(&Token::Comma) || self.check_token(&Token::Semi) {
+                self.bump();
+            }
+        }
+        let _ = self.expect_token(Token::RBrace, "expected `}` after struct");
+        let end = self.previous_end();
+        Some(Item::Struct {
+            name,
+            fields,
             span: Span {
                 start: start.start,
                 end,
@@ -647,6 +693,20 @@ impl Parser {
             self.consume_optional_semi();
             return Some(Stmt::ExprStmt(expr));
         }
+        if self.check_keyword("return") {
+            self.bump();
+            let val = if self.check_token(&Token::Semi) {
+                Expr::Literal("0".into())
+            } else {
+                self.parse_expr(0)
+            };
+            self.consume_optional_semi();
+            // Represent return as a call to a builtin for lowering compatibility in this slice
+            return Some(Stmt::ExprStmt(Expr::Call {
+                callee: "return".into(),
+                args: vec![val],
+            }));
+        }
         if self.starts_expr() {
             let expr = self.parse_expr(0);
             self.consume_optional_semi();
@@ -787,9 +847,68 @@ impl Parser {
             Token::Ident(name) => {
                 if self.check_token(&Token::LParen) {
                     let args = self.parse_call_args();
-                    Expr::Call { callee: name, args }
+                    let mut e = Expr::Call {
+                        callee: name.clone(),
+                        args,
+                    };
+                    // allow field on call result: foo().bar
+                    while self.check_token(&Token::Dot) {
+                        self.bump();
+                        if let Some((f, _)) = self.expect_ident("expected field after .") {
+                            e = Expr::FieldAccess {
+                                base: Box::new(e),
+                                field: f,
+                                span: tok.span,
+                            };
+                        }
+                    }
+                    e
+                } else if self.check_token(&Token::LBrace) {
+                    // struct literal: Name { f: e, ... }
+                    self.bump();
+                    let mut fields = vec![];
+                    while !self.at_eof() && !self.check_token(&Token::RBrace) {
+                        if let Some((fname, _)) = self.expect_ident("expected field in struct lit")
+                        {
+                            let _ = self.expect_token(Token::Colon, "expected : in struct lit");
+                            let val = self.parse_expr(0);
+                            fields.push((fname, Box::new(val)));
+                        }
+                        if self.check_token(&Token::Comma) {
+                            self.bump();
+                        }
+                    }
+                    let _ = self.expect_token(Token::RBrace, "expected } in struct lit");
+                    let mut e = Expr::StructLiteral {
+                        name: name.clone(),
+                        fields,
+                        span: tok.span,
+                    };
+                    while self.check_token(&Token::Dot) {
+                        self.bump();
+                        if let Some((f, _)) = self.expect_ident("expected field") {
+                            e = Expr::FieldAccess {
+                                base: Box::new(e),
+                                field: f,
+                                span: tok.span,
+                            };
+                        }
+                    }
+                    e
                 } else {
-                    Expr::Var(name)
+                    let mut e = Expr::Var(name.clone());
+                    // field access: p.x or chained
+                    while self.check_token(&Token::Dot) {
+                        self.bump();
+                        if let Some((f, _)) = self.expect_ident("expected field after .") {
+                            e = Expr::FieldAccess {
+                                base: Box::new(e),
+                                field: f,
+                                span: tok.span,
+                            };
+                        }
+                    }
+                    e
                 }
             }
             Token::Keyword(k) if k == "true" || k == "false" => Expr::Literal(k),

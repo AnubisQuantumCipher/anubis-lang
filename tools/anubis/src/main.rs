@@ -104,6 +104,10 @@ enum Commands {
         #[arg(long)]
         evidence: bool,
 
+        /// Emit specific IRs as JSON (comma sep: ast,hir,mir) or "all"
+        #[arg(long)]
+        emit: Option<String>,
+
         /// Output directory for evidence bundles
         #[arg(short, long, default_value = "out")]
         out: PathBuf,
@@ -244,6 +248,7 @@ fn main() -> Result<()> {
         Commands::Check {
             input,
             evidence,
+            emit,
             out,
         } => {
             println!("anubis check {} (evidence={})", input.display(), evidence);
@@ -255,13 +260,53 @@ fn main() -> Result<()> {
 
             let typed_res = typecheck(ast.clone(), mode);
             let (typed, check_error) = match typed_res {
-                Ok(t) => (Some(t), None),
-                Err(e) => (None, Some(e)),
+                Ok(ref t) => (Some(t.clone()), None),
+                Err(ref e) => (None, Some(e.clone())),
             };
 
             let _tainted = typed.as_ref().map(|t| TaintPass::apply(t.clone()));
 
             std::fs::create_dir_all(&out)?;
+
+            // Support --emit ast,hir,mir (or via --evidence) for Gate 2/3 ordinary workflows
+            let stem = input
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let do_emit = emit.as_deref().unwrap_or("");
+            let emit_all = do_emit == "all" || do_emit.contains("ast") || evidence;
+            if emit_all || evidence {
+                let ast_rep = serde_json::json!({
+                    "num_items": ast.items.len(),
+                    "first_item_kind": match ast.items.first() {
+                        Some(Item::Fn { name, .. }) => format!("fn:{}", name),
+                        Some(Item::Struct { name, .. }) => format!("struct:{}", name),
+                        Some(Item::Import { .. }) => "import".into(),
+                        Some(Item::Module { .. }) => "module".into(),
+                        _ => "other".into(),
+                    },
+                    "preview": src.chars().take(120).collect::<String>()
+                });
+                let _ = std::fs::write(
+                    out.join(format!("{}.ast.json", stem)),
+                    serde_json::to_string_pretty(&ast_rep).unwrap_or_default(),
+                );
+            }
+            if let Ok(t) = &typed_res {
+                if do_emit.contains("hir") || emit_all || evidence {
+                    if let Ok(h) = serde_json::to_string_pretty(&t.hir) {
+                        let _ = std::fs::write(out.join(format!("{}.hir.json", stem)), h);
+                    }
+                }
+                if do_emit.contains("mir") || emit_all || evidence {
+                    let mir_rep = serde_json::json!({ "blocks": t.mir.len(), "constraints": t.constraints.len() });
+                    let _ = std::fs::write(
+                        out.join(format!("{}.mir.json", stem)),
+                        serde_json::to_string_pretty(&mir_rep).unwrap_or_default(),
+                    );
+                }
+            }
 
             let logs = vec![
                 format!("check input: {}", input.display()),
@@ -1180,6 +1225,7 @@ fn first_mode(items: &[Item]) -> Option<Mode> {
                 }
             }
             Item::Import { .. } => {}
+            Item::Struct { .. } => {}
         }
     }
     None

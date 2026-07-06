@@ -1,0 +1,149 @@
+{
+  "fixtures": [
+    {
+      "name": "arithmetic_precedence",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "attribute_safe_parse",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "comments_line",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "comparison_bool",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "declassify_missing_reason",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "declassify_policy_pass",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "function_call",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "function_return_u32",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "hello_minimal",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "if_else",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "metal_parity_minimal",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "missing_semicolon",
+      "expected": "FAIL",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "parenthesized_expr",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "risc0_minimal_pass",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "struct_field_access",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "struct_literal",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "symbolic_assert_fail",
+      "expected": "FAIL",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "symbolic_assert_pass",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_reject_safe",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "tainted_sink_without_declassify",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "type_mismatch_u32_bool",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_let_u32",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_let_u8",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "unknown_variable",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    }
+  ],
+  "overall_verdict": "PENDING"
+}

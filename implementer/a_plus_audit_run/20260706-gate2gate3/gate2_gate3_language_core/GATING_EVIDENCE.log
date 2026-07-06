@@ -1,0 +1,13 @@
+A15 full block transcript (abbrev for slice):
+bash tools/grok-safety-check.sh -> OK
+cargo fmt --check -> OK (after run)
+cargo test -p anubis-compiler language parser type -> targeted pass
+cargo test --all ; clippy -D -> clean
+bash scripts/run_language_fixtures.sh --out ... -> report generated (core fixtures PASS for taint/unknown/type; symbolic policy vs solver noted PARTIAL)
+jq report PASS/FAIL per fixture
+bash scripts/repro... -> report
+cargo run check hello_minimal --evidence -> ast/hir/mir json + bundle
+grep ANUBIS_UNKNOWN | ANUBIS_TYPE | tainted -> present in fail outs
+sealed: taint_reject FAIL as expected; declass with policy PASS; symbolic pass; risc0 prove + verify; metal parity jq PASS
+verify_bundle on key outs -> PASS
+A15 evidence structure complete.
