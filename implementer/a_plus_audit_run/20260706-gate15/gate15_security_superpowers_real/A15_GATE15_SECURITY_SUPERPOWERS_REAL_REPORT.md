@@ -278,3 +278,21 @@ No simulated/demo/placeholder/synthetic/manually-seeded/"env allows"/"partial du
 
 All evidence saved to scratch /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-b46a7c44d0ef/implementer.
 
+
+## Quarantine Pass Verification (this step)
+
+Executed exact commands per plan:
+- bash tools/grok-safety-check.sh → OK
+- mkdir -p .../simulated_or_superseded
+- grep -R (full output saved to scratch)
+
+Current FINAL real evidence dir state:
+- ls contains only a15_*_real dirs, a15_release_candidate_security_real/, reports, GATING_EVIDENCE.log, STEP_STATUS.tsv.
+- No top-level or stray metal_parity_* artifact directories with placeholder/sim labels.
+- All grep hits inside this dir are honest declarations ("real extraction... no simulated", "real_only no_demo_artifacts") or binary.
+- Any prior items with forbidden labels (placeholder_image_id, simulated, etc.) were moved to simulated_or_superseded/ in prior passes and confirmed absent from the final evidence tree.
+
+**No simulated artifacts were used for Gate 15 final verdict.**
+
+All test output and artifacts from this pass saved to scratch /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-b46a7c44d0ef/implementer.
+
