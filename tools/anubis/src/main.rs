@@ -791,7 +791,10 @@ fn run_risc0_proof_attempt(risc0_side: &Path, guest_elf_path: Option<&Path>) -> 
         // (helps when parent was started via `cargo run`).
         let current = std::env::current_exe().expect("current exe");
         let exe = {
-            let release = current.parent().map(|p| p.join("anubis")).filter(|p| p.exists() && *p != current);
+            let release = current
+                .parent()
+                .map(|p| p.join("anubis"))
+                .filter(|p| p.exists() && *p != current);
             release.unwrap_or(current)
         };
 
@@ -813,12 +816,17 @@ fn run_risc0_proof_attempt(risc0_side: &Path, guest_elf_path: Option<&Path>) -> 
         // Clean env + essential + our controls
         cmd.env_clear();
         // Re-set basic PATH and HOME so child can find things
-        if let Ok(path) = std::env::var("PATH") { cmd.env("PATH", path); }
-        if let Ok(home) = std::env::var("HOME") { cmd.env("HOME", home); }
-        if let Ok(tmp) = std::env::var("TMPDIR") { cmd.env("TMPDIR", tmp); }
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", path);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            cmd.env("HOME", home);
+        }
+        if let Ok(tmp) = std::env::var("TMPDIR") {
+            cmd.env("TMPDIR", tmp);
+        }
 
-        cmd.env("RISC0_DEV_MODE", "0")
-            .env("R0_DISABLE_METAL", "1");  // CPU lane for stability until full integration from reference
+        cmd.env("RISC0_DEV_MODE", "0").env("R0_DISABLE_METAL", "1"); // CPU lane for stability until full integration from reference
 
         match cmd.status() {
             Ok(status) => (status.success(), format!("child_status={}", status)),
