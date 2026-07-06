@@ -52,3 +52,22 @@ For the RISC0 receipt path in `tools/anubis` and hybrid full templates, the patc
 - Real receipt + verify achieved when using release + clean spawn.
 
 This contract will be updated only with ADR when upstream or vendoring changes.
+
+## Exact Contract (Gate 10 closure checklist)
+- reference repo: https://github.com/AnubisQuantumCipher/risc0-metal-hybrid
+- local reference path: /Users/sicarii/Desktop/metal-hybrid-prover
+- exact vendored patch path: /Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im
+- Cargo [patch.crates-io] line:
+  [patch.crates-io]
+  risc0-circuit-rv32im = { path = "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im" }
+- supported version envelope:
+  risc0-zkvm = 3.0.5
+  risc0-zkp = 3.0.4
+  risc0-circuit-rv32im = 4.0.4
+- in-process proving requirement (get_prover_server + ProverOpts + prove + receipt.verify(IMAGE_ID))
+- R0_DISABLE_METAL=1 behavior for CPU isolation / comparison
+- no external r0vm assumption
+- no third-party reproduction claim (local reference + GitHub source of truth)
+- feeds Gate 11 Metal parity: same pinned patch, in-process only, receipt-verified CPU-vs-Metal, validate.sh --require-metal on Tier-2 hardware, hosted runners use R0_DISABLE_METAL=1 only.
+
+The GitHub README confirms: pinned patch moving generic STARK to Metal, circuit kernels CPU, stock receipts verify.
