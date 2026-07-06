@@ -1,9 +1,0 @@
-[
-  {
-    "detail": "counterexample satisfies assumptions and negates assertion",
-    "model": "sat\n(\n  (define-fun x () (_ BitVec 32)\n    #x00000000)\n)\n",
-    "name": "assert:(bvugt x (_ bv20 32))",
-    "smt": "(set-logic QF_BV)\n(declare-const x (_ BitVec 32))\n(assert (bvult x (_ bv10 32)))\n(assert (not (bvugt x (_ bv20 32))))\n(check-sat)\n(get-model)\n",
-    "status": "FAIL"
-  }
-]tamper

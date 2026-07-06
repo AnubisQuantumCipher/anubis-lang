@@ -1,6 +1,0 @@
-// Must fail because declassify requires policy and reason (GATE 5)
-fn main() {
-    let secret = taint_source("password");
-    let public = declassify(secret);
-    sink(public);
-}

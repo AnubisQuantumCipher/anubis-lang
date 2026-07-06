@@ -1,3 +1,0 @@
-Verifying bundle: out/a15_gate10_final_pass_tampered/evidence-20260706-025113-safe
-  manifest.json present (preferred for v1)
-TAMPER: backend/risc0/receipt.verify.log hash mismatch

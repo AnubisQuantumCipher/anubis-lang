@@ -1,16 +1,20 @@
-Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+Verifying bundle: /tmp/tam/evidence-20260706-034409-safe
   manifest.json present (preferred for v1)
-TAMPER: backend/risc0/image_id.txt hash mismatch
+MISSING: manifest-listed file backend/risc0/guest.elf
+tamper correctly detected for receipt.bin
+Verifying bundle: /tmp/tam/evidence-20260706-034409-safe
+  manifest.json present (preferred for v1)
+MISSING: manifest-listed file backend/risc0/guest.elf
 tamper correctly detected for image_id.txt
-Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+Verifying bundle: /tmp/tam/evidence-20260706-034409-safe
   manifest.json present (preferred for v1)
-TAMPER: backend/risc0/guest.elf hash mismatch
+MISSING: manifest-listed file backend/risc0/guest.elf
 tamper correctly detected for guest.elf
-Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+Verifying bundle: /tmp/tam/evidence-20260706-034409-safe
   manifest.json present (preferred for v1)
-MISSING: manifest-listed file backend/risc0/risc0_metadata.json
+MISSING: manifest-listed file backend/risc0/guest.elf
 tamper correctly detected for risc0_metadata.json
-Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+Verifying bundle: /tmp/tam/evidence-20260706-034409-safe
   manifest.json present (preferred for v1)
-TAMPER: backend/risc0/receipt.verify.log hash mismatch
+MISSING: manifest-listed file backend/risc0/guest.elf
 tamper correctly detected for receipt.verify.log

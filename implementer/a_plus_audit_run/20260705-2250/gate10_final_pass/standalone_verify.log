@@ -1,6 +1,0 @@
-    Finished `release` profile [optimized] target(s) in 0.20s
-warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
-note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
-     Running `target/release/anubis verify-receipt --receipt out/a15_gate10_final_pass/evidence-20260706-025113-safe/backend/risc0/receipt.bin --image-id out/a15_gate10_final_pass/evidence-20260706-025113-safe/backend/risc0/image_id.txt`
-anubis verify-receipt --receipt out/a15_gate10_final_pass/evidence-20260706-025113-safe/backend/risc0/receipt.bin --image-id out/a15_gate10_final_pass/evidence-20260706-025113-safe/backend/risc0/image_id.txt
-receipt.verify(ANUBIS_ID) PASSED (real RISC0 API path: risc0_zkvm::Receipt::verify)

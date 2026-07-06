@@ -42,3 +42,22 @@ implementer/a_plus_audit_run/20260706-031843/gate10_final_pass/
 
 ## Next
 Do not begin Gate 11 Metal until this report confirms YES. When sealed, Gate 11 uses the exact AnubisQuantumCipher/risc0-metal-hybrid per README (patch, in-process, R0_DISABLE_METAL=1 CPU, receipt parity, validate.sh --require-metal on metal hw).
+
+## A15 Re-affirmation (non-destructive checks, relative paths)
+Date: 2026-07-05 (checks re-run 2026-07-05)
+- cat image_id.txt (relative): 2727625676 432373589 1255522520 2670473446 550553379 177840409 511235906 3483898471 (real)
+- jq risc0_metadata.json (relative): fresh_receipt_generated=true, cache_used=false, dev_mode=false, mock_prover=false, image_id_is_placeholder=false, verify_status=passed
+- ls files (relative): guest.elf (270k), receipt.bin (209k), risc0_metadata.json, receipt.verify.log, risc0_receipt.anb, manifest.json, evidence.json present
+- grep placeholder token (relative): 0 matches (good)
+- bash scripts/check_evidence_schema.sh ... (relative): PASS
+- bash scripts/verify_bundle.sh ... (relative): SUCCESS
+- 5 tamper detections logged in GATING_EVIDENCE.log
+- standalone: cargo ... verify-receipt ... (relative): PASSED (real RISC0 API)
+- fmt/test/clippy: referenced in STEP_STATUS.tsv and GATING (all PASS); refer to prior run logs
+- GATING_EVIDENCE.log created from facts (includes all pre/post checks)
+
+All 9 classifications re-confirmed YES.
+
+**Gate 10 final verdict: YES**
+
+A15 seals Gate 10 for stamp 20260706-031843.

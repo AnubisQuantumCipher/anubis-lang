@@ -1,9 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
-     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-633bb714f63c580b)
-
-running 2 tests
-test tests::hybrid_full_template_uses_risc0_305_receipt_shape ... ok
-test tests::risc0_receipt_fixture ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
-

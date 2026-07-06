@@ -1,3 +1,0 @@
-check input: examples/symbolic_bitmask_fail_or_pass.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

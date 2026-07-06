@@ -1,4 +1,0 @@
-build input: examples/taint_declassify.anb
-mode: Safe
-taint pass: applied
-symbolic: constraints generated

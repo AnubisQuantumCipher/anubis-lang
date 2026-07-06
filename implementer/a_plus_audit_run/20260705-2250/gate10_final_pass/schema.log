@@ -1,8 +1,0 @@
-Schema checking bundle layout in: out/a15_gate10_final_pass/evidence-20260706-025113-safe
-  present: hir.json
-  present: mir.json
-  present: solver.json
-  present: source-tree.json
-  taint analysis present
-  evidence.json has required top keys per schema
-check_evidence_schema.sh: PASS for layout on out/a15_gate10_final_pass/evidence-20260706-025113-safe

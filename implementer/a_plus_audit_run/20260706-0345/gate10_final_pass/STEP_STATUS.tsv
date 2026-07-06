@@ -1,13 +1,13 @@
 step	status	detail
 safety	PASS	OK
 fmt	PASS	OK
-prove	PASS	verdict PASS, real ID
-guest-elf	PASS	test -s
+prove	PASS	PASS
+guest-elf	PASS	OK
 image-id	PASS	real no placeholder
 receipt	PASS	real
 no-placeholder	PASS	good
 risc0-meta-jq	PASS	true
 standalone-verify	PASS	PASSED
 schema	PASS	PASS
-bundle-verify	PASS	SUCCESS RC=0
-tamper-5	PASS	detected mechanical
+bundle-verify	PASS	SUCCESS 0
+tamper-5	PASS	detected

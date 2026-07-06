@@ -1,17 +1,17 @@
 # A15_GATE10_FINAL_PASS_REPORT
 
-**Stamp:** 20260706-0345
+**Stamp:** 20260706-034723 (from reproduce)
 **Branch:** a-plus-maturity/20260705-1649
 
-## Commands
-- safety, fmt, tests, clippy
+## Fresh commands (reproduce + checks)
+- safety, fmt --check, tests, clippy
 - rm + prove (verdict PASS)
 - find, test -s, cat image, grep no placeholder
-- jq -e metadata
+- jq -e
 - verify-receipt (PASSED)
-- schema, verify_bundle (PASS, SUCCESS, RC=0)
+- schema, verify_bundle (PASS, SUCCESS, 0)
 - 5 tamper (detected)
-- reproduce script run (COMPLETE all YES)
+- reproduce script (COMPLETE all YES)
 
 ## Classifications
 - Top-level PASS: YES

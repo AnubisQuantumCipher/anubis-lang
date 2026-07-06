@@ -1,7 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
-warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
-note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
-     Running `target/debug/anubis verify-receipt --receipt out/a15_gate10_risc0_strict/backend/risc0/receipt.bin --image-id out/a15_gate10_risc0_strict/backend/risc0/image_id.txt`
-anubis verify-receipt --receipt out/a15_gate10_risc0_strict/backend/risc0/receipt.bin --image-id out/a15_gate10_risc0_strict/backend/risc0/image_id.txt
-Error: deserialize receipt: invalid value: integer `1701012850`, expected variant index 0 <= i < 4
-verify-receipt nonzero (stub receipt; real API was attempted)

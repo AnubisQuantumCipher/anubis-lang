@@ -1,3 +1,0 @@
-check input: examples/declassify_missing_policy.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)
