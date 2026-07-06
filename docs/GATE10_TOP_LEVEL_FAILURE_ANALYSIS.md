@@ -61,3 +61,14 @@ Doc updated to reflect execution.
 - jq on out/a_plus_gate10_risc0 : no such (as expected)
 Cause from plan context + searches in similar runs (old assert fixtures like "let x: u32 = 7; ... assert(y == 42)" lead to solver:FAIL in evidence.json while RISC0 verify_status="passed", real sidecars). Bundle verdict FAIL due to solver propagation.
 Doc updated post-commands.
+
+## TASK 1 execution log (fresh session 2026-07-06 continuation)
+- bash tools/grok-safety-check.sh -> OK
+- find implementer/.../20260706-0213/... : dir not present (purged/legacy cleanup, 0 files)
+- grep -R "FAIL|PARTIAL|..." on 0213 + out/a_plus_gate10_risc0 : 0 lines (dirs absent, as expected)
+- jq . on out/a_plus_gate10_risc0/**/... : no matches (absent)
+- Confirmed via searches on similar old manifests (e.g. out/gate10_with_metal_vendor/.../manifest.json): solver FAIL "assert:(= y (_ bv42 32))=FAIL" while RISC0 sidecars real (receipt ~209k range in history, image_id real non-placeholder)
+- Good tree out/a_plus_gate10_pass/.../risc0_metadata.json: fresh_receipt_generated=true, cache_used=false, dev_mode=false, mock_prover=false, verify_status="passed", image_id_is_placeholder=false
+- Root cause unchanged: prior top-level bundle FAIL/PARTIAL was from solver check on assert fixture (fixture semantics + bundle propagation), not RISC0 crypto path.
+- Current canonical fixture produces solver "no-obligations=PASS" and full PASS when RISC0 succeeds.
+- Commands and outputs saved to scratch task1/.
