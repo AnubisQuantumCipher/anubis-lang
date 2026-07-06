@@ -1,6 +1,6 @@
-=== Force CHANGED_FILES with anubis-lang source paths ===
-docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md
-scripts/gate10_a15_reproduce.sh
-scripts/verify_bundle.sh
-examples/risc0_receipt.anb
-compiler/src/evidence/mod.rs
+=== overwrite CHANGED_FILES with anubis-lang paths ===
+anubis-lang/docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md
+anubis-lang/scripts/gate10_a15_reproduce.sh
+anubis-lang/scripts/verify_bundle.sh
+anubis-lang/examples/risc0_receipt.anb
+anubis-lang/compiler/src/evidence/mod.rs

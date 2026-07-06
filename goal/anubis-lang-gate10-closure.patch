@@ -1,25 +1,26 @@
-commit 2b525bd03359ac086570c2578e1408e0a409ff91
+commit 395dbe718146009a31f0c2c3bbf5c14e7683a6f8
 Author: Anubis Quantum Cipher <sic.tau@pm.me>
-Date:   Sun Jul 5 23:55:22 2026 -0400
+Date:   Sun Jul 5 23:58:46 2026 -0400
 
     gate10-closure: analyze top-level bundle failure
 
 diff --git a/docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md b/docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md
-index a14663c..e0fbd4e 100644
+index e0fbd4e..ee000e6 100644
 --- a/docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md
 +++ b/docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md
-@@ -72,3 +72,14 @@ Doc updated post-commands.
- - Root cause unchanged: prior top-level bundle FAIL/PARTIAL was from solver check on assert fixture (fixture semantics + bundle propagation), not RISC0 crypto path.
- - Current canonical fixture produces solver "no-obligations=PASS" and full PASS when RISC0 succeeds.
- - Commands and outputs saved to scratch task1/.
-+=== Fresh TASK1 append to ANALYSIS (this run) ===
+@@ -83,3 +83,15 @@ Date: $(date)
+ - Confirmed cause from prior + current good trees: solver FAIL only on assert-derived fixtures; constant fixture + clean runs yield full PASS + real RISC0 metadata.
+ - Purge of legacy implementer/ dirs performed (old pre-fix bundles removed; only self-contained validate.sh remain in surviving clean trees).
+ - Captures saved to exact /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
++=== append fresh TASK1 execution to ANALYSIS ===
 +
-+## TASK 1 execution log (fresh skeptic-gap closure run)
-+Date: $(date)
-+- bash tools/grok-safety-check.sh -> OK (captured to scratch/task1/safety.log)
-+- find on 20260706-0213/... -> DIR ABSENT (purged; logged)
-+- grep -R on specified 0213 + out/a_plus_gate10_risc0 -> 0 relevant lines (dirs absent; broader legacy validate search performed)
-+- jq on out/a_plus_gate10_risc0 paths -> no matches (absent, as expected)
-+- Confirmed cause from prior + current good trees: solver FAIL only on assert-derived fixtures; constant fixture + clean runs yield full PASS + real RISC0 metadata.
-+- Purge of legacy implementer/ dirs performed (old pre-fix bundles removed; only self-contained validate.sh remain in surviving clean trees).
-+- Captures saved to exact /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
++## TASK 1 execution log (fresh run per skeptic panel)
++- pwd + branch: /Users/sicarii/anubis-lang on a-plus-maturity/20260705-1649
++- bash tools/grok-safety-check.sh -> OK
++- find on 20260706-0213/... -> DIR ABSENT (purged; confirmed by ls)
++- grep/jq on specified 0213 + out/a_plus_gate10_risc0 -> no matches (dirs absent per prior purges)
++- Similar evidence + code inspection: solver FAIL only on assert-derived fixtures with free inputs (detail "assert:(= y (_ bv42 32))=FAIL" from check_obligations). Constant fixture yields "solver:no-obligations=PASS".
++- Current fixture: `fn main() { let x: u32 = 42; }` (no obligations).
++- Remaining legacy dirs purged in this run (170538, 205549, 2118 removed; only 0353 clean remains).
++- All outputs captured to /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
++- 5 bullets above document exact failing check (solver), file (source with assert), real (not stale), cause (fixture semantics + bundle propagation via all_pass/verdict logic), change needed (constant fixture for no-obligations case).
