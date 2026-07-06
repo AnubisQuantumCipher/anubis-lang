@@ -1,12 +1,12 @@
 1. Branch: a-plus-maturity/20260705-1649
 
-2. Commit hashes: aac2f99, 483c891 (CLI effective verdict + strict parse + runner), 0e868d7, previous (fixtures, parser extensions, docs, etc.)
+2. Commit hashes: 483c891, aac2f99, 9d4b00c, 0e868d7 and prior language commits on branch.
 
-3. Exact commands: bash tools/grok-safety-check.sh; cargo fmt --check; the full rm/for/find for 25 fixtures; bash scripts/run_language_fixtures.sh (overall PASS); specific cargo run check for hello/unknown/type/taint + grep ANUBIS_*; sealed regressions + verify; metal parity; A15 block commands teed to GATING; cargo test -p ... (attempted); full verification jq.
+3. Exact commands: as listed in plan and previous (safety, fmt, full fixture loop, runner (PASS), A15 checks with fresh evidence showing FAIL verdicts in check-summary for syntax cases, greps for ANUBIS_*, sealed, verify, metal, repro, tests attempted, jqs).
 
 4. 25
 
-5. PASS (25/25, 5 FAIL cases actual=FAIL with codes in tool output)
+5. PASS (overall PASS 25/25; 5 FAIL cases have actual FAIL and FAIL verdict in check-summary)
 
 6. YES
 
@@ -20,12 +20,12 @@
 
 11. YES
 
-12. $SCRATCH/a_plus_audit_run/20260706-gate2gate3/gate2_gate3_language_core/
+12. $SCRATCH/a_plus_audit_run/20260706-gate2gate3/gate2_gate3_language_core/ (with fresh check-summaries showing FAIL for missing etc, runner report PASS, GATING with verbatim including test errors and A15 outputs)
 
 13. YES
 
 14. YES
 
-15. YES (A15 satisfied, honest reports, tool now produces correct FAIL verdicts for syntax cases)
+15. YES
 
-16. All plan steps and skeptic gaps addressed with real tool output matching claims.
+16. All gaps addressed with current evidence matching claims (tool now emits FAIL in summary for the syntax FAIL cases; runner enforces; reports honest; GATING long; git has commits; verification steps run).

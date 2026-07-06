@@ -52,12 +52,16 @@ for f in "$FIXTURE_DIR"/*.anb; do
   if [[ $has_check_error -eq 1 || $log_has_check_failed -eq 1 ]]; then
     failure_run=1
   fi
+  # Also detect solver/assert FAIL in evidence for symbolic cases
+  if grep -q '"status": "FAIL"' "$outd"/evidence-*/solver.json 2>/dev/null || grep -q '"status": "FAIL"' "$outd"/evidence-*/evidence.json 2>/dev/null || grep -q '"status": "FAIL"' "$outd"/evidence-*/checks.sarif 2>/dev/null; then
+    failure_run=1
+  fi
 
-  # Verdict for reporting (best effort)
-  if grep -q "check passed (no policy violations)" "$outd/run.log" 2>/dev/null; then
-    verdict="PASS"
-  elif [[ $failure_run -eq 1 ]]; then
+  # Verdict for reporting (best effort) -- failure_run takes precedence for FAIL expectations
+  if [[ $failure_run -eq 1 ]]; then
     verdict="FAIL"
+  elif grep -q "check passed (no policy violations)" "$outd/run.log" 2>/dev/null; then
+    verdict="PASS"
   else
     verdict="PASS"
   fi
