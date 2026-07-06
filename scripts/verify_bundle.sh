@@ -105,5 +105,31 @@ for f in "$BUNDLE_DIR"/risc0_*; do
   fi
 done 2>/dev/null || true
 
+# Gate 10 strict: explicit mechanical detection for the 5 key RISC0 sidecars.
+# Compute current hash and compare to the hash recorded in MANIFEST for that basename.
+# Tamper (changing content) will cause mismatch -> nonzero exit.
+for pat in receipt.bin image_id.txt guest.elf risc0_metadata.json receipt.verify.log; do
+  target=$(find "$BUNDLE_DIR" -type f -name "$pat" 2>/dev/null | head -1)
+  if [[ -z "$target" ]]; then
+    target=$(find "$BUNDLE_DIR" -type f -name "risc0_$pat" 2>/dev/null | head -1)
+  fi
+  if [[ -n "$target" && -f "$target" ]]; then
+    actual=$(shasum -a 256 "$target" | cut -d' ' -f1)
+    # find the line in MANIFEST that mentions this pat and extract its recorded hash
+    expected=$(grep -E "(^| )${pat}( |$)" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null | head -1 | cut -d' ' -f1)
+    if [[ -z "$expected" ]]; then
+      # fallback: any line containing the basename
+      expected=$(grep -F "$(basename "$target")" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null | head -1 | cut -d' ' -f1)
+    fi
+    if [[ -n "$expected" && "$actual" != "$expected" ]]; then
+      echo "TAMPER: key sidecar $pat (at $target) hash mismatch (expected $expected got $actual)"
+      exit 1
+    fi
+    if [[ -n "$expected" && "$actual" == "$expected" ]]; then
+      : # still matches (not tampered)
+    fi
+  fi
+done
+
 echo "verify_bundle.sh: SUCCESS for $BUNDLE_DIR"
 exit 0
