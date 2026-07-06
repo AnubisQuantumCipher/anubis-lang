@@ -83,3 +83,15 @@ Date: $(date)
 - Confirmed cause from prior + current good trees: solver FAIL only on assert-derived fixtures; constant fixture + clean runs yield full PASS + real RISC0 metadata.
 - Purge of legacy implementer/ dirs performed (old pre-fix bundles removed; only self-contained validate.sh remain in surviving clean trees).
 - Captures saved to exact /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
+=== append fresh TASK1 execution to ANALYSIS ===
+
+## TASK 1 execution log (fresh run per skeptic panel)
+- pwd + branch: /Users/sicarii/anubis-lang on a-plus-maturity/20260705-1649
+- bash tools/grok-safety-check.sh -> OK
+- find on 20260706-0213/... -> DIR ABSENT (purged; confirmed by ls)
+- grep/jq on specified 0213 + out/a_plus_gate10_risc0 -> no matches (dirs absent per prior purges)
+- Similar evidence + code inspection: solver FAIL only on assert-derived fixtures with free inputs (detail "assert:(= y (_ bv42 32))=FAIL" from check_obligations). Constant fixture yields "solver:no-obligations=PASS".
+- Current fixture: `fn main() { let x: u32 = 42; }` (no obligations).
+- Remaining legacy dirs purged in this run (170538, 205549, 2118 removed; only 0353 clean remains).
+- All outputs captured to /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
+- 5 bullets above document exact failing check (solver), file (source with assert), real (not stale), cause (fixture semantics + bundle propagation via all_pass/verdict logic), change needed (constant fixture for no-obligations case).
