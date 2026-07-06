@@ -1,0 +1,20 @@
+   Compiling core-foundation v0.9.4
+   Compiling objc v0.2.7
+   Compiling core-graphics-types v0.1.3
+   Compiling foreign-types-macros v0.2.3
+   Compiling foreign-types v0.5.0
+   Compiling metal v0.29.0
+   Compiling anubis_hybrid_host v0.2.0 (/private/var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/anubis-hybrid-lower-56860-1783310043794635000/hybrid_test-fast-hybrid)
+    Finished `release` profile [optimized] target(s) in 8.56s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+test tests::parses_hybrid_and_spec_blocks ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.66s
+
+   Doc-tests anubis_compiler
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

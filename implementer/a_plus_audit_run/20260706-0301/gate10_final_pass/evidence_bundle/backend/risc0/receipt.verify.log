@@ -1,1 +1,0 @@
-receipt.verify(ANUBIS_ID) PASSED (real risc0_zkvm::Receipt::verify)

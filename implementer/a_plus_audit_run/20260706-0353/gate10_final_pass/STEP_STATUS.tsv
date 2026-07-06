@@ -1,0 +1,5 @@
+parse	PASS
+typecheck	PASS
+solver	PASS
+risc0_receipt_verify	PASS
+bundle_verdict	PASS

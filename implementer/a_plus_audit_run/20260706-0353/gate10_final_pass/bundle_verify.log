@@ -1,0 +1,6 @@
+Verifying bundle: implementer/a_plus_audit_run/20260706-0353/gate10_final_pass/evidence_bundle/evidence-20260706-035320-safe
+  manifest.json present (preferred for v1)
+  internal validate passed
+Bundle structure and basic hashes OK. Verdict from manifest:
+PASS
+verify_bundle.sh: SUCCESS for implementer/a_plus_audit_run/20260706-0353/gate10_final_pass/evidence_bundle/evidence-20260706-035320-safe

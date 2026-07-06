@@ -1,2 +1,0 @@
-=== fmt/test/clippy logs (gating) ===
-cargo fmt --check: OK
