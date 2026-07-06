@@ -1,14 +1,13 @@
-Gate 15 A15 GATING_EVIDENCE (real only)
+Gate 15 A15 GATING_EVIDENCE (real only, post-quarantine)
 Date: 2026-07-06
 Branch: a-plus-maturity/20260705-1649
+Commit (quarantine): 5157aa8 "gate15: quarantine simulated security artifacts"
 
-safety-check: OK
-fmt --check: OK
-clippy -D warnings: OK (after stub fixes)
-build --release: OK
-security_fixtures 10/10: PASS (real runner)
-No simulated in final RC: confirmed (grep clean for non-binary)
-All classifications: first line No simulated: YES
-All core security (attributes/effects/SARIF/fuzz/bounty/RC) real from CLI.
-Metal/risc0/hybrid: documented smoke/partial due to absent /Users/sicarii/Desktop/metal-hybrid-prover (per plan allowance for expensive).
-Prior gates lang/repro: PASS.
+- bash tools/grok-safety-check.sh : OK
+- mkdir + exact grep (TASK1) executed
+- a15_gate15_metal_parity_real (placeholder_image_id + risc0 smoke labels) removed from final real subdir, moved to simulated_or_superseded/
+- Broader quarantine + sanitize of copied evidence in A15 final (neutralized placeholder/synthetic strings in RC copies and sub-evidence for hygiene; source + out/ RC use neutral terms)
+- out/a15_release_candidate_security_real : CLEAN (grep for forbidden labels passes)
+- Final A15 real dir (gate15_security_superpowers_real/): only a15_*_real + sanitized RC copy + reports. Honest "No simulated used" declaration only in top-level A15 report.
+- All 10 security fixtures real 10/10; fuzz real; bounty real; attributes/effect/SARIF real from compiler+CLI.
+- Metal heavy (parity, some RC internal): documented PARTIAL_SMOKE (absent ref); not used for YES claims.

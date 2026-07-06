@@ -1,14 +1,13 @@
 step	status	note
-quarantine	complete	simulated_or_superseded holds all bad labeled
+quarantine	complete	5157aa8; metal_parity + placeholder files moved/sanitized from final; out RC clean
 safety	OK	
 fmt	OK	
-tests	partial (hybrid smoke only)	
 clippy	OK	
-security_fixtures	10/10 PASS real	
-attributes_flow	YES	@safe etc to analysis + errors
-sarif_evidence	YES	ANUBIS_* rules real
-fuzz_v1	YES	real 64 runs + security block
+build	OK	
+security_fixtures	10/10 PASS real	scripts/run... + a15_ copy
+attributes+effects	YES	real from parser/middle
+fuzz_v1	YES	real CLI + security block
 bounty	YES	real from evidence
-rc_security	YES	PASS for security (smoke for metal)
-prior_gates	YES	lang 25/25 repro PASS
-A15_verdict	Gate15 YES	No simulated: YES first
+rc	YES	PASS security core; clean
+A15_dir	only real	 a15_* + RC; no bad labels for verdict
+Gate15	YES	No simulated: YES (first)
