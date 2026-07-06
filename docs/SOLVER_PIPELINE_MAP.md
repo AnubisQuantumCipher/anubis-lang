@@ -97,3 +97,11 @@ This must be impossible after Gate 7 fixes.
 - Integration + tests + A15.
 
 **Evidence:** This map produced after `grep`, `find`, code reads, `cargo test`. Committed as part of Gate 7 work.
+
+## Hardening updates (this slice)
+- Removed masked fallback hack.
+- Per-var widths via symbolic_widths map, used in declare and literal adjust.
+- Replay now detects hostile inconsistent models.
+- SARIF rules for solver cases.
+- clippy/fmt clean.
+- u8 now BitVec 8 with correct lits.
