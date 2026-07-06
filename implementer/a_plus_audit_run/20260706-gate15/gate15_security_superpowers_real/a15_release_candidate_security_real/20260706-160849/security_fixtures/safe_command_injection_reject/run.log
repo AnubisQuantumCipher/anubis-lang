@@ -1,4 +1,0 @@
-anubis check examples/security/safe_command_injection_reject.anb (evidence=true)
-evidence bundle: out/a15_release_candidate_security_real/20260706-160849/security_fixtures/safe_command_injection_reject/evidence-20260706-200953-safe
-verdict: FAIL
-check failed: ANUBIS_EFFECT_FORBIDDEN_IN_MODE: safe mode shell/exec effect is forbidden (use @research/@poc with authorization)

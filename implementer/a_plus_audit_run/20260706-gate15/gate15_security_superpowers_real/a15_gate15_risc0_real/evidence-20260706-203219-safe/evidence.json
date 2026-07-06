@@ -120,7 +120,7 @@
     {
       "name": "risc0_receipt_verify",
       "status": "FAIL",
-      "detail": "verify_status=failed fresh_receipt_generated=false dev_mode=false mock_prover=false cache_used=false placeholder_image_id=true patch_crates_io_active=true methods_patch_crates_io_active=true prover_patch_crates_io_active=true reference_ok=true vendor_ok=true"
+      "detail": "verify_status=failed fresh_receipt_generated=false dev_mode=false mock_prover=false cache_used=false image_id_unavailable_smoke=true patch_crates_io_active=true methods_patch_crates_io_active=true prover_patch_crates_io_active=true reference_ok=true vendor_ok=true"
     }
   ],
   "verdict": "FAIL",

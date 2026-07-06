@@ -1,0 +1,108 @@
+{
+  "fixtures": [
+    {
+      "name": "audit_file_scan_pass",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS",
+      "command": "./target/release/anubis check examples/security/audit_file_scan_pass.anb --evidence --out out/gate15_security_fixtures_real_task2/audit_file_scan_pass",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/audit_file_scan_pass"
+    },
+    {
+      "name": "bounty_report_from_taint",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS",
+      "command": "./target/release/anubis check examples/security/bounty_report_from_taint.anb --evidence --out out/gate15_security_fixtures_real_task2/bounty_report_from_taint",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/bounty_report_from_taint"
+    },
+    {
+      "name": "declassify_report_pass",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS",
+      "command": "./target/release/anubis check examples/security/declassify_report_pass.anb --evidence --out out/gate15_security_fixtures_real_task2/declassify_report_pass",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/declassify_report_pass"
+    },
+    {
+      "name": "fuzz_crash_demo",
+      "status": "PASS",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "command": "./target/release/anubis check examples/security/fuzz_crash_demo.anb --evidence --out out/gate15_security_fixtures_real_task2/fuzz_crash_demo",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/fuzz_crash_demo"
+    },
+    {
+      "name": "fuzz_parser_v1",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS",
+      "command": "./target/release/anubis check examples/security/fuzz_parser_v1.anb --evidence --out out/gate15_security_fixtures_real_task2/fuzz_parser_v1",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/fuzz_parser_v1"
+    },
+    {
+      "name": "metal_backed_proof_parity",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS",
+      "command": "./target/release/anubis check examples/security/metal_backed_proof_parity.anb --evidence --out out/gate15_security_fixtures_real_task2/metal_backed_proof_parity",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/metal_backed_proof_parity"
+    },
+    {
+      "name": "poc_missing_authorization_fail",
+      "status": "PASS",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "command": "./target/release/anubis check examples/security/poc_missing_authorization_fail.anb --evidence --out out/gate15_security_fixtures_real_task2/poc_missing_authorization_fail",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/poc_missing_authorization_fail"
+    },
+    {
+      "name": "proof_backed_policy_check",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS",
+      "command": "./target/release/anubis check examples/security/proof_backed_policy_check.anb --evidence --out out/gate15_security_fixtures_real_task2/proof_backed_policy_check",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/proof_backed_policy_check"
+    },
+    {
+      "name": "research_authorized_taint_model",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS",
+      "command": "./target/release/anubis check examples/security/research_authorized_taint_model.anb --evidence --out out/gate15_security_fixtures_real_task2/research_authorized_taint_model",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/research_authorized_taint_model"
+    },
+    {
+      "name": "safe_command_injection_reject",
+      "status": "PASS",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "command": "./target/release/anubis check examples/security/safe_command_injection_reject.anb --evidence --out out/gate15_security_fixtures_real_task2/safe_command_injection_reject",
+      "exit_code": 0,
+      "executed_via": "release",
+      "evidence_path": "out/gate15_security_fixtures_real_task2/safe_command_injection_reject"
+    }
+  ],
+  "overall_verdict": "PASS",
+  "total": 10,
+  "passed": 10,
+  "failed": 0
+}

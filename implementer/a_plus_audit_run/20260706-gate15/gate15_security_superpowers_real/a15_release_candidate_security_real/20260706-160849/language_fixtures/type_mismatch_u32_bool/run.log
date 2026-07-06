@@ -1,6 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
-     Running `target/debug/anubis check tests/fixtures/language_core/type_mismatch_u32_bool.anb --evidence --out out/a15_release_candidate_security_real/20260706-160849/language_fixtures/type_mismatch_u32_bool`
-anubis check tests/fixtures/language_core/type_mismatch_u32_bool.anb (evidence=true)
-evidence bundle: out/a15_release_candidate_security_real/20260706-160849/language_fixtures/type_mismatch_u32_bool/evidence-20260706-200859-safe
-verdict: FAIL
-check failed: ANUBIS_TYPE_MISMATCH: type mismatch: expected u32, got bool

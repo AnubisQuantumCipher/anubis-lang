@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: PASS\n// FEATURE: if / else\nfn main() {\n    let x: u32 = 1;\n    if x > 0 {\n        let y = 2;\n    } else {\n   "
-}

@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/gate15_security_fixtures_real/proof_backed_policy_check/evidence-20260706-203817-research",
+  "check_error": null,
+  "source_hash": "1c06da0b71d896b6ae6df3f3fd33ce9ecfa8918872024faabdf5ec03ccd7b816",
+  "verdict": "PASS"
+}

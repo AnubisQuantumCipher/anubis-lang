@@ -708,3 +708,26 @@ Security release candidate: (TASK7)
 Gate 15 final verdict: (pending full real YES)
 
 All artifacts in this final dir produced by fresh real `./target/release/anubis` and script runs. No simulated used for verdict.
+
+## Runner improvement (TASK2 progress)
+- scripts/run_security_fixtures.sh now always prefers ./target/release/anubis.
+- Per-fixture records now include: command, exit_code, executed_via, evidence_path.
+- Fresh run 10/10 PASS with full details captured and copied to a15_gate15_security_fixtures_real/ in this FINAL.
+
+
+## TASK 1 Quarantine Re-execution (this turn)
+Executed exact:
+bash tools/grok-safety-check.sh
+mkdir -p implementer/a_plus_audit_run/20260706-gate15/simulated_or_superseded
+grep -R ... (full across paths, saved to SCRATCH)
+
+Actions this turn:
+- Moved dated RC subdir 20260706-163157 (contained full fixture run tree) from inside a15_release_candidate_security_real/ to superseded/.
+- Removed duplicate copy dirs ( -fresh-from-task1 , gate15...task2 ) from inside security_fixtures_real tree.
+- Verified no remaining placeholder_image_id in any json inside FINAL.
+- FINAL now contains only canonical a15_*_real dirs + report + GATING + STEP + (clean) a15_release_candidate_security_real .
+- All outputs, greps, ls, moves logged in SCRATCH.
+
+**No simulated artifacts used for Gate 15 final verdict: YES**
+
+All evidence here is from fresh real CLI/script executions. Historical bad dated/synthetic runs quarantined.

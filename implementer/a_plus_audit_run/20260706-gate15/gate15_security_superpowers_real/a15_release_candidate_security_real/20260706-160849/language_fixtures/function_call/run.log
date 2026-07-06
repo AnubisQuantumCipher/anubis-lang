@@ -1,6 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
-     Running `target/debug/anubis check tests/fixtures/language_core/function_call.anb --evidence --out out/a15_release_candidate_security_real/20260706-160849/language_fixtures/function_call`
-anubis check tests/fixtures/language_core/function_call.anb (evidence=true)
-evidence bundle: out/a15_release_candidate_security_real/20260706-160849/language_fixtures/function_call/evidence-20260706-200854-safe
-verdict: PASS
-check passed (no policy violations)

@@ -1,0 +1,56 @@
+{
+  "timestamp": "20260706-194229",
+  "tool": "anubis 0.2.0",
+  "mode": "research",
+  "source_hash": "84fc3d50c8d171356d2dd346b85d2e9ab13d352b1770e9da0e139823d26c8ddb",
+  "build_log_hash": "d3fbf1089e57e7b1b146ed451b1b4537f92a5a8598d74befc66bc6c37b5215a3",
+  "artifact_hash": null,
+  "lane": "research-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "13627a4a5786add3b338b9d704878ee4e5636a18e0574ad484a039e79006a6b2",
+  "sarif_hash": "0b0b7694cdbdab958c542cbb592d2500ea08ba6864fa15ae18df96f03e1e54a4",
+  "bounty_report_hash": "d567e43e0dadc17b8af753e24861288f0bf2329ee00a664b215a86a4a5b343cf",
+  "manifest_signature": "cf7fe32e1bebef0aa9c558c9b6e7f7324ff47da045f1797c0d8dab9d43bdd38c",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=research symbols=2 functions=1"
+    },
+    {
+      "name": "taint",
+      "status": "PASS",
+      "detail": "labels=3 traces=1"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "name": "solver",
+      "status": "PASS",
+      "detail": "solver:no-obligations=PASS"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "84fc3d50c8d171356d2dd346b85d2e9ab13d352b1770e9da0e139823d26c8ddb"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "d3fbf1089e57e7b1b146ed451b1b4537f92a5a8598d74befc66bc6c37b5215a3"
+    }
+  ],
+  "verdict": "PASS",
+  "security": {
+    "mode": "research",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}
