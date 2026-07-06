@@ -418,7 +418,8 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     "fn" | "let" | "if" | "else" | "research" | "exploit" | "hybrid" | "gpu"
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
-                    | "intent" | "true" | "false" | "import" | "module" | "mod" => {
+                    | "intent" | "true" | "false" | "import" | "module" | "mod"
+                    | "struct" | "return" => {
                         Token::Keyword(id)
                     }
                     _ => Token::Ident(id),
@@ -473,7 +474,13 @@ impl Parser {
                         Token::Other(s) | Token::Keyword(s) | Token::Ident(s) => s.clone(),
                         _ => break,
                     };
-                    if s == "@" || s.starts_with('@') || s == "safe" || s == "research" || s == "proof" || s == "audit" {
+                    if s == "@"
+                        || s.starts_with('@')
+                        || s == "safe"
+                        || s == "research"
+                        || s == "proof"
+                        || s == "audit"
+                    {
                         self.bump();
                         continue;
                     }
@@ -622,7 +629,8 @@ impl Parser {
         let (name, _) = self.expect_ident("expected function name")?;
         let params = self.parse_params();
         // Optional return type: -> Type
-        if self.check_token(&Token::Minus) {  // for ->
+        if self.check_token(&Token::Minus) {
+            // for ->
             // consume - >
             let _ = self.bump();
             if self.check_token(&Token::Gt) {
@@ -703,6 +711,9 @@ impl Parser {
     fn parse_stmt(&mut self) -> Option<Stmt> {
         if self.check_keyword("let") {
             return self.parse_let();
+        }
+        if self.check_keyword("if") {
+            return self.parse_if_stmt();
         }
         if self.check_keyword("research") {
             let _start = self.bump()?;
@@ -791,6 +802,28 @@ impl Parser {
                 end,
             },
         })
+    }
+
+    fn parse_if_stmt(&mut self) -> Option<Stmt> {
+        let _ = self.expect_keyword("if");
+        let cond = self.parse_expr(0);
+        let then = if self.check_token(&Token::LBrace) {
+            self.parse_block()
+        } else {
+            self.diagnostic("expected `{` after if cond", self.current_span());
+            vec![]
+        };
+        let mut else_ = None;
+        if self.check_keyword("else") {
+            let _ = self.bump();
+            else_ = Some(if self.check_token(&Token::LBrace) {
+                self.parse_block()
+            } else {
+                self.diagnostic("expected `{` after else", self.current_span());
+                vec![]
+            });
+        }
+        Some(Stmt::If { cond, then, else_ })
     }
 
     fn parse_assume_or_assert(&mut self) -> Option<Stmt> {
@@ -1250,7 +1283,7 @@ pub fn parse(tokens: Vec<Token>) -> Result<AST, String> {
         })
         .collect();
     let output = Parser::new(spanned).parse_output();
-    if output.ast.items.is_empty() && !output.diagnostics.is_empty() {
+    if !output.diagnostics.is_empty() {
         Err(output
             .diagnostics
             .iter()
@@ -1268,7 +1301,7 @@ pub fn parse_source_detailed(source: &str) -> ParseOutput {
 
 pub fn parse_source(source: &str) -> Result<AST, String> {
     let output = parse_source_detailed(source);
-    if output.ast.items.is_empty() && !output.diagnostics.is_empty() {
+    if !output.diagnostics.is_empty() {
         Err(output
             .diagnostics
             .iter()
