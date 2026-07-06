@@ -367,7 +367,11 @@ fn main() -> Result<()> {
                 // If there was a check error (policy violation etc), the bundle may have FAIL from diagnostics in build
                 // but to ensure, we can note it
                 println!("evidence bundle: {}", bundle.dir.display());
-                let effective_verdict = if check_error.is_some() { "FAIL".to_string() } else { "PASS".to_string() };
+                let effective_verdict = if check_error.is_some() {
+                    "FAIL".to_string()
+                } else {
+                    "PASS".to_string()
+                };
                 println!("verdict: {}", effective_verdict);
 
                 if let Some(err) = &check_error {

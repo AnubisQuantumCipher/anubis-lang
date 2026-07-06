@@ -418,10 +418,8 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     "fn" | "let" | "if" | "else" | "research" | "exploit" | "hybrid" | "gpu"
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
-                    | "intent" | "true" | "false" | "import" | "module" | "mod"
-                    | "struct" | "return" => {
-                        Token::Keyword(id)
-                    }
+                    | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
+                    | "return" => Token::Keyword(id),
                     _ => Token::Ident(id),
                 };
                 tokens.push(SpannedToken {
