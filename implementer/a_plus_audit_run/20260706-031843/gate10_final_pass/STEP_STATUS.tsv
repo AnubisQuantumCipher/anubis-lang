@@ -1,0 +1,26 @@
+step	status	detail
+safety-check	PASS	tools/grok-safety-check.sh OK
+fmt-check	PASS	cargo fmt --check
+risc0-compiler-test	PASS	cargo test -p anubis-compiler risc0
+all-tests	PASS	cargo test --all
+clippy	PASS	cargo clippy --all-targets -D warnings
+fresh-prove	PASS	cargo run --release -p anubis -- prove ... --out out/a15...
+guest-elf	PASS	test -s .../guest.elf
+image-id	PASS	real non-placeholder
+receipt-bin	PASS	real ~ size
+image-id-cat	PASS	printed real ID
+no-placeholder	PASS	grep -R ANUBIS_ID_FRESH_RISC0 -> no
+risc0-metadata	PASS	jq fields
+fresh-receipt-jq	PASS	true
+no-cache-jq	PASS	false
+no-dev-jq	PASS	false
+no-mock-jq	PASS	false
+verify-status-jq	PASS	"passed"
+standalone-verify	PASS	receipt.verify(ANUBIS_ID) PASSED
+schema-check	PASS	check_evidence_schema.sh PASS
+bundle-verify	PASS	verify_bundle.sh SUCCESS (RC=0)
+tamper-receipt	PASS	detected (nonzero)
+tamper-image	PASS	detected
+tamper-guest-elf	PASS	detected
+tamper-risc0meta	PASS	detected
+tamper-verifylog	PASS	detected
