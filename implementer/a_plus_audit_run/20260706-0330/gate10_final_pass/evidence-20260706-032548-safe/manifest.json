@@ -1,0 +1,132 @@
+{
+  "timestamp": "20260706-032548",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "10b7e09d15366daadeb23803b074630da64a636d7f2b81c15369295ad751dace",
+  "build_log_hash": "58ba9d14c58048aba62c55b197f9982a1e3bef067ba540c80922567f93802e53",
+  "artifact_hash": "e352bf9749a70b59115b1e1298ca4731bac4540139ffea75b9e75e4cd7346c9b",
+  "lane": "risc0-risc0",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "4c5d9c81984bff69554a9f24cdfbc7fa87c317cacc905950cb3222794e5b4dae",
+  "sarif_hash": "f6c6aed06511b98502f72baaec3baca70faa6c0a8dd58d2a29fa626725f970df",
+  "bounty_report_hash": "7276fbb2433a09f10ae51ab35d921c875d11c3c6d910aca6a4f7d8029b725865",
+  "manifest_signature": "0c6eedea63b8371898ef92f285fe9e26bac1d94659b3816e8bb4f5ea434b31de",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=safe symbols=1 functions=1"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "name": "solver",
+      "status": "PASS",
+      "detail": "solver:no-obligations=PASS"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "10b7e09d15366daadeb23803b074630da64a636d7f2b81c15369295ad751dace"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "58ba9d14c58048aba62c55b197f9982a1e3bef067ba540c80922567f93802e53"
+    },
+    {
+      "name": "artifact",
+      "status": "PASS",
+      "detail": "native emitted"
+    },
+    {
+      "name": "artifact_hash",
+      "status": "PASS",
+      "detail": "e352bf9749a70b59115b1e1298ca4731bac4540139ffea75b9e75e4cd7346c9b"
+    },
+    {
+      "name": "hybrid_receipt_artifacts",
+      "status": "PASS",
+      "detail": "guest.elf,image_id.txt,generated-methods.rs,risc0_guest.elf,risc0_image_id.txt,risc0_receipt.bin,risc0_risc0_metadata.json,risc0_receipt.verify.log,risc0_prove.log,risc0_guest_src_main.rs,risc0_receipt,risc0_metadata.json,risc0_receipt.rs"
+    },
+    {
+      "name": "hybrid_guest_elf_hash",
+      "status": "PASS",
+      "detail": "1cf5c59ae284bf33ea3bc31d470c59efb83bf04cfb58d6477252dd2217e9fe3c"
+    },
+    {
+      "name": "hybrid_image_id_txt_hash",
+      "status": "PASS",
+      "detail": "7517466e75e0ee16e870281e9bd08152291435ad39e59d98968380516b9d5ad4"
+    },
+    {
+      "name": "hybrid_generated_methods_rs_hash",
+      "status": "PASS",
+      "detail": "e0f443ba2bae96733a98bce5f2ac8123fe57f31eebe2ff5b0a455062cf6bdd56"
+    },
+    {
+      "name": "hybrid_risc0_guest_elf_hash",
+      "status": "PASS",
+      "detail": "1cf5c59ae284bf33ea3bc31d470c59efb83bf04cfb58d6477252dd2217e9fe3c"
+    },
+    {
+      "name": "hybrid_risc0_image_id_txt_hash",
+      "status": "PASS",
+      "detail": "7517466e75e0ee16e870281e9bd08152291435ad39e59d98968380516b9d5ad4"
+    },
+    {
+      "name": "hybrid_risc0_receipt_bin_hash",
+      "status": "PASS",
+      "detail": "4a52588341f6578e124149b88428207a04b93cf8ac4cc3b174f5ec96ed4cbba0"
+    },
+    {
+      "name": "hybrid_risc0_risc0_metadata_json_hash",
+      "status": "PASS",
+      "detail": "a69b848989efc801d6644086f33450eae8544c64bd534d5a747b9fecf8a11830"
+    },
+    {
+      "name": "hybrid_risc0_receipt_verify_log_hash",
+      "status": "PASS",
+      "detail": "e28f35ede15d35417640b8b928416e5d164a17337f83f5165fcb183e20577df5"
+    },
+    {
+      "name": "hybrid_risc0_prove_log_hash",
+      "status": "PASS",
+      "detail": "32e478af9f8aeffb2536736de3d852b2f452e7489461645bc39bcfffc783a2e1"
+    },
+    {
+      "name": "hybrid_risc0_guest_src_main_rs_hash",
+      "status": "PASS",
+      "detail": "af76dac3218c7aaf0df7eba777f8972dc94e3af19333e3beb5a0c234aa251432"
+    },
+    {
+      "name": "hybrid_risc0_receipt_hash",
+      "status": "PASS",
+      "detail": "e352bf9749a70b59115b1e1298ca4731bac4540139ffea75b9e75e4cd7346c9b"
+    },
+    {
+      "name": "hybrid_risc0_metadata_json_hash",
+      "status": "PASS",
+      "detail": "a69b848989efc801d6644086f33450eae8544c64bd534d5a747b9fecf8a11830"
+    },
+    {
+      "name": "hybrid_risc0_receipt_rs_hash",
+      "status": "PASS",
+      "detail": "a39dc51c2d25eae3d35ef47a4fd1cdf4718455308d16de5462155ae61670fb12"
+    },
+    {
+      "name": "risc0_receipt_verify",
+      "status": "PASS",
+      "detail": "verify_status=passed fresh_receipt_generated=true dev_mode=false mock_prover=false cache_used=false placeholder_image_id=false"
+    }
+  ],
+  "verdict": "PASS"
+}
