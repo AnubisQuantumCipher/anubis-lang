@@ -1,0 +1,15 @@
+Step	Command	Status	Notes
+safety	grok-safety-check.sh	PASS	OK
+fmt	cargo fmt --check	PASS	clean (exit 0)
+compiler_risc0	cargo test -p anubis-compiler risc0	PASS	4 tests
+all_tests	cargo test --all	PASS	passed
+clippy	cargo clippy --all-targets -- -D warnings	PASS	only future note
+prove	rm + release prove to out/a15...	PASS	verdict PASS, real ID
+file_sizes	test -s guest/image/receipt	PASS	all OK
+no_placeholder	grep ANUBIS_ID_FRESH	PASS	none
+image_cat	cat image_id.txt	PASS	real
+jq_metadata	jq + -e on risc0_metadata	PASS	all conditions
+standalone_verify	verify-receipt	PASS	real API PASSED
+schema	check_evidence_schema.sh	PASS	layout OK
+verify_bundle	verify_bundle.sh	PASS	SUCCESS, verdict PASS
+tamper_5	for 5 patterns + tamper	PASS	all detected

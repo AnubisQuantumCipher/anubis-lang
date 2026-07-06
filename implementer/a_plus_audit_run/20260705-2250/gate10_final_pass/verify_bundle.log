@@ -1,0 +1,10 @@
+Verifying bundle: out/a15_gate10_final_pass/evidence-20260706-025113-safe
+  manifest.json present (preferred for v1)
+error: unexpected argument '.' found
+
+Usage: anubis-cli verify --key <KEY> --input <INPUT> --signature <SIGNATURE>
+
+For more information, try '--help'.
+  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with manifest/verdict checks
+Bundle structure and basic hashes OK. Verdict from manifest:
+PASS
