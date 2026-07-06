@@ -729,9 +729,16 @@ fn report() {
         let out_dir = unique_test_dir("tampered-source");
         std::fs::create_dir_all(&out_dir).unwrap();
         let src = "fn main() { let x = 1; }";
-        let bundle =
-            build_evidence_bundle(src, "safe", None, vec!["test build".into()], &out_dir, None, None)
-                .expect("bundle");
+        let bundle = build_evidence_bundle(
+            src,
+            "safe",
+            None,
+            vec!["test build".into()],
+            &out_dir,
+            None,
+            None,
+        )
+        .expect("bundle");
 
         std::fs::write(bundle.dir.join("source.anubis"), "fn main() { let x = 2; }").unwrap();
 
@@ -1082,9 +1089,16 @@ fn main() {
         let out_dir = unique_test_dir("manifest-rewrite");
         std::fs::create_dir_all(&out_dir).unwrap();
         let src = "fn main() { let x = 1; }";
-        let bundle =
-            build_evidence_bundle(src, "safe", None, vec!["test build".into()], &out_dir, None, None)
-                .expect("bundle");
+        let bundle = build_evidence_bundle(
+            src,
+            "safe",
+            None,
+            vec!["test build".into()],
+            &out_dir,
+            None,
+            None,
+        )
+        .expect("bundle");
 
         let tampered_source = "fn main() { let x = 2; }";
         std::fs::write(bundle.dir.join("source.anubis"), tampered_source).unwrap();

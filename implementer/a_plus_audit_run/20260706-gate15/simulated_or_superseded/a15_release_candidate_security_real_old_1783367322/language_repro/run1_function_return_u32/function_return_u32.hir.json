@@ -1,0 +1,53 @@
+{
+  "imports": [],
+  "modules": [],
+  "functions": [
+    {
+      "name": "id",
+      "module": null,
+      "mode": "safe",
+      "params": [
+        {
+          "name": "x",
+          "ty": "u32",
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": null
+        }
+      ],
+      "symbols": [],
+      "effects": [],
+      "span": [
+        45,
+        83
+      ]
+    },
+    {
+      "name": "main",
+      "module": null,
+      "mode": "safe",
+      "params": [],
+      "symbols": [
+        {
+          "name": "v",
+          "ty": null,
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": [
+            100,
+            115
+          ]
+        }
+      ],
+      "effects": [],
+      "span": [
+        84,
+        117
+      ]
+    }
+  ]
+}

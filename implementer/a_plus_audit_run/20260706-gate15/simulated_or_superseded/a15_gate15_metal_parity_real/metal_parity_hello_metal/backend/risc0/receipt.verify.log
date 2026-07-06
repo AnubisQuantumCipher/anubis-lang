@@ -1,0 +1,1 @@
+receipt.verify(ANUBIS_ID) FAILED: child_success=false receipt_present=false image_id_valid=false elf_present=false; child_skipped image_id_valid=false elf_present=false

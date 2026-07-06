@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: reason|policy|declassify|ANUBIS\nfn main() {\n    let s = taint_source(\"s\");\n    let p "
+}

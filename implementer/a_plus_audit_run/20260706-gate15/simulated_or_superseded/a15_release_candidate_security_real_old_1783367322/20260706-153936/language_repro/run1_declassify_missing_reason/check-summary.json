@@ -1,0 +1,7 @@
+{
+  "bounty_ready": false,
+  "bundle": "out/a15_release_candidate_security_real/20260706-153936/language_repro/run1_declassify_missing_reason/evidence-20260706-193957-safe",
+  "check_error": "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: safe mode tainted flow from `s` to sink `sink` requires declassify() or research boundary",
+  "source_hash": "c43067922feb6c549d5f4110e68ef2f6e614422fd3c0324a12f8ca62e736bdee",
+  "verdict": "FAIL"
+}

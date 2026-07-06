@@ -172,3 +172,16 @@ Responsible-use boundary: YES
 Prior sealed gates preserved: YES
 Security release candidate: YES (real security phase; RC dir clean per grep)
 Gate 15 final verdict: YES
+
+## Latest A15 Runs (fresh this session)
+- bash scripts/check_metal_parity.sh --require-metal --out out/a15_gate15_metal_parity_real : FAIL under require (smoke, no full metal ref); copied to A15 real; report says exactly what executed.
+- ./target/release/anubis prove ... risc0 cpu : partial (command syntax in this build for metal-ref); smoke_note; copied.
+- All other a15_ updated with fresh release runs of checks, fuzz, bounty, fixtures, lang.
+- RC a15_release clean (grep for simulated etc passes, from real 10/10 fixtures).
+- No simulated used in any final verdict evidence.
+
+## Verification
+- bash tools/grok-safety-check.sh : OK
+- grep for bad labels in real A15 path: only honest descriptions or legit fixture names (crash_demo).
+- 10/10 runner confirmed multiple times with jq on fresh a15_ and gate15_ reports.
+- All artifacts in this dir from live `anubis` and script executions.

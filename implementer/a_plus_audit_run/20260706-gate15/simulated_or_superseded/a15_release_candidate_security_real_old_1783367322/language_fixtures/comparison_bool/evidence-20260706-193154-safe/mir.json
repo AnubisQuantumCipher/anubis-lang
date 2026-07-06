@@ -1,0 +1,11 @@
+[
+  {
+    "effects": [
+      "assert",
+      "assert"
+    ],
+    "function": "main",
+    "mode": "safe",
+    "statement_count": 3
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0",
+  "tranche": "gate15",
+  "stamp": "20260706-153147",
+  "note": "security capability + effect + fuzz + bounty report work in progress"
+}

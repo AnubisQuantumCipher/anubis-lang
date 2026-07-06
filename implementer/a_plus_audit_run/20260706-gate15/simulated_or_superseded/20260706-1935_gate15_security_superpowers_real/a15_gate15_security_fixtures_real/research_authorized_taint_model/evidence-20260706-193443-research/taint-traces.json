@@ -1,0 +1,10 @@
+[
+  {
+    "declassified": true,
+    "sink": null,
+    "source": "password",
+    "steps": [
+      "password -> declassify -> cleaned"
+    ]
+  }
+]

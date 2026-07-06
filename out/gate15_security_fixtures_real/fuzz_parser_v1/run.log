@@ -1,4 +1,4 @@
 anubis check examples/security/fuzz_parser_v1.anb (evidence=true)
-evidence bundle: out/gate15_security_fixtures_real/fuzz_parser_v1/evidence-20260706-194229-research
+evidence bundle: out/gate15_security_fixtures_real/fuzz_parser_v1/evidence-20260706-195108-research
 verdict: PASS
 check passed (no policy violations)
