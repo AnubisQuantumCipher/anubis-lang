@@ -100,6 +100,10 @@ enum Commands {
         #[arg(long, default_value = "native")]
         backend: String,
 
+        /// Lane selection for risc0 backend (cpu forces R0_DISABLE_METAL=1; metal-hybrid does not; auto uses runtime probe but cannot yield Gate 11 YES unless observed)
+        #[arg(long, default_value = "cpu")]
+        lane: String,
+
         /// Emit full tamper-evident evidence bundle with sidecars
         #[arg(long)]
         evidence: bool,
@@ -304,13 +308,15 @@ fn main() -> Result<()> {
         Commands::Prove {
             input,
             backend,
+            lane,
             evidence,
             out,
         } => {
             println!(
-                "anubis prove {} --backend {} (evidence={})",
+                "anubis prove {} --backend {} --lane {} (evidence={})",
                 input.display(),
                 backend,
+                lane,
                 evidence
             );
             let src = std::fs::read_to_string(&input)?;
@@ -322,13 +328,25 @@ fn main() -> Result<()> {
 
             let is_risc0 = backend == "risc0";
             let full_hybrid = prove_uses_full_hybrid(&backend);
+            let lane_normalized = lane.to_lowercase();
+            let force_cpu = lane_normalized == "cpu" || lane_normalized == "r0-disable-metal";
+            let force_metal = lane_normalized == "metal-hybrid" || lane_normalized == "metal";
 
             let artifact = lower_to_native(tainted, &out, "risc0_receipt", full_hybrid)
                 .map_err(|e| anyhow!("{}", e))?;
             println!("lowered artifact: {}", artifact);
 
             if is_risc0 {
-                // === TASK 1/2/4 hardening: real derived ImageID from actual risc0-build guest ELF + real receipt via RISC0 prover ===
+                // === TASK 1/2/4 hardening + Gate 11 lane: real derived ImageID + real receipt + explicit lane control ===
+                // --lane cpu  → R0_DISABLE_METAL=1 (CPU comparison lane, observed "cpu")
+                // --lane metal-hybrid → no R0_DISABLE (Metal-hybrid lane if Tier-2 + logs confirm, observed "metal-hybrid")
+                // --lane auto allowed for exploration but Gate 11 YES requires observed != unknown.
+                if force_cpu {
+                    std::env::set_var("R0_DISABLE_METAL", "1");
+                } else if force_metal {
+                    // Explicitly ensure absence so child observes metal path
+                    std::env::remove_var("R0_DISABLE_METAL");
+                } // auto: leave as-is (parent or probe decides; observed will be unknown if ambiguous)
                 // Create a complete risc0 "methods" crate layout so `cargo build` runs risc0-build and emits real ANUBIS_ID + ELF.
                 let methods_dir = out.join("methods");
                 std::fs::create_dir_all(methods_dir.join("guest/src"))?;
@@ -526,6 +544,8 @@ fn main() {
                     "run_stamp": run_stamp,
                     "receipt_verified_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
                     "placeholder_image_id": image_id_is_placeholder(&real_id),
+                    "lane": lane.clone(),
+                    "lane_normalized": lane_normalized.clone(),
                     "metal_hybrid": metal_section
                 });
                 std::fs::write(
@@ -855,16 +875,11 @@ fn run_risc0_proof_attempt(risc0_side: &Path, guest_elf_path: Option<&Path>) -> 
         }
 
         cmd.env("RISC0_DEV_MODE", "0");
-        // Gate 11 lane contract:
-        // --lane cpu (or legacy default) → set R0_DISABLE_METAL=1 → observed "cpu"
-        // --lane metal-hybrid → do not set → child observes "metal-hybrid" (only if Tier-2 present in runtime; logs will confirm)
-        // Never use external r0vm for this path.
+        // Gate 11: decide from env var state (parent Prove arm sets/clears R0_DISABLE_METAL before calling this based on --lane)
         if std::env::var("R0_DISABLE_METAL").is_ok() {
             cmd.env("R0_DISABLE_METAL", "1");
-        } else {
-            // If the parent explicitly cleared it for metal, propagate absence (child will see not set).
-            // Do not set here.
         }
+        // metal lane: parent removed the var; we do not set it → child sees absent and will log metal-hybrid when successful.
 
         match cmd.status() {
             Ok(status) => (status.success(), format!("child_status={}", status)),
