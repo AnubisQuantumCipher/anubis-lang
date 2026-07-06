@@ -1,0 +1,52 @@
+[
+  {
+    "path": "source.anubis",
+    "sha256": "dbbd6fdbe2c8716380204bcdf8a7ae3468f6c87d4951b0ee0371d2ac9e884af0",
+    "bytes": 249
+  },
+  {
+    "path": "build.log",
+    "sha256": "9efb844f0d577dd0267088c2791478b35dca1df3445a458dc12043b11b3df255",
+    "bytes": 109
+  },
+  {
+    "path": "hir.json",
+    "sha256": "29d36b329a2f7b161b95cd628063a9ee98faebd313eadf3e2353ff0276301234",
+    "bytes": 1080
+  },
+  {
+    "path": "mir.json",
+    "sha256": "7779d0eb996fa2f8120e0964d9284958c331a76e1915137c525fbd18e56f780c",
+    "bytes": 171
+  },
+  {
+    "path": "taint-traces.json",
+    "sha256": "8be61283bfa3ea31a6769cab7385833fc23ee5f00b441dbad102f5c0d4f1bc11",
+    "bytes": 132
+  },
+  {
+    "path": "solver.json",
+    "sha256": "2751db112fd94a2ef06c170271ebc5f587fd169e3f3e2b3794c92b011b6d6895",
+    "bytes": 158
+  },
+  {
+    "path": "environment.json",
+    "sha256": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+    "bytes": 215
+  },
+  {
+    "path": "checks.sarif",
+    "sha256": "0b0b7694cdbdab958c542cbb592d2500ea08ba6864fa15ae18df96f03e1e54a4",
+    "bytes": 1290
+  },
+  {
+    "path": "bounty-report.md",
+    "sha256": "0105803e408d0f0013da184b1b9c4277495a0756d038af379c7804e93e7a7b72",
+    "bytes": 462
+  },
+  {
+    "path": "validate.sh",
+    "sha256": "fbea7c6bdc573e79f8310dd486bed7fa8372e068e24e2b717a2b44143d1c6e9f",
+    "bytes": 750
+  }
+]

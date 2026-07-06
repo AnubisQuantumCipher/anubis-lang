@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// FEATURE: typed let u32 + literal
+fn main() {
+    let x: u32 = 42;
+}

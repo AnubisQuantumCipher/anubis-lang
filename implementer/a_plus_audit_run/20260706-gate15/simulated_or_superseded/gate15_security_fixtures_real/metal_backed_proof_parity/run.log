@@ -1,0 +1,4 @@
+anubis check examples/security/metal_backed_proof_parity.anb (evidence=true)
+evidence bundle: out/gate15_security_fixtures_real/metal_backed_proof_parity/evidence-20260706-193846-research
+verdict: PASS
+check passed (no policy violations)

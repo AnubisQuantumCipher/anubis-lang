@@ -1,0 +1,4 @@
+anubis check examples/security/bounty_report_from_taint.anb (evidence=true)
+evidence bundle: out/gate15_security_fixtures_real/bounty_report_from_taint/evidence-20260706-193846-research
+verdict: PASS
+check passed (no policy violations)

@@ -1,0 +1,47 @@
+{
+  "functions": [
+    {
+      "effects": [
+        "assume",
+        "assume",
+        "assert"
+      ],
+      "mode": "safe",
+      "module": null,
+      "name": "main",
+      "params": [],
+      "span": [
+        69,
+        234
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "secret",
+          "span": [
+            85,
+            122
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": "u32"
+        },
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "derived",
+          "span": [
+            180,
+            206
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

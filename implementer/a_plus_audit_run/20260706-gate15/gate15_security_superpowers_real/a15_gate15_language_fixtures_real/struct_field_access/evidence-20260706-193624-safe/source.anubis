@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// FEATURE: struct field access
+struct Point { x: u32 }
+fn main() {
+    let p = Point { x: 5 };
+    let v = p.x;
+}

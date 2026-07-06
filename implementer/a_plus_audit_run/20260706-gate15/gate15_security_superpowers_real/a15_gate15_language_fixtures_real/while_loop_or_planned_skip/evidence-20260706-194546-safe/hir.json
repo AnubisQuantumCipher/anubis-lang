@@ -1,0 +1,43 @@
+{
+  "functions": [
+    {
+      "effects": [],
+      "mode": "safe",
+      "module": null,
+      "name": "main",
+      "params": [],
+      "span": [
+        64,
+        141
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "i",
+          "span": [
+            80,
+            95
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": "u32"
+        },
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "j",
+          "span": [
+            119,
+            133
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

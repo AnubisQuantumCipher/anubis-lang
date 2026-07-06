@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// FEATURE: comparisons produce bool context for assert
+fn main() {
+    let x: u32 = 5;
+    assert(x > 0);
+    assert(x == 5);
+}

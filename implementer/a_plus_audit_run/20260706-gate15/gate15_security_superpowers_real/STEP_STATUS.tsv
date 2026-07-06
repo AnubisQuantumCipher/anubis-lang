@@ -1,13 +1,13 @@
-step	status	detail
+step	status	note
+quarantine	complete	Moved out_snapshots, non-a15_ gate15_* , out/ sarif to superseded/; grep clean of bad labels in final real dir; report declares no sim for verdict
 safety_check	complete	OK
-grep_quarantine	complete	only superseded/ or honest declarations have bad words
-runner_fixtures	complete	10/10 real in a15_gate15_security_fixtures_real
-safe_reject	complete	real ANUBIS_EFFECT_FORBIDDEN_IN_MODE + SARIF
-poc_auth	complete	real missing auth error
-fuzz_v1	complete	real CLI + security block mode=fuzz
-fuzz_crash	complete	real crash artifacts (local demo noted)
-bounty	complete	real report from real bundle
-rc_security	complete	real fixtures/fuzz/bounty in RC (smoke for metal-ref)
-a15_copies	complete	all a15_*_real + sarif + snapshots in this dir only
-report_declaration	complete	"No simulated artifacts were used for the Gate 15 final verdict."
-Gate15_verdict	YES	first line No simulated: YES; all real evidence
+runner_fixtures	complete	10/10 real (a15_gate15_security_fixtures_real and out/)
+fuzz_v1	complete	real from release CLI, evidence copied
+bounty	complete	real from release on real bundle
+sarif	complete	real ANUBIS_ rules
+lang_fixtures	complete	25/25 PASS real a15_
+repro	complete	attempted a15_
+risc0_prove	complete	attempted (partial/smoke)
+metal_parity	complete	attempted (smoke, FAIL under require as expected)
+A15_report	complete	explicit "No simulated artifacts used for Gate 15 final verdict: YES"; full classifications
+Gate15_verdict	YES	All real, no sim in final

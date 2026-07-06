@@ -1,6 +1,6 @@
 {
   "bounty_ready": false,
-  "bundle": "out/a15_gate15_language_repro_real/run2_tainted_sink_without_declassify/evidence-20260706-193713-safe",
+  "bundle": "out/a15_gate15_language_repro_real/run2_tainted_sink_without_declassify/evidence-20260706-194611-safe",
   "check_error": "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: safe mode tainted flow from `s` to sink `sink` requires declassify() or research boundary",
   "source_hash": "f7ba7d7a8e839d672fec27f5fe59821619ab91932b7600891ee0d7300ff274f1",
   "verdict": "FAIL"

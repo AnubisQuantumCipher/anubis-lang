@@ -1,0 +1,13 @@
+// EXPECT: PASS
+
+@fuzz(
+  target: "parser",
+  runs: 100,
+  sandbox: true,
+  effects: ["fuzz_exec"]
+)
+fn main(input: bytes) {
+    let s = taint_source("input");
+    let p = declassify(s, "fuzz", "test");
+    sink(p);
+}

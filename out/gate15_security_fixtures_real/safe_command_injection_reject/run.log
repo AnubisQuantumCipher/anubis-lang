@@ -1,4 +1,4 @@
 anubis check examples/security/safe_command_injection_reject.anb (evidence=true)
-evidence bundle: out/gate15_security_fixtures_real/safe_command_injection_reject/evidence-20260706-192933-safe
+evidence bundle: out/gate15_security_fixtures_real/safe_command_injection_reject/evidence-20260706-194229-safe
 verdict: FAIL
 check failed: ANUBIS_EFFECT_FORBIDDEN_IN_MODE: safe mode shell/exec effect is forbidden (use @research/@poc with authorization)

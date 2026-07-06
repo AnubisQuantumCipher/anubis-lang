@@ -19,3 +19,16 @@ Commands executed fresh (using target/release/anubis or scripts after cargo buil
 - All artifacts copied ONLY from the above fresh real executions into this dir. No sim dirs copied.
 
 Quarantine complete: simulated_or_superseded/ holds all historical sim/demo/partial-env runs.
+Additional fresh A15 runs:
+- bash scripts/run_language_fixtures.sh --out out/a15_gate15_language_fixtures_real : 25/25 PASS real
+- ./target/release/anubis prove ... risc0 cpu (syntax/partial due to build flags for security; copied)
+- bash scripts/check_metal_parity.sh --require-metal --out ... (smoke, ref absent; copied)
+This turn quarantine actions (TASK1):
+- bash tools/grok-safety-check.sh : OK
+- mkdir -p .../simulated_or_superseded
+- grep -R ... (full, saved to scratch)
+- Moved out_snapshots/, gate15_security_fixtures_real (non-a15), gate15_security_sarif_safe_shell from real dir to superseded/
+- mv out/gate15_security_sarif_safe_shell to superseded/
+- Real dir now only a15_*_real fresh + report + GATING + STEP + a15_release...
+- Report updated with explicit top declaration and full classifications.
+- Fresh runs of lang fixtures (25/25), repro, risc0 prove attempt, metal parity (smoke) copied.

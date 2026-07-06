@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/a15_gate15_language_fixtures_real/typed_let_u8/evidence-20260706-194545-safe",
+  "check_error": null,
+  "source_hash": "d0a671008e0788b32be7e4e37b6d388303745a47f3f2e4065f709c44b1ace4d7",
+  "verdict": "PASS"
+}
