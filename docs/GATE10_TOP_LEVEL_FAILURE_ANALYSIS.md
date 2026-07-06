@@ -44,3 +44,12 @@
 Current canonical examples/risc0_receipt.anb is the constant form and produces top-level PASS while preserving real RISC0 crypto.
 
 This doc produced after running the mandated commands (safety, find, grep, jq) on the referenced evidence.
+
+## Post-inspection note (TASK 1 execution)
+Commands run on 2026-07-05:
+- bash tools/grok-safety-check.sh -> OK
+- find on 20260706-0213/... -> dir not present (purged per legacy cleanup)
+- grep -R on 0213 and out/a_plus_gate10_risc0 -> 0 lines (dir absent)
+- jq on out/a_plus_gate10_risc0 -> no such
+Cause confirmed from plan context and searches in similar runs (e.g. old assert fixtures leading to solver FAIL while RISC0 verify_status=passed).
+Doc updated to reflect execution.
