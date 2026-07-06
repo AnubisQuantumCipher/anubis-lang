@@ -41,7 +41,7 @@
   },
   {
     "path": "bounty-report.md",
-    "sha256": "eabcc353527173b5e739c6492e517c80c84e85cf95e7e489cfa894316f7c5e35",
+    "sha256": "123e1f1436feca4daab30ab73d0c7d6ff87b6437f6ad22a0e134bdcb6c83faf5",
     "bytes": 2374
   },
   {
@@ -81,12 +81,12 @@
   },
   {
     "path": "risc0_receipt.bin",
-    "sha256": "561e3fa4460b9dd10c961fabc0b201b4884e4fd6f18a24f90d382945cd190d71",
+    "sha256": "ba316c7d5727c6098c68af3579870256a62b9fa82cf8686bc04b78dc26de8976",
     "bytes": 209570
   },
   {
     "path": "risc0_risc0_metadata.json",
-    "sha256": "85c48c2936c0a3d9185a617d47830e4b2a0fbef13c449f4a9699448a3322d680",
+    "sha256": "416aa9181f9a1c38243bcf4d4ee63df2bbe402da7386b8d7595f2dbb3436b3dd",
     "bytes": 1055
   },
   {
@@ -111,7 +111,7 @@
   },
   {
     "path": "risc0_metadata.json",
-    "sha256": "85c48c2936c0a3d9185a617d47830e4b2a0fbef13c449f4a9699448a3322d680",
+    "sha256": "416aa9181f9a1c38243bcf4d4ee63df2bbe402da7386b8d7595f2dbb3436b3dd",
     "bytes": 1055
   },
   {

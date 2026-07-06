@@ -1,0 +1,16 @@
+Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/image_id.txt hash mismatch
+tamper correctly detected for image_id.txt
+Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/guest.elf hash mismatch
+tamper correctly detected for guest.elf
+Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+  manifest.json present (preferred for v1)
+MISSING: manifest-listed file backend/risc0/risc0_metadata.json
+tamper correctly detected for risc0_metadata.json
+Verifying bundle: /tmp/tam/evidence-20260706-034217-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/receipt.verify.log hash mismatch
+tamper correctly detected for receipt.verify.log

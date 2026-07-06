@@ -19,12 +19,12 @@
 - `hybrid_generated_methods_rs_hash`: PASS - e0f443ba2bae96733a98bce5f2ac8123fe57f31eebe2ff5b0a455062cf6bdd56
 - `hybrid_risc0_guest_elf_hash`: PASS - 1cf5c59ae284bf33ea3bc31d470c59efb83bf04cfb58d6477252dd2217e9fe3c
 - `hybrid_risc0_image_id_txt_hash`: PASS - 7517466e75e0ee16e870281e9bd08152291435ad39e59d98968380516b9d5ad4
-- `hybrid_risc0_receipt_bin_hash`: PASS - 561e3fa4460b9dd10c961fabc0b201b4884e4fd6f18a24f90d382945cd190d71
-- `hybrid_risc0_risc0_metadata_json_hash`: PASS - 85c48c2936c0a3d9185a617d47830e4b2a0fbef13c449f4a9699448a3322d680
+- `hybrid_risc0_receipt_bin_hash`: PASS - ba316c7d5727c6098c68af3579870256a62b9fa82cf8686bc04b78dc26de8976
+- `hybrid_risc0_risc0_metadata_json_hash`: PASS - 416aa9181f9a1c38243bcf4d4ee63df2bbe402da7386b8d7595f2dbb3436b3dd
 - `hybrid_risc0_receipt_verify_log_hash`: PASS - e28f35ede15d35417640b8b928416e5d164a17337f83f5165fcb183e20577df5
 - `hybrid_risc0_prove_log_hash`: PASS - 32e478af9f8aeffb2536736de3d852b2f452e7489461645bc39bcfffc783a2e1
 - `hybrid_risc0_guest_src_main_rs_hash`: PASS - af76dac3218c7aaf0df7eba777f8972dc94e3af19333e3beb5a0c234aa251432
 - `hybrid_risc0_receipt_hash`: PASS - e352bf9749a70b59115b1e1298ca4731bac4540139ffea75b9e75e4cd7346c9b
-- `hybrid_risc0_metadata_json_hash`: PASS - 85c48c2936c0a3d9185a617d47830e4b2a0fbef13c449f4a9699448a3322d680
+- `hybrid_risc0_metadata_json_hash`: PASS - 416aa9181f9a1c38243bcf4d4ee63df2bbe402da7386b8d7595f2dbb3436b3dd
 - `hybrid_risc0_receipt_rs_hash`: PASS - a39dc51c2d25eae3d35ef47a4fd1cdf4718455308d16de5462155ae61670fb12
 - `risc0_receipt_verify`: PASS - verify_status=passed fresh_receipt_generated=true dev_mode=false mock_prover=false cache_used=false placeholder_image_id=false
