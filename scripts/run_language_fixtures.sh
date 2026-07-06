@@ -34,10 +34,17 @@ for f in "$FIXTURE_DIR"/*.anb; do
   expect=$(grep -o 'EXPECT: [A-Z]*' "$f" | head -1 | awk '{print $2}' || echo "PASS")
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || echo "")
 
-  verdict="PASS"
+  # Verdict from summary (authoritative for policy) + log
+  summary_pass=0
+  if [[ -f "$outd/check-summary.json" ]] && ( grep -q '"check_error": null' "$outd/check-summary.json" || grep -q '"verdict": "PASS"' "$outd/check-summary.json" ); then
+    summary_pass=1
+  fi
+  log_pass=0
   if grep -q "check passed (no policy violations)" "$outd/run.log" 2>/dev/null; then
-    verdict="PASS"
-  elif [[ -f "$outd/check-summary.json" ]] && grep -q '"check_error": null' "$outd/check-summary.json"; then
+    log_pass=1
+  fi
+
+  if [[ $summary_pass -eq 1 || $log_pass -eq 1 ]]; then
     verdict="PASS"
   else
     verdict="FAIL"
@@ -48,7 +55,7 @@ for f in "$FIXTURE_DIR"/*.anb; do
   if [[ "$expect" == "FAIL" ]]; then
     if [[ "$verdict" == "FAIL" ]]; then ok=1; fi
     if [[ -n "$err_needle" ]]; then
-      if grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null; then
+      if grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null || grep -qi "$err_needle" "$outd/check_diagnostics.txt" 2>/dev/null; then
         ok=1
       fi
     fi

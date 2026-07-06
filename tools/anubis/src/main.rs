@@ -254,19 +254,48 @@ fn main() -> Result<()> {
             println!("anubis check {} (evidence={})", input.display(), evidence);
 
             let src = std::fs::read_to_string(&input)?;
-            let ast = parse_source(&src).map_err(|e| anyhow!("parse: {}", e))?;
+            let detailed = anubis_compiler::frontend::parse_source_detailed(&src);
+            let parse_err = if detailed.diagnostics.is_empty() {
+                None
+            } else {
+                Some(
+                    detailed
+                        .diagnostics
+                        .iter()
+                        .map(|d| d.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+            };
+            let ast = if parse_err.is_none() {
+                parse_source(&src).ok()
+            } else {
+                None
+            };
 
-            let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+            let mode = if let Some(ref a) = ast {
+                first_mode(&a.items).unwrap_or(Mode::Safe)
+            } else {
+                Mode::Safe
+            };
 
-            let typed_res = typecheck(ast.clone(), mode);
+            let typed_res = if let Some(ref a) = ast {
+                typecheck(a.clone(), mode)
+            } else {
+                Err(parse_err.clone().unwrap_or_else(|| "parse failed".into()))
+            };
             let (typed, check_error) = match typed_res {
-                Ok(ref t) => (Some(t.clone()), None),
-                Err(ref e) => (None, Some(e.clone())),
+                Ok(ref t) => (Some(t.clone()), parse_err.clone()),
+                Err(ref e) => (None, parse_err.clone().or(Some(e.clone()))),
             };
 
             let _tainted = typed.as_ref().map(|t| TaintPass::apply(t.clone()));
 
             std::fs::create_dir_all(&out)?;
+
+            let ast_for_json = ast
+                .clone()
+                .unwrap_or_else(|| anubis_compiler::frontend::AST { items: vec![] });
 
             // Support --emit ast,hir,mir (or via --evidence) for Gate 2/3 ordinary workflows
             let stem = input
@@ -278,8 +307,8 @@ fn main() -> Result<()> {
             let emit_all = do_emit == "all" || do_emit.contains("ast") || evidence;
             if emit_all || evidence {
                 let ast_rep = serde_json::json!({
-                    "num_items": ast.items.len(),
-                    "first_item_kind": match ast.items.first() {
+                    "num_items": ast_for_json.items.len(),
+                    "first_item_kind": match ast_for_json.items.first() {
                         Some(Item::Fn { name, .. }) => format!("fn:{}", name),
                         Some(Item::Struct { name, .. }) => format!("struct:{}", name),
                         Some(Item::Import { .. }) => "import".into(),
