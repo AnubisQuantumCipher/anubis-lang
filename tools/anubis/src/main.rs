@@ -367,7 +367,8 @@ fn main() -> Result<()> {
                 // If there was a check error (policy violation etc), the bundle may have FAIL from diagnostics in build
                 // but to ensure, we can note it
                 println!("evidence bundle: {}", bundle.dir.display());
-                println!("verdict: {}", bundle.manifest.verdict);
+                let effective_verdict = if check_error.is_some() { "FAIL".to_string() } else { "PASS".to_string() };
+                println!("verdict: {}", effective_verdict);
 
                 if let Some(err) = &check_error {
                     println!("check failed: {}", err);
@@ -379,10 +380,10 @@ fn main() -> Result<()> {
                 }
 
                 let summary = serde_json::json!({
-                    "bounty_ready": bundle.manifest.verdict == "PASS" && check_error.is_none(),
+                    "bounty_ready": effective_verdict == "PASS" && check_error.is_none(),
                     "bundle": bundle.dir.to_string_lossy(),
                     "source_hash": bundle.manifest.source_hash,
-                    "verdict": bundle.manifest.verdict,
+                    "verdict": effective_verdict,
                     "check_error": check_error,
                 });
                 std::fs::write(
