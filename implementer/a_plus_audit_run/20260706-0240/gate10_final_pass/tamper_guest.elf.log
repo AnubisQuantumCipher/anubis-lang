@@ -1,0 +1,3 @@
+Verifying bundle: out/a15_gate10_final_pass_tampered/evidence-20260706-023915-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/guest.elf hash mismatch
