@@ -139,10 +139,11 @@ for pat in receipt.bin image_id.txt guest.elf risc0_metadata.json receipt.verify
   if [[ -n "$target" && -f "$target" ]]; then
     actual=$(shasum -a 256 "$target" | cut -d' ' -f1)
     # find the line in MANIFEST that mentions this pat and extract its recorded hash
-    expected=$(grep -E "(^| )${pat}( |$)" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null | head -1 | cut -d' ' -f1)
+    # Guard greps with || true under pipefail; use F for path suffix match too.
+    expected=$(grep -E "(^| )${pat}( |$)" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null | head -1 | cut -d' ' -f1 || true)
     if [[ -z "$expected" ]]; then
-      # fallback: any line containing the basename
-      expected=$(grep -F "$(basename "$target")" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null | head -1 | cut -d' ' -f1)
+      # fallback: any line containing the basename or /basename at end
+      expected=$(grep -E "(/|^| )${pat}(\$| |$)" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null | head -1 | cut -d' ' -f1 || true)
     fi
     if [[ -n "$expected" && "$actual" != "$expected" ]]; then
       echo "TAMPER: key sidecar $pat (at $target) hash mismatch (expected $expected got $actual)"
