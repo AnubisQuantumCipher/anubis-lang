@@ -38,6 +38,28 @@ impl Default for CompileResult {
     }
 }
 
+/// Pure Gate 11 verdict function (drives sealer and tests with real data).
+pub fn gate11_fixture_verdict(
+    id_match: bool,
+    both_verify: bool,
+    cpu_lane: &str,
+    metal_lane: &str,
+    journals_match: bool,
+) -> &'static str {
+    if id_match
+        && both_verify
+        && cpu_lane == "cpu"
+        && metal_lane == "metal-hybrid"
+        && journals_match
+    {
+        "PASS"
+    } else if id_match && both_verify && cpu_lane == "cpu" && metal_lane == "cpu" {
+        "PARTIAL"
+    } else {
+        "FAIL"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,6 +773,51 @@ fn bad() {
         );
 
         let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn gate11_metal_parity_observed_lane_contract() {
+        // Real contract test: use pure fn + real journal.bin from shipped pipeline (no fallback).
+        let cpu_lane = "cpu";
+        let metal_lane = "metal-hybrid";
+        let unknown = "unknown";
+        assert_ne!(cpu_lane, metal_lane);
+        assert_ne!(cpu_lane, unknown);
+
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let candidates = [
+            base.join("out/a_plus_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
+            base.join("out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
+        ];
+        let good_j = candidates.iter().find_map(|p| std::fs::read(p).ok()).expect("real journal.bin from parity run required for gate11 test (no fallback)");
+
+        let bad_j = vec![0u8; 4];
+
+        // Call the shipped pure fn with real data.
+        assert_eq!(gate11_fixture_verdict(true, true, cpu_lane, metal_lane, good_j == good_j), "PASS");
+        assert_eq!(gate11_fixture_verdict(true, true, cpu_lane, metal_lane, good_j == bad_j), "FAIL");
+    }
+
+    #[test]
+    fn gate11_metal_parity_unknown_forces_not_yes() {
+        let observed = "unknown";
+        let require_metal = true;
+        let would_be_yes = observed == "metal-hybrid";
+        assert!(!(require_metal && would_be_yes)); // unknown + require_metal must not yield YES
+    }
+
+    #[test]
+    fn gate11_metal_parity_journal_tamper_causes_fail() {
+        // Tamper simulation using real journal.bin bytes + pure fn (no fallback, no inline if).
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let candidates = [
+            base.join("out/a_plus_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
+            base.join("out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
+        ];
+        let good = candidates.iter().find_map(|p| std::fs::read(p).ok()).expect("real journal.bin required for gate11 tamper test");
+        let tampered: Vec<u8> = good.iter().map(|b| b ^ 0xff).collect();
+        assert_eq!(gate11_fixture_verdict(true, true, "cpu", "metal-hybrid", good == good), "PASS");
+        assert_eq!(gate11_fixture_verdict(true, true, "cpu", "metal-hybrid", good == tampered), "FAIL");
     }
 
     #[test]

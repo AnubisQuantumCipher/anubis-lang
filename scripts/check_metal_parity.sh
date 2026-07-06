@@ -122,25 +122,61 @@ for f in "${FIXTURES[@]}"; do
   metal_meta_status=$(jq -r '.verify_status // "missing"' "$metal_out/backend/risc0/risc0_metadata.json" 2>/dev/null || echo "missing")
 
   image_match=false
-  receipt_match=false
   if [[ "$cpu_id_val" == "$metal_id_val" && "$cpu_id_val" != "MISSING" ]]; then image_match=true; fi
-  if [[ "$cpu_receipt_sha" == "$metal_receipt_sha" && "$cpu_receipt_sha" != "MISSING" ]]; then receipt_match=true; fi
+
+  # Real journal extraction for Gate 11: for these fixtures the risc0 guest always does env::read() u32, y = x*6, env::commit(&y)
+  # Committed journal is the little-endian u32 42 (0x2a000000 on LE for the value 42).
+  # We extract by writing a small journal.bin from the known semantics (or could deserialize receipt.journal).
+  # Both lanes use identical guest + input => journals must be bit-identical when both verify + ID match.
+  # Compute journal shas from the extracted journal.bin (written by verify-receipt after real deserialization)
+  cpu_journal_sha=$(shasum -a 256 "$cpu_out/backend/risc0/journal.bin" 2>/dev/null | awk '{print $1}' || echo "MISSING")
+  metal_journal_sha=$(shasum -a 256 "$metal_out/backend/risc0/journal.bin" 2>/dev/null | awk '{print $1}' || echo "MISSING")
+  if [[ "$cpu_journal_sha" == "MISSING" || "$metal_journal_sha" == "MISSING" ]]; then
+    echo "ERROR: missing extracted journal.bin for $f (CPU or Metal). Real journal extraction via verify-receipt is required; no hardcoded fallback allowed." | tee -a "$LOG"
+    # Force FAIL for this fixture; do not fabricate match even if MISSING==MISSING
+    journal_match=false
+    output_match=false
+    both_verify=false   # will be set below but we force FAIL path
+  else
+    journal_match=false
+    output_match=false
+    if $image_match && [[ "$cpu_meta_status" == "passed" && "$metal_meta_status" == "passed" ]] && [[ "$cpu_journal_sha" == "$metal_journal_sha" ]]; then
+      journal_match=true
+      output_match=true
+    fi
+  fi
+
+  # Record for evidence
+  echo "$cpu_journal_sha" > "$cpu_out/backend/risc0/journal.sha256" 2>/dev/null || true
+  echo "$metal_journal_sha" > "$metal_out/backend/risc0/journal.sha256" 2>/dev/null || true
 
   both_verify=false
   if [[ "$cpu_meta_status" == "passed" && "$metal_meta_status" == "passed" ]]; then both_verify=true; fi
 
+  # If journals missing, force no match and FAIL (override any both_verify)
+  if [[ "$cpu_journal_sha" == "MISSING" || "$metal_journal_sha" == "MISSING" ]]; then
+    journal_match=false
+    output_match=false
+    both_verify=false
+  fi
+
   verdict="FAIL"
-  if $image_match && $receipt_match && $both_verify && [[ "$cpu_lane" == "cpu" ]] && [[ "$metal_lane" == "metal-hybrid" || "$metal_lane" == "cpu" ]]; then
-    # For strict Gate 11 we want metal observed on metal run
-    if [[ "$metal_lane" == "metal-hybrid" ]]; then
-      verdict="PASS"
-    else
-      verdict="PARTIAL"
-    fi
+  if $image_match && $both_verify && [[ "$cpu_lane" == "cpu" ]] && [[ "$metal_lane" == "metal-hybrid" ]] && $journal_match; then
+    verdict="PASS"
+  elif $image_match && $both_verify && [[ "$cpu_lane" == "cpu" ]] && [[ "$metal_lane" == "cpu" ]]; then
+    verdict="PARTIAL"  # metal not observed as metal
   fi
 
   if [[ "$verdict" != "PASS" ]]; then
     OVERALL="PARTIAL"
+  fi
+
+  # Final guard before emission: if journals missing, force false in the JSON
+  if [[ "$cpu_journal_sha" == "MISSING" || "$metal_journal_sha" == "MISSING" ]]; then
+    journal_match=false
+    output_match=false
+    both_verify=false
+    verdict="FAIL"
   fi
 
   if [[ $first -eq 0 ]]; then echo ',' >> "$REPORT"; fi
@@ -153,20 +189,20 @@ for f in "${FIXTURES[@]}"; do
         "bundle": "$cpu_out",
         "lane_observed": "$cpu_lane",
         "receipt_verify": "$cpu_meta_status",
-        "journal_sha256": "$cpu_receipt_sha",
+        "journal_sha256": "$cpu_journal_sha",
         "image_id": "$cpu_id_val"
       },
       "metal": {
         "bundle": "$metal_out",
         "lane_observed": "$metal_lane",
         "receipt_verify": "$metal_meta_status",
-        "journal_sha256": "$metal_receipt_sha",
+        "journal_sha256": "$metal_journal_sha",
         "image_id": "$metal_id_val"
       },
       "parity": {
         "image_id_match": $image_match,
-        "journal_match": $receipt_match,
-        "output_match": $receipt_match,
+        "journal_match": $journal_match,
+        "output_match": $output_match,
         "both_receipts_verify": $both_verify
       },
       "verdict": "$verdict"
@@ -184,8 +220,24 @@ echo "=== DONE ===" | tee -a "$LOG"
 echo "Report: $REPORT"
 cat "$REPORT" | tee -a "$LOG"
 
+# Canonicalize via Rust single-source-of-truth sealer (Gate 11 subcommand).
+# This ensures parity_report.json is produced by shipped code, not post-edits.
+echo "Canonicalizing report via gate11-metal-parity subcommand..." | tee -a "$LOG"
+cargo run --release -p anubis -- gate11-metal-parity \
+  --cpu "$OUT_DIR" --metal "$OUT_DIR" --out "$OUT_DIR" ${REQUIRE_METAL:+--require-metal} 2>&1 | tee -a "$LOG" || true
+
+# Re-read the canonical report for final verdict
+if [[ -f "$REPORT" ]]; then
+  if command -v jq >/dev/null; then
+    OVERALL=$(jq -r '.overall_verdict // "UNKNOWN"' "$REPORT")
+  fi
+fi
+
+echo "Final canonical overall_verdict=$OVERALL" | tee -a "$LOG"
+
 if [[ "$OVERALL" != "PASS" && "$REQUIRE_METAL" == "1" ]]; then
   echo "Metal parity not fully PASS under --require-metal (observed lanes or verify may be PARTIAL on this run)."
+  exit 1
 fi
 
 exit 0
