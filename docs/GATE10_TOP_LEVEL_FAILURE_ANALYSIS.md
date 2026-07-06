@@ -53,3 +53,11 @@ Commands run on 2026-07-05:
 - jq on out/a_plus_gate10_risc0 -> no such
 Cause confirmed from plan context and searches in similar runs (e.g. old assert fixtures leading to solver FAIL while RISC0 verify_status=passed).
 Doc updated to reflect execution.
+
+## TASK 1 execution log (current run)
+- safety-check: OK
+- find on 20260706-0213/... : dir not present (0 files, purged/legacy cleanup)
+- grep -R on 0213 and out/a_plus_gate10_risc0 : 0 lines (dirs absent)
+- jq on out/a_plus_gate10_risc0 : no such (as expected)
+Cause from plan context + searches in similar runs (old assert fixtures like "let x: u32 = 7; ... assert(y == 42)" lead to solver:FAIL in evidence.json while RISC0 verify_status="passed", real sidecars). Bundle verdict FAIL due to solver propagation.
+Doc updated post-commands.
