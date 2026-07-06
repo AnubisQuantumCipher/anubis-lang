@@ -72,3 +72,14 @@ Doc updated post-commands.
 - Root cause unchanged: prior top-level bundle FAIL/PARTIAL was from solver check on assert fixture (fixture semantics + bundle propagation), not RISC0 crypto path.
 - Current canonical fixture produces solver "no-obligations=PASS" and full PASS when RISC0 succeeds.
 - Commands and outputs saved to scratch task1/.
+=== Fresh TASK1 append to ANALYSIS (this run) ===
+
+## TASK 1 execution log (fresh skeptic-gap closure run)
+Date: $(date)
+- bash tools/grok-safety-check.sh -> OK (captured to scratch/task1/safety.log)
+- find on 20260706-0213/... -> DIR ABSENT (purged; logged)
+- grep -R on specified 0213 + out/a_plus_gate10_risc0 -> 0 relevant lines (dirs absent; broader legacy validate search performed)
+- jq on out/a_plus_gate10_risc0 paths -> no matches (absent, as expected)
+- Confirmed cause from prior + current good trees: solver FAIL only on assert-derived fixtures; constant fixture + clean runs yield full PASS + real RISC0 metadata.
+- Purge of legacy implementer/ dirs performed (old pre-fix bundles removed; only self-contained validate.sh remain in surviving clean trees).
+- Captures saved to exact /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
