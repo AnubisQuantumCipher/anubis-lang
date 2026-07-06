@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// EXPECT: PASS\n// FEATURE: minimal arithmetic for Metal/CPU parity\nfn main() {\n    let x: u32 = 7;\n    let y: u32 = x *"
+}

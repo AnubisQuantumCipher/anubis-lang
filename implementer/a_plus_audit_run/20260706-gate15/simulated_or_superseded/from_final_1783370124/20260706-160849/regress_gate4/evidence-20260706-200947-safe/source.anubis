@@ -1,0 +1,5 @@
+// Example that must be rejected in safe mode (GATE 4)
+fn main() {
+    let secret = taint_source("password");
+    sink(secret);
+}

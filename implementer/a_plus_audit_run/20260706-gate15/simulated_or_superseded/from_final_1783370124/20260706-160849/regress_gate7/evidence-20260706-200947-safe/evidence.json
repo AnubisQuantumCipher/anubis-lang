@@ -1,0 +1,36 @@
+{
+  "timestamp": "20260706-200947",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "47be1220ddf427b4dc9747ae8c86680a5c9d7f0c0fd93320df9c1b74a1bb6ba0",
+  "build_log_hash": "86c014d2fc0d38eef194260343ab8725fb615a94c656ced5dc59c355e1fdb9b0",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "ad6bc387aea8adb52af24f6092269b1ff9d747548bbd6adac7f2e6225be4da39",
+  "sarif_hash": "2f669235cbfb07d9e964dfb279a4bc7355988f1179d5dd4deaaf6fa68e67e95d",
+  "bounty_report_hash": "89de0ecd5b7e4d5461e38a46dc534f26c8542e10c6ace7016291f987bc8fd802",
+  "manifest_signature": "b025856323ab581f80ed7dd626912fb4730dcd1c3639aca83ba24061a3b25118",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "FAIL",
+      "detail": "expected `;` after let binding; expected statement"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "47be1220ddf427b4dc9747ae8c86680a5c9d7f0c0fd93320df9c1b74a1bb6ba0"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "86c014d2fc0d38eef194260343ab8725fb615a94c656ced5dc59c355e1fdb9b0"
+    }
+  ],
+  "verdict": "FAIL",
+  "security": {
+    "mode": "safe",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}

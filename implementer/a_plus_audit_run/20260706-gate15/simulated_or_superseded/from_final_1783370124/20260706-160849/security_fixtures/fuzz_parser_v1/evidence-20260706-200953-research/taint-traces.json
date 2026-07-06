@@ -1,0 +1,10 @@
+[
+  {
+    "declassified": true,
+    "sink": null,
+    "source": "input",
+    "steps": [
+      "input -> declassify -> p"
+    ]
+  }
+]

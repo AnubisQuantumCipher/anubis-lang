@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "struct:Point",
+  "num_items": 2,
+  "preview": "// EXPECT: PASS\n// FEATURE: struct literal\nstruct Point { x: u32, y: u32 }\nfn main() {\n    let p = Point { x: 10, y: 20 "
+}
