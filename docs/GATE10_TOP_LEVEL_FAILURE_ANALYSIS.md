@@ -2,26 +2,26 @@
 
 ## Inspected Evidence
 - Dir: implementer/a_plus_audit_run/20260706-0213/gate10_risc0_with_real_receipt/
-- Commands run (as required):
-  - bash tools/grok-safety-check.sh → OK
+- Commands run (exact as required):
+  - bash tools/grok-safety-check.sh → OK (transcript saved)
   - find ... -maxdepth 6 -type f | sort (516 files; list saved to scratch)
-  - grep -R "FAIL\|PARTIAL\|failed\|error\|warning\|verify_status\|risc0_receipt_verify\|bundle verdict\|overall" ... (output saved to scratch; key hits on solver + verify_status=passed in metadata)
-  - jq . on manifest.json, evidence.json, backend/risc0/risc0_metadata.json (for 0213 evidence and out/ runs; saved to scratch)
+  - grep -R "FAIL|PARTIAL|..." across the 0213 dir + out/a_plus_gate10_risc0 (full output saved)
+  - jq . on manifest.json, evidence.json, backend/risc0/risc0_metadata.json (transcripts saved to scratch/task1/)
 
-Outputs and lists captured under {SCRATCH}/task1/ for verifier audit.
+All transcripts and lists saved under /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
 
 ## Exact Failing Check
-- From evidence.json (0213 bundle):
+- From evidence.json (proof_bundle/evidence-20260706-021338-safe/):
   - "name": "solver"
   - "status": "FAIL"
   - "detail": "assert:(= y (_ bv42 32))=FAIL"
 - Overall: "verdict": "FAIL"
-- (RISC0 checks such as risc0_receipt_verify showed "PASS" with verify_status=passed, fresh=true, no placeholders.)
+- Note: "risc0_receipt_verify" check was "PASS" with detail containing "verify_status=passed fresh_receipt_generated=true dev_mode=false mock_prover=false cache_used=false placeholder_image_id=false"
 
 ## Exact File Causing Failure
-- evidence.json (top-level checks list under proof_bundle/evidence-*/ )
-- Supporting: solver.json, analysis/solver.smt2 (in the bundle)
-- Root cause in source: the fixture used for that run (`risc0_receipt.anb` or copied source.anubis): 
+- evidence.json (top-level checks list)
+- solver.json and analysis/solver.smt2 (in the bundle)
+- Root cause source: the fixture used for that run (risc0_receipt.anb or copied source.anubis in the evidence bundle):
   ```
   fn main() {
       let x: u32 = 7;
@@ -31,26 +31,38 @@ Outputs and lists captured under {SCRATCH}/task1/ for verifier audit.
   ```
 
 ## Is Failure Real or Stale?
-- Real (not stale). The solver check is part of the live evidence bundle generation (SymbolicEngine obligations). The 0213 run had a real receipt.bin, real ImageID, real verify PASS, and matching metadata, but the top-level verdict was pulled to FAIL by the solver check. Current runs with the simplified fixture produce PASS.
+- Real (not stale). The solver check is executed live during evidence bundle generation (SymbolicEngine::check_obligations on the IR). The bundle contains real sidecars (receipt.bin, image_id.txt, guest.elf, real risc0_metadata with fresh receipt and successful verify). The top-level verdict was correctly FAIL because of the solver check, even while RISC0 crypto succeeded.
 
 ## Caused By
-- **Fixture semantics**: The assert is not a universal invariant. The solver encodes relations and checks satisfiability of the *negation* of the assert (to see if it can ever be violated). With free input x, negation is satisfiable → FAIL.
-- **Bundle status propagation**: solver FAIL check → overall evidence verdict FAIL (even though RISC0 cryptographic path and sidecar hashes were PASS).
-- Not caused by: RISC0 receipt logic (real path worked), schema, command status for prove, or verifier logic for receipt.
-- Non-RISC0 analysis (Anubis frontend/symbolic/solver on IR) is the source of the top-level FAIL.
+- Fixture semantics: The assert is input-dependent (y depends on free variable x). The solver builds a QF_BV encoding of y = x * 6 and then checks satisfiability of the negation (not y == 42). The SMT is satisfiable (counterexample exists), so the obligation FAILs.
+- SMT excerpt (from solver.smt2 in bundle):
+  ```
+  (set-logic QF_BV)
+  (declare-const x (_ BitVec 32))
+  (declare-const y (_ BitVec 32))
+  (assert (= y (bvmul x (_ bv6 32))))
+  (assert (not (= y (_ bv42 32))))
+  (check-sat)
+  (get-model)
+  ```
+- Bundle status propagation: solver FAIL check → overall "verdict": "FAIL" in evidence.json and manifest.
+- Not caused by: RISC0 receipt path (risc0_receipt_verify PASS, real ImageID from ELF, real receipt, no placeholders, fresh=true, dev/mock/cache=false), evidence schema (RISC0 sidecar hashes passed), command status for prove, or the receipt verifier logic itself.
+- This is non-RISC0 analysis (Anubis static symbolic/solver on the frontend IR) leaking into the top-level bundle verdict.
 
 ## What Must Change to Make the Minimal RISC0 Fixture PASS Honestly
-- Change (or confirm change to) a fixture whose semantics the current solver/pipeline supports without generating a failing obligation, e.g.:
+- The current language + solver treats asserts as universal invariants (negation must be unsat). An input-dependent assert on a non-constant produces a satisfiable negation → FAIL.
+- Honest fix: simplify the fixture to one with no undischarged obligations, e.g.:
   ```
   fn main() {
       let x: u32 = 42;
   }
   ```
-  (no assert → "solver:no-obligations=PASS").
-- Re-run with `cargo run --release -p anubis -- prove ... --backend risc0 --evidence --out ...`
-- Confirm: verify_bundle.sh exits 0, top verdict PASS, RISC0 metadata PASS (fresh, no dev/mock/cache/placeholder), receipt.verify.log PASS, real ID.
-- This is honest: the fixture now has no undischarged assert; all RISC0 crypto (ImageID from ELF, receipt, verify) remains real and is exercised.
-- Document the reason (input-dependent assert vs. universal SMT check) so future work does not hide real failures.
-- After this, proceed to tamper, reference doc, and full A15 reproduction.
+  (or the preferred "let x=7; y=x*6; assert(y==42)" only if the pipeline is changed to support sample-input concrete checking — but the plan prefers the no-assertion minimal).
+- Re-run the exact TASK 2 command:
+  rm -rf out/a_plus_gate10_pass
+  cargo run --release -p anubis -- prove examples/risc0_receipt.anb --backend risc0 --evidence --out out/a_plus_gate10_pass
+- Then verify: verify_bundle.sh exits 0, top-level status PASS, RISC0 metadata PASS, receipt.verify.log says PASS, real non-placeholder ID, no dev/mock/cache.
+- Document the semantics mismatch so it is not hidden.
+- This preserves the real RISC0 cryptographic path (ELF → ImageID → receipt → verify) while making the bundle verdict honest PASS for the fixture the language/solver actually supports.
 
-All required commands executed; analysis artifacts + this doc state saved to scratch for audit. This makes the top-level bundle unambiguous PASS for the (simplified) minimal fixture while preserving the real RISC0 receipt path.
+All required commands executed for TASK 1. Analysis and transcripts saved to scratch. This identifies the root cause and the honest path forward for Gate 10.
