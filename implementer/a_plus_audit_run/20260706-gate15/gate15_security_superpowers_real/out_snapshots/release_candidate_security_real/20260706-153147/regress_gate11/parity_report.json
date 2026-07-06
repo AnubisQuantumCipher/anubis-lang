@@ -1,0 +1,89 @@
+{
+  "fixtures": [
+    {
+      "cpu": {
+        "bundle": "out/release_candidate_security_real/20260706-153147/regress_gate11/metal_parity_hello_cpu",
+        "image_id": "NO_REAL_ID_DERIVED",
+        "journal_sha256": "MISSING",
+        "lane_observed": "cpu",
+        "receipt_verify": "failed"
+      },
+      "metal": {
+        "bundle": "out/release_candidate_security_real/20260706-153147/regress_gate11/metal_parity_hello_metal",
+        "image_id": "NO_REAL_ID_DERIVED",
+        "journal_sha256": "MISSING",
+        "lane_observed": "unknown",
+        "receipt_verify": "failed"
+      },
+      "name": "metal_parity_hello",
+      "parity": {
+        "both_receipts_verify": false,
+        "image_id_match": true,
+        "journal_match": false,
+        "output_match": false
+      },
+      "verdict": "FAIL"
+    },
+    {
+      "cpu": {
+        "bundle": "out/release_candidate_security_real/20260706-153147/regress_gate11/metal_parity_arithmetic_cpu",
+        "image_id": "NO_REAL_ID_DERIVED",
+        "journal_sha256": "MISSING",
+        "lane_observed": "cpu",
+        "receipt_verify": "failed"
+      },
+      "metal": {
+        "bundle": "out/release_candidate_security_real/20260706-153147/regress_gate11/metal_parity_arithmetic_metal",
+        "image_id": "NO_REAL_ID_DERIVED",
+        "journal_sha256": "MISSING",
+        "lane_observed": "unknown",
+        "receipt_verify": "failed"
+      },
+      "name": "metal_parity_arithmetic",
+      "parity": {
+        "both_receipts_verify": false,
+        "image_id_match": true,
+        "journal_match": false,
+        "output_match": false
+      },
+      "verdict": "FAIL"
+    },
+    {
+      "cpu": {
+        "bundle": "out/release_candidate_security_real/20260706-153147/regress_gate11/metal_parity_symbolic_safe_cpu",
+        "image_id": "NO_REAL_ID_DERIVED",
+        "journal_sha256": "MISSING",
+        "lane_observed": "cpu",
+        "receipt_verify": "failed"
+      },
+      "metal": {
+        "bundle": "out/release_candidate_security_real/20260706-153147/regress_gate11/metal_parity_symbolic_safe_metal",
+        "image_id": "NO_REAL_ID_DERIVED",
+        "journal_sha256": "MISSING",
+        "lane_observed": "unknown",
+        "receipt_verify": "failed"
+      },
+      "name": "metal_parity_symbolic_safe",
+      "parity": {
+        "both_receipts_verify": false,
+        "image_id_match": true,
+        "journal_match": false,
+        "output_match": false
+      },
+      "verdict": "FAIL"
+    }
+  ],
+  "host": {
+    "apple_silicon": true,
+    "machine": "aarch64",
+    "os": "macos",
+    "tier2_metal_available": true
+  },
+  "overall_verdict": "FAIL",
+  "reference": {
+    "local_path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+    "repo": "https://github.com/AnubisQuantumCipher/risc0-metal-hybrid",
+    "vendor_path": "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im"
+  },
+  "schema_version": "1.0"
+}

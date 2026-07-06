@@ -1,0 +1,47 @@
+{
+  "imports": [],
+  "modules": [],
+  "functions": [
+    {
+      "name": "main",
+      "module": null,
+      "mode": "research",
+      "params": [],
+      "symbols": [
+        {
+          "name": "secret",
+          "ty": "tainted<string>",
+          "mode": "research",
+          "tainted": true,
+          "taint_source": "data",
+          "declassified": false,
+          "span": [
+            141,
+            175
+          ]
+        },
+        {
+          "name": "public",
+          "ty": null,
+          "mode": "research",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": true,
+          "span": [
+            180,
+            229
+          ]
+        }
+      ],
+      "effects": [
+        "taint-propagate",
+        "declassify",
+        "sink:sink"
+      ],
+      "span": [
+        125,
+        249
+      ]
+    }
+  ]
+}

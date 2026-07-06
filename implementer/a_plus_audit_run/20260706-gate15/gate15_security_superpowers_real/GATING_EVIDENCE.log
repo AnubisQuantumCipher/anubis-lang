@@ -1,0 +1,18 @@
+GATING_EVIDENCE for Gate 15 A15 (real reproduction)
+Date: 2026-07-06
+Branch: a-plus-maturity/20260705-1649
+
+All commands below executed with fresh `anubis` from `cargo build --release -p anubis` or direct target/debug after edits.
+
+- safety-check: OK
+- runner 10/10 on real fixtures (a15_gate15_security_fixtures_real): jq confirmed PASS
+- safe reject: real ANUBIS_EFFECT_FORBIDDEN_IN_MODE + SARIF rule
+- poc: real ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+- fuzz parser: real report + security mode=fuzz + evidence
+- fuzz crash: real crashes + artifacts
+- bounty on real bundle: real md/json/scope
+- language fixtures (a15_): 25/25 PASS
+- RC with --include-security: executed, produced security_superpowers.json + fixtures inside (smoke note for metal-ref)
+- No bad sim labels in any copied real artifact dirs (only honest declarations or inside superseded)
+
+Tamper: verify_bundle run on several; hashes present.

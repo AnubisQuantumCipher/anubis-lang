@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/release_candidate_security_real/20260706-153147/security_fixtures/bounty_report_from_taint/evidence-20260706-193305-research",
+  "check_error": null,
+  "source_hash": "110dafae9e0d4e91de240419dc62719865e335bfd1ad556722b7a15840c75a10",
+  "verdict": "PASS"
+}

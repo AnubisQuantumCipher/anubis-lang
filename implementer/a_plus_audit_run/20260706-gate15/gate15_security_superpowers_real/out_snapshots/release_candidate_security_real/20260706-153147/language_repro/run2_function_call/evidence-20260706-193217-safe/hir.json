@@ -1,0 +1,62 @@
+{
+  "functions": [
+    {
+      "effects": [],
+      "mode": "safe",
+      "module": null,
+      "name": "add",
+      "params": [
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "a",
+          "span": null,
+          "taint_source": null,
+          "tainted": false,
+          "ty": "u32"
+        },
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "b",
+          "span": null,
+          "taint_source": null,
+          "tainted": false,
+          "ty": "u32"
+        }
+      ],
+      "span": [
+        50,
+        101
+      ],
+      "symbols": []
+    },
+    {
+      "effects": [],
+      "mode": "safe",
+      "module": null,
+      "name": "main",
+      "params": [],
+      "span": [
+        102,
+        138
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "z",
+          "span": [
+            118,
+            136
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

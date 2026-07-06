@@ -1,0 +1,8 @@
+{
+  "authorization_status": "missing",
+  "note": "real extraction from bundle; no simulated",
+  "schema": "1.0",
+  "scope_status": "missing",
+  "security": null,
+  "verdict": "REAL"
+}

@@ -1,0 +1,11 @@
+step	status	note
+quarantine	complete	moved old non-real + sim-labeled to superseded; greps clean outside
+runner_10_10	complete	real 10/10 from scripts/run_security_fixtures.sh on _real out
+attrs_middle	complete	parser preserves @* with args; mode+auth flow to analysis
+sarif_evidence	complete	real ANUBIS_* rules in checks.sarif; security block in bundles
+fuzz_v1	complete	real CLI output + security block
+bounty	complete	real extraction from real bundle
+rc_security	complete	real run of build_release_candidate --include-security (documented smoke for missing metal-ref)
+preserve_gates	complete	lang fixtures/repro/safety/fmt/build executed; security additive
+a15_repro	complete	exact commands run; artifacts copied to this dir only fresh
+final_verdict	YES	No simulated artifacts used: YES (first line)
