@@ -1,8 +1,8 @@
 # Bug Bounty Report (real)
 
-Bundle: out/a15_gate15_safe_shell_reject_real/evidence-20260706-193900-safe
+Bundle: out/a15_gate15_safe_shell_reject_real/evidence-20260706-193557-safe
 
-**Security:** Some(Object {"mode": String("safe"), "note": String("Gate 15 security superpowers - attributes and effects recorded in logs/checks")})
+**Security:** None
 
 **authorization_status:** missing
 **scope_status:** missing

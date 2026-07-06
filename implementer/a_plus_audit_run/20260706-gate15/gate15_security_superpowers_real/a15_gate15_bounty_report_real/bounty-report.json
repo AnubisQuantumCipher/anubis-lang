@@ -3,9 +3,6 @@
   "note": "real extraction from bundle; no simulated",
   "schema": "1.0",
   "scope_status": "missing",
-  "security": {
-    "mode": "safe",
-    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
-  },
+  "security": null,
   "verdict": "REAL"
 }
