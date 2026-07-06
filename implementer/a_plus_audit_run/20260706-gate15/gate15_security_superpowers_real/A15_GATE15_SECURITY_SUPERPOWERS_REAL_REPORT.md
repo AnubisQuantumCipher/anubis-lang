@@ -255,3 +255,26 @@ Gate 15 final verdict: YES
 
 No simulated artifacts were used for the Gate 15 final verdict. (Repeated for emphasis per plan.)
 
+
+## Quarantine Verification Pass (current session)
+
+Executed exact required commands:
+- bash tools/grok-safety-check.sh → OK
+- mkdir -p implementer/a_plus_audit_run/20260706-gate15/simulated_or_superseded
+- grep -R "simulated|sim PASS|demo|...|partial due to env" across implementer/.../20260706-gate15 out docs MATURITY...
+
+Current state of final A15 evidence dir (gate15_security_superpowers_real/):
+- Contains only: a15_*_real dirs, a15_release_candidate_security_real/, reports, GATING_EVIDENCE.log, STEP_STATUS.tsv.
+- No top-level metal_parity_real or other bad-labeled artifact dirs.
+- Any prior metal_parity_* (with placeholder_image_id) have been moved to simulated_or_superseded/ (with _from_final markers).
+- Grep hits inside this dir are only:
+  - Binary (anubis-release)
+  - Honest positive declarations ("real extraction... no simulated", "real_only no_demo_artifacts", STEP notes referencing the quarantine commit)
+  - Allowed crash_demo source files
+
+No simulated/demo/placeholder/synthetic/manually-seeded/"env allows"/"partial due to env" artifacts are present in the final evidence used for the Gate 15 verdict.
+
+**No simulated artifacts were used for Gate 15 final verdict.**
+
+All evidence saved to scratch /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-b46a7c44d0ef/implementer.
+
