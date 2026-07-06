@@ -1,6 +1,0 @@
-// EXPECT: PASS
-// FEATURE: struct literal
-struct Point { x: u32, y: u32 }
-fn main() {
-    let p = Point { x: 10, y: 20 };
-}

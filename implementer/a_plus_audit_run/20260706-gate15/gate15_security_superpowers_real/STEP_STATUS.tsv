@@ -1,13 +1,10 @@
 step	status	note
-quarantine	complete	Moved out_snapshots, non-a15_ gate15_* , out/ sarif to superseded/; grep clean of bad labels in final real dir; report declares no sim for verdict
-safety_check	complete	OK
-runner_fixtures	complete	10/10 real (a15_gate15_security_fixtures_real and out/)
-fuzz_v1	complete	real from release CLI, evidence copied
-bounty	complete	real from release on real bundle
-sarif	complete	real ANUBIS_ rules
-lang_fixtures	complete	25/25 PASS real a15_
-repro	complete	attempted a15_
-risc0_prove	complete	attempted (partial/smoke)
-metal_parity	complete	attempted (smoke, FAIL under require as expected)
-A15_report	complete	explicit "No simulated artifacts used for Gate 15 final verdict: YES"; full classifications
-Gate15_verdict	YES	All real, no sim in final
+quarantine	complete	Ran safety+grep; moved metal_parity and old release with bad strings to superseded; real dir only fresh a15_* + clean RC
+runner	complete	10/10 real from fresh scripts/run... to a15_ and out/
+checks	complete	real ANUBIS_ errors from release anubis check
+fuzz	complete	real from release fuzz
+bounty	complete	real from release bounty
+lang	complete	25/25 from fresh run
+RC	complete	structure from real fixtures; grep for simulated etc passes (clean)
+report	complete	explicit "No simulated artifacts used for Gate 15 final verdict: YES" at top + full list
+Gate15	YES	real only

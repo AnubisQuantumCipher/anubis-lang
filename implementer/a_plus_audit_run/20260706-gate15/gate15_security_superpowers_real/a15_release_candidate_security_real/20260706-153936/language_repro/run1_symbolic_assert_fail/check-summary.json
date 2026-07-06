@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/a15_release_candidate_security_real/20260706-153936/language_repro/run1_symbolic_assert_fail/evidence-20260706-194020-safe",
-  "check_error": null,
-  "source_hash": "01c7b90c4d2ee27ef57809ff0538aa35a93791ed2ec08fae28104c968a1a9d18",
-  "verdict": "FAIL"
-}

@@ -1,3 +1,0 @@
-check input: tests/fixtures/language_core/function_call.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

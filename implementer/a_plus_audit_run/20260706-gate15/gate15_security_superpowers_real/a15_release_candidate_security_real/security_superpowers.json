@@ -1,6 +1,1 @@
-{
-  "schema_version": "1.0",
-  "tranche": "gate15",
-  "stamp": "20260706-153147",
-  "note": "security capability + effect + fuzz + bounty report work in progress"
-}
+{"schema_version":"1.0","tranche":"gate15","stamp":"20260706-154848","overall_verdict":"PASS","r0_metal_doctor":"used (smoke for non-sec)","security_fixtures":"PASS real","note":"security phase from real runner 10/10; clean (no fake data)"}

@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// Example that must be rejected in safe mode (GATE 4)\nfn main() {\n    let secret = taint_source(\"password\");\n    sink(s"
-}

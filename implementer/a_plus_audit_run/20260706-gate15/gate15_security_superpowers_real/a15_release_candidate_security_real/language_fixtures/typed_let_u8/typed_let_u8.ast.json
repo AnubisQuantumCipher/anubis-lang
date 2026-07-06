@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: PASS\n// FEATURE: typed let u8\nfn main() {\n    let b: u8 = 7;\n}\n"
-}

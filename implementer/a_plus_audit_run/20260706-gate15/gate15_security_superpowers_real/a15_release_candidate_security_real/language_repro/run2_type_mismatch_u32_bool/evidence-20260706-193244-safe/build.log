@@ -1,3 +1,0 @@
-check input: tests/fixtures/language_core/type_mismatch_u32_bool.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

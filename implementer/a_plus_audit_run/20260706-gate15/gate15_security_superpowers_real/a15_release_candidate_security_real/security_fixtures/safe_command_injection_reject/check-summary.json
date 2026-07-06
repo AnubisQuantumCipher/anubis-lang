@@ -1,6 +1,6 @@
 {
   "bounty_ready": false,
-  "bundle": "out/release_candidate_security_real/20260706-153147/security_fixtures/safe_command_injection_reject/evidence-20260706-193306-safe",
+  "bundle": "out/a15_gate15_security_fixtures_real/safe_command_injection_reject/evidence-20260706-193554-safe",
   "check_error": "ANUBIS_EFFECT_FORBIDDEN_IN_MODE: safe mode shell/exec effect is forbidden (use @research/@poc with authorization)",
   "source_hash": "dc036044c29c1fe81e71590fa303b47cfc0159e848cd0eed405f24ed97d697bb",
   "verdict": "FAIL"
