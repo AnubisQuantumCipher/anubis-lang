@@ -296,3 +296,12 @@ Current FINAL real evidence dir state:
 
 All test output and artifacts from this pass saved to scratch /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-b46a7c44d0ef/implementer.
 
+
+## Verification after current quarantine pass (TASK 1)
+- Exact commands re-run: bash tools/grok-safety-check.sh (OK), mkdir, full grep (output saved to scratch).
+- FINAL real dir ls: only a15_*_real + reports/logs (no stray simulated/demo/placeholder dirs).
+- Grep inside FINAL: only binary or honest declarations ("no simulated", "real_only no_demo_artifacts").
+- All previous bad items (metal_parity with placeholder_image_id, old sim reports) are in simulated_or_superseded/.
+- **No simulated artifacts were used for Gate 15 final verdict.**
+
+Evidence (grep, ls, report) saved to scratch.
