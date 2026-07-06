@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// EXPECT: PASS\n\n@proof(backend: \"risc0\", lane: \"cpu\", authorization: \"local-proof\")\nfn main() {\n    // proof mode for p"
+}

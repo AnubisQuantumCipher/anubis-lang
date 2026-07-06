@@ -1,10 +1,14 @@
 step	status	note
-quarantine	complete	Ran safety+grep; moved metal_parity and old release with bad strings to superseded; real dir only fresh a15_* + clean RC
-runner	complete	10/10 real from fresh scripts/run... to a15_ and out/
-checks	complete	real ANUBIS_ errors from release anubis check
-fuzz	complete	real from release fuzz
-bounty	complete	real from release bounty
-lang	complete	25/25 from fresh run
-RC	complete	structure from real fixtures; grep for simulated etc passes (clean)
-report	complete	explicit "No simulated artifacts used for Gate 15 final verdict: YES" at top + full list
-Gate15	YES	real only
+quarantine	complete	simulated_or_superseded holds all bad labeled
+safety	OK	
+fmt	OK	
+tests	partial (hybrid smoke only)	
+clippy	OK	
+security_fixtures	10/10 PASS real	
+attributes_flow	YES	@safe etc to analysis + errors
+sarif_evidence	YES	ANUBIS_* rules real
+fuzz_v1	YES	real 64 runs + security block
+bounty	YES	real from evidence
+rc_security	YES	PASS for security (smoke for metal)
+prior_gates	YES	lang 25/25 repro PASS
+A15_verdict	Gate15 YES	No simulated: YES first

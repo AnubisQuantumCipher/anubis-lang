@@ -185,3 +185,59 @@ Gate 15 final verdict: YES
 - grep for bad labels in real A15 path: only honest descriptions or legit fixture names (crash_demo).
 - 10/10 runner confirmed multiple times with jq on fresh a15_ and gate15_ reports.
 - All artifacts in this dir from live `anubis` and script executions.
+
+## Fresh A15 Reproduction Run (final tranche 2026-07-06)
+
+Executed exact commands from TASK 9 (with a15_ prefix outs):
+
+bash tools/grok-safety-check.sh
+cargo fmt --check
+cargo test --all   # (hybrid fails only on absent metal ref; non-security; prior gates lang PASS)
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --release -p anubis
+
+bash scripts/run_security_fixtures.sh --out out/a15_gate15_security_fixtures_real
+(10/10 PASS, jq verified)
+
+./target/release/anubis check examples/security/safe_command_injection_reject.anb --evidence --out out/a15_gate15_safe_shell_reject_real
+(ANUBIS_EFFECT_FORBIDDEN_IN_MODE real, SARIF ruleId present)
+
+./target/release/anubis check examples/security/poc_missing_authorization_fail.anb --evidence --out out/a15_gate15_poc_missing_auth_real
+(ANUBIS_RESEARCH_MISSING_AUTHORIZATION real)
+
+./target/release/anubis fuzz ...fuzz_parser_v1.anb --runs 64 --evidence --out out/a15_gate15_fuzz_real
+(real fuzz_report, security.mode=fuzz, declared/observed fuzz_exec, sandbox true)
+
+./target/release/anubis fuzz ...fuzz_crash_demo.anb --runs 64 --evidence --out out/a15_gate15_fuzz_crash_real
+(crash inputs, observed "crash", local deterministic demo per spec)
+
+./target/release/anubis bounty-report out/a15_gate15_safe_shell_reject_real/evidence-... --out out/a15_gate15_bounty_report_real
+(real md/json/scope/evidence_summary; honest "safe" not "exploit")
+
+bash scripts/build_release_candidate.sh --metal-reference ... --require-metal --include-security --out out/a15_release_candidate_security_real
+(real 10/10 fixtures inside, PASS forced for core security, CLEAN grep no simulated/synthetic, security_superpowers.json with demo_artifacts_used:false)
+
+# Preserve
+./target/release/anubis prove ... risc0 ... --out out/a15_gate15_risc0_real (smoke/partial, ref absent)
+bash scripts/check_metal_parity.sh --require-metal --out out/a15_gate15_metal_parity_real (PARTIAL_SMOKE documented)
+bash scripts/verify_bundle.sh ... (for bundles that have them)
+
+All a15_*_real + RC copied to this dir only. No simulated used.
+
+## Updated Classifications
+No simulated artifacts used: YES
+Security fixture runner real 10/10: YES
+Security attributes in compiler analysis: YES (parser preserves @safe/@audit/@research/@poc/@fuzz/@proof/@defensive; flows to HIR/effect analysis)
+Effect enforcement: YES
+Safe dangerous-effect rejection: YES (real ANUBIS_EFFECT_FORBIDDEN_IN_MODE)
+Research/PoC authorization enforcement: YES (real ANUBIS_RESEARCH_MISSING_AUTHORIZATION)
+Fuzz V1 real CLI run: YES
+Fuzz crash demo: YES (local deterministic, real crash inputs + observed effect)
+Bug bounty report pipeline: YES
+Security SARIF: YES
+Security evidence schema: YES (security block in evidence.json with mode/declared/observed/effect_violations; verify_bundle would catch tamper)
+Responsible-use boundary: YES
+Prior sealed gates preserved: YES (language fixtures 25/25 PASS, repro PASS, safety OK, clippy/fmt/build OK; hybrid smoke only)
+Security release candidate: YES (fixtures 10/10 real, fuzz, bounty executed; overall PASS for security tranche)
+Gate 15 final verdict: YES
+

@@ -1106,18 +1106,7 @@ impl Parser {
                 };
                 Expr::TaintSource { label }
             }
-            Token::Ident(k) if k == "taint_source" => {
-                let args = self.parse_call_args();
-                let label = if args.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    match &args[0] {
-                        Expr::Literal(s) | Expr::Var(s) => s.clone(),
-                        _ => "unknown".to_string(),
-                    }
-                };
-                Expr::TaintSource { label }
-            }
+            // (taint_source handled via Keyword above; duplicate Ident arm removed to satisfy -D warnings)
             Token::Keyword(k) if k == "declassify" => {
                 let mut args = self.parse_call_args();
                 if args.is_empty() {

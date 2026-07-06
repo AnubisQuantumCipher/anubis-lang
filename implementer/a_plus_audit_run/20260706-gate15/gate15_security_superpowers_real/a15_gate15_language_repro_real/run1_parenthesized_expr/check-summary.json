@@ -1,6 +1,6 @@
 {
   "bounty_ready": true,
-  "bundle": "out/a15_gate15_language_repro_real/run1_parenthesized_expr/evidence-20260706-194557-safe",
+  "bundle": "out/a15_gate15_language_repro_real/run1_parenthesized_expr/evidence-20260706-195837-safe",
   "check_error": null,
   "source_hash": "adfdad1a3bf68f48c29b7f8f56b9ad7eac5f4eb8689eb98c4455c99e3a448486",
   "verdict": "PASS"

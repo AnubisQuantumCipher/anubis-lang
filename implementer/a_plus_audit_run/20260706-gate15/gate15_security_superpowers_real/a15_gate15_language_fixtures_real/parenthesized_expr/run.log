@@ -1,7 +1,6 @@
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on build directory
 warning: unreachable pattern
     --> compiler/src/frontend/mod.rs:1109:13
      |
@@ -63,6 +62,6 @@ warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anu
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
      Running `target/debug/anubis check tests/fixtures/language_core/parenthesized_expr.anb --evidence --out out/a15_gate15_language_fixtures_real/parenthesized_expr`
 anubis check tests/fixtures/language_core/parenthesized_expr.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/parenthesized_expr/evidence-20260706-194541-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/parenthesized_expr/evidence-20260706-195809-safe
 verdict: PASS
 check passed (no policy violations)

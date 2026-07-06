@@ -1,0 +1,4 @@
+fuzz input: examples/security/fuzz_crash_demo.anb
+sandbox: true
+effects: [fuzz_exec]
+crashes: 64

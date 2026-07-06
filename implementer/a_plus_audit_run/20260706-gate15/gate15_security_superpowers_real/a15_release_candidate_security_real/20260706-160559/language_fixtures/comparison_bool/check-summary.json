@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/a15_release_candidate_security_real/20260706-160559/language_fixtures/comparison_bool/evidence-20260706-200601-safe",
+  "check_error": null,
+  "source_hash": "c3f240c1a79384391d36c8bdf1104e3833e09de260cfc47b4fb6d9461865a086",
+  "verdict": "PASS"
+}

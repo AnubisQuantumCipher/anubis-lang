@@ -1,70 +1,11 @@
 === Gate 11 Metal Parity Check ===
-Mon Jul  6 15:54:57 EDT 2026
+Mon Jul  6 16:07:16 EDT 2026
 host: Darwin MacBook-Pro.local 25.0.0 Darwin Kernel Version 25.0.0: Mon Aug 25 21:17:54 PDT 2025; root:xnu-12377.1.9~3/RELEASE_ARM64_T6041 arm64
 require_metal=1
 reference: /Users/sicarii/Desktop/metal-hybrid-prover
 === Fixture: metal_parity_hello ===
 Prove CPU (R0_DISABLE_METAL=1 --lane cpu)...
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-   Compiling anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
-    Finished `release` profile [optimized] target(s) in 1.54s
+    Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis prove examples/metal_parity_hello.anb --backend risc0 --lane cpu --evidence --out out/a15_gate15_metal_parity_real/metal_parity_hello_cpu`
 anubis prove examples/metal_parity_hello.anb --backend risc0 --lane cpu (evidence=true)
 lowered artifact: out/a15_gate15_metal_parity_real/metal_parity_hello_cpu/risc0_receipt
@@ -80,68 +21,10 @@ Caused by:
 Caused by:
   No such file or directory (os error 2)
 risc0 sidecars (REAL derived ID: NO_REAL_ID_DERIVED)
-evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_hello_cpu/evidence-20260706-195459-safe
+evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_hello_cpu/evidence-20260706-200716-safe
 verdict: FAIL
 prove complete
 Prove Metal-hybrid (no R0_DISABLE --lane metal-hybrid)...
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis prove examples/metal_parity_hello.anb --backend risc0 --lane metal-hybrid --evidence --out out/a15_gate15_metal_parity_real/metal_parity_hello_metal`
 anubis prove examples/metal_parity_hello.anb --backend risc0 --lane metal-hybrid (evidence=true)
@@ -158,129 +41,13 @@ Caused by:
 Caused by:
   No such file or directory (os error 2)
 risc0 sidecars (REAL derived ID: NO_REAL_ID_DERIVED)
-evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_hello_metal/evidence-20260706-195459-safe
+evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_hello_metal/evidence-20260706-200716-safe
 verdict: FAIL
 prove complete
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_hello_cpu/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_hello_cpu/backend/risc0/image_id.txt`
 anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_hello_cpu/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_hello_cpu/backend/risc0/image_id.txt
 Error: receipt verify FAILED: placeholder or empty image ID
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_hello_metal/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_hello_metal/backend/risc0/image_id.txt`
 anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_hello_metal/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_hello_metal/backend/risc0/image_id.txt
@@ -289,64 +56,6 @@ ERROR: missing extracted journal.bin for metal_parity_hello (CPU or Metal). Real
 Fixture metal_parity_hello verdict=FAIL cpu_lane=cpu metal_lane=unknown
 === Fixture: metal_parity_arithmetic ===
 Prove CPU (R0_DISABLE_METAL=1 --lane cpu)...
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.02s
      Running `target/release/anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane cpu --evidence --out out/a15_gate15_metal_parity_real/metal_parity_arithmetic_cpu`
 anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane cpu (evidence=true)
@@ -363,68 +72,10 @@ Caused by:
 Caused by:
   No such file or directory (os error 2)
 risc0 sidecars (REAL derived ID: NO_REAL_ID_DERIVED)
-evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_arithmetic_cpu/evidence-20260706-195500-safe
+evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_arithmetic_cpu/evidence-20260706-200717-safe
 verdict: FAIL
 prove complete
 Prove Metal-hybrid (no R0_DISABLE --lane metal-hybrid)...
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane metal-hybrid --evidence --out out/a15_gate15_metal_parity_real/metal_parity_arithmetic_metal`
 anubis prove examples/metal_parity_arithmetic.anb --backend risc0 --lane metal-hybrid (evidence=true)
@@ -441,129 +92,13 @@ Caused by:
 Caused by:
   No such file or directory (os error 2)
 risc0 sidecars (REAL derived ID: NO_REAL_ID_DERIVED)
-evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_arithmetic_metal/evidence-20260706-195501-safe
+evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_arithmetic_metal/evidence-20260706-200718-safe
 verdict: FAIL
 prove complete
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_arithmetic_cpu/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_arithmetic_cpu/backend/risc0/image_id.txt`
 anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_arithmetic_cpu/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_arithmetic_cpu/backend/risc0/image_id.txt
 Error: receipt verify FAILED: placeholder or empty image ID
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_arithmetic_metal/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_arithmetic_metal/backend/risc0/image_id.txt`
 anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_arithmetic_metal/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_arithmetic_metal/backend/risc0/image_id.txt
@@ -572,65 +107,7 @@ ERROR: missing extracted journal.bin for metal_parity_arithmetic (CPU or Metal).
 Fixture metal_parity_arithmetic verdict=FAIL cpu_lane=cpu metal_lane=unknown
 === Fixture: metal_parity_symbolic_safe ===
 Prove CPU (R0_DISABLE_METAL=1 --lane cpu)...
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
-    Finished `release` profile [optimized] target(s) in 0.03s
+    Finished `release` profile [optimized] target(s) in 0.02s
      Running `target/release/anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane cpu --evidence --out out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu`
 anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane cpu (evidence=true)
 lowered artifact: out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu/risc0_receipt
@@ -646,68 +123,10 @@ Caused by:
 Caused by:
   No such file or directory (os error 2)
 risc0 sidecars (REAL derived ID: NO_REAL_ID_DERIVED)
-evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu/evidence-20260706-195502-safe
+evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu/evidence-20260706-200719-safe
 verdict: FAIL
 prove complete
 Prove Metal-hybrid (no R0_DISABLE --lane metal-hybrid)...
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane metal-hybrid --evidence --out out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_metal`
 anubis prove examples/metal_parity_symbolic_safe.anb --backend risc0 --lane metal-hybrid (evidence=true)
@@ -724,129 +143,13 @@ Caused by:
 Caused by:
   No such file or directory (os error 2)
 risc0 sidecars (REAL derived ID: NO_REAL_ID_DERIVED)
-evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_metal/evidence-20260706-195502-safe
+evidence bundle: out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_metal/evidence-20260706-200719-safe
 verdict: FAIL
 prove complete
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu/backend/risc0/image_id.txt`
 anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_cpu/backend/risc0/image_id.txt
 Error: receipt verify FAILED: placeholder or empty image ID
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.03s
      Running `target/release/anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_metal/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_metal/backend/risc0/image_id.txt`
 anubis verify-receipt --receipt out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_metal/backend/risc0/receipt.bin --image-id out/a15_gate15_metal_parity_real/metal_parity_symbolic_safe_metal/backend/risc0/image_id.txt
@@ -946,64 +249,6 @@ Fixture metal_parity_symbolic_safe verdict=FAIL cpu_lane=cpu metal_lane=unknown
   "overall_verdict": "PARTIAL"
 }
 Canonicalizing report via gate11-metal-parity subcommand...
-warning: unreachable pattern
-    --> compiler/src/frontend/mod.rs:1109:13
-     |
-1022 |             Token::Ident(name) => {
-     |             ------------------ matches all the relevant values
-...
-1109 |             Token::Ident(k) if k == "taint_source" => {
-     |             ^^^^^^^^^^^^^^^ no value can reach this
-     |
-     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
-
-warning: `anubis-compiler` (lib) generated 1 warning
-warning: unreachable statement
-    --> tools/anubis/src/main.rs:1374:5
-     |
-1372 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-     |       ------------- any code following this expression is unreachable
-1373 |                      // (original risc0 code elided for compile)
-1374 | /     if let Some(parent) = receipt.parent() {
-1375 | |         std::fs::create_dir_all(parent)?;
-1376 | |     }
-     | |_____^ unreachable statement
-     |
-     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `id_words`
-   --> tools/anubis/src/main.rs:900:17
-    |
-900 |             let id_words = parse_image_id_words(&id_data)
-    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `journal_bytes`
-   --> tools/anubis/src/main.rs:914:17
-    |
-914 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
-
-warning: unused variable: `journal_sha`
-   --> tools/anubis/src/main.rs:915:17
-    |
-915 |             let journal_sha = "stub-sha256-for-gate15".to_string();
-    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
-
-warning: unused variable: `elf_bytes`
-    --> tools/anubis/src/main.rs:1359:9
-     |
-1359 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
-     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
-
-warning: unused variable: `id_words`
-    --> tools/anubis/src/main.rs:1361:9
-     |
-1361 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
-     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
-
-warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
     Finished `release` profile [optimized] target(s) in 0.02s
      Running `target/release/anubis gate11-metal-parity --cpu out/a15_gate15_metal_parity_real --metal out/a15_gate15_metal_parity_real --out out/a15_gate15_metal_parity_real --require-metal`
 gate11-metal-parity --cpu out/a15_gate15_metal_parity_real --metal out/a15_gate15_metal_parity_real --out out/a15_gate15_metal_parity_real (require_metal=true)

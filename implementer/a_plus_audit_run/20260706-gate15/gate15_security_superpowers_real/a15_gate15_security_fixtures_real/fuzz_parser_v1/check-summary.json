@@ -1,6 +1,6 @@
 {
   "bounty_ready": true,
-  "bundle": "out/a15_gate15_security_fixtures_real/fuzz_parser_v1/evidence-20260706-195117-research",
+  "bundle": "out/a15_gate15_security_fixtures_real/fuzz_parser_v1/evidence-20260706-195653-research",
   "check_error": null,
   "source_hash": "dbbd6fdbe2c8716380204bcdf8a7ae3468f6c87d4951b0ee0371d2ac9e884af0",
   "verdict": "PASS"

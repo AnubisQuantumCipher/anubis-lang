@@ -1,0 +1,3 @@
+check input: tests/fixtures/language_core/hello_minimal.anb
+mode: Safe
+taint pass: applied (if typecheck succeeded)

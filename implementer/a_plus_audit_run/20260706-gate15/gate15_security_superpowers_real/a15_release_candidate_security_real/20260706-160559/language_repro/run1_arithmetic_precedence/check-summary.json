@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/a15_release_candidate_security_real/20260706-160559/language_repro/run1_arithmetic_precedence/evidence-20260706-200610-safe",
+  "check_error": null,
+  "source_hash": "de0999a4e6485bcc4213a54d662612f3f32e5929e0bac9686553f06e2e5a0808",
+  "verdict": "PASS"
+}

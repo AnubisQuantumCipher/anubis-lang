@@ -1,0 +1,180 @@
+{
+  "runs": [
+    {
+      "fixture": "arithmetic_precedence",
+      "source_hash": "de0999a4e6485bcc4213a54d662612f3f32e5929e0bac9686553f06e2e5a0808",
+      "summary1": "5d3b9018bfc65c7940de193cf5e76641ea4ae69313e8b84093eeef195dcb7e95",
+      "summary2": "f6ee1c0caffbf071c97845df0eac99b90eb6f483f82758cab0c66edb45cb8dd8",
+      "match": "true"
+    },
+    {
+      "fixture": "attribute_safe_parse",
+      "source_hash": "fecde23c324d8760dc7cf79ea2696022efe9b9d30117ecd7fa841c950a687fa0",
+      "summary1": "035e744a91540cf642ff8c717521fca1e30803d218980482779a4ab8ee362f80",
+      "summary2": "ddb9c331a2901d97339bb8337320fc09a8ae7f22a5f1e1714a30faf58713814d",
+      "match": "true"
+    },
+    {
+      "fixture": "comments_line",
+      "source_hash": "5893980247a2971632a98bbba803acfb91b4aff0dec9d8e5fa2be7750e2640aa",
+      "summary1": "9c67c203fc1f747b50f662b55e82a874345bfd4ea2f5b00e10e6da60245eca71",
+      "summary2": "40aba725b26697563c34a4de58db3b3f484ddf44afe81904cf94c613ce23bce5",
+      "match": "true"
+    },
+    {
+      "fixture": "comparison_bool",
+      "source_hash": "c3f240c1a79384391d36c8bdf1104e3833e09de260cfc47b4fb6d9461865a086",
+      "summary1": "1a5e1c4a40ecb450a6ad2a09fcd2cfd71847e27492b770443d0ea83a9fa4e199",
+      "summary2": "80c367583d3045f1265a3fa066ff882526ef1c90070098525262712376b08b4b",
+      "match": "true"
+    },
+    {
+      "fixture": "declassify_missing_reason",
+      "source_hash": "c43067922feb6c549d5f4110e68ef2f6e614422fd3c0324a12f8ca62e736bdee",
+      "summary1": "6b19fdabaccd4b0df2dbd039be27e5224556c5918197ed737efb9e561062d295",
+      "summary2": "544073d632b10877de45b8d717fcf2e7ae5861a48cc627e43c59bc187563e7e9",
+      "match": "true"
+    },
+    {
+      "fixture": "declassify_policy_pass",
+      "source_hash": "d75e993ec75a716d3217b962ffe279852110fa5abca82005a7f1627e0f8a726f",
+      "summary1": "97fe7fc6f5cbf0014d4b60ee705ab017e52f5e7fef20b6f6ca488da52c5e99a9",
+      "summary2": "cbefb227f0368e6660645bfa7cece7da119caf8c8fecfeeffd8a63c5b65d159f",
+      "match": "true"
+    },
+    {
+      "fixture": "function_call",
+      "source_hash": "bbb0a60a47bf935a4ff68c4bf4b89aee344f1a277234fc1bcda2ccfc76ff9ab4",
+      "summary1": "9e30dbffbca76ccf9143b242530fb7df825e2e22f4b0fa2fbb12b774018fb5d3",
+      "summary2": "a89a51eee46d93daacf41a84350d83edd5f4d533269347059f0445a09583e9af",
+      "match": "true"
+    },
+    {
+      "fixture": "function_return_u32",
+      "source_hash": "15ce80fba0984c3c20a13b8000351cfad2f7097fb4da7b88f2d5bdd75e692c30",
+      "summary1": "aee47391b0f3a7f4c0de48aee0cc0bc839933dcc492e3a066cee5e0cdc1814d8",
+      "summary2": "b8ccbcd14cf91b136ce53dabc0996d2971eb2a572e7773ad2c13521376a4ff65",
+      "match": "true"
+    },
+    {
+      "fixture": "hello_minimal",
+      "source_hash": "a3eaddbae3861907e74da7cd13de0c52e1f04cfc31b189fda463f00863617b70",
+      "summary1": "3dad32ed54254d60bbfdd809849de69759bfbc4a0ea1af73e93a71d06dbb3a1d",
+      "summary2": "617316985590e1b63e79273f917a983285f22277fbcca12b543bc3cf7de50bee",
+      "match": "true"
+    },
+    {
+      "fixture": "if_else",
+      "source_hash": "786a05e4952a07fa28814edeccd7088b3d54a70281e3f132169d88e2358d3896",
+      "summary1": "fbd94da0a15ece8de169025665529a3e6dc2d289435a40d0df20c902a5105f04",
+      "summary2": "4ef06f6bc0466462add44f69f81f17ccdfd7a8c47d9cff9459621514d01762ab",
+      "match": "true"
+    },
+    {
+      "fixture": "metal_parity_minimal",
+      "source_hash": "000e356aecf0900290735166df52b875baaac43350d8f8d059287dda4fa4d4fa",
+      "summary1": "9b65595fd35bfca3cdf6f341d95a147d43f738d74086c1438d9bf87f8e5c92f2",
+      "summary2": "9761be192ef8a61748cffc5ba187efca91b8d426df1d40ce825bd449666105e1",
+      "match": "true"
+    },
+    {
+      "fixture": "missing_semicolon",
+      "source_hash": "1fb1f2ba5f57b588c67eb3c6583323b9b7449bec5253ea92bce05fc7ff45f1b3",
+      "summary1": "487df138d785764b1f3972f57857022fa3c8c763ecbc45e63c57bd25b255d504",
+      "summary2": "5ecf5c7d386e14aa8c2113e96dba5d0257dbae4e11516afcc06bf5ce9943709c",
+      "match": "true"
+    },
+    {
+      "fixture": "parenthesized_expr",
+      "source_hash": "adfdad1a3bf68f48c29b7f8f56b9ad7eac5f4eb8689eb98c4455c99e3a448486",
+      "summary1": "ec4ba1175830973e2ba3ba0eebf8995c658c4990a66bc18ac82e3bbe8b81bd11",
+      "summary2": "8f81a31271d4f38fa6032548b6e04aa2b1f85151cd3608814caa67e49dab8c55",
+      "match": "true"
+    },
+    {
+      "fixture": "risc0_minimal_pass",
+      "source_hash": "7be594f761474f7f2531405090545cb80c26e27d32a8b19022c058e75aa883fc",
+      "summary1": "b38864d7389c410307c775cd8318c8437bf76ffb3c59f6ae6185bb32b8c33d06",
+      "summary2": "6a47127eed770bb44a67a41a7f4cbe425c5533549d511bfc322eecb19c7edecb",
+      "match": "true"
+    },
+    {
+      "fixture": "struct_field_access",
+      "source_hash": "c2d02e0080481f353fdc0a47fd64c5148365243010fef593b73a8adddaaba27e",
+      "summary1": "b9c8b557aec474dd7e464001fecabd191ed6394aeeff2e8c558615d93d1008e5",
+      "summary2": "28125d25427b6c6dda45528fc1c6049cb225ff5ae9644184cea7e270b782500f",
+      "match": "true"
+    },
+    {
+      "fixture": "struct_literal",
+      "source_hash": "fea379e054bd10263440d78190728397864ccbf259e976bed18b6a37ae2f9f4f",
+      "summary1": "64c6d040ffdbf76ce2bc121eee9262e6f4457b91218cf3aff3c38ad1284953bc",
+      "summary2": "07882da653c10905af5b9d3ed62d2e7c3976f5572cad1eb10ddea0e57058857d",
+      "match": "true"
+    },
+    {
+      "fixture": "symbolic_assert_fail",
+      "source_hash": "01c7b90c4d2ee27ef57809ff0538aa35a93791ed2ec08fae28104c968a1a9d18",
+      "summary1": "dec4e139cca4d704de9e1de007dce94450cc2fa7b918eeacae7603c7ad9134fc",
+      "summary2": "f3d101ef2eb6d4b8e1a59f3446b7e87d6730f95d46ba53546215db79bf194cea",
+      "match": "true"
+    },
+    {
+      "fixture": "symbolic_assert_pass",
+      "source_hash": "e19be2cba7c1cc7a1a7630cb4383bf061e5bb9a03e17bec6e08200c0df52e47e",
+      "summary1": "461bff5f755f17d6274ff109158af33573be67dbc9397ef29f451378bc44c78f",
+      "summary2": "0b4fe22fc337fee222b7a43e6f69b0c06dd6c4519af25f37871ccdaca2124528",
+      "match": "true"
+    },
+    {
+      "fixture": "taint_reject_safe",
+      "source_hash": "d5773b5b6045a266698ef65d3191ea07737005b8b3e6a0e0e641a5bb6926d701",
+      "summary1": "cceb4e2711722b56ec71cec1ee2a74722efb9511344066e4c0ef60d7458149d7",
+      "summary2": "177f7fdaed3ac9779036059e8ff747ce3268dfad7a1a018eb37ca61beb8c6e92",
+      "match": "true"
+    },
+    {
+      "fixture": "tainted_sink_without_declassify",
+      "source_hash": "f7ba7d7a8e839d672fec27f5fe59821619ab91932b7600891ee0d7300ff274f1",
+      "summary1": "116315a6d93e2467be24751f88d24e571ca7bb3b8c7955982585fa2727684ebc",
+      "summary2": "409c4970eae2249ff0e377d2e224fbb60df575cad955dcb6aac306400dc3972b",
+      "match": "true"
+    },
+    {
+      "fixture": "type_mismatch_u32_bool",
+      "source_hash": "48f2a89c2e12e4d0770a9f29b814578418e1d78fa8a5428d9fb14b779ba715ac",
+      "summary1": "be756138cefa70ae79938d3a0af7f9bcbb162aa4485296dd52cc048fbcdd26c3",
+      "summary2": "b16f80662b32dc1b6ef39127857a9a7f7975ead5f50b565a33ce47ea17ef1ca4",
+      "match": "true"
+    },
+    {
+      "fixture": "typed_let_u32",
+      "source_hash": "e14c089a305e6a8b487b3dd84a12077faff2003a2ef632cb77a80b0a9b60a03c",
+      "summary1": "79cf32aefce0536b70babb3d1c2a05af21d5d8535bc27805f0604dafceaf1e6e",
+      "summary2": "308f17a2aa5b6a13c87b9838183caaac6063813c5d3852630971c77aad55a861",
+      "match": "true"
+    },
+    {
+      "fixture": "typed_let_u8",
+      "source_hash": "d0a671008e0788b32be7e4e37b6d388303745a47f3f2e4065f709c44b1ace4d7",
+      "summary1": "da8228b26cb797d535df834f57d34181f6d6dd8cc0820bfd2929d583a11f94f0",
+      "summary2": "e67f1a2558b982be03a0d7b5133d8bb7bb85d93ccda2fd108b14f665cd700f0e",
+      "match": "true"
+    },
+    {
+      "fixture": "unknown_variable",
+      "source_hash": "34e44a2f7efa6658234df907c8caeacc65698e48fa082bfc501ba55e2cec06d1",
+      "summary1": "cfd28fdfc04920a56e5c3a1587e31d90b1372238f5357299a3335c96fa7140e2",
+      "summary2": "fc46f2e953b08f903b74f76d8a9249897ded2d41628758b3a9d24bbc1610fc27",
+      "match": "true"
+    },
+    {
+      "fixture": "while_loop_or_planned_skip",
+      "source_hash": "52328d3a9af54f8844ce57065103ffb1dcfffb1920fdaf9e0389de4693c5f0ea",
+      "summary1": "21685fc6af04aede1285aecbb7f1b9a5e339638028937aa801f40a828e9197ea",
+      "summary2": "b7e0df49a11b2af4c0d6716ee921ba4d52f32e1e580f365986f3c8d8d32d621f",
+      "match": "true"
+    }
+  ],
+  "overall_verdict": "PASS"
+}

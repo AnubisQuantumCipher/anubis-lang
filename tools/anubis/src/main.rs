@@ -897,7 +897,7 @@ fn main() {
             if receipt_data.is_empty() {
                 return Err(anyhow!("receipt verify FAILED: empty receipt"));
             }
-            let id_words = parse_image_id_words(&id_data)
+            let _id_words = parse_image_id_words(&id_data)
                 .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
 
             // Real call path (risc0-zkvm 3.0.5):
@@ -911,11 +911,6 @@ fn main() {
                 return Err(anyhow!("receipt verify FAILED: empty (stub)"));
             }
             println!("receipt.verify(ANUBIS_ID) STUBBED (risc0_zkvm not linked in Gate15 security build; use full env for real risc0 verify)");
-            let journal_bytes: &[u8] = b"stub-journal-for-security-build";
-            let journal_sha = "stub-sha256-for-gate15".to_string();
-
-            // Gate 11: extract and persist the actual journal bytes for mechanical comparison.
-            // The public output (journal) must match across CPU and Metal lanes for parity.
             let journal_bytes: &[u8] = b"stub-journal-bytes-for-gate15"; // stub, no verified in security build
             let journal_sha = {
                 let mut hasher = sha2::Sha256::new();
@@ -1356,9 +1351,9 @@ fn run_risc0_prove_child(
     // (complete vendored risc0-circuit-rv32im Metal HAL, patches, working prove paths,
     //  per-chip results, validation scripts). Align future risc0 prove child / default_prover
     //  setup with that reference instead of plain default_prover().
-    let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
+    let _elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
     let id_text = std::fs::read_to_string(image_id).map_err(|e| anyhow!("read image ID: {}", e))?;
-    let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
+    let _id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
     // Gate15 security build stub: risc0_zkvm not available (deps commented in Cargo.toml for check/fuzz paths).
     // Real impl lives in metal-hybrid-prover reference. Here we emit a dummy receipt so build succeeds.
     let forced_cpu = std::env::var("R0_DISABLE_METAL").is_ok();
@@ -1369,13 +1364,11 @@ fn run_risc0_prove_child(
         verify_log,
         format!("stub risc0 child lane_observed={}\n", lane_observed),
     )?;
-    return Ok(()); // early return stub; real risc0 code below is unreachable in this build
-                   // (original risc0 code elided for compile)
-    if let Some(parent) = receipt.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // (stub early-returned above; this tail is remnant of original risc0 child and is now unreachable)
-    Ok(())
+    Ok(()) // early return stub; real risc0 code below is unreachable in this build
+           // (original risc0 code elided for compile)
+           // if let Some(parent) = receipt.parent() { std::fs::create_dir_all(parent)?; }
+           // (stub early-returned above; this tail is remnant of original risc0 child and is now unreachable)
+           // Ok(())
 }
 
 fn first_mode(items: &[Item]) -> Option<Mode> {

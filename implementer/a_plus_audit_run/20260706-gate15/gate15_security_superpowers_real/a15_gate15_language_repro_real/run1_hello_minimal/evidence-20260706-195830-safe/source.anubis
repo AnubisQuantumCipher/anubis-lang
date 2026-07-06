@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// FEATURE: minimal fn + string literal + comment
+fn main() {
+    // Safe minimal hello
+    let msg = "hello";
+}

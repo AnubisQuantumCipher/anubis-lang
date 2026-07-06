@@ -1,7 +1,3 @@
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on build directory
 warning: unreachable pattern
     --> compiler/src/frontend/mod.rs:1109:13
      |
@@ -60,9 +56,9 @@ warning: unused variable: `id_words`
      |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
 
 warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
      Running `target/debug/anubis check tests/fixtures/language_core/type_mismatch_u32_bool.anb --evidence --out out/a15_gate15_language_fixtures_real/type_mismatch_u32_bool`
 anubis check tests/fixtures/language_core/type_mismatch_u32_bool.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/type_mismatch_u32_bool/evidence-20260706-194544-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/type_mismatch_u32_bool/evidence-20260706-195812-safe
 verdict: FAIL
 check failed: ANUBIS_TYPE_MISMATCH: type mismatch: expected u32, got bool

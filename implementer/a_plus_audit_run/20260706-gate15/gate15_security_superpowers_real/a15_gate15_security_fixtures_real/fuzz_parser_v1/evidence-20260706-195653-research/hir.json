@@ -1,0 +1,57 @@
+{
+  "functions": [
+    {
+      "effects": [
+        "taint-propagate",
+        "declassify",
+        "sink:sink"
+      ],
+      "mode": "research",
+      "module": null,
+      "name": "main",
+      "params": [
+        {
+          "declassified": false,
+          "mode": "research",
+          "name": "input",
+          "span": null,
+          "taint_source": null,
+          "tainted": false,
+          "ty": "bytes"
+        }
+      ],
+      "span": [
+        132,
+        248
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "research",
+          "name": "s",
+          "span": [
+            160,
+            190
+          ],
+          "taint_source": "input",
+          "tainted": true,
+          "ty": "tainted<string>"
+        },
+        {
+          "declassified": true,
+          "mode": "research",
+          "name": "p",
+          "span": [
+            195,
+            233
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "tranche": "gate15",
+  "stamp": "20260706-160559",
+  "security_fixture_verdict": "PASS",
+  "note": "REAL 10/10 security fixtures + fuzz V1 + bounty from CLI; metal smoke if ref absent (documented); real_only no_demo_artifacts",
+  "demo_artifacts_used": false
+}

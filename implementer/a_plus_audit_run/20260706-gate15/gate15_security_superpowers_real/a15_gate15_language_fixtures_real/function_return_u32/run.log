@@ -59,6 +59,6 @@ warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anu
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
      Running `target/debug/anubis check tests/fixtures/language_core/function_return_u32.anb --evidence --out out/a15_gate15_language_fixtures_real/function_return_u32`
 anubis check tests/fixtures/language_core/function_return_u32.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/function_return_u32/evidence-20260706-194539-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/function_return_u32/evidence-20260706-195807-safe
 verdict: PASS
 check passed (no policy violations)

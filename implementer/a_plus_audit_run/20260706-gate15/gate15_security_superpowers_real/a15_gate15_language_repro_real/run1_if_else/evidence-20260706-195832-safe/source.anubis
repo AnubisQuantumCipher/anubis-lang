@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// FEATURE: if / else
+fn main() {
+    let x: u32 = 1;
+    if x > 0 {
+        let y = 2;
+    } else {
+        let y = 3;
+    }
+}

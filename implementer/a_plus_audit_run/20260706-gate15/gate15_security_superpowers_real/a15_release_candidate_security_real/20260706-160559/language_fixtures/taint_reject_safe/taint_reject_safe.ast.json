@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: tainted|taint|declassify|sink\nfn main() {\n    let secret = taint_source(\"password\");\n"
+}

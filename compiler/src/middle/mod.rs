@@ -202,9 +202,7 @@ fn collect_items(
                     if !has_auth && !attributes.is_empty() {
                         ctx.diagnostics.push(SemanticDiagnostic {
                             code: Some("ANUBIS_RESEARCH_MISSING_AUTHORIZATION".into()),
-                            message: format!(
-                                "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
-                            ),
+                            message: "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata".to_string(),
                             span: Some((span.start, span.end)),
                         });
                     }
@@ -531,9 +529,7 @@ fn analyze_expr_effect(
                 if mode == Mode::Safe {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
-                        message: format!(
-                            "safe mode shell/exec effect is forbidden (use @research/@poc with authorization)"
-                        ),
+                        message: "safe mode shell/exec effect is forbidden (use @research/@poc with authorization)".to_string(),
                         span: None,
                     });
                 }

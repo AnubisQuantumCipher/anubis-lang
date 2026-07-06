@@ -59,6 +59,6 @@ warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anu
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
      Running `target/debug/anubis check tests/fixtures/language_core/comments_line.anb --evidence --out out/a15_gate15_language_fixtures_real/comments_line`
 anubis check tests/fixtures/language_core/comments_line.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/comments_line/evidence-20260706-194537-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/comments_line/evidence-20260706-195805-safe
 verdict: PASS
 check passed (no policy violations)

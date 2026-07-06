@@ -59,6 +59,6 @@ warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anu
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
      Running `target/debug/anubis check tests/fixtures/language_core/struct_field_access.anb --evidence --out out/a15_gate15_language_fixtures_real/struct_field_access`
 anubis check tests/fixtures/language_core/struct_field_access.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/struct_field_access/evidence-20260706-194542-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/struct_field_access/evidence-20260706-195810-safe
 verdict: PASS
 check passed (no policy violations)

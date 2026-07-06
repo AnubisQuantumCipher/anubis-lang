@@ -1,0 +1,10 @@
+[
+  {
+    "effects": [
+      "sink:sink"
+    ],
+    "function": "main",
+    "mode": "research",
+    "statement_count": 2
+  }
+]
