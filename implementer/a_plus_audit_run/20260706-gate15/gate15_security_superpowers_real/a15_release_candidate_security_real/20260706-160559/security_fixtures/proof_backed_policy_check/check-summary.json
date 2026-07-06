@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/a15_release_candidate_security_real/20260706-160559/security_fixtures/proof_backed_policy_check/evidence-20260706-200702-research",
-  "check_error": null,
-  "source_hash": "1c06da0b71d896b6ae6df3f3fd33ce9ecfa8918872024faabdf5ec03ccd7b816",
-  "verdict": "PASS"
-}

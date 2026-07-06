@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/a15_release_candidate_security_real/20260706-160559/language_repro/run1_function_return_u32/evidence-20260706-200623-safe",
-  "check_error": null,
-  "source_hash": "15ce80fba0984c3c20a13b8000351cfad2f7097fb4da7b88f2d5bdd75e692c30",
-  "verdict": "PASS"
-}

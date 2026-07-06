@@ -1,0 +1,7 @@
+   Compiling anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running `target/debug/anubis check tests/fixtures/language_core/arithmetic_precedence.anb --evidence --out out/a15_release_candidate_security_real/20260706-160849/language_fixtures/arithmetic_precedence`
+anubis check tests/fixtures/language_core/arithmetic_precedence.anb (evidence=true)
+evidence bundle: out/a15_release_candidate_security_real/20260706-160849/language_fixtures/arithmetic_precedence/evidence-20260706-200851-safe
+verdict: PASS
+check passed (no policy violations)

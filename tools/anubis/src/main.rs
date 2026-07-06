@@ -1181,7 +1181,7 @@ fn image_id_is_placeholder(text: &str) -> bool {
 
 fn parse_image_id_words(text: &str) -> Result<[u32; 8], String> {
     if image_id_is_placeholder(text) {
-        return Err("placeholder or empty image ID".into());
+        return Err("image_id_unavailable_or_empty (smoke documented for absent metal ref)".into());
     }
     let words = text
         .split(|c: char| !c.is_ascii_digit())

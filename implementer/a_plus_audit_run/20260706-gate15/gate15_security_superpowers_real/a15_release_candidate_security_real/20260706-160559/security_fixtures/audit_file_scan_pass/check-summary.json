@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/a15_release_candidate_security_real/20260706-160559/security_fixtures/audit_file_scan_pass/evidence-20260706-200701-research",
-  "check_error": null,
-  "source_hash": "b3c970cbda0a382fac620f9e5cfc82cfe92cfdd898b6796ac941be1145fbd9c6",
-  "verdict": "PASS"
-}

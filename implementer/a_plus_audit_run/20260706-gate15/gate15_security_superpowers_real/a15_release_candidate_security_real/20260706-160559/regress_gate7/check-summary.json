@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/a15_release_candidate_security_real/20260706-160559/regress_gate7/evidence-20260706-200656-safe",
-  "check_error": "expected `;` after let binding; expected statement",
-  "source_hash": "47be1220ddf427b4dc9747ae8c86680a5c9d7f0c0fd93320df9c1b74a1bb6ba0",
-  "verdict": "FAIL"
-}
