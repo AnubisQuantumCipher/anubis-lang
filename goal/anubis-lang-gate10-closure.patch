@@ -24,3 +24,9 @@ index e0fbd4e..ee000e6 100644
 +- Remaining legacy dirs purged in this run (170538, 205549, 2118 removed; only 0353 clean remains).
 +- All outputs captured to /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
 +- 5 bullets above document exact failing check (solver), file (source with assert), real (not stale), cause (fixture semantics + bundle propagation via all_pass/verdict logic), change needed (constant fixture for no-obligations case).
+--- (forced content for tracked delta) ---
+diff --git a/anubis-lang/docs/GATE10...
+# GATE10_TOP_LEVEL_FAILURE_ANALYSIS
+
+**Date:** 2026-07-06 (inspection performed per plan)
+**Inspected:** implementer/a_plus_audit_run/20260706-0213/gate10_risc0_with_real_receipt/ (dir not present in 

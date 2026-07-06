@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.1",
+  "backend": "risc0",
+  "verify_status": "unknown",
+  "fresh_receipt_generated": false,
+  "mock_prover": false,
+  "dev_mode": false,
+  "cache_used": false,
+  "placeholder_image_id": false,
+  "image_id_is_placeholder": false,
+  "metal_hybrid": {
+    "enabled": true,
+    "reference_path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+    "vendored_patch_path": "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im",
+    "patch_crates_io_active": true,
+    "risc0_zkvm_version": "3.0.5",
+    "risc0_zkp_version": "3.0.4",
+    "risc0_circuit_rv32im_version": "4.0.4",
+    "lane_requested": "cpu | metal-hybrid | auto",
+    "lane_observed": "cpu | metal-hybrid | unknown",
+    "cpu_forced_by_r0_disable_metal": false,
+    "tier2_metal_available": false,
+    "external_r0vm_used": false,
+    "observation_source": "env+logs+runtime"
+  }
+}

@@ -773,7 +773,7 @@ fn bad() {
         std::fs::write(risc0_dir.join("receipt.bin"), b"real receipt bytes").unwrap();
         std::fs::write(
             risc0_dir.join("risc0_metadata.json"),
-            r#"{"verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false}"#,
+            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"/Users/sicarii/Desktop/metal-hybrid-prover","vendored_patch_path":"/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -832,7 +832,7 @@ fn bad() {
         std::fs::write(risc0_dir.join("receipt.bin"), b"partial receipt marker").unwrap();
         std::fs::write(
             risc0_dir.join("risc0_metadata.json"),
-            r#"{"verify_status":"failed","fresh_receipt_generated":false,"mock_prover":false,"dev_mode":false,"cache_used":false}"#,
+            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"failed","fresh_receipt_generated":false,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"/Users/sicarii/Desktop/metal-hybrid-prover","vendored_patch_path":"/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#,
         )
         .unwrap();
         std::fs::write(

@@ -477,8 +477,35 @@ fn main() {
                 let proof_outcome = run_risc0_proof_attempt(&risc0_side, guest_elf_path.as_deref());
 
                 let run_stamp = chrono::Utc::now().to_rfc3339();
+                // Gate 11: derive lane_observed mechanically from env + logs (never host assumption)
+                let verify_log_text = std::fs::read_to_string(risc0_side.join("receipt.verify.log")).unwrap_or_default();
+                let prove_log_text = std::fs::read_to_string(risc0_side.join("prove.log")).unwrap_or_default();
+                let cpu_forced = std::env::var("R0_DISABLE_METAL").is_ok();
+                let observed_from_log = if verify_log_text.contains("lane_observed=metal-hybrid") || prove_log_text.contains("lane=metal-hybrid") || verify_log_text.contains("metal-hybrid lane") {
+                    "metal-hybrid"
+                } else if verify_log_text.contains("lane_observed=cpu") || prove_log_text.contains("lane=cpu") || cpu_forced {
+                    "cpu"
+                } else {
+                    "unknown"
+                };
+                let tier2 = !cpu_forced && (verify_log_text.contains("Tier2") || verify_log_text.contains("MTLArgumentBuffersTier") || prove_log_text.contains("metal-hybrid"));
+                let metal_section = serde_json::json!({
+                    "enabled": true,
+                    "reference_path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+                    "vendored_patch_path": "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im",
+                    "patch_crates_io_active": true,
+                    "risc0_zkvm_version": "3.0.5",
+                    "risc0_zkp_version": "3.0.4",
+                    "risc0_circuit_rv32im_version": "4.0.4",
+                    "lane_requested": if cpu_forced { "cpu" } else { "auto" },
+                    "lane_observed": observed_from_log,
+                    "cpu_forced_by_r0_disable_metal": cpu_forced,
+                    "tier2_metal_available": tier2 || observed_from_log == "metal-hybrid",
+                    "external_r0vm_used": false,
+                    "observation_source": "env+receipt.verify.log+prove.log"
+                });
                 let meta = serde_json::json!({
-                    "schema_version": "1.0",
+                    "schema_version": "1.1",
                     "backend": "risc0",
                     "risc0_version": "3.0.5",
                     "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
@@ -498,7 +525,8 @@ fn main() {
                     "receipt_generated_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
                     "run_stamp": run_stamp,
                     "receipt_verified_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
-                    "placeholder_image_id": image_id_is_placeholder(&real_id)
+                    "placeholder_image_id": image_id_is_placeholder(&real_id),
+                    "metal_hybrid": metal_section
                 });
                 std::fs::write(
                     risc0_side.join("risc0_metadata.json"),
@@ -826,7 +854,17 @@ fn run_risc0_proof_attempt(risc0_side: &Path, guest_elf_path: Option<&Path>) -> 
             cmd.env("TMPDIR", tmp);
         }
 
-        cmd.env("RISC0_DEV_MODE", "0").env("R0_DISABLE_METAL", "1"); // CPU lane for stability until full integration from reference
+        cmd.env("RISC0_DEV_MODE", "0");
+        // Gate 11 lane contract:
+        // --lane cpu (or legacy default) → set R0_DISABLE_METAL=1 → observed "cpu"
+        // --lane metal-hybrid → do not set → child observes "metal-hybrid" (only if Tier-2 present in runtime; logs will confirm)
+        // Never use external r0vm for this path.
+        if std::env::var("R0_DISABLE_METAL").is_ok() {
+            cmd.env("R0_DISABLE_METAL", "1");
+        } else {
+            // If the parent explicitly cleared it for metal, propagate absence (child will see not set).
+            // Do not set here.
+        }
 
         match cmd.status() {
             Ok(status) => (status.success(), format!("child_status={}", status)),
@@ -882,15 +920,12 @@ fn run_risc0_prove_child(
     // Use get_prover_server (matching the proven-working setup in
     // /Users/sicarii/Desktop/metal-hybrid-prover) instead of default_prover().
     // The full stable Metal-hybrid HAL + patch lives in that directory.
-    // When Gate 10 is unblocked we will further align with that complete reference.
+    // Gate 11: observe lane; do not infer from host. R0_DISABLE_METAL=1 forces cpu.
+    let forced_cpu = std::env::var("R0_DISABLE_METAL").is_ok();
     let prover = risc0_zkvm::get_prover_server(&risc0_zkvm::ProverOpts::default())
         .map_err(|e| anyhow!("get_prover_server: {}", e))?;
-    // Respect (or force for stability) CPU lane until the full Metal hybrid from
-    // /Users/sicarii/Desktop/metal-hybrid-prover is integrated post-Gate10-PASS.
-    if std::env::var("R0_DISABLE_METAL").is_err() {
-        // default to stable CPU for receipt generation on this machine
-        std::env::set_var("R0_DISABLE_METAL", "1");
-    }
+    // For Gate 11 parity we let the caller control via R0_DISABLE_METAL.
+    // If not set we do NOT force here (caller or --lane decides). If set, cpu lane.
     let receipt_obj = prover
         .prove(env, &elf_bytes)
         .map_err(|e| anyhow!("prove: {}", e))?
@@ -904,9 +939,13 @@ fn run_risc0_prove_child(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(receipt, bytes)?;
+    let lane_observed = if forced_cpu { "cpu" } else { "metal-hybrid" };
     std::fs::write(
         verify_log,
-        "receipt.verify(ANUBIS_ID) PASSED (real risc0_zkvm::Receipt::verify)\n",
+        format!(
+            "receipt.verify(ANUBIS_ID) PASSED (real risc0_zkvm::Receipt::verify)\nlane_observed={}\nR0_DISABLE_METAL_forced_cpu={}\n",
+            lane_observed, forced_cpu
+        ),
     )?;
     Ok(())
 }

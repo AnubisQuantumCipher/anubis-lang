@@ -1,4 +1,4 @@
-=== overwrite CHANGED_FILES with anubis-lang paths ===
+=== CHANGED_FILES (anubis-lang only) ===
 anubis-lang/docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md
 anubis-lang/scripts/gate10_a15_reproduce.sh
 anubis-lang/scripts/verify_bundle.sh
