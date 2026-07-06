@@ -1,0 +1,23 @@
+Verifying bundle: /tmp/tam/evidence-20260706-033252-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/receipt.bin hash mismatch
+tamper correctly detected for receipt.bin
+Verifying bundle: /tmp/tam/evidence-20260706-033252-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/image_id.txt hash mismatch
+tamper correctly detected for image_id.txt
+Verifying bundle: /tmp/tam/evidence-20260706-033252-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/guest.elf hash mismatch
+tamper correctly detected for guest.elf
+Verifying bundle: /tmp/tam/evidence-20260706-033252-safe
+  manifest.json present (preferred for v1)
+  internal validate passed
+Bundle structure and basic hashes OK. Verdict from manifest:
+PASS
+verify_bundle.sh: SUCCESS for /tmp/tam/evidence-20260706-033252-safe
+ERROR not detected risc0_metadata.json
+Verifying bundle: /tmp/tam/evidence-20260706-033252-safe
+  manifest.json present (preferred for v1)
+TAMPER: backend/risc0/receipt.verify.log hash mismatch
+tamper correctly detected for receipt.verify.log
