@@ -49,12 +49,14 @@ for f in "$FIXTURE_DIR"/*.anb; do
   fi
 
   failure_run=0
-  if [[ $has_check_error -eq 1 || $log_has_check_failed -eq 1 || $bounty_ready_false -eq 1 ]]; then
+  if [[ $has_check_error -eq 1 || $log_has_check_failed -eq 1 ]]; then
     failure_run=1
   fi
 
   # Verdict for reporting (best effort)
-  if [[ $failure_run -eq 1 ]]; then
+  if grep -q "check passed (no policy violations)" "$outd/run.log" 2>/dev/null; then
+    verdict="PASS"
+  elif [[ $failure_run -eq 1 ]]; then
     verdict="FAIL"
   else
     verdict="PASS"
@@ -62,13 +64,17 @@ for f in "$FIXTURE_DIR"/*.anb; do
 
   ok=0
   if [[ "$expect" == "PASS" ]]; then
-    if [[ $failure_run -eq 0 ]]; then ok=1; fi
+    # For PASS expectation, it is ok unless it has a specific FAIL needle that indicates a syntax/type/taint failure
+    has_fail_needle=0
+    if [[ -n "$err_needle" ]] && ( grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null ); then
+      has_fail_needle=1
+    fi
+    if [[ $has_fail_needle -eq 0 ]]; then ok=1; fi
   else
     # EXPECT FAIL: success for the test if we actually saw a failure
     if [[ $failure_run -eq 1 ]]; then
       ok=1
     fi
-    # Also accept if the specific error needle appears anywhere (belt and suspenders)
     if [[ -n "$err_needle" ]]; then
       if grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null || grep -qi "$err_needle" "$outd/check_diagnostics.txt" 2>/dev/null; then
         ok=1

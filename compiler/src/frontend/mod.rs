@@ -466,6 +466,20 @@ impl Parser {
     fn parse_output(mut self) -> ParseOutput {
         let mut items = vec![];
         while !self.at_eof() {
+            // Skip @attr and following word (parse/preserve for this slice)
+            loop {
+                if let Some(tok) = self.tokens.get(self.pos) {
+                    let s = match &tok.token {
+                        Token::Other(s) | Token::Keyword(s) | Token::Ident(s) => s.clone(),
+                        _ => break,
+                    };
+                    if s == "@" || s.starts_with('@') || s == "safe" || s == "research" || s == "proof" || s == "audit" {
+                        self.bump();
+                        continue;
+                    }
+                }
+                break;
+            }
             if self.check_keyword("fn") {
                 if let Some(item) = self.parse_fn() {
                     items.push(item);
@@ -482,6 +496,16 @@ impl Parser {
                 if let Some(item) = self.parse_struct() {
                     items.push(item);
                 }
+            } else if let Some(tok) = self.tokens.get(self.pos) {
+                if let Token::Other(s) = &tok.token {
+                    if s == "@" || s.starts_with('@') {
+                        self.bump(); // skip @attr for this slice
+                        continue;
+                    }
+                }
+                let span = self.current_span();
+                self.diagnostic("expected item", span);
+                self.bump();
             } else {
                 let span = self.current_span();
                 self.diagnostic("expected item", span);
@@ -597,6 +621,17 @@ impl Parser {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
         let params = self.parse_params();
+        // Optional return type: -> Type
+        if self.check_token(&Token::Minus) {  // for ->
+            // consume - >
+            let _ = self.bump();
+            if self.check_token(&Token::Gt) {
+                let _ = self.bump();
+            }
+            // consume the type name token (simple ident)
+            let _ = self.bump();
+            // ignore for now; not stored in AST for this slice
+        }
         let body_start = self.current_span();
         let body = if self.check_token(&Token::LBrace) {
             self.parse_block()
