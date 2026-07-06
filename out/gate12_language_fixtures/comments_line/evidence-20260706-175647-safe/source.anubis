@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// FEATURE: line comments only
+fn main() {
+    // comment 1
+    let x = 1; // comment 2
+}

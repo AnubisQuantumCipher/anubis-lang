@@ -38,7 +38,8 @@
 - Repro guarantees.
 
 ## Phase 6 — Tooling & Quality (A11-13)
-- LSP or honest diagnostic server.
+- `anubis doctor`, portable backend config, release-candidate evidence builder (Gate 12/13/14 tranche).
+- LSP or honest diagnostic server (future).
 - Expanded CI + fuzz/golden/property.
 - All old failure modes impossible.
 

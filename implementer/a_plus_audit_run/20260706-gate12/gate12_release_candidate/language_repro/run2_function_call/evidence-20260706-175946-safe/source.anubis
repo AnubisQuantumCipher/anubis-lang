@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// FEATURE: user fn call + return
+fn add(a: u32, b: u32) -> u32 {
+    return a + b;
+}
+fn main() {
+    let z = add(1, 2);
+}

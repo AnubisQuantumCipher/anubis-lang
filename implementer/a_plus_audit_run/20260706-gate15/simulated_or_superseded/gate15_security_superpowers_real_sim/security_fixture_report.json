@@ -1,0 +1,67 @@
+{"fixtures": [
+    {
+      "name": "audit_file_scan_pass",
+      "status": "FAIL",
+      "expected": "PASS",
+      "actual": "FAIL"
+    },
+    {
+      "name": "bounty_report_from_taint",
+      "status": "PASS",
+      "expected": "PASS",
+      "actual": "PASS"
+    },
+    {
+      "name": "declassify_report_pass",
+      "status": "FAIL",
+      "expected": "PASS",
+      "actual": "FAIL"
+    },
+    {
+      "name": "fuzz_crash_demo",
+      "status": "PASS",
+      "expected": "FAIL",
+      "actual": "FAIL"
+    },
+    {
+      "name": "fuzz_parser_v1",
+      "status": "FAIL",
+      "expected": "PASS",
+      "actual": "FAIL"
+    },
+    {
+      "name": "metal_backed_proof_parity",
+      "status": "FAIL",
+      "expected": "PASS",
+      "actual": "FAIL"
+    },
+    {
+      "name": "poc_missing_authorization_fail",
+      "status": "PASS",
+      "expected": "FAIL",
+      "actual": "FAIL"
+    },
+    {
+      "name": "proof_backed_policy_check",
+      "status": "FAIL",
+      "expected": "PASS",
+      "actual": "FAIL"
+    },
+    {
+      "name": "research_authorized_taint_model",
+      "status": "FAIL",
+      "expected": "PASS",
+      "actual": "FAIL"
+    },
+    {
+      "name": "safe_command_injection_reject",
+      "status": "PASS",
+      "expected": "FAIL",
+      "actual": "FAIL"
+    }
+  ],
+  "overall_verdict": "FAIL",
+  "total": 10,
+  "passed": 3,
+  "failed": 7
+}

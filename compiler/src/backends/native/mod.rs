@@ -1,7 +1,7 @@
 use crate::frontend::{Expr, Stmt};
 use std::path::Path;
 
-mod hybrid;
+pub(crate) mod hybrid;
 
 // Note: direct lowering in lower_to_native (research/hybrid branches) for fidelity to source AST.
 // Legacy emit_stmt/expr_to_str removed (were dead; research path uses collect/extract + inline).

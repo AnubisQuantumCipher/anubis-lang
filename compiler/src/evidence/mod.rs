@@ -31,6 +31,9 @@ pub struct EvidenceManifest {
     pub manifest_signature: String,
     pub checks: Vec<Check>,
     pub verdict: String,
+    // Gate 15 security superpowers
+    #[serde(default)]
+    pub security: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -80,6 +83,7 @@ pub fn build_evidence_bundle(
     logs: Vec<String>,
     out_base: &Path,
     lane: Option<&str>,
+    security: Option<serde_json::Value>,
 ) -> Result<EvidenceBundle, String> {
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let dir = out_base.join(format!("evidence-{}-{}", ts, mode));
@@ -324,6 +328,10 @@ pub fn build_evidence_bundle(
         manifest_signature,
         checks,
         verdict,
+        security: security.or_else(|| Some(serde_json::json!({
+            "mode": mode,
+            "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+        }))),
     };
 
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
@@ -424,6 +432,31 @@ fn build_sarif(checks: &[Check]) -> serde_json::Value {
                 "ANUBIS_SOLVER_MODEL_REPLAY_FAILED".to_string()
             } else if check.detail.contains("unsupported") {
                 "ANUBIS_SOLVER_UNSUPPORTED_EXPRESSION".to_string()
+            } else if check.detail.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE")
+                || check.detail.contains("forbidden in mode")
+                || check.detail.contains("safe mode shell")
+            {
+                "ANUBIS_EFFECT_FORBIDDEN_IN_MODE".to_string()
+            } else if check
+                .detail
+                .contains("ANUBIS_RESEARCH_MISSING_AUTHORIZATION")
+                || check.detail.contains("requires authorization")
+            {
+                "ANUBIS_RESEARCH_MISSING_AUTHORIZATION".to_string()
+            } else if check.detail.contains("ANUBIS_POC_MISSING_SCOPE")
+                || check.detail.contains("missing scope")
+            {
+                "ANUBIS_POC_MISSING_SCOPE".to_string()
+            } else if check.detail.contains("ANUBIS_FUZZ_SANDBOX_REQUIRED")
+                || (check.detail.contains("fuzz") && check.detail.contains("sandbox"))
+            {
+                "ANUBIS_FUZZ_SANDBOX_REQUIRED".to_string()
+            } else if check.detail.contains("ANUBIS_FUZZ_CRASH")
+                || check.detail.contains("fuzz crash")
+            {
+                "ANUBIS_FUZZ_CRASH".to_string()
+            } else if check.detail.contains("ANUBIS_EFFECT_NOT_DECLARED") {
+                "ANUBIS_EFFECT_NOT_DECLARED".to_string()
             } else {
                 check.name.clone()
             };
@@ -607,18 +640,56 @@ fn risc0_metadata_check(bundle_dir: &Path) -> Option<Check> {
         .or_else(|| value.get("image_id_is_placeholder"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let metal_hybrid = value
+        .get("metal_hybrid")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let patch_active = metal_hybrid
+        .get("patch_crates_io_active")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let methods_patch_active = metal_hybrid
+        .get("methods_patch_crates_io_active")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(patch_active);
+    let prover_patch_active = metal_hybrid
+        .get("prover_patch_crates_io_active")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(patch_active);
+    let reference_ok = metal_hybrid.get("reference_path").and_then(|v| v.as_str())
+        == Some("/Users/sicarii/Desktop/metal-hybrid-prover");
+    let vendor_ok = metal_hybrid
+        .get("vendored_patch_path")
+        .and_then(|v| v.as_str())
+        == Some("/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im");
     let passed = verify_status == "passed"
         && fresh
         && !dev_mode
         && !mock_prover
         && !cache_used
-        && !placeholder;
+        && !placeholder
+        && patch_active
+        && methods_patch_active
+        && prover_patch_active
+        && reference_ok
+        && vendor_ok;
     Some(Check {
         name: "risc0_receipt_verify".into(),
         status: if passed { "PASS" } else { "FAIL" }.into(),
         detail: format!(
-            "verify_status={} fresh_receipt_generated={} dev_mode={} mock_prover={} cache_used={} placeholder_image_id={}",
-            verify_status, fresh, dev_mode, mock_prover, cache_used, placeholder
+            "verify_status={} fresh_receipt_generated={} dev_mode={} mock_prover={} cache_used={} placeholder_image_id={} patch_crates_io_active={} methods_patch_crates_io_active={} prover_patch_crates_io_active={} reference_ok={} vendor_ok={}",
+            verify_status,
+            fresh,
+            dev_mode,
+            mock_prover,
+            cache_used,
+            placeholder,
+            patch_active,
+            methods_patch_active,
+            prover_patch_active,
+            reference_ok,
+            vendor_ok
         ),
     })
 }

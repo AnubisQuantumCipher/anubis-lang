@@ -1,0 +1,46 @@
+warning: function `metal_hybrid_reference_root_from` is never used
+    --> tools/anubis/src/main.rs:1231:4
+     |
+1231 | fn metal_hybrid_reference_root_from(resolved: &Path) -> PathBuf {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `metal_hybrid_reference_root` is never used
+    --> tools/anubis/src/main.rs:1243:4
+     |
+1243 | fn metal_hybrid_reference_root() -> PathBuf {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `risc0_vendor_patch_path` is never used
+    --> tools/anubis/src/main.rs:1247:4
+     |
+1247 | fn risc0_vendor_patch_path() -> PathBuf {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `anubis` (bin "anubis") generated 3 warnings
+    Finished `release` profile [optimized] target(s) in 0.66s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/anubis doctor --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --require-risc0 --json`
+{
+  "metal_reference": {
+    "exists": true,
+    "metal_hal_present": true,
+    "patch_dir_exists": true,
+    "path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+    "source": "cli"
+  },
+  "ready": true,
+  "require_metal": false,
+  "require_risc0": true,
+  "risc0": {
+    "expected_circuit": "4.0.4 (patched)",
+    "expected_zkvm": "3.0.5"
+  },
+  "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+  "target": "aarch64-macos",
+  "tool": "anubis",
+  "version": "0.1.0",
+  "z3": "Z3 version 4.15.4 - 64 bit"
+}

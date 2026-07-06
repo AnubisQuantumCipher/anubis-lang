@@ -1,0 +1,7 @@
+{
+  "bounty_ready": false,
+  "bundle": "out/gate12_language_fixtures/unknown_variable/evidence-20260706-175746-safe",
+  "check_error": "ANUBIS_UNKNOWN_VARIABLE: unknown variable `x`",
+  "source_hash": "34e44a2f7efa6658234df907c8caeacc65698e48fa082bfc501ba55e2cec06d1",
+  "verdict": "FAIL"
+}

@@ -1,0 +1,43 @@
+{
+  "imports": [],
+  "modules": [],
+  "functions": [
+    {
+      "name": "main",
+      "module": null,
+      "mode": "safe",
+      "params": [],
+      "symbols": [
+        {
+          "name": "p",
+          "ty": null,
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": [
+            88,
+            111
+          ]
+        },
+        {
+          "name": "v",
+          "ty": null,
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": [
+            116,
+            128
+          ]
+        }
+      ],
+      "effects": [],
+      "span": [
+        72,
+        130
+      ]
+    }
+  ]
+}

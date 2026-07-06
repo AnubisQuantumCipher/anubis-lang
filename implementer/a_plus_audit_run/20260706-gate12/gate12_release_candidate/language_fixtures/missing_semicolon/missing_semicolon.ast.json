@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "other",
+  "num_items": 0,
+  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: semicolon|; |expected\nfn main() {\n    let x = 1\n}\n"
+}

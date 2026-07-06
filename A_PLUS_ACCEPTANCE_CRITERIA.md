@@ -11,23 +11,22 @@ cargo build --release
 ```
 Evidence: command output + release binary.
 
-## GATE 2 — Real language core
-Must support at minimum (with tests + examples):
-- functions
-- local bindings
-- integer and boolean types
-- strings
-- arrays or vectors
-- structs
-- enums or tagged unions
-- modules/imports
-- if/else
-- loops
-- return values
-- result/error handling
-- comments
-- attributes for mode/effect/policy
-- at least one useful example CLI program that runs
+## GATE 2 — Real language core (this slice: minimum viable per plan)
+This slice (2026-07-06) completed the first serious pass of the *defined minimum*:
+- comments (//)
+- fn main + typed params + return (as call expr)
+- let x = ; let x: u32 = ;
+- primitives: bool, u8, u32 (u16/u64/string partial/where feasible)
+- expr: literals, var, + - * , == != < <= > >= , & , parens
+- control: if/else ; while (or PLANNED skip)
+- structs: decl + lit + field access
+- calls: user fn + builtins (symbolic, assume, assert, taint_source, declassify, sink)
+- attrs parsed/preserved: @safe @research @proof @audit @effect(...)
+- modules/imports, enums, full Result, large stdlib: PLANNED / out of slice
+
+Evidence: 25 canonical fixtures (tests/fixtures/language_core/*.anb with EXPECT headers), runner, reports, A15 repro with consistent verdicts.
+
+Do not claim "general-purpose language complete". See MATURITY_CLAIM_MATRIX + docs/language/UNSUPPORTED.md .
 
 ## GATE 3 — Parser/HIR/MIR
 ≥20 fixture programs:

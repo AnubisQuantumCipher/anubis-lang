@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/release_candidate_security_real/20260706-153147/language_repro/run1_risc0_minimal_pass/evidence-20260706-193229-safe",
+  "check_error": null,
+  "source_hash": "7be594f761474f7f2531405090545cb80c26e27d32a8b19022c058e75aa883fc",
+  "verdict": "PASS"
+}

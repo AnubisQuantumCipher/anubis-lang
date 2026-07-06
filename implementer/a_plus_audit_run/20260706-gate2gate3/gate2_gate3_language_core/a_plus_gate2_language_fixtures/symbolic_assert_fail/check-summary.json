@@ -1,0 +1,7 @@
+{
+  "bounty_ready": false,
+  "bundle": "out/a15_gate2_language_fixtures/symbolic_assert_fail/evidence-20260706-071454-safe",
+  "check_error": null,
+  "source_hash": "01c7b90c4d2ee27ef57809ff0538aa35a93791ed2ec08fae28104c968a1a9d18",
+  "verdict": "FAIL"
+}

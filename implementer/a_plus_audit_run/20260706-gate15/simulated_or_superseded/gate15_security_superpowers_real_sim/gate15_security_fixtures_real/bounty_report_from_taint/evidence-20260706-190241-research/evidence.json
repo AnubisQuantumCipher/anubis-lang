@@ -1,0 +1,77 @@
+{
+  "timestamp": "20260706-190241",
+  "tool": "anubis 0.2.0",
+  "mode": "research",
+  "source_hash": "110dafae9e0d4e91de240419dc62719865e335bfd1ad556722b7a15840c75a10",
+  "build_log_hash": "cb55f378282a0151546e2c8c3be7a31d43eac4002ef17759711cf0c64b0621ba",
+  "artifact_hash": null,
+  "lane": "research-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "9514f4146a0fa13e484b828689e935c07edce54abbab363b7f9a28bb44cab4e1",
+  "sarif_hash": "0b0b7694cdbdab958c542cbb592d2500ea08ba6864fa15ae18df96f03e1e54a4",
+  "bounty_report_hash": "515405c916aad367827315c50ac125e52b7170c75313706ae76966b822b5ceb4",
+  "manifest_signature": "8b7e88683bb4e10fbf6b4453cd562ce360f854b6791f38caea6ea61c32f347a1",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=research symbols=2 functions=1"
+    },
+    {
+      "name": "taint",
+      "status": "PASS",
+      "detail": "labels=3 traces=1"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "name": "solver",
+      "status": "PASS",
+      "detail": "solver:no-obligations=PASS"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "110dafae9e0d4e91de240419dc62719865e335bfd1ad556722b7a15840c75a10"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "cb55f378282a0151546e2c8c3be7a31d43eac4002ef17759711cf0c64b0621ba"
+    }
+  ],
+  "verdict": "PASS",
+  "security": {
+    "attributes": [
+      {
+        "args": [
+          {
+            "key": "authorization",
+            "value": "bounty"
+          },
+          {
+            "key": "scope",
+            "value": "local"
+          },
+          {
+            "key": "reason",
+            "value": "taint to report"
+          },
+          {
+            "key": "non_destructive",
+            "value": "true"
+          }
+        ],
+        "name": "research"
+      }
+    ]
+  }
+}

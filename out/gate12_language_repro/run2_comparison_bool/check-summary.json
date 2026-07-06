@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/gate12_language_repro/run2_comparison_bool/evidence-20260706-175930-safe",
+  "check_error": null,
+  "source_hash": "c3f240c1a79384391d36c8bdf1104e3833e09de260cfc47b4fb6d9461865a086",
+  "verdict": "PASS"
+}

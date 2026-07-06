@@ -76,6 +76,18 @@ pub struct AST {
     pub items: Vec<Item>,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AttrArg {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Attribute {
+    pub name: String,
+    pub args: Vec<AttrArg>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Item {
     Import {
@@ -93,6 +105,7 @@ pub enum Item {
         body: Vec<Stmt>,
         mode: Mode,
         intent: Option<String>,
+        attributes: Vec<Attribute>,
         span: Span,
     },
     Struct {
@@ -419,7 +432,7 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
                     | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
-                    | "return" => Token::Keyword(id),
+                    | "return" | "as" => Token::Keyword(id),
                     _ => Token::Ident(id),
                 };
                 tokens.push(SpannedToken {
@@ -465,28 +478,9 @@ impl Parser {
     fn parse_output(mut self) -> ParseOutput {
         let mut items = vec![];
         while !self.at_eof() {
-            // Skip @attr and following word (parse/preserve for this slice)
-            loop {
-                if let Some(tok) = self.tokens.get(self.pos) {
-                    let s = match &tok.token {
-                        Token::Other(s) | Token::Keyword(s) | Token::Ident(s) => s.clone(),
-                        _ => break,
-                    };
-                    if s == "@"
-                        || s.starts_with('@')
-                        || s == "safe"
-                        || s == "research"
-                        || s == "proof"
-                        || s == "audit"
-                    {
-                        self.bump();
-                        continue;
-                    }
-                }
-                break;
-            }
+            let attrs = self.parse_attributes();
             if self.check_keyword("fn") {
-                if let Some(item) = self.parse_fn() {
+                if let Some(item) = self.parse_fn(attrs) {
                     items.push(item);
                 }
             } else if self.check_keyword("import") {
@@ -501,16 +495,6 @@ impl Parser {
                 if let Some(item) = self.parse_struct() {
                     items.push(item);
                 }
-            } else if let Some(tok) = self.tokens.get(self.pos) {
-                if let Token::Other(s) = &tok.token {
-                    if s == "@" || s.starts_with('@') {
-                        self.bump(); // skip @attr for this slice
-                        continue;
-                    }
-                }
-                let span = self.current_span();
-                self.diagnostic("expected item", span);
-                self.bump();
             } else {
                 let span = self.current_span();
                 self.diagnostic("expected item", span);
@@ -521,6 +505,102 @@ impl Parser {
             ast: AST { items },
             diagnostics: self.diagnostics,
         }
+    }
+
+    fn parse_attributes(&mut self) -> Vec<Attribute> {
+        let mut attrs = vec![];
+        loop {
+            if self.at_eof() {
+                break;
+            }
+            let tok = match self.tokens.get(self.pos) {
+                Some(t) => &t.token,
+                None => break,
+            };
+            let s = match tok {
+                Token::Other(s) | Token::Keyword(s) | Token::Ident(s) => s.clone(),
+                _ => break,
+            };
+            if !(s == "@"
+                || s.starts_with('@')
+                || matches!(
+                    s.as_str(),
+                    "safe" | "research" | "proof" | "audit" | "poc" | "fuzz" | "defensive"
+                ))
+            {
+                break;
+            }
+            self.bump();
+            let name = if s.starts_with('@') {
+                s.trim_start_matches('@').to_string()
+            } else {
+                s
+            };
+            let mut args = vec![];
+            if self.check_token(&Token::LParen) {
+                self.bump(); // (
+                while !self.at_eof() && !self.check_token(&Token::RParen) {
+                    if let Some((k, _)) = self.expect_ident("key") {
+                        if self.check_token(&Token::Colon) {
+                            let _ = self.bump();
+                        }
+                        // Gate15: support simple val or [list] for effects etc.
+                        let mut val = String::new();
+                        if self.check_token(&Token::LBracket) {
+                            // consume [ ... ] as single value string e.g. "[file_read]"
+                            let mut depth = 0;
+                            let mut buf = String::new();
+                            while !self.at_eof() {
+                                let t = self.bump();
+                                if t.is_none() {
+                                    break;
+                                }
+                                let tt = t.unwrap().token;
+                                if matches!(tt, Token::LBracket) {
+                                    depth += 1;
+                                    buf.push('[');
+                                } else if matches!(tt, Token::RBracket) {
+                                    depth -= 1;
+                                    buf.push(']');
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                } else if let Token::StringLit(s)
+                                | Token::Ident(s)
+                                | Token::Keyword(s)
+                                | Token::Other(s)
+                                | Token::Number(s) = tt
+                                {
+                                    buf.push_str(&s);
+                                } else {
+                                    buf.push_str(&format!("{:?}", tt));
+                                }
+                            }
+                            val = buf;
+                        } else if let Some(val_st) = self.bump() {
+                            let val_tok = val_st.token;
+                            val = match val_tok {
+                                Token::StringLit(v) => v.trim_matches('"').to_string(),
+                                Token::Ident(v)
+                                | Token::Keyword(v)
+                                | Token::Other(v)
+                                | Token::Number(v) => v,
+                                _ => "".into(),
+                            };
+                        }
+                        args.push(AttrArg { key: k, value: val });
+                    }
+                    if self.check_token(&Token::Comma) {
+                        let _ = self.bump();
+                    }
+                }
+                if self.check_token(&Token::RParen) {
+                    let _ = self.bump();
+                }
+            }
+            attrs.push(Attribute { name, args });
+        }
+        attrs
     }
 
     fn parse_import(&mut self) -> Option<Item> {
@@ -590,7 +670,8 @@ impl Parser {
         let mut items = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             if self.check_keyword("fn") {
-                if let Some(item) = self.parse_fn() {
+                let attrs = self.parse_attributes();
+                if let Some(item) = self.parse_fn(attrs) {
                     items.push(item);
                 }
             } else if self.check_keyword("import") {
@@ -622,7 +703,7 @@ impl Parser {
         })
     }
 
-    fn parse_fn(&mut self) -> Option<Item> {
+    fn parse_fn(&mut self, pre_attrs: Vec<Attribute>) -> Option<Item> {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
         let params = self.parse_params();
@@ -649,13 +730,24 @@ impl Parser {
             start: start.start,
             end: self.previous_end().max(start.end),
         };
-        let mode = infer_mode(&body);
+        let mut mode = infer_mode(&body);
+        // Gate 15: attributes can set/override mode for security capabilities
+        for attr in &pre_attrs {
+            match attr.name.as_str() {
+                "safe" => mode = Mode::Safe,
+                "research" | "poc" | "fuzz" | "proof" | "defensive" | "audit" => {
+                    mode = Mode::Research
+                }
+                _ => {}
+            }
+        }
         Some(Item::Fn {
             name,
             params,
             body,
             mode,
             intent: None,
+            attributes: pre_attrs,
             span,
         })
     }
@@ -889,7 +981,24 @@ impl Parser {
 
     fn parse_expr(&mut self, min_prec: u8) -> Expr {
         let mut lhs = self.parse_primary();
-        while let Some((op, prec)) = self.current_binary_op() {
+        loop {
+            if self.check_keyword("as") {
+                self.bump();
+                let ty = self.collect_type_until(&[
+                    Token::Semi,
+                    Token::Comma,
+                    Token::RParen,
+                    Token::RBrace,
+                ]);
+                lhs = Expr::Cast {
+                    expr: Box::new(lhs),
+                    ty,
+                };
+                continue;
+            }
+            let Some((op, prec)) = self.current_binary_op() else {
+                break;
+            };
             if prec < min_prec {
                 break;
             }
@@ -997,6 +1106,18 @@ impl Parser {
                 };
                 Expr::TaintSource { label }
             }
+            Token::Ident(k) if k == "taint_source" => {
+                let args = self.parse_call_args();
+                let label = if args.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    match &args[0] {
+                        Expr::Literal(s) | Expr::Var(s) => s.clone(),
+                        _ => "unknown".to_string(),
+                    }
+                };
+                Expr::TaintSource { label }
+            }
             Token::Keyword(k) if k == "declassify" => {
                 let mut args = self.parse_call_args();
                 if args.is_empty() {
@@ -1083,6 +1204,15 @@ impl Parser {
     }
 
     fn parse_optional_generic_ty(&mut self) -> Option<String> {
+        if self.check_token(&Token::Colon)
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|tok| &tok.token),
+                Some(Token::Colon)
+            )
+        {
+            self.bump();
+            self.bump();
+        }
         if self.check_token(&Token::Lt) {
             self.bump();
             let ty = self.collect_type_until(&[Token::Gt]);

@@ -71,3 +71,7 @@ This contract will be updated only with ADR when upstream or vendoring changes.
 - feeds Gate 11 Metal parity: same pinned patch, in-process only, receipt-verified CPU-vs-Metal, validate.sh --require-metal on Tier-2 hardware, hosted runners use R0_DISABLE_METAL=1 only.
 
 The GitHub README confirms: pinned patch moving generic STARK to Metal, circuit kernels CPU, stock receipts verify.
+
+## Portable usage (Gate 12+)
+
+Use `--metal-reference`, `ANUBIS_RISC0_METAL_REFERENCE`, or `Anubis.toml` instead of assuming the Desktop path at runtime. Evidence records the `config_source`. The local default remains only for this development host. The underlying contract (versions, in-process, vendored patch layout, `metal_lane_selected()`) is unchanged.

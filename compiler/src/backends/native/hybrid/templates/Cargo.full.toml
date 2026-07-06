@@ -10,4 +10,4 @@ debug = 1
 lto = true
 
 [patch.crates-io]
-risc0-circuit-rv32im = { path = "vendor/risc0-circuit-rv32im" }
+risc0-circuit-rv32im = { path = "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im" }

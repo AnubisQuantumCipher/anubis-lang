@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// EXPECT: PASS\n\n@fuzz(\n  target: \"parser\",\n  runs: 100,\n  sandbox: true,\n  effects: [\"fuzz_exec\"]\n)\nfn main(input: byte"
+}

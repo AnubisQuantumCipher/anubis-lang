@@ -2,6 +2,7 @@
 //! Fast mode: metal-only (real dispatch). Full mode adds risc0.
 
 use std::fs;
+use std::io;
 use std::path::Path;
 
 pub fn emit_hybrid_project(proj_dir: &Path, _full: bool, cpu_val: &str) -> Result<(), String> {
@@ -77,10 +78,8 @@ fn emit_full_hybrid_project(proj_dir: &Path, cpu_val: &str) -> Result<(), String
     )
     .map_err(|e| e.to_string())?;
 
-    let vendored_src = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "compiler crate has no parent".to_string())?
-        .join("vendor/risc0-circuit-rv32im");
+    let vendored_src =
+        Path::new("/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im");
     let vendored_dst = proj_dir.join("vendor/risc0-circuit-rv32im");
     if !vendored_src.join("src/prove/hal/metal.rs").exists() {
         return Err(format!(
@@ -88,7 +87,7 @@ fn emit_full_hybrid_project(proj_dir: &Path, cpu_val: &str) -> Result<(), String
             vendored_src.display()
         ));
     }
-    copy_dir_recursive(&vendored_src, &vendored_dst)?;
+    copy_dir_recursive(vendored_src, &vendored_dst)?;
     Ok(())
 }
 
@@ -108,8 +107,15 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
             }
             copy_dir_recursive(&source_path, &target_path)?;
         } else if file_type.is_file() {
-            fs::copy(&source_path, &target_path).map_err(|e| e.to_string())?;
+            copy_file_buffered(&source_path, &target_path)?;
         }
     }
+    Ok(())
+}
+
+fn copy_file_buffered(src: &Path, dst: &Path) -> Result<(), String> {
+    let mut reader = fs::File::open(src).map_err(|e| e.to_string())?;
+    let mut writer = fs::File::create(dst).map_err(|e| e.to_string())?;
+    io::copy(&mut reader, &mut writer).map_err(|e| e.to_string())?;
     Ok(())
 }

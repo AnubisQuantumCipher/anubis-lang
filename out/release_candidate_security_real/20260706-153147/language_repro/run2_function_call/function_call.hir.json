@@ -1,0 +1,62 @@
+{
+  "imports": [],
+  "modules": [],
+  "functions": [
+    {
+      "name": "add",
+      "module": null,
+      "mode": "safe",
+      "params": [
+        {
+          "name": "a",
+          "ty": "u32",
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": null
+        },
+        {
+          "name": "b",
+          "ty": "u32",
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": null
+        }
+      ],
+      "symbols": [],
+      "effects": [],
+      "span": [
+        50,
+        101
+      ]
+    },
+    {
+      "name": "main",
+      "module": null,
+      "mode": "safe",
+      "params": [],
+      "symbols": [
+        {
+          "name": "z",
+          "ty": null,
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": [
+            118,
+            136
+          ]
+        }
+      ],
+      "effects": [],
+      "span": [
+        102,
+        138
+      ]
+    }
+  ]
+}

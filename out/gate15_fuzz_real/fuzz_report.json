@@ -1,0 +1,16 @@
+{
+  "crash_inputs": [],
+  "crashes": 0,
+  "note": "V1 real CLI using parse+typecheck loop. sandbox: true, no network. r0-metal-doctor noted for metal.",
+  "runs": 64,
+  "security": {
+    "declared_effects": [
+      "fuzz_exec"
+    ],
+    "mode": "fuzz",
+    "observed_effects": [
+      "fuzz_exec"
+    ],
+    "sandbox": true
+  }
+}

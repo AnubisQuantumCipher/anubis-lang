@@ -1,0 +1,13 @@
+// EXPECT: PASS
+
+@research(
+  authorization: "local-lab-or-bug-bounty-program",
+  scope: "local-fixture",
+  reason: "model tainted flow for boundary issue report",
+  non_destructive: true
+)
+fn main() {
+    let secret = taint_source("password");
+    let cleaned = declassify(secret, "redact", "authorized research");
+    sink(cleaned);
+}

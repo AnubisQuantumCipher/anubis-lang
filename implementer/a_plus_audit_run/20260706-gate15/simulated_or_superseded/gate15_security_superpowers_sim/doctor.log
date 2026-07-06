@@ -1,0 +1,4 @@
+=== Simulated A15 doctor run ===
+anubis doctor --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover
+r0-metal-doctor invoked: true (path: /Users/sicarii/Desktop/r0-metal-doctor)
+ready: false (ref missing in env, but code wired)

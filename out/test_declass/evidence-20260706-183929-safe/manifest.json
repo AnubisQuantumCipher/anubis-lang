@@ -1,0 +1,36 @@
+{
+  "timestamp": "20260706-183929",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "1a3df4b35448beb66a064b185c6190a2d8835977c528673cd057e92980c76e8d",
+  "build_log_hash": "694f07680f6151941b130dbb6d5faea2f9f163e68a3dbae5014b236ec8a13e8d",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "e6dd6d10e80693d9cf70e09c12a0fe2c94ac22d28d43e260544ccfce85e316c7",
+  "sarif_hash": "4aea0e9653754d15dd9e12f7dd834324fd0c3fcb69b2c69eefab1a8890449dec",
+  "bounty_report_hash": "2f268e742b7c049dd8afdcbe3b8bc0215badceae30fa48a504ce9dba3f0156e6",
+  "manifest_signature": "4f5f263a0583baf3711c774aaee5133cb7aededfd4f863328575870f39849ef9",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "FAIL",
+      "detail": "expected `)` after call arguments; expected `;` after let binding; expected statement; expected statement; expected statement; expected statement; expected statement"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "1a3df4b35448beb66a064b185c6190a2d8835977c528673cd057e92980c76e8d"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "694f07680f6151941b130dbb6d5faea2f9f163e68a3dbae5014b236ec8a13e8d"
+    }
+  ],
+  "verdict": "FAIL",
+  "security": {
+    "mode": "safe",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}

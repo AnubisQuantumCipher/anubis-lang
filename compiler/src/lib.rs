@@ -42,18 +42,18 @@ impl Default for CompileResult {
 pub fn gate11_fixture_verdict(
     id_match: bool,
     both_verify: bool,
-    cpu_lane:  str,
-    metal_lane:  str,
+    cpu_lane: &str,
+    metal_lane: &str,
     journals_match: bool,
-) ->  'static str {
+) -> &'static str {
     if id_match
-           both_verify
-           cpu_lane == "cpu"
-           metal_lane == "metal-hybrid"
-           journals_match
+        && both_verify
+        && cpu_lane == "cpu"
+        && metal_lane == "metal-hybrid"
+        && journals_match
     {
         "PASS"
-    } else if id_match    both_verify    cpu_lane == "cpu"    metal_lane == "cpu" {
+    } else if id_match && both_verify && cpu_lane == "cpu" && metal_lane == "cpu" {
         "PARTIAL"
     } else {
         "FAIL"
@@ -67,7 +67,7 @@ mod tests {
     use crate::frontend::parse_source;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_test_dir(label:  str) -> std::path::PathBuf {
+    fn unique_test_dir(label: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock after epoch")
@@ -97,7 +97,7 @@ mod tests {
             parsed.diagnostics
         );
         assert_eq!(parsed.ast.items.len(), 1);
-        let it0 =  parsed.ast.items[0];
+        let it0 = &parsed.ast.items[0];
         let (name, params, body, span) = if let frontend::Item::Fn {
             name,
             params,
@@ -130,30 +130,33 @@ mod tests {
             assert_eq!(span.start, 0);
             assert_eq!(span.end, src.len());
 
-            let frontend::Stmt::Let { init, span, .. } =  body[0] else {
+            let frontend::Stmt::Let {
+                init,
+                span: let_span,
+                ..
+            } = &body[0]
+            else {
                 panic!("expected let statement: {:?}", body);
             };
-        } else {
-            // struct path - assertions skipped for Gate2/3 struct fixture
-        }
-        assert_eq!( src[span.start..span.end], "let z = x + y * 3;");
-        if name != "dummy" {
+            assert_eq!(&src[let_span.start..let_span.end], "let z = x + y * 3;");
             let frontend::Expr::Binary { op, lhs, rhs } = init else {
                 panic!("expected binary expression: {:?}", init);
             };
             assert_eq!(op, "+");
-            assert!(matches!( **lhs, frontend::Expr::Var(v) if v == "x"));
+            assert!(matches!(&**lhs, frontend::Expr::Var(v) if v == "x"));
             let frontend::Expr::Binary {
                 op: rhs_op,
                 lhs: rhs_lhs,
                 rhs: rhs_rhs,
-            } =  **rhs
+            } = &**rhs
             else {
                 panic!("expected multiplication on RHS: {:?}", rhs);
             };
             assert_eq!(rhs_op, "*");
-            assert!(matches!( **rhs_lhs, frontend::Expr::Var(v) if v == "y"));
+            assert!(matches!(&**rhs_lhs, frontend::Expr::Var(v) if v == "y"));
             let _ = rhs_rhs; // placeholder for slice
+        } else {
+            // struct path - assertions skipped for Gate2/3 struct fixture
         }
     }
 
@@ -163,7 +166,7 @@ mod tests {
         let parsed = frontend::parse_source_detailed(src);
 
         assert_eq!(parsed.ast.items.len(), 1);
-        let frontend::Item::Fn { body, .. } =  parsed.ast.items[0] else {
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
             panic!("expected function item: {:?}", parsed.ast.items[0]);
         };
         assert_eq!(
@@ -176,7 +179,7 @@ mod tests {
             parsed
                 .diagnostics
                 .iter()
-                .any(|d| d.message.contains("expected `;`")    d.span.start == 22),
+                .any(|d| d.message.contains("expected `;`") && d.span.start == 22),
             "expected missing semicolon diagnostic at newline: {:?}",
             parsed.diagnostics
         );
@@ -242,11 +245,11 @@ mod tests {
         let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
         let out_dir =
             std::env::temp_dir().join(format!("anubis-lower-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all( out_dir);
-        std::fs::create_dir_all( out_dir).unwrap();
-        let exe_path = lower_to_native(ir,  out_dir, "poc_lower", false).expect("lower");
+        let _ = std::fs::remove_dir_all(&out_dir);
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let exe_path = lower_to_native(ir, &out_dir, "poc_lower", false).expect("lower");
         let rs_path = out_dir.join("poc_lower.rs");
-        let emitted = std::fs::read_to_string( rs_path).expect("read emitted");
+        let emitted = std::fs::read_to_string(rs_path).expect("read emitted");
         // Must contain source variable name "x" and the AST bound 191 (not fallback 256)
         assert!(
             emitted.contains("let x: u32") || emitted.contains(" x:"),
@@ -263,33 +266,33 @@ mod tests {
             "must not be old hardcoded template 300"
         );
         assert!(
-            std::path::Path::new( exe_path).exists(),
+            std::path::Path::new(&exe_path).exists(),
             "binary must exist after lower"
         );
         // Behavior with the examples bound
-        let run1 = std::process::Command::new( exe_path)
+        let run1 = std::process::Command::new(&exe_path)
             .env("ANUBIS_TEST_X", "10")
             .arg("10")
             .output()
             .expect("run 10");
-        let out1 = String::from_utf8_lossy( run1.stdout);
+        let out1 = String::from_utf8_lossy(&run1.stdout);
         assert!(
             out1.contains("poc_memory_op_executed"),
             "run with 10 must print POC line: {}",
             out1
         );
-        let run2 = std::process::Command::new( exe_path)
+        let run2 = std::process::Command::new(&exe_path)
             .env("ANUBIS_TEST_X", "200")
             .arg("200")
             .output()
             .expect("run 200");
-        let out2 = String::from_utf8_lossy( run2.stdout);
+        let out2 = String::from_utf8_lossy(&run2.stdout);
         assert!(
             out2.contains("poc_memory_op_executed"),
             "run with 200 must print POC line: {}",
             out2
         );
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
@@ -305,16 +308,16 @@ fn trigger() {
         let ast = parse_source(src).expect("parse");
         let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
         let out_dir = unique_test_dir("missing-assume-bound");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
 
-        let err = lower_to_native(ir,  out_dir, "missing_bound", false)
+        let err = lower_to_native(ir, &out_dir, "missing_bound", false)
             .expect_err("research lowering must reject missing assume bound");
         assert!(
-            err.contains("assume")    err.contains("bound"),
+            err.contains("assume") && err.contains("bound"),
             "error: {}",
             err
         );
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
@@ -366,9 +369,9 @@ fn trigger() {
         let ast = parse_source(src).expect("parse");
         let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
         let out_dir = unique_test_dir("non-x-taint");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
 
-        let exe_path = lower_to_native(ir,  out_dir, "non_x_lower", false).expect("lower");
+        let exe_path = lower_to_native(ir, &out_dir, "non_x_lower", false).expect("lower");
         let emitted =
             std::fs::read_to_string(out_dir.join("non_x_lower.rs")).expect("read emitted");
 
@@ -388,19 +391,19 @@ fn trigger() {
             emitted
         );
 
-        let run = std::process::Command::new( exe_path)
+        let run = std::process::Command::new(&exe_path)
             .env("ANUBIS_TEST_Y", "42")
             .arg("42")
             .output()
             .expect("run 42");
-        let stdout = String::from_utf8_lossy( run.stdout);
+        let stdout = String::from_utf8_lossy(&run.stdout);
         assert!(
             stdout.contains("wrote at idx 42"),
             "runtime must derive write index from y value: {}",
             stdout
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
@@ -414,15 +417,15 @@ fn trigger() {
         assert!(ir.mode == BuildMode::Safe);
         // strengthen: lower and check real keywords in .rs (no stubs)
         let out = unique_test_dir("hybrid-lower");
-        std::fs::create_dir_all( out).unwrap();
-        let _ = lower_to_native(ir,  out, "hybrid_test", false);
+        std::fs::create_dir_all(&out).unwrap();
+        let _ = lower_to_native(ir, &out, "hybrid_test", false);
         let rs = std::fs::read_to_string(out.join("hybrid_test.rs")).unwrap_or_default();
         assert!(
             rs.contains("StorageModeShared") || rs.contains("metal"),
             "lowered hybrid .rs must contain real StorageModeShared/metal dispatch pattern"
         );
         // RISC0 prove path is in full template; fast demonstrates metal. The gate test verifies actual build+run of real dispatch.
-        let _ = std::fs::remove_dir_all( out);
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
@@ -464,21 +467,22 @@ module poc {
         );
         assert!(
             parsed.ast.items.iter().any(|item| {
-                matches!(
-                    item,
-                    frontend::Item::Module { name, items, .. }
-                        if name == "poc"
-                               items.iter().any(|nested| matches!(
-                                nested,
-                                frontend::Item::Fn { name, params, .. }
-                                    if name == "entry"
-                                           params
-                                            ==  vec![(
-                                                "input".to_string(),
-                                                "tainted<u32>".to_string()
-                                            )]
-                            ))
-                )
+                if let frontend::Item::Module { name, items, .. } = item {
+                    if name == "poc" {
+                        return items.iter().any(|nested| {
+                            if let frontend::Item::Fn { name, params, .. } = nested {
+                                return name == "entry"
+                                    && params
+                                        == &vec![(
+                                            "input".to_string(),
+                                            "tainted<u32>".to_string(),
+                                        )];
+                            }
+                            false
+                        });
+                    }
+                }
+                false
             }),
             "AST should retain module and typed function parameter: {:?}",
             parsed.ast.items
@@ -492,7 +496,7 @@ module poc {
         let err = typecheck(ast, frontend::Mode::Safe)
             .expect_err("safe mode must reject raw pointers without research/exploit boundary");
         assert!(
-            err.contains("raw pointer")    err.contains("research"),
+            err.contains("raw pointer") && err.contains("research"),
             "unexpected type error: {}",
             err
         );
@@ -516,16 +520,18 @@ fn report() {
 
         assert!(
             after.taint_traces.iter().any(|trace| trace.source == "raw"
-                   trace.sink.as_deref() == Some("sink")
-                   !trace.declassified),
+                && trace.sink.as_deref() == Some("sink")
+                && !trace.declassified),
             "tainted raw sink trace missing: {:?}",
             after.taint_traces
         );
         // For research bare declass, trace may be recorded via other paths; accept presence of declass mention or sink after declass
         assert!(
-            after.taint_traces.iter().any(|trace| trace.source == "raw"
-                   (trace.steps.iter().any(|step| step.contains("declassify"))
-                    || trace.declassified)),
+            after.taint_traces.iter().any(|trace| {
+                trace.source == "raw"
+                    && (trace.steps.iter().any(|step| step.contains("declassify"))
+                        || trace.declassified)
+            }),
             "declassify trace missing or not declassified as expected: {:?}",
             after.taint_traces
         );
@@ -544,12 +550,12 @@ fn bad() {
 "#;
         let ast = parse_source(src).expect("parse solver case");
         let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck solver case");
-        let checks = SymbolicEngine::check_obligations( ir);
+        let checks = SymbolicEngine::check_obligations(&ir);
 
         assert!(
             checks
                 .iter()
-                .any(|check| check.name.contains("assert")    check.status == "FAIL"),
+                .any(|check| check.name.contains("assert") && check.status == "FAIL"),
             "solver must fail impossible assertion: {:?}",
             checks
         );
@@ -559,6 +565,73 @@ fn bad() {
                 .as_deref()
                 .is_some_and(|model| model.contains("x"))),
             "solver failure must include model/counterexample mentioning x: {:?}",
+            checks
+        );
+    }
+
+    #[test]
+    fn solver_keeps_literal_widths_per_symbolic_variable() {
+        let src = r#"
+fn poc() {
+    research {
+        let buf: *mut u8 = 0 as *mut u8;
+        let x: tainted<u32> = symbolic();
+        assume(x < 191);
+        assume(x > 0);
+        assert(x > 0);
+    }
+}
+"#;
+        let ast = parse_source(src).expect("parse mixed-width solver case");
+        let ir =
+            typecheck(ast, frontend::Mode::Research).expect("typecheck mixed-width solver case");
+        let checks = SymbolicEngine::check_obligations(&ir);
+
+        assert!(
+            checks.iter().any(|check| check.status == "PASS"),
+            "mixed pointer/u32 research obligation should prove: {:?}",
+            checks
+        );
+        assert!(
+            checks.iter().all(|check| !check.detail.contains("sort")
+                && !check.smt.contains("(bvugt x (_ bv0 8))")),
+            "u32 symbolic obligation must not be narrowed by unrelated u8 bindings: {:?}",
+            checks
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.smt.contains("(bvugt x (_ bv0 32))")),
+            "x > 0 must use x's 32-bit width: {:?}",
+            checks
+        );
+    }
+
+    #[test]
+    fn solver_uses_concrete_let_bindings_as_assumptions() {
+        let src = r#"
+fn main() {
+    let x: u32 = 7;
+    let y: u32 = x * 6;
+    assert(x > 0);
+    assert(y == 42);
+}
+"#;
+        let ast = parse_source(src).expect("parse concrete solver case");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck concrete solver case");
+        let checks = SymbolicEngine::check_obligations(&ir);
+
+        assert!(
+            checks.iter().all(|check| check.status == "PASS"),
+            "concrete let bindings should discharge arithmetic assertions: {:?}",
+            checks
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.smt.contains("(assert (= x (_ bv7 32)))")
+                    && check.smt.contains("(assert (= y (bvmul x (_ bv6 32))))")),
+            "SMT must include concrete let assumptions for x and y: {:?}",
             checks
         );
     }
@@ -575,7 +648,7 @@ fn bad() {
         };
         let bad_model = "(define-fun x () (_ BitVec 32) #x0000000f)"; // x=15 violates <10
         assert!(
-            !middle::replay_counterexample( obl, bad_model),
+            !middle::replay_counterexample(&obl, bad_model),
             "replay must fail for inconsistent model"
         );
     }
@@ -592,9 +665,9 @@ fn bad() {
     #[test]
     fn evidence_bundle_contains_reference_grade_metadata_and_reports() {
         let out_dir = unique_test_dir("reference-evidence");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let artifact_path = out_dir.join("artifact-input");
-        std::fs::write( artifact_path, b"reference artifact").unwrap();
+        std::fs::write(&artifact_path, b"reference artifact").unwrap();
         let src = r#"
 fn report() {
     research {
@@ -610,8 +683,9 @@ fn report() {
             "research",
             artifact_path.to_str(),
             vec!["test build".into()],
-             out_dir,
+            &out_dir,
             Some("research"),
+            None,
         )
         .expect("bundle");
 
@@ -634,7 +708,7 @@ fn report() {
                 .manifest
                 .checks
                 .iter()
-                .any(|check| check.name == "solver"    check.status == "FAIL"),
+                .any(|check| check.name == "solver" && check.status == "FAIL"),
             "bundle should preserve real solver verdicts, not placeholder PASS: {:?}",
             bundle.manifest.checks
         );
@@ -643,45 +717,46 @@ fn report() {
             "failed solver obligation must fail the bundle"
         );
         assert!(
-            !validate_bundle( bundle.dir).expect("validate failing bundle"),
+            !validate_bundle(&bundle.dir).expect("validate failing bundle"),
             "validation must reject bundles with FAIL checks"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
     fn validate_bundle_rejects_tampered_source_snapshot() {
         let out_dir = unique_test_dir("tampered-source");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let src = "fn main() { let x = 1; }";
         let bundle =
-            build_evidence_bundle(src, "safe", None, vec!["test build".into()],  out_dir, None)
+            build_evidence_bundle(src, "safe", None, vec!["test build".into()], &out_dir, None, None)
                 .expect("bundle");
 
         std::fs::write(bundle.dir.join("source.anubis"), "fn main() { let x = 2; }").unwrap();
 
         assert!(
-            !validate_bundle( bundle.dir).expect("validate tampered bundle"),
+            !validate_bundle(&bundle.dir).expect("validate tampered bundle"),
             "tampered source snapshot must invalidate bundle"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
     fn validate_bundle_rejects_tampered_artifact() {
         let out_dir = unique_test_dir("tampered-artifact");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let artifact_path = out_dir.join("artifact-input");
-        std::fs::write( artifact_path, b"original artifact bytes").unwrap();
+        std::fs::write(&artifact_path, b"original artifact bytes").unwrap();
         let src = "fn main() { let x = 1; }";
         let bundle = build_evidence_bundle(
             src,
             "safe",
             artifact_path.to_str(),
             vec!["test build".into()],
-             out_dir,
+            &out_dir,
+            None,
             None,
         )
         .expect("bundle");
@@ -689,19 +764,19 @@ fn report() {
         std::fs::write(bundle.dir.join("artifact"), b"tampered artifact bytes").unwrap();
 
         assert!(
-            !validate_bundle( bundle.dir).expect("validate tampered artifact bundle"),
+            !validate_bundle(&bundle.dir).expect("validate tampered artifact bundle"),
             "tampered artifact must invalidate bundle"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
     fn evidence_bundle_captures_and_hashes_hybrid_sidecars() {
         let out_dir = unique_test_dir("hybrid-sidecar-evidence");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let artifact_path = out_dir.join("artifact-input");
-        std::fs::write( artifact_path, b"hybrid host bytes").unwrap();
+        std::fs::write(&artifact_path, b"hybrid host bytes").unwrap();
         std::fs::write(out_dir.join("guest.elf"), b"guest elf bytes").unwrap();
         std::fs::write(out_dir.join("image_id.txt"), b"1 2 3 4 5 6 7 8").unwrap();
         std::fs::write(
@@ -716,8 +791,9 @@ fn report() {
             "research",
             artifact_path.to_str(),
             vec!["test full hybrid build".into()],
-             out_dir,
+            &out_dir,
             Some("hybrid-metal-risc0"),
+            None,
         )
         .expect("bundle");
 
@@ -739,7 +815,7 @@ fn report() {
                     .manifest
                     .checks
                     .iter()
-                    .any(|item| item.name == check    item.status == "PASS"),
+                    .any(|item| item.name == check && item.status == "PASS"),
                 "hybrid evidence bundle must include PASS check {}: {:?}",
                 check,
                 bundle.manifest.checks
@@ -747,19 +823,19 @@ fn report() {
         }
         std::fs::write(bundle.dir.join("guest.elf"), b"tampered guest").unwrap();
         assert!(
-            !validate_bundle( bundle.dir).expect("validate tampered hybrid sidecar"),
+            !validate_bundle(&bundle.dir).expect("validate tampered hybrid sidecar"),
             "tampered hybrid guest ELF must invalidate bundle"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
     fn evidence_bundle_writes_solver_analysis_sidecars() {
         let out_dir = unique_test_dir("solver-analysis-sidecars");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let artifact_path = out_dir.join("artifact-input");
-        std::fs::write( artifact_path, b"solver artifact").unwrap();
+        std::fs::write(&artifact_path, b"solver artifact").unwrap();
         let src = r#"
 fn bad() {
     research {
@@ -775,8 +851,9 @@ fn bad() {
             "research",
             artifact_path.to_str(),
             vec!["test solver evidence".into()],
-             out_dir,
+            &out_dir,
             Some("research"),
+            None,
         )
         .expect("bundle");
 
@@ -789,7 +866,7 @@ fn bad() {
             "solver replay sidecar must be written into analysis/"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
@@ -829,7 +906,7 @@ fn bad() {
         let observed = "unknown";
         let require_metal = true;
         let would_be_yes = observed == "metal-hybrid";
-        assert!(!(require_metal    would_be_yes)); // unknown + require_metal must not yield YES
+        assert!(!(require_metal && would_be_yes)); // unknown + require_metal must not yield YES
     }
 
     #[test]
@@ -858,11 +935,11 @@ fn bad() {
     #[test]
     fn validate_bundle_rejects_nested_risc0_sidecar_tamper() {
         let out_dir = unique_test_dir("nested-risc0-tamper");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let artifact_path = out_dir.join("artifact-input");
         let risc0_dir = out_dir.join("backend/risc0");
         std::fs::create_dir_all(risc0_dir.join("guest/src")).unwrap();
-        std::fs::write( artifact_path, b"host artifact").unwrap();
+        std::fs::write(&artifact_path, b"host artifact").unwrap();
         std::fs::write(out_dir.join("guest.elf"), b"flat guest").unwrap();
         std::fs::write(out_dir.join("image_id.txt"), b"1 2 3 4 5 6 7 8").unwrap();
         std::fs::write(
@@ -892,13 +969,14 @@ fn bad() {
             "safe",
             artifact_path.to_str(),
             vec!["test risc0 evidence".into()],
-             out_dir,
+            &out_dir,
             Some("risc0-risc0"),
+            None,
         )
         .expect("bundle");
 
         assert!(
-            validate_bundle( bundle.dir).expect("validate fresh bundle"),
+            validate_bundle(&bundle.dir).expect("validate fresh bundle"),
             "fresh nested RISC0 bundle should validate before tamper"
         );
         std::fs::write(
@@ -907,21 +985,21 @@ fn bad() {
         )
         .unwrap();
         assert!(
-            !validate_bundle( bundle.dir).expect("validate tampered nested receipt"),
+            !validate_bundle(&bundle.dir).expect("validate tampered nested receipt"),
             "tampering nested backend/risc0 receipt must invalidate the bundle"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
     fn evidence_bundle_fails_when_risc0_metadata_reports_failed_verify() {
         let out_dir = unique_test_dir("risc0-failed-metadata");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let artifact_path = out_dir.join("artifact-input");
         let risc0_dir = out_dir.join("backend/risc0");
         std::fs::create_dir_all(risc0_dir.join("guest/src")).unwrap();
-        std::fs::write( artifact_path, b"host artifact").unwrap();
+        std::fs::write(&artifact_path, b"host artifact").unwrap();
         std::fs::write(out_dir.join("guest.elf"), b"flat guest").unwrap();
         std::fs::write(out_dir.join("image_id.txt"), b"1 2 3 4 5 6 7 8").unwrap();
         std::fs::write(
@@ -951,8 +1029,9 @@ fn bad() {
             "safe",
             artifact_path.to_str(),
             vec!["test failed risc0 evidence".into()],
-             out_dir,
+            &out_dir,
             Some("risc0-risc0"),
+            None,
         )
         .expect("bundle");
 
@@ -962,18 +1041,18 @@ fn bad() {
                 .checks
                 .iter()
                 .any(|check| check.name == "risc0_receipt_verify"
-                       check.status == "FAIL"
-                       check.detail.contains("failed")),
+                    && check.status == "FAIL"
+                    && check.detail.contains("failed")),
             "failed RISC0 metadata must become a failing evidence check: {:?}",
             bundle.manifest.checks
         );
         assert_eq!(bundle.manifest.verdict, "FAIL");
         assert!(
-            !validate_bundle( bundle.dir).expect("validate failed RISC0 bundle"),
+            !validate_bundle(&bundle.dir).expect("validate failed RISC0 bundle"),
             "bundle with failed RISC0 verify metadata must not validate"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
@@ -990,7 +1069,7 @@ fn main() {
             .expect_err("safe tainted sink must produce policy error");
         assert!(
             err.contains("tainted")
-                   (err.contains("declassify") || err.contains("policy") || err.contains("sink")),
+                && (err.contains("declassify") || err.contains("policy") || err.contains("sink")),
             "unexpected safe taint error: {}",
             err
         );
@@ -1001,34 +1080,32 @@ fn main() {
         use sha2::{Digest, Sha256};
 
         let out_dir = unique_test_dir("manifest-rewrite");
-        std::fs::create_dir_all( out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
         let src = "fn main() { let x = 1; }";
         let bundle =
-            build_evidence_bundle(src, "safe", None, vec!["test build".into()],  out_dir, None)
+            build_evidence_bundle(src, "safe", None, vec!["test build".into()], &out_dir, None, None)
                 .expect("bundle");
 
         let tampered_source = "fn main() { let x = 2; }";
         std::fs::write(bundle.dir.join("source.anubis"), tampered_source).unwrap();
 
-        let mut manifest: serde_json::Value = serde_json::from_str(
-             std::fs::read_to_string(bundle.dir.join("evidence.json")).unwrap(),
-        )
-        .unwrap();
+        let evidence_text = std::fs::read_to_string(bundle.dir.join("evidence.json")).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_str(&evidence_text).unwrap();
         let mut hasher = Sha256::new();
         hasher.update(tampered_source.as_bytes());
         manifest["source_hash"] = serde_json::Value::String(hex::encode(hasher.finalize()));
         std::fs::write(
             bundle.dir.join("evidence.json"),
-            serde_json::to_string_pretty( manifest).unwrap(),
+            serde_json::to_string_pretty(&manifest).unwrap(),
         )
         .unwrap();
 
         assert!(
-            !validate_bundle( bundle.dir).expect("validate manifest tamper"),
+            !validate_bundle(&bundle.dir).expect("validate manifest tamper"),
             "rewriting source plus evidence.json must be rejected by MANIFEST.sha256"
         );
 
-        let _ = std::fs::remove_dir_all( out_dir);
+        let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
@@ -1039,11 +1116,11 @@ fn main() {
         let ast = parse_source(src).expect("parse hybrid_stub");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("tc hybrid");
         let out = unique_test_dir("hybrid-gate");
-        let _ = std::fs::remove_dir_all( out);
-        std::fs::create_dir_all( out).unwrap();
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
 
         // lower fast: emits full project (with real RISC0+metal source) + produces fast real metal dispatch dst
-        let dst = lower_to_native(ir,  out, "hybrid_gate", false).expect("lower hybrid");
+        let dst = lower_to_native(ir, &out, "hybrid_gate", false).expect("lower hybrid");
 
         let proj = out.join("hybrid_gate-real-hybrid");
         assert!(
@@ -1064,13 +1141,13 @@ fn main() {
 
         // The dst produced by lower (fast path) must be a real executable that did dispatch
         assert!(
-            std::path::Path::new( dst).exists(),
+            std::path::Path::new(&dst).exists(),
             "fast dispatch dst must exist"
         );
-        let out_run = std::process::Command::new( dst)
+        let out_run = std::process::Command::new(&dst)
             .output()
             .expect("run fast dispatch dst");
-        let stdout = String::from_utf8_lossy( out_run.stdout);
+        let stdout = String::from_utf8_lossy(&out_run.stdout);
         assert!(
             stdout.contains("lane=metal-hybrid") || stdout.contains("lane=cpu"),
             "must report lane from probe: {}",
@@ -1088,37 +1165,35 @@ fn main() {
             "must complete hybrid path: {}",
             stdout
         );
-        let forced_cpu = std::process::Command::new( dst)
+        let forced_cpu = std::process::Command::new(&dst)
             .env("R0_DISABLE_METAL", "1")
             .arg("lane")
             .output()
             .expect("run forced cpu lane probe");
-        let forced_stdout = String::from_utf8_lossy( forced_cpu.stdout);
+        let forced_stdout = String::from_utf8_lossy(&forced_cpu.stdout);
         assert!(
             forced_stdout.contains("lane=cpu"),
             "R0_DISABLE_METAL=1 must force CPU lane: {}",
             forced_stdout
         );
-        let _ = std::fs::remove_dir_all( out);
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
     fn hybrid_full_project_emits_methods_vendor_patch_and_receipt_contract() {
-        let src = include_str!("../../examples/hybrid_stub.anubis");
-        let ast = parse_source(src).expect("parse hybrid_stub");
-        let ir = typecheck(ast, frontend::Mode::Safe).expect("tc hybrid");
         let out = unique_test_dir("hybrid-full-contract");
-        let _ = std::fs::remove_dir_all( out);
-        std::fs::create_dir_all( out).unwrap();
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
 
-        let _dst = lower_to_native(ir,  out, "hybrid_contract", false).expect("lower hybrid");
         let proj = out.join("hybrid_contract-real-hybrid");
+        crate::backends::native::hybrid::emit_hybrid_project(&proj, true, "42")
+            .expect("emit full hybrid project");
 
         let root_cargo = std::fs::read_to_string(proj.join("Cargo.toml")).expect("root cargo");
         assert!(
             root_cargo.contains("[patch.crates-io]")
-                   root_cargo.contains("vendor/risc0-circuit-rv32im"),
-            "full hybrid workspace must patch crates.io to vendored risc0-metal-hybrid crate:\n{}",
+                && root_cargo.contains("/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im"),
+            "full hybrid workspace must patch crates.io to the canonical Desktop metal-hybrid-prover crate:\n{}",
             root_cargo
         );
         assert!(
@@ -1130,8 +1205,8 @@ fn main() {
         let host_cargo = std::fs::read_to_string(proj.join("host/Cargo.toml")).expect("host cargo");
         assert!(
             host_cargo.contains("risc0-zkvm = { version = \"=3.0.5\"")
-                   host_cargo.contains("disable-dev-mode")
-                   host_cargo.contains("risc0-circuit-rv32im = { version = \"=4.0.4\""),
+                && host_cargo.contains("disable-dev-mode")
+                && host_cargo.contains("risc0-circuit-rv32im = { version = \"=4.0.4\""),
             "host must pin the measured risc0-metal-hybrid dependency shape:\n{}",
             host_cargo
         );
@@ -1166,7 +1241,7 @@ fn main() {
             );
         }
 
-        let _ = std::fs::remove_dir_all( out);
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
@@ -1199,7 +1274,7 @@ fn main() {
             "full hybrid template must use reference get_prover_server path, not default_prover"
         );
         assert!(
-            full.contains("bincode::serialize( receipt)"),
+            full.contains("bincode::serialize(&receipt)"),
             "full hybrid template must serialize the real receipt, not write a marker:\n{}",
             full
         );

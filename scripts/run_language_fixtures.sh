@@ -66,23 +66,24 @@ for f in "$FIXTURE_DIR"/*.anb; do
     verdict="PASS"
   fi
 
+  needle_ok=1
+  if [[ -n "$err_needle" ]]; then
+    needle_ok=0
+    if grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null || grep -qi "$err_needle" "$outd/check_diagnostics.txt" 2>/dev/null; then
+      needle_ok=1
+    fi
+  fi
+
   ok=0
   if [[ "$expect" == "PASS" ]]; then
-    # For PASS expectation, it is ok unless it has a specific FAIL needle that indicates a syntax/type/taint failure
-    has_fail_needle=0
-    if [[ -n "$err_needle" ]] && ( grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null ); then
-      has_fail_needle=1
-    fi
-    if [[ $has_fail_needle -eq 0 ]]; then ok=1; fi
-  else
-    # EXPECT FAIL: success for the test if we actually saw a failure
-    if [[ $failure_run -eq 1 ]]; then
+    # PASS means the command completed and no parser/type/taint/solver evidence failed.
+    if [[ $rc -eq 0 && $failure_run -eq 0 && "$verdict" == "PASS" ]]; then
       ok=1
     fi
-    if [[ -n "$err_needle" ]]; then
-      if grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null || grep -qi "$err_needle" "$outd/check_diagnostics.txt" 2>/dev/null; then
-        ok=1
-      fi
+  else
+    # FAIL means a real failure was observed; if a diagnostic needle is present, it must match too.
+    if [[ $needle_ok -eq 1 && ( $rc -ne 0 || $failure_run -eq 1 || "$verdict" == "FAIL" ) ]]; then
+      ok=1
     fi
   fi
 

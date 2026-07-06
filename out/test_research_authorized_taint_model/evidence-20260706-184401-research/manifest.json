@@ -1,0 +1,77 @@
+{
+  "timestamp": "20260706-184401",
+  "tool": "anubis 0.2.0",
+  "mode": "research",
+  "source_hash": "84fc3d50c8d171356d2dd346b85d2e9ab13d352b1770e9da0e139823d26c8ddb",
+  "build_log_hash": "06818f532e415d69da4043e53c88115e4a28823d34ac0f15a19bcce147eb8045",
+  "artifact_hash": null,
+  "lane": "research-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "5b8e35dd4f8720d7897a971b2d1cca84cc06e51506489e7c219fd1c31140a752",
+  "sarif_hash": "0b0b7694cdbdab958c542cbb592d2500ea08ba6864fa15ae18df96f03e1e54a4",
+  "bounty_report_hash": "3f1287483d73cafdd85be047f9712a34d3de45d505d4113f3a3181df68f69d80",
+  "manifest_signature": "8efc0a5dd9a003f4802e3a3dc18d9cc5a606802b1c423457533ef943d0740122",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=research symbols=2 functions=1"
+    },
+    {
+      "name": "taint",
+      "status": "PASS",
+      "detail": "labels=3 traces=1"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "name": "solver",
+      "status": "PASS",
+      "detail": "solver:no-obligations=PASS"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "84fc3d50c8d171356d2dd346b85d2e9ab13d352b1770e9da0e139823d26c8ddb"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "06818f532e415d69da4043e53c88115e4a28823d34ac0f15a19bcce147eb8045"
+    }
+  ],
+  "verdict": "PASS",
+  "security": {
+    "attributes": [
+      {
+        "args": [
+          {
+            "key": "authorization",
+            "value": "local-lab-or-bug-bounty-program"
+          },
+          {
+            "key": "scope",
+            "value": "local-fixture"
+          },
+          {
+            "key": "reason",
+            "value": "model tainted flow for boundary issue report"
+          },
+          {
+            "key": "non_destructive",
+            "value": "true"
+          }
+        ],
+        "name": "research"
+      }
+    ]
+  }
+}

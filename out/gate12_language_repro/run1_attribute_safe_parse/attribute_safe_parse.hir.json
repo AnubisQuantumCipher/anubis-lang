@@ -1,0 +1,31 @@
+{
+  "imports": [],
+  "modules": [],
+  "functions": [
+    {
+      "name": "main",
+      "module": null,
+      "mode": "safe",
+      "params": [],
+      "symbols": [
+        {
+          "name": "x",
+          "ty": "u32",
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": [
+            87,
+            102
+          ]
+        }
+      ],
+      "effects": [],
+      "span": [
+        71,
+        104
+      ]
+    }
+  ]
+}

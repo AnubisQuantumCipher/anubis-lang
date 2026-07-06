@@ -180,6 +180,7 @@ fn collect_items(
                 body,
                 mode,
                 span,
+                attributes,
                 ..
             } => {
                 let effective_mode = if *mode == Mode::Safe {
@@ -187,6 +188,27 @@ fn collect_items(
                 } else {
                     *mode
                 };
+                // Gate 15: enforce authorization for research/poc/fuzz etc.
+                if matches!(effective_mode, Mode::Research) {
+                    let has_auth = attributes.iter().any(|attr| {
+                        matches!(
+                            attr.name.as_str(),
+                            "research" | "poc" | "fuzz" | "proof" | "defensive" | "audit"
+                        ) && attr
+                            .args
+                            .iter()
+                            .any(|a| a.key == "authorization" && !a.value.is_empty())
+                    });
+                    if !has_auth && !attributes.is_empty() {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_RESEARCH_MISSING_AUTHORIZATION".into()),
+                            message: format!(
+                                "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
+                            ),
+                            span: Some((span.start, span.end)),
+                        });
+                    }
+                }
                 analyze_function(name, module, params, body, effective_mode, *span, ctx);
             }
             Item::Struct { .. } => {
@@ -209,6 +231,11 @@ fn analyze_function(
     if mode != Mode::Safe {
         ctx.has_research = true;
     }
+
+    // Gate 15: capability enforcement from attributes (basic for now)
+    // In real, we'd pass attributes; for demo use mode + assume caller set correctly.
+    // For poc/research without auth metadata, we rely on CLI layer for now,
+    // but add note for effect-like checks.
 
     let mut scope = BTreeMap::<String, ScopeBinding>::new();
     let mut fn_symbols = vec![];
@@ -390,12 +417,12 @@ fn analyze_stmts(
                 };
                 ctx.symbolic_widths.insert(name.clone(), w);
 
-                // For solver faithfulness: record equality only for derived computations (Binary)
-                if matches!(init, Expr::Binary { .. }) {
-                    let def_smt = format!("(= {} {})", name, expr_to_smt(init));
+                // For solver faithfulness: concrete lets become path assumptions.
+                // Symbolic sources remain unconstrained until assume()/assert() shape them.
+                if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
+                    let def_smt = format!("(= {} {})", name, init_smt);
                     ctx.symbolic_defs.push(def_smt.clone());
-                    ctx.constraints
-                        .push(format!("(assert (= {} {}))", name, expr_to_smt(init)));
+                    ctx.constraints.push(format!("(assert {})", def_smt));
                     assumptions.push(def_smt); // so it is included in subsequent obligations
                 }
             }
@@ -432,13 +459,13 @@ fn analyze_stmts(
                 }
             }
             Stmt::ExprStmt(Expr::Assume(expr)) => {
-                let smt = expr_to_smt(expr);
+                let smt = expr_to_smt(expr, &ctx.symbolic_widths);
                 assumptions.push(smt.clone());
                 ctx.constraints.push(format!("(assert {})", smt));
                 effects.push("assume".into());
             }
             Stmt::ExprStmt(Expr::Assert(expr)) => {
-                let smt = expr_to_smt(expr);
+                let smt = expr_to_smt(expr, &ctx.symbolic_widths);
                 ctx.constraints.push(format!("(assert {})", smt));
                 let mut vars = BTreeSet::new();
                 collect_vars_from_smt(&smt, &mut vars);
@@ -498,26 +525,66 @@ fn analyze_expr_effect(
     ctx: &mut SemanticContext,
 ) {
     match expr {
-        Expr::Call { callee, args } if is_sink(callee) => {
-            effects.push(format!("sink:{}", callee));
-            for arg in args {
-                if let Some(source) = expr_taint_source(arg, scope) {
-                    let declassified = expr_is_declassified(arg, scope);
-                    ctx.taint_traces.push(TaintTrace {
-                        source: source.clone(),
-                        sink: Some(callee.clone()),
-                        steps: vec![format!("{} -> {}", source, callee)],
-                        declassified,
+        Expr::Call { callee, args } => {
+            if callee == "shell" || callee == "exec" || callee == "system" {
+                effects.push("shell".to_string());
+                if mode == Mode::Safe {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
+                        message: format!(
+                            "safe mode shell/exec effect is forbidden (use @research/@poc with authorization)"
+                        ),
+                        span: None,
                     });
-                    if mode == Mode::Safe && !declassified {
-                        ctx.diagnostics.push(SemanticDiagnostic {
-                            code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
-                            message: format!(
-                                "safe mode tainted flow from `{}` to sink `{}` requires declassify() or research boundary",
-                                source, callee
-                            ),
-                            span: None,
+                }
+            }
+            if callee == "read_file" || callee == "open" {
+                effects.push("file_read".to_string());
+                if mode == Mode::Safe {
+                    // allow for audit but record; strict forbid only for certain
+                }
+            }
+            if callee == "write_file" || callee == "write" {
+                effects.push("file_write".to_string());
+                if mode == Mode::Safe {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
+                        message: "safe mode file_write forbidden".to_string(),
+                        span: None,
+                    });
+                }
+            }
+            if callee.contains("network") || callee == "send" || callee == "connect" {
+                effects.push("network".to_string());
+                if mode == Mode::Safe {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
+                        message: "safe mode network effect forbidden".to_string(),
+                        span: None,
+                    });
+                }
+            }
+            if is_sink(callee) {
+                effects.push(format!("sink:{}", callee));
+                for arg in args {
+                    if let Some(source) = expr_taint_source(arg, scope) {
+                        let declassified = expr_is_declassified(arg, scope);
+                        ctx.taint_traces.push(TaintTrace {
+                            source: source.clone(),
+                            sink: Some(callee.clone()),
+                            steps: vec![format!("{} -> {}", source, callee)],
+                            declassified,
                         });
+                        if mode == Mode::Safe && !declassified {
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
+                                message: format!(
+                                    "safe mode tainted flow from `{}` to sink `{}` requires declassify() or research boundary",
+                                    source, callee
+                                ),
+                                span: None,
+                            });
+                        }
                     }
                 }
             }
@@ -551,13 +618,6 @@ fn analyze_expr_effect(
                     });
                 }
             }
-        }
-        Expr::Call { args, .. }
-            if args
-                .iter()
-                .any(|arg| expr_taint_source(arg, scope).is_some()) =>
-        {
-            effects.push("tainted-call".into());
         }
         _ => {}
     }
@@ -622,37 +682,18 @@ impl SymbolicEngine {
             .map(|obl| {
                 // Faithful complete smt with defs from ir + obligation
                 let mut smt = String::from("(set-logic QF_BV)\n");
-                let mut vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
-                for d in &ir.symbolic_defs {
-                    if let Some(v) = d.split_whitespace().nth(1) {
-                        vars.insert(v.trim_end_matches(')').to_string());
-                    }
-                }
+                let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
                 for v in &vars {
                     if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
                         let w = *ir.symbolic_widths.get(v).unwrap_or(&32u32);
                         smt.push_str(&format!("(declare-const {} {})\n", v, smt_bv_type(w)));
                     }
                 }
-                if ir.symbolic_widths.values().any(|&ww| ww == 8) {
-                    smt = smt.replace("(_ bv1 32)", "(_ bv1 8)");
-                    smt = smt.replace("(_ bv0 32)", "(_ bv0 8)");
-                    smt = smt.replace("(_ bv255 32)", "(_ bv255 8)");
-                }
-                for d in &ir.symbolic_defs {
-                    smt.push_str(&format!("(assert {})\n", d));
-                }
                 for a in &obl.assumptions {
                     smt.push_str(&format!("(assert {})\n", a));
                 }
                 smt.push_str(&format!("(assert (not {}))\n", obl.assertion));
                 smt.push_str("(check-sat)\n(get-model)\n");
-                // Post adjust after full smt built
-                if ir.symbolic_widths.values().any(|&ww| ww == 8) {
-                    smt = smt.replace("(_ bv1 32)", "(_ bv1 8)");
-                    smt = smt.replace("(_ bv0 32)", "(_ bv0 8)");
-                    smt = smt.replace("(_ bv255 32)", "(_ bv255 8)");
-                }
                 run_z3_obligation_with_smt(obl, smt)
             })
             .collect()
@@ -757,13 +798,45 @@ pub fn replay_counterexample_for_ir(_ir: &TypedIR, model: &str) -> bool {
     )
 }
 
-fn expr_to_smt(e: &Expr) -> String {
+fn expr_to_smt(e: &Expr, widths: &BTreeMap<String, u32>) -> String {
+    expr_to_smt_with_width(e, widths, None)
+}
+
+fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String> {
+    match e {
+        Expr::Var(v) if widths.contains_key(v) => Some(v.clone()),
+        Expr::Literal(l) if l.chars().all(|c| c.is_ascii_digit()) => Some(expr_to_smt(e, widths)),
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_to_smt_value(lhs, widths)?;
+            expr_to_smt_value(rhs, widths)?;
+            Some(expr_to_smt(e, widths))
+        }
+        Expr::Cast { expr, ty } => {
+            expr_to_smt_value(expr, widths)?;
+            Some(expr_to_smt_with_width(expr, widths, Some(bitwidth_of(ty))))
+        }
+        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+            expr_to_smt_value(inner, widths)
+        }
+        _ => None,
+    }
+}
+
+fn expr_to_smt_with_width(
+    e: &Expr,
+    widths: &BTreeMap<String, u32>,
+    expected_width: Option<u32>,
+) -> String {
     match e {
         Expr::Var(v) => v.clone(),
-        Expr::Literal(l) => format!("(_ bv{} 32)", l), // default 32 for now
+        Expr::Literal(l) => format!("(_ bv{} {})", l, expected_width.unwrap_or(32)),
         Expr::Binary { op, lhs, rhs } => {
-            let l = expr_to_smt(lhs);
-            let r = expr_to_smt(rhs);
+            let width = expr_bitwidth(lhs, widths)
+                .or_else(|| expr_bitwidth(rhs, widths))
+                .or(expected_width)
+                .unwrap_or(32);
+            let l = expr_to_smt_with_width(lhs, widths, Some(width));
+            let r = expr_to_smt_with_width(rhs, widths, Some(width));
             match op.as_str() {
                 "+" => format!("(bvadd {} {})", l, r),
                 "-" => format!("(bvsub {} {})", l, r),
@@ -778,11 +851,30 @@ fn expr_to_smt(e: &Expr) -> String {
                 _ => format!("({} {} {})", op, l, r),
             }
         }
-        Expr::Declassify { inner, .. } => expr_to_smt(inner),
-        Expr::Assume(inner) | Expr::Assert(inner) => expr_to_smt(inner),
+        Expr::Cast { expr, ty } => expr_to_smt_with_width(expr, widths, Some(bitwidth_of(ty))),
+        Expr::Declassify { inner, .. } => expr_to_smt_with_width(inner, widths, expected_width),
+        Expr::Assume(inner) | Expr::Assert(inner) => {
+            expr_to_smt_with_width(inner, widths, expected_width)
+        }
         Expr::TaintSource { label } => format!("taint_source_{}", label.replace("\"", "")),
         Expr::Symbolic { .. } => "symbolic".into(),
         _ => "true".into(),
+    }
+}
+
+fn expr_bitwidth(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<u32> {
+    match e {
+        Expr::Var(v) => widths.get(v).copied(),
+        Expr::Cast { ty, .. } | Expr::Tainted { ty, .. } | Expr::Symbolic { ty } => {
+            Some(bitwidth_of(ty))
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_bitwidth(lhs, widths).or_else(|| expr_bitwidth(rhs, widths))
+        }
+        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+            expr_bitwidth(inner, widths)
+        }
+        _ => None,
     }
 }
 

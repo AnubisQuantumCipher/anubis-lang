@@ -1,0 +1,34 @@
+{
+  "imports": [],
+  "modules": [],
+  "functions": [
+    {
+      "name": "main",
+      "module": null,
+      "mode": "safe",
+      "params": [],
+      "symbols": [
+        {
+          "name": "x",
+          "ty": "u32",
+          "mode": "safe",
+          "tainted": false,
+          "taint_source": null,
+          "declassified": false,
+          "span": [
+            88,
+            103
+          ]
+        }
+      ],
+      "effects": [
+        "assert",
+        "assert"
+      ],
+      "span": [
+        72,
+        144
+      ]
+    }
+  ]
+}

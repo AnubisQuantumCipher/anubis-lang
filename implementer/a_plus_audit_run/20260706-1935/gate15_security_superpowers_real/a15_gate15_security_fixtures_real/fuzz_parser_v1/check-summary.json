@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "implementer/a_plus_audit_run/20260706-1935/gate15_security_superpowers_real/a15_gate15_security_fixtures_real/fuzz_parser_v1/evidence-20260706-193443-research",
+  "check_error": null,
+  "source_hash": "dbbd6fdbe2c8716380204bcdf8a7ae3468f6c87d4951b0ee0371d2ac9e884af0",
+  "verdict": "PASS"
+}

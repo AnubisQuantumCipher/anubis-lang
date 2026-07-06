@@ -1,0 +1,24 @@
+# Anubis.toml.example
+# Copy to Anubis.toml (or place next to your .anb sources) and edit.
+# Resolution order for risc0 metal-hybrid reference:
+#   1. --metal-reference (CLI)
+#   2. ANUBIS_RISC0_METAL_REFERENCE (env)
+#   3. This file: [backend.risc0_metal] reference_path
+#   4. Built-in local default (only for the canonical development host)
+
+[backend.risc0]
+enabled = true
+version = "3.0.5"
+prove_mode = "in-process"
+
+[backend.risc0_metal]
+enabled = true
+reference_path = "/path/to/metal-hybrid-prover"
+vendored_patch_path = "/path/to/metal-hybrid-prover/vendor/risc0-circuit-rv32im"
+require_tier2_metal = true
+allow_cpu_fallback = false
+
+[evidence]
+schema_version = "1.0"
+require_manifest = true
+require_tamper_check = true

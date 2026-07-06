@@ -1,0 +1,4 @@
+check input: examples/security/research_authorized_taint_model.anb
+mode: Research
+taint pass: applied (if typecheck succeeded)
+security_attr: research [AttrArg { key: "authorization", value: "local-lab-or-bug-bounty-program" }, AttrArg { key: "scope", value: "local-fixture" }, AttrArg { key: "reason", value: "model tainted flow for boundary issue report" }, AttrArg { key: "non_destructive", value: "true" }]

@@ -1,0 +1,8 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/debug/anubis check tests/fixtures/language_core/parenthesized_expr.anb --evidence --out out/a15_gate2_language_fixtures/parenthesized_expr`
+anubis check tests/fixtures/language_core/parenthesized_expr.anb (evidence=true)
+evidence bundle: out/a15_gate2_language_fixtures/parenthesized_expr/evidence-20260706-071446-safe
+verdict: PASS
+check passed (no policy violations)
