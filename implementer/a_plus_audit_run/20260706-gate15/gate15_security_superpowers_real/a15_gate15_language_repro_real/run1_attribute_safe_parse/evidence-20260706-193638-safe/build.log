@@ -1,0 +1,3 @@
+check input: tests/fixtures/language_core/attribute_safe_parse.anb
+mode: Safe
+taint pass: applied (if typecheck succeeded)

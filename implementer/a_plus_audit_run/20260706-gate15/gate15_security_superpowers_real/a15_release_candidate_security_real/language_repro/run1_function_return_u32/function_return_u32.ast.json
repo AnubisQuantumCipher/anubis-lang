@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:id",
+  "num_items": 2,
+  "preview": "// EXPECT: PASS\n// FEATURE: typed return u32\nfn id(x: u32) -> u32 {\n    return x;\n}\nfn main() {\n    let v = id(99);\n}\n"
+}

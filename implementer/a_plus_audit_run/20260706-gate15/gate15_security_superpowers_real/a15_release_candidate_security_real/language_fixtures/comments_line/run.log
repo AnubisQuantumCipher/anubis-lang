@@ -1,0 +1,73 @@
+warning: unreachable pattern
+    --> compiler/src/frontend/mod.rs:1057:33
+     |
+ 982 |             Token::Ident(name) => {
+     |             ------------------ matches all the relevant values
+...
+1057 |             Token::Keyword(k) | Token::Ident(k) if k == "taint_source" => {
+     |                                 ^^^^^^^^^^^^^^^ no value can reach this
+     |
+     = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable pattern
+    --> compiler/src/frontend/mod.rs:1069:33
+     |
+ 982 |             Token::Ident(name) => {
+     |             ------------------ matches all the relevant values
+...
+1069 |             Token::Keyword(k) | Token::Ident(k) if k == "declassify" => {
+     |                                 ^^^^^^^^^^^^^^^ no value can reach this
+
+warning: `anubis-compiler` (lib) generated 2 warnings
+warning: unreachable statement
+    --> tools/anubis/src/main.rs:1315:5
+     |
+1313 |       return Ok(()); // early return stub; real risc0 code below is unreachable in this build
+     |       ------------- any code following this expression is unreachable
+1314 |       // (original risc0 code elided for compile)
+1315 | /     if let Some(parent) = receipt.parent() {
+1316 | |         std::fs::create_dir_all(parent)?;
+1317 | |     }
+     | |_____^ unreachable statement
+     |
+     = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `id_words`
+   --> tools/anubis/src/main.rs:844:17
+    |
+844 |             let id_words = parse_image_id_words(&id_data)
+    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `journal_bytes`
+   --> tools/anubis/src/main.rs:858:17
+    |
+858 |             let journal_bytes: &[u8] = b"stub-journal-for-security-build";
+    |                 ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_bytes`
+
+warning: unused variable: `journal_sha`
+   --> tools/anubis/src/main.rs:859:17
+    |
+859 |             let journal_sha = "stub-sha256-for-gate15".to_string();
+    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_journal_sha`
+
+warning: unused variable: `elf_bytes`
+    --> tools/anubis/src/main.rs:1303:9
+     |
+1303 |     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
+     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elf_bytes`
+
+warning: unused variable: `id_words`
+    --> tools/anubis/src/main.rs:1305:9
+     |
+1305 |     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_id_words`
+
+warning: `anubis` (bin "anubis") generated 6 warnings (run `cargo fix --bin "anubis" -p anubis` to apply 5 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running `target/debug/anubis check tests/fixtures/language_core/comments_line.anb --evidence --out out/release_candidate_security_real/20260706-153147/language_fixtures/comments_line`
+anubis check tests/fixtures/language_core/comments_line.anb (evidence=true)
+evidence bundle: out/release_candidate_security_real/20260706-153147/language_fixtures/comments_line/evidence-20260706-193154-safe
+verdict: PASS
+check passed (no policy violations)

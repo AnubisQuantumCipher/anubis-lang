@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// FEATURE: typed return u32
+fn id(x: u32) -> u32 {
+    return x;
+}
+fn main() {
+    let v = id(99);
+}

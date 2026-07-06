@@ -1,0 +1,9 @@
+[
+  {
+    "detail": "assertion proved: assumptions imply assertion",
+    "model": null,
+    "name": "assert:(= y (_ bv42 32))",
+    "smt": "(set-logic QF_BV)\n(declare-const x (_ BitVec 32))\n(declare-const y (_ BitVec 32))\n(assert (= x (_ bv7 32)))\n(assert (= y (bvmul x (_ bv6 32))))\n(assert (not (= y (_ bv42 32))))\n(check-sat)\n(get-model)\n",
+    "status": "PASS"
+  }
+]

@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: unknown variable|ANUBIS_UNKNOWN_VARIABLE\nfn main() {\n    let y = x + 1;\n}\n"
+}

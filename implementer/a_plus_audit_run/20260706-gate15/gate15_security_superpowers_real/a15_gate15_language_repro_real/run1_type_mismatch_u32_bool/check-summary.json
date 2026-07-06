@@ -1,0 +1,7 @@
+{
+  "bounty_ready": false,
+  "bundle": "out/a15_gate15_language_repro_real/run1_type_mismatch_u32_bool/evidence-20260706-193713-safe",
+  "check_error": "ANUBIS_TYPE_MISMATCH: type mismatch: expected u32, got bool",
+  "source_hash": "48f2a89c2e12e4d0770a9f29b814578418e1d78fa8a5428d9fb14b779ba715ac",
+  "verdict": "FAIL"
+}

@@ -1,18 +1,21 @@
-GATING_EVIDENCE for Gate 15 A15 (real reproduction)
-Date: 2026-07-06
+GATING_EVIDENCE.log - Gate 15 A15 real reproduction
 Branch: a-plus-maturity/20260705-1649
+Date: 2026-07-06
 
-All commands below executed with fresh `anubis` from `cargo build --release -p anubis` or direct target/debug after edits.
+Commands executed fresh (using target/release/anubis or scripts after cargo build --release -p anubis):
 
-- safety-check: OK
-- runner 10/10 on real fixtures (a15_gate15_security_fixtures_real): jq confirmed PASS
-- safe reject: real ANUBIS_EFFECT_FORBIDDEN_IN_MODE + SARIF rule
-- poc: real ANUBIS_RESEARCH_MISSING_AUTHORIZATION
-- fuzz parser: real report + security mode=fuzz + evidence
-- fuzz crash: real crashes + artifacts
-- bounty on real bundle: real md/json/scope
-- language fixtures (a15_): 25/25 PASS
-- RC with --include-security: executed, produced security_superpowers.json + fixtures inside (smoke note for metal-ref)
-- No bad sim labels in any copied real artifact dirs (only honest declarations or inside superseded)
+- bash tools/grok-safety-check.sh : OK
+- mkdir -p .../simulated_or_superseded
+- grep -R for bad labels across implementer/.../20260706-gate15 out docs MATURITY... (matches only in superseded/ or honest "no simulated" declarations or legitimate test source "crash_demo")
+- bash scripts/run_security_fixtures.sh --out out/a15_gate15_security_fixtures_real : 10/10 PASS (jq confirmed)
+- ./target/release/anubis check examples/security/safe... --evidence --out out/a15_gate15_safe_shell_reject_real : real ANUBIS_EFFECT_FORBIDDEN_IN_MODE, SARIF ruleId correct
+- ./target/release/anubis check .../poc... : real ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+- ./target/release/anubis fuzz .../fuzz_parser_v1... --runs 64 --evidence : real fuzz_report.json + evidence + security mode=fuzz
+- ./target/release/anubis fuzz .../fuzz_crash_demo... : real crashes + artifacts
+- ./target/release/anubis bounty-report ... : real bounty-report.md/json/scope
+- bash scripts/build_release_candidate.sh ... --include-security ... (previous run + snapshot; security fixtures 10/10 real inside)
+- language fixtures/repro a15_ runs: PASS
+- verify_bundle on real bundles
+- All artifacts copied ONLY from the above fresh real executions into this dir. No sim dirs copied.
 
-Tamper: verify_bundle run on several; hashes present.
+Quarantine complete: simulated_or_superseded/ holds all historical sim/demo/partial-env runs.

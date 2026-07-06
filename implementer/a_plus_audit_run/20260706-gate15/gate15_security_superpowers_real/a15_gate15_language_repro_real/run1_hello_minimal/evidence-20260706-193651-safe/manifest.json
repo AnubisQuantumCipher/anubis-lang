@@ -1,0 +1,51 @@
+{
+  "timestamp": "20260706-193651",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "a3eaddbae3861907e74da7cd13de0c52e1f04cfc31b189fda463f00863617b70",
+  "build_log_hash": "ef6d9664c8448460ae8986d4b2b166cbd297b5f20897662aa20c13dac6dcd684",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "fa7452a96c3a30a10685e468c9dead07a19b08ee9cd377dadc6d3c5934a10845",
+  "sarif_hash": "279f82a4e81ce162b77baa9dabcc3ffd526b22d54776e914d1e6a987d77184a2",
+  "bounty_report_hash": "d5a117f602396efdb88cf82bc53ee7f425104f828250d90094c755fdc1439a39",
+  "manifest_signature": "c3ede45367073880c841567b933f63104b282fe61a9bdc17ae06385027741e21",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=safe symbols=1 functions=1"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "name": "solver",
+      "status": "PASS",
+      "detail": "solver:no-obligations=PASS"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "a3eaddbae3861907e74da7cd13de0c52e1f04cfc31b189fda463f00863617b70"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "ef6d9664c8448460ae8986d4b2b166cbd297b5f20897662aa20c13dac6dcd684"
+    }
+  ],
+  "verdict": "PASS",
+  "security": {
+    "mode": "safe",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}

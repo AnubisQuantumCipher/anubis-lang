@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/release_candidate_security_real/20260706-153147/language_repro/run1_metal_parity_minimal/evidence-20260706-193223-safe",
+  "check_error": null,
+  "source_hash": "000e356aecf0900290735166df52b875baaac43350d8f8d059287dda4fa4d4fa",
+  "verdict": "PASS"
+}

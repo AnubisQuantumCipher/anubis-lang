@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/a15_gate15_language_repro_real/run1_comments_line/evidence-20260706-193640-safe",
+  "check_error": null,
+  "source_hash": "5893980247a2971632a98bbba803acfb91b4aff0dec9d8e5fa2be7750e2640aa",
+  "verdict": "PASS"
+}

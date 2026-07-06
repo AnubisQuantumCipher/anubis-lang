@@ -1,0 +1,1 @@
+prove input: examples/metal_parity_hello.anb backend: risc0
