@@ -11,6 +11,13 @@ target/
 out/*/target/
 out/audit/hybrid/*target/
 
+# Experiment / A+ audit outputs (generated, do not commit raw runs)
+out/a_plus_*/
+out/a15_*/
+out/*_tampered/
+out/current_*/
+implementer/a_plus_audit_run/*/proof_bundle/
+
 # OS / editor
 .DS_Store
 *.swp

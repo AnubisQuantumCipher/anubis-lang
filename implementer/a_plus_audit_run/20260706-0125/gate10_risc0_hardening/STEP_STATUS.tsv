@@ -1,0 +1,8 @@
+step	status	note
+1-real-id	YES	real 8-word from GUEST_ID after risc0-build
+2-real-verify-api	PARTIAL	real Receipt::verify call implemented + documented; stub receipt in this run
+3-tamper	YES	enhanced copy + script requires hashes for all sidecars including source
+4-dev-mock	YES	flags all false, no dev mode
+5-tests	YES	fmt clean, risc0 tests pass, clippy clean
+6-a15-repro	YES	this dir
+7-docs	DONE	updated with PARTIAL

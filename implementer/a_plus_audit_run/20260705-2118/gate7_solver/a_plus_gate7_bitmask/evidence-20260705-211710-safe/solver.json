@@ -1,0 +1,9 @@
+[
+  {
+    "detail": "z3 returned `(error \"line 4 column 25: unknown constant derived\")` stderr ``",
+    "model": "(error \"line 4 column 25: unknown constant derived\")\nsat\n(\n  (define-fun masked () (_ BitVec 32)\n    #xffffffd3)\n  (define-fun x () (_ BitVec 32)\n    #x00000000)\n)\n",
+    "name": "assert:(= masked (_ bv44 32))",
+    "smt": "(set-logic QF_BV)\n(declare-const masked (_ BitVec 32))\n(declare-const x (_ BitVec 32))\n(assert (= masked (bvand derived (_ bv255 32))))\n(assert (not (= masked (_ bv44 32))))\n(check-sat)\n(get-model)\n",
+    "status": "FAIL"
+  }
+]

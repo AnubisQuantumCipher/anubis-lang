@@ -1,0 +1,7 @@
+step\tstatus\tcommand\tevidence
+gate4_safe_taint_reject\tPASS\tcargo run -- check examples/taint_reject.anb --evidence --out ...\timplementer/a_plus_audit_run/20260705-170548/gate4_gate5_gate8/a_plus_a15_g4/...
+gate5_declass_missing\tPASS\tcargo run -- check examples/declassify_missing_policy.anb ...\timplementer/a_plus_audit_run/20260705-170548/gate4_gate5_gate8/a_plus_a15_g5m/...
+gate5_declass_pass\tPASS\tcargo run -- check/build examples/taint_declassify.anb ...\timplementer/a_plus_audit_run/20260705-170548/gate4_gate5_gate8/a_plus_a15_g5p ... g5b
+schema_v1\tPASS\tscripts/check_evidence_schema.sh + verify\tmultiple
+sarif_rules\tPARTIAL\tANUBIS_TAINTED... present in sarif\tchecks.sarif
+old_assume_avoided\tYES\terror msg is tainted flow not assume\tlogs

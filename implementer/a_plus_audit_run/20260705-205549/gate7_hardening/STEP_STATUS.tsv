@@ -1,0 +1,7 @@
+step	status	notes
+fmt/clippy/test	clean	PASS after run
+u8 BitVec 8	YES	declare 8, lits 8
+replay failure	YES	test passes
+SARIF	REAL	mapping for ANUBIS_*
+tamper	YES	detected
+verdicts	YES	core

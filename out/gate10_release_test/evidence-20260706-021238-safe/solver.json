@@ -1,0 +1,9 @@
+[
+  {
+    "detail": "counterexample satisfies assumptions and negates assertion",
+    "model": "sat\n(\n  (define-fun x () (_ BitVec 32)\n    #x2aaaaab2)\n  (define-fun y () (_ BitVec 32)\n    #x0000002c)\n)\n",
+    "name": "assert:(= y (_ bv42 32))",
+    "smt": "(set-logic QF_BV)\n(declare-const x (_ BitVec 32))\n(declare-const y (_ BitVec 32))\n(assert (= y (bvmul x (_ bv6 32))))\n(assert (= y (bvmul x (_ bv6 32))))\n(assert (not (= y (_ bv42 32))))\n(check-sat)\n(get-model)\n",
+    "status": "FAIL"
+  }
+]

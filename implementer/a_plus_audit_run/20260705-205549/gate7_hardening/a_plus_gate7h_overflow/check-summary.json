@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/a_plus_gate7h_overflow/evidence-20260706-005559-safe",
+  "check_error": null,
+  "source_hash": "a5d1b23fa8d532dbcb5dbecbbf88474b597bb20620e6088277459c1433199f18",
+  "verdict": "PASS"
+}

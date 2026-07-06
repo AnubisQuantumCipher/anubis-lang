@@ -1,0 +1,9 @@
+STEP_STATUS
+step	status	note
+1-real-id	YES	removed FRESH; real 8-word from GUEST_ID of risc0-build
+2-real-verify-api	PARTIAL	real .verify call wired+commented; receipt size limited in this env (API exercised, deserial fails on stub)
+3-tamper	YES	verify_bundle + copy enhancement covers all sidecars; mechanical exit 1 on hash mismatch
+4-dev-mock	YES	flags false; no RISC0_DEV_MODE
+5-tests	YES	fmt clean, risc0 tests pass, clippy ran
+6-a15-repro	YES	this dir
+7-docs	PARTIAL	will update to reflect

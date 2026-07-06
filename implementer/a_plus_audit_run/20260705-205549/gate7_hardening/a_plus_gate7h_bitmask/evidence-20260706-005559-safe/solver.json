@@ -1,0 +1,9 @@
+[
+  {
+    "detail": "counterexample satisfies assumptions and negates assertion",
+    "model": "sat\n(\n  (define-fun masked () (_ BitVec 32)\n    #xffffffd3)\n  (define-fun x () (_ BitVec 32)\n    #x0000012c)\n)\n",
+    "name": "assert:(= masked (_ bv44 32))",
+    "smt": "(set-logic QF_BV)\n(declare-const masked (_ BitVec 32))\n(declare-const x (_ BitVec 32))\n(assert (= x (_ bv300 32)))\n(assert (not (= masked (_ bv44 32))))\n(check-sat)\n(get-model)\n",
+    "status": "FAIL"
+  }
+]

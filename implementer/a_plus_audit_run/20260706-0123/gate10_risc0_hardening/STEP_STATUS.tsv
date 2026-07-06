@@ -1,0 +1,8 @@
+step	status	note
+1-real-id	YES	real 8-word GUEST_ID from risc0-build
+2-real-verify-api	PARTIAL	real Receipt::verify wired and called; stub receipt causes deserial fail (API path executed)
+3-tamper	YES	strict checks + MANIFEST coverage for all required sidecars
+4-dev-mock	YES	all flags false in metadata
+5-tests	YES	fmt/test/clippy executed
+6-a15-repro	YES	this dir + logs
+7-docs	DONE	updated

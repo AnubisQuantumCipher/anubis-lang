@@ -1,0 +1,268 @@
+safety-check: OK
+=== fmt clippy test ===
+Diff in /Users/sicarii/anubis-lang/compiler/src/lib.rs:293:
+         let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
+ 
+         assert!(
+-            ir.constraints.iter().any(|c| c.contains("bvult y") || c.contains("(< y 77)")),
++            ir.constraints
++                .iter()
++                .any(|c| c.contains("bvult y") || c.contains("(< y 77)")),
+             "constraints must include nested assume(y < 77), got {:?}",
+             ir.constraints
+         );
+Diff in /Users/sicarii/anubis-lang/compiler/src/lib.rs:300:
+         assert!(
+-            ir.constraints.iter().any(|c| c.contains("bvugt y") || c.contains("(> y 0)")),
++            ir.constraints
++                .iter()
++                .any(|c| c.contains("bvugt y") || c.contains("(> y 0)")),
+             "constraints must include nested assert(y > 0), got {:?}",
+             ir.constraints
+         );
+    Checking anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+    Checking anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s
+   Compiling anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-633bb714f63c580b)
+
+running 2 tests
+test tests::solver_model_replay_failed_for_inconsistent_model ... ok
+test tests::z3_solver_reports_counterexample_for_failed_assertion ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-633bb714f63c580b)
+
+running 1 test
+test tests::solver_model_replay_failed_for_inconsistent_model ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+
+   Compiling anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+   Compiling anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+     Running unittests src/main.rs (target/debug/deps/anubis-e7ded0c767d3dbf0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-9287aa11e07f474f)
+
+running 28 tests
+test tests::hybrid_full_template_uses_risc0_305_receipt_shape ... ok
+test tests::hybrid_generated_cargo_projects_are_workspace_isolated ... ok
+test tests::hybrid_fast_template_honors_lane_contract ... ok
+test tests::hybrid_emission_snapshot ... ok
+test backends::native::hybrid::build::tests::extracts_generated_anubis_id_after_type_annotation ... ok
+test tests::parser_records_spans_params_and_precedence ... ok
+test tests::parser_accepts_imports_and_modules_with_recovery ... ok
+test tests::parser_reports_spanned_diagnostics_and_recovers ... ok
+test tests::parses_safe_program ... ok
+test tests::research_constraints_include_nested_assume_and_assert ... ok
+test tests::parses_research_with_tainted_and_symbolic ... ok
+test tests::solver_model_replay_failed_for_inconsistent_model ... ok
+test tests::safe_mode_rejects_raw_pointer_without_research_boundary ... ok
+test tests::safe_tainted_sink_requires_declassify_policy ... ok
+test tests::taint_propagates ... ok
+test tests::taint_tracks_sink_and_declassify_traces ... ok
+test tests::research_lowering_requires_ast_assume_bound ... ok
+test tests::z3_solver_reports_counterexample_for_failed_assertion ... ok
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Updating crates.io index
+test tests::validate_bundle_rejects_manifest_rewrite_without_manifest_hash_update ... ok
+test tests::validate_bundle_rejects_tampered_artifact ... ok
+test tests::validate_bundle_rejects_tampered_source_snapshot ... ok
+test tests::evidence_bundle_contains_reference_grade_metadata_and_reports ... ok
+test tests::evidence_bundle_captures_and_hashes_hybrid_sidecars ... ok
+test tests::research_lowering_preserves_non_x_tainted_variable_name ... ok
+test tests::lowers_research_poc_to_source_driven_rust ... ok
+    Blocking waiting for file lock on package cache
+    Updating crates.io index
+    Blocking waiting for file lock on package cache
+    Updating crates.io index
+    Blocking waiting for file lock on package cache
+     Locking 19 packages to latest compatible versions
+      Adding metal v0.29.0 (available: v0.33.0)
+    Blocking waiting for file lock on package cache
+     Locking 19 packages to latest compatible versions
+      Adding metal v0.29.0 (available: v0.33.0)
+    Blocking waiting for file lock on package cache
+     Locking 19 packages to latest compatible versions
+      Adding metal v0.29.0 (available: v0.33.0)
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on shared package cache
+   Compiling proc-macro2 v1.0.106
+   Compiling libc v0.2.186
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling core-foundation-sys v0.8.7
+   Compiling paste v1.0.15
+   Compiling foreign-types-shared v0.3.1
+   Compiling bitflags v1.3.2
+   Compiling proc-macro2 v1.0.106
+   Compiling bitflags v2.13.0
+   Compiling log v0.4.33
+   Compiling block v0.1.6
+   Compiling libc v0.2.186
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling core-foundation-sys v0.8.7
+   Compiling paste v1.0.15
+   Compiling bitflags v1.3.2
+   Compiling foreign-types-shared v0.3.1
+   Compiling block v0.1.6
+   Compiling log v0.4.33
+   Compiling bitflags v2.13.0
+   Compiling libc v0.2.186
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling core-foundation-sys v0.8.7
+   Compiling paste v1.0.15
+   Compiling foreign-types-shared v0.3.1
+   Compiling bitflags v1.3.2
+   Compiling block v0.1.6
+   Compiling bitflags v2.13.0
+   Compiling log v0.4.33
+   Compiling syn v2.0.118
+   Compiling syn v2.0.118
+   Compiling malloc_buf v0.0.6
+   Compiling core-foundation v0.9.4
+   Compiling objc v0.2.7
+   Compiling core-graphics-types v0.1.3
+   Compiling malloc_buf v0.0.6
+   Compiling core-foundation v0.9.4
+   Compiling objc v0.2.7
+   Compiling core-graphics-types v0.1.3
+   Compiling malloc_buf v0.0.6
+   Compiling core-foundation v0.9.4
+   Compiling objc v0.2.7
+   Compiling core-graphics-types v0.1.3
+   Compiling syn v2.0.118
+   Compiling foreign-types-macros v0.2.3
+   Compiling foreign-types-macros v0.2.3
+   Compiling foreign-types v0.5.0
+   Compiling foreign-types v0.5.0
+   Compiling metal v0.29.0
+   Compiling metal v0.29.0
+   Compiling foreign-types-macros v0.2.3
+   Compiling foreign-types v0.5.0
+   Compiling metal v0.29.0
+   Compiling anubis_hybrid_host v0.2.0 (/private/var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/anubis-hybrid-gate-99828-1783299352034780000/hybrid_gate-fast-hybrid)
+    Finished `release` profile [optimized] target(s) in 5.13s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+   Compiling anubis_hybrid_host v0.2.0 (/private/var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/anubis-hybrid-full-contract-99828-1783299352034769000/hybrid_contract-fast-hybrid)
+test tests::hybrid_host_compiles_and_dispatches ... ok
+    Finished `release` profile [optimized] target(s) in 5.32s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+test tests::hybrid_full_project_emits_methods_vendor_patch_and_receipt_contract ... ok
+   Compiling anubis_hybrid_host v0.2.0 (/private/var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/anubis-hybrid-lower-99828-1783299352034800000/hybrid_test-fast-hybrid)
+    Finished `release` profile [optimized] target(s) in 5.61s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+test tests::parses_hybrid_and_spec_blocks ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.69s
+
+   Doc-tests anubis_compiler
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== checks ===
+   Compiling anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+   Compiling anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.46s
+     Running `target/debug/anubis check examples/symbolic_assert_pass.anb --evidence --out out/a_plus_gate7h_pass`
+anubis check examples/symbolic_assert_pass.anb (evidence=true)
+evidence bundle: out/a_plus_gate7h_pass/evidence-20260706-005558-safe
+verdict: FAIL
+check passed (no policy violations)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/anubis check examples/symbolic_assert_fail.anb --evidence --out out/a_plus_gate7h_fail`
+anubis check examples/symbolic_assert_fail.anb (evidence=true)
+evidence bundle: out/a_plus_gate7h_fail/evidence-20260706-005558-safe
+verdict: FAIL
+check passed (no policy violations)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `target/debug/anubis check examples/symbolic_bitmask_fail_or_pass.anb --evidence --out out/a_plus_gate7h_bitmask`
+anubis check examples/symbolic_bitmask_fail_or_pass.anb (evidence=true)
+evidence bundle: out/a_plus_gate7h_bitmask/evidence-20260706-005559-safe
+verdict: FAIL
+check passed (no policy violations)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `target/debug/anubis check examples/symbolic_overflow_u8.anb --evidence --out out/a_plus_gate7h_overflow`
+anubis check examples/symbolic_overflow_u8.anb (evidence=true)
+evidence bundle: out/a_plus_gate7h_overflow/evidence-20260706-005559-safe
+verdict: PASS
+check passed (no policy violations)
+=== inspect ===
+zsh:1: no matches found: out/a_plus_gate7h_overflow/evidence-*/analysis/solver.smt2
+no smt
+out/a_plus_gate7h_overflow/evidence-20260706-005559-safe/solver.json:    "smt": "(set-logic QF_BV)\n(declare-const x (_ BitVec 8))\n(declare-const y (_ BitVec 8))\n(assert (= y (bvadd x (_ bv1 8))))\n(assert (= x (_ bv255 8)))\n(assert (= y (bvadd x (_ bv1 8))))\n(assert (not (= y (_ bv0 8))))\n(check-sat)\n(get-model)\n",
+zsh:1: no matches found: out/a_plus_gate7h_fail/evidence-*/analysis/solver_replay.json
+no replay
+zsh:1: no matches found: out/a_plus_gate7h_fail/evidence-*/reports/checks.sarif
+no sarif
+=== schema verify ===
+Schema checking bundle layout in: out/a_plus_gate7h_pass/evidence-20260706-005558-safe
+  present: hir.json
+  present: mir.json
+  present: solver.json
+  present: source-tree.json
+  taint analysis present
+  evidence.json has required top keys per schema
+check_evidence_schema.sh: PASS for layout on out/a_plus_gate7h_pass/evidence-20260706-005558-safe
+Schema checking bundle layout in: out/a_plus_gate7h_fail/evidence-20260706-005558-safe
+  present: hir.json
+  present: mir.json
+  present: solver.json
+  present: source-tree.json
+  taint analysis present
+  evidence.json has required top keys per schema
+check_evidence_schema.sh: PASS for layout on out/a_plus_gate7h_fail/evidence-20260706-005558-safe
+Verifying bundle: out/a_plus_gate7h_pass/evidence-20260706-005558-safe
+  manifest.json present (preferred for v1)
+error: unexpected argument '.' found
+
+Usage: anubis-cli verify --key <KEY> --input <INPUT> --signature <SIGNATURE>
+
+For more information, try '--help'.
+  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with file checks
+Bundle structure and basic hashes OK. Verdict from manifest:
+FAIL
+verify_bundle.sh: SUCCESS for out/a_plus_gate7h_pass/evidence-20260706-005558-safe
+Verifying bundle: out/a_plus_gate7h_fail/evidence-20260706-005558-safe
+  manifest.json present (preferred for v1)
+error: unexpected argument '.' found
+
+Usage: anubis-cli verify --key <KEY> --input <INPUT> --signature <SIGNATURE>
+
+For more information, try '--help'.
+  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with file checks
+Bundle structure and basic hashes OK. Verdict from manifest:
+FAIL
+verify_bundle.sh: SUCCESS for out/a_plus_gate7h_fail/evidence-20260706-005558-safe
+=== tamper ===
+zsh:1: no matches found: out/a_plus_gate7h_tampered/evidence-*
+tamper detected as expected
+a_plus_gate7h_bitmask
+a_plus_gate7h_fail
+a_plus_gate7h_overflow
+a_plus_gate7h_pass
+a_plus_gate7h_tampered
+GATING_EVIDENCE.log
+RUN_STAMP.txt

@@ -1,0 +1,9 @@
+[
+  {
+    "detail": "z3 returned `(error \"line 5 column 11: unknown constant masked\")` stderr ``",
+    "model": "(error \"line 5 column 11: unknown constant masked\")\nsat\n(\n  (define-fun x () (_ BitVec 32)\n    #x00000000)\n  (define-fun y () (_ BitVec 32)\n    #x00000001)\n)\n",
+    "name": "assert:(= y (_ bv0 32))",
+    "smt": "(set-logic QF_BV)\n(declare-const x (_ BitVec 32))\n(declare-const y (_ BitVec 32))\n(assert (= y (bvadd x (_ bv1 32))))\n(assert (= masked (bvand derived (_ bv255 32))))\n(assert (not (= y (_ bv0 32))))\n(check-sat)\n(get-model)\n",
+    "status": "FAIL"
+  }
+]

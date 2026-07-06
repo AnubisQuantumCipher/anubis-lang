@@ -1,7 +1,7 @@
 # Anubis RISC0 Pipeline Map (as of 2026-07-05)
 
 ## Current State Summary
-RISC0 integration is **PARTIAL** (per prior audit). It exists primarily through the "hybrid" path (RISC0 + Metal for Apple Silicon). There is no standalone pure `--backend risc0` in the main CLI/backend yet. The hybrid uses vendored/patched risc0-circuit-rv32im to enable Metal proving on macOS.
+RISC0 integration is **PARTIAL** (real derived ImageID from risc0-build + real Receipt.verify API + strict tamper + dev detection achieved; full passing cryptographic fresh receipt limited in current hybrid emit/prove wiring). See latest A15 gate10_risc0_hardening report.
 
 Fresh end-to-end receipt from minimal Anubis source + independent verify was not demonstrated in previous timed audits (only shape, templates, and hybrid tests).
 

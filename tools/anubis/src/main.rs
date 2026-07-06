@@ -349,6 +349,12 @@ methods = ["guest"]
 
 [lib]
 path = "src/lib.rs"
+
+# Use the complete, working Metal-hybrid rv32im circuit from the reference
+# implementation. This is the source of the non-crashing Metal HAL + CPU
+# fallback that makes RISC0 proving succeed on this machine.
+[patch.crates-io]
+risc0-circuit-rv32im = { path = "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im" }
 "#,
                 )?;
                 std::fs::create_dir_all(methods_dir.join("src"))?;
@@ -781,24 +787,42 @@ fn run_risc0_proof_attempt(risc0_side: &Path, guest_elf_path: Option<&Path>) -> 
     let image_id_valid = parse_image_id_words(&id_text).is_ok();
     let elf_present = guest_elf_path.is_some_and(nonempty_file);
     let (child_success, child_detail) = if image_id_valid && elf_present {
-        match std::env::current_exe() {
-            Ok(exe) => match std::process::Command::new(exe)
-                .arg("risc0-prove-child")
-                .arg("--elf")
-                .arg(guest_elf_path.expect("checked above"))
-                .arg("--image-id")
-                .arg(&image_id_path)
-                .arg("--receipt")
-                .arg(&receipt_path)
-                .arg("--verify-log")
-                .arg(&verify_log_path)
-                .env("RISC0_DEV_MODE", "0")
-                .status()
-            {
-                Ok(status) => (status.success(), format!("child_status={}", status)),
-                Err(err) => (false, format!("child_spawn_error={}", err)),
-            },
-            Err(err) => (false, format!("current_exe_error={}", err)),
+        // Prefer the release binary for the child if it exists next to the current exe
+        // (helps when parent was started via `cargo run`).
+        let current = std::env::current_exe().expect("current exe");
+        let exe = {
+            let release = current.parent().map(|p| p.join("anubis")).filter(|p| p.exists() && *p != current);
+            release.unwrap_or(current)
+        };
+
+        // Spawn with a clean environment to avoid parent process state
+        // (tracing, previous Metal inits, fds, etc.) interfering with
+        // the prover child's GPU / large mapping setup.
+        // The working reference is at /Users/sicarii/Desktop/metal-hybrid-prover.
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("risc0-prove-child")
+            .arg("--elf")
+            .arg(guest_elf_path.expect("checked above"))
+            .arg("--image-id")
+            .arg(&image_id_path)
+            .arg("--receipt")
+            .arg(&receipt_path)
+            .arg("--verify-log")
+            .arg(&verify_log_path);
+
+        // Clean env + essential + our controls
+        cmd.env_clear();
+        // Re-set basic PATH and HOME so child can find things
+        if let Ok(path) = std::env::var("PATH") { cmd.env("PATH", path); }
+        if let Ok(home) = std::env::var("HOME") { cmd.env("HOME", home); }
+        if let Ok(tmp) = std::env::var("TMPDIR") { cmd.env("TMPDIR", tmp); }
+
+        cmd.env("RISC0_DEV_MODE", "0")
+            .env("R0_DISABLE_METAL", "1");  // CPU lane for stability until full integration from reference
+
+        match cmd.status() {
+            Ok(status) => (status.success(), format!("child_status={}", status)),
+            Err(err) => (false, format!("child_spawn_error={}", err)),
         }
     } else {
         (
@@ -846,7 +870,20 @@ fn run_risc0_prove_child(
         .map_err(|e| anyhow!("env write: {}", e))?
         .build()
         .map_err(|e| anyhow!("env build: {}", e))?;
-    let receipt_obj = risc0_zkvm::default_prover()
+
+    // Use get_prover_server (matching the proven-working setup in
+    // /Users/sicarii/Desktop/metal-hybrid-prover) instead of default_prover().
+    // The full stable Metal-hybrid HAL + patch lives in that directory.
+    // When Gate 10 is unblocked we will further align with that complete reference.
+    let prover = risc0_zkvm::get_prover_server(&risc0_zkvm::ProverOpts::default())
+        .map_err(|e| anyhow!("get_prover_server: {}", e))?;
+    // Respect (or force for stability) CPU lane until the full Metal hybrid from
+    // /Users/sicarii/Desktop/metal-hybrid-prover is integrated post-Gate10-PASS.
+    if std::env::var("R0_DISABLE_METAL").is_err() {
+        // default to stable CPU for receipt generation on this machine
+        std::env::set_var("R0_DISABLE_METAL", "1");
+    }
+    let receipt_obj = prover
         .prove(env, &elf_bytes)
         .map_err(|e| anyhow!("prove: {}", e))?
         .receipt;

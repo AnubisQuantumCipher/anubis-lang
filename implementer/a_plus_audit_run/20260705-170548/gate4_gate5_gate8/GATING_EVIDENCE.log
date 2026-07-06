@@ -1,0 +1,93 @@
+=== A15 HOSTILE REPRO GATE4/5/8 20260705-170548 ===
+safety-check: OK
+=== GATE4 reject check ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/anubis check examples/taint_reject.anb --evidence --out out/a_plus_a15_g4`
+anubis check examples/taint_reject.anb (evidence=true)
+evidence bundle: out/a_plus_a15_g4/evidence-20260705-210548-safe
+verdict: FAIL
+check failed: safe mode tainted flow from `password` to sink `sink` requires declassify() or research boundary
+=== GATE5 missing ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/anubis check examples/declassify_missing_policy.anb --evidence --out out/a_plus_a15_g5m`
+anubis check examples/declassify_missing_policy.anb (evidence=true)
+evidence bundle: out/a_plus_a15_g5m/evidence-20260705-210549-safe
+verdict: FAIL
+check failed: safe mode tainted flow from `password` to sink `sink` requires declassify() or research boundary
+=== GATE5 pass check ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `target/debug/anubis check examples/taint_declassify.anb --evidence --out out/a_plus_a15_g5p`
+anubis check examples/taint_declassify.anb (evidence=true)
+evidence bundle: out/a_plus_a15_g5p/evidence-20260705-210549-safe
+verdict: PASS
+check passed (no policy violations)
+=== GATE5 pass build ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `target/debug/anubis build examples/taint_declassify.anb --evidence --out out/a_plus_a15_g5b`
+anubis build examples/taint_declassify.anb (evidence=true)
+native artifact: out/a_plus_a15_g5b/anubis_out
+evidence bundle: out/a_plus_a15_g5b/evidence-20260705-210549-safe
+verdict: PASS
+build complete
+=== schema/verify ===
+Schema checking bundle layout in: out/a_plus_a15_g4/evidence-20260705-210548-safe
+  present: hir.json
+  present: mir.json
+  present: solver.json
+  present: source-tree.json
+  taint analysis present
+  evidence.json has required top keys per schema
+check_evidence_schema.sh: PASS for layout on out/a_plus_a15_g4/evidence-20260705-210548-safe
+Verifying bundle: out/a_plus_a15_g4/evidence-20260705-210548-safe
+  manifest.json present (preferred for v1)
+error: unexpected argument '.' found
+
+Usage: anubis-cli verify --key <KEY> --input <INPUT> --signature <SIGNATURE>
+
+For more information, try '--help'.
+  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with file checks
+Bundle structure and basic hashes OK. Verdict from manifest:
+FAIL
+verify_bundle.sh: SUCCESS for out/a_plus_a15_g4/evidence-20260705-210548-safe
+Verifying bundle: out/a_plus_a15_g5p/evidence-20260705-210549-safe
+  manifest.json present (preferred for v1)
+error: unexpected argument '.' found
+
+Usage: anubis-cli verify --key <KEY> --input <INPUT> --signature <SIGNATURE>
+
+For more information, try '--help'.
+  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with file checks
+Bundle structure and basic hashes OK. Verdict from manifest:
+PASS
+verify_bundle.sh: SUCCESS for out/a_plus_a15_g5p/evidence-20260705-210549-safe
+Verifying bundle: out/a_plus_a15_g5b/evidence-20260705-210549-safe
+  manifest.json present (preferred for v1)
+error: unexpected argument '.' found
+
+Usage: anubis-cli verify --key <KEY> --input <INPUT> --signature <SIGNATURE>
+
+For more information, try '--help'.
+  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with file checks
+Bundle structure and basic hashes OK. Verdict from manifest:
+PASS
+verify_bundle.sh: SUCCESS for out/a_plus_a15_g5b/evidence-20260705-210549-safe
+a_plus_a15_g4
+a_plus_a15_g5b
+a_plus_a15_g5m
+a_plus_a15_g5p
+GATING_EVIDENCE.log
+RUN_STAMP.txt
+
+implementer/a_plus_audit_run/20260705-170548/gate4_gate5_gate8/a_plus_a15_g4:
+check-summary.json
+evidence-20260705-210548-safe
+
+implementer/a_plus_audit_run/20260705-170548/gate4_gate5_gate8/a_plus_a15_g4/evidence-20260705-210548-safe:
+bounty-report.md
+build.log
+check_diagnostics.txt
+checks.sarif
+environment.json
+evidence.json
+hir.json
+manifest.json

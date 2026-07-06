@@ -35,6 +35,9 @@ if command -v shasum >/dev/null; then
         echo "TAMPER: $file hash mismatch"
         exit 1
       fi
+    else
+      echo "MISSING: manifest-listed file $file"
+      exit 1
     fi
   done < "$BUNDLE_DIR/MANIFEST.sha256"
 else
@@ -46,28 +49,61 @@ if [[ -x "$BUNDLE_DIR/validate.sh" ]]; then
   if (cd "$BUNDLE_DIR" && ./validate.sh 2>&1); then
     echo "  internal validate passed"
   else
-    echo "  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with file checks"
+    echo "  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with manifest/verdict checks"
   fi
 fi
 
 echo "Bundle structure and basic hashes OK. Verdict from manifest:"
 jq -r '.verdict' "$BUNDLE_DIR/evidence.json" 2>/dev/null || cat "$BUNDLE_DIR/evidence.json" | head -c 200
 
-# RISC0 sidecar strict tamper if present in bundle dir
+if command -v jq >/dev/null; then
+  verdict=$(jq -r '.verdict // "MISSING"' "$BUNDLE_DIR/evidence.json")
+  if [[ "$verdict" != "PASS" ]]; then
+    echo "FAIL: bundle verdict is $verdict"
+    exit 1
+  fi
+  if ! jq -e '.checks | all(.status == "PASS")' "$BUNDLE_DIR/evidence.json" >/dev/null; then
+    echo "FAIL: one or more evidence checks are not PASS"
+    exit 1
+  fi
+else
+  echo "FAIL: jq is required for verdict/check validation"
+  exit 1
+fi
+
+# RISC0 sidecar strict tamper (A+ Gate 10: mechanical failure on ANY hashed sidecar)
+# All of: guest.elf, guest source, image_id.txt, receipt.bin, risc0_metadata.json,
+# receipt.verify.log, prove.log (if present), verify.log (if present) must be covered.
 if [[ -d "$BUNDLE_DIR/backend/risc0" ]]; then
-  for f in guest.elf image_id.txt receipt.bin risc0_metadata.json receipt.verify.log prove.log; do
-    fp="$BUNDLE_DIR/backend/risc0/$f"
-    if [[ -f "$fp" ]]; then
+  for f in guest.elf image_id.txt receipt.bin risc0_metadata.json receipt.verify.log prove.log verify.log 'guest/src/main.rs' 'guest_source.rs'; do
+    # find first match (flat or nested)
+    target=$(find "$BUNDLE_DIR" -type f -name "$(basename "$f")" 2>/dev/null | head -1)
+    if [[ -z "$target" ]]; then
+      # also try risc0_ prefixed flat
+      target=$(find "$BUNDLE_DIR" -type f -name "risc0_$(basename "$f" | tr '/' '_')" 2>/dev/null | head -1)
+    fi
+    if [[ -n "$target" && -f "$target" ]]; then
       if command -v shasum >/dev/null; then
-        actual=$(shasum -a 256 "$fp" | cut -d' ' -f1)
+        actual=$(shasum -a 256 "$target" | cut -d' ' -f1)
         if ! grep -q "$actual" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null; then
-          echo "TAMPER: risc0 sidecar $f hash mismatch or not tracked"
+          echo "TAMPER: risc0 sidecar $f (at $target) hash mismatch or not tracked in MANIFEST"
           exit 1
         fi
       fi
     fi
   done
 fi
+
+# Also enforce any direct risc0_* flat files are covered by MANIFEST (from copy_hybrid_sidecars)
+for f in "$BUNDLE_DIR"/risc0_*; do
+  if [[ -f "$f" ]]; then
+    actual=$(shasum -a 256 "$f" | cut -d' ' -f1)
+    if ! grep -q "$actual" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null; then
+      echo "TAMPER: risc0 flat sidecar $(basename "$f") not tracked or mismatch"
+      exit 1
+    fi
+  fi
+done 2>/dev/null || true
 
 echo "verify_bundle.sh: SUCCESS for $BUNDLE_DIR"
 exit 0

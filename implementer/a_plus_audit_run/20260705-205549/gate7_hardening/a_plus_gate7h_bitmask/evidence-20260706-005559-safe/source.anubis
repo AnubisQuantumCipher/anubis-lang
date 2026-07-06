@@ -1,0 +1,6 @@
+fn main() {
+    let x: u32 = symbolic("x");
+    assume(x == 300);
+    let masked = x & 255;
+    assert(masked == 44);
+}

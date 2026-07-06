@@ -1,0 +1,6 @@
+// Must pass only with explicit policy + reason (GATE 5)
+fn main() {
+    let secret = taint_source("password");
+    let public = declassify(secret, "redacted-proof", "only redacted proof may leave boundary");
+    sink(public);
+}

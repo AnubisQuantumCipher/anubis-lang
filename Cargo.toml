@@ -5,6 +5,14 @@ members = [
     "tools/anubis",
 ]
 
+# For RISC0 receipt (Gate 10) on Apple Silicon: use the complete, working
+# Metal-hybrid circuit implementation from the reference.
+# Source: /Users/sicarii/Desktop/metal-hybrid-prover (full HAL + patch + e2e).
+# This fixes SIGBUS in the prover child. Do not remove until a stable
+# upstream or vendored equivalent is adopted.
+[patch.crates-io]
+risc0-circuit-rv32im = { path = "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

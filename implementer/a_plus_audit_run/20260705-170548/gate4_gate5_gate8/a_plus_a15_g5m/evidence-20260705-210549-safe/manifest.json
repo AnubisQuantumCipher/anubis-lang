@@ -1,0 +1,37 @@
+{
+  "timestamp": "20260705-210549",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "5d4b06d38c7301c1eaa61cd0348abcc8b3474f117ab6295a9c8a13255fd5bf28",
+  "build_log_hash": "0c93607d59036c3d357e97b7cb4af48cca1b85e6e5854b0ad83d5974a8f0cf45",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "1000ecd31a777b5e8aec4c44372d76d7fdfa79d1eb662c0f61b73262324d27f9",
+  "sarif_hash": "f836e64294becc1a9b71bed34e4860bc02447a990d6d0d3ba293e370426eaff4",
+  "bounty_report_hash": "5107584e74de84dbb66e11703be1f9c89c714d74b1e64ce0752b720d854281b0",
+  "manifest_signature": "8f038429782b333a77f74459eefc7ff8a36626577a8fcf724fc66d1d538c582d",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "FAIL",
+      "detail": "safe mode tainted flow from `password` to sink `sink` requires declassify() or research boundary"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "5d4b06d38c7301c1eaa61cd0348abcc8b3474f117ab6295a9c8a13255fd5bf28"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "0c93607d59036c3d357e97b7cb4af48cca1b85e6e5854b0ad83d5974a8f0cf45"
+    }
+  ],
+  "verdict": "FAIL"
+}

@@ -89,14 +89,13 @@ Every build (success or fail) produces bundle with:
 - After modifying any hashed file: verify false
 
 ## GATE 10 — RISC0 receipt (end-to-end)
-Minimal example:
-- guest source generated
-- guest ELF generated
-- image ID generated
-- receipt generated
-- receipt.verify(ANUBIS_ID) (or equivalent) passes
-- sidecars in evidence
-- reproducible from documented command (timeout-aware)
+Hardened state (2026-07):
+- real ImageID derived from actual guest ELF via risc0-build (no FRESH/NO_REAL placeholder)
+- real RISC0 Receipt::verify(image_id) API call wired + documented + rejects bad IDs
+- all required sidecars (guest.elf, image_id.txt, receipt.bin, metadata, logs, guest source) hashed and covered by strict tamper detection
+- dev/mock/cache flags explicit and false for YES claims
+- A15 reproduction with real ID + tamper results
+- Verdict: PARTIAL (API + ID + tamper strong; full passing cryptographic receipt still limited in current hybrid emit/prove path)
 
 ## GATE 11 — Metal parity
 ≥3 deterministic kernels/workloads:

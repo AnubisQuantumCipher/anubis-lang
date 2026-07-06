@@ -1,0 +1,5 @@
+step	status	evidence
+no_placeholder	yes	NO_REAL_ID_DERIVED not FRESH
+real_verify	PARTIAL	verify rejects placeholder, real API commented
+strict_tamper	PARTIAL	detects for tracked sidecars
+dev_mock	no	dev_mode false

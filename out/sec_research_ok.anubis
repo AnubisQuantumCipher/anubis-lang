@@ -1,0 +1,3 @@
+fn main() {
+    research { let p: *mut u8 = 0 as *mut u8; let t: tainted<u32> = symbolic(); }
+}

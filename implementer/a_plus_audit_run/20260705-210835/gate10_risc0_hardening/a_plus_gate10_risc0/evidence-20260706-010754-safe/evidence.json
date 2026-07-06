@@ -1,0 +1,77 @@
+{
+  "timestamp": "20260706-010754",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "a520473f792ab92523fe7aea9c5ba83ae59bb674c5892a443b3b3af2c64473ba",
+  "build_log_hash": "58ba9d14c58048aba62c55b197f9982a1e3bef067ba540c80922567f93802e53",
+  "artifact_hash": "e352bf9749a70b59115b1e1298ca4731bac4540139ffea75b9e75e4cd7346c9b",
+  "lane": "risc0-risc0",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "3eb0a63cd2c04a0ef4e46a992b6cadf741f6f2a0ecfad99b28e955efa1270e6b",
+  "sarif_hash": "3ab95afc9f495839478410b6e666839a3e6f1da40dd6d487caa04d1fa44b4c8a",
+  "bounty_report_hash": "3ebe4dda4ef7b907c9872bc14c614f9c8433c3359c1a1303f4218ad46994c194",
+  "manifest_signature": "35a8c4f0b600ce89979d2029e4751193860ef31ab30f2f4e7ac38e045b5838ed",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=safe symbols=2 functions=1"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=2"
+    },
+    {
+      "name": "solver",
+      "status": "FAIL",
+      "detail": "assert:(= y (_ bv42 32))=FAIL"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "a520473f792ab92523fe7aea9c5ba83ae59bb674c5892a443b3b3af2c64473ba"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "58ba9d14c58048aba62c55b197f9982a1e3bef067ba540c80922567f93802e53"
+    },
+    {
+      "name": "artifact",
+      "status": "PASS",
+      "detail": "native emitted"
+    },
+    {
+      "name": "artifact_hash",
+      "status": "PASS",
+      "detail": "e352bf9749a70b59115b1e1298ca4731bac4540139ffea75b9e75e4cd7346c9b"
+    },
+    {
+      "name": "hybrid_receipt_artifacts",
+      "status": "PASS",
+      "detail": "guest.elf,image_id.txt,generated-methods.rs"
+    },
+    {
+      "name": "hybrid_guest_elf_hash",
+      "status": "PASS",
+      "detail": "7888038e2eea92a7f2360efedb0c8b581f81bd97f581e471e3a669f98abbb0b4"
+    },
+    {
+      "name": "hybrid_image_id_txt_hash",
+      "status": "PASS",
+      "detail": "ed1de968dd8ab8d2f3d6659fb56c2e1cf98286621acc105d6ebe0e6a2703b430"
+    },
+    {
+      "name": "hybrid_generated_methods_rs_hash",
+      "status": "PASS",
+      "detail": "d8ebd11d9446d94ec93bc9f32acd8e95aa4b05080c9426e43ee8f17b04074822"
+    }
+  ],
+  "verdict": "FAIL"
+}

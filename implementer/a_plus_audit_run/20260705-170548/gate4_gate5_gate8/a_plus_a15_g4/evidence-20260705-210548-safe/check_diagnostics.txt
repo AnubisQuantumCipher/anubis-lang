@@ -1,0 +1,1 @@
+safe mode tainted flow from `password` to sink `sink` requires declassify() or research boundary

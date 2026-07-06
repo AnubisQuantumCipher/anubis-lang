@@ -16,6 +16,6 @@ source -> frontend -> risc0 guest source (emitted) -> guest.elf -> image_id -> f
 Evidence in out/a_plus_gate10_risc0 and A15 dir.
 
 ## Truth
-Fresh receipt: PARTIAL (path and sidecars present; ImageID not real derived from guest ELF via risc0-build in this env; see A15 report for details).
+Fresh receipt: PARTIAL (real derived ImageID from risc0-build GUEST_ID + real Receipt.verify API wired + strict tamper on all sidecars + dev/mock detection; full passing cryptographic receipt limited in this hybrid emit slice — see latest A15 report).
 
-Gate 10: PARTIAL.
+Gate 10: PARTIAL (real ImageID + real verify API + strict tamper; full receipt limited).

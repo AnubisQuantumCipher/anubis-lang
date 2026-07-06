@@ -1,0 +1,8 @@
+// bad: contradiction to force FAIL + model
+fn main() {
+    research {
+        let x: tainted<u32> = symbolic();
+        assume(x < 10);
+        assert(x > 20);
+    }
+}

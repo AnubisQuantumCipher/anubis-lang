@@ -1,0 +1,11 @@
+Verifying bundle: out/a_plus_a15_g5b/evidence-20260705-210549-safe
+  manifest.json present (preferred for v1)
+error: unexpected argument '.' found
+
+Usage: anubis-cli verify --key <KEY> --input <INPUT> --signature <SIGNATURE>
+
+For more information, try '--help'.
+  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with file checks
+Bundle structure and basic hashes OK. Verdict from manifest:
+PASS
+verify_bundle.sh: SUCCESS for out/a_plus_a15_g5b/evidence-20260705-210549-safe

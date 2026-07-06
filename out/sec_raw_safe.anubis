@@ -1,0 +1,1 @@
+fn main() { let p: *mut u8 = 0 as *mut u8; }

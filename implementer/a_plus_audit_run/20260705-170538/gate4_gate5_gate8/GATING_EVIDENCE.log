@@ -1,0 +1,28 @@
+=== GATING EVIDENCE ===
+safety-check: OK
+=== check gate4 ===
+   Compiling anubis-compiler v0.1.0 (/Users/sicarii/anubis-lang/compiler)
+   Compiling anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.58s
+     Running `target/debug/anubis check examples/taint_reject.anb --evidence out/a_plus_a15_gate4`
+error: unexpected argument 'out/a_plus_a15_gate4' found
+
+Usage: anubis check [OPTIONS] <INPUT>
+
+For more information, try '--help'.
+=== check gate5 missing ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/anubis check examples/declassify_missing_policy.anb --evidence out/a_plus_a15_g5m`
+error: unexpected argument 'out/a_plus_a15_g5m' found
+
+Usage: anubis check [OPTIONS] <INPUT>
+
+For more information, try '--help'.
+=== check+build gate5 pass ===
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/anubis build examples/taint_declassify.anb --evidence out/a_plus_a15_g5b`
+error: unexpected argument 'out/a_plus_a15_g5b' found
+
+Usage: anubis build [OPTIONS] <INPUT>
+
+For more information, try '--help'.
