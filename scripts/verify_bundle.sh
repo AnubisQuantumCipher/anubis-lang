@@ -154,5 +154,22 @@ for pat in receipt.bin image_id.txt guest.elf risc0_metadata.json receipt.verify
   fi
 done
 
+# Final strict gate for the 5 key RISC0 sidecars required by Gate 10.
+# If any is present but its current hash is not the one recorded in the sealed MANIFEST,
+# force mechanical failure (non-zero exit) so the exact tamper loop reports "detected".
+for pat in receipt.bin image_id.txt guest.elf risc0_metadata.json receipt.verify.log; do
+  tgt=$(find "$BUNDLE_DIR" -type f -name "$pat" 2>/dev/null | head -1)
+  if [ -z "$tgt" ]; then
+    tgt=$(find "$BUNDLE_DIR" -type f -name "risc0_$pat" 2>/dev/null | head -1)
+  fi
+  if [ -n "$tgt" ] && [ -f "$tgt" ]; then
+    actual=$(shasum -a 256 "$tgt" | cut -d' ' -f1)
+    if ! grep -q "$actual" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null; then
+      echo "TAMPER: key sidecar $pat (at $tgt) current hash not in sealed MANIFEST"
+      exit 1
+    fi
+  fi
+done
+
 echo "verify_bundle.sh: SUCCESS for $BUNDLE_DIR"
 exit 0
