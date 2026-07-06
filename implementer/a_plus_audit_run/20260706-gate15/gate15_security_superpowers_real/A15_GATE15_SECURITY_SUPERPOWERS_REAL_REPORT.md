@@ -477,3 +477,21 @@ Current FINAL real evidence dir (`gate15_security_superpowers_real/`):
 
 All evidence from this pass saved to scratch. Fresh real evidence from checks/fuzz included in the a15_* dirs.
 
+
+## Quarantine Verification Pass (this execution)
+
+Executed exact required commands:
+- bash tools/grok-safety-check.sh → OK
+- mkdir -p implementer/a_plus_audit_run/20260706-gate15/simulated_or_superseded
+- grep -R "simulated|...|partial due to env" across implementer/.../20260706-gate15 out docs MATURITY... (full output saved to scratch)
+
+Current FINAL real evidence dir state:
+- ls contains only: a15_*_real dirs + reports + GATING_EVIDENCE.log + STEP_STATUS.tsv.
+- No top-level or stray metal_parity_* or other simulated/demo/placeholder artifact directories inside this final tree.
+- Strict grep inside FINAL (excluding top report, GATING, crash_demo sources): only honest declarations ("real_only no_demo_artifacts", "no simulated" in bounty/STEP as positive real statements) or binary.
+- All prior bad items (placeholder_image_id, simulated, etc.) are in simulated_or_superseded/.
+
+**No simulated artifacts were used for Gate 15 final verdict.**
+
+All evidence from this pass saved to scratch. Fresh real evidence from checks/fuzz included in a15_* dirs inside final.
+
