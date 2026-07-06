@@ -1,0 +1,15 @@
+Step	Status	Notes
+safety	PASS	OK
+fmt	PASS	clean
+compiler_risc0	PASS	4 tests
+all_tests	PASS	passed
+clippy	PASS	only note
+prove	PASS	verdict PASS, real ID
+file_sizes	PASS	OK
+no_placeholder	PASS	none
+image_cat	PASS	real
+jq_metadata	PASS	all -e
+standalone_verify	PASS	real API
+schema	PASS
+verify_bundle	PASS	SUCCESS
+tamper_5	PASS	all detected
