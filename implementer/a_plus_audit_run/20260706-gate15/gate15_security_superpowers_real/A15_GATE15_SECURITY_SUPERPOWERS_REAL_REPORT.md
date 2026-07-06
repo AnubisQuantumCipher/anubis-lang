@@ -305,3 +305,35 @@ All test output and artifacts from this pass saved to scratch /var/folders/bg/pt
 - **No simulated artifacts were used for Gate 15 final verdict.**
 
 Evidence (grep, ls, report) saved to scratch.
+
+## Quarantine Verification Pass (this execution)
+
+Executed exact required commands:
+- bash tools/grok-safety-check.sh → OK
+- mkdir -p implementer/a_plus_audit_run/20260706-gate15/simulated_or_superseded
+- grep -R "simulated|...|partial due to env" across implementer/.../20260706-gate15 , out , docs , MATURITY... (full output saved to scratch)
+
+Result:
+- FINAL real evidence dir (gate15_security_superpowers_real/) contains ONLY the following (fresh a15_*_real + reports):
+  a15_gate15_bounty_report_real
+  a15_gate15_fuzz_crash_real
+  a15_gate15_fuzz_real
+  a15_gate15_language_fixtures_real
+  a15_gate15_language_repro_real
+  a15_gate15_poc_missing_auth_real
+  a15_gate15_risc0_real
+  a15_gate15_safe_shell_reject_real
+  a15_gate15_security_fixtures_real
+  A15_GATE15_SECURITY_SUPERPOWERS_REAL_REPORT.md
+  a15_release_candidate_security_real
+  GATING_EVIDENCE.log
+  STEP_STATUS.tsv
+- No top-level or stray metal_parity_* or other simulated/demo/placeholder artifact directories inside this final tree.
+- Any prior items with forbidden labels were moved to simulated_or_superseded/ in previous passes (confirmed absent here).
+- Grep hits inside FINAL are only binary or honest declarations ("real extraction... no simulated", "real_only no_demo_artifacts", STEP notes).
+- crash_demo sources are legitimate test inputs (explicitly allowed).
+
+**No simulated artifacts were used for Gate 15 final verdict.**
+
+All evidence from this pass (grep, ls, report) saved to scratch.
+

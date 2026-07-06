@@ -1,4 +1,4 @@
 anubis check examples/security/poc_missing_authorization_fail.anb (evidence=true)
-evidence bundle: out/a15_gate15_security_fixtures_real/poc_missing_authorization_fail/evidence-20260706-195653-research
+evidence bundle: out/a15_gate15_security_fixtures_real/poc_missing_authorization_fail/evidence-20260706-201548-research
 verdict: FAIL
 check failed: ANUBIS_RESEARCH_MISSING_AUTHORIZATION: research/poc/fuzz/proof/defensive/audit requires authorization=... metadata

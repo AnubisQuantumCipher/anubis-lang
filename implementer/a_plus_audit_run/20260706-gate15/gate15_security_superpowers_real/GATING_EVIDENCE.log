@@ -11,3 +11,4 @@ Commit (quarantine): 5157aa8 "gate15: quarantine simulated security artifacts"
 - Final A15 real dir (gate15_security_superpowers_real/): only a15_*_real + sanitized RC copy + reports. Honest "No simulated used" declaration only in top-level A15 report.
 - All 10 security fixtures real 10/10; fuzz real; bounty real; attributes/effect/SARIF real from compiler+CLI.
 - Metal heavy (parity, some RC internal): documented PARTIAL_SMOKE (absent ref); not used for YES claims.
+Quarantine pass Mon Jul  6 16:16:05 EDT 2026: exact commands run, FINAL clean, report declaration, commit 8f0c3e0

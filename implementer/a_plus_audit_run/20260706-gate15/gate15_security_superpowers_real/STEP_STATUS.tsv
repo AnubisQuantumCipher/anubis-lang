@@ -11,3 +11,4 @@ bounty	YES	real from evidence
 rc	YES	PASS security core; clean
 A15_dir	only real	 a15_* + RC; no bad labels for verdict
 Gate15	YES	No simulated: YES (first)
+quarantine-pass	complete	8f0c3e0; FINAL ls clean; report updated
