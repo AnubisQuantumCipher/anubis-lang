@@ -16,5 +16,6 @@ source -> frontend -> risc0 guest source (emitted) -> guest.elf -> image_id -> f
 Evidence in out/a_plus_gate10_risc0 and A15 dir.
 
 ## Truth
-Fresh receipt: YES (per run)
-See A15 report.
+Fresh receipt: PARTIAL (path and sidecars present; ImageID not real derived from guest ELF via risc0-build in this env; see A15 report for details).
+
+Gate 10: PARTIAL.

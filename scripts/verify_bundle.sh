@@ -53,5 +53,21 @@ fi
 echo "Bundle structure and basic hashes OK. Verdict from manifest:"
 jq -r '.verdict' "$BUNDLE_DIR/evidence.json" 2>/dev/null || cat "$BUNDLE_DIR/evidence.json" | head -c 200
 
+# RISC0 sidecar strict tamper if present in bundle dir
+if [[ -d "$BUNDLE_DIR/backend/risc0" ]]; then
+  for f in guest.elf image_id.txt receipt.bin risc0_metadata.json receipt.verify.log prove.log; do
+    fp="$BUNDLE_DIR/backend/risc0/$f"
+    if [[ -f "$fp" ]]; then
+      if command -v shasum >/dev/null; then
+        actual=$(shasum -a 256 "$fp" | cut -d' ' -f1)
+        if ! grep -q "$actual" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null; then
+          echo "TAMPER: risc0 sidecar $f hash mismatch or not tracked"
+          exit 1
+        fi
+      fi
+    fi
+  done
+fi
+
 echo "verify_bundle.sh: SUCCESS for $BUNDLE_DIR"
 exit 0
