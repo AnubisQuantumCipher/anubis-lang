@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/a15_release_candidate_security_real/20260706-163157/language_repro/run1_while_loop_or_planned_skip/evidence-20260706-203252-safe",
+  "check_error": null,
+  "source_hash": "52328d3a9af54f8844ce57065103ffb1dcfffb1920fdaf9e0389de4693c5f0ea",
+  "verdict": "PASS"
+}

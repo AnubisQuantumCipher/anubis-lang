@@ -12,3 +12,11 @@ rc	YES	PASS security core; clean
 A15_dir	only real	 a15_* + RC; no bad labels for verdict
 Gate15	YES	No simulated: YES (first)
 quarantine-pass	complete	8f0c3e0; FINAL ls clean; report updated
+quarantine-pass	complete	ea6b730; FINAL ls clean; report updated; 10/10 real in final copy
+2026-07-06	gate15	security_fixtures	10/10 real PASS	YES
+2026-07-06	gate15	fuzz_v1_real	CLI runs + security block + crashes	YES
+2026-07-06	gate15	bounty_real	from real evidence	YES
+2026-07-06	gate15	attributes_effects	parser+middle real	YES
+2026-07-06	gate15	no_simulated	declaration + clean grep	YES
+2026-07-06	gate15	prior_gates	lang+repro+risc0 verified	YES
+2026-07-06	gate15	final	Gate 15 real YES	YES

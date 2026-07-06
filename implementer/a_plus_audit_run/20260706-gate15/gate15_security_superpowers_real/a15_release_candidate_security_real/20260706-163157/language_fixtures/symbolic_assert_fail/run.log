@@ -1,0 +1,6 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/anubis check tests/fixtures/language_core/symbolic_assert_fail.anb --evidence --out out/a15_release_candidate_security_real/20260706-163157/language_fixtures/symbolic_assert_fail`
+anubis check tests/fixtures/language_core/symbolic_assert_fail.anb (evidence=true)
+evidence bundle: out/a15_release_candidate_security_real/20260706-163157/language_fixtures/symbolic_assert_fail/evidence-20260706-203204-safe
+verdict: FAIL
+check passed (no policy violations)

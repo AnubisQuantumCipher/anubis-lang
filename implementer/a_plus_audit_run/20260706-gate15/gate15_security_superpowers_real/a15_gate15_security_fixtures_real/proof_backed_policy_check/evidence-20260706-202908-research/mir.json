@@ -1,0 +1,10 @@
+[
+  {
+    "effects": [
+      "assert"
+    ],
+    "function": "main",
+    "mode": "research",
+    "statement_count": 2
+  }
+]

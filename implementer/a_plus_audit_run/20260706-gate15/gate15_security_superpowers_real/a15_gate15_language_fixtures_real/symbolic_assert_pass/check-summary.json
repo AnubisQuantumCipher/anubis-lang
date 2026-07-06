@@ -1,6 +1,6 @@
 {
   "bounty_ready": true,
-  "bundle": "out/a15_gate15_language_fixtures_real/symbolic_assert_pass/evidence-20260706-195811-safe",
+  "bundle": "out/a15_gate15_language_fixtures_real/symbolic_assert_pass/evidence-20260706-203100-safe",
   "check_error": null,
   "source_hash": "e19be2cba7c1cc7a1a7630cb4383bf061e5bb9a03e17bec6e08200c0df52e47e",
   "verdict": "PASS"

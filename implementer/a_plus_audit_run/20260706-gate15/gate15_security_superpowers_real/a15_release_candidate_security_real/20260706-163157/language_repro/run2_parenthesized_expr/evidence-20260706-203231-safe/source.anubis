@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// FEATURE: parenthesized expr
+fn main() {
+    let v = (1 + (2 * 3));
+}

@@ -1,0 +1,6 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/anubis check tests/fixtures/language_core/risc0_minimal_pass.anb --evidence --out out/a15_release_candidate_security_real/20260706-163157/language_fixtures/risc0_minimal_pass`
+anubis check tests/fixtures/language_core/risc0_minimal_pass.anb (evidence=true)
+evidence bundle: out/a15_release_candidate_security_real/20260706-163157/language_fixtures/risc0_minimal_pass/evidence-20260706-203203-safe
+verdict: PASS
+check passed (no policy violations)

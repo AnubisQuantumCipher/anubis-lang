@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: unknown variable|ANUBIS_UNKNOWN_VARIABLE
+fn main() {
+    let y = x + 1;
+}

@@ -1,0 +1,55 @@
+{
+  "functions": [
+    {
+      "effects": [],
+      "mode": "safe",
+      "module": null,
+      "name": "main",
+      "params": [],
+      "span": [
+        38,
+        143
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "x",
+          "span": [
+            54,
+            69
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": "u32"
+        },
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "y",
+          "span": [
+            93,
+            103
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        },
+        {
+          "declassified": false,
+          "mode": "safe",
+          "name": "y",
+          "span": [
+            125,
+            135
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

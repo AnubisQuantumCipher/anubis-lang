@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:main",
+  "num_items": 1,
+  "preview": "// EXPECT: PASS\n// FEATURE: symbolic + assume + assert (solver path)\nfn main() {\n    let secret: u32 = symbolic(\"secret\""
+}

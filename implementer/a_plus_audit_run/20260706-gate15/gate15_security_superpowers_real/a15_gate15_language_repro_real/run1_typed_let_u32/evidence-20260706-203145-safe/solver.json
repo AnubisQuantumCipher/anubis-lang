@@ -1,0 +1,9 @@
+[
+  {
+    "detail": "no assertions to discharge",
+    "model": null,
+    "name": "solver:no-obligations",
+    "smt": "(check-sat)",
+    "status": "PASS"
+  }
+]

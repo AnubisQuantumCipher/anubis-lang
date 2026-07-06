@@ -1,6 +1,6 @@
 {
   "bounty_ready": true,
-  "bundle": "out/a15_gate15_security_fixtures_real/bounty_report_from_taint/evidence-20260706-201548-research",
+  "bundle": "out/a15_gate15_security_fixtures_real/bounty_report_from_taint/evidence-20260706-203312-research",
   "check_error": null,
   "source_hash": "110dafae9e0d4e91de240419dc62719865e335bfd1ad556722b7a15840c75a10",
   "verdict": "PASS"

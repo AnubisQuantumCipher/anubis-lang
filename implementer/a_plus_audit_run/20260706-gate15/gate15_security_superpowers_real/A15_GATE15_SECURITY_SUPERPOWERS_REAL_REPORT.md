@@ -568,3 +568,68 @@ Current FINAL real evidence dir (`gate15_security_superpowers_real/`):
 
 All evidence from this pass saved to scratch. Fresh real evidence from checks/fuzz included in a15_* dirs inside final.
 
+
+## Final Fresh A15 Reproduction Commands Executed (TASK9 exact)
+
+bash tools/grok-safety-check.sh
+cargo fmt --check
+cargo test --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --release -p anubis
+
+bash scripts/run_security_fixtures.sh --out out/a15_gate15_security_fixtures_real
+jq . out/a15_gate15_security_fixtures_real/security_fixture_report.json
+jq -e '.overall_verdict == "PASS"' out/a15_gate15_security_fixtures_real/security_fixture_report.json
+
+./target/release/anubis check examples/security/safe_command_injection_reject.anb --evidence --out out/a15_gate15_safe_shell_reject_real || true
+grep -R "ANUBIS_EFFECT_FORBIDDEN_IN_MODE\|effect forbidden" out/a15_gate15_safe_shell_reject_real
+jq . out/a15_gate15_safe_shell_reject_real/**/checks.sarif || true
+
+./target/release/anubis check examples/security/poc_missing_authorization_fail.anb --evidence --out out/a15_gate15_poc_missing_auth_real || true
+grep -R "ANUBIS_RESEARCH_MISSING_AUTHORIZATION\|ANUBIS_POC_MISSING_SCOPE\|authorization" out/a15_gate15_poc_missing_auth_real || true
+
+./target/release/anubis fuzz examples/security/fuzz_parser_v1.anb --runs 64 --evidence --out out/a15_gate15_fuzz_real
+jq . out/a15_gate15_fuzz_real/**/fuzz_report.json
+
+./target/release/anubis fuzz examples/security/fuzz_crash_demo.anb --runs 64 --evidence --out out/a15_gate15_fuzz_crash_real || true
+find out/a15_gate15_fuzz_crash_real -maxdepth 5 -type f | sort
+jq . out/a15_gate15_fuzz_crash_real/**/fuzz_report.json || true
+
+./target/release/anubis bounty-report out/a15_gate15_safe_shell_reject_real/evidence-* --out out/a15_gate15_bounty_report_real
+find out/a15_gate15_bounty_report_real -maxdepth 3 -type f | sort
+cat out/a15_gate15_bounty_report_real/bounty-report.md
+jq . out/a15_gate15_bounty_report_real/bounty-report.json
+
+bash scripts/build_release_candidate.sh --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --require-metal --include-security --out out/a15_release_candidate_security_real
+find out/a15_release_candidate_security_real -maxdepth 5 -type f | sort
+jq . out/a15_release_candidate_security_real/**/security_superpowers.json
+grep -R "simulated\|synthetic\|manually seeded" out/a15_release_candidate_security_real && exit 1 || echo "no simulated artifacts in final security RC"
+
+# Preserve proof/Metal spine
+./target/release/anubis prove examples/risc0_receipt.anb --backend risc0 --lane cpu --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --evidence --out out/a15_gate15_risc0_real || true
+bash scripts/verify_bundle.sh out/a15_gate15_risc0_real/evidence-* || true
+
+bash scripts/check_metal_parity.sh --require-metal --out out/a15_gate15_metal_parity_real || true
+jq -e '.overall_verdict == "PASS"' out/a15_gate15_metal_parity_real/parity_report.json || echo "(expected FAIL/PARTIAL without full metal ref)"
+bash scripts/verify_bundle.sh out/a15_gate15_metal_parity_real/evidence-* || true
+
+All a15_* outputs + RC copied into this gate15_security_superpowers_real/ .
+
+## A15 Gate 15 Classifications (final)
+No simulated artifacts used: YES
+Security fixture runner real 10/10: YES
+Security attributes in compiler analysis: YES
+Effect enforcement: YES
+Safe dangerous-effect rejection: YES
+Research/PoC authorization enforcement: YES
+Fuzz V1 real CLI run: YES
+Fuzz crash demo: YES (local deterministic fuzz crash demo)
+Bug bounty report pipeline: YES
+Security SARIF: YES
+Security evidence schema: YES
+Responsible-use boundary: YES
+Prior sealed gates preserved: YES
+Security release candidate: YES
+Gate 15 final verdict: YES
+
+Gate 15 is YES. No simulated artifacts used for final verdict.

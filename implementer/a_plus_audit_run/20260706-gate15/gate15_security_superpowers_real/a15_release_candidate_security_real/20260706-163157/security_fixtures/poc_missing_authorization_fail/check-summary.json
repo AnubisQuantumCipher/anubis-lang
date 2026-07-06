@@ -1,0 +1,7 @@
+{
+  "bounty_ready": false,
+  "bundle": "out/a15_release_candidate_security_real/20260706-163157/security_fixtures/poc_missing_authorization_fail/evidence-20260706-203259-research",
+  "check_error": "ANUBIS_RESEARCH_MISSING_AUTHORIZATION: research/poc/fuzz/proof/defensive/audit requires authorization=... metadata",
+  "source_hash": "6425ff1c04d37e3dcfd00387955ebb68193cee874f69d89a8acfe342dd221d5c",
+  "verdict": "FAIL"
+}

@@ -12,3 +12,7 @@ Commit (quarantine): 5157aa8 "gate15: quarantine simulated security artifacts"
 - All 10 security fixtures real 10/10; fuzz real; bounty real; attributes/effect/SARIF real from compiler+CLI.
 - Metal heavy (parity, some RC internal): documented PARTIAL_SMOKE (absent ref); not used for YES claims.
 Quarantine pass Mon Jul  6 16:16:05 EDT 2026: exact commands run, FINAL clean, report declaration, commit 8f0c3e0
+Quarantine pass 2026-07-06T20:25:12Z: exact commands, FINAL clean, report declaration, commit ea6b730. Real 10/10 confirmed inside final copy.
+[2026-07-06T16:33:51] A15 fresh full repro: security fixtures 10/10 PASS real, fuzz real, bounty real, checks real (effect forbidden, auth missing), lang fixtures 25/25, repro PASS, risc0/metal smoke documented (no full metal ref), RC security PASS (10/10 real core). All a15_ copied. No simulated used.
+[2026-07-06T16:33:51] STEP: Gate15 security superpowers - runner=10/10, attributes+effects wired real, SARIF real, fuzz/bounty real, prior gates preserved, RC real security. Final verdict YES.
+A15_GATE15_SECURITY_SUPERPOWERS_REAL_REPORT.md updated with full classifications + exact TASK9 commands.

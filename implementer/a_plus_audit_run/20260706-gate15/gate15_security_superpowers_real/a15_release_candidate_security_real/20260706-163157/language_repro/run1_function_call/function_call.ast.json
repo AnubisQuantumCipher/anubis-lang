@@ -1,0 +1,5 @@
+{
+  "first_item_kind": "fn:add",
+  "num_items": 2,
+  "preview": "// EXPECT: PASS\n// FEATURE: user fn call + return\nfn add(a: u32, b: u32) -> u32 {\n    return a + b;\n}\nfn main() {\n    le"
+}
