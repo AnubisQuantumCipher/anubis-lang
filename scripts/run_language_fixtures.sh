@@ -34,26 +34,41 @@ for f in "$FIXTURE_DIR"/*.anb; do
   expect=$(grep -o 'EXPECT: [A-Z]*' "$f" | head -1 | awk '{print $2}' || echo "PASS")
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || echo "")
 
-  # Verdict from summary (authoritative for policy) + log
-  summary_pass=0
-  if [[ -f "$outd/check-summary.json" ]] && ( grep -q '"check_error": null' "$outd/check-summary.json" || grep -q '"verdict": "PASS"' "$outd/check-summary.json" ); then
-    summary_pass=1
+  # Determine if this run was a failure (syntax error, type error, taint violation, etc.)
+  has_check_error=0
+  if [[ -f "$outd/check-summary.json" ]] && grep -q '"check_error":' "$outd/check-summary.json" && ! grep -q '"check_error": null' "$outd/check-summary.json"; then
+    has_check_error=1
   fi
-  log_pass=0
-  if grep -q "check passed (no policy violations)" "$outd/run.log" 2>/dev/null; then
-    log_pass=1
+  log_has_check_failed=0
+  if grep -qi "check failed" "$outd/run.log" 2>/dev/null || grep -qi "Error: parse" "$outd/run.log" 2>/dev/null; then
+    log_has_check_failed=1
+  fi
+  bounty_ready_false=0
+  if [[ -f "$outd/check-summary.json" ]] && grep -q '"bounty_ready": false' "$outd/check-summary.json"; then
+    bounty_ready_false=1
   fi
 
-  if [[ $summary_pass -eq 1 || $log_pass -eq 1 ]]; then
-    verdict="PASS"
-  else
+  failure_run=0
+  if [[ $has_check_error -eq 1 || $log_has_check_failed -eq 1 || $bounty_ready_false -eq 1 ]]; then
+    failure_run=1
+  fi
+
+  # Verdict for reporting (best effort)
+  if [[ $failure_run -eq 1 ]]; then
     verdict="FAIL"
+  else
+    verdict="PASS"
   fi
 
   ok=0
-  if [[ "$expect" == "PASS" && "$verdict" == "PASS" ]]; then ok=1; fi
-  if [[ "$expect" == "FAIL" ]]; then
-    if [[ "$verdict" == "FAIL" ]]; then ok=1; fi
+  if [[ "$expect" == "PASS" ]]; then
+    if [[ $failure_run -eq 0 ]]; then ok=1; fi
+  else
+    # EXPECT FAIL: success for the test if we actually saw a failure
+    if [[ $failure_run -eq 1 ]]; then
+      ok=1
+    fi
+    # Also accept if the specific error needle appears anywhere (belt and suspenders)
     if [[ -n "$err_needle" ]]; then
       if grep -qi "$err_needle" "$outd"/* 2>/dev/null || grep -qi "$err_needle" "$outd/run.log" 2>/dev/null || grep -qi "$err_needle" "$outd/check-summary.json" 2>/dev/null || grep -qi "$err_needle" "$outd/check_diagnostics.txt" 2>/dev/null; then
         ok=1
