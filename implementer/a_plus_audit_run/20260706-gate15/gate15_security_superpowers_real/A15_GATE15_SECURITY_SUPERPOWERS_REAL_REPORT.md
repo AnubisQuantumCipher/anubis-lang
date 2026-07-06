@@ -775,3 +775,18 @@ grep -R "simulated\|sim PASS\|demo\|when ref present\|placeholder\|synthetic\|ma
 **No simulated artifacts used for Gate 15 final verdict: YES**
 
 All artifacts in this final dir are from fresh real `./target/release/anubis` and script runs. No simulated/demo artifacts used for the verdict.
+
+## TASK 1 Quarantine Re-execution (this session)
+bash tools/grok-safety-check.sh
+mkdir -p implementer/a_plus_audit_run/20260706-gate15/simulated_or_superseded
+grep -R "simulated\|sim PASS\|demo\|when ref present\|placeholder\|synthetic\|manually seeded\|env allows\|partial due to env" \
+  implementer/a_plus_audit_run/20260706-gate15 out docs MATURITY_CLAIM_MATRIX.md 2>/dev/null || true
+
+- Inspected FINAL: clean (no dated subdirs, no placeholder_image_id in jsons).
+- No additional bad evidence files found inside FINAL to move (previous dated RC and duplicates already in superseded).
+- Report already contains explicit top declaration and "no simulated used" statements.
+- FINAL contains only a15_*_real + report + GATING + STEP + RC key real files.
+
+**No simulated artifacts used for Gate 15 final verdict: YES**
+
+All evidence here is from fresh real `./target/release/anubis` and script runs on this date. No simulated artifacts were used for final verdict.
