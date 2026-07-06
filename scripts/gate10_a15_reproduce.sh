@@ -59,6 +59,10 @@ echo "=== 6. tamper tests ==="
 for pattern in 'receipt.bin' 'image_id.txt' 'guest.elf' 'risc0_metadata.json' 'receipt.verify.log'; do
   rm -rf out/a15_gate10_final_pass_tampered
   cp -R out/a15_gate10_final_pass out/a15_gate10_final_pass_tampered
+  # prune other copies of the 5 pats so that find head-1 is guaranteed the tampered instance
+  for p in receipt.bin image_id.txt guest.elf risc0_metadata.json receipt.verify.log; do
+    find out/a15_gate10_final_pass_tampered -type f -name "$p" | tail -n +2 | xargs -r rm -f
+  done
   target=$(find out/a15_gate10_final_pass_tampered -type f -name "$pattern" | head -1)
   test -n "$target"
   echo tamper >> "$target"
