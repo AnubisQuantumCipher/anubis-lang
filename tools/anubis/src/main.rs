@@ -370,7 +370,7 @@ fn main() -> Result<()> {
                 let effective_verdict = if check_error.is_some() {
                     "FAIL".to_string()
                 } else {
-                    "PASS".to_string()
+                    bundle.manifest.verdict.clone()
                 };
                 println!("verdict: {}", effective_verdict);
 
