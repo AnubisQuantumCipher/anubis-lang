@@ -1,0 +1,41 @@
+{
+  "timestamp": "20260706-192916",
+  "tool": "anubis 0.2.0",
+  "mode": "research",
+  "source_hash": "6425ff1c04d37e3dcfd00387955ebb68193cee874f69d89a8acfe342dd221d5c",
+  "build_log_hash": "fb54210e8e84e2b7c6bf860cef6c8b215b8216b65a35120c0a3f09e7834a1e27",
+  "artifact_hash": null,
+  "lane": "research-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "652412b313b84b0831fa7e2cdec42037280b59f2d31ae79fca260feda7d2c2f9",
+  "sarif_hash": "1b84b6ce151766c0033648bdc691a0c369f27c07f26e30bbf8064ca790db1ad6",
+  "bounty_report_hash": "97d8ef1046a08fa0bced97651a476eac01719a9f3140e181f8a5d2338ae2def2",
+  "manifest_signature": "d7c4ccaaba563dbc3dbbecef461190b376af463828b6b252ccbcb35d07d160c5",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "FAIL",
+      "detail": "ANUBIS_RESEARCH_MISSING_AUTHORIZATION: research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "6425ff1c04d37e3dcfd00387955ebb68193cee874f69d89a8acfe342dd221d5c"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "fb54210e8e84e2b7c6bf860cef6c8b215b8216b65a35120c0a3f09e7834a1e27"
+    }
+  ],
+  "verdict": "FAIL",
+  "security": {
+    "mode": "research",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}

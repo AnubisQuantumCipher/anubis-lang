@@ -1,6 +1,6 @@
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
      Running `target/debug/anubis check tests/fixtures/language_core/tainted_sink_without_declassify.anb --evidence --out out/a15_gate15_language_fixtures_real/tainted_sink_without_declassify`
 anubis check tests/fixtures/language_core/tainted_sink_without_declassify.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/tainted_sink_without_declassify/evidence-20260706-203101-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/tainted_sink_without_declassify/evidence-20260706-204851-safe
 verdict: FAIL
 check failed: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: safe mode tainted flow from `s` to sink `sink` requires declassify() or research boundary

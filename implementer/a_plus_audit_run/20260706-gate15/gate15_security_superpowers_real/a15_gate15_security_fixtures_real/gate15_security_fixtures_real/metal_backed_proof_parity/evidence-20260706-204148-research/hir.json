@@ -1,0 +1,33 @@
+{
+  "functions": [
+    {
+      "effects": [
+        "sink:sink"
+      ],
+      "mode": "research",
+      "module": null,
+      "name": "main",
+      "params": [],
+      "span": [
+        100,
+        168
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "research",
+          "name": "x",
+          "span": [
+            142,
+            153
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

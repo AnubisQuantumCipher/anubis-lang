@@ -1,6 +1,6 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
      Running `target/debug/anubis check tests/fixtures/language_core/typed_let_u8.anb --evidence --out out/a15_gate15_language_fixtures_real/typed_let_u8`
 anubis check tests/fixtures/language_core/typed_let_u8.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/typed_let_u8/evidence-20260706-203102-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/typed_let_u8/evidence-20260706-204852-safe
 verdict: PASS
 check passed (no policy violations)

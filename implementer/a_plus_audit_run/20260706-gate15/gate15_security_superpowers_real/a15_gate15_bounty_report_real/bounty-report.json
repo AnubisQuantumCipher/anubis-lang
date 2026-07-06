@@ -4,7 +4,7 @@
   "schema": "1.0",
   "scope_status": "missing",
   "security": {
-    "mode": "safe",
+    "mode": "research",
     "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
   },
   "verdict": "REAL"

@@ -1,0 +1,4 @@
+anubis check examples/security/audit_file_scan_pass.anb (evidence=true)
+evidence bundle: out/gate15_security_fixtures_real/audit_file_scan_pass/evidence-20260706-205106-research
+verdict: PASS
+check passed (no policy violations)

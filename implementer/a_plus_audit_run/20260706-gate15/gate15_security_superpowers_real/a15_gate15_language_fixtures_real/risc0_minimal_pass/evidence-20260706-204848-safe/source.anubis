@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// FEATURE: minimal for RISC0 prove path
+fn main() {
+    let x: u32 = 42;
+}

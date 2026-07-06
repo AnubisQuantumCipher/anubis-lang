@@ -892,3 +892,19 @@ grep -R "simulated\|sim PASS\|demo\|when ref present\|placeholder\|synthetic\|ma
 **No simulated artifacts used for Gate 15 final verdict: YES**
 
 All artifacts here from fresh real CLI/script runs. Historical bad items in superseded/.
+
+## Additional fresh A15 commands executed (this turn)
+./target/release/anubis check examples/security/safe_command_injection_reject.anb --evidence --out out/a15_gate15_safe_shell_reject_real
+(real ANUBIS_EFFECT_FORBIDDEN_IN_MODE)
+./target/release/anubis check examples/security/poc_missing_authorization_fail.anb --evidence --out out/a15_gate15_poc_missing_auth_real
+(real ANUBIS_RESEARCH_MISSING_AUTHORIZATION)
+Copied to FINAL as a15_*_real (overwriting previous if needed).
+
+**No simulated artifacts used for Gate 15 final verdict: YES**
+
+## FINAL dir cleaned (this turn)
+Moved non-canonical a15_*_fresh dirs to superseded to ensure FINAL contains only canonical a15_*_real + report + GATING + STEP + RC.
+
+Re-copied fresh safe/poc checks as a15_*_real.
+
+**No simulated artifacts used for Gate 15 final verdict: YES**

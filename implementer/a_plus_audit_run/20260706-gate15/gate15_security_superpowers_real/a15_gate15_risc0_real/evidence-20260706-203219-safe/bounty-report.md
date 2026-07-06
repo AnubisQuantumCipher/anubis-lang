@@ -26,4 +26,4 @@
 - `hybrid_risc0_receipt_hash`: PASS - e352bf9749a70b59115b1e1298ca4731bac4540139ffea75b9e75e4cd7346c9b
 - `hybrid_risc0_metadata_json_hash`: PASS - f794d8b3c8b854b1ec0b4637aa6802384e3cdabcb5a91f6d103fb1d7fafb1caa
 - `hybrid_risc0_receipt_rs_hash`: PASS - a39dc51c2d25eae3d35ef47a4fd1cdf4718455308d16de5462155ae61670fb12
-- `risc0_receipt_verify`: FAIL - verify_status=failed fresh_receipt_generated=false dev_mode=false mock_prover=false cache_used=false placeholder_image_id=true patch_crates_io_active=true methods_patch_crates_io_active=true prover_patch_crates_io_active=true reference_ok=true vendor_ok=true
+- `risc0_receipt_verify`: FAIL - verify_status=failed fresh_receipt_generated=false dev_mode=false mock_prover=false cache_used=false image_id_unavailable_smoke=true patch_crates_io_active=true methods_patch_crates_io_active=true prover_patch_crates_io_active=true reference_ok=true vendor_ok=true

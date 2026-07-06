@@ -1,0 +1,12 @@
+[
+  {
+    "effects": [
+      "taint-propagate",
+      "declassify",
+      "sink:sink"
+    ],
+    "function": "main",
+    "mode": "research",
+    "statement_count": 3
+  }
+]

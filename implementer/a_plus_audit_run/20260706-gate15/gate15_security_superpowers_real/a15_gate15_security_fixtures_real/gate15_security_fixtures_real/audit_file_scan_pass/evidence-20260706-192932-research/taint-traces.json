@@ -1,0 +1,10 @@
+[
+  {
+    "declassified": true,
+    "sink": null,
+    "source": "data",
+    "steps": [
+      "data -> declassify -> public"
+    ]
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "bounty_ready": true,
+  "bundle": "out/gate15_security_fixtures_real/audit_file_scan_pass/evidence-20260706-205106-research",
+  "check_error": null,
+  "source_hash": "b3c970cbda0a382fac620f9e5cfc82cfe92cfdd898b6796ac941be1145fbd9c6",
+  "verdict": "PASS"
+}

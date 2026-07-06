@@ -1,6 +1,6 @@
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
      Running `target/debug/anubis check tests/fixtures/language_core/symbolic_assert_pass.anb --evidence --out out/a15_gate15_language_fixtures_real/symbolic_assert_pass`
 anubis check tests/fixtures/language_core/symbolic_assert_pass.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/symbolic_assert_pass/evidence-20260706-203100-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/symbolic_assert_pass/evidence-20260706-204850-safe
 verdict: PASS
 check passed (no policy violations)

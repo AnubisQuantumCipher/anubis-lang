@@ -1,6 +1,6 @@
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
      Running `target/debug/anubis check tests/fixtures/language_core/while_loop_or_planned_skip.anb --evidence --out out/a15_gate15_language_fixtures_real/while_loop_or_planned_skip`
 anubis check tests/fixtures/language_core/while_loop_or_planned_skip.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/while_loop_or_planned_skip/evidence-20260706-203103-safe
+evidence bundle: out/a15_gate15_language_fixtures_real/while_loop_or_planned_skip/evidence-20260706-204853-safe
 verdict: PASS
 check passed (no policy violations)

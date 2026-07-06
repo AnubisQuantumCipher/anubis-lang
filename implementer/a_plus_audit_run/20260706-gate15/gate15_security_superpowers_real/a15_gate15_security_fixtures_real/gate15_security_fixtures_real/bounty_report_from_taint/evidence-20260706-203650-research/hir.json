@@ -1,0 +1,47 @@
+{
+  "functions": [
+    {
+      "effects": [
+        "taint-propagate",
+        "declassify",
+        "sink:sink"
+      ],
+      "mode": "research",
+      "module": null,
+      "name": "main",
+      "params": [],
+      "span": [
+        118,
+        249
+      ],
+      "symbols": [
+        {
+          "declassified": false,
+          "mode": "research",
+          "name": "secret",
+          "span": [
+            134,
+            169
+          ],
+          "taint_source": "token",
+          "tainted": true,
+          "ty": "tainted<string>"
+        },
+        {
+          "declassified": true,
+          "mode": "research",
+          "name": "public",
+          "span": [
+            174,
+            229
+          ],
+          "taint_source": null,
+          "tainted": false,
+          "ty": null
+        }
+      ]
+    }
+  ],
+  "imports": [],
+  "modules": []
+}

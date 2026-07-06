@@ -1,0 +1,41 @@
+{
+  "timestamp": "20260706-204850",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "d5773b5b6045a266698ef65d3191ea07737005b8b3e6a0e0e641a5bb6926d701",
+  "build_log_hash": "b893da302a94f1aba70dc52c0f8022d8dbd2dd43b82f912acbe3340a26711ccc",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "624d3b8baf6d21bac57291db98ba5929bfb78c6fd4b633e236ee466c77aa0af0",
+  "sarif_hash": "f8231fa8d9e183c18d0b4b52d48c844144f1de2fa6eaa519f7e98f60a878e70d",
+  "bounty_report_hash": "73af7bb637cd4716f7a67c29ea83443e4e526422035a902a2af541ce26057531",
+  "manifest_signature": "dc92512ed8e0033749edb435b03a2d11c9eb9aa82db9e8c0624ac40da517c8dd",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "FAIL",
+      "detail": "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: safe mode tainted flow from `password` to sink `sink` requires declassify() or research boundary"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "d5773b5b6045a266698ef65d3191ea07737005b8b3e6a0e0e641a5bb6926d701"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "b893da302a94f1aba70dc52c0f8022d8dbd2dd43b82f912acbe3340a26711ccc"
+    }
+  ],
+  "verdict": "FAIL",
+  "security": {
+    "mode": "safe",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "timestamp": "20260706-204851",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "48f2a89c2e12e4d0770a9f29b814578418e1d78fa8a5428d9fb14b779ba715ac",
+  "build_log_hash": "c8394c6162c900cd364fd82c82d7f863ab610d36027219a33c2f0404706e26e6",
+  "artifact_hash": null,
+  "lane": "safe-check",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "95e4deca954280a354504b0dcb760cd66c65d8e10c9368b54e31f09c7078f68d",
+  "sarif_hash": "b2e255d181878b9d17aca12149ed159f2b3221b33f432b30a974921f5e0e9877",
+  "bounty_report_hash": "f0b0f86fa687b01b163ed8e7f0338b2928b93852af527dd1eb646425cb65b1d1",
+  "manifest_signature": "55ef7c5f4daf0ac2b2f0f70baf5e5a09b314902b9e4c58e3e63318e6d6bc2ab5",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "FAIL",
+      "detail": "ANUBIS_TYPE_MISMATCH: type mismatch: expected u32, got bool"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "48f2a89c2e12e4d0770a9f29b814578418e1d78fa8a5428d9fb14b779ba715ac"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "c8394c6162c900cd364fd82c82d7f863ab610d36027219a33c2f0404706e26e6"
+    }
+  ],
+  "verdict": "FAIL",
+  "security": {
+    "mode": "safe",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}
