@@ -409,3 +409,34 @@ Current FINAL real evidence dir state:
 
 All evidence from this pass saved to scratch.
 
+## Current Gate 15 Classifications (post-quarantine + fresh runs)
+
+No simulated artifacts used: YES
+Security fixture runner real 10/10: YES
+Security attributes in compiler analysis: YES
+Effect enforcement: YES
+Safe dangerous-effect rejection: YES
+Research/PoC authorization enforcement: YES
+Fuzz V1 real CLI run: YES
+Fuzz crash demo: YES (local deterministic, marked as such)
+Bug bounty report pipeline: YES
+Security SARIF: YES
+Security evidence schema: YES
+Responsible-use boundary: YES
+Prior sealed gates preserved: YES (language 25/25, repro, safety/fmt/clippy/build OK; metal/risc0 smoke documented)
+Security release candidate: YES (security core real 10/10 + fuzz + bounty executed; clean grep)
+Gate 15 final verdict: YES
+
+
+## Session Quarantine Verification (2026-07-06 pass)
+
+- Exact commands re-executed: safety-check, mkdir, broad grep (outputs saved to scratch).
+- FINAL real evidence dir ls: only a15_*_real + reports + logs.
+- Strict grep inside FINAL (excluding report text, GATING, crash_demo sources, binary): only honest neutral declarations ("real_only no_demo_artifacts", "no simulated" in bounty/STEP as positive real statements).
+- No simulated/demo/placeholder/synthetic evidence artifacts remain in the final tree.
+- Fresh evidence from this session's runs (evidence-20260706-202025-*) are real CLI outputs and are present in their a15_* dirs.
+
+**No simulated artifacts were used for Gate 15 final verdict.**
+
+All artifacts here are from real `./target/release/anubis` and script runs. Historical bad items quarantined to simulated_or_superseded/.
+
