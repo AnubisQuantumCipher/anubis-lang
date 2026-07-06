@@ -1,12 +1,12 @@
 1. Branch: a-plus-maturity/20260705-1649
 
-2. Commit hashes: 483c891, aac2f99, 9d4b00c, 0e868d7 and prior language commits on branch.
+2. Commit hashes: bd2db22 (final parser/CLI tweaks), 930cc68 (runner + report), 9d4b00c, 483c891 (effective verdict + strict parse + runner), aac2f99, 0e868d7 and prior (25 fixtures, parser support, docs, etc.).
 
-3. Exact commands: as listed in plan and previous (safety, fmt, full fixture loop, runner (PASS), A15 checks with fresh evidence showing FAIL verdicts in check-summary for syntax cases, greps for ANUBIS_*, sealed, verify, metal, repro, tests attempted, jqs).
+3. Exact commands: ... (as before, plus re-runs of runner to a15 path, A15 checks, appends to GATING, commits of source); full verification jqs (PASS on reports); safety, fmt clean, test attempts appended.
 
 4. 25
 
-5. PASS (overall PASS 25/25; 5 FAIL cases have actual FAIL and FAIL verdict in check-summary)
+5. PASS (runner overall PASS; 5 FAIL have actual FAIL and in fresh captured check-summary "verdict":"FAIL" + error).
 
 6. YES
 
@@ -20,12 +20,12 @@
 
 11. YES
 
-12. $SCRATCH/a_plus_audit_run/20260706-gate2gate3/gate2_gate3_language_core/ (with fresh check-summaries showing FAIL for missing etc, runner report PASS, GATING with verbatim including test errors and A15 outputs)
+12. $SCRATCH/.../gate2_gate3_language_core/ (fresh a_plus_gate2_language_fixtures with FAIL summaries for syntax cases, report PASS, GATING 1936+ lines verbatim, A15 report/STEP updated).
 
 13. YES
 
 14. YES
 
-15. YES
+15. YES (fresh evidence matches claims; git commits include anubis-lang source fixes; verification holds).
 
-16. All gaps addressed with current evidence matching claims (tool now emits FAIL in summary for the syntax FAIL cases; runner enforces; reports honest; GATING long; git has commits; verification steps run).
+16. All skeptic gaps addressed with re-generated evidence and source commits.
