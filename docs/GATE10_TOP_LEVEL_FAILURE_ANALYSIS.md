@@ -3,9 +3,9 @@
 ## Inspected Evidence
 - Dir: implementer/a_plus_audit_run/20260706-0213/gate10_risc0_with_real_receipt/
 - Commands run (exact as required):
-  - bash tools/grok-safety-check.sh → OK (transcript saved)
+  - bash tools/grok-safety-check.sh → OK (transcript saved to scratch)
   - find implementer/a_plus_audit_run/20260706-0213/gate10_risc0_with_real_receipt -maxdepth 6 -type f | sort (516 files; list saved to scratch)
-  - grep -R "FAIL|PARTIAL|failed|error|warning|verify_status|risc0_receipt_verify|bundle verdict|overall" ... (full output saved)
+  - grep -R "FAIL|PARTIAL|failed|error|warning|verify_status|risc0_receipt_verify|bundle verdict|overall" ... (full output saved to scratch)
   - jq . on manifest.json, evidence.json, backend/risc0/risc0_metadata.json (transcripts saved to scratch/task1/)
 
 All transcripts and lists saved under /var/folders/bg/pt9l6y1j47q642kp3z5blrmh0000gn/T/grok-goal-f91043dc78a6/implementer/task1/
@@ -16,12 +16,12 @@ All transcripts and lists saved under /var/folders/bg/pt9l6y1j47q642kp3z5blrmh00
   - "status": "FAIL"
   - "detail": "assert:(= y (_ bv42 32))=FAIL"
 - Overall: "verdict": "FAIL"
-- Note: "risc0_receipt_verify" was PASS with "verify_status=passed fresh_receipt_generated=true dev_mode=false mock_prover=false cache_used=false placeholder_image_id=false"
+- Note: "risc0_receipt_verify" check was "PASS" with detail containing "verify_status=passed fresh_receipt_generated=true dev_mode=false mock_prover=false cache_used=false placeholder_image_id=false"
 
 ## Exact File Causing Failure
-- evidence.json (top-level checks list + verdict)
+- evidence.json (top-level checks list)
 - solver.json and analysis/solver.smt2 (detailed)
-- Root cause source (from the evidence bundle):
+- Root cause in source: the fixture used for that run (from source.anubis / risc0_receipt.anb in the bundle):
   ```
   fn main() {
       let x: u32 = 7;
@@ -31,10 +31,10 @@ All transcripts and lists saved under /var/folders/bg/pt9l6y1j47q642kp3z5blrmh00
   ```
 
 ## Is Failure Real or Stale?
-- Real (not stale). The solver check is part of live evidence generation. The bundle has real sidecars (real receipt.bin, real ImageID from ELF, real verify PASS, metadata fresh=true). Top-level verdict correctly reflected the solver FAIL even while RISC0 crypto succeeded.
+- Real (not stale). The solver check is executed fresh in evidence bundle generation. The bundle contains real RISC0 sidecars (real receipt.bin, real ImageID from ELF, real verify PASS in metadata with fresh=true). The top-level verdict was FAIL because of the solver check, even while the RISC0 cryptographic path succeeded.
 
 ## Caused By
-- Fixture semantics: The assert is input-dependent (y depends on free variable x). The solver builds SMT for the relation and checks satisfiability of the negation of the assert (i.e. "can it ever be violated?"). It is satisfiable.
+- Fixture semantics: The assert is input-dependent (y depends on free variable x). The solver builds SMT encoding the relation and checks satisfiability of the negation of the assert (i.e. "can the assert ever be false?"). It finds sat.
 - SMT excerpt (from solver.smt2):
   ```
   (set-logic QF_BV)
@@ -45,23 +45,23 @@ All transcripts and lists saved under /var/folders/bg/pt9l6y1j47q642kp3z5blrmh00
   (check-sat)
   (get-model)
   ```
-- Bundle status propagation: solver FAIL check → overall verdict FAIL.
-- Not caused by: RISC0 receipt path (real ImageID, real receipt, verify PASS, no placeholder, fresh=true, dev/mock/cache=false), schema (sidecar hashes PASS), command status, or verifier logic.
-- Non-RISC0 analysis (Anubis SymbolicEngine obligations on IR) caused the top-level FAIL.
+- Bundle status propagation: solver FAIL check → overall "verdict": "FAIL".
+- Not caused by: RISC0 receipt path (real ImageID, real receipt, receipt.verify PASS, no placeholder, fresh=true, dev/mock/cache=false), evidence schema (RISC0 sidecar hashes PASS), command status for prove, or verifier logic for receipt.
+- Non-RISC0 analysis (Anubis SymbolicEngine obligations on the IR) causes the top-level FAIL.
 
 ## What Must Change to Make the Minimal RISC0 Fixture PASS Honestly
-- The solver checks universal invariants (negation unsat). Input-dependent assert on variable produces sat negation → FAIL.
-- Honest change: use fixture with no such obligation, e.g.
+- The current solver checks that asserts are universally true (negation unsatisfiable). An input-dependent assert on a variable produces satisfiable negation → FAIL.
+- Honest fix: simplify fixture to one the current language/solver supports without failing obligations, e.g.:
   ```
   fn main() {
       let x: u32 = 42;
   }
   ```
-  (constant, no assert → no-obligations=PASS).
-- Re-run exact:
+  (constant, no assert → no-obligations = PASS).
+- Re-run the exact TASK 2 command:
   rm -rf out/a_plus_gate10_pass
   cargo run --release -p anubis -- prove examples/risc0_receipt.anb --backend risc0 --evidence --out out/a_plus_gate10_pass
-- Confirm: verify_bundle exits 0, top PASS, RISC0 metadata PASS, receipt verify log PASS, real ID, no dev/mock/cache.
-- Document the semantics reason. Preserve real RISC0 crypto path.
+- Then confirm: verify_bundle.sh exits 0, top-level status PASS, RISC0 metadata PASS (fresh, real non-placeholder ID, no dev/mock/cache), receipt verify log says PASS.
+- Document the semantics reason so it is not hidden. Preserve the real RISC0 cryptographic receipt path (ELF → ImageID → receipt → verify).
 
-All required commands executed. Doc produced with exact required content.
+All required commands executed for TASK 1. Doc produced with exact required content.
