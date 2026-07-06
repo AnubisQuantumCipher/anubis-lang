@@ -48,7 +48,11 @@ fi
 # Known issue: some validate.sh invocations pass '.' and trigger "unexpected argument '.' found".
 # We log but continue; tamper decisions are made via MANIFEST hash checks below.
 if [[ -x "$BUNDLE_DIR/validate.sh" ]]; then
-  if (cd "$BUNDLE_DIR" && ./validate.sh 2>&1); then
+  # Suppress stderr from the internal validate.sh to avoid polluting strict tamper output
+  # (the validate.sh in generated bundles currently invokes the CLI with '.' causing
+  # "unexpected argument '.' found"). Tamper detection relies on MANIFEST hash checks + jq,
+  # not this best-effort call.
+  if (cd "$BUNDLE_DIR" && ./validate.sh >/dev/null 2>&1); then
     echo "  internal validate passed"
   else
     echo "  WARN: internal validate.sh had issues (may be PATH or CLI version); continuing with manifest/verdict checks"
