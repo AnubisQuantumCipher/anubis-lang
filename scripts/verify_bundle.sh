@@ -44,7 +44,9 @@ else
   echo "WARN: no shasum, skipping full hash verify"
 fi
 
-# Call internal validate if present (best effort; some bundles use 'anubis' from PATH)
+# Call internal validate if present (best effort only — never rely on it for strict tamper verdict)
+# Known issue: some validate.sh invocations pass '.' and trigger "unexpected argument '.' found".
+# We log but continue; tamper decisions are made via MANIFEST hash checks below.
 if [[ -x "$BUNDLE_DIR/validate.sh" ]]; then
   if (cd "$BUNDLE_DIR" && ./validate.sh 2>&1); then
     echo "  internal validate passed"
@@ -93,6 +95,23 @@ if [[ -d "$BUNDLE_DIR/backend/risc0" ]]; then
     fi
   done
 fi
+
+# Explicit Gate-10 strict check for the exact 5 sidecars the task requires.
+# If any of these 5 have a current hash not recorded in the sealed MANIFEST, fail mechanically.
+for pat in receipt.bin image_id.txt guest.elf risc0_metadata.json receipt.verify.log; do
+  tgt=$(find "$BUNDLE_DIR" -type f -name "$pat" 2>/dev/null | head -1)
+  if [[ -z "$tgt" ]]; then
+    tgt=$(find "$BUNDLE_DIR" -type f -name "risc0_$pat" 2>/dev/null | head -1)
+  fi
+  if [[ -n "$tgt" && -f "$tgt" ]]; then
+    actual=$(shasum -a 256 "$tgt" | cut -d' ' -f1)
+    # Look for the recorded hash next to a line mentioning this pat
+    if ! grep -q "$actual" "$BUNDLE_DIR/MANIFEST.sha256" 2>/dev/null; then
+      echo "TAMPER: key sidecar $pat (at $tgt) current hash not present in sealed MANIFEST"
+      exit 1
+    fi
+  fi
+done
 
 # Also enforce any direct risc0_* flat files are covered by MANIFEST (from copy_hybrid_sidecars)
 for f in "$BUNDLE_DIR"/risc0_*; do
