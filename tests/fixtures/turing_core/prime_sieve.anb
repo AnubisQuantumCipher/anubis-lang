@@ -1,0 +1,35 @@
+// EXPECT: PASS
+// FEATURE: collections capstone (Sieve of Eratosthenes)
+// Sieve of Eratosthenes in Anubis — arrays, nested loops, mutation.
+// Counts primes below 100 (expected: 25) and prints the 25th-and-under list.
+fn main() {
+    let limit = 100;
+    let is_composite = [0];
+    // grow a flag array of size `limit` (0 = prime candidate, 1 = composite)
+    let k = 1;
+    while k < limit {
+        push(is_composite, 0);
+        k = k + 1;
+    }
+    let i = 2;
+    while i * i < limit {
+        if is_composite[i] == 0 {
+            let j = i * i;
+            while j < limit {
+                is_composite[j] = 1;
+                j = j + i;
+            }
+        }
+        i = i + 1;
+    }
+    let count = 0;
+    let primes = [];
+    for n in 2..limit {
+        if is_composite[n] == 0 {
+            count = count + 1;
+            push(primes, n);
+        }
+    }
+    print(count);
+    print(primes);
+}
