@@ -1,6 +1,6 @@
 //! Middle: typed HIR, mode/effect checks, taint tracking, and Z3 obligations.
 
-use crate::frontend::{Expr, Item, Mode, Pattern, Span, Stmt, AST};
+use crate::frontend::{Expr, Item, Mode, Span, Stmt, AST};
 use crate::BuildMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -271,7 +271,6 @@ fn check_calls_expr(
     bound: &BTreeSet<String>,
     ctx: &mut SemanticContext,
 ) {
-    use crate::frontend::Pattern;
     match e {
         Expr::Call { callee, args } => {
             if !fns.contains(callee)
@@ -331,18 +330,11 @@ fn check_calls_expr(
             check_calls_expr(scrutinee, fns, bound, ctx);
             for arm in arms {
                 let mut b = bound.clone();
-                if let Pattern::EnumVariant {
-                    bindings,
-                    named_bindings,
-                    ..
-                } = &arm.pattern
-                {
-                    for x in bindings {
-                        b.insert(x.clone());
-                    }
-                    for (_, x) in named_bindings {
-                        b.insert(x.clone());
-                    }
+                for x in arm.pattern.bound_names() {
+                    b.insert(x);
+                }
+                if let Some(guard) = &arm.guard {
+                    check_calls_expr(guard, fns, &b, ctx);
                 }
                 check_calls_expr(&arm.body, fns, &b, ctx);
             }
@@ -1524,6 +1516,9 @@ fn check_expr_semantics(
         } => {
             check_expr_semantics(scrutinee, scope, ctx);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    check_expr_semantics(guard, scope, ctx);
+                }
                 check_expr_semantics(&arm.body, scope, ctx);
             }
             check_match_exhaustiveness(scrutinee, arms, scope, ctx);
@@ -1540,8 +1535,11 @@ fn check_match_exhaustiveness(
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &mut SemanticContext,
 ) {
-    // Wildcard present → exhaustive.
-    if arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard)) {
+    // An unguarded irrefutable arm (`_` or a bare binding) → exhaustive.
+    if arms
+        .iter()
+        .any(|a| a.pattern.is_irrefutable() && a.guard.is_none())
+    {
         return;
     }
     // Determine enum type of scrutinee.
@@ -1562,14 +1560,15 @@ fn check_match_exhaustiveness(
     };
     let mut covered = BTreeSet::new();
     for arm in arms {
-        if let Pattern::EnumVariant {
-            enum_name: en,
-            variant,
-            ..
-        } = &arm.pattern
-        {
-            if en == &enum_name {
-                covered.insert(variant.clone());
+        // A guarded arm may not fire, so it cannot be counted toward exhaustiveness.
+        if arm.guard.is_some() {
+            continue;
+        }
+        let mut pairs = Vec::new();
+        arm.pattern.covered_enum_variants(&mut pairs);
+        for (en, variant) in pairs {
+            if en == enum_name {
+                covered.insert(variant);
             }
         }
     }

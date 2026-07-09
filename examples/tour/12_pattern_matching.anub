@@ -1,0 +1,78 @@
+// EXPECT: zero|small|negative|huge|medium|A|B|F|greeting|xyz|300|20|0|FizzBuzz|Fizz|Buzz|1
+// Rich pattern matching: literals, or-patterns, guards, bindings, and destructuring.
+
+enum Shape {
+    Circle(int),
+    Rect { w: int, h: int },
+    Point,
+}
+
+fn classify(n) {
+    // literal arm, or-pattern, guard arms, and a binding catch-all
+    match n {
+        0 => "zero",
+        1 | 2 | 3 => "small",
+        n if n < 0 => "negative",
+        n if n > 100 => "huge",
+        _ => "medium",
+    }
+}
+
+fn grade(n) {
+    match n {
+        n if n >= 90 => "A",
+        n if n >= 80 => "B",
+        n if n >= 70 => "C",
+        _ => "F",
+    }
+}
+
+fn describe(s) {
+    match s {
+        "hello" => "greeting",
+        other => other,
+    }
+}
+
+fn area(sh) {
+    match sh {
+        Shape::Circle(r) => 3 * r * r,
+        Shape::Rect { w: w, h: h } => w * h,
+        Shape::Point => 0,
+    }
+}
+
+fn fizzbuzz(n) {
+    match n {
+        n if n % 15 == 0 => "FizzBuzz",
+        n if n % 3 == 0 => "Fizz",
+        n if n % 5 == 0 => "Buzz",
+        _ => "number",
+    }
+}
+
+fn main() {
+    print(classify(0));
+    print(classify(2));
+    print(classify(-5));
+    print(classify(500));
+    print(classify(50));
+
+    print(grade(95));
+    print(grade(85));
+    print(grade(40));
+
+    print(describe("hello"));
+    print(describe("xyz"));
+
+    print(area(Shape::Circle(10)));
+    print(area(Shape::Rect { w: 4, h: 5 }));
+    print(area(Shape::Point));
+
+    print(fizzbuzz(15));
+    print(fizzbuzz(9));
+    print(fizzbuzz(20));
+
+    // implicit tail return: this function needs no `return`
+    print(area(Shape::Circle(1)) - 2);
+}

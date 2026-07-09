@@ -2798,23 +2798,53 @@ fn run_anubis_source(
     let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
 
     std::fs::create_dir_all(out)?;
-    let rs_path = out.join("anubis_run.rs");
-    let exe_path = out.join("anubis_run");
-    std::fs::write(&rs_path, rust_source)?;
+    // Compile and run inside a unique temp directory so that concurrent `anubis run`
+    // invocations never clobber each other's generated Rust mid-compile (which would make
+    // rustc read a half-written file). Artifacts are copied into `out/` afterward for
+    // inspection, so the user-facing paths stay stable.
+    let unique = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!(
+            "{}-{}-{}",
+            std::process::id(),
+            nanos,
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        )
+    };
+    let work = std::env::temp_dir().join(format!("anubis-run-{unique}"));
+    std::fs::create_dir_all(&work)?;
+    let work_rs = work.join("anubis_run.rs");
+    let work_exe = work.join("anubis_run");
+    std::fs::write(&work_rs, &rust_source)?;
     let status = std::process::Command::new("rustc")
-        .arg(&rs_path)
+        .arg(&work_rs)
         .arg("-o")
-        .arg(&exe_path)
+        .arg(&work_exe)
         .status()
         .map_err(|e| anyhow!("rustc spawn failed: {}", e))?;
     if !status.success() {
+        let _ = std::fs::remove_dir_all(&work);
         return Err(anyhow!("ANUBIS_UNSUPPORTED_NATIVE_LOWERING: rustc failed"));
     }
 
-    let output = std::process::Command::new(&exe_path)
+    let output = std::process::Command::new(&work_exe)
         .args(args)
         .output()
         .map_err(|e| anyhow!("run spawn failed: {}", e))?;
+
+    // Copy artifacts into `out/` for inspection (each write is a complete file, so even a
+    // concurrent copy resolves to one full version rather than a corrupt interleave).
+    let rs_path = out.join("anubis_run.rs");
+    let exe_path = out.join("anubis_run");
+    let _ = std::fs::copy(&work_rs, &rs_path);
+    let _ = std::fs::copy(&work_exe, &exe_path);
+    let _ = std::fs::remove_dir_all(&work);
 
     Ok(RunOutcome {
         input: input.to_path_buf(),

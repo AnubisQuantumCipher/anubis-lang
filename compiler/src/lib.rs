@@ -484,7 +484,11 @@ mod tests {
 
     #[test]
     fn parser_reports_spanned_diagnostics_and_recovers() {
-        let src = "fn main() { let a = 1\nlet b = 2; }";
+        // A stray token between statements is reported with a span, and the parser
+        // recovers to parse the following statement. (Note: a trailing `;` is optional
+        // on every statement kind — including `let` — so a missing semicolon is not an
+        // error; the diagnostic machinery is exercised here with a genuine stray token.)
+        let src = "fn main() { let a = 1; , let b = 2; }";
         let parsed = frontend::parse_source_detailed(src);
 
         assert_eq!(parsed.ast.items.len(), 1);
@@ -494,16 +498,21 @@ mod tests {
         assert_eq!(
             body.len(),
             2,
-            "parser should recover following let: {:?}",
+            "parser should recover past the stray token and parse both bindings: {:?}",
             body
         );
+        let diag = parsed
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("expected statement"))
+            .unwrap_or_else(|| {
+                panic!("expected a spanned diagnostic: {:?}", parsed.diagnostics)
+            });
         assert!(
-            parsed
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains("expected `;`") && d.span.start == 22),
-            "expected missing semicolon diagnostic at newline: {:?}",
-            parsed.diagnostics
+            src[diag.span.start..].starts_with(','),
+            "diagnostic span should point at the stray `,`: start={} src={:?}",
+            diag.span.start,
+            src
         );
     }
 

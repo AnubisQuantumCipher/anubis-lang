@@ -159,7 +159,18 @@ pub struct EnumVariant {
 /// Pattern for `match` arms.
 #[derive(Debug, Clone)]
 pub enum Pattern {
+    /// `_` — matches anything, binds nothing.
     Wildcard,
+    /// A bare lowercase/identifier pattern like `n` — matches anything and binds
+    /// the scrutinee to `n`. Irrefutable.
+    Binding(String),
+    /// A numeric or boolean literal (`1`, `-3`, `3.14`, `true`) — matches by value.
+    Literal(String),
+    /// A string or char literal (`"hi"`, `'a'`) — matches by value.
+    StrLiteral(String),
+    /// Or-pattern: `1 | 2 | 3` — matches if any alternative matches. Alternatives
+    /// may not bind variables (they must be literals, wildcards, or unit variants).
+    Or(Vec<Pattern>),
     /// `Status::Ok`, `Status::Err(n)`, or `Status::Err { code: c }`
     EnumVariant {
         enum_name: String,
@@ -171,9 +182,53 @@ pub enum Pattern {
     },
 }
 
+impl Pattern {
+    /// All identifiers this pattern introduces into the arm's scope.
+    pub fn bound_names(&self) -> Vec<String> {
+        match self {
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::StrLiteral(_) => Vec::new(),
+            Pattern::Binding(n) => vec![n.clone()],
+            Pattern::Or(pats) => pats.iter().flat_map(|p| p.bound_names()).collect(),
+            Pattern::EnumVariant {
+                bindings,
+                named_bindings,
+                ..
+            } => {
+                let mut v: Vec<String> = bindings.iter().filter(|b| *b != "_").cloned().collect();
+                v.extend(named_bindings.iter().map(|(_, b)| b.clone()));
+                v
+            }
+        }
+    }
+
+    /// Whether this pattern matches every possible value (making a match exhaustive
+    /// on its own, when unguarded).
+    pub fn is_irrefutable(&self) -> bool {
+        matches!(self, Pattern::Wildcard | Pattern::Binding(_))
+    }
+
+    /// Collect every `(enum_name, variant)` pair this pattern covers, recursing
+    /// through or-patterns. Used for exhaustiveness analysis.
+    pub fn covered_enum_variants(&self, out: &mut Vec<(String, String)>) {
+        match self {
+            Pattern::EnumVariant {
+                enum_name, variant, ..
+            } => out.push((enum_name.clone(), variant.clone())),
+            Pattern::Or(pats) => {
+                for p in pats {
+                    p.covered_enum_variants(out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    /// Optional `if <expr>` guard evaluated after the pattern binds.
+    pub guard: Option<Expr>,
     pub body: Expr,
 }
 
@@ -1135,9 +1190,27 @@ impl Parser {
         let mut arms = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             let pattern = self.parse_pattern();
+            // Optional `if <guard>` before the arrow.
+            let guard = if matches!(&self.current().token, Token::Keyword(k) if k == "if") {
+                self.bump();
+                Some(self.with_struct_allowed(|p| p.parse_expr(0)))
+            } else {
+                None
+            };
             let _ = self.expect_token(Token::FatArrow, "expected `=>` after match pattern");
-            let body = self.with_struct_allowed(|p| p.parse_expr(0));
-            arms.push(MatchArm { pattern, body });
+            // A `{`-led arm body is a block expression (`=> { stmt; stmt; value }`), matching
+            // `if`/lambda bodies; anything else is a normal expression. (A map-literal arm body
+            // must be parenthesized: `=> ({ "k": v })`.)
+            let body = if self.check_token(&Token::LBrace) {
+                self.parse_expr_block()
+            } else {
+                self.with_struct_allowed(|p| p.parse_expr(0))
+            };
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                body,
+            });
             if self.check_token(&Token::Comma) {
                 self.bump();
             }
@@ -1158,14 +1231,59 @@ impl Parser {
         }
     }
 
+    /// Parse a full pattern, including top-level or-patterns (`a | b | c`).
     fn parse_pattern(&mut self) -> Pattern {
+        let first = self.parse_pattern_atom();
+        if !self.check_token(&Token::Pipe) {
+            return first;
+        }
+        let mut alts = vec![first];
+        while self.check_token(&Token::Pipe) {
+            self.bump();
+            alts.push(self.parse_pattern_atom());
+        }
+        Pattern::Or(alts)
+    }
+
+    /// Parse a single (non-or) pattern.
+    fn parse_pattern_atom(&mut self) -> Pattern {
+        // Literal patterns: numbers, negative numbers, booleans, strings/chars.
+        match &self.current().token {
+            Token::Number(n) => {
+                let n = n.clone();
+                self.bump();
+                return Pattern::Literal(n);
+            }
+            Token::Minus => {
+                // Negative numeric literal: `-5`, `-3.14`.
+                self.bump();
+                if let Token::Number(n) = &self.current().token {
+                    let lit = format!("-{}", n);
+                    self.bump();
+                    return Pattern::Literal(lit);
+                }
+                self.diagnostic("expected number after `-` in pattern", self.current_span());
+                return Pattern::Wildcard;
+            }
+            Token::StringLit(s) => {
+                let s = s.clone();
+                self.bump();
+                return Pattern::StrLiteral(s);
+            }
+            Token::Keyword(k) if k == "true" || k == "false" => {
+                let k = k.clone();
+                self.bump();
+                return Pattern::Literal(k);
+            }
+            _ => {}
+        }
         if let Token::Ident(name) = &self.current().token {
             if name == "_" {
                 self.bump();
                 return Pattern::Wildcard;
             }
         }
-        // Enum::Variant / Enum::Variant(a) / Enum::Variant { f: b }
+        // Enum::Variant / Enum::Variant(a) / Enum::Variant { f: b }, or a bare binding.
         if matches!(self.current().token, Token::Ident(_)) {
             let (enum_name, _) = self.expect_ident("expected enum name in pattern").unwrap();
             if self.check_token(&Token::ColonColon) {
@@ -1213,11 +1331,9 @@ impl Parser {
                     named_bindings,
                 };
             }
-            self.diagnostic(
-                "match pattern must be `Enum::Variant` or `_`",
-                self.current_span(),
-            );
-            return Pattern::Wildcard;
+            // A bare identifier (no `::`) is a binding pattern: it matches anything
+            // and binds the scrutinee to that name.
+            return Pattern::Binding(enum_name);
         }
         self.diagnostic("expected match pattern", self.current_span());
         self.bump();
@@ -1727,11 +1843,13 @@ impl Parser {
             Expr::Other("missing-init".into())
         };
 
+        // The trailing `;` is optional, matching every other statement kind
+        // (expression statements, assignments, and `return` are all newline-terminated).
+        // Consume it if present; otherwise the binding ends at the initializer.
         let end = if self.check_token(&Token::Semi) {
             self.bump().map(|t| t.span.end).unwrap_or(start.end)
         } else {
-            self.diagnostic("expected `;` after let binding", self.current_span());
-            start.merge(self.current_span()).end
+            self.previous_end()
         };
 
         Some(Stmt::Let {
@@ -2238,7 +2356,17 @@ impl Parser {
             | Token::Pipe
             | Token::PipePipe
             | Token::Bang => true,
-            Token::Keyword(k) => k == "declassify" || k == "true" || k == "false" || k == "unified",
+            // `match` and `if` are expressions in this language, so they can also stand
+            // as statements / block-tail expressions (`match x { ... }` for its value or
+            // side effects). `parse_primary` handles both keywords.
+            Token::Keyword(k) => {
+                k == "declassify"
+                    || k == "true"
+                    || k == "false"
+                    || k == "unified"
+                    || k == "match"
+                    || k == "if"
+            }
             _ => false,
         }
     }

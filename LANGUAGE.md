@@ -16,14 +16,18 @@ language Turing-complete.
 The same lowering targets a RISC0 zkVM guest for `anubis prove`, so the program you run is the
 program that gets proven.
 
-Every runtime value is one of eight kinds: **int** (`i64`), **float** (`f64`), **bool**,
-**string**, **list**, **map**, **struct**, and **closure**.
+Every runtime value is one of nine kinds: **int** (`i64`), **float** (`f64`), **bool**,
+**string**, **list**, **map**, **struct**, **enum**, and **closure**.
 
 ```
 fn main() {
     print("hello, anubis");
 }
 ```
+
+Statements are newline-terminated; a trailing `;` is **optional** on every statement kind
+(`let`, assignment, `return`, and expression statements alike). The examples in this document use
+`;` for clarity, but omitting it is equally valid.
 
 ## Comments
 
@@ -136,6 +140,18 @@ fn fib(n: u32) -> u32 {
 }
 ```
 
+**Implicit return.** A function's final bare expression is its value — an explicit `return` is
+optional, exactly as in Rust or ML. A trailing statement (a loop, an assignment, a `print`) or an
+empty body yields the default value `0`.
+
+```
+fn double(n) { n * 2 }                 // returns n*2, no `return` needed
+fn label(n)  { if n > 0 { "pos" } else { "neg" } }   // tail if-expression
+fn area(sh)  { match sh { Circle(r) => 3*r*r, _ => 0 } }  // tail match
+```
+
+An explicit `return` anywhere (including inside a `match` arm) returns from the whole function.
+
 Duplicate function definitions, duplicate parameters, arity mismatches on calls to known
 functions, and calls to unknown functions are compile-time errors.
 
@@ -181,10 +197,11 @@ fn main() {
 }
 ```
 
-## Enums and match
+## Enums and pattern matching
 
-Enums support unit, tuple, and struct-shaped variants; `match` binds their payloads and requires
-either full variant coverage or a `_` wildcard.
+Enums support unit, tuple, and struct-shaped variants. `match` is an expression (it yields a
+value) and can also stand as a statement. Arms are tried top-to-bottom; the first arm whose
+pattern matches — and whose guard, if any, passes — wins.
 
 ```
 enum Http {
@@ -194,14 +211,64 @@ enum Http {
 }
 
 fn describe(r) {
-    return match r {
-        Http::Ok { code: c } => c,
-        Http::Redirect(loc)  => loc,
-        Http::NotFound       => 404,
-        _                    => 0,
-    };
+    match r {
+        Http::Ok { code: c } => c,       // struct variant, binds field `code` to `c`
+        Http::Redirect(loc)  => loc,     // tuple variant, binds payload to `loc`
+        Http::NotFound       => 404,     // unit variant
+        _                    => 0,        // wildcard
+    }
 }
 ```
+
+### Pattern kinds
+
+| Pattern | Example | Matches |
+|---------|---------|---------|
+| literal | `0`, `-1`, `3.14`, `true`, `"hi"` | a value of the **same kind** and equal (see below) |
+| binding | `n` | anything; binds the scrutinee to `n` (irrefutable) |
+| wildcard | `_` | anything; binds nothing |
+| or-pattern | `1 \| 2 \| 3` | any listed alternative (alternatives may not bind) |
+| enum tuple | `Status::Err(n)`, `Pair(_, b)` | that variant; binds fields positionally (`_` ignores one) |
+| enum struct | `Http::Ok { code: c }` | that variant; binds named fields |
+
+Literal patterns are **type-exact**: a string pattern matches only strings, a bool pattern only
+bools, and a numeric pattern only numbers. Unlike the `==` operator (which coerces across types),
+`match 5 { "5" => … }` does **not** match, and `match 1 { true => … }` does **not** match. Int and
+float remain interchangeable when numerically equal (`match 5 { 5.0 => … }` matches).
+
+### Guards
+
+Any arm may carry an `if <condition>` guard evaluated after the pattern binds. If the guard is
+false, matching **falls through** to the next arm:
+
+```
+fn grade(n) {
+    match n {
+        n if n >= 90 => "A",
+        n if n >= 80 => "B",
+        n if n >= 70 => "C",
+        _            => "F",
+    }
+}
+```
+
+### Or-patterns and literals
+
+```
+fn kind(n) {
+    match n {
+        0            => "zero",
+        1 | 2 | 3    => "small",
+        n if n < 0   => "negative",
+        _            => "other",
+    }
+}
+```
+
+Exhaustiveness: a `match` on a known enum type must cover every variant or include an
+irrefutable arm (`_` or a bare binding). Guarded arms do not count toward coverage, since a
+guard may fail. Nested matches compose freely — a match may appear in another match's arm, in a
+loop body, as a function argument, or inside a closure.
 
 ## Standard library
 

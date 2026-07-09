@@ -46,16 +46,89 @@ fn emit_fn(
     for (p, _ty) in params {
         sig.push(format!("mut {}: AnubisValue", sanitize_ident(p)?));
     }
+    let (head, tail) = split_tail_expr(body);
     let mut body_src = String::new();
-    for stmt in body {
+    for stmt in &head {
         emit_safe_run_stmt(stmt, 1, &mut body_src, ctx)?;
     }
+    // Implicit return: a bare trailing expression is the function's value (like Rust/ML).
+    // Falls back to Int(0) for bodies that end in a statement or are empty.
+    let tail_src = match &tail {
+        Some(expr) => safe_run_expr(expr, ctx)?,
+        None => "AnubisValue::Int(0)".to_string(),
+    };
     Ok(format!(
-        "fn anb_{}({}) -> AnubisValue {{\n{}    AnubisValue::Int(0)\n}}\n",
+        "fn anb_{}({}) -> AnubisValue {{\n{}    {}\n}}\n",
         sanitize_ident(name)?,
         sig.join(", "),
         body_src,
+        tail_src,
     ))
+}
+
+/// Split a function body into (head statements, optional trailing tail expression).
+/// The tail is the value the function implicitly returns. A trailing statement that is
+/// already a `return`, or a side-effecting void builtin (`print`/`println`/`eprint`/
+/// `eprintln`), is kept in the head so its lowering and observable return value are
+/// unchanged; every other bare trailing expression becomes the implicit return value.
+fn split_tail_expr(body: &[Stmt]) -> (Vec<Stmt>, Option<Expr>) {
+    if let Some((last, head)) = body.split_last() {
+        if let Some(tail) = stmt_as_tail_expr(last) {
+            return (head.to_vec(), Some(tail));
+        }
+    }
+    (body.to_vec(), None)
+}
+
+/// Convert a trailing statement into the expression a block/function implicitly returns.
+/// A bare expression statement is its own value; a trailing `if/else` becomes an `if`
+/// expression whose branches are themselves tail-valued blocks (so `if c { a } else { b }`
+/// at the end of a function returns `a` or `b`). Everything else has no tail value.
+fn stmt_as_tail_expr(stmt: &Stmt) -> Option<Expr> {
+    match stmt {
+        Stmt::ExprStmt(e) => {
+            let statement_only = matches!(
+                e,
+                Expr::Call { callee, .. }
+                    if matches!(
+                        callee.as_str(),
+                        "return" | "print" | "println" | "eprint" | "eprintln"
+                    )
+            );
+            if statement_only {
+                None
+            } else {
+                Some(e.clone())
+            }
+        }
+        Stmt::If {
+            cond,
+            then,
+            else_: Some(else_),
+        } => Some(Expr::If {
+            cond: Box::new(cond.clone()),
+            then: Box::new(block_as_tail_expr(then)),
+            else_: Box::new(block_as_tail_expr(else_)),
+            span: crate::frontend::Span::default(),
+        }),
+        _ => None,
+    }
+}
+
+/// Turn a statement block into a block expression whose value is its trailing tail (or Int(0)).
+fn block_as_tail_expr(stmts: &[Stmt]) -> Expr {
+    if let Some((last, head)) = stmts.split_last() {
+        if let Some(tail) = stmt_as_tail_expr(last) {
+            return Expr::Block {
+                stmts: head.to_vec(),
+                tail: Some(Box::new(tail)),
+            };
+        }
+    }
+    Expr::Block {
+        stmts: stmts.to_vec(),
+        tail: None,
+    }
 }
 
 /// Lower an entire Anubis program to a self-contained Rust program for `anubis run`.
@@ -143,7 +216,7 @@ fn lower_program_with_entry(
     };
     Ok(format!(
         "{header}{prelude}\n{core}\n{poc}\n{proof}\n{functions}\n{entry}",
-        header = "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports)]\n",
+        header = "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\n",
         prelude = prelude,
         core = ANUBIS_CORE_RUNTIME_RS,
         poc = poc_kit_runtime,
@@ -1489,7 +1562,6 @@ fn collect_free_expr(
     vars: &mut std::collections::BTreeSet<String>,
     callees: &mut std::collections::BTreeSet<String>,
 ) {
-    use crate::frontend::Pattern;
     match e {
         Expr::Var(n) => {
             if !bound.contains(n) {
@@ -1552,18 +1624,11 @@ fn collect_free_expr(
             collect_free_expr(scrutinee, bound, vars, callees);
             for arm in arms {
                 let mut b2 = bound.clone();
-                if let Pattern::EnumVariant {
-                    bindings,
-                    named_bindings,
-                    ..
-                } = &arm.pattern
-                {
-                    for x in bindings {
-                        b2.insert(x.clone());
-                    }
-                    for (_, x) in named_bindings {
-                        b2.insert(x.clone());
-                    }
+                for x in arm.pattern.bound_names() {
+                    b2.insert(x);
+                }
+                if let Some(guard) = &arm.guard {
+                    collect_free_expr(guard, &b2, vars, callees);
                 }
                 collect_free_expr(&arm.body, &b2, vars, callees);
             }
@@ -1811,6 +1876,36 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     .map(|a| safe_run_expr(a, ctx))
                     .collect::<Result<Vec<_>>>()?;
                 return Ok(format!("anb_{}({})", sanitize_ident(callee)?, lowered.join(", ")));
+            }
+            // Void output builtins in expression position (e.g. a `match` arm body or a
+            // block-tail): perform the side effect, then yield Int(0) so the expression
+            // still has an AnubisValue type.
+            if matches!(callee.as_str(), "print" | "println" | "eprint" | "eprintln") {
+                let macro_name = if callee.starts_with('e') {
+                    "eprintln"
+                } else {
+                    "println"
+                };
+                let mut parts = Vec::new();
+                for a in args {
+                    parts.push(format!("{}.display_string()", safe_run_expr(a, ctx)?));
+                }
+                let call = if parts.is_empty() {
+                    format!("{}!()", macro_name)
+                } else {
+                    let fmt = vec!["{}"; parts.len()].join(" ");
+                    format!("{}!(\"{}\", {})", macro_name, fmt, parts.join(", "))
+                };
+                return Ok(format!("{{ {}; AnubisValue::Int(0) }}", call));
+            }
+            // `return` in expression position (e.g. `match x { _ => return 5 }`) diverges
+            // out of the enclosing function; `!` coerces to AnubisValue at the use site.
+            if callee == "return" {
+                let val = match args.first() {
+                    Some(e) => safe_run_expr(e, ctx)?,
+                    None => "AnubisValue::Int(0)".to_string(),
+                };
+                return Ok(format!("return {}", val));
             }
             if callee == "len" {
                 let a = args
@@ -2175,50 +2270,128 @@ fn lower_match_expr(
     arms: &[crate::frontend::MatchArm],
     ctx: &EmitCtx,
 ) -> Result<String> {
-    use crate::frontend::Pattern;
     let scr = safe_run_expr(scrutinee, ctx)?;
-    // Nested if-else chain over enum tag / wildcard.
-    let mut out = format!("{{ let __anb_m = {scr}; ");
-    let mut first = true;
+    // Bind the scrutinee once, then walk arms in order inside a `loop` that always
+    // breaks with the first matching arm's body (or Int(0) if none match). Using a
+    // bare `loop` (rather than a named label) means nested `match` expressions never
+    // collide on a label, and guard failures fall through to the next arm cleanly.
+    let mut out = format!("{{ let __anb_m = {scr}; loop {{ ");
     for arm in arms {
-        let body = safe_run_expr(&arm.body, ctx)?;
-        let cond = match &arm.pattern {
-            Pattern::Wildcard => "true".to_string(),
-            Pattern::EnumVariant {
-                enum_name,
-                variant,
-                ..
-            } => {
-                format!(
-                    "matches!(&__anb_m, AnubisValue::Enum {{ ty, tag, .. }} if ty == {} && tag == {})",
-                    rust_string_lit(enum_name)?,
-                    rust_string_lit(variant)?
-                )
-            }
-        };
-        if !first {
-            out.push_str(" else ");
-        }
-        first = false;
+        let (cond, binds) = pattern_test_and_binds(&arm.pattern, "__anb_m")?;
         out.push_str(&format!("if {cond} {{ "));
-        // Bind tuple / struct fields for EnumVariant arms.
-        if let Pattern::EnumVariant {
+        out.push_str(&binds);
+        let body = safe_run_expr(&arm.body, ctx)?;
+        match &arm.guard {
+            Some(guard) => {
+                let gs = safe_run_expr(guard, ctx)?;
+                out.push_str(&format!("if ({gs}).as_bool() {{ break ({body}); }} "));
+            }
+            None => {
+                out.push_str(&format!("break ({body}); "));
+            }
+        }
+        out.push_str("} ");
+    }
+    out.push_str("break AnubisValue::Int(0); } }");
+    Ok(out)
+}
+
+/// Lower a single pattern to `(test_expr, binding_statements)` against a scrutinee
+/// variable already in scope. `test_expr` is a `bool` Rust expression; the binding
+/// statements are emitted inside the arm body's block after the test passes.
+fn pattern_test_and_binds(
+    pat: &crate::frontend::Pattern,
+    scr: &str,
+) -> Result<(String, String)> {
+    use crate::frontend::Pattern;
+    match pat {
+        Pattern::Wildcard => Ok(("true".to_string(), String::new())),
+        Pattern::Binding(name) => {
+            let bn = sanitize_ident(name)?;
+            Ok(("true".to_string(), format!("let mut {bn} = {scr}.clone(); ")))
+        }
+        Pattern::Literal(text) => {
+            // Type-exact literal matching: a literal pattern matches only a value of the same
+            // kind. Numeric literals match Int/Float scrutinees by numeric value (int and float
+            // interchangeable when equal), but a bool never matches a number and a string never
+            // matches a number. (The general `==` operator coerces across types; pattern
+            // matching deliberately does not, so `match 5 { "5" => .. }` and
+            // `match 1 { true => .. }` do NOT match.)
+            let test = if text == "true" || text == "false" {
+                format!("matches!(&{scr}, AnubisValue::Bool(__b) if *__b == {text})")
+            } else if let Ok(i) = text.parse::<i64>() {
+                format!(
+                    "(match &{scr} {{ AnubisValue::Int(__x) => *__x == {i}i64, AnubisValue::Float(__x) => *__x == {i}i64 as f64, _ => false }})"
+                )
+            } else if let Ok(f) = text.parse::<f64>() {
+                format!(
+                    "(match &{scr} {{ AnubisValue::Float(__x) => *__x == {f}f64, AnubisValue::Int(__x) => (*__x as f64) == {f}f64, _ => false }})"
+                )
+            } else {
+                // Not numeric or boolean — treat as a string value.
+                format!(
+                    "matches!(&{scr}, AnubisValue::Str(__s) if __s.as_str() == {})",
+                    rust_string_lit(text)?
+                )
+            };
+            Ok((test, String::new()))
+        }
+        Pattern::StrLiteral(s) => {
+            // String/char literal patterns match only string values, exactly.
+            Ok((
+                format!(
+                    "matches!(&{scr}, AnubisValue::Str(__s) if __s.as_str() == {})",
+                    rust_string_lit(s)?
+                ),
+                String::new(),
+            ))
+        }
+        Pattern::Or(pats) => {
+            let mut conds = Vec::new();
+            for p in pats {
+                let (c, b) = pattern_test_and_binds(p, scr)?;
+                if !b.trim().is_empty() {
+                    return Err(unsupported_run(
+                        "or-patterns may not bind variables (use literals, `_`, or unit variants)",
+                    ));
+                }
+                conds.push(format!("({c})"));
+            }
+            if conds.is_empty() {
+                Ok(("false".to_string(), String::new()))
+            } else {
+                Ok((conds.join(" || "), String::new()))
+            }
+        }
+        Pattern::EnumVariant {
+            enum_name,
+            variant,
             bindings,
             named_bindings,
-            ..
-        } = &arm.pattern
-        {
+        } => {
+            let cond = format!(
+                "matches!(&{scr}, AnubisValue::Enum {{ ty, tag, .. }} if ty == {} && tag == {})",
+                rust_string_lit(enum_name)?,
+                rust_string_lit(variant)?
+            );
+            let mut binds = String::new();
             for (i, b) in bindings.iter().enumerate() {
+                if b == "_" {
+                    continue;
+                }
                 let bn = sanitize_ident(b)?;
-                out.push_str(&format!(
-                    "let mut {bn} = match &__anb_m {{ AnubisValue::Enum {{ fields, .. }} if fields.len() > {i} => fields[{i}].clone(), _ => AnubisValue::Int(0) }}; "
+                binds.push_str(&format!(
+                    "let mut {bn} = match &{scr} {{ AnubisValue::Enum {{ fields, .. }} if fields.len() > {i} => fields[{i}].clone(), _ => AnubisValue::Int(0) }}; "
                 ));
             }
             for (fname, bname) in named_bindings {
+                if bname == "_" {
+                    continue; // `Rec::Full { x: _ }` ignores the field
+                }
                 let bn = sanitize_ident(bname)?;
                 let fstr = rust_string_lit(fname)?;
-                out.push_str(&format!(
-                    "let mut {bn} = match &__anb_m {{ AnubisValue::Enum {{ fields, field_names, .. }} => {{ \
+                binds.push_str(&format!(
+                    "let mut {bn} = match &{scr} {{ AnubisValue::Enum {{ fields, field_names, .. }} => {{ \
                         let mut __v = AnubisValue::Int(0); \
                         for (__i, __n) in field_names.iter().enumerate() {{ \
                             if __n == &{fstr} {{ if let Some(__f) = fields.get(__i) {{ __v = __f.clone(); }} break; }} \
@@ -2227,17 +2400,9 @@ fn lower_match_expr(
                     }}, _ => AnubisValue::Int(0) }}; "
                 ));
             }
+            Ok((cond, binds))
         }
-        out.push_str(&format!("{body} }}"));
     }
-    if first {
-        // no arms
-        out.push_str("AnubisValue::Int(0)");
-    } else {
-        out.push_str(" else { AnubisValue::Int(0) }");
-    }
-    out.push_str(" }");
-    Ok(out)
 }
 
 /// Lower a numeric/boolean literal's text to an `AnubisValue` constructor.
@@ -2261,11 +2426,34 @@ fn sanitize_ident(name: &str) -> Result<String> {
     let valid = !name.is_empty()
         && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
         && !name.chars().next().is_some_and(|c| c.is_ascii_digit());
-    if valid {
-        Ok(name.to_string())
-    } else {
-        Err(unsupported_run(format!("invalid identifier `{}`", name)))
+    if !valid {
+        return Err(unsupported_run(format!("invalid identifier `{}`", name)));
     }
+    // A legal Anubis identifier may be a Rust keyword (`type`, `move`, `ref`, `impl`, `self`, …).
+    // Escape those with a reserved suffix so the emitted Rust is well-formed. The transform is
+    // deterministic, so a binding site and its uses stay consistent, and it composes with the
+    // `anb_` function-name prefix (`fn type` → `anb_type__anbkw`). A user identifier can never
+    // end in `__anbkw` unless they wrote it literally, so this is collision-free in practice.
+    if is_rust_keyword(name) {
+        Ok(format!("{name}__anbkw"))
+    } else {
+        Ok(name.to_string())
+    }
+}
+
+/// Rust 2021 keywords plus reserved words — any of these, if used as an Anubis identifier,
+/// must be escaped before being emitted as a bare Rust identifier.
+fn is_rust_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "break" | "const" | "continue" | "crate" | "dyn" | "else" | "enum" | "extern"
+            | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match" | "mod"
+            | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self" | "static" | "struct"
+            | "super" | "trait" | "true" | "type" | "unsafe" | "use" | "where" | "while"
+            | "async" | "await" | "gen" | "abstract" | "become" | "box" | "do" | "final"
+            | "macro" | "override" | "priv" | "typeof" | "unsized" | "virtual" | "yield"
+            | "try" | "union"
+    )
 }
 
 fn unsupported_run(detail: impl Into<String>) -> anyhow::Error {
@@ -2273,7 +2461,11 @@ fn unsupported_run(detail: impl Into<String>) -> anyhow::Error {
 }
 
 fn rust_string_lit(value: &str) -> Result<String> {
-    serde_json::to_string(value).map_err(|e| anyhow!("string literal encode: {}", e))
+    // Emit a valid *Rust* string literal. Rust's Debug for &str uses escape_debug, which
+    // escapes control characters in Rust's own unicode-escape form, handles quotes and
+    // backslashes, and leaves printable Unicode intact -- exactly the Rust literal grammar.
+    // (serde_json emits JSON-style control-char escapes, which Rust's lexer rejects.)
+    Ok(format!("{:?}", value))
 }
 
 
@@ -2381,6 +2573,154 @@ mod run_tests {
         let src = "enum E { A, B(u32) } fn main() { let e = E::B(7); \
                    let r = match e { E::A => 0, E::B(n) => n, _ => 1 }; print(r); }";
         assert_eq!(run(src), "7");
+    }
+
+    #[test]
+    fn match_literal_patterns() {
+        let src = "fn name(n) { return match n { 0 => \"zero\", 1 => \"one\", _ => \"many\" }; } \
+                   fn main() { print(name(0)); print(name(1)); print(name(9)); }";
+        assert_eq!(run(src), "zero\none\nmany");
+    }
+
+    #[test]
+    fn match_or_patterns() {
+        let src = "fn kind(n) { return match n { 1 | 2 | 3 => \"small\", 4 | 5 => \"mid\", _ => \"big\" }; } \
+                   fn main() { print(kind(2)); print(kind(5)); print(kind(99)); }";
+        assert_eq!(run(src), "small\nmid\nbig");
+    }
+
+    #[test]
+    fn match_guards_fall_through_in_order() {
+        let src = "fn grade(n) { return match n { \
+                     n if n >= 90 => \"A\", n if n >= 80 => \"B\", n if n >= 70 => \"C\", _ => \"F\" }; } \
+                   fn main() { print(grade(95)); print(grade(85)); print(grade(50)); }";
+        assert_eq!(run(src), "A\nB\nF");
+    }
+
+    #[test]
+    fn match_binding_catchall_binds_scrutinee() {
+        let src = "fn echo(s) { return match s { \"hi\" => \"greeting\", other => other }; } \
+                   fn main() { print(echo(\"hi\")); print(echo(\"xyz\")); }";
+        assert_eq!(run(src), "greeting\nxyz");
+    }
+
+    #[test]
+    fn match_negative_literal_pattern() {
+        let src = "fn sign(n) { return match n { -1 => \"neg\", 0 => \"zero\", _ => \"pos\" }; } \
+                   fn main() { print(sign(-1)); print(sign(0)); print(sign(5)); }";
+        assert_eq!(run(src), "neg\nzero\npos");
+    }
+
+    #[test]
+    fn match_struct_variant_and_ignored_field() {
+        let src = "enum Shape { Circle(u32), Rect { w: u32, h: u32 }, Dot } \
+                   fn area(s) { return match s { \
+                     Shape::Circle(r) => 3 * r * r, \
+                     Shape::Rect { w: w, h: h } => w * h, \
+                     Shape::Dot => 0 }; } \
+                   fn main() { print(area(Shape::Circle(10))); \
+                     print(area(Shape::Rect { w: 4, h: 5 })); print(area(Shape::Dot)); }";
+        assert_eq!(run(src), "300\n20\n0");
+    }
+
+    #[test]
+    fn implicit_tail_return_no_keyword() {
+        // A bare trailing expression is the function's value — no `return` needed.
+        let src = "fn double(n) { n * 2 } fn main() { print(double(21)); }";
+        assert_eq!(run(src), "42");
+    }
+
+    #[test]
+    fn match_as_statement_side_effect() {
+        let src = "fn main() { let n = 2; \
+                   match n { 1 => print(\"one\"), 2 => print(\"two\"), _ => print(\"other\") } }";
+        assert_eq!(run(src), "two");
+    }
+
+    #[test]
+    fn nested_match_no_label_collision() {
+        // Two matches nested in one arm must not collide on any generated control label.
+        let src = "fn f(a, b) { return match a { \
+                     0 => match b { 0 => \"00\", _ => \"0x\" }, \
+                     _ => match b { 0 => \"x0\", _ => \"xx\" } }; } \
+                   fn main() { print(f(0,0)); print(f(0,9)); print(f(9,0)); print(f(9,9)); }";
+        assert_eq!(run(src), "00\n0x\nx0\nxx");
+    }
+
+    #[test]
+    fn match_arm_block_body() {
+        // A `{`-led arm body is a block (statements + tail value), not a map literal.
+        let src = "enum T { N(int), Op(string) } \
+                   fn ev(t, a, b) { return match t { \
+                     T::N(n) => n, \
+                     T::Op(o) => { let r = a + b; r * 2 } }; } \
+                   fn main() { print(ev(T::N(7), 0, 0)); print(ev(T::Op(\"+\"), 3, 4)); }";
+        assert_eq!(run(src), "7\n14");
+    }
+
+    #[test]
+    fn match_binding_named_rust_keyword() {
+        // A binding whose name is a Rust keyword (`type`, `ref`) must be escaped, not emitted raw.
+        let src = "fn f(n) { match n { type if type > 5 => \"big\", _ => \"small\" } } \
+                   fn main() { print(f(9)); print(f(2)); } ";
+        assert_eq!(run(src), "big\nsmall");
+        let src2 = "enum E { A(int) } \
+                    fn main() { match E::A(7) { E::A(ref) => print(ref) } print(\"end\"); }";
+        assert_eq!(run(src2), "7\nend");
+    }
+
+    #[test]
+    fn let_binding_named_rust_keyword() {
+        // Same escaping must apply to ordinary variables and parameters, not just match bindings.
+        let src = "fn make(move) { move * 2 } fn main() { let type = make(21); print(type); }";
+        assert_eq!(run(src), "42");
+    }
+
+    #[test]
+    fn match_literals_are_type_exact() {
+        // A literal pattern matches only a value of the same kind — no cross-type coercion.
+        assert_eq!(run("fn main() { print(match 5 { \"5\" => \"str\", 5 => \"int\", _ => \"no\" }) }"), "int");
+        assert_eq!(run("fn main() { print(match \"5\" { 5 => \"int\", \"5\" => \"str\", _ => \"no\" }) }"), "str");
+        assert_eq!(run("fn main() { print(match 1 { true => \"T\", 1 => \"one\", _ => \"no\" }) }"), "one");
+        // …but same-kind literals still match, and int/float stay numerically comparable.
+        assert_eq!(
+            run("fn main() { print(match true { true => \"y\", _ => \"n\" }); \
+                 print(match 5 { 5 => \"i\", _ => \"n\" }); \
+                 print(match \"hi\" { \"hi\" => \"s\", _ => \"n\" }) }"),
+            "y\ni\ns"
+        );
+    }
+
+    #[test]
+    fn string_literal_with_control_escapes() {
+        // NUL and other control-char escapes must round-trip through the transpiler.
+        let src = "fn main() { print(match \"a\\0b\" { \"a\\0b\" => \"nul\", _ => \"no\" }) }";
+        assert_eq!(run(src), "nul");
+    }
+
+    #[test]
+    fn match_underscore_struct_variant_field() {
+        let src = "enum Rec { Full { x: int, y: int } } \
+                   fn main() { print(match Rec::Full { x: 9, y: 4 } { Rec::Full { x: a, y: _ } => a }) }";
+        assert_eq!(run(src), "9");
+    }
+
+    #[test]
+    fn implicit_return_trailing_if() {
+        let src = "fn sign(n) { if n < 0 { 111 } else { 222 } } \
+                   fn main() { print(sign(-3)); print(sign(4)); }";
+        assert_eq!(run(src), "111\n222");
+        // else-if chains and branches with their own statements
+        let src2 = "fn g(n) { if n < 0 { \"neg\" } else if n == 0 { let z = \"ze\"; z } else { \"pos\" } } \
+                    fn main() { print(g(-1)); print(g(0)); print(g(5)); }";
+        assert_eq!(run(src2), "neg\nze\npos");
+    }
+
+    #[test]
+    fn let_without_semicolon_is_valid() {
+        // Trailing `;` is optional on every statement kind, including `let`.
+        let src = "fn main() {\n  let a = 5\n  let b = a + 1\n  print(b)\n}";
+        assert_eq!(run(src), "6");
     }
 
     #[test]
