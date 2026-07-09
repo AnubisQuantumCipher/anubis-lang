@@ -66,3 +66,16 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Arrays / lists (literal, index read/write, `len`, `push`, growable) | REAL | `tests/fixtures/turing_core/bubble_sort.anb` (→ sorted), `array_dp.anb` (→377/15) | `./target/release/anubis run tests/fixtures/turing_core/bubble_sort.anb` | `AnubisValue::List`; dynamic typing; enables real algorithms |
 | `for v in a..b` range loops | REAL | `tests/fixtures/turing_core/for_range_sum.anb` (→5050) | `bash scripts/run_turing_core_fixtures.sh` | Desugars to counted while; bound evaluated once |
 | Struct-literal-in-header ambiguity resolved (parser hang fix) | REAL | `header_position_is_not_a_struct_literal` unit test; `while running {}` / `for i in 0..n {}` | `cargo test -p anubis-compiler header_position` | Rust-style `no_struct` flag; also fixed latent `if flag {}` bug |
+
+## RISC0 Proof Bound to the Program (2026-07-09)
+
+Retires the biggest honesty debt: `prove --backend risc0` previously proved a HARDCODED `x*6`
+circuit on input `77`, decoupled from the input `.anb`. It now compiles the actual Anubis program
+into the guest, so the ImageID (derived from that guest ELF) binds the receipt to the program.
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| RISC0 guest compiled from the Anubis program (not a fixed circuit) | REAL | `out/proof_factorial/backend/risc0/guest/src/main.rs` contains `anb_factorial`/`anb_main`/`env::commit`; `risc0_metadata.json` `guest_binding=anubis-program` | `bash scripts/run_proof_binding_gate.sh` | `lower_program_to_guest` reuses the Turing-complete lowering; `std` guest |
+| Receipt proves the program's real result (journal = computed value) | REAL | `proof_factorial` journal `120` = factorial(5); `proof_fib` journal `55` = fib(10); both `verify_status=passed`, `dev_mode=false`, `mock_prover=false` | `bash scripts/run_proof_binding_gate.sh` → `Overall: PASS` | journal decoded u32 LE; verified via `Receipt::verify(image_id)` |
+| Proof is program-bound (different program → different ImageID) | REAL | factorial ImageID `2358913413…` ≠ fib ImageID `4137336513…` | `bash scripts/run_proof_binding_gate.sh` (distinct-ImageID check) | ImageID = cryptographic commitment to the compiled program |
+| Real derived ImageID + real `Receipt::verify` + strict non-dev | REAL | `risc0_metadata.json` (real u32x8 ImageID, `image_id_is_placeholder=false`); `verify-receipt` re-extracts journal | `anubis verify-receipt --receipt … --image-id …` | bound to vendored patched `risc0-circuit-rv32im` at the reference path |

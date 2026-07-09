@@ -1,0 +1,10 @@
+// A provable Anubis computation: the guest runs THIS program in the zkVM
+// and commits factorial(5) = 120 to the journal. The receipt's ImageID is
+// derived from this program's compiled guest, binding the proof to the code.
+fn factorial(n: u32) {
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+fn main() {
+    return factorial(5);
+}

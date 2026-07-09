@@ -703,7 +703,7 @@ fn main() -> Result<()> {
             let src = std::fs::read_to_string(&input)?;
             let ast = parse_source(&src).map_err(|e| anyhow!("parse: {}", e))?;
             let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
-            let typed = typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
+            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
             let tainted = TaintPass::apply(typed.clone());
             std::fs::create_dir_all(&out)?;
 
@@ -781,17 +781,27 @@ edition = "2021"
 risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] }
 "#,
                 )?;
-                // Guest program matches the risc0_receipt.anb fixture shape (x*6 commit) for reproducible ID/receipt.
-                std::fs::write(
-                    methods_dir.join("guest/src/main.rs"),
-                    r#"use risc0_zkvm::guest::env;
-fn main() {
-    let x: u32 = env::read();
-    let y: u32 = x * 6;
-    env::commit(&y);
-}
-"#,
-                )?;
+                // Compile the ACTUAL Anubis program into the guest: `anb_main()` runs in the
+                // zkVM and commits its result. risc0-build derives the ImageID from this guest's
+                // ELF, so the ImageID (and the receipt) is cryptographically bound to THIS
+                // program — not a fixed x*6 circuit. Falls back to a clearly-labelled minimal
+                // guest only if the program cannot be lowered to the safe run subset.
+                let guest_src = match lower_program_to_guest(&ast.items) {
+                    Ok(s) => {
+                        println!(
+                            "guest: compiled from Anubis program (ImageID binds to this program)"
+                        );
+                        s
+                    }
+                    Err(e) => {
+                        println!(
+                            "warning: program not lowerable to guest ({}); using minimal input-echo guest",
+                            e
+                        );
+                        "use risc0_zkvm::guest::env;\nfn main() {\n    let x: u32 = env::read();\n    env::commit(&x);\n}\n".to_string()
+                    }
+                };
+                std::fs::write(methods_dir.join("guest/src/main.rs"), &guest_src)?;
 
                 println!(
                     "Building risc0 methods (risc0-build will compute real ImageID from ELF)..."
@@ -923,12 +933,16 @@ fn main() {
                     "observation_source": "env+receipt.verify.log+prove.log"
                 });
                 let meta = serde_json::json!({
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "backend": "risc0",
                     "risc0_version": "3.0.5",
                     "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
+                    "guest_source_sha256": sha256_of_file_or("missing", &risc0_side.join("guest/src/main.rs")),
+                    "guest_binding": "anubis-program",
+                    "guest_binding_note": "guest is compiled from the input Anubis program's main(); the ImageID is derived from that guest ELF, so the receipt is bound to this program, not a fixed circuit",
+                    "committed_journal_sha256": sha256_of_file_or("missing", &risc0_side.join("journal.bin")),
                     "image_id": real_id,
-                    "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF)",
+                    "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
                     "method_id_type": "risc0_image_id_u32x8",
                     "image_id_is_placeholder": image_id_is_placeholder(&real_id),
                     "receipt_sha256": sha256_of_file_or("derived", &risc0_side.join("receipt.bin")),
@@ -2230,7 +2244,7 @@ fn emit_fn(name: &str, params: &[(String, String)], body: &[Stmt]) -> Result<Str
     ))
 }
 
-/// Lower an entire Anubis program to a self-contained Rust program.
+/// Lower an entire Anubis program to a self-contained Rust program for `anubis run`.
 ///
 /// Every Anubis function becomes a Rust function returning `AnubisValue`, so user-defined
 /// calls and recursion execute on the Rust call stack; `let` bindings are `mut` so assignment
@@ -2238,6 +2252,24 @@ fn emit_fn(name: &str, params: &[(String, String)], body: &[Stmt]) -> Result<Str
 /// heap growth (`AnubisValue::Str`/recursion depth), this makes the executable language
 /// Turing-complete. `anb_main` is the entry function; real `fn main()` just calls it.
 fn lower_program_to_rust(items: &[Item]) -> Result<String> {
+    lower_program_with_entry(items, "", "fn main() {\n    let _ = anb_main();\n}\n")
+}
+
+/// Lower an Anubis program's `main` into a RISC0 zkVM guest that runs the real program and
+/// commits its result to the journal. risc0-build derives the ImageID from this guest's ELF,
+/// so the ImageID — and therefore the receipt — is cryptographically bound to THIS program,
+/// not a fixed demonstration circuit. Uses the reference guest's `std` feature.
+fn lower_program_to_guest(items: &[Item]) -> Result<String> {
+    lower_program_with_entry(
+        items,
+        "use risc0_zkvm::guest::env;\n",
+        "fn main() {\n    let __anubis_result = anb_main();\n    let __anubis_journal: u32 = __anubis_result.as_i64() as u32;\n    env::commit(&__anubis_journal);\n}\n",
+    )
+}
+
+/// Shared lowering: emit the AnubisValue runtime + every function, framed by a caller-provided
+/// `prelude` (e.g. a guest `use`) and `entry` (the real `fn main`).
+fn lower_program_with_entry(items: &[Item], prelude: &str, entry: &str) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
     if !fns.iter().any(|(name, _, _)| *name == "main") {
@@ -2251,7 +2283,7 @@ fn lower_program_to_rust(items: &[Item]) -> Result<String> {
     Ok(format!(
         r#"
 #![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens)]
-
+{prelude}
 #[derive(Clone, Debug)]
 enum AnubisValue {{
     Int(i64),
@@ -2385,10 +2417,7 @@ fn anubis_cmp(op: &str, lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {{
 }}
 
 {functions_src}
-fn main() {{
-    let _ = anb_main();
-}}
-"#
+{entry}"#
     ))
 }
 

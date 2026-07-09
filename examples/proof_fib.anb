@@ -1,0 +1,6 @@
+// Different program → different guest → different ImageID → different journal.
+fn fib(n: u32) {
+    if n < 2 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+fn main() { return fib(10); }

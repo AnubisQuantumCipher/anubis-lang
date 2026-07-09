@@ -38,7 +38,7 @@ All ten independent readers returned the same verdict: **evidence AGAINST Turing
 
 These are not fraud — they are a prototype's shortcuts left labeled more strongly than they behave. The prime law requires each to be either fixed or downgraded, with evidence.
 
-1. **The RISC0 receipt is semantically decoupled from the Anubis program.** `prove <file>.anb --backend risc0` writes a **hardcoded** guest (`let y = x*6; env::commit(&y)`, `main.rs:785-794`) fed a **hardcoded** input `77` (`main.rs:2919`). It produces a genuine receipt for `77*6=462` **regardless of the input `.anb`**. So "RISC0 proof of an Anubis circuit" is today a proof of a fixed, unrelated statement.
+1. ~~**The RISC0 receipt is semantically decoupled from the Anubis program.**~~ **RETIRED 2026-07-09.** `prove --backend risc0` now compiles the actual Anubis program into the guest (`lower_program_to_guest`), so the risc0-build-derived ImageID binds the receipt to the program. Verified: `factorial(5)` proves journal `120`, `fib(10)` proves journal `55`, with distinct ImageIDs. Gate: `bash scripts/run_proof_binding_gate.sh` → PASS. Follow-up: parameterized guest inputs (the guest is currently input-free — it proves a fixed computation of the program; the fallback echo guest still reads one u32).
 2. **`risc0_metadata.json` asserts on hardcoded constants.** `dev_mode`/`cache_used`/`mock_prover` are literal `false` (`main.rs:937-939`); `gate10_a15_reproduce.sh` then `jq -e`'s those constants (lines 47-49) — gates that can never fail.
 3. **Three runners have structural false-green paths:**
    - `run_language_fixtures.sh:65` — verdict **defaults to PASS**; an EXPECT=PASS fixture passes on `rc==0` alone, proving no analysis actually ran.
