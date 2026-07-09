@@ -1,0 +1,36 @@
+// Prove enum + match: Status::Err(n) matches and yields n as public code.
+// Prove: --input-json '{"n":42}' → journal code=42, ok_unit=0, pending_unit=1
+enum Status {
+    Ok,
+    Err(u32),
+    Pending,
+}
+
+fn main() {
+    let n = proof_input_u32("n");
+    let sample = Status::Err(n);
+    let code = match sample {
+        Status::Ok => 0,
+        Status::Err(x) => x,
+        Status::Pending => 1,
+        _ => 999,
+    };
+    let z = match Status::Ok {
+        Status::Ok => 0,
+        Status::Err(y) => y,
+        Status::Pending => 1,
+        _ => 2,
+    };
+    let p = match Status::Pending {
+        Status::Ok => 0,
+        Status::Err(y) => y,
+        Status::Pending => 1,
+        _ => 2,
+    };
+    proof_assert(z == 0);
+    proof_assert(p == 1);
+    proof_commit_u32("code", code);
+    proof_commit_u32("ok_unit", z);
+    proof_commit_u32("pending_unit", p);
+    return 0;
+}

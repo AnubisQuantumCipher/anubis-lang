@@ -1,0 +1,28 @@
+// Algebraic data types: enum + match (executable).
+// Expected stdout: 42
+enum Status {
+    Ok,
+    Err(u32),
+    Pending,
+}
+
+fn code_of(s: Status) {
+    return match s {
+        Status::Ok => 0,
+        Status::Err(n) => n,
+        Status::Pending => 1,
+        _ => 999,
+    };
+}
+
+fn main() {
+    let a = Status::Ok;
+    let b = Status::Err(42);
+    let c = Status::Pending;
+    // Prefer the Err payload as the program result.
+    let _ok = code_of(a);
+    let _p = code_of(c);
+    let r = code_of(b);
+    print(r);
+    return r;
+}

@@ -15,9 +15,17 @@
 - **Bounty-grade local PoC kit** — packing, `target_run`, process mutation fuzz, gold crash PoC.
   Evidence: `bash scripts/run_poc_kit_gate.sh`. See `docs/language/POC_KIT.md`.
 
+## NOW REAL (enums — 2026-07-09)
+
+- `enum Name { Unit, Tuple(T, …) }` declarations — REAL
+- Construction `Name::Variant` / `Name::Tuple(a, b)` — REAL
+- `match scrutinee { Name::Variant => e, Name::Tuple(x) => e, _ => e }` expressions — REAL
+- Executable via `anubis run`; proof-capable via RISC0 guest lowering
+- Gate: `bash scripts/run_enum_match_gate.sh`
+
 ## Explicitly PLANNED (not real yet)
 
-- Enums and tagged unions (`enum Color { Red, Blue(u32) }`)
+- Struct-like enum variants (`Err { code: u32 }`) and full exhaustiveness errors in typecheck
 - Iterator-style `for x in collection` (only numeric `for i in a..b` ranges exist today)
 - Maps / dictionaries, and array/list slicing
 - `Result<T,E>` / `Option` / error handling in the language surface (beyond assert/assume)

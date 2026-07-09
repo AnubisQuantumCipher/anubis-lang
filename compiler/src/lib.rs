@@ -324,6 +324,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_enum_and_match() {
+        let src = r#"
+        enum Status { Ok, Err(u32), Pending }
+        fn main() {
+            let s = Status::Err(7);
+            let c = match s {
+                Status::Ok => 0,
+                Status::Err(n) => n,
+                Status::Pending => 1,
+                _ => 9,
+            };
+            return c;
+        }
+        "#;
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected diags: {:?}",
+            parsed.diagnostics
+        );
+        assert!(
+            parsed
+                .ast
+                .items
+                .iter()
+                .any(|it| matches!(it, frontend::Item::Enum { name, variants, .. }
+                    if name == "Status" && variants.len() == 3)),
+            "expected Status enum: {:?}",
+            parsed.ast.items
+        );
+        let frontend::Item::Fn { body, .. } = parsed
+            .ast
+            .items
+            .iter()
+            .find(|it| matches!(it, frontend::Item::Fn { name, .. } if name == "main"))
+            .expect("main")
+        else {
+            panic!("fn");
+        };
+        let has_match = body.iter().any(|s| {
+            matches!(
+                s,
+                frontend::Stmt::Let {
+                    init: frontend::Expr::Match { arms, .. },
+                    ..
+                } if arms.len() == 4
+            )
+        });
+        assert!(has_match, "expected match with 4 arms: {:?}", body);
+        typecheck(parsed.ast, frontend::Mode::Safe).expect("typecheck enum program");
+    }
+
+    #[test]
     fn parses_research_with_tainted_and_symbolic() {
         let src = r#"
         fn poc() {

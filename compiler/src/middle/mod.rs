@@ -213,6 +213,9 @@ fn collect_items(
                 // Minimal support for this slice: structs are parsed and preserved in AST;
                 // full type registration and field typing added in typechecker work.
             }
+            Item::Enum { .. } => {
+                // Enums are registered by presence; variant construction is runtime-checked.
+            }
         }
     }
 }
@@ -967,6 +970,7 @@ fn first_fn_body(items: &[Item]) -> Option<Vec<Stmt>> {
             }
             Item::Import { .. } => {}
             Item::Struct { .. } => {}
+            Item::Enum { .. } => {}
         }
     }
     None

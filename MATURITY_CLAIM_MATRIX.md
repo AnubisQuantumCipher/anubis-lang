@@ -167,3 +167,6 @@ Public outputs beyond a single u32: `return [a, b, …]` commits each field via
 | `proof_commit_bool` | REAL | ok=1 in journal_fields | power gate | 0/1 public bit |
 | Engagement action receipt chain | REAL | `evidence/receipts/chain.jsonl` + tip | `anubis receipt-verify` | hash-chained; tamper fail-closed |
 | Power gate (language+proof+receipts) | REAL | `scripts/run_power_gate.sh` | bash gate | compound capability seal |
+| Enums (`enum` + unit/tuple variants) | REAL | `examples/enum_status.anb` | `anubis run` → 42 | `Status::Err(42)` |
+| `match` expressions + bindings | REAL | same + `proof_enum_status.anb` | `bash scripts/run_enum_match_gate.sh` | `_` wildcard supported |
+| Struct-like enum variants / full exhaustiveness TC | PLANNED | — | — | unit+tuple only today |

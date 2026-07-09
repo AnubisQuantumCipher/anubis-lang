@@ -14,6 +14,8 @@ pub enum Token {
     LBracket,
     RBracket,
     Colon,
+    ColonColon,
+    FatArrow,
     Semi,
     Comma,
     Dot,
@@ -120,6 +122,38 @@ pub enum Item {
         fields: Vec<(String, String)>,
         span: Span,
     },
+    /// `enum Status { Ok, Err(u32), Pending }`
+    Enum {
+        name: String,
+        variants: Vec<EnumVariant>,
+        span: Span,
+    },
+}
+
+/// Enum variant: unit `Ok` or tuple `Err(u32, bool)`.
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    /// Empty = unit variant; otherwise tuple-field type names.
+    pub fields: Vec<String>,
+}
+
+/// Pattern for `match` arms.
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Wildcard,
+    /// `Status::Ok` or `Status::Err(n, m)` — bindings bind field values.
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +266,19 @@ pub enum Expr {
     FieldAccess {
         base: Box<Expr>,
         field: String,
+        span: Span,
+    },
+    /// `Status::Ok` or `Status::Err(x, y)`
+    EnumConstruct {
+        enum_name: String,
+        variant: String,
+        fields: Vec<Expr>,
+        span: Span,
+    },
+    /// `match scrutinee { Status::Ok => 0, Status::Err(n) => n, _ => 1 }`
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
         span: Span,
     },
     Other(String),
@@ -352,13 +399,26 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     end: start + 1,
                 },
             }),
-            ':' => tokens.push(SpannedToken {
-                token: Token::Colon,
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
+            ':' => {
+                if let Some(&(idx, ':')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken {
+                        token: Token::ColonColon,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
+                } else {
+                    tokens.push(SpannedToken {
+                        token: Token::Colon,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
+                }
+            }
             ';' => tokens.push(SpannedToken {
                 token: Token::Semi,
                 span: Span {
@@ -470,6 +530,15 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                             end: idx + 1,
                         },
                     });
+                } else if let Some(&(idx, '>')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken {
+                        token: Token::FatArrow,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
                     tokens.push(SpannedToken {
                         token: Token::Eq,
@@ -548,6 +617,7 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
                     | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
+                    | "enum" | "match"
                     | "return" | "as" | "while" | "loop" | "break" | "continue" | "mut" | "for"
                     | "in" => Token::Keyword(id),
                     _ => Token::Ident(id),
@@ -634,6 +704,10 @@ impl Parser {
                 }
             } else if self.check_keyword("struct") {
                 if let Some(item) = self.parse_struct() {
+                    items.push(item);
+                }
+            } else if self.check_keyword("enum") {
+                if let Some(item) = self.parse_enum() {
                     items.push(item);
                 }
             } else {
@@ -797,6 +871,131 @@ impl Parser {
         Some(Item::Struct {
             name,
             fields,
+            span: Span {
+                start: start.start,
+                end,
+            },
+        })
+    }
+
+    fn parse_match_expr(&mut self, start: Span) -> Expr {
+        let scrutinee = self.with_struct_allowed(|p| p.parse_header_expr());
+        let _ = self.expect_token(Token::LBrace, "expected `{` after match scrutinee");
+        let mut arms = vec![];
+        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            let pattern = self.parse_pattern();
+            let _ = self.expect_token(Token::FatArrow, "expected `=>` after match pattern");
+            let body = self.with_struct_allowed(|p| p.parse_expr(0));
+            arms.push(MatchArm { pattern, body });
+            if self.check_token(&Token::Comma) {
+                self.bump();
+            }
+        }
+        let end = if self.check_token(&Token::RBrace) {
+            self.bump().map(|t| t.span.end).unwrap_or(start.end)
+        } else {
+            self.diagnostic("expected `}` after match arms", self.current_span());
+            self.current_span().end
+        };
+        Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            span: Span {
+                start: start.start,
+                end,
+            },
+        }
+    }
+
+    fn parse_pattern(&mut self) -> Pattern {
+        if let Token::Ident(name) = &self.current().token {
+            if name == "_" {
+                self.bump();
+                return Pattern::Wildcard;
+            }
+        }
+        // Enum::Variant or Enum::Variant(a, b)
+        if matches!(self.current().token, Token::Ident(_)) {
+            let (enum_name, _) = self.expect_ident("expected enum name in pattern").unwrap();
+            if self.check_token(&Token::ColonColon) {
+                self.bump();
+                let (variant, _) = self
+                    .expect_ident("expected variant in pattern")
+                    .unwrap_or_else(|| ("_".into(), Span::default()));
+                let bindings = if self.check_token(&Token::LParen) {
+                    self.bump();
+                    let mut binds = vec![];
+                    while !self.at_eof() && !self.check_token(&Token::RParen) {
+                        if let Some((b, _)) = self.expect_ident("expected binding") {
+                            binds.push(b);
+                        } else {
+                            self.bump();
+                        }
+                        if self.check_token(&Token::Comma) {
+                            self.bump();
+                        }
+                    }
+                    let _ = self.expect_token(Token::RParen, "expected `)` in pattern");
+                    binds
+                } else {
+                    vec![]
+                };
+                return Pattern::EnumVariant {
+                    enum_name,
+                    variant,
+                    bindings,
+                };
+            }
+            // bare ident treated as wildcard-ish unit of unknown enum — use as Err path
+            self.diagnostic(
+                "match pattern must be `Enum::Variant` or `_`",
+                self.current_span(),
+            );
+            return Pattern::Wildcard;
+        }
+        self.diagnostic("expected match pattern", self.current_span());
+        self.bump();
+        Pattern::Wildcard
+    }
+
+    fn parse_enum(&mut self) -> Option<Item> {
+        let start = self.expect_keyword("enum")?.span;
+        let (name, _) = self.expect_ident("expected enum name")?;
+        let _ = self.expect_token(Token::LBrace, "expected `{` after enum name");
+        let mut variants = vec![];
+        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            if let Some((vname, _)) = self.expect_ident("expected variant name") {
+                let mut fields = vec![];
+                if self.check_token(&Token::LParen) {
+                    self.bump();
+                    while !self.at_eof() && !self.check_token(&Token::RParen) {
+                        let fty =
+                            self.collect_type_until(&[Token::Comma, Token::RParen, Token::Semi]);
+                        if !fty.is_empty() {
+                            fields.push(fty);
+                        }
+                        if self.check_token(&Token::Comma) {
+                            self.bump();
+                        }
+                    }
+                    let _ = self.expect_token(Token::RParen, "expected `)` after variant fields");
+                }
+                variants.push(EnumVariant {
+                    name: vname,
+                    fields,
+                });
+            } else {
+                self.bump();
+            }
+            if self.check_token(&Token::Comma) || self.check_token(&Token::Semi) {
+                self.bump();
+            }
+        }
+        let _ = self.expect_token(Token::RBrace, "expected `}` after enum");
+        let end = self.previous_end();
+        Some(Item::Enum {
+            name,
+            variants,
             span: Span {
                 start: start.start,
                 end,
@@ -1248,7 +1447,24 @@ impl Parser {
         let primary = match tok.token {
             Token::Number(n) | Token::StringLit(n) => Expr::Literal(n),
             Token::Ident(name) => {
-                if self.check_token(&Token::LParen) {
+                // Enum construct: Status::Ok or Status::Err(a, b)
+                if self.check_token(&Token::ColonColon) {
+                    self.bump();
+                    let (variant, _) = self
+                        .expect_ident("expected variant after `::`")
+                        .unwrap_or_else(|| ("_".into(), tok.span));
+                    let fields = if self.check_token(&Token::LParen) {
+                        self.parse_call_args()
+                    } else {
+                        vec![]
+                    };
+                    Expr::EnumConstruct {
+                        enum_name: name.clone(),
+                        variant,
+                        fields,
+                        span: tok.span,
+                    }
+                } else if self.check_token(&Token::LParen) {
                     let args = self.parse_call_args();
                     let mut e = Expr::Call {
                         callee: name.clone(),
@@ -1318,6 +1534,7 @@ impl Parser {
                 }
             }
             Token::Keyword(k) if k == "true" || k == "false" => Expr::Literal(k),
+            Token::Keyword(k) if k == "match" => self.parse_match_expr(tok.span),
             Token::Keyword(k) if k == "symbolic" => {
                 let ty = self
                     .parse_optional_generic_ty()
@@ -1449,7 +1666,10 @@ impl Parser {
     }
 
     fn parse_optional_generic_ty(&mut self) -> Option<String> {
-        if self.check_token(&Token::Colon)
+        // Turbofish: `::<T>` — either ColonColon or legacy Colon+Colon.
+        if self.check_token(&Token::ColonColon) {
+            self.bump();
+        } else if self.check_token(&Token::Colon)
             && matches!(
                 self.tokens.get(self.pos + 1).map(|tok| &tok.token),
                 Some(Token::Colon)
