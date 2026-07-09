@@ -50,10 +50,13 @@ jq -e '.overall_verdict=="PASS"' out/poc_kit/report.json
   non_destructive: true
 )
 fn main() {
-    let payload = cyclic(80) + p64(0);
+    let payload = cyclic(80) + p64(0x0);
     let r = target_run("poc_kit/bin/vuln_local", payload);
-    // r[0]=crashed, r[1]=signal, r[2]=exit_code, r[3]=payload_len
-    print(r[0]);
+    // A+: named TargetRun fields
+    print(r.crashed);
+    print(r.signal);
+    print(r.payload_len);
+    // list-compat still works: r[0] == r.crashed
 }
 ```
 
@@ -61,11 +64,23 @@ fn main() {
 
 | Builtin | Meaning |
 |---|---|
-| `p8(n)` / `p16(n)` / `p32(n)` / `p64(n)` | little-endian pack → list of byte ints |
+| `p8(n)` / `p16(n)` / `p32(n)` / `p64(n)` | little-endian pack → list of byte ints (hex ints OK: `p32(0x41414141)`) |
 | `cyclic(n)` | de Bruijn-style a..z pattern of length `n` |
 | `flat(x)` | normalize value to byte list |
-| `target_run(path, payload)` | run **local** binary with stdin=`payload`; returns crash tuple |
+| `target_run(path, payload)` | run **local** binary with stdin=`payload`; returns **TargetRun** struct |
 | list `+` list | concatenate (payload assembly) |
+
+### TargetRun result (A+)
+
+| Field | Meaning |
+|---|---|
+| `r.crashed` | `1` if killed by signal, else `0` |
+| `r.signal` | Unix signal number, or `-1` |
+| `r.exit_code` | process exit code, or `-1` |
+| `r.payload_len` | byte length of payload fed to stdin |
+| `r.timed_out` | `1` if harness timeout, else `0` |
+
+Positional index `r[0]..r[4]` follows the same field order for backward compatibility.
 
 ## Fuzz
 

@@ -65,7 +65,8 @@
    - Values are dynamically typed (Int / Bool / Str / List); lists may hold any mix and grow.
    - Enables real algorithms: sorting, dynamic programming, string scanning.
 
-8. Enums / tagged unions: PLANNED (documented; not required for this slice's 25 fixtures).
+8. Enums / tagged unions: REAL (unit, tuple, struct-like variants + match; exhaustiveness A+).
+   Maps `{k:v}`, if-expressions with required `else`: REAL.
 
 9. Functions / calls
    - User-defined calls (arity + basic type checking).

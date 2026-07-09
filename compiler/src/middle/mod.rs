@@ -1,6 +1,6 @@
 //! Middle: typed HIR, mode/effect checks, taint tracking, and Z3 obligations.
 
-use crate::frontend::{Expr, Item, Mode, Span, Stmt, AST};
+use crate::frontend::{Expr, Item, Mode, Pattern, Span, Stmt, AST};
 use crate::BuildMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -112,6 +112,10 @@ struct SemanticContext {
     symbolic_defs: Vec<String>,
     symbolic_widths: BTreeMap<String, u32>,
     known_bindings: BTreeSet<String>,
+    /// Enum name → variant names (for match exhaustiveness).
+    enum_variants: BTreeMap<String, Vec<String>>,
+    /// Function name → ordered parameter types (for call-site type checks).
+    fn_params: BTreeMap<String, Vec<String>>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -121,6 +125,8 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
         Mode::Exploit => BuildMode::Exploit,
     };
     let mut ctx = SemanticContext::default();
+    // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
+    register_program_surface(&ast.items, &mut ctx);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -159,6 +165,26 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
         symbolic_defs: ctx.symbolic_defs,
         symbolic_widths: ctx.symbolic_widths,
     })
+}
+
+/// Pass-1 registration: enums and function parameter types (A+ call/match surface).
+fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
+    for item in items {
+        match item {
+            Item::Module { items, .. } => register_program_surface(items, ctx),
+            Item::Enum { name, variants, .. } => {
+                let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+                ctx.enum_variants.insert(name.clone(), names);
+            }
+            Item::Fn { name, params, .. } => {
+                ctx.fn_params.insert(
+                    name.clone(),
+                    params.iter().map(|(_, ty)| ty.clone()).collect(),
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 fn collect_items(
@@ -213,8 +239,9 @@ fn collect_items(
                 // Minimal support for this slice: structs are parsed and preserved in AST;
                 // full type registration and field typing added in typechecker work.
             }
-            Item::Enum { .. } => {
-                // Enums are registered by presence; variant construction is runtime-checked.
+            Item::Enum { name, variants, .. } => {
+                let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+                ctx.enum_variants.insert(name.clone(), names);
             }
         }
     }
@@ -233,10 +260,11 @@ fn analyze_function(
         ctx.has_research = true;
     }
 
-    // Gate 15: capability enforcement from attributes (basic for now)
-    // In real, we'd pass attributes; for demo use mode + assume caller set correctly.
-    // For poc/research without auth metadata, we rely on CLI layer for now,
-    // but add note for effect-like checks.
+    // A+ call-site typing: record this function's parameter types for later calls.
+    ctx.fn_params.insert(
+        name.to_string(),
+        params.iter().map(|(_, ty)| ty.clone()).collect(),
+    );
 
     let mut scope = BTreeMap::<String, ScopeBinding>::new();
     let mut fn_symbols = vec![];
@@ -347,18 +375,23 @@ fn analyze_stmts(
                 // mark known after unknown check so later stmts see it
                 ctx.known_bindings.insert(name.clone());
 
-                // Minimal type mismatch for Gate2/3 (u32 vs bool literal etc)
+                // A+ type mismatch: annotation vs inferred init type.
                 if let Some(t) = ty.as_deref() {
-                    let looks_bool =
-                        matches!(init, Expr::Literal(s) if s == "true" || s == "false");
-                    if (t == "u32" || t == "u8" || t == "u64") && looks_bool {
-                        ctx.diagnostics.push(SemanticDiagnostic {
-                            code: Some("ANUBIS_TYPE_MISMATCH".into()),
-                            message: format!("type mismatch: expected {}, got bool", t),
-                            span: Some((span.start, span.end)),
-                        });
+                    if let Some(got) = infer_expr_type_scoped(init, scope) {
+                        if !types_compatible(t, &got) {
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                message: format!(
+                                    "type mismatch: expected `{}`, got `{}`",
+                                    t, got
+                                ),
+                                span: Some((span.start, span.end)),
+                            });
+                        }
                     }
                 }
+                // A+ walk init for call-site types + match exhaustiveness.
+                check_expr_semantics(init, scope, ctx);
 
                 if let Some(source) = &declass_source {
                     ctx.taint_traces.push(TaintTrace {
@@ -379,7 +412,7 @@ fn analyze_stmts(
                 };
                 let info = BindingInfo {
                     name: name.clone(),
-                    ty: ty.clone().or_else(|| infer_expr_type(init)),
+                    ty: ty.clone().or_else(|| infer_expr_type_scoped(init, scope)),
                     mode: mode_name(mode).into(),
                     tainted,
                     taint_source: taint_source.clone(),
@@ -483,6 +516,7 @@ fn analyze_stmts(
             }
             Stmt::ExprStmt(expr) => {
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
+                check_expr_semantics(expr, scope, ctx);
             }
             Stmt::Assign { target, value } => {
                 if let Some(source) = expr_taint_source(value, scope) {
@@ -493,6 +527,26 @@ fn analyze_stmts(
                             steps: vec![format!("{} -> assign -> {}", source, name)],
                             declassified: false,
                         });
+                    }
+                }
+                check_expr_semantics(value, scope, ctx);
+                // A+: if target is a typed variable, value must be compatible.
+                if let Expr::Var(name) = target {
+                    if let Some(binding) = scope.get(name) {
+                        if let Some(expected) = binding.info.ty.as_deref() {
+                            if let Some(got) = infer_expr_type_scoped(value, scope) {
+                                if !types_compatible(expected, &got) {
+                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                        code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                        message: format!(
+                                            "type mismatch on assign to `{}`: expected `{}`, got `{}`",
+                                            name, expected, got
+                                        ),
+                                        span: None,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -563,6 +617,36 @@ fn analyze_expr_effect(
 ) {
     match expr {
         Expr::Call { callee, args } => {
+            // A+ call-site type checks for user functions (not builtins).
+            if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
+                if args.len() != param_tys.len() {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_ARITY_MISMATCH".into()),
+                        message: format!(
+                            "function `{}` expects {} argument(s), got {}",
+                            callee,
+                            param_tys.len(),
+                            args.len()
+                        ),
+                        span: None,
+                    });
+                } else {
+                    for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
+                        if let Some(got) = infer_expr_type_scoped(arg, scope) {
+                            if !types_compatible(expected, &got) {
+                                ctx.diagnostics.push(SemanticDiagnostic {
+                                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                    message: format!(
+                                        "type mismatch: argument {} of `{}` expects `{}`, got `{}`",
+                                        i, callee, expected, got
+                                    ),
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             if callee == "shell" || callee == "exec" || callee == "system" {
                 effects.push("shell".to_string());
                 if mode == Mode::Safe {
@@ -1012,22 +1096,275 @@ fn is_tainted_type(ty: Option<&str>) -> bool {
     ty.is_some_and(|ty| ty.to_ascii_lowercase().contains("tainted"))
 }
 
-fn infer_expr_type(expr: &Expr) -> Option<String> {
+fn infer_expr_type_scoped(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> Option<String> {
     match expr {
         Expr::Symbolic { ty } => Some(ty.clone()),
         Expr::Tainted { ty, .. } => Some(format!("tainted<{}>", ty)),
         Expr::UnifiedBuffer { ty } => Some(format!("unified Buffer<{}>", ty)),
         Expr::RawPtr { mutable } => Some(
             if *mutable {
-                "*mut unknown"
+                "*mut unknown".into()
             } else {
-                "*const unknown"
-            }
-            .into(),
+                "*const unknown".into()
+            },
         ),
-        Expr::Declassify { inner, .. } => infer_expr_type(inner),
+        Expr::Declassify { inner, .. } => infer_expr_type_scoped(inner, scope),
         Expr::TaintSource { .. } => Some("tainted<string>".into()),
+        Expr::Literal(s) if s == "true" || s == "false" => Some("bool".into()),
+        Expr::Literal(s) if s.parse::<i64>().is_ok() || s.parse::<f64>().is_ok() => {
+            Some("u32".into())
+        }
+        Expr::Literal(s) if s.starts_with('"') || s.starts_with('\'') => Some("string".into()),
+        Expr::StrLiteral(_) => Some("string".into()),
+        Expr::Var(name) => scope.get(name).and_then(|b| b.info.ty.clone()),
+        Expr::Unary { op, expr } if op == "!" => Some("bool".into()),
+        Expr::Unary { expr, .. } => infer_expr_type_scoped(expr, scope),
+        Expr::Binary { op, lhs, rhs } => {
+            if matches!(
+                op.as_str(),
+                "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+            ) {
+                Some("bool".into())
+            } else {
+                infer_expr_type_scoped(lhs, scope).or_else(|| infer_expr_type_scoped(rhs, scope))
+            }
+        }
+        Expr::ArrayLiteral { .. } => Some("list".into()),
+        Expr::MapLiteral { .. } => Some("map".into()),
+        Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
+        Expr::If { then, else_, .. } => {
+            let t = infer_expr_type_scoped(then, scope);
+            let e = infer_expr_type_scoped(else_, scope);
+            match (t, e) {
+                (Some(a), Some(b)) if types_compatible(&a, &b) => Some(a),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (Some(a), Some(_)) => Some(a),
+                _ => None,
+            }
+        }
+        Expr::Match { arms, .. } => arms
+            .first()
+            .and_then(|a| infer_expr_type_scoped(&a.body, scope)),
+        Expr::Index { .. } => None, // dynamic
+        Expr::FieldAccess { .. } => None,
+        Expr::Call { .. } => None,
+        Expr::Cast { ty, .. } => Some(ty.clone()),
         _ => None,
+    }
+}
+
+fn normalize_ty(ty: &str) -> String {
+    let t = ty.trim().to_ascii_lowercase();
+    match t.as_str() {
+        "int" | "i32" | "i64" | "usize" | "isize" | "number" => "u32".into(),
+        "u8" | "u16" | "u32" | "u64" => t,
+        "str" | "string" => "string".into(),
+        "bool" | "boolean" => "bool".into(),
+        "list" | "array" | "vec" => "list".into(),
+        "map" | "dict" | "dictionary" => "map".into(),
+        other => other.to_string(),
+    }
+}
+
+fn is_numeric_ty(ty: &str) -> bool {
+    matches!(
+        normalize_ty(ty).as_str(),
+        "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "float"
+    )
+}
+
+/// A+ compatibility: numeric widths interoperate; bool/string/enums do not cross.
+/// `tainted<T>` is a *qualifier*: clean `T` may flow into a tainted binding (labeling),
+/// and tainted flows are still policed by the separate taint analysis.
+fn types_compatible(expected: &str, actual: &str) -> bool {
+    let e_raw = expected.trim();
+    let a_raw = actual.trim();
+    let e = normalize_ty(e_raw);
+    let a = normalize_ty(a_raw);
+    if e == a || e_raw == a_raw {
+        return true;
+    }
+    if e == "any" || a == "any" || e == "unknown" || a == "unknown" {
+        return true;
+    }
+    // Pointer forms: any *mut/*const pair is treated as compatible at this slice.
+    if (e_raw.contains('*') || e.contains("rawptr")) && (a_raw.contains('*') || a.contains("rawptr"))
+    {
+        return true;
+    }
+    // tainted<T> ↔ T (qualifier, not a distinct value type for annotation matching)
+    if let Some(inner) = tainted_inner(e_raw) {
+        if types_compatible(&inner, a_raw) {
+            return true;
+        }
+    }
+    if let Some(inner) = tainted_inner(a_raw) {
+        if types_compatible(e_raw, &inner) {
+            return true;
+        }
+    }
+    if is_numeric_ty(&e) && is_numeric_ty(&a) {
+        return true;
+    }
+    false
+}
+
+fn tainted_inner(ty: &str) -> Option<String> {
+    let t = ty.trim();
+    let lower = t.to_ascii_lowercase();
+    if lower.starts_with("tainted<") && lower.ends_with('>') {
+        let start = t.find('<')? + 1;
+        let end = t.rfind('>')?;
+        return Some(t[start..end].trim().to_string());
+    }
+    None
+}
+
+/// Walk expressions for A+ call typing + match exhaustiveness (fail-closed).
+fn check_expr_semantics(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
+                if args.len() != param_tys.len() {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_ARITY_MISMATCH".into()),
+                        message: format!(
+                            "function `{}` expects {} argument(s), got {}",
+                            callee,
+                            param_tys.len(),
+                            args.len()
+                        ),
+                        span: None,
+                    });
+                } else {
+                    for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
+                        if let Some(got) = infer_expr_type_scoped(arg, scope) {
+                            if !types_compatible(expected, &got) {
+                                ctx.diagnostics.push(SemanticDiagnostic {
+                                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                    message: format!(
+                                        "type mismatch: argument {} of `{}` expects `{}`, got `{}`",
+                                        i, callee, expected, got
+                                    ),
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            for a in args {
+                check_expr_semantics(a, scope, ctx);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            check_expr_semantics(lhs, scope, ctx);
+            check_expr_semantics(rhs, scope, ctx);
+        }
+        Expr::Unary { expr, .. } => check_expr_semantics(expr, scope, ctx),
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            check_expr_semantics(cond, scope, ctx);
+            check_expr_semantics(then, scope, ctx);
+            check_expr_semantics(else_, scope, ctx);
+        }
+        Expr::ArrayLiteral { elements } => {
+            for e in elements {
+                check_expr_semantics(e, scope, ctx);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                check_expr_semantics(k, scope, ctx);
+                check_expr_semantics(v, scope, ctx);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for f in fields {
+                check_expr_semantics(f, scope, ctx);
+            }
+        }
+        Expr::Index { base, index } => {
+            check_expr_semantics(base, scope, ctx);
+            check_expr_semantics(index, scope, ctx);
+        }
+        Expr::FieldAccess { base, .. } => check_expr_semantics(base, scope, ctx),
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            check_expr_semantics(scrutinee, scope, ctx);
+            for arm in arms {
+                check_expr_semantics(&arm.body, scope, ctx);
+            }
+            check_match_exhaustiveness(scrutinee, arms, scope, ctx);
+        }
+        Expr::Declassify { inner, .. } => check_expr_semantics(inner, scope, ctx),
+        Expr::Cast { expr, .. } => check_expr_semantics(expr, scope, ctx),
+        _ => {}
+    }
+}
+
+fn check_match_exhaustiveness(
+    scrutinee: &Expr,
+    arms: &[crate::frontend::MatchArm],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    // Wildcard present → exhaustive.
+    if arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard)) {
+        return;
+    }
+    // Determine enum type of scrutinee.
+    let enum_name = match scrutinee {
+        Expr::Var(n) => scope
+            .get(n)
+            .and_then(|b| b.info.ty.clone())
+            .filter(|t| ctx.enum_variants.contains_key(t)),
+        Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
+        _ => infer_expr_type_scoped(scrutinee, scope)
+            .filter(|t| ctx.enum_variants.contains_key(t)),
+    };
+    let Some(enum_name) = enum_name else {
+        return; // unknown scrutinee type — do not false-positive
+    };
+    let Some(all_variants) = ctx.enum_variants.get(&enum_name).cloned() else {
+        return;
+    };
+    let mut covered = BTreeSet::new();
+    for arm in arms {
+        if let Pattern::EnumVariant {
+            enum_name: en,
+            variant,
+            ..
+        } = &arm.pattern
+        {
+            if en == &enum_name {
+                covered.insert(variant.clone());
+            }
+        }
+    }
+    let missing: Vec<_> = all_variants
+        .into_iter()
+        .filter(|v| !covered.contains(v))
+        .collect();
+    if !missing.is_empty() {
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_MATCH_NON_EXHAUSTIVE".into()),
+            message: format!(
+                "non-exhaustive match on `{}`: missing variant(s) {} (add arms or `_`)",
+                enum_name,
+                missing.join(", ")
+            ),
+            span: None,
+        });
     }
 }
 

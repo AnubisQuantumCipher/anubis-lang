@@ -1,0 +1,134 @@
+// sealed_ledger.anb
+//
+// A small "engagement ledger" written to feel the language end-to-end:
+//   - struct-like enums for sealed verdicts
+//   - maps for risk weights
+//   - lists + for-in for event streams
+//   - if-expressions for thresholds
+//   - recursion for a fold checksum
+//   - match for unpacking verdicts
+//
+// Story: walk a sequence of authorized actions, accumulate risk, seal a
+// verdict, and print (1) total risk, (2) checksum, (3) verdict code.
+//
+// EXPECT (four lines):
+//   13     total risk  (1+2+1+5+1+2+1)
+//   9850   rolling checksum over event codes
+//   2      verdict code Hold
+//   13     held score payload from match
+//
+// Verdict codes: 0=Clear, 1=Watch, 2=Hold, 3=Abort
+
+enum Verdict {
+    Clear,
+    Watch { score: u32 },
+    Hold { score: u32, reason: u32 },
+    Abort { score: u32 },
+}
+
+// Fold a simple rolling checksum over a list of action codes.
+// checksum = ((acc * 31) + x) % 10007  for each x
+fn fold_checksum(xs: list, i: u32, n: u32, acc: u32) {
+    if i >= n {
+        return acc;
+    } else {
+        let x = xs[i];
+        let next = ((acc * 31) + x) % 10007;
+        return fold_checksum(xs, i + 1, n, next);
+    }
+}
+
+// Map an action name (as string key) to a risk weight via the weight table.
+fn weight_of(weights: map, name: string) {
+    return weights[name];
+}
+
+// Seal a verdict from a total risk score.
+//   < 5   → Clear
+//   < 12  → Watch
+//   < 25  → Hold (reason code 7 = "elevated cumulative")
+//   else  → Abort
+fn seal(score: u32) {
+    let v = if score < 5 {
+        Verdict::Clear
+    } else if score < 12 {
+        Verdict::Watch { score: score }
+    } else if score < 25 {
+        Verdict::Hold { score: score, reason: 7 }
+    } else {
+        Verdict::Abort { score: score }
+    };
+    return v;
+}
+
+// Collapse a verdict into a single public code for the "journal".
+fn verdict_code(v: Verdict) {
+    // Exhaustive arms (A+ match) — no bare wildcard needed.
+    return match v {
+        Verdict::Clear => 0,
+        Verdict::Watch { score: _s } => 1,
+        Verdict::Hold { score: _s, reason: _r } => 2,
+        Verdict::Abort { score: _s } => 3,
+    };
+}
+
+fn main() {
+    // Risk weight table: string keys → integer weights.
+    let weights = {
+        "recon": 1,
+        "scan": 2,
+        "prove": 1,
+        "lateral": 5,
+        "persist": 8,
+        "exfil": 13
+    };
+
+    // Event stream for this "engagement" (ordered actions).
+    // Codes mirror a tiny alphabet so we can checksum them:
+    //   recon=1, scan=2, prove=3, lateral=4, persist=5, exfil=6
+    let events = [1, 2, 3, 4, 1, 2, 3];
+    // Corresponding names for the weight lookup (parallel list of strings).
+    let names = ["recon", "scan", "prove", "lateral", "recon", "scan", "prove"];
+
+    // Accumulate total risk by walking names and looking up weights.
+    let total = 0;
+    let i = 0;
+    let n = len(names);
+    while i < n {
+        let name = names[i];
+        let w = weight_of(weights, name);
+        total = total + w;
+        i = i + 1;
+    }
+    // total = 1+2+1+5+1+2+1 = 13 ... wait recalculate:
+    // recon+scan+prove+lateral+recon+scan+prove
+    // 1 + 2 + 1 + 5 + 1 + 2 + 1 = 13
+    // Adjust expectation below if needed — actually want Hold band (<25, >=12).
+    // 13 is Watch (<12 is watch, 13 is Hold). Good.
+
+    // Rolling checksum over raw event codes.
+    let chk = fold_checksum(events, 0, len(events), 0);
+
+    // Seal the verdict from total risk.
+    let sealed = seal(total);
+    let code = verdict_code(sealed);
+
+    // Extract score from Hold if present (else 0) — exercises named match.
+    let held_score = match sealed {
+        Verdict::Hold { score: s, reason: _r } => s,
+        Verdict::Watch { score: s } => s,
+        Verdict::Abort { score: s } => s,
+        Verdict::Clear => 0,
+        _ => 0,
+    };
+
+    // Public "journal" lines: total risk, checksum, verdict code.
+    // Also print held_score so a reader can see the sealed payload matched.
+    print(total);
+    print(chk);
+    print(code);
+    print(held_score);
+
+    // Return the verdict code as the process-ish exit value.
+    return code;
+}

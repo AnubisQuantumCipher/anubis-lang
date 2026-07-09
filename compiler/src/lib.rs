@@ -327,6 +327,62 @@ mod tests {
     }
 
     #[test]
+    fn a_plus_rejects_bool_for_u32_param() {
+        let src = r#"
+        fn add(x: u32, y: u32) { return x + y; }
+        fn main() {
+            let r = add(true, "hi");
+            print(r);
+        }
+        "#;
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(parsed.diagnostics.is_empty(), "diags: {:?}", parsed.diagnostics);
+        let err = typecheck(parsed.ast, frontend::Mode::Safe).expect_err("must type-error");
+        assert!(
+            err.contains("ANUBIS_TYPE_MISMATCH"),
+            "expected type mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_plus_match_non_exhaustive_fails_closed() {
+        let src = r#"
+        enum V { A, B, C }
+        fn main() {
+            let v = V::A;
+            let x = match v {
+                V::A => 1,
+            };
+            return x;
+        }
+        "#;
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(parsed.diagnostics.is_empty(), "diags: {:?}", parsed.diagnostics);
+        let err = typecheck(parsed.ast, frontend::Mode::Safe).expect_err("must non-exhaustive");
+        assert!(
+            err.contains("ANUBIS_MATCH_NON_EXHAUSTIVE"),
+            "expected non-exhaustive, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_plus_match_with_wildcard_is_exhaustive() {
+        let src = r#"
+        enum V { A, B }
+        fn main() {
+            let v = V::A;
+            let x = match v {
+                V::A => 1,
+                _ => 0,
+            };
+            return x;
+        }
+        "#;
+        let parsed = frontend::parse_source_detailed(src);
+        typecheck(parsed.ast, frontend::Mode::Safe).expect("wildcard exhausts");
+    }
+
+    #[test]
     fn header_position_is_not_a_struct_literal() {
         // `while running { .. }` and `for i in 0..n { .. }` must NOT parse `running`/`n` as a
         // struct literal; the `{` starts the loop body. Regression for a parser hang.

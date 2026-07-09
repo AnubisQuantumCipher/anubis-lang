@@ -10,10 +10,9 @@
   non_destructive: true
 )
 fn main() {
-    // 0x41414141 = 1094795585 ("AAAA" little-endian)
-    let a = p32(1094795585);
-    // 0x4242424242424242 = 4774451407313060418
-    let b = p64(4774451407313060418);
+    // A+: hex integer literals are first-class (0x41414141 == "AAAA" LE)
+    let a = p32(0x41414141);
+    let b = p64(0x4242424242424242);
     let c = cyclic(4);
     let payload = a + b + c;
     print(len(payload));

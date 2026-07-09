@@ -1,41 +1,74 @@
-# Anubis Core Language Features (Gate 2/3 Minimum)
+# Anubis Core Language Features
 
-This document lists what is REAL (implemented + tested by fixtures/runner), PARTIAL, or PLANNED for the current slice.
+**Truth date:** 2026-07-09 · branch `a-plus-maturity/*`  
+This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **PLANNED**.
 
-## REAL (exercised by 25 fixtures + unit tests + sealed regressions)
+## REAL — executable by `anubis run` / check / prove
 
+### Core program structure
 - Line comments `//`
-- `fn` definitions with typed params (u32 etc.)
-- `let x = e;`, `let x: u32 = e;`
-- Primitives: bool, u8, u32 (literals + ops)
-- Expressions: literals (int/string/bool), vars, `+ - * / %`, comparisons `== != < <= > >=`,
-  logical `&& || !`, unary `-`/`!`, bitwise `&`, calls, parens
-- Control: `if / else if / else`, `while`, `loop`, `break`, `continue`, `return expr`
-- Mutation: assignment `x = expr;`
-- Recursion: user functions + mutual recursion execute on a real call stack (`anubis run`)
-- **Turing-complete execution** — see TURING_COMPLETENESS.md and tests/fixtures/turing_core/
-- Structs: decl, literal, field access (added/required in slice)
-- Calls: user fns + builtins symbolic/assume/assert/taint_source/declassify/sink
-- Special lowering: taint tracking, declassify policy+reason enforcement, symbolic constraints, solver obligations, assert/assume
-- Attributes: parse + preserve @safe/@research/@proof/@audit/@effect (via Mode + effects)
-- Evidence: AST/HIR/MIR JSON emission, bundle + verify, RISC0 receipts, Metal parity
-- Diagnostics: source spans, file/line/column (improved), human messages + new ANUBIS_* codes
+- `fn` definitions with typed params (`u32`, `bool`, …)
+- `let x = e;`, `let x: T = e;`
+- Attributes: `@safe` / `@research` / `@poc` / `@fuzz` / `@proof` / `@audit` / `@effect` (parse + mode inference; research requires `authorization=`)
 
-## PARTIAL (exists in some form, needs strengthening for slice)
+### Types & checking (A+)
+- Primitives: `bool`, `u8`, `u16`, `u32`, `u64` (numeric widths interoperate)
+- String literals + concat
+- **Call-site type checks** against parameter annotations (`ANUBIS_TYPE_MISMATCH`, `ANUBIS_ARITY_MISMATCH`)
+- **Let/assign** annotation vs inferred init type
+- `tainted<T>` is a *qualifier* (compatible with `T` for annotation matching; taint flow still separate)
+- Integer literals: decimal, `_` separators, **`0x` / `0b` / `0o` radix**
 
-- u16 / u64 / string primitives (some tests use u8/string labels; full width + string ops limited)
-- Module/import (parsed with recovery; no real name resolution or stdlib import)
-- Column-accurate diagnostics (byte spans dominant; improve to line+col)
-- Return type checking + missing return errors
+### Expressions & control
+- Arithmetic `+ - * / %`, comparisons, logical `&& || !`, unary `-` / `!`, bitwise `& | ^ << >> ~`
+- `if` / `else if` / `else` statements
+- **if-expressions** `let x = if c { a } else { b }` (`else` required)
+- `while`, `loop`, `break`, `continue`, `for i in a..b`, `for x in collection`
+- Assignment + indexed assignment; nested places (`a.b[i]`)
+- Recursion / mutual recursion (real call stack)
 
-## PLANNED (explicitly not required / out of scope for this slice)
+### Data
+- Arrays/lists: `[..]`, `len`, `push`, index R/W
+- **Maps** `{ k: v }` + index get/set + for-in keys
+- Structs: decl, literal, field access
+- **Enums**: unit, tuple, **struct-like** variants
+- **match** with bindings; **A+ exhaustiveness** (`ANUBIS_MATCH_NON_EXHAUSTIVE` without `_` or full arms)
 
-- Enums / tagged unions (document in UNSUPPORTED)
-- `for` loops (range/iterator form; `while` is REAL, use it today)
-- Result / error handling types in language surface
-- Block comments `/* */`
-- Large stdlib (only the 9 minimal builtins listed in plan)
-- Full attribute decorator syntax with enforcement (parse/preserve is enough)
-- LSP, packaging, async, networking, public release
+### Turing completeness
+- REAL — see `TURING_COMPLETENESS.md` + `scripts/run_turing_core_fixtures.sh`
 
-All PLANNED items must appear in UNSUPPORTED.md and the claim matrix as NO / PARTIAL.
+### Analysis / safe surface
+- `symbolic` / `assume` / `assert` / `taint_source` / `declassify` / `sink`
+- Raw pointer reject in safe; effect forbid for shell/network in safe
+
+### Proof surface (`anubis prove --backend risc0`)
+- `proof_input_u32` / `proof_input_bool`, `proof_commit_u32` / `proof_commit_bool`, `proof_assert`
+- Named journal fields + multi-field commit
+
+### PoC kit (`anubis run --allow-research`)
+- Packing `p8`/`p16`/`p32`/`p64`, `cyclic`, `flat`, list concat
+- **`target_run` → TargetRun** named fields (`crashed`, `signal`, `exit_code`, `payload_len`, `timed_out`) + index compat
+- Process mutation fuzz; network targets fail-closed
+- See `POC_KIT.md`
+
+## PARTIAL
+- Full string API (beyond len/concat/index)
+- Module/import name resolution across files
+- Column-perfect diagnostics everywhere
+- Return-type checking on all paths
+
+## PLANNED (not claimed)
+- Array/list slicing sugar
+- `Option`/`Result` sugar beyond enums
+- Async, networking language surface, large stdlib, LSP, packaging
+- Automatic remote exploit chains / ROP (explicitly out of scope for PoC kit)
+
+## Gates
+| Gate | Command |
+|------|---------|
+| Turing core | `bash scripts/run_turing_core_fixtures.sh` |
+| Enum/match | `bash scripts/run_enum_match_gate.sh` |
+| For-in | `bash scripts/run_for_in_gate.sh` |
+| Lang trio | `bash scripts/run_lang_trio_gate.sh` |
+| PoC kit | `bash scripts/run_poc_kit_gate.sh` |
+| Power | `bash scripts/run_power_gate.sh` |

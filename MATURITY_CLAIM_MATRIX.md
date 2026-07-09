@@ -174,7 +174,10 @@ Public outputs beyond a single u32: `return [a, b, …]` commits each field via
 | if-expressions `let x = if c {a} else {b}` | REAL | `examples/if_expr.anb` → 7 | same gate | else required; else-if chains |
 | Lang power trio (maps+struct-enum+if-expr) | REAL | `examples/lang_power_trio.anb` → 42 | same gate | combined executable surface |
 | Prove if-expr + struct-enum + named journal | REAL | `examples/proof/proof_lang_trio.anb` | same gate (when metal ref present) | secret private; code+ok public |
-| Match exhaustiveness errors in typecheck | PLANNED | — | — | runtime `_` / fallthrough only today |
+| A+ call-site + let type checks | REAL | `a_plus_rejects_bool_for_u32_param` | `cargo test -p anubis-compiler a_plus_rejects` | `ANUBIS_TYPE_MISMATCH` / arity |
+| A+ match exhaustiveness | REAL | `a_plus_match_non_exhaustive_fails_closed` | `cargo test -p anubis-compiler a_plus_match` | missing arms fail check; `_` OK |
+| Hex/bin/oct integer literals | REAL | packing smoke uses `0x41414141` | `anubis run …/poc_packing_smoke.anb --allow-research` | lexer → decimal token |
+| PoC `target_run` named TargetRun | REAL | `r.crashed` / `r.signal` … | `poc_local_overflow.anb` + list-compat `r[0]` | struct fields + index order |
 | `for x in collection` list iteration | REAL | `examples/for_in_list.anb` → 60 | `bash scripts/run_for_in_gate.sh` | also turing fixture sum 15 |
 | `for i in a..b` range (regression) | REAL | for_range_sum → 5050 | same gate | half-open |
 | Prove for-in sum of private inputs | REAL | proof_for_in_sum journal 60 | same gate | a+b+c with proof_assert |

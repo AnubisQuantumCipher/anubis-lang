@@ -13,11 +13,11 @@ fn main() {
     // 80-byte cyclic pattern exceeds the lab oracle's 64-byte limit → abort/crash
     let payload = cyclic(80);
     let r = target_run("poc_kit/bin/vuln_local", payload);
-    // r = [crashed, signal, exit_code, payload_len]
-    let crashed = r[0];
-    let signal = r[1];
-    let exit_code = r[2];
-    let plen = r[3];
+    // A+: named TargetRun fields (r.crashed); r[0] still works for list-compat.
+    let crashed = r.crashed;
+    let signal = r.signal;
+    let exit_code = r.exit_code;
+    let plen = r.payload_len;
     print(crashed);
     print(signal);
     print(exit_code);

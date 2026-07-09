@@ -1,0 +1,55 @@
+// poc_feel_threshold.anb
+// Hands-on PoC: binary-search the lab oracle crash threshold with packing.
+// Gold target aborts when stdin len > 64. We probe short vs long and seal a
+// mini result map: crashed_short / crashed_long / plen_long.
+//
+// REQUIRES: bash poc_kit/build_vuln.sh
+// RUN: anubis run examples/security/poc_feel_threshold.anb --allow-research
+//
+// EXPECT (lines):
+//   0     short (32 bytes) did not crash
+//   1     long  (80 bytes) crashed
+//   6     signal (SIGABRT on macOS often shows as 6)
+//   80    long payload length
+//   1     ok flag (short-stable && long-crashed)
+
+@research(
+  authorization: "local-lab-or-bug-bounty-program",
+  scope: "local-fixture",
+  reason: "threshold PoC: prove short-stable / long-crash against gold vuln_local",
+  non_destructive: true
+)
+fn main() {
+    // Short: cyclic + one p32 word, still under 64.
+    let short_pl = cyclic(28) + p32(0);
+    // Long: classic overflow-class payload for this lab oracle.
+    let long_pl = cyclic(72) + p64(0);
+
+    let rs = target_run("poc_kit/bin/vuln_local", short_pl);
+    let rl = target_run("poc_kit/bin/vuln_local", long_pl);
+
+    // A+: named fields (also r[0].. list-compat)
+    let short_crash = rs.crashed;
+    let long_crash = rl.crashed;
+    let long_sig = rl.signal;
+    let long_len = rl.payload_len;
+
+    // "ok" if short is stable and long crashes — impact is length-gated.
+    let ok = if short_crash == 0 {
+        if long_crash == 1 { 1 } else { 0 }
+    } else {
+        0
+    };
+
+    print(short_crash);
+    print(long_crash);
+    print(long_sig);
+    print(long_len);
+    print(ok);
+
+    // Fail closed in the PoC itself if the oracle shape is wrong.
+    if ok == 0 {
+        print("ANUBIS_POC_THRESHOLD_MISMATCH");
+    }
+    return ok;
+}

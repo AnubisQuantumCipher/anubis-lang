@@ -39,21 +39,26 @@
 - Proof fixture: `examples/proof/proof_lang_trio.anb` (if-expr + struct enum + named commits)
 - Gate: `bash scripts/run_lang_trio_gate.sh`
 
+## NOW REAL (A+ typing + match — 2026-07-09)
+
+- Call-site type checks vs parameter annotations — REAL (`ANUBIS_TYPE_MISMATCH`, `ANUBIS_ARITY_MISMATCH`)
+- Match exhaustiveness on known enums — REAL (`ANUBIS_MATCH_NON_EXHAUSTIVE`; `_` exhausts)
+- Hex / binary / octal integer literals (`0x`/`0b`/`0o`) — REAL
+- `target_run` returns named **TargetRun** struct (`r.crashed`, …) with list-index compat — REAL
+
 ## Explicitly PLANNED (not real yet)
 
-- Full exhaustiveness errors in typecheck for `match` (runtime `_` / fail-soft still apply)
-- Array/list slicing
-- `Result<T,E>` / `Option` / error handling in the language surface (beyond assert/assume)
+- Array/list slicing sugar
+- `Result<T,E>` / `Option` sugar beyond user-defined enums
 - Block comments `/* ... */`
-- Full string type + operations beyond label literals (len, concat, etc. may be PARTIAL)
-- u16 / u64 as first-class with full arithmetic in all paths (u32/u8 dominant)
-- Module system with real name resolution, `use`, multiple files, stdlib imports
-- Full `@safe fn foo() {}` decorator syntax with separate enforcement (blocks + Mode inference cover current needs)
+- Full string library (beyond len/concat/index)
+- Module system with real multi-file name resolution + stdlib imports
 - Generics / traits / impls
-- Async / await / tasks / networking
+- Async / await / tasks / language-level networking
 - Package manager, crates, publishing
 - LSP / IDE support
-- Large standard library (beyond the 9 core builtins)
+- Large standard library
+- Automatic remote exploit / ROP / C2 (out of scope by design — not a gap to “close” for A+)
 
 ## Current Gaps That Must Be Addressed in Fixtures / Tests (but are targeted for this slice)
 
