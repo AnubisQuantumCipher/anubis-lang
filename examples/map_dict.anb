@@ -1,0 +1,13 @@
+// Map/dictionary: { k: v }, index get/set, len, for-in keys
+// EXPECT: 6
+fn main() {
+    let m = { "x": 1, "y": 2, "z": 3 };
+    m["w"] = 0;
+    let s = 0;
+    for k in m {
+        s = s + m[k];
+    }
+    // 1+2+3+0 = 6
+    print(s);
+    return s;
+}

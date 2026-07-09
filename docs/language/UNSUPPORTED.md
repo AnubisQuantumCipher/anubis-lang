@@ -29,11 +29,20 @@
 - `for i in a..b { … }` — REAL (unchanged half-open range)
 - Gate: `bash scripts/run_for_in_gate.sh` + turing fixture `for_in_list`
 
+## NOW REAL (language power trio — 2026-07-09)
+
+- **Maps / dictionaries** `{ k: v, … }` — REAL (`AnubisValue::Map`); index get/set `m[k]`;
+  `len(m)`; `for k in m` iterates keys
+- **Struct-like enum variants** `Err { code: u32 }` — REAL (decl, construct, match named bindings)
+- **if-expressions** `let x = if c { a } else { b }` — REAL (`else` required; `else if` chains)
+- Combined fixture: `examples/lang_power_trio.anb` → 42
+- Proof fixture: `examples/proof/proof_lang_trio.anb` (if-expr + struct enum + named commits)
+- Gate: `bash scripts/run_lang_trio_gate.sh`
+
 ## Explicitly PLANNED (not real yet)
 
-- Struct-like enum variants (`Err { code: u32 }`) and full exhaustiveness errors in typecheck
-
-- Maps / dictionaries, and array/list slicing
+- Full exhaustiveness errors in typecheck for `match` (runtime `_` / fail-soft still apply)
+- Array/list slicing
 - `Result<T,E>` / `Option` / error handling in the language surface (beyond assert/assume)
 - Block comments `/* ... */`
 - Full string type + operations beyond label literals (len, concat, etc. may be PARTIAL)

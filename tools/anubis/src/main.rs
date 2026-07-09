@@ -2956,12 +2956,16 @@ enum AnubisValue {{
     Bool(bool),
     Str(String),
     List(Vec<AnubisValue>),
-    /// Algebraic data: `Status::Err(n)` → Enum {{ ty: Status, tag: Err, fields: [n] }}
+    /// Algebraic data: unit/tuple/struct variants.
+    /// `field_names` non-empty only for struct-like variants (parallel to `fields`).
     Enum {{
         ty: String,
         tag: String,
         fields: Vec<AnubisValue>,
+        field_names: Vec<String>,
     }},
+    /// Dictionary: string keys (via display_string) → values.
+    Map(Vec<(String, AnubisValue)>),
 }}
 
 impl AnubisValue {{
@@ -2972,6 +2976,7 @@ impl AnubisValue {{
             AnubisValue::Str(v) => v.parse::<i64>().unwrap_or(0),
             AnubisValue::List(v) => v.len() as i64,
             AnubisValue::Enum {{ fields, .. }} => fields.first().map(|f| f.as_i64()).unwrap_or(0),
+            AnubisValue::Map(m) => m.len() as i64,
         }}
     }}
 
@@ -2982,6 +2987,7 @@ impl AnubisValue {{
             AnubisValue::Str(v) => !v.is_empty(),
             AnubisValue::List(v) => !v.is_empty(),
             AnubisValue::Enum {{ .. }} => true,
+            AnubisValue::Map(m) => !m.is_empty(),
         }}
     }}
 
@@ -2994,13 +3000,26 @@ impl AnubisValue {{
                 let parts: Vec<String> = v.iter().map(|x| x.display_string()).collect();
                 format!("[{{}}]", parts.join(", "))
             }}
-            AnubisValue::Enum {{ ty, tag, fields }} => {{
+            AnubisValue::Enum {{ ty, tag, fields, field_names }} => {{
                 if fields.is_empty() {{
                     format!("{{}}::{{}}", ty, tag)
+                }} else if !field_names.is_empty() {{
+                    // Struct-variant display: type, tag, braced fields.
+                    let parts: Vec<String> = field_names.iter().zip(fields.iter())
+                        .map(|(n, v)| format!("{{}}:{{}}", n, v.display_string()))
+                        .collect();
+                    format!("{{}}::{{}}{{{{{{}}}}}}", ty, tag, parts.join(", "))
                 }} else {{
                     let parts: Vec<String> = fields.iter().map(|x| x.display_string()).collect();
                     format!("{{}}::{{}}({{}})", ty, tag, parts.join(", "))
                 }}
+            }}
+            AnubisValue::Map(m) => {{
+                // Map display wraps joined entries in braces.
+                let parts: Vec<String> = m.iter()
+                    .map(|(k, v)| format!("{{}}:{{}}", k, v.display_string()))
+                    .collect();
+                format!("{{{{{{}}}}}}", parts.join(", "))
             }}
         }}
     }}
@@ -3024,16 +3043,31 @@ impl AnubisValue {{
                     AnubisValue::Str(String::new())
                 }}
             }}
+            AnubisValue::Map(m) => {{
+                let key = i.display_string();
+                m.iter().find(|(k, _)| k == &key).map(|(_, v)| v.clone()).unwrap_or(AnubisValue::Int(0))
+            }}
             _ => AnubisValue::Int(0),
         }}
     }}
 
     fn index_set(&mut self, i: AnubisValue, val: AnubisValue) {{
-        if let AnubisValue::List(v) = self {{
-            let idx = i.as_i64();
-            if idx >= 0 && (idx as usize) < v.len() {{
-                v[idx as usize] = val;
+        match self {{
+            AnubisValue::List(v) => {{
+                let idx = i.as_i64();
+                if idx >= 0 && (idx as usize) < v.len() {{
+                    v[idx as usize] = val;
+                }}
             }}
+            AnubisValue::Map(m) => {{
+                let key = i.display_string();
+                if let Some(slot) = m.iter_mut().find(|(k, _)| k == &key) {{
+                    slot.1 = val;
+                }} else {{
+                    m.push((key, val));
+                }}
+            }}
+            _ => {{}}
         }}
     }}
 
@@ -3047,7 +3081,18 @@ impl AnubisValue {{
         match self {{
             AnubisValue::List(v) => AnubisValue::Int(v.len() as i64),
             AnubisValue::Str(s) => AnubisValue::Int(s.chars().count() as i64),
+            AnubisValue::Map(m) => AnubisValue::Int(m.len() as i64),
             _ => AnubisValue::Int(0),
+        }}
+    }}
+
+    /// Keys of a map as a list of strings (for `for k in m`).
+    fn map_keys(&self) -> AnubisValue {{
+        match self {{
+            AnubisValue::Map(m) => AnubisValue::List(
+                m.iter().map(|(k, _)| AnubisValue::Str(k.clone())).collect()
+            ),
+            _ => AnubisValue::List(vec![]),
         }}
     }}
 }}
@@ -3513,12 +3558,13 @@ fn emit_safe_run_stmt(
                     Ok(())
                 }
                 ForSource::Collection { expr } => {
-                    // `for v in xs` — index walk over list/string.
+                    // `for v in xs` — index walk over list/string/map-keys.
                     let col = format!("__anb_for_col_{}", indent);
                     let idx = format!("__anb_for_i_{}", indent);
                     let len = format!("__anb_for_len_{}", indent);
+                    // Maps iterate keys (as string list) so body can index values.
                     out.push_str(&format!(
-                        "{pad}let {} = {};\n",
+                        "{pad}let {} = {{ let __c = {}; match &__c {{ AnubisValue::Map(_) => __c.map_keys(), _ => __c }} }};\n",
                         col,
                         safe_run_expr(expr, allow_research)?
                     ));
@@ -3799,22 +3845,50 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
             enum_name,
             variant,
             fields,
+            field_names,
             ..
         } => {
             let mut fs = Vec::new();
             for f in fields {
                 fs.push(safe_run_expr(f, allow_research)?);
             }
+            let names: Vec<String> = field_names
+                .iter()
+                .map(|n| format!("{}.to_string()", rust_string_lit(n).unwrap_or_else(|_| "\"\"".into())))
+                .collect();
             Ok(format!(
-                "AnubisValue::Enum {{ ty: {}.to_string(), tag: {}.to_string(), fields: vec![{}] }}",
+                "AnubisValue::Enum {{ ty: {}.to_string(), tag: {}.to_string(), fields: vec![{}], field_names: vec![{}] }}",
                 rust_string_lit(enum_name)?,
                 rust_string_lit(variant)?,
-                fs.join(", ")
+                fs.join(", "),
+                names.join(", ")
             ))
         }
         Expr::Match {
             scrutinee, arms, ..
         } => lower_match_expr(scrutinee, arms, allow_research),
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            let c = safe_run_expr(cond, allow_research)?;
+            let t = safe_run_expr(then, allow_research)?;
+            let e = safe_run_expr(else_, allow_research)?;
+            Ok(format!(
+                "if ({c}).as_bool() {{ {t} }} else {{ {e} }}"
+            ))
+        }
+        Expr::MapLiteral { entries, .. } => {
+            let mut pairs = Vec::new();
+            for (k, v) in entries {
+                let ks = safe_run_expr(k, allow_research)?;
+                let vs = safe_run_expr(v, allow_research)?;
+                pairs.push(format!("(({ks}).display_string(), {vs})"));
+            }
+            Ok(format!(
+                "AnubisValue::Map(vec![{}])",
+                pairs.join(", ")
+            ))
+        }
         Expr::Index { base, index } => Ok(format!(
             "({}).index_get({})",
             safe_run_expr(base, allow_research)?,
@@ -3860,7 +3934,7 @@ fn lower_match_expr(
             Pattern::EnumVariant {
                 enum_name,
                 variant,
-                bindings: _,
+                ..
             } => {
                 format!(
                     "matches!(&__anb_m, AnubisValue::Enum {{ ty, tag, .. }} if ty == {} && tag == {})",
@@ -3874,12 +3948,30 @@ fn lower_match_expr(
         }
         first = false;
         out.push_str(&format!("if {cond} {{ "));
-        // Bind tuple fields for EnumVariant arms.
-        if let Pattern::EnumVariant { bindings, .. } = &arm.pattern {
+        // Bind tuple / struct fields for EnumVariant arms.
+        if let Pattern::EnumVariant {
+            bindings,
+            named_bindings,
+            ..
+        } = &arm.pattern
+        {
             for (i, b) in bindings.iter().enumerate() {
                 let bn = sanitize_ident(b)?;
                 out.push_str(&format!(
                     "let mut {bn} = match &__anb_m {{ AnubisValue::Enum {{ fields, .. }} if fields.len() > {i} => fields[{i}].clone(), _ => AnubisValue::Int(0) }}; "
+                ));
+            }
+            for (fname, bname) in named_bindings {
+                let bn = sanitize_ident(bname)?;
+                let fstr = rust_string_lit(fname)?;
+                out.push_str(&format!(
+                    "let mut {bn} = match &__anb_m {{ AnubisValue::Enum {{ fields, field_names, .. }} => {{ \
+                        let mut __v = AnubisValue::Int(0); \
+                        for (__i, __n) in field_names.iter().enumerate() {{ \
+                            if __n == &{fstr} {{ if let Some(__f) = fields.get(__i) {{ __v = __f.clone(); }} break; }} \
+                        }} \
+                        __v \
+                    }}, _ => AnubisValue::Int(0) }}; "
                 ));
             }
         }

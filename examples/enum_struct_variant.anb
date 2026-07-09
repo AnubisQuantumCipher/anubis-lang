@@ -1,0 +1,17 @@
+// Struct-like enum variants
+// EXPECT: 99
+enum ApiErr {
+    None,
+    Fail { code: u32, hint: u32 },
+}
+
+fn main() {
+    let e = ApiErr::Fail { code: 99, hint: 1 };
+    let c = match e {
+        ApiErr::None => 0,
+        ApiErr::Fail { code: c, hint: _h } => c,
+        _ => 1,
+    };
+    print(c);
+    return c;
+}

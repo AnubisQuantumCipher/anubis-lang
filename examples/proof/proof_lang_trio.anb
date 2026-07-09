@@ -1,0 +1,31 @@
+// Prove if-expr + map-ish selection via enum struct variant.
+// Private secret; public only ok and code.
+enum Verdict {
+    Bad,
+    Good { code: u32 },
+}
+
+fn main() {
+    let secret = proof_input_u32("secret");
+    let lo = proof_input_u32("lo");
+    let hi = proof_input_u32("hi");
+    proof_assert(secret >= lo);
+    proof_assert(secret <= hi);
+    let v = if secret >= lo {
+        if secret <= hi {
+            Verdict::Good { code: secret }
+        } else {
+            Verdict::Bad
+        }
+    } else {
+        Verdict::Bad
+    };
+    let code = match v {
+        Verdict::Good { code: c } => c,
+        Verdict::Bad => 0,
+        _ => 0,
+    };
+    proof_commit_u32("code", code);
+    proof_commit_bool("ok", true);
+    return 0;
+}

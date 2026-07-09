@@ -1,0 +1,39 @@
+// Maps + struct-like enum variants + if-expressions.
+// EXPECT stdout: 42
+enum Result {
+    Ok,
+    Err { code: u32, detail: u32 },
+}
+
+fn main() {
+    // if-expression
+    let flag = true;
+    let base = if flag { 40 } else { 0 };
+
+    // map literal + index set/get
+    let m = { "a": 1, "b": 2 };
+    m["c"] = base;
+    let a = m["a"];
+    let c = m["c"];
+
+    // struct-like enum + match bindings
+    let e = Result::Err { code: 1, detail: a };
+    let add = match e {
+        Result::Ok => 0,
+        Result::Err { code: _c, detail: d } => d,
+        _ => 0,
+    };
+
+    let total = c + add;
+    // total = 40 + 1 = 41... need 42: use detail 2
+    let e2 = Result::Err { code: 0, detail: 2 };
+    let d2 = match e2 {
+        Result::Err { code: _x, detail: d } => d,
+        Result::Ok => 0,
+        _ => 0,
+    };
+    let out = if total > 0 { c + d2 } else { 0 };
+    // c=40, d2=2 → 42
+    print(out);
+    return out;
+}

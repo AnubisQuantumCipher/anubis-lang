@@ -169,7 +169,12 @@ Public outputs beyond a single u32: `return [a, b, …]` commits each field via
 | Power gate (language+proof+receipts) | REAL | `scripts/run_power_gate.sh` | bash gate | compound capability seal |
 | Enums (`enum` + unit/tuple variants) | REAL | `examples/enum_status.anb` | `anubis run` → 42 | `Status::Err(42)` |
 | `match` expressions + bindings | REAL | same + `proof_enum_status.anb` | `bash scripts/run_enum_match_gate.sh` | `_` wildcard supported |
-| Struct-like enum variants / full exhaustiveness TC | PLANNED | — | — | unit+tuple only today |
+| Struct-like enum variants (`Err { code }`) | REAL | `examples/enum_struct_variant.anb` → 99 | `bash scripts/run_lang_trio_gate.sh` | match named bindings |
+| Maps / dictionaries `{k:v}` | REAL | `examples/map_dict.anb` → 6 | same gate | index get/set, for-in keys |
+| if-expressions `let x = if c {a} else {b}` | REAL | `examples/if_expr.anb` → 7 | same gate | else required; else-if chains |
+| Lang power trio (maps+struct-enum+if-expr) | REAL | `examples/lang_power_trio.anb` → 42 | same gate | combined executable surface |
+| Prove if-expr + struct-enum + named journal | REAL | `examples/proof/proof_lang_trio.anb` | same gate (when metal ref present) | secret private; code+ok public |
+| Match exhaustiveness errors in typecheck | PLANNED | — | — | runtime `_` / fallthrough only today |
 | `for x in collection` list iteration | REAL | `examples/for_in_list.anb` → 60 | `bash scripts/run_for_in_gate.sh` | also turing fixture sum 15 |
 | `for i in a..b` range (regression) | REAL | for_range_sum → 5050 | same gate | half-open |
 | Prove for-in sum of private inputs | REAL | proof_for_in_sum journal 60 | same gate | a+b+c with proof_assert |

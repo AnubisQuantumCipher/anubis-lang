@@ -233,6 +233,100 @@ mod tests {
     }
 
     #[test]
+    fn parses_if_expression_with_else_if() {
+        let src = "fn main() { let n = 3; let r = if n > 2 { n + 4 } else if n == 0 { 1 } else { 0 }; }";
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "diags: {:?}",
+            parsed.diagnostics
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("fn");
+        };
+        let frontend::Stmt::Let { init, .. } = &body[1] else {
+            panic!("expected let r, got {:?}", body[1]);
+        };
+        assert!(
+            matches!(init, frontend::Expr::If { .. }),
+            "expected if-expression, got {:?}",
+            init
+        );
+        typecheck(parsed.ast, frontend::Mode::Safe).expect("tc");
+    }
+
+    #[test]
+    fn parses_map_literal_and_index() {
+        let src = r#"fn main() { let m = { "a": 1, "b": 2 }; let x = m["a"]; m["c"] = 3; }"#;
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "diags: {:?}",
+            parsed.diagnostics
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("fn");
+        };
+        let frontend::Stmt::Let { init, .. } = &body[0] else {
+            panic!("expected map let");
+        };
+        assert!(
+            matches!(init, frontend::Expr::MapLiteral { entries, .. } if entries.len() == 2),
+            "expected 2-entry map, got {:?}",
+            init
+        );
+        typecheck(parsed.ast, frontend::Mode::Safe).expect("tc");
+    }
+
+    #[test]
+    fn parses_struct_like_enum_variant_and_match() {
+        let src = r#"
+        enum ApiErr {
+            None,
+            Fail { code: u32, hint: u32 },
+        }
+        fn main() {
+            let e = ApiErr::Fail { code: 99, hint: 1 };
+            let c = match e {
+                ApiErr::None => 0,
+                ApiErr::Fail { code: c, hint: _h } => c,
+                _ => 1,
+            };
+            return c;
+        }
+        "#;
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "diags: {:?}",
+            parsed.diagnostics
+        );
+        assert!(
+            matches!(&parsed.ast.items[0], frontend::Item::Enum { variants, .. }
+                if variants.iter().any(|v| matches!(v.kind, frontend::EnumVariantKind::Struct(_)))),
+            "expected struct-like variant: {:?}",
+            parsed.ast.items[0]
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[1] else {
+            panic!("fn");
+        };
+        let frontend::Stmt::Let { init, .. } = &body[0] else {
+            panic!("enum construct let");
+        };
+        match init {
+            frontend::Expr::EnumConstruct { field_names, .. } => {
+                assert_eq!(
+                    field_names.as_slice(),
+                    ["code", "hint"],
+                    "expected struct field names"
+                );
+            }
+            other => panic!("expected struct construct, got {:?}", other),
+        }
+        typecheck(parsed.ast, frontend::Mode::Safe).expect("tc");
+    }
+
+    #[test]
     fn header_position_is_not_a_struct_literal() {
         // `while running { .. }` and `for i in 0..n { .. }` must NOT parse `running`/`n` as a
         // struct literal; the `{` starts the loop body. Regression for a parser hang.
@@ -379,12 +473,13 @@ mod tests {
             parsed.diagnostics
         );
         assert!(
-            parsed
-                .ast
-                .items
-                .iter()
-                .any(|it| matches!(it, frontend::Item::Enum { name, variants, .. }
-                    if name == "Status" && variants.len() == 3)),
+            parsed.ast.items.iter().any(|it| {
+                matches!(
+                    it,
+                    frontend::Item::Enum { name, variants, .. }
+                        if name == "Status" && variants.len() == 3
+                )
+            }),
             "expected Status enum: {:?}",
             parsed.ast.items
         );

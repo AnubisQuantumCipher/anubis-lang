@@ -130,23 +130,35 @@ pub enum Item {
     },
 }
 
-/// Enum variant: unit `Ok` or tuple `Err(u32, bool)`.
+/// Shape of an enum variant.
+#[derive(Debug, Clone)]
+pub enum EnumVariantKind {
+    Unit,
+    /// `Err(u32, bool)`
+    Tuple(Vec<String>),
+    /// `Err { code: u32, msg: u32 }`
+    Struct(Vec<(String, String)>),
+}
+
+/// Enum variant declaration.
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: String,
-    /// Empty = unit variant; otherwise tuple-field type names.
-    pub fields: Vec<String>,
+    pub kind: EnumVariantKind,
 }
 
 /// Pattern for `match` arms.
 #[derive(Debug, Clone)]
 pub enum Pattern {
     Wildcard,
-    /// `Status::Ok` or `Status::Err(n, m)` — bindings bind field values.
+    /// `Status::Ok`, `Status::Err(n)`, or `Status::Err { code: c }`
     EnumVariant {
         enum_name: String,
         variant: String,
+        /// Positional bindings for tuple variants.
         bindings: Vec<String>,
+        /// Named field bindings `(field, bind)` for struct variants.
+        named_bindings: Vec<(String, String)>,
     },
 }
 
@@ -277,17 +289,32 @@ pub enum Expr {
         field: String,
         span: Span,
     },
-    /// `Status::Ok` or `Status::Err(x, y)`
+    /// `Status::Ok`, `Status::Err(x, y)`, or `Status::Err { code: x }`
     EnumConstruct {
         enum_name: String,
         variant: String,
+        /// Positional field expressions (tuple) or values in `field_names` order (struct).
         fields: Vec<Expr>,
+        /// Empty for unit/tuple; for struct, names parallel to `fields`.
+        field_names: Vec<String>,
         span: Span,
     },
     /// `match scrutinee { Status::Ok => 0, Status::Err(n) => n, _ => 1 }`
     Match {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
+        span: Span,
+    },
+    /// `if c { a } else { b }` (expression; else required)
+    If {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        else_: Box<Expr>,
+        span: Span,
+    },
+    /// `{ k: v, ... }` dictionary / map literal
+    MapLiteral {
+        entries: Vec<(Expr, Expr)>,
         span: Span,
     },
     Other(String),
@@ -923,7 +950,7 @@ impl Parser {
                 return Pattern::Wildcard;
             }
         }
-        // Enum::Variant or Enum::Variant(a, b)
+        // Enum::Variant / Enum::Variant(a) / Enum::Variant { f: b }
         if matches!(self.current().token, Token::Ident(_)) {
             let (enum_name, _) = self.expect_ident("expected enum name in pattern").unwrap();
             if self.check_token(&Token::ColonColon) {
@@ -931,12 +958,13 @@ impl Parser {
                 let (variant, _) = self
                     .expect_ident("expected variant in pattern")
                     .unwrap_or_else(|| ("_".into(), Span::default()));
-                let bindings = if self.check_token(&Token::LParen) {
+                let mut bindings = vec![];
+                let mut named_bindings = vec![];
+                if self.check_token(&Token::LParen) {
                     self.bump();
-                    let mut binds = vec![];
                     while !self.at_eof() && !self.check_token(&Token::RParen) {
                         if let Some((b, _)) = self.expect_ident("expected binding") {
-                            binds.push(b);
+                            bindings.push(b);
                         } else {
                             self.bump();
                         }
@@ -945,17 +973,31 @@ impl Parser {
                         }
                     }
                     let _ = self.expect_token(Token::RParen, "expected `)` in pattern");
-                    binds
-                } else {
-                    vec![]
-                };
+                } else if self.check_token(&Token::LBrace) {
+                    self.bump();
+                    while !self.at_eof() && !self.check_token(&Token::RBrace) {
+                        if let Some((fname, _)) = self.expect_ident("expected field in pattern") {
+                            let _ = self.expect_token(Token::Colon, "expected `:` in struct pattern");
+                            let (bname, _) = self
+                                .expect_ident("expected binding after field")
+                                .unwrap_or_else(|| (fname.clone(), Span::default()));
+                            named_bindings.push((fname, bname));
+                        } else {
+                            self.bump();
+                        }
+                        if self.check_token(&Token::Comma) {
+                            self.bump();
+                        }
+                    }
+                    let _ = self.expect_token(Token::RBrace, "expected `}` in struct pattern");
+                }
                 return Pattern::EnumVariant {
                     enum_name,
                     variant,
                     bindings,
+                    named_bindings,
                 };
             }
-            // bare ident treated as wildcard-ish unit of unknown enum — use as Err path
             self.diagnostic(
                 "match pattern must be `Enum::Variant` or `_`",
                 self.current_span(),
@@ -974,9 +1016,9 @@ impl Parser {
         let mut variants = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             if let Some((vname, _)) = self.expect_ident("expected variant name") {
-                let mut fields = vec![];
-                if self.check_token(&Token::LParen) {
+                let kind = if self.check_token(&Token::LParen) {
                     self.bump();
+                    let mut fields = vec![];
                     while !self.at_eof() && !self.check_token(&Token::RParen) {
                         let fty =
                             self.collect_type_until(&[Token::Comma, Token::RParen, Token::Semi]);
@@ -988,10 +1030,31 @@ impl Parser {
                         }
                     }
                     let _ = self.expect_token(Token::RParen, "expected `)` after variant fields");
-                }
+                    EnumVariantKind::Tuple(fields)
+                } else if self.check_token(&Token::LBrace) {
+                    self.bump();
+                    let mut fields = vec![];
+                    while !self.at_eof() && !self.check_token(&Token::RBrace) {
+                        if let Some((fname, _)) = self.expect_ident("expected field name") {
+                            let _ = self.expect_token(Token::Colon, "expected `:` after field");
+                            let fty = self
+                                .collect_type_until(&[Token::Comma, Token::RBrace, Token::Semi]);
+                            fields.push((fname, fty));
+                        } else {
+                            self.bump();
+                        }
+                        if self.check_token(&Token::Comma) {
+                            self.bump();
+                        }
+                    }
+                    let _ = self.expect_token(Token::RBrace, "expected `}` after struct variant");
+                    EnumVariantKind::Struct(fields)
+                } else {
+                    EnumVariantKind::Unit
+                };
                 variants.push(EnumVariant {
                     name: vname,
-                    fields,
+                    kind,
                 });
             } else {
                 self.bump();
@@ -1010,6 +1073,88 @@ impl Parser {
                 end,
             },
         })
+    }
+
+    /// Expression block body: `{ expr }` or `{ expr; }` (last expression wins).
+    fn parse_expr_block(&mut self) -> Expr {
+        let _ = self.expect_token(Token::LBrace, "expected `{`");
+        if self.check_token(&Token::RBrace) {
+            self.bump();
+            return Expr::Literal("0".into());
+        }
+        let e = self.with_struct_allowed(|p| p.parse_expr(0));
+        if self.check_token(&Token::Semi) {
+            self.bump();
+        }
+        // Ignore extra statements after first expr for this slice (take first).
+        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            // skip trailing stmts loosely
+            if self.check_keyword("let")
+                || self.check_keyword("if")
+                || self.check_keyword("return")
+                || self.check_keyword("while")
+            {
+                break;
+            }
+            self.bump();
+        }
+        let _ = self.expect_token(Token::RBrace, "expected `}`");
+        e
+    }
+
+    fn parse_if_expr(&mut self, start: Span) -> Expr {
+        let cond = self.parse_header_expr();
+        let then = self.parse_expr_block();
+        let else_ = if self.check_keyword("else") {
+            self.bump();
+            if self.check_keyword("if") {
+                let tok = self.bump().unwrap();
+                self.parse_if_expr(tok.span)
+            } else {
+                self.parse_expr_block()
+            }
+        } else {
+            self.diagnostic("if-expression requires `else`", self.current_span());
+            Expr::Literal("0".into())
+        };
+        Expr::If {
+            cond: Box::new(cond),
+            then: Box::new(then),
+            else_: Box::new(else_),
+            span: Span {
+                start: start.start,
+                end: self.previous_end().max(start.end),
+            },
+        }
+    }
+
+    fn parse_map_literal(&mut self, start: Span) -> Expr {
+        // `{` already consumed by caller
+        let mut entries = vec![];
+        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            let key = self.with_struct_allowed(|p| p.parse_expr(0));
+            let _ = self.expect_token(Token::Colon, "expected `:` in map entry");
+            let val = self.with_struct_allowed(|p| p.parse_expr(0));
+            entries.push((key, val));
+            if self.check_token(&Token::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let end = if self.check_token(&Token::RBrace) {
+            self.bump().map(|t| t.span.end).unwrap_or(start.end)
+        } else {
+            self.diagnostic("expected `}` after map literal", self.current_span());
+            self.current_span().end
+        };
+        Expr::MapLiteral {
+            entries,
+            span: Span {
+                start: start.start,
+                end,
+            },
+        }
     }
 
     fn parse_module(&mut self) -> Option<Item> {
@@ -1464,21 +1609,44 @@ impl Parser {
         let primary = match tok.token {
             Token::Number(n) | Token::StringLit(n) => Expr::Literal(n),
             Token::Ident(name) => {
-                // Enum construct: Status::Ok or Status::Err(a, b)
+                // Enum construct: Status::Ok / Status::Err(a) / Status::Err { code: a }
                 if self.check_token(&Token::ColonColon) {
                     self.bump();
                     let (variant, _) = self
                         .expect_ident("expected variant after `::`")
                         .unwrap_or_else(|| ("_".into(), tok.span));
-                    let fields = if self.check_token(&Token::LParen) {
-                        self.parse_call_args()
+                    let (fields, field_names) = if self.check_token(&Token::LParen) {
+                        (self.parse_call_args(), vec![])
+                    } else if self.check_token(&Token::LBrace) {
+                        self.bump();
+                        let mut names = vec![];
+                        let mut vals = vec![];
+                        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+                            if let Some((fname, _)) =
+                                self.expect_ident("expected field in enum construct")
+                            {
+                                let _ = self
+                                    .expect_token(Token::Colon, "expected `:` in enum construct");
+                                let val = self.with_struct_allowed(|p| p.parse_expr(0));
+                                names.push(fname);
+                                vals.push(val);
+                            } else {
+                                self.bump();
+                            }
+                            if self.check_token(&Token::Comma) {
+                                self.bump();
+                            }
+                        }
+                        let _ = self.expect_token(Token::RBrace, "expected `}` in enum construct");
+                        (vals, names)
                     } else {
-                        vec![]
+                        (vec![], vec![])
                     };
                     Expr::EnumConstruct {
                         enum_name: name.clone(),
                         variant,
                         fields,
+                        field_names,
                         span: tok.span,
                     }
                 } else if self.check_token(&Token::LParen) {
@@ -1552,6 +1720,7 @@ impl Parser {
             }
             Token::Keyword(k) if k == "true" || k == "false" => Expr::Literal(k),
             Token::Keyword(k) if k == "match" => self.parse_match_expr(tok.span),
+            Token::Keyword(k) if k == "if" => self.parse_if_expr(tok.span),
             Token::Keyword(k) if k == "symbolic" => {
                 let ty = self
                     .parse_optional_generic_ty()
@@ -1651,6 +1820,7 @@ impl Parser {
                 let _ = self.expect_token(Token::RBracket, "expected `]` after array literal");
                 Expr::ArrayLiteral { elements }
             }
+            Token::LBrace => self.parse_map_literal(tok.span),
             other => Expr::Other(format!("{:?}", other)),
         };
         // Postfix indexing: base[index], possibly chained (a[i][j]).
