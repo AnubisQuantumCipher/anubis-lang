@@ -22,16 +22,15 @@ for f in "$FIXTURES"/*.anb; do
   cargo run -- check "$f" --evidence --out "$d2" > /dev/null 2>&1 || true
 
   h1=$(sha256sum "$f" | awk '{print $1}')
-  h2=$(sha256sum "$f" | awk '{print $1}')
-  s1=$(sha256sum "$d1/check-summary.json" 2>/dev/null | awk '{print $1}' || echo "missing")
-  s2=$(sha256sum "$d2/check-summary.json" 2>/dev/null | awk '{print $1}' || echo "missing")
+  # Reproducibility = the tool's DETERMINISTIC semantic output is identical across two runs.
+  # We extract only the timestamp-free fields (verdict + check_error) with jq and compare them.
+  # Missing output from either run (tool failed to write a summary) is a FAIL, not a pass.
+  s1=$(jq -S -c '{verdict, check_error}' "$d1/check-summary.json" 2>/dev/null || echo "MISSING_1")
+  s2=$(jq -S -c '{verdict, check_error}' "$d2/check-summary.json" 2>/dev/null || echo "MISSING_2")
 
   match="true"
-  if [[ "$s1" != "$s2" ]]; then
-    # allow nondet in evidence timestamps; check only source + basic verdict presence
-    if ! grep -q '"verdict"' "$d1/check-summary.json" || ! grep -q '"verdict"' "$d2/check-summary.json"; then
-      match="false"; ok=0
-    fi
+  if [[ "$s1" == "MISSING_1" || "$s2" == "MISSING_2" || "$s1" != "$s2" ]]; then
+    match="false"; ok=0
   fi
 
   jq --arg b "$base" --arg m "$match" --arg h "$h1" --arg s1 "$s1" --arg s2 "$s2" \

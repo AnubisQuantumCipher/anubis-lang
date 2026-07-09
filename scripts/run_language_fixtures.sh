@@ -57,13 +57,16 @@ for f in "$FIXTURE_DIR"/*.anb; do
     failure_run=1
   fi
 
-  # Verdict for reporting (best effort) -- failure_run takes precedence for FAIL expectations
-  if [[ $failure_run -eq 1 ]]; then
+  # Verdict is DERIVED from the tool's own recorded verdict PLUS a positive success signal.
+  # It never defaults to PASS: a run with no positive confirmation is UNKNOWN (which fails a PASS
+  # expectation). This closes the false-green where a no-op checker scored PASS on rc==0 alone.
+  summary_verdict="$(grep -oE '"verdict": *"(PASS|FAIL)"' "$outd/check-summary.json" 2>/dev/null | grep -oE 'PASS|FAIL' | head -1 || echo "")"
+  if [[ $failure_run -eq 1 || "$summary_verdict" == "FAIL" ]]; then
     verdict="FAIL"
-  elif grep -q "check passed (no policy violations)" "$outd/run.log" 2>/dev/null; then
+  elif [[ "$summary_verdict" == "PASS" ]] && grep -q "check passed (no policy violations)" "$outd/run.log" 2>/dev/null; then
     verdict="PASS"
   else
-    verdict="PASS"
+    verdict="UNKNOWN"
   fi
 
   needle_ok=1
