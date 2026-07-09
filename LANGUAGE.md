@@ -52,6 +52,17 @@ Underscores in numbers are separators. `\n \t \r \0 \\ \" \'`, `\xNN`, and `\u{.
 supported in strings and char literals. Numeric-looking strings stay strings: `"007"` prints
 `007`, and `len("3")` is `1`.
 
+**String interpolation.** Inside a string, `${expr}` splices the value of any expression (rendered
+by its display form). The braces may contain arithmetic, calls, field access, indexing, nested
+strings, and `if`-expressions:
+
+```
+let who = "Ada";
+print("Hello, ${who}! 2+3 = ${2 + 3}, grade ${if s >= 90 { "A" } else { "B" }}");
+```
+
+A `$` not followed by `{` is a literal dollar sign (`"$5"` prints `$5`).
+
 ## Variables and mutation
 
 All bindings are reassignable (`mut` is accepted but never required):

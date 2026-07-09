@@ -756,6 +756,64 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                             continue;
                         }
                     }
+                    // Interpolation `${ ... }`: consume it verbatim (balancing braces and skipping
+                    // over nested string literals) so an inner `"` or `}` does not end the outer
+                    // string. The raw fragment is re-parsed later by `interp_string`.
+                    if nc == '$' {
+                        if let Some(&(_, '{')) = chars.peek() {
+                            chars.next();
+                            s.push('$');
+                            s.push('{');
+                            let mut depth = 1usize;
+                            // `in_str` tracks whether we're inside a nested string literal, so a
+                            // `{`/`}` there is not counted for brace-balancing. Escaped quotes
+                            // `\"` (how quotes are written inside the outer string) are unescaped
+                            // to real `"` and toggle string state; other escapes are unescaped too.
+                            let mut in_str = false;
+                            while depth > 0 {
+                                match chars.next() {
+                                    Some((i2, '\\')) => {
+                                        end = i2 + 1;
+                                        if let Some(&(ei, ec)) = chars.peek() {
+                                            chars.next();
+                                            end = ei + ec.len_utf8();
+                                            if ec == '"' {
+                                                s.push('"');
+                                                in_str = !in_str;
+                                            } else {
+                                                lex_escape(ec, &mut s, &mut chars, &mut end);
+                                            }
+                                        }
+                                    }
+                                    Some((i2, '"')) => {
+                                        end = i2 + 1;
+                                        in_str = !in_str;
+                                        s.push('"');
+                                    }
+                                    Some((i2, '{')) => {
+                                        end = i2 + 1;
+                                        if !in_str {
+                                            depth += 1;
+                                        }
+                                        s.push('{');
+                                    }
+                                    Some((i2, '}')) => {
+                                        end = i2 + 1;
+                                        if !in_str {
+                                            depth -= 1;
+                                        }
+                                        s.push('}');
+                                    }
+                                    Some((i2, c2)) => {
+                                        end = i2 + c2.len_utf8();
+                                        s.push(c2);
+                                    }
+                                    None => break,
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     s.push(nc);
                 }
                 tokens.push(SpannedToken {
@@ -2186,6 +2244,93 @@ impl Parser {
 
     /// Parse a lambda literal: `|p1, p2| body` or `|| body`. `body` is a single expression, which
     /// may be a block `{ ... }`.
+    /// Desugar string interpolation: `"a ${expr} b"` → `"" + "a " + (expr) + " b"`. The `+`
+    /// operator coerces each interpolated value to its display form. A literal `${` is not
+    /// currently escapable, and string literals may not appear inside `${...}` (the lexer ends
+    /// the outer string at the first inner quote).
+    fn interp_string(&mut self, s: String) -> Expr {
+        if !s.contains("${") {
+            return Expr::StrLiteral(s);
+        }
+        let chars: Vec<char> = s.chars().collect();
+        // Seed with "" so the whole concatenation is string-typed even if it starts with a value.
+        let mut parts: Vec<Expr> = vec![Expr::StrLiteral(String::new())];
+        let mut lit = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '{' {
+                if !lit.is_empty() {
+                    parts.push(Expr::StrLiteral(std::mem::take(&mut lit)));
+                }
+                i += 2;
+                let mut depth = 1usize;
+                let mut expr_src = String::new();
+                while i < chars.len() && depth > 0 {
+                    match chars[i] {
+                        '{' => {
+                            depth += 1;
+                            expr_src.push('{');
+                        }
+                        '}' => {
+                            depth -= 1;
+                            if depth > 0 {
+                                expr_src.push('}');
+                            }
+                        }
+                        '"' => {
+                            // Copy a nested string literal verbatim so a `}` inside it doesn't
+                            // close the interpolation.
+                            expr_src.push('"');
+                            i += 1;
+                            while i < chars.len() {
+                                let c = chars[i];
+                                expr_src.push(c);
+                                i += 1;
+                                if c == '\\' {
+                                    if i < chars.len() {
+                                        expr_src.push(chars[i]);
+                                        i += 1;
+                                    }
+                                    continue;
+                                }
+                                if c == '"' {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        c => expr_src.push(c),
+                    }
+                    i += 1;
+                }
+                parts.push(self.parse_embedded_expr(&expr_src));
+            } else {
+                lit.push(chars[i]);
+                i += 1;
+            }
+        }
+        if !lit.is_empty() {
+            parts.push(Expr::StrLiteral(lit));
+        }
+        let mut acc = parts.remove(0);
+        for p in parts {
+            acc = Expr::Binary {
+                op: "+".into(),
+                lhs: Box::new(acc),
+                rhs: Box::new(p),
+            };
+        }
+        acc
+    }
+
+    /// Parse a standalone expression from an interpolation fragment, forwarding any diagnostics.
+    fn parse_embedded_expr(&mut self, src: &str) -> Expr {
+        let mut sub = Parser::new(lex_spanned(src));
+        let e = sub.parse_expr(0);
+        self.diagnostics.extend(sub.diagnostics);
+        e
+    }
+
     fn parse_lambda(&mut self) -> Expr {
         let mut params = Vec::new();
         if self.check_token(&Token::PipePipe) {
@@ -2254,7 +2399,7 @@ impl Parser {
         };
         let primary = match tok.token {
             Token::Number(n) => Expr::Literal(n),
-            Token::StringLit(s) => Expr::StrLiteral(s),
+            Token::StringLit(s) => self.interp_string(s),
             Token::Ident(name) => {
                 // Built-in Option/Result constructors: Some(x), None, Ok(x), Err(x) — no decl needed.
                 if let Some(en) = builtin_variant_enum(&name) {

@@ -1,0 +1,33 @@
+// EXPECT: Hello, Ada!|2 + 3 = 5|point (3, 4), dist^2 = 25|grade: B|items: [1, 2, 3] (3)|price: $9
+// String interpolation: ${expr} splices any expression's value into a string.
+
+struct Point { x: int, y: int }
+fn mk(a, b) { Point { x: a, y: b } }
+
+fn grade(score) {
+    if score >= 90 { "A" } else if score >= 80 { "B" } else { "C" }
+}
+
+fn main() {
+    let who = "Ada";
+    print("Hello, ${who}!");
+
+    // arithmetic and precedence inside the braces
+    print("2 + 3 = ${2 + 3}");
+
+    // field access and function calls
+    let p = mk(3, 4);
+    print("point (${p.x}, ${p.y}), dist^2 = ${p.x * p.x + p.y * p.y}");
+
+    // nested strings and if-expressions are fine inside ${...}
+    print("grade: ${grade(85)}");
+
+    // collections interpolate via their display form
+    let xs = [1, 2, 3];
+    print("items: ${xs} (${len(xs)})");
+
+    // a `$` not followed by `{` is a literal dollar sign; here `$$` gives `$` then `${...}`
+    print("price: $${mul(3, 3)}");
+}
+
+fn mul(a, b) { a * b }

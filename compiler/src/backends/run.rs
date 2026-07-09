@@ -3044,6 +3044,38 @@ mod run_tests {
     }
 
     #[test]
+    fn string_interpolation_basic() {
+        let src = "fn main() { let name = \"Anubis\"; let age = 3; \
+                   print(\"hi ${name}, age ${age}\"); print(\"sum=${2 + 3 * 4}\"); \
+                   print(\"${name}!\"); print(\"no interp\"); }";
+        assert_eq!(run(src), "hi Anubis, age 3\nsum=14\nAnubis!\nno interp");
+    }
+
+    #[test]
+    fn string_interpolation_nested_and_calls() {
+        // Nested strings, calls, field access, and list display inside ${...}.
+        let src = "fn dbl(n) { n * 2 } struct P { x: int, y: int } fn mk(a, b) { P { x: a, y: b } } \
+                   fn main() { let p = mk(3, 4); let xs = [1, 2]; \
+                     print(\"pt (${p.x}, ${p.y}) d=${dbl(p.x)}\"); \
+                     print(\"xs=${xs} pick=${if p.x > 2 { \"big\" } else { \"small\" }}\"); }";
+        assert_eq!(run(src), "pt (3, 4) d=6\nxs=[1, 2] pick=big");
+    }
+
+    #[test]
+    fn dollar_without_brace_is_literal() {
+        let src = "fn main() { print(\"cost is $5 total\"); }";
+        assert_eq!(run(src), "cost is $5 total");
+    }
+
+    #[test]
+    fn interpolation_with_escaped_quotes() {
+        // Quotes inside ${...} are written escaped (they're inside the outer string); they must
+        // be unescaped, and a `}` inside such a nested string must not close the interpolation.
+        let src = r#"fn main() { print("call ${upper(\"hi\")}"); print("brace ${\"a}b\"}"); }"#;
+        assert_eq!(run(src), "call HI\nbrace a}b");
+    }
+
+    #[test]
     fn let_binds_a_parameter() {
         // Regression: `let s = param` must not report the parameter as unknown.
         let src = "fn f(xs) { let s = xs; s[0] + 1 } fn main() { print(f([41, 9])); }";
