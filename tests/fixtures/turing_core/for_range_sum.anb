@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// FEATURE: collections (for-range loop + accumulator)
+fn main() {
+    let total = 0;
+    for i in 1..101 {
+        total = total + i;
+    }
+    print(total);
+}

@@ -45,9 +45,11 @@
 6. Control flow
    - `if cond { ... } else { ... }`, including `else if` chains — REAL.
    - `while cond { ... }`, `loop { ... }`, `break`, `continue` — REAL and executed by `anubis run`.
+   - `for v in start..end { ... }` (range loop) — REAL and executed.
    - `return expr;` — REAL (functions return values; drives recursion).
-   - Assignment `x = expr;` (mutation of an existing binding) — REAL.
-   - `for`: PLANNED (write as `while`; range/iterator `for` not yet in the grammar).
+   - Assignment `x = expr;` and indexed assignment `a[i] = expr;` — REAL.
+   - Note: `if`/`while`/`for` header expressions do not parse a trailing `{` as a struct literal
+     (Rust-style rule), so `while running {` and `for i in 0..n {` are unambiguous.
    - The language is Turing-complete at runtime: loops + mutation + recursion execute.
      See [TURING_COMPLETENESS.md](TURING_COMPLETENESS.md).
 
@@ -55,6 +57,13 @@
    - `struct Point { x: u32, y: u32 }`
    - `let p = Point { x: 1, y: 2 };`
    - `p.x`
+
+7b. Arrays / lists (REAL, executed by `anubis run`)
+   - Literal: `let a = [1, 2, 3];`
+   - Index read: `a[i]`; index write: `a[i] = v;`
+   - Builtins: `len(a)` (list or string length), `push(a, v)` (grow a list)
+   - Values are dynamically typed (Int / Bool / Str / List); lists may hold any mix and grow.
+   - Enables real algorithms: sorting, dynamic programming, string scanning.
 
 8. Enums / tagged unions: PLANNED (documented; not required for this slice's 25 fixtures).
 

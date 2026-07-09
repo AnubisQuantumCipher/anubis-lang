@@ -1,7 +1,10 @@
 {
   "binary": "target/release/anubis",
   "fixtures": [
+    {"name": "array_dp", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "bubble_sort", "status": "PASS", "detail": "stdout matches expected"},
     {"name": "collatz", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "for_range_sum", "status": "PASS", "detail": "stdout matches expected"},
     {"name": "loop_break", "status": "PASS", "detail": "stdout matches expected"},
     {"name": "mutual_recursion", "status": "PASS", "detail": "stdout matches expected"},
     {"name": "nested_loops", "status": "PASS", "detail": "stdout matches expected"},
@@ -10,6 +13,6 @@
     {"name": "turing_machine", "status": "PASS", "detail": "stdout matches expected"},
     {"name": "while_counter", "status": "PASS", "detail": "stdout matches expected"}
   ],
-  "total": 8, "passed": 8, "failed": 0,
+  "total": 11, "passed": 11, "failed": 0,
   "overall_verdict": "PASS"
 }

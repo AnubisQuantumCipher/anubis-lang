@@ -17,6 +17,7 @@ pub enum Token {
     Semi,
     Comma,
     Dot,
+    DotDot,
     Star,
     Slash,
     Percent,
@@ -145,6 +146,12 @@ pub enum Stmt {
     Loop {
         body: Vec<Stmt>,
     },
+    For {
+        var: String,
+        start: Expr,
+        end: Expr,
+        body: Vec<Stmt>,
+    },
     Break,
     Continue,
     ResearchBlock {
@@ -182,6 +189,13 @@ pub enum Expr {
     Unary {
         op: String,
         expr: Box<Expr>,
+    },
+    ArrayLiteral {
+        elements: Vec<Expr>,
+    },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     Cast {
         expr: Box<Expr>,
@@ -359,13 +373,26 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     end: start + 1,
                 },
             }),
-            '.' => tokens.push(SpannedToken {
-                token: Token::Dot,
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
+            '.' => {
+                if let Some(&(idx, '.')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken {
+                        token: Token::DotDot,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
+                } else {
+                    tokens.push(SpannedToken {
+                        token: Token::Dot,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
+                }
+            }
             '*' => tokens.push(SpannedToken {
                 token: Token::Star,
                 span: Span {
@@ -486,10 +513,14 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             c if c.is_ascii_digit() => {
                 let mut num = c.to_string();
                 let mut end = start + c.len_utf8();
+                // Integer literals only (digits + `_` separators). `.` is never part of a number,
+                // so range syntax `a..b` lexes cleanly as Number DotDot Number.
                 while let Some(&(idx, nc)) = chars.peek() {
-                    if nc.is_ascii_digit() || nc == '.' {
+                    if nc.is_ascii_digit() || nc == '_' {
                         chars.next();
-                        num.push(nc);
+                        if nc != '_' {
+                            num.push(nc);
+                        }
                         end = idx + nc.len_utf8();
                     } else {
                         break;
@@ -517,9 +548,8 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
                     | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
-                    | "return" | "as" | "while" | "loop" | "break" | "continue" | "mut" => {
-                        Token::Keyword(id)
-                    }
+                    | "return" | "as" | "while" | "loop" | "break" | "continue" | "mut" | "for"
+                    | "in" => Token::Keyword(id),
                     _ => Token::Ident(id),
                 };
                 tokens.push(SpannedToken {
@@ -551,6 +581,10 @@ struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
     diagnostics: Vec<ParseDiagnostic>,
+    /// When true, a bare `Name {` is NOT a struct literal — the `{` starts a block.
+    /// Set while parsing `if`/`while`/`for` header expressions to resolve the classic
+    /// `for i in 0..n {` ambiguity (Rust does the same). Reset inside `()`/`[]`/call args.
+    no_struct: bool,
 }
 
 impl Parser {
@@ -559,7 +593,27 @@ impl Parser {
             tokens,
             pos: 0,
             diagnostics: vec![],
+            no_struct: false,
         }
+    }
+
+    /// Parse an expression in header position (loop/if condition, for-range bound), where a
+    /// trailing `{` must be read as a block, not a struct literal.
+    fn parse_header_expr(&mut self) -> Expr {
+        let prev = self.no_struct;
+        self.no_struct = true;
+        let e = self.parse_expr(0);
+        self.no_struct = prev;
+        e
+    }
+
+    /// Run a parse closure with struct literals re-enabled (inside a delimited `()`/`[]`/args).
+    fn with_struct_allowed<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let prev = self.no_struct;
+        self.no_struct = false;
+        let r = f(self);
+        self.no_struct = prev;
+        r
     }
 
     fn parse_output(mut self) -> ParseOutput {
@@ -894,7 +948,7 @@ impl Parser {
         }
         if self.check_keyword("while") {
             self.bump();
-            let cond = self.parse_expr(0);
+            let cond = self.parse_header_expr();
             let body = if self.check_token(&Token::LBrace) {
                 self.parse_block()
             } else {
@@ -912,6 +966,26 @@ impl Parser {
                 vec![]
             };
             return Some(Stmt::Loop { body });
+        }
+        if self.check_keyword("for") {
+            self.bump();
+            let (var, _) = self.expect_ident("expected loop variable after `for`")?;
+            let _ = self.expect_keyword("in");
+            let start = self.parse_header_expr();
+            let _ = self.expect_token(Token::DotDot, "expected `..` in for-range");
+            let end = self.parse_header_expr();
+            let body = if self.check_token(&Token::LBrace) {
+                self.parse_block()
+            } else {
+                self.diagnostic("expected `{` after for-range", self.current_span());
+                vec![]
+            };
+            return Some(Stmt::For {
+                var,
+                start,
+                end,
+                body,
+            });
         }
         if self.check_keyword("break") {
             self.bump();
@@ -1028,7 +1102,7 @@ impl Parser {
 
     fn parse_if_stmt(&mut self) -> Option<Stmt> {
         let _ = self.expect_keyword("if");
-        let cond = self.parse_expr(0);
+        let cond = self.parse_header_expr();
         let then = if self.check_token(&Token::LBrace) {
             self.parse_block()
         } else {
@@ -1171,7 +1245,7 @@ impl Parser {
         let Some(tok) = self.bump() else {
             return Expr::Other("eof".into());
         };
-        match tok.token {
+        let primary = match tok.token {
             Token::Number(n) | Token::StringLit(n) => Expr::Literal(n),
             Token::Ident(name) => {
                 if self.check_token(&Token::LParen) {
@@ -1192,7 +1266,7 @@ impl Parser {
                         }
                     }
                     e
-                } else if self.check_token(&Token::LBrace) {
+                } else if !self.no_struct && self.check_token(&Token::LBrace) {
                     // struct literal: Name { f: e, ... }
                     self.bump();
                     let mut fields = vec![];
@@ -1200,8 +1274,11 @@ impl Parser {
                         if let Some((fname, _)) = self.expect_ident("expected field in struct lit")
                         {
                             let _ = self.expect_token(Token::Colon, "expected : in struct lit");
-                            let val = self.parse_expr(0);
+                            let val = self.with_struct_allowed(|p| p.parse_expr(0));
                             fields.push((fname, Box::new(val)));
+                        } else {
+                            // Do not spin on an unexpected token; advance to make progress.
+                            self.bump();
                         }
                         if self.check_token(&Token::Comma) {
                             self.bump();
@@ -1323,19 +1400,44 @@ impl Parser {
                 Expr::UnifiedBuffer { ty }
             }
             Token::LParen => {
-                let expr = self.parse_expr(0);
+                let expr = self.with_struct_allowed(|p| p.parse_expr(0));
                 let _ = self.expect_token(Token::RParen, "expected `)` after expression");
                 expr
             }
+            Token::LBracket => {
+                let mut elements = vec![];
+                while !self.at_eof() && !self.check_token(&Token::RBracket) {
+                    elements.push(self.with_struct_allowed(|p| p.parse_expr(0)));
+                    if self.check_token(&Token::Comma) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                let _ = self.expect_token(Token::RBracket, "expected `]` after array literal");
+                Expr::ArrayLiteral { elements }
+            }
             other => Expr::Other(format!("{:?}", other)),
+        };
+        // Postfix indexing: base[index], possibly chained (a[i][j]).
+        let mut e = primary;
+        while self.check_token(&Token::LBracket) {
+            self.bump();
+            let index = self.with_struct_allowed(|p| p.parse_expr(0));
+            let _ = self.expect_token(Token::RBracket, "expected `]` after index");
+            e = Expr::Index {
+                base: Box::new(e),
+                index: Box::new(index),
+            };
         }
+        e
     }
 
     fn parse_call_args(&mut self) -> Vec<Expr> {
         let mut args = vec![];
         let _ = self.expect_token(Token::LParen, "expected `(` for call");
         while !self.at_eof() && !self.check_token(&Token::RParen) {
-            args.push(self.parse_expr(0));
+            args.push(self.with_struct_allowed(|p| p.parse_expr(0)));
             if self.check_token(&Token::Comma) {
                 self.bump();
             } else {
@@ -1392,6 +1494,7 @@ impl Parser {
             | Token::Number(_)
             | Token::StringLit(_)
             | Token::LParen
+            | Token::LBracket
             | Token::Minus
             | Token::Bang => true,
             Token::Keyword(k) => k == "declassify" || k == "true" || k == "false" || k == "unified",

@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// FEATURE: collections (growable array via push, dynamic programming)
+fn main() {
+    let f = [0, 1];
+    for i in 2..15 {
+        push(f, f[i - 1] + f[i - 2]);
+    }
+    print(f[14]);
+    print(len(f));
+}

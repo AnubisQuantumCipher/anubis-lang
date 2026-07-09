@@ -4,17 +4,20 @@
 
 ## NOW REAL (previously planned — implemented 2026-07-09, see TURING_COMPLETENESS.md)
 
-- `while` loops, `loop`, `break`, `continue` — REAL and executed by `anubis run`.
-- Assignment / mutation (`x = expr;`) — REAL.
+- `while` loops, `loop`, `break`, `continue`, and `for v in a..b` range loops — REAL and executed.
+- Assignment / mutation (`x = expr;`) and indexed assignment (`a[i] = expr;`) — REAL.
 - General recursion and mutual recursion (real call stack) — REAL.
+- Arrays / lists: literals `[..]`, indexing `a[i]`, `len(a)`, `push(a, v)`, growable — REAL.
 - Operators `/ % != && || !` and unary `-`/`!`, and `else if` chains — REAL.
+- Integer digit separators (`1_000_000`) — REAL.
 - **The executable language is Turing-complete** (loops + mutation + recursion), with a
   runnable Turing-machine witness. Evidence: `bash scripts/run_turing_core_fixtures.sh`.
 
 ## Explicitly PLANNED (not real yet)
 
 - Enums and tagged unions (`enum Color { Red, Blue(u32) }`)
-- `for` loops (range / iterator form; use `while` today)
+- Iterator-style `for x in collection` (only numeric `for i in a..b` ranges exist today)
+- Maps / dictionaries, and array/list slicing
 - `Result<T,E>` / `Option` / error handling in the language surface (beyond assert/assume)
 - Block comments `/* ... */`
 - Full string type + operations beyond label literals (len, concat, etc. may be PARTIAL)

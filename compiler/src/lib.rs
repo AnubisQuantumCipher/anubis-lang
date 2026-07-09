@@ -164,6 +164,67 @@ mod tests {
     }
 
     #[test]
+    fn parses_arrays_indexing_and_for_range() {
+        let src = "fn main() { let a = [1, 2, 3]; let x = a[0]; for i in 0..len(a) { a[i] = a[i] + 1; } }";
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("expected fn");
+        };
+        let frontend::Stmt::Let { init, .. } = &body[0] else {
+            panic!("expected array let");
+        };
+        assert!(
+            matches!(init, frontend::Expr::ArrayLiteral { elements } if elements.len() == 3),
+            "expected 3-element array literal, got {:?}",
+            init
+        );
+        let frontend::Stmt::Let { init: idx, .. } = &body[1] else {
+            panic!("expected index let");
+        };
+        assert!(
+            matches!(idx, frontend::Expr::Index { .. }),
+            "expected index expression, got {:?}",
+            idx
+        );
+        assert!(
+            matches!(&body[2], frontend::Stmt::For { var, .. } if var == "i"),
+            "expected for-loop, got {:?}",
+            body[2]
+        );
+    }
+
+    #[test]
+    fn header_position_is_not_a_struct_literal() {
+        // `while running { .. }` and `for i in 0..n { .. }` must NOT parse `running`/`n` as a
+        // struct literal; the `{` starts the loop body. Regression for a parser hang.
+        let src = "fn main() { let running = true; let n = 3; while running { running = false; } for i in 0..n { let z = i; } }";
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected diagnostics (struct-literal-in-header ambiguity?): {:?}",
+            parsed.diagnostics
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("expected fn");
+        };
+        assert!(
+            matches!(&body[2], frontend::Stmt::While { .. }),
+            "expected while loop, got {:?}",
+            body[2]
+        );
+        assert!(
+            matches!(&body[3], frontend::Stmt::For { .. }),
+            "expected for loop, got {:?}",
+            body[3]
+        );
+    }
+
+    #[test]
     fn parser_records_spans_params_and_precedence() {
         let src = "fn add(x: u32, y: u32) { let z = x + y * 3; }";
         let parsed = frontend::parse_source_detailed(src);

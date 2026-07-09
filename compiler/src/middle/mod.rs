@@ -521,6 +521,24 @@ fn analyze_stmts(
                 effects.push("loop".into());
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
             }
+            Stmt::For {
+                var, body, start, ..
+            } => {
+                effects.push("loop".into());
+                // The loop variable is a fresh in-scope binding for the body's analysis.
+                let info = BindingInfo {
+                    name: var.clone(),
+                    ty: Some("u32".into()),
+                    mode: mode_name(mode).into(),
+                    tainted: expr_taint_source(start, scope).is_some(),
+                    taint_source: expr_taint_source(start, scope),
+                    declassified: false,
+                    span: None,
+                };
+                scope.insert(var.clone(), ScopeBinding { info: info.clone() });
+                ctx.known_bindings.insert(var.clone());
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+            }
             Stmt::Break | Stmt::Continue => {}
             Stmt::SpecBlock { .. } => effects.push("spec".into()),
         }

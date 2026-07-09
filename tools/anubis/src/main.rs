@@ -2257,6 +2257,7 @@ enum AnubisValue {{
     Int(i64),
     Bool(bool),
     Str(String),
+    List(Vec<AnubisValue>),
 }}
 
 impl AnubisValue {{
@@ -2265,6 +2266,7 @@ impl AnubisValue {{
             AnubisValue::Int(v) => *v,
             AnubisValue::Bool(v) => i64::from(*v),
             AnubisValue::Str(v) => v.parse::<i64>().unwrap_or(0),
+            AnubisValue::List(v) => v.len() as i64,
         }}
     }}
 
@@ -2273,6 +2275,7 @@ impl AnubisValue {{
             AnubisValue::Bool(v) => *v,
             AnubisValue::Int(v) => *v != 0,
             AnubisValue::Str(v) => !v.is_empty(),
+            AnubisValue::List(v) => !v.is_empty(),
         }}
     }}
 
@@ -2281,6 +2284,56 @@ impl AnubisValue {{
             AnubisValue::Int(v) => v.to_string(),
             AnubisValue::Bool(v) => v.to_string(),
             AnubisValue::Str(v) => v.clone(),
+            AnubisValue::List(v) => {{
+                let parts: Vec<String> = v.iter().map(|x| x.display_string()).collect();
+                format!("[{{}}]", parts.join(", "))
+            }}
+        }}
+    }}
+
+    fn index_get(&self, i: AnubisValue) -> AnubisValue {{
+        match self {{
+            AnubisValue::List(v) => {{
+                let idx = i.as_i64();
+                if idx >= 0 && (idx as usize) < v.len() {{
+                    v[idx as usize].clone()
+                }} else {{
+                    AnubisValue::Int(0)
+                }}
+            }}
+            AnubisValue::Str(s) => {{
+                let idx = i.as_i64();
+                let chars: Vec<char> = s.chars().collect();
+                if idx >= 0 && (idx as usize) < chars.len() {{
+                    AnubisValue::Str(chars[idx as usize].to_string())
+                }} else {{
+                    AnubisValue::Str(String::new())
+                }}
+            }}
+            _ => AnubisValue::Int(0),
+        }}
+    }}
+
+    fn index_set(&mut self, i: AnubisValue, val: AnubisValue) {{
+        if let AnubisValue::List(v) = self {{
+            let idx = i.as_i64();
+            if idx >= 0 && (idx as usize) < v.len() {{
+                v[idx as usize] = val;
+            }}
+        }}
+    }}
+
+    fn push_val(&mut self, val: AnubisValue) {{
+        if let AnubisValue::List(v) = self {{
+            v.push(val);
+        }}
+    }}
+
+    fn len_val(&self) -> AnubisValue {{
+        match self {{
+            AnubisValue::List(v) => AnubisValue::Int(v.len() as i64),
+            AnubisValue::Str(s) => AnubisValue::Int(s.chars().count() as i64),
+            _ => AnubisValue::Int(0),
         }}
     }}
 }}
@@ -2359,10 +2412,40 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
                 ));
                 Ok(())
             }
+            Expr::Index { base, index } => {
+                if let Expr::Var(name) = &**base {
+                    out.push_str(&format!(
+                        "{pad}{}.index_set({}, {});\n",
+                        sanitize_ident(name)?,
+                        safe_run_expr(index)?,
+                        safe_run_expr(value)?
+                    ));
+                    Ok(())
+                } else {
+                    Err(unsupported_run(
+                        "indexed assignment base must be a variable in the run subset",
+                    ))
+                }
+            }
             _ => Err(unsupported_run(
-                "assignment target must be a variable in the run subset",
+                "assignment target must be a variable or index in the run subset",
             )),
         },
+        Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "push" => {
+            if args.len() == 2 {
+                if let Expr::Var(name) = &args[0] {
+                    out.push_str(&format!(
+                        "{pad}{}.push_val({});\n",
+                        sanitize_ident(name)?,
+                        safe_run_expr(&args[1])?
+                    ));
+                    return Ok(());
+                }
+            }
+            Err(unsupported_run(
+                "push(list, value) requires a variable list as its first argument",
+            ))
+        }
         Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "print" => {
             let arg = args
                 .first()
@@ -2418,6 +2501,36 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
             for stmt in body {
                 emit_safe_run_stmt(stmt, indent + 1, out)?;
             }
+            out.push_str(&format!("{pad}}}\n"));
+            Ok(())
+        }
+        Stmt::For {
+            var,
+            start,
+            end,
+            body,
+        } => {
+            // `for v in a..b { .. }` desugars to a counted while loop. The upper bound is
+            // evaluated once (like a real range) into a per-depth temporary.
+            let v = sanitize_ident(var)?;
+            let endtmp = format!("__anb_for_end_{}", indent);
+            out.push_str(&format!(
+                "{pad}let mut {} = {};\n",
+                v,
+                safe_run_expr(start)?
+            ));
+            out.push_str(&format!("{pad}let {} = {};\n", endtmp, safe_run_expr(end)?));
+            out.push_str(&format!(
+                "{pad}while anubis_cmp(\"<\", {}.clone(), {}.clone()).as_bool() {{\n",
+                v, endtmp
+            ));
+            for stmt in body {
+                emit_safe_run_stmt(stmt, indent + 1, out)?;
+            }
+            out.push_str(&format!(
+                "{pad}    {} = anubis_add({}.clone(), AnubisValue::Int(1));\n",
+                v, v
+            ));
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
         }
@@ -2507,6 +2620,13 @@ fn safe_run_expr(expr: &Expr) -> Result<String> {
             }
         }
         Expr::Call { callee, args } => {
+            // `len(x)` is a run builtin: length of a list or string.
+            if callee == "len" {
+                let a = args
+                    .first()
+                    .ok_or_else(|| unsupported_run("len requires one argument"))?;
+                return Ok(format!("({}).len_val()", safe_run_expr(a)?));
+            }
             if is_non_run_builtin(callee) {
                 return Err(unsupported_run(format!(
                     "builtin `{}` is a proof/analysis construct, not available in `run`",
@@ -2523,6 +2643,18 @@ fn safe_run_expr(expr: &Expr) -> Result<String> {
                 lowered.join(", ")
             ))
         }
+        Expr::ArrayLiteral { elements } => {
+            let mut lowered = Vec::new();
+            for el in elements {
+                lowered.push(safe_run_expr(el)?);
+            }
+            Ok(format!("AnubisValue::List(vec![{}])", lowered.join(", ")))
+        }
+        Expr::Index { base, index } => Ok(format!(
+            "({}).index_get({})",
+            safe_run_expr(base)?,
+            safe_run_expr(index)?
+        )),
         Expr::Cast { expr, .. } => safe_run_expr(expr),
         Expr::Tainted { .. }
         | Expr::Symbolic { .. }
