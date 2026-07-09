@@ -12,6 +12,8 @@
 - Integer digit separators (`1_000_000`) — REAL.
 - **The executable language is Turing-complete** (loops + mutation + recursion), with a
   runnable Turing-machine witness. Evidence: `bash scripts/run_turing_core_fixtures.sh`.
+- **Bounty-grade local PoC kit** — packing, `target_run`, process mutation fuzz, gold crash PoC.
+  Evidence: `bash scripts/run_poc_kit_gate.sh`. See `docs/language/POC_KIT.md`.
 
 ## Explicitly PLANNED (not real yet)
 

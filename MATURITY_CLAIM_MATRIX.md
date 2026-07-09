@@ -67,6 +67,51 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | `for v in a..b` range loops | REAL | `tests/fixtures/turing_core/for_range_sum.anb` (→5050) | `bash scripts/run_turing_core_fixtures.sh` | Desugars to counted while; bound evaluated once |
 | Struct-literal-in-header ambiguity resolved (parser hang fix) | REAL | `header_position_is_not_a_struct_literal` unit test; `while running {}` / `for i in 0..n {}` | `cargo test -p anubis-compiler header_position` | Rust-style `no_struct` flag; also fixed latent `if flag {}` bug |
 
+## Bounty-Grade PoC Kit (2026-07-09)
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| Packing builtins (`p8`/`p16`/`p32`/`p64`, `cyclic`, list concat) | REAL | `examples/security/poc_packing_smoke.anb` → `16/65/65` | `./target/release/anubis run examples/security/poc_packing_smoke.anb --allow-research` | Requires `--allow-research` |
+| Local process harness (`target_run`) | REAL | `examples/security/poc_local_overflow.anb` crashed=1 against `poc_kit/bin/vuln_local` | `bash poc_kit/build_vuln.sh` then `anubis run …/poc_local_overflow.anb --allow-research` | Local FS only; network URLs rejected |
+| Gold local crash PoC | REAL | `poc_kit/vuln_local.c` + PoC fixture | `bash scripts/run_poc_kit_gate.sh` | Intentional lab oracle (abort if len>64) |
+| Mutation process fuzz (real crashes) | REAL | `fuzz_report.json` engine=`mutation-process-v1`, unique_crashes≥1, distinct crash bins | `anubis fuzz --target poc_kit/bin/vuln_local --runs 50` | Mutator unit tests: multi-payload + len>64; not parse/typecheck |
+| Security fixture runner needle honesty | REAL | EXPECT FAIL + ERROR_CONTAINS requires needle in log; wrong failure ≠ green | `bash scripts/run_security_fixtures.sh` + `security_fixture_matches` unit tests | Fixed inverted-needle false-green |
+| Network targets forbidden | REAL | fuzz/target_run reject `://` | gate fixture `network_forbidden` | Fail-closed dual-use boundary |
+| PoC kit gate | REAL | `out/poc_kit/report.json` / gate script | `bash scripts/run_poc_kit_gate.sh --out out/poc_kit` | 4/4 packing + crash PoC + fuzz + network deny |
+| Full unscoped malware platform | **NOT CLAIMED** | docs/language/OFFENSIVE_PLATFORM.md | — | Engagement-scoped red-team platform only |
+
+## Offensive Platform AOP T1–T7 (2026-07-09)
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| Engagement scope fail-closed | REAL | engage-init/status | `anubis engage-init` | kill date + authorization |
+| aop-2 AES-GCM encrypted beacons | REAL | live whoami result protocol aop-2 | gate `t1_encrypted_c2` | PSK in engagement |
+| Agent keys + jitter | REAL | agent meta key_id + jitter_pct | `agent-generate` | sleep jitter in agent |
+| mTLS cert material | REAL | `certs/server.crt.pem` | engage-init | ready; HTTP default |
+| HTTP C2 + operator console | REAL | `GET /` HTML | gate `t7_console` | RBAC roles |
+| DNS + UDS transports | REAL | listen log multi-transport | gate t3_* | lab DNS/UDS |
+| LaunchAgent persistence | REAL | `persistence/*.plist` | `persist-launchagent` | install script included |
+| Inject plan-only | REAL | PLAN_ONLY JSON | `inject-plan` | no silent inject |
+| Lateral SSH scoped | REAL | external deny | `lateral-ssh` | allowed_lateral_hosts |
+| ROP pattern/gadgets/browser | REAL | pattern-offset found | pattern-*/gadget-*/browser-harness | lab browser localhost only |
+| XOR packer | REAL | packs/*.xor.pack | `pack-xor` | lab packer |
+| Exploit modules + PoC kit | REAL | exploit success | exploit-run | crash oracle |
+| Offensive gate | REAL | 16/16 | `bash scripts/run_offensive_platform_gate.sh` | T1–T7 |
+| Full rustls mTLS handshake / SMB lateral / live inject | PLANNED/PARTIAL | OFFENSIVE_PLATFORM.md | — | polish beyond lab REAL |
+
+## RISC0 parameterized proofs (2026-07-09)
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| Program-bound guest (input-free) | REAL | factorial journal 120, fib 55, distinct ImageIDs | `bash scripts/run_proof_binding_gate.sh` | commit 164488a |
+| `proof_input_u32` / guest `env::read` map | REAL | guest contains `anubis_load_proof_inputs` + lookup | prove `examples/proof/proof_factorial_input.anb` | ABI v1 |
+| CLI `--input-json` / `--input-file` | REAL | input_sha256 in metadata | prove with `--input-json '{"n":5}'` | exclusive flags |
+| Same program, different inputs → different journals | REAL | n=5→120, n=6→720 | out/proof_factorial_5 + _6 | same ImageID |
+| Same program → same ImageID | REAL | ImageIDs equal across n=5/n=6 | metadata compare | program-bound |
+| input_sha256 + parameterized metadata | REAL | risc0_metadata.json schema 1.3 | prove --evidence | canonical JSON hash |
+| Receipt verify for parameterized | REAL | verify_status=passed, !dev_mode | both n=5 and n=6 | Metal ref required |
+| Parameterized proof gate | REAL | scripts/run_parameterized_proof_gate.sh | `bash scripts/run_parameterized_proof_gate.sh` | opt-in ~1–2 min |
+
 ## RISC0 Proof Bound to the Program (2026-07-09)
 
 Retires the biggest honesty debt: `prove --backend risc0` previously proved a HARDCODED `x*6`
@@ -79,3 +124,33 @@ into the guest, so the ImageID (derived from that guest ELF) binds the receipt t
 | Receipt proves the program's real result (journal = computed value) | REAL | `proof_factorial` journal `120` = factorial(5); `proof_fib` journal `55` = fib(10); both `verify_status=passed`, `dev_mode=false`, `mock_prover=false` | `bash scripts/run_proof_binding_gate.sh` → `Overall: PASS` | journal decoded u32 LE; verified via `Receipt::verify(image_id)` |
 | Proof is program-bound (different program → different ImageID) | REAL | factorial ImageID `2358913413…` ≠ fib ImageID `4137336513…` | `bash scripts/run_proof_binding_gate.sh` (distinct-ImageID check) | ImageID = cryptographic commitment to the compiled program |
 | Real derived ImageID + real `Receipt::verify` + strict non-dev | REAL | `risc0_metadata.json` (real u32x8 ImageID, `image_id_is_placeholder=false`); `verify-receipt` re-extracts journal | `anubis verify-receipt --receipt … --image-id …` | bound to vendored patched `risc0-circuit-rv32im` at the reference path |
+
+## Gate 11 Metal CPU vs Metal-hybrid parity (2026-07-09 honesty re-seal)
+
+Retires same-dir / sealer-`|| true` / trivial-guest debt. Fixtures are program-derived (return `42` /
+`x*6`); CPU and Metal prove into **distinct** `*_cpu` / `*_metal` dirs; sealer requires
+`paths_distinct` and is fail-closed under `--require-metal`.
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| Distinct per-lane out dirs (no same-path compare) | REAL | sealer `parity.paths_distinct=true` on all 3 fixtures; script path check | `bash scripts/check_metal_parity.sh --require-metal --out out/a_plus_gate11_parity_continue` | A15: `implementer/a_plus_audit_run/20260709-095128/gate11_metal_parity` |
+| CPU lane observed = `cpu` | REAL | all fixtures `cpu.lane_observed=cpu` + `R0_DISABLE_METAL=1` | same | not inferred from host only |
+| Metal-hybrid lane observed = `metal-hybrid` | REAL (local Tier-2) | all fixtures `metal.lane_observed=metal-hybrid` | same | host aarch64/macos; CI Metal **NOT CLAIMED** |
+| Journals match (program commit = 42 LE) | REAL | all 6 `journal.bin` = `2a000000`; sha256 `e8a4b2ee…d7cc` | same | extracted journals, not hardcoded |
+| ImageID match per fixture (both lanes) | REAL | `image_id_match=true` per fixture | same | same guest ELF per program |
+| Different programs → different ImageIDs | REAL | hello ≠ arithmetic ≠ symbolic_safe ImageIDs | jq fixtures | program-bound guests post Gate 10 binding |
+| Both receipts verify | REAL | `receipt_verify=passed` both lanes | same | real `Receipt::verify` |
+| Sealer fail-closed + A15 no `\|\| true` | REAL | `seal_rc=0`, `overall_verdict=PASS`; `gate11_a15_reproduce.sh` exits nonzero on fail | `./target/release/anubis gate11-metal-parity … --require-metal` | sealer exit no longer ignored |
+| Overall Gate 11 under `--require-metal` | REAL (local Apple Silicon) | `overall_verdict=PASS` | full checker + sealer | third-party / hosted CI Metal still **NOT CLAIMED** |
+
+## Multi-field journals (2026-07-09)
+
+Public outputs beyond a single u32: `return [a, b, …]` commits each field via
+`anubis_commit_journal` (scalar path remains v1-compatible).
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| List return → multi-u32 journal | REAL | a=3,b=4 → journal `[7,12]` (8 bytes) | `bash scripts/run_multi_field_journal_gate.sh` | `proof_multi_field.anb` |
+| Different multi-field inputs → different journals, same ImageID | REAL | a,b=(3,4) vs (5,6) → `[7,12]` vs `[11,30]` | same gate | program-bound |
+| Scalar journal still 4-byte u32 | REAL | factorial n=5 → 120 | same gate regression | no break of parameterized path |
+| Private witness / redacted input split | NOT CLAIMED | inputs already not in journal (env::read only) | — | no selective redaction metadata yet |

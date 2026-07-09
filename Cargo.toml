@@ -5,12 +5,11 @@ members = [
     "tools/anubis",
 ]
 
-# For RISC0 receipt (Gate 10) on Apple Silicon: use the canonical
-# metal-hybrid-prover reference tree. The user wants proof/computation to point
-# at this backend implementation explicitly.
-# [patch.crates-io]
-# risc0-circuit-rv32im = { path = "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im" }
-# Temporarily commented to allow real cargo run for Gate 15 security fixtures (non-RISC0 security checks). Revert after.
+# For RISC0 receipt (Gate 10+) on Apple Silicon: use the canonical
+# metal-hybrid-prover reference tree. Proof and Metal computation must bind to
+# this vendored backend rather than crates.io's unpatched circuit crate.
+[patch.crates-io]
+risc0-circuit-rv32im = { path = "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im" }
 
 [workspace.package]
 version = "0.1.0"

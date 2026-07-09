@@ -1,5 +1,5 @@
+// Gate 11 parity: commit 7*6 = 42 from real Anubis lowering.
 fn main() {
     let x: u32 = 7;
-    let y: u32 = x * 6;
-    assert(y == 42);
+    return x * 6;
 }

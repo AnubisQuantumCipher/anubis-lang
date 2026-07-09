@@ -1,5 +1,7 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_FUZZ_CRASH
+// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+// @fuzz without authorization metadata must fail closed under `anubis check`.
+// (Process fuzz crashes are covered by `anubis fuzz --target` + poc_kit gate, not this check fixture.)
 
 @fuzz(target: "crash_demo", runs: 1, sandbox: true, effects: ["fuzz_exec", "crash_capture"])
 fn main(input: bytes) {

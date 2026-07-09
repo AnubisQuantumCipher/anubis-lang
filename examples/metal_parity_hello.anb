@@ -1,3 +1,5 @@
+// Gate 11 parity fixture: both CPU and Metal-hybrid lanes must prove THIS program
+// and commit the same journal (42). Guest is program-derived (not a fixed x*6 circuit).
 fn main() {
-    let x: u32 = 42;
+    return 42;
 }

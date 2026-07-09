@@ -13,6 +13,10 @@ See `MATURITY_CLAIM_MATRIX.md` for the live table.
 - Metal parity (local Apple Silicon + Tier-2): **REAL**
 - Language core (25 fixtures + repro): **REAL** (for the defined minimum surface)
 - Backend portability / `anubis doctor` / CLI / install: **REAL** (this tranche)
+- Runtime probe capability evidence: **REAL** (local, not proof truth)
+- Ordinary `anubis run` safe subset: **PARTIAL**
+- Runtime planning with embedded probe: **REAL PLAN-ONLY**
+- Runtime execution / plan-observed enforcement: **DEFERRED**
 - General-purpose language: **PARTIAL**
 - Third-party reproduction: **NOT CLAIMED**
 - Hosted CI Metal validation: **NOT CLAIMED**

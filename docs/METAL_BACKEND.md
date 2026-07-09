@@ -56,11 +56,31 @@ See docs/METAL_BACKEND_PIPELINE_MAP.md for the full contract, file locations, CI
 
 See docs/RISC0_METAL_HYBRID_REFERENCE.md for the pinned source repo and validation steps.
 
+## Honesty layout (2026-07-09)
+
+- Prove into **distinct** directories: `out/.../<fixture>_cpu` vs `out/.../<fixture>_metal`.
+- Sealer (`anubis gate11-metal-parity`) resolves sibling `*_cpu`/`*_metal` under one root;
+  requires `paths_distinct` and fails under `--require-metal` if overall ≠ PASS.
+- Fixtures (`examples/metal_parity_*.anb`) are **program-derived** guests that commit `42`
+  (not a leftover fixed `x*6` on 77). Different fixtures yield different ImageIDs.
+- `scripts/check_metal_parity.sh` does not ignore sealer exit; A15 reproduce does not `|| true`.
+
+Reproduce:
+
+```bash
+bash scripts/check_metal_parity.sh --require-metal --out out/a_plus_gate11_parity
+# or: bash scripts/gate11_a15_reproduce.sh
+jq '{overall_verdict, fixtures: [.fixtures[] | {name, verdict, paths: .parity.paths_distinct, cpu: .cpu.lane_observed, metal: .metal.lane_observed}]}' \
+  out/a_plus_gate11_parity/parity_report.json
+```
+
 ## Maturity Claim
 - CPU lane (R0 path): REAL
 - Metal-hybrid lane: REAL **only when observed** on Tier-2 Apple Silicon local run
 - Receipt verification (both): REAL only when both pass real verify
-- Output parity: REAL only when hashes match
+- Output parity: REAL only when hashes match + paths distinct
 - All other claims (speed, third-party, CI Metal): NOT CLAIMED
 
-This document + the A15 report + parity_report.json + tamper logs are the durable evidence for Gate 11.
+This document + the A15 report + parity_report.json are the durable evidence for Gate 11.
+Latest local re-seal: `implementer/a_plus_audit_run/20260709-095128/gate11_metal_parity`
+(`overall_verdict=PASS`, metal-hybrid observed on all three fixtures).

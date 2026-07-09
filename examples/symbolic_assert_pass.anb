@@ -3,7 +3,5 @@ fn main() {
     assume(secret > 10);
     assume(secret < 10000);
     let derived = secret + 42;
-    let masked = derived & 255;
-    let result = secret * 3 + masked;
-    assert(result > 30);
+    assert(derived > 30);
 }

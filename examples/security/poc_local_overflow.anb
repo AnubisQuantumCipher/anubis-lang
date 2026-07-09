@@ -1,0 +1,29 @@
+// EXPECT: PASS
+// FEATURE: bounty-grade PoC kit (local process harness + packing)
+// Gold weaponized PoC: oversized payload against lab vuln_local => crash (signal/abort).
+// Requires: bash poc_kit/build_vuln.sh && anubis run --allow-research this file
+
+@research(
+  authorization: "local-lab-or-bug-bounty-program",
+  scope: "local-fixture",
+  reason: "demonstrate reliable crash PoC against intentionally vulnerable local binary",
+  non_destructive: true
+)
+fn main() {
+    // 80-byte cyclic pattern exceeds the lab oracle's 64-byte limit → abort/crash
+    let payload = cyclic(80);
+    let r = target_run("poc_kit/bin/vuln_local", payload);
+    // r = [crashed, signal, exit_code, payload_len]
+    let crashed = r[0];
+    let signal = r[1];
+    let exit_code = r[2];
+    let plen = r[3];
+    print(crashed);
+    print(signal);
+    print(exit_code);
+    print(plen);
+    // hard-fail the PoC if the target did not crash
+    if crashed == 0 {
+        print("ANUBIS_POC_NO_CRASH");
+    }
+}

@@ -1,0 +1,8 @@
+// Multi-field public journal: commit [sum, product] as two u32s.
+// Prove with: anubis prove ... --input-json '{"a":3,"b":4}'
+//   → journal.bin = 07 00 00 00  0c 00 00 00  (7, 12 LE)
+fn main() {
+    let a = proof_input_u32("a");
+    let b = proof_input_u32("b");
+    return [a + b, a * b];
+}

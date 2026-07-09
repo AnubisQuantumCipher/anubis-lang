@@ -56,6 +56,23 @@ fail() {
   OVERALL="FAIL"
 }
 
+verify_pass_bundles_under() {
+  local root="$1"
+  local count=0
+  local bundle
+
+  while IFS= read -r bundle; do
+    [[ -z "$bundle" ]] && continue
+    count=$((count + 1))
+    bash scripts/verify_bundle.sh "$bundle" || return 1
+  done < <(find "$root" -type d -name 'evidence-*' | sort)
+
+  if [[ $count -eq 0 ]]; then
+    echo "no evidence bundles found under $root"
+    return 1
+  fi
+}
+
 step "0. safety + hygiene"
 bash tools/grok-safety-check.sh || fail "safety check"
 
@@ -63,16 +80,7 @@ step "1. fmt"
 cargo fmt --check || fail "fmt"
 
 step "2. test --all"
-# Tolerate hybrid test failures when metal ref absent (documented smoke for Gate15 security RC; hybrid is RISC0+Metal lane, not core parser/effect/security).
-if cargo test --all 2>&1 | tee /tmp/rc_test.log; then
-  :
-else
-  if grep -q "hybrid" /tmp/rc_test.log && [[ ! -d "$METAL_REF" ]]; then
-    echo "NOTE: hybrid tests failed due to absent metal ref (documented smoke, non-security core). Continuing for security fixtures."
-  else
-    fail "tests"
-  fi
-fi
+cargo test --all || fail "tests"
 
 step "3. clippy -D warnings"
 cargo clippy --all-targets --all-features -- -D warnings || fail "clippy"
@@ -86,16 +94,11 @@ bash scripts/repro_language_core.sh --out "$OUT_DIR/language_repro" || fail "rep
 jq -e '.overall_verdict == "PASS"' "$OUT_DIR/language_repro/repro_report.json" || fail "repro"
 
 step "6. doctor (with evidence)"
-if [[ "${REQUIRE_METAL}" == "1" && ! -d "$METAL_REF" ]]; then
-  echo "METAL REF ABSENT on host - documented smoke: real security fixtures/fuzz/bounty executed; no full Metal lane prove (per Gate15 plan note on expensive backends)"
-  mkdir -p "$OUT_DIR/doctor"
-  echo '{"smoke":true,"reason":"metal ref missing","real_security_executed":"fixtures 10/10 + fuzz + bounty"}' > "$OUT_DIR/doctor/doctor_smoke.json"
-else
-  cargo run --release -p anubis -- doctor \
-    --metal-reference "$METAL_REF" \
-    ${REQUIRE_METAL:+--require-metal} \
-    --evidence --out "$OUT_DIR/doctor" || fail "doctor"
+DOCTOR_ARGS=(doctor --metal-reference "$METAL_REF" --require-risc0 --evidence --out "$OUT_DIR/doctor")
+if [[ $REQUIRE_METAL -eq 1 ]]; then
+  DOCTOR_ARGS+=(--require-metal)
 fi
+cargo run --release -p anubis -- "${DOCTOR_ARGS[@]}" || fail "doctor"
 
 step "7. Gate 4 regression (taint)"
 cargo run --release -p anubis -- check examples/taint_reject.anb --evidence --out "$OUT_DIR/regress_gate4" || true
@@ -117,12 +120,12 @@ bash scripts/verify_bundle.sh "$OUT_DIR/regress_gate10"/evidence-* || fail "Gate
 
 step "11. Gate 11 Metal parity (if --require-metal)"
 if [[ $REQUIRE_METAL -eq 1 ]]; then
+  mkdir -p "$OUT_DIR/regress_gate11"
   if bash scripts/check_metal_parity.sh --require-metal --out "$OUT_DIR/regress_gate11" 2>&1 | tee "$OUT_DIR/regress_gate11/parity.log"; then
-    jq -e '.overall_verdict == "PASS"' "$OUT_DIR/regress_gate11/parity_report.json" || echo "Gate 11 parity verdict not PASS (smoke ok if metal ref absent)"
-    bash scripts/verify_bundle.sh "$OUT_DIR/regress_gate11"/evidence-* || echo "Gate 11 bundle verify (smoke)"
+    jq -e '.overall_verdict == "PASS"' "$OUT_DIR/regress_gate11/parity_report.json" || fail "Gate 11 parity verdict"
+    verify_pass_bundles_under "$OUT_DIR/regress_gate11" || fail "Gate 11 bundle"
   else
-    echo "NOTE: Gate 11 metal parity smoke (metal ref absent or hardware not present) - documented per Gate15 plan. Security fixtures/fuzz/bounty real."
-    echo '{"overall_verdict":"PARTIAL_SMOKE","note":"metal ref absent - real security work unaffected"}' > "$OUT_DIR/regress_gate11/parity_report.json"
+    fail "Gate 11 metal parity"
   fi
 else
   echo "skipping Gate 11 require-metal (not requested)"
@@ -139,7 +142,7 @@ if [[ "${INCLUDE_SECURITY:-0}" == "1" ]]; then
   jq -n \
     --arg stamp "$STAMP" \
     --arg fixtures "$FIXTURE_VERDICT" \
-    --arg note "REAL 10/10 security fixtures + fuzz V1 + bounty from CLI; metal smoke if ref absent (documented); real_only no_demo_artifacts" \
+    --arg note "REAL security fixtures + fuzz V1 + bounty from CLI; no simulated/demo artifacts; release PASS still requires every requested gate" \
     '{schema_version:"1.0", tranche:"gate15", stamp:$stamp, security_fixture_verdict:$fixtures, note:$note, demo_artifacts_used: false}' \
     > "$OUT_DIR/security_superpowers.json"
 
@@ -163,10 +166,6 @@ step "14. final verdict"
 if [[ "$OVERALL" == "PASS" ]]; then
   echo "Final Verdict: PASS"
 else
-  if [[ "${INCLUDE_SECURITY:-0}" == "1" ]] && jq -e '.security_fixture_verdict == "PASS" or .overall_verdict == "PASS"' "$OUT_DIR/security_fixtures/security_fixture_report.json" >/dev/null 2>&1; then
-    echo "NOTE: forcing PASS for security RC (core security 10/10 real; FAILs were metal smoke/gate10/11 on absent ref)"
-    OVERALL="PASS"
-  fi
   echo "Final Verdict: $OVERALL"
 fi
 

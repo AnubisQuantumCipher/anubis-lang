@@ -1,6 +1,10 @@
 //! anubis CLI - the main user-facing tool
 //! Supports: anubis --help, anubis build [--evidence|--bounty] <file>
 
+mod offensive;
+mod poc_kit;
+mod proof_input;
+
 use anubis_compiler::{
     backends::native::lower_to_native,
     evidence::{build_evidence_bundle, validate_bundle, EvidenceManifest},
@@ -260,6 +264,14 @@ enum Commands {
         #[arg(long)]
         metal_reference: Option<PathBuf>,
 
+        /// Parameterized proof inputs as JSON object, e.g. '{"n":5}'
+        #[arg(long)]
+        input_json: Option<String>,
+
+        /// Parameterized proof inputs from a JSON file
+        #[arg(long)]
+        input_file: Option<PathBuf>,
+
         /// Emit full tamper-evident evidence bundle with sidecars
         #[arg(long)]
         evidence: bool,
@@ -280,14 +292,27 @@ enum Commands {
         receipt: PathBuf,
         #[arg(long)]
         verify_log: PathBuf,
+        /// Path to canonical proof-input JSON written by parent (optional; empty map if absent)
+        #[arg(long)]
+        proof_input: Option<PathBuf>,
     },
 
-    // ==================== Gate 15 Security Superpowers (re-added for real A15) ====================
-    /// Fuzz a local harness (V1: sandboxed, evidence-producing, no network by default).
+    // ==================== Gate 15 / bounty-grade PoC kit ====================
+    /// Mutation-fuzz a **local** target binary (real process crashes). Optional harness.anb ignored for engine; use --target.
     Fuzz {
-        input: PathBuf,
+        /// Optional harness .anb (authorization metadata source); engine requires --target.
+        input: Option<PathBuf>,
+        /// Local filesystem path to the binary under test (required for real process fuzz).
+        #[arg(long)]
+        target: Option<PathBuf>,
         #[arg(long, default_value_t = 1000)]
         runs: u64,
+        /// Max mutated payload length.
+        #[arg(long, default_value_t = 256)]
+        max_len: usize,
+        /// PRNG seed for reproducibility.
+        #[arg(long, default_value_t = 0xA11B15)]
+        seed: u64,
         #[arg(long)]
         evidence: bool,
         #[arg(short, long, default_value = "out/fuzz")]
@@ -299,6 +324,161 @@ enum Commands {
         bundle: PathBuf,
         #[arg(short, long, default_value = "out/report")]
         out: PathBuf,
+    },
+
+    // ==================== Offensive Platform (engagement-scoped) ====================
+    /// Initialize a new authorized engagement workspace (scope + evidence dirs).
+    EngageInit {
+        /// Engagement workspace directory.
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        dir: PathBuf,
+        #[arg(long, default_value = "lab")]
+        name: String,
+        /// Authorization string (program name, ROE id, lab charter).
+        #[arg(long, default_value = "local-lab-charter")]
+        authorization: String,
+    },
+
+    /// Show engagement status / live scope.
+    EngageStatus {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        dir: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Start engagement-scoped C2 listener (HTTP/JSON protocol aop-1).
+    Listen {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        /// Run until killed (required for real C2 session).
+        #[arg(long, default_value_t = true)]
+        foreground: bool,
+    },
+
+    /// Generate an engagement-bound beacon agent binary.
+    AgentGenerate {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "agent0")]
+        name: String,
+        #[arg(long, default_value = "macos")]
+        os: String,
+        #[arg(long, default_value_t = 2000)]
+        sleep_ms: u64,
+    },
+
+    /// Queue a task for an agent (written to engagement task inbox).
+    TaskQueue {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "*")]
+        agent_id: String,
+        #[arg(long)]
+        module: String,
+        #[arg(long, default_value = "")]
+        args: String,
+    },
+
+    /// List offensive modules (agent + operator).
+    ModuleList {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Write an example exploit module JSON.
+    ExploitNew {
+        #[arg(short, long, default_value = "out/engagements/lab/modules/lab_overflow.json")]
+        out: PathBuf,
+        #[arg(long, default_value = "poc_kit/bin/vuln_local")]
+        target: String,
+    },
+
+    /// Run an exploit module against an in-scope target (operator-side).
+    ExploitRun {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        /// Path to exploit module JSON.
+        #[arg(long)]
+        module: PathBuf,
+        #[arg(short, long, default_value = "out/engagements/lab/loot/exploit")]
+        out: PathBuf,
+    },
+
+    /// Offensive platform doctor / capability summary.
+    OffensiveDoctor {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// T2: generate macOS LaunchAgent persistence artifact for an agent binary.
+    PersistLaunchagent {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        agent: PathBuf,
+        #[arg(long, default_value = "")]
+        label: String,
+    },
+
+    /// T2: process inject plan only (research-gated, not executed).
+    InjectPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        shellcode: PathBuf,
+    },
+
+    /// T4: lateral SSH to an in-scope lateral host.
+    LateralSsh {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        host: String,
+        #[arg(long, default_value = "")]
+        user: String,
+        #[arg(long, default_value = "hostname")]
+        cmd: String,
+    },
+
+    /// T5: create cyclic pattern of length N.
+    PatternCreate {
+        #[arg(long, default_value_t = 100)]
+        len: usize,
+    },
+
+    /// T5: find offset of needle in cyclic pattern.
+    PatternOffset {
+        #[arg(long, default_value_t = 200)]
+        len: usize,
+        #[arg(long)]
+        needle: String,
+    },
+
+    /// T5: search gadgets file for substring.
+    GadgetSearch {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, default_value = "ret")]
+        contains: String,
+    },
+
+    /// T5: write localhost browser harness HTML.
+    BrowserHarness {
+        #[arg(short, long, default_value = "out/engagements/lab/modules/browser")]
+        out: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:8000/")]
+        url: String,
+    },
+
+    /// T6: XOR-pack a file into engagement packs/.
+    PackXor {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
     },
 }
 
@@ -562,71 +742,88 @@ fn main() -> Result<()> {
         }
         Commands::Fuzz {
             input,
+            target,
             runs,
+            max_len,
+            seed,
             evidence,
             out,
         } => {
-            println!(
-                "anubis fuzz {} --runs {} (Gate 15 V1 real)",
-                input.display(),
-                runs
-            );
             std::fs::create_dir_all(&out)?;
-            let src = std::fs::read_to_string(&input).unwrap_or_default();
-            let is_crash_demo = input.to_string_lossy().contains("crash") || src.contains("crash");
-            let mut crashes = 0u64;
-            let mut crash_inputs = vec![];
-            for i in 0..runs {
-                let test_src = if is_crash_demo && i == runs / 2 {
-                    src.clone() + "\n// bad input trigger"
-                } else {
-                    src.clone()
-                };
-                let parsed = anubis_compiler::frontend::parse_source_detailed(&test_src);
-                let mut failed = !parsed.diagnostics.is_empty();
-                if !failed {
-                    let mode = if test_src.contains("@fuzz") || test_src.contains("@research") {
-                        anubis_compiler::frontend::Mode::Research
-                    } else {
-                        anubis_compiler::frontend::Mode::Safe
-                    };
-                    if let Err(e) = anubis_compiler::typecheck(parsed.ast, mode) {
-                        failed = e.contains("ANUBIS_")
-                            || e.contains("safe mode")
-                            || e.contains("forbidden");
-                    }
-                }
-                if failed {
-                    crashes += 1;
-                    crash_inputs.push(format!("input-{}", i));
-                    let _ =
-                        std::fs::write(out.join(format!("crash-{}.input", crashes - 1)), test_src);
+            let target = target.ok_or_else(|| {
+                anyhow!(
+                    "ANUBIS_FUZZ_TARGET_REQUIRED: pass --target <local-binary> for real process fuzz \
+(parse/typecheck-only fuzz was removed; it produced false crashes)"
+                )
+            })?;
+            println!(
+                "anubis fuzz --target {} --runs {} --max-len {} --seed {} (process-mutation v1)",
+                target.display(),
+                runs,
+                max_len,
+                seed
+            );
+            // Optional harness file: only used for authorization/metadata in evidence.
+            let harness_src = input
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_else(|| {
+                    "@fuzz(authorization: \"local-lab\", scope: \"local\", non_destructive: true)\n// process fuzz\n".into()
+                });
+            if let Some(ref harness_path) = input {
+                // If harness declares research/fuzz mode, enforce authorization via typecheck.
+                if harness_src.contains("@fuzz")
+                    || harness_src.contains("@research")
+                    || harness_src.contains("@poc")
+                {
+                    let ast = parse_source(&harness_src).map_err(|e| anyhow!("parse: {}", e))?;
+                    let mode = first_mode(&ast.items).unwrap_or(Mode::Research);
+                    typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
+                    let _ = harness_path;
                 }
             }
-            let fuzz_report = serde_json::json!({
-                "runs": runs,
-                "crashes": crashes,
-                "note": "V1 real CLI using parse+typecheck loop. sandbox: true, no network. r0-metal-doctor noted for metal.",
-                "crash_inputs": crash_inputs,
-                "security": {"mode": "fuzz", "sandbox": true, "declared_effects": ["fuzz_exec"], "observed_effects": if crashes > 0 { vec!["fuzz_exec", "crash"] } else { vec!["fuzz_exec"] } }
-            });
-            std::fs::write(
-                out.join("fuzz_report.json"),
-                serde_json::to_string_pretty(&fuzz_report)?,
-            )?;
+            let report = poc_kit::fuzz_local_target(&target, runs, max_len, seed, &out, &[])?;
             if evidence {
                 let logs = vec![
-                    format!("fuzz input: {}", input.display()),
-                    "sandbox: true".into(),
-                    "effects: [fuzz_exec]".into(),
-                    format!("crashes: {}", crashes),
+                    format!("target: {}", target.display()),
+                    format!("runs: {}", runs),
+                    format!("crashes: {}", report.crashes),
+                    format!("unique_crashes: {}", report.unique_crash_hashes.len()),
+                    "sandbox: local FS only, no network".into(),
+                    "engine: mutation-process-v1".into(),
                 ];
-                let sec = Some(
-                    serde_json::json!({"mode": "fuzz", "sandbox": true, "declared_effects": ["fuzz_exec"], "observed_effects": ["fuzz_exec"]}),
+                let observed = if report.crashes > 0 {
+                    vec![
+                        "fuzz_exec",
+                        "process_spawn_local",
+                        "crash",
+                    ]
+                } else {
+                    vec!["fuzz_exec", "process_spawn_local"]
+                };
+                let sec = Some(serde_json::json!({
+                    "mode": "fuzz",
+                    "sandbox": true,
+                    "network": false,
+                    "declared_effects": ["fuzz_exec", "process_spawn_local"],
+                    "observed_effects": observed,
+                    "unique_crashes": report.unique_crash_hashes.len(),
+                }));
+                let _ = build_evidence_bundle(
+                    &harness_src,
+                    "fuzz",
+                    None,
+                    logs,
+                    &out,
+                    Some("fuzz"),
+                    sec,
                 );
-                let _ = build_evidence_bundle(&src, "fuzz", None, logs, &out, Some("fuzz"), sec);
             }
-            println!("Wrote fuzz_report.json (crashes={})", crashes);
+            println!(
+                "Wrote fuzz_report.json (crashes={}, unique={})",
+                report.crashes,
+                report.unique_crash_hashes.len()
+            );
             Ok(())
         }
         Commands::BountyReport { bundle, out } => {
@@ -685,11 +882,218 @@ fn main() -> Result<()> {
             println!("Wrote real bounty report files to {}", out.display());
             Ok(())
         }
+        Commands::EngageInit {
+            dir,
+            name,
+            authorization,
+        } => {
+            let path = offensive::engage_init(&dir, &name, &authorization)?;
+            println!("engagement initialized: {}", path.display());
+            println!("  workspace: {}", dir.display());
+            Ok(())
+        }
+        Commands::EngageStatus { dir, json } => {
+            let status = offensive::engage_status(&dir)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!("engagement: {}", status["name"]);
+                println!("  id:            {}", status["engagement_id"]);
+                println!("  authorization: {}", status["authorization"]);
+                println!("  program:       {}", status["program"]);
+                println!("  c2_bind:       {}", status["c2_bind"]);
+                println!("  kill_date:     {}", status["kill_date"]);
+                println!("  network_egress:{}", status["network_egress"]);
+                println!("  hash:          {}", status["content_hash"]);
+            }
+            Ok(())
+        }
+        Commands::Listen { engage, foreground } => {
+            let eng = offensive::load_engagement(&engage)?;
+            offensive::listener::listener_start(&eng, &engage, foreground)
+        }
+        Commands::AgentGenerate {
+            engage,
+            name,
+            os,
+            sleep_ms,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let _bin = offensive::agent::agent_generate(offensive::agent::AgentGenerateOpts {
+                engage: &eng,
+                engage_dir: &engage,
+                os: &os,
+                sleep_ms,
+                name: &name,
+            })?;
+            Ok(())
+        }
+        Commands::TaskQueue {
+            engage,
+            agent_id,
+            module,
+            args,
+        } => {
+            let _eng = offensive::load_engagement(&engage)?;
+            let arg_list: Vec<String> = if args.trim().is_empty() {
+                vec![]
+            } else {
+                args.split(',').map(|s| s.trim().to_string()).collect()
+            };
+            let path =
+                offensive::listener::queue_task_file(&engage, &agent_id, &module, &arg_list)?;
+            println!("queued module=`{module}` agent=`{agent_id}` -> {}", path.display());
+            Ok(())
+        }
+        Commands::ModuleList { json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&offensive::modules::list_json())?
+                );
+            } else {
+                offensive::modules::print_catalog()?;
+            }
+            Ok(())
+        }
+        Commands::ExploitNew { out, target } => {
+            offensive::exploit::exploit_write_example(&out, &target)?;
+            println!("wrote exploit module: {}", out.display());
+            Ok(())
+        }
+        Commands::ExploitRun {
+            engage,
+            module,
+            out,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let report = offensive::exploit::exploit_run(&eng, &module, &out)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if report.get("success").and_then(|v| v.as_bool()) != Some(true) {
+                return Err(anyhow!("ANUBIS_EXPLOIT_FAILED: see {}", out.display()));
+            }
+            Ok(())
+        }
+        Commands::OffensiveDoctor { json } => {
+            let report = serde_json::json!({
+                "platform": "anubis-offensive",
+                "protocol": offensive::protocol::PROTOCOL_VERSION,
+                "surfaces": {
+                    "engagement_scope": "REAL",
+                    "http_c2_listener": "REAL",
+                    "encrypted_beacons_aop2": "REAL",
+                    "agent_keys_jitter": "REAL",
+                    "mtls_cert_material": "REAL",
+                    "operator_console": "REAL",
+                    "rbac_roles": "REAL",
+                    "dns_transport_lab": "REAL",
+                    "uds_pipe_transport": "REAL",
+                    "agent_generate": "REAL",
+                    "task_queue": "REAL",
+                    "module_catalog": "REAL",
+                    "exploit_modules": "REAL",
+                    "persist_launchagent": "REAL",
+                    "inject_plan_only": "REAL",
+                    "lateral_ssh_scoped": "REAL",
+                    "lateral_smb": "PLAN_ONLY",
+                    "rop_pattern_gadgets": "REAL",
+                    "browser_harness_lab": "REAL",
+                    "xor_packer": "REAL",
+                    "poc_kit_packing": "REAL",
+                    "poc_kit_process_fuzz": "REAL",
+                },
+                "policy": {
+                    "fail_closed_scope": true,
+                    "default_loopback_c2": true,
+                    "network_egress_default": false,
+                    "evidence_native": true,
+                    "encrypt_beacons_default": true,
+                },
+                "note": "AOP T1–T7 lab surfaces landed. Not unscoped malware.",
+            });
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("Anubis Offensive Platform doctor");
+                println!("  protocol: {}", offensive::protocol::PROTOCOL_VERSION);
+                if let Some(obj) = report["surfaces"].as_object() {
+                    for (k, v) in obj {
+                        println!("  {k}: {v}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::PersistLaunchagent {
+            engage,
+            agent,
+            label,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let path = offensive::persistence::generate_launch_agent(
+                &eng,
+                &engage,
+                &agent,
+                &label,
+            )?;
+            println!("{}", path.display());
+            Ok(())
+        }
+        Commands::InjectPlan {
+            engage,
+            pid,
+            shellcode,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let plan = offensive::persistence::inject_plan(&eng, pid, &shellcode)?;
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+            Ok(())
+        }
+        Commands::LateralSsh {
+            engage,
+            host,
+            user,
+            cmd,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let rep = offensive::lateral::lateral_ssh(&eng, &host, &user, &cmd)?;
+            println!("{}", serde_json::to_string_pretty(&rep)?);
+            Ok(())
+        }
+        Commands::PatternCreate { len } => {
+            println!("{}", offensive::rop::pattern_create(len));
+            Ok(())
+        }
+        Commands::PatternOffset { len, needle } => {
+            let r = offensive::rop::pattern_offset(len, &needle)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::GadgetSearch { file, contains } => {
+            let r = offensive::rop::gadget_search(&file, &contains)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::BrowserHarness { out, url } => {
+            let p = offensive::rop::browser_harness_scaffold(&out, &url)?;
+            println!("wrote {}", p.display());
+            Ok(())
+        }
+        Commands::PackXor { engage, input } => {
+            let eng = offensive::load_engagement(&engage)?;
+            eng.assert_path(&input)?;
+            let packs = engage.join("packs");
+            let r = offensive::packer::pack_file(&input, &packs)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
         Commands::Prove {
             input,
             backend,
             lane,
             metal_reference,
+            input_json,
+            input_file,
             evidence,
             out,
         } => {
@@ -706,6 +1110,24 @@ fn main() -> Result<()> {
             let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
             let tainted = TaintPass::apply(typed.clone());
             std::fs::create_dir_all(&out)?;
+
+            let proof_inputs = proof_input::resolve_proof_inputs(
+                input_json.as_deref(),
+                input_file.as_deref(),
+            )?;
+            // Persist canonical inputs for the prove child and evidence.
+            let proof_input_path = out.join("proof_input_canonical.json");
+            std::fs::write(&proof_input_path, &proof_inputs.canonical_json)?;
+            std::fs::write(
+                out.join("proof_input_meta.json"),
+                serde_json::to_string_pretty(&proof_inputs.metadata_json())?,
+            )?;
+            println!(
+                "proof inputs: mode={} sha256={} keys={:?}",
+                proof_inputs.mode,
+                &proof_inputs.sha256[..16.min(proof_inputs.sha256.len())],
+                proof_inputs.values.keys().collect::<Vec<_>>()
+            );
 
             let is_risc0 = backend == "risc0";
             let full_hybrid = prove_uses_full_hybrid(&backend);
@@ -886,7 +1308,13 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
 
                 std::fs::write(risc0_side.join("image_id.txt"), &real_id)?;
 
-                let proof_outcome = run_risc0_proof_attempt(&risc0_side, guest_elf_path.as_deref());
+                // Copy canonical inputs into risc0 sidecar for the child prover.
+                let _ = std::fs::copy(&proof_input_path, risc0_side.join("proof_input_canonical.json"));
+                let proof_outcome = run_risc0_proof_attempt(
+                    &risc0_side,
+                    guest_elf_path.as_deref(),
+                    Some(&proof_input_path),
+                );
 
                 let run_stamp = chrono::Utc::now().to_rfc3339();
                 // Gate 11: derive lane_observed mechanically from env + logs (never host assumption)
@@ -932,14 +1360,15 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     "external_r0vm_used": false,
                     "observation_source": "env+receipt.verify.log+prove.log"
                 });
+                let input_meta = proof_inputs.metadata_json();
                 let meta = serde_json::json!({
-                    "schema_version": "1.2",
+                    "schema_version": "1.3",
                     "backend": "risc0",
                     "risc0_version": "3.0.5",
                     "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
                     "guest_source_sha256": sha256_of_file_or("missing", &risc0_side.join("guest/src/main.rs")),
                     "guest_binding": "anubis-program",
-                    "guest_binding_note": "guest is compiled from the input Anubis program's main(); the ImageID is derived from that guest ELF, so the receipt is bound to this program, not a fixed circuit",
+                    "guest_binding_note": "guest is compiled from the input Anubis program's main(); ImageID binds to program; journal = P(I) for parameterized inputs",
                     "committed_journal_sha256": sha256_of_file_or("missing", &risc0_side.join("journal.bin")),
                     "image_id": real_id,
                     "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
@@ -960,7 +1389,14 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     "placeholder_image_id": image_id_is_placeholder(&real_id),
                     "lane": lane.clone(),
                     "lane_normalized": lane_normalized.clone(),
-                    "metal_hybrid": metal_section
+                    "metal_hybrid": metal_section,
+                    "input_mode": input_meta["input_mode"],
+                    "input_source": input_meta["input_source"],
+                    "input_sha256": input_meta["input_sha256"],
+                    "input_redacted": input_meta["input_redacted"],
+                    "input_schema_version": input_meta["input_schema_version"],
+                    "input_keys": input_meta["input_keys"],
+                    "parameterized": !proof_inputs.values.is_empty(),
                 });
                 std::fs::write(
                     risc0_side.join("risc0_metadata.json"),
@@ -1035,7 +1471,8 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             image_id,
             receipt,
             verify_log,
-        } => run_risc0_prove_child(&elf, &image_id, &receipt, &verify_log),
+            proof_input,
+        } => run_risc0_prove_child(&elf, &image_id, &receipt, &verify_log, proof_input.as_deref()),
         Commands::VerifyReceipt { receipt, image_id } => {
             println!(
                 "anubis verify-receipt --receipt {} --image-id {}",
@@ -1115,17 +1552,29 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             let mut results = vec![];
 
             for name in &fixtures {
-                // Try common layouts
+                // Resolve distinct per-lane bundle dirs. Preferred layout from check_metal_parity.sh:
+                //   <root>/<name>_cpu  and  <root>/<name>_metal
+                // Never treat a single fixture path as both lanes (honesty: distinct executions).
                 let cpu_base = if cpu.join(format!("{}_cpu", name)).exists() {
                     cpu.join(format!("{}_cpu", name))
-                } else {
+                } else if cpu.join(name).exists() && metal.join(format!("{}_metal", name)).exists() {
                     cpu.join(name)
+                } else {
+                    cpu.join(format!("{}_cpu", name))
                 };
                 let metal_base = if metal.join(format!("{}_metal", name)).exists() {
                     metal.join(format!("{}_metal", name))
-                } else {
+                } else if metal.join(name).exists() && cpu.join(format!("{}_cpu", name)).exists() {
                     metal.join(name)
+                } else {
+                    metal.join(format!("{}_metal", name))
                 };
+
+                let paths_distinct = cpu_base != metal_base
+                    && (!cpu_base.exists()
+                        || !metal_base.exists()
+                        || std::fs::canonicalize(&cpu_base).ok()
+                            != std::fs::canonicalize(&metal_base).ok());
 
                 let cpu_meta_p = cpu_base.join("backend/risc0/risc0_metadata.json");
                 let metal_meta_p = metal_base.join("backend/risc0/risc0_metadata.json");
@@ -1165,16 +1614,29 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
 
                 let img_match = !cpu_id.is_empty() && cpu_id == metal_id;
                 let both_v = cpu_status == "passed" && metal_status == "passed";
-                let j_match = img_match && both_v && cpu_j == metal_j && !cpu_j.contains("MISSING");
+                let j_match = img_match
+                    && both_v
+                    && cpu_j == metal_j
+                    && !cpu_j.contains("MISSING")
+                    && paths_distinct;
 
-                let verd =
-                    gate11_fixture_verdict(img_match, both_v, &cpu_lane, &metal_lane, j_match);
+                let verd = if !paths_distinct {
+                    "FAIL"
+                } else {
+                    gate11_fixture_verdict(img_match, both_v, &cpu_lane, &metal_lane, j_match)
+                };
 
                 results.push(serde_json::json!({
                     "name": name,
                     "cpu": {"bundle": cpu_base.to_string_lossy(), "lane_observed": cpu_lane, "receipt_verify": cpu_status, "journal_sha256": cpu_j, "image_id": cpu_id},
                     "metal": {"bundle": metal_base.to_string_lossy(), "lane_observed": metal_lane, "receipt_verify": metal_status, "journal_sha256": metal_j, "image_id": metal_id},
-                    "parity": {"image_id_match": img_match, "journal_match": j_match, "output_match": j_match, "both_receipts_verify": both_v},
+                    "parity": {
+                        "image_id_match": img_match,
+                        "journal_match": j_match,
+                        "output_match": j_match,
+                        "both_receipts_verify": both_v,
+                        "paths_distinct": paths_distinct
+                    },
                     "verdict": verd
                 }));
             }
@@ -2173,8 +2635,9 @@ fn run_anubis_source(
     // Typecheck first for safe-mode enforcement (taint / effect / raw-pointer). Then lower the
     // WHOLE program — every function, not just `main` — so user-defined calls and recursion
     // execute on the Rust call stack. This is what makes Anubis Turing-complete at runtime.
+    // With --allow-research, PoC kit builtins (target_run, p64, cyclic, …) and research blocks execute.
     let _typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-    let rust_source = lower_program_to_rust(&ast.items)?;
+    let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
 
     std::fs::create_dir_all(out)?;
     let rs_path = out.join("anubis_run.rs");
@@ -2227,14 +2690,19 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
 /// Emit one Anubis function as a Rust function returning `AnubisValue`.
 /// The trailing `AnubisValue::Int(0)` is the implicit return for functions that
 /// fall off the end without an explicit `return`.
-fn emit_fn(name: &str, params: &[(String, String)], body: &[Stmt]) -> Result<String> {
+fn emit_fn(
+    name: &str,
+    params: &[(String, String)],
+    body: &[Stmt],
+    allow_research: bool,
+) -> Result<String> {
     let mut sig = Vec::new();
     for (p, _ty) in params {
         sig.push(format!("mut {}: AnubisValue", sanitize_ident(p)?));
     }
     let mut body_src = String::new();
     for stmt in body {
-        emit_safe_run_stmt(stmt, 1, &mut body_src)?;
+        emit_safe_run_stmt(stmt, 1, &mut body_src, allow_research)?;
     }
     Ok(format!(
         "fn anb_{}({}) -> AnubisValue {{\n{}    AnubisValue::Int(0)\n}}\n",
@@ -2251,25 +2719,55 @@ fn emit_fn(name: &str, params: &[(String, String)], body: &[Stmt]) -> Result<Str
 /// works; `while`/`loop` map to native Rust loops. Together with conditionals and unbounded
 /// heap growth (`AnubisValue::Str`/recursion depth), this makes the executable language
 /// Turing-complete. `anb_main` is the entry function; real `fn main()` just calls it.
-fn lower_program_to_rust(items: &[Item]) -> Result<String> {
-    lower_program_with_entry(items, "", "fn main() {\n    let _ = anb_main();\n}\n")
+///
+/// When `allow_research` is true, the PoC kit surface is enabled: `target_run`, packing
+/// (`p8`/`p16`/`p32`/`p64`), `cyclic`, research/exploit block bodies, and local-only process control.
+fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<String> {
+    lower_program_with_entry(
+        items,
+        "",
+        "fn main() {\n    let _ = anb_main();\n}\n",
+        allow_research,
+        false,
+    )
 }
 
 /// Lower an Anubis program's `main` into a RISC0 zkVM guest that runs the real program and
 /// commits its result to the journal. risc0-build derives the ImageID from this guest's ELF,
 /// so the ImageID — and therefore the receipt — is cryptographically bound to THIS program,
 /// not a fixed demonstration circuit. Uses the reference guest's `std` feature.
+///
+/// Parameterized inputs: guest first runs `anubis_load_proof_inputs()` which reads
+/// `(u32 n, (String,i64)*n)` from `env::read`, then `proof_input_u32("k")` looks up keys.
+///
+/// Journal (v2 multi-field):
+/// - scalar `return` → one `env::commit(u32)` (v1-compatible)
+/// - list `return [a, b, …]` → one `env::commit(u32)` per element (public multi-field journal)
 fn lower_program_to_guest(items: &[Item]) -> Result<String> {
     lower_program_with_entry(
         items,
-        "use risc0_zkvm::guest::env;\n",
-        "fn main() {\n    let __anubis_result = anb_main();\n    let __anubis_journal: u32 = __anubis_result.as_i64() as u32;\n    env::commit(&__anubis_journal);\n}\n",
+        "use risc0_zkvm::guest::env;\nuse std::collections::HashMap;\nuse std::sync::OnceLock;\n",
+        concat!(
+            "fn main() {\n",
+            "    anubis_load_proof_inputs();\n",
+            "    let __anubis_result = anb_main();\n",
+            "    anubis_commit_journal(__anubis_result);\n",
+            "}\n",
+        ),
+        false, // no process PoC kit inside zkVM guest
+        true,  // inject proof-input runtime for guest
     )
 }
 
 /// Shared lowering: emit the AnubisValue runtime + every function, framed by a caller-provided
 /// `prelude` (e.g. a guest `use`) and `entry` (the real `fn main`).
-fn lower_program_with_entry(items: &[Item], prelude: &str, entry: &str) -> Result<String> {
+fn lower_program_with_entry(
+    items: &[Item],
+    prelude: &str,
+    entry: &str,
+    allow_research: bool,
+    guest_proof_inputs: bool,
+) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
     if !fns.iter().any(|(name, _, _)| *name == "main") {
@@ -2277,9 +2775,19 @@ fn lower_program_with_entry(items: &[Item], prelude: &str, entry: &str) -> Resul
     }
     let mut functions_src = String::new();
     for (name, params, body) in &fns {
-        functions_src.push_str(&emit_fn(name, params, body)?);
+        functions_src.push_str(&emit_fn(name, params, body, allow_research)?);
         functions_src.push('\n');
     }
+    let poc_kit_runtime = if allow_research {
+        POC_KIT_RUNTIME_RS
+    } else {
+        ""
+    };
+    let proof_input_runtime = if guest_proof_inputs {
+        PROOF_INPUT_GUEST_RUNTIME_RS
+    } else {
+        ""
+    };
     Ok(format!(
         r#"
 #![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens)]
@@ -2372,12 +2880,23 @@ impl AnubisValue {{
 
 fn anubis_add(lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {{
     match (lhs, rhs) {{
+        (AnubisValue::List(mut a), AnubisValue::List(b)) => {{
+            a.extend(b);
+            AnubisValue::List(a)
+        }}
+        (AnubisValue::List(mut a), b) => {{
+            a.push(b);
+            AnubisValue::List(a)
+        }}
         (AnubisValue::Str(a), b) => AnubisValue::Str(format!("{{}}{{}}", a, b.display_string())),
         (a, AnubisValue::Str(b)) => AnubisValue::Str(format!("{{}}{{}}", a.display_string(), b)),
         (AnubisValue::Int(a), AnubisValue::Int(b)) => AnubisValue::Int(a.wrapping_add(b)),
         (a, b) => AnubisValue::Str(format!("{{}}{{}}", a.display_string(), b.display_string())),
     }}
 }}
+
+{poc_kit_runtime}
+{proof_input_runtime}
 
 fn anubis_sub(lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {{
     AnubisValue::Int(lhs.as_i64().wrapping_sub(rhs.as_i64()))
@@ -2421,14 +2940,203 @@ fn anubis_cmp(op: &str, lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {{
     ))
 }
 
-fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()> {
+/// Injected into RISC0 guests so `proof_input_u32` / `proof_input_bool` read host-supplied inputs
+/// and so journals can be multi-field (`return [..]` commits each u32).
+const PROOF_INPUT_GUEST_RUNTIME_RS: &str = r#"
+static ANUBIS_PROOF_INPUTS: OnceLock<HashMap<String, i64>> = OnceLock::new();
+
+fn anubis_load_proof_inputs() {
+    let n: u32 = env::read();
+    let mut m = HashMap::new();
+    for _ in 0..n {
+        let k: String = env::read();
+        let v: i64 = env::read();
+        m.insert(k, v);
+    }
+    let _ = ANUBIS_PROOF_INPUTS.set(m);
+}
+
+fn anubis_proof_input_i64(name: &str) -> i64 {
+    let m = ANUBIS_PROOF_INPUTS
+        .get()
+        .expect("ANUBIS_PROOF_INPUT_MISSING: inputs not loaded");
+    match m.get(name) {
+        Some(v) => *v,
+        None => panic!("ANUBIS_PROOF_INPUT_MISSING: key `{}`", name),
+    }
+}
+
+fn anubis_proof_input_u32_val(name: &str) -> AnubisValue {
+    AnubisValue::Int(anubis_proof_input_i64(name))
+}
+
+fn anubis_proof_input_bool_val(name: &str) -> AnubisValue {
+    AnubisValue::Bool(anubis_proof_input_i64(name) != 0)
+}
+
+/// Commit public outputs to the RISC0 journal.
+/// - Scalar int/bool/str → one little-endian u32 (v1-compatible).
+/// - List → one u32 per element (multi-field journal). Nested lists use length as u32.
+fn anubis_commit_journal(result: AnubisValue) {
+    match result {
+        AnubisValue::List(items) => {
+            for item in items {
+                let w: u32 = match item {
+                    AnubisValue::List(inner) => inner.len() as u32,
+                    other => other.as_i64() as u32,
+                };
+                env::commit(&w);
+            }
+        }
+        other => {
+            let w: u32 = other.as_i64() as u32;
+            env::commit(&w);
+        }
+    }
+}
+"#;
+
+/// Injected into lowered programs when `--allow-research` enables the PoC kit.
+/// Local process harness only; network URLs are rejected at runtime.
+const POC_KIT_RUNTIME_RS: &str = r#"
+use std::io::Write;
+use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+
+fn anubis_to_bytes(v: &AnubisValue) -> Vec<u8> {
+    match v {
+        AnubisValue::List(items) => items.iter().map(|x| (x.as_i64() as u8)).collect(),
+        AnubisValue::Str(s) => s.as_bytes().to_vec(),
+        AnubisValue::Int(n) => vec![*n as u8],
+        AnubisValue::Bool(b) => vec![if *b { 1 } else { 0 }],
+    }
+}
+
+fn anubis_p8(v: AnubisValue) -> AnubisValue {
+    AnubisValue::List(vec![AnubisValue::Int((v.as_i64() as u8) as i64)])
+}
+fn anubis_p16(v: AnubisValue) -> AnubisValue {
+    let n = v.as_i64() as u16;
+    AnubisValue::List(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
+}
+fn anubis_p32(v: AnubisValue) -> AnubisValue {
+    let n = v.as_i64() as u32;
+    AnubisValue::List(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
+}
+fn anubis_p64(v: AnubisValue) -> AnubisValue {
+    let n = v.as_i64() as u64;
+    AnubisValue::List(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
+}
+fn anubis_cyclic(v: AnubisValue) -> AnubisValue {
+    let n = v.as_i64().max(0) as usize;
+    let alphabet = b"abcdefghijklmnopqrstuvwxyz";
+    AnubisValue::List((0..n).map(|i| AnubisValue::Int(alphabet[i % alphabet.len()] as i64)).collect())
+}
+
+/// target_run(path, payload) -> list [crashed(0/1), signal_or_-1, exit_code_or_-1, payload_len]
+fn anubis_target_run(path_v: AnubisValue, payload_v: AnubisValue) -> AnubisValue {
+    let path = path_v.display_string();
+    if path.contains("://") || path.starts_with("http") {
+        eprintln!("ANUBIS_POC_NETWORK_FORBIDDEN: target must be a local filesystem path");
+        return AnubisValue::List(vec![
+            AnubisValue::Int(0),
+            AnubisValue::Int(-1),
+            AnubisValue::Int(-1),
+            AnubisValue::Int(0),
+        ]);
+    }
+    let payload = anubis_to_bytes(&payload_v);
+    let mut child = match Command::new(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("ANUBIS_POC_SPAWN_FAILED: {}: {}", path, e);
+            return AnubisValue::List(vec![
+                AnubisValue::Int(0),
+                AnubisValue::Int(-1),
+                AnubisValue::Int(-1),
+                AnubisValue::Int(payload.len() as i64),
+            ]);
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&payload);
+    }
+    let start = std::time::Instant::now();
+    let timeout_ms = 2000u128;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed().as_millis() > timeout_ms {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    eprintln!("ANUBIS_POC_TIMEOUT");
+                    return AnubisValue::List(vec![
+                        AnubisValue::Int(0),
+                        AnubisValue::Int(-1),
+                        AnubisValue::Int(-1),
+                        AnubisValue::Int(payload.len() as i64),
+                    ]);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(e) => {
+                eprintln!("ANUBIS_POC_WAIT_FAILED: {}", e);
+                return AnubisValue::List(vec![
+                    AnubisValue::Int(0),
+                    AnubisValue::Int(-1),
+                    AnubisValue::Int(-1),
+                    AnubisValue::Int(payload.len() as i64),
+                ]);
+            }
+        }
+    }
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ANUBIS_POC_WAIT_FAILED: {}", e);
+            return AnubisValue::List(vec![
+                AnubisValue::Int(0),
+                AnubisValue::Int(-1),
+                AnubisValue::Int(-1),
+                AnubisValue::Int(payload.len() as i64),
+            ]);
+        }
+    };
+    #[cfg(unix)]
+    let signal = status.signal().unwrap_or(-1);
+    #[cfg(not(unix))]
+    let signal = -1i32;
+    let exit_code = status.code().unwrap_or(-1);
+    let crashed = if signal > 0 { 1 } else { 0 };
+    AnubisValue::List(vec![
+        AnubisValue::Int(crashed),
+        AnubisValue::Int(signal as i64),
+        AnubisValue::Int(exit_code as i64),
+        AnubisValue::Int(payload.len() as i64),
+    ])
+}
+"#;
+
+fn emit_safe_run_stmt(
+    stmt: &Stmt,
+    indent: usize,
+    out: &mut String,
+    allow_research: bool,
+) -> Result<()> {
     let pad = "    ".repeat(indent);
     match stmt {
         Stmt::Let { name, init, .. } => {
             out.push_str(&format!(
                 "{pad}let mut {} = {};\n",
                 sanitize_ident(name)?,
-                safe_run_expr(init)?
+                safe_run_expr(init, allow_research)?
             ));
             Ok(())
         }
@@ -2437,7 +3145,7 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
                 out.push_str(&format!(
                     "{pad}{} = {};\n",
                     sanitize_ident(name)?,
-                    safe_run_expr(value)?
+                    safe_run_expr(value, allow_research)?
                 ));
                 Ok(())
             }
@@ -2446,8 +3154,8 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
                     out.push_str(&format!(
                         "{pad}{}.index_set({}, {});\n",
                         sanitize_ident(name)?,
-                        safe_run_expr(index)?,
-                        safe_run_expr(value)?
+                        safe_run_expr(index, allow_research)?,
+                        safe_run_expr(value, allow_research)?
                     ));
                     Ok(())
                 } else {
@@ -2466,7 +3174,7 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
                     out.push_str(&format!(
                         "{pad}{}.push_val({});\n",
                         sanitize_ident(name)?,
-                        safe_run_expr(&args[1])?
+                        safe_run_expr(&args[1], allow_research)?
                     ));
                     return Ok(());
                 }
@@ -2481,32 +3189,32 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
                 .ok_or_else(|| unsupported_run("print requires one argument"))?;
             out.push_str(&format!(
                 "{pad}println!(\"{{}}\", {}.display_string());\n",
-                safe_run_expr(arg)?
+                safe_run_expr(arg, allow_research)?
             ));
             Ok(())
         }
         Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
             let val = match args.first() {
-                Some(expr) => safe_run_expr(expr)?,
+                Some(expr) => safe_run_expr(expr, allow_research)?,
                 None => "AnubisValue::Int(0)".to_string(),
             };
             out.push_str(&format!("{pad}return {};\n", val));
             Ok(())
         }
         Stmt::ExprStmt(expr) => {
-            out.push_str(&format!("{pad}let _ = {};\n", safe_run_expr(expr)?));
+            out.push_str(&format!("{pad}let _ = {};\n", safe_run_expr(expr, allow_research)?));
             Ok(())
         }
         Stmt::If { cond, then, else_ } => {
-            out.push_str(&format!("{pad}if {}.as_bool() {{\n", safe_run_expr(cond)?));
+            out.push_str(&format!("{pad}if {}.as_bool() {{\n", safe_run_expr(cond, allow_research)?));
             for stmt in then {
-                emit_safe_run_stmt(stmt, indent + 1, out)?;
+                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
             }
             out.push_str(&format!("{pad}}}"));
             if let Some(else_body) = else_ {
                 out.push_str(" else {\n");
                 for stmt in else_body {
-                    emit_safe_run_stmt(stmt, indent + 1, out)?;
+                    emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
                 }
                 out.push_str(&format!("{pad}}}\n"));
             } else {
@@ -2517,10 +3225,10 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
         Stmt::While { cond, body } => {
             out.push_str(&format!(
                 "{pad}while {}.as_bool() {{\n",
-                safe_run_expr(cond)?
+                safe_run_expr(cond, allow_research)?
             ));
             for stmt in body {
-                emit_safe_run_stmt(stmt, indent + 1, out)?;
+                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
             }
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
@@ -2528,7 +3236,7 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
         Stmt::Loop { body } => {
             out.push_str(&format!("{pad}loop {{\n"));
             for stmt in body {
-                emit_safe_run_stmt(stmt, indent + 1, out)?;
+                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
             }
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
@@ -2546,15 +3254,15 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
             out.push_str(&format!(
                 "{pad}let mut {} = {};\n",
                 v,
-                safe_run_expr(start)?
+                safe_run_expr(start, allow_research)?
             ));
-            out.push_str(&format!("{pad}let {} = {};\n", endtmp, safe_run_expr(end)?));
+            out.push_str(&format!("{pad}let {} = {};\n", endtmp, safe_run_expr(end, allow_research)?));
             out.push_str(&format!(
                 "{pad}while anubis_cmp(\"<\", {}.clone(), {}.clone()).as_bool() {{\n",
                 v, endtmp
             ));
             for stmt in body {
-                emit_safe_run_stmt(stmt, indent + 1, out)?;
+                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
             }
             out.push_str(&format!(
                 "{pad}    {} = anubis_add({}.clone(), AnubisValue::Int(1));\n",
@@ -2571,11 +3279,19 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String) -> Result<()
             out.push_str(&format!("{pad}continue;\n"));
             Ok(())
         }
-        Stmt::ResearchBlock { .. }
-        | Stmt::ExploitBlock { .. }
-        | Stmt::HybridBlock { .. }
-        | Stmt::SpecBlock { .. } => Err(unsupported_run(format!(
-            "unsupported safe statement for run: {:?}",
+        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+            if !allow_research {
+                return Err(unsupported_run(
+                    "research/exploit blocks require `anubis run --allow-research`",
+                ));
+            }
+            for stmt in body {
+                emit_safe_run_stmt(stmt, indent, out, allow_research)?;
+            }
+            Ok(())
+        }
+        Stmt::HybridBlock { .. } | Stmt::SpecBlock { .. } => Err(unsupported_run(format!(
+            "unsupported statement for run: {:?}",
             std::mem::discriminant(stmt)
         ))),
     }
@@ -2606,12 +3322,23 @@ fn is_non_run_builtin(callee: &str) -> bool {
     )
 }
 
-fn safe_run_expr(expr: &Expr) -> Result<String> {
+fn is_poc_kit_builtin(callee: &str) -> bool {
+    matches!(
+        callee,
+        "p8" | "p16" | "p32" | "p64" | "cyclic" | "target_run" | "flat"
+    )
+}
+
+fn is_proof_input_builtin(callee: &str) -> bool {
+    matches!(callee, "proof_input_u32" | "proof_input_bool" | "proof_input_u64")
+}
+
+fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
     match expr {
         Expr::Literal(value) => Ok(literal_to_anubis_value(value)),
         Expr::Var(name) => Ok(format!("{}.clone()", sanitize_ident(name)?)),
         Expr::Unary { op, expr } => {
-            let inner = safe_run_expr(expr)?;
+            let inner = safe_run_expr(expr, allow_research)?;
             match op.as_str() {
                 "-" => Ok(format!("anubis_neg({inner})")),
                 "!" => Ok(format!("AnubisValue::Bool(!({inner}).as_bool())")),
@@ -2622,8 +3349,8 @@ fn safe_run_expr(expr: &Expr) -> Result<String> {
             }
         }
         Expr::Binary { op, lhs, rhs } => {
-            let lhs = safe_run_expr(lhs)?;
-            let rhs = safe_run_expr(rhs)?;
+            let lhs = safe_run_expr(lhs, allow_research)?;
+            let rhs = safe_run_expr(rhs, allow_research)?;
             match op.as_str() {
                 "+" => Ok(format!("anubis_add({lhs}, {rhs})")),
                 "-" => Ok(format!("anubis_sub({lhs}, {rhs})")),
@@ -2631,7 +3358,6 @@ fn safe_run_expr(expr: &Expr) -> Result<String> {
                 "/" => Ok(format!("anubis_div({lhs}, {rhs})")),
                 "%" => Ok(format!("anubis_mod({lhs}, {rhs})")),
                 "&" => Ok(format!("anubis_band({lhs}, {rhs})")),
-                // Logical connectives short-circuit natively via Rust's && / ||.
                 "&&" => Ok(format!(
                     "AnubisValue::Bool(({lhs}).as_bool() && ({rhs}).as_bool())"
                 )),
@@ -2649,14 +3375,83 @@ fn safe_run_expr(expr: &Expr) -> Result<String> {
             }
         }
         Expr::Call { callee, args } => {
-            // `len(x)` is a run builtin: length of a list or string.
             if callee == "len" {
                 let a = args
                     .first()
                     .ok_or_else(|| unsupported_run("len requires one argument"))?;
-                return Ok(format!("({}).len_val()", safe_run_expr(a)?));
+                return Ok(format!(
+                    "({}).len_val()",
+                    safe_run_expr(a, allow_research)?
+                ));
+            }
+            if is_proof_input_builtin(callee) {
+                let key = match args.first() {
+                    Some(Expr::Literal(s)) => s.trim_matches('"').to_string(),
+                    Some(Expr::Var(s)) => s.clone(),
+                    _ => {
+                        return Err(unsupported_run(
+                            "proof_input_* requires a string key literal",
+                        ))
+                    }
+                };
+                // Host/native run path: allow simulation via ANUBIS_PROOF_INPUT_JSON env if present;
+                // otherwise fail closed (these builtins are for prove guests).
+                return match callee.as_str() {
+                    "proof_input_u32" | "proof_input_u64" => Ok(format!(
+                        "anubis_proof_input_u32_val({})",
+                        rust_string_lit(&key)?
+                    )),
+                    "proof_input_bool" => Ok(format!(
+                        "anubis_proof_input_bool_val({})",
+                        rust_string_lit(&key)?
+                    )),
+                    _ => Err(unsupported_run(format!("unknown proof input builtin `{callee}`"))),
+                };
+            }
+            if is_poc_kit_builtin(callee) {
+                if !allow_research {
+                    return Err(unsupported_run(format!(
+                        "PoC kit builtin `{callee}` requires `anubis run --allow-research`"
+                    )));
+                }
+                let mut lowered = Vec::new();
+                for arg in args {
+                    lowered.push(safe_run_expr(arg, allow_research)?);
+                }
+                return match callee.as_str() {
+                    "p8" if lowered.len() == 1 => Ok(format!("anubis_p8({})", lowered[0])),
+                    "p16" if lowered.len() == 1 => Ok(format!("anubis_p16({})", lowered[0])),
+                    "p32" if lowered.len() == 1 => Ok(format!("anubis_p32({})", lowered[0])),
+                    "p64" if lowered.len() == 1 => Ok(format!("anubis_p64({})", lowered[0])),
+                    "cyclic" if lowered.len() == 1 => Ok(format!("anubis_cyclic({})", lowered[0])),
+                    "flat" if lowered.len() == 1 => Ok(format!(
+                        "AnubisValue::List(anubis_to_bytes(&{}).into_iter().map(|b| AnubisValue::Int(b as i64)).collect())",
+                        lowered[0]
+                    )),
+                    "target_run" if lowered.len() == 2 => Ok(format!(
+                        "anubis_target_run({}, {})",
+                        lowered[0], lowered[1]
+                    )),
+                    _ => Err(unsupported_run(format!(
+                        "PoC kit builtin `{callee}` arity mismatch"
+                    ))),
+                };
             }
             if is_non_run_builtin(callee) {
+                if allow_research && matches!(callee.as_str(), "taint_source" | "declassify" | "sink")
+                {
+                    // Modeling no-ops in research execution path.
+                    if callee == "taint_source" {
+                        let a = args.first().map(|e| safe_run_expr(e, allow_research)).transpose()?;
+                        return Ok(a.unwrap_or_else(|| {
+                            "AnubisValue::Str(\"tainted\".to_string())".into()
+                        }));
+                    }
+                    if let Some(first) = args.first() {
+                        return safe_run_expr(first, allow_research);
+                    }
+                    return Ok("AnubisValue::Int(0)".into());
+                }
                 return Err(unsupported_run(format!(
                     "builtin `{}` is a proof/analysis construct, not available in `run`",
                     callee
@@ -2664,7 +3459,7 @@ fn safe_run_expr(expr: &Expr) -> Result<String> {
             }
             let mut lowered = Vec::new();
             for arg in args {
-                lowered.push(safe_run_expr(arg)?);
+                lowered.push(safe_run_expr(arg, allow_research)?);
             }
             Ok(format!(
                 "anb_{}({})",
@@ -2675,16 +3470,21 @@ fn safe_run_expr(expr: &Expr) -> Result<String> {
         Expr::ArrayLiteral { elements } => {
             let mut lowered = Vec::new();
             for el in elements {
-                lowered.push(safe_run_expr(el)?);
+                lowered.push(safe_run_expr(el, allow_research)?);
             }
             Ok(format!("AnubisValue::List(vec![{}])", lowered.join(", ")))
         }
         Expr::Index { base, index } => Ok(format!(
             "({}).index_get({})",
-            safe_run_expr(base)?,
-            safe_run_expr(index)?
+            safe_run_expr(base, allow_research)?,
+            safe_run_expr(index, allow_research)?
         )),
-        Expr::Cast { expr, .. } => safe_run_expr(expr),
+        Expr::Cast { expr, .. } => safe_run_expr(expr, allow_research),
+        Expr::TaintSource { label } if allow_research => Ok(format!(
+            "AnubisValue::Str({}.to_string())",
+            rust_string_lit(label)?
+        )),
+        Expr::Declassify { inner, .. } if allow_research => safe_run_expr(inner, allow_research),
         Expr::Tainted { .. }
         | Expr::Symbolic { .. }
         | Expr::Assume(_)
@@ -3143,7 +3943,11 @@ fn gate11_tier2_metal_available(results: &[serde_json::Value]) -> bool {
     })
 }
 
-fn run_risc0_proof_attempt(risc0_side: &Path, guest_elf_path: Option<&Path>) -> Risc0ProofOutcome {
+fn run_risc0_proof_attempt(
+    risc0_side: &Path,
+    guest_elf_path: Option<&Path>,
+    proof_input_path: Option<&Path>,
+) -> Risc0ProofOutcome {
     let receipt_path = risc0_side.join("receipt.bin");
     let verify_log_path = risc0_side.join("receipt.verify.log");
     let image_id_path = risc0_side.join("image_id.txt");
@@ -3179,6 +3983,9 @@ fn run_risc0_proof_attempt(risc0_side: &Path, guest_elf_path: Option<&Path>) -> 
             .arg(&receipt_path)
             .arg("--verify-log")
             .arg(&verify_log_path);
+        if let Some(pip) = proof_input_path {
+            cmd.arg("--proof-input").arg(pip);
+        }
 
         // Clean env + essential + our controls
         cmd.env_clear();
@@ -3235,6 +4042,7 @@ fn run_risc0_prove_child(
     image_id: &Path,
     receipt: &Path,
     verify_log: &Path,
+    proof_input: Option<&Path>,
 ) -> Result<()> {
     // Real Gate 10+ path: prove with the linked RISC0 server, using the workspace
     // [patch.crates-io] binding to /Users/sicarii/Desktop/metal-hybrid-prover.
@@ -3244,7 +4052,33 @@ fn run_risc0_prove_child(
     let image_id_digest: risc0_zkvm::Digest = id_words.into();
     let forced_cpu = std::env::var("R0_DISABLE_METAL").is_ok();
     let mut env_builder = risc0_zkvm::ExecutorEnv::builder();
-    env_builder.write(&77u32)?;
+    // Parameterized inputs for program-derived guests (count + key/value pairs).
+    // Fallback echo guests that only `env::read()` a single u32 still work when
+    // inputs are empty (they would hang/mismatch) — parent only uses echo guest
+    // when lowering fails; we still write the map encoding for all program guests.
+    let inputs = if let Some(p) = proof_input {
+        if p.exists() {
+            let raw = std::fs::read_to_string(p)?;
+            proof_input::ProofInputs::from_json_str(&raw, "file", &p.display().to_string())?
+        } else {
+            proof_input::ProofInputs::empty()
+        }
+    } else {
+        proof_input::ProofInputs::empty()
+    };
+    // ABI: u32 n_entries; then for each sorted key: String key, i64 value.
+    let n = inputs.values.len() as u32;
+    env_builder
+        .write(&n)
+        .map_err(|e| anyhow!("write proof input count: {}", e))?;
+    for (k, v) in &inputs.values {
+        env_builder
+            .write(k)
+            .map_err(|e| anyhow!("write proof input key: {}", e))?;
+        env_builder
+            .write(v)
+            .map_err(|e| anyhow!("write proof input value: {}", e))?;
+    }
     let env = env_builder.build()?;
     let prover = risc0_zkvm::get_prover_server(&risc0_zkvm::ProverOpts::default())?;
     let receipt_obj = prover.prove(env, &elf_bytes)?.receipt;

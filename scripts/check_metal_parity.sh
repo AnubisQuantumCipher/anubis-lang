@@ -124,13 +124,16 @@ for f in "${FIXTURES[@]}"; do
   image_match=false
   if [[ "$cpu_id_val" == "$metal_id_val" && "$cpu_id_val" != "MISSING" ]]; then image_match=true; fi
 
-  # Real journal extraction for Gate 11: for these fixtures the risc0 guest always does env::read() u32, y = x*6, env::commit(&y)
-  # Committed journal is the little-endian u32 42 (0x2a000000 on LE for the value 42).
-  # We extract by writing a small journal.bin from the known semantics (or could deserialize receipt.journal).
-  # Both lanes use identical guest + input => journals must be bit-identical when both verify + ID match.
-  # Compute journal shas from the extracted journal.bin (written by verify-receipt after real deserialization)
+  # Journals come from program-derived guests (anb_main → env::commit). Both lanes prove the
+  # same guest ELF (same ImageID) so journals must be bit-identical when both verify.
+  # journal.bin is written by the real prove child after receipt deserialization — never hardcoded.
   cpu_journal_sha=$(shasum -a 256 "$cpu_out/backend/risc0/journal.bin" 2>/dev/null | awk '{print $1}' || echo "MISSING")
   metal_journal_sha=$(shasum -a 256 "$metal_out/backend/risc0/journal.bin" 2>/dev/null | awk '{print $1}' || echo "MISSING")
+  # Honesty: cpu and metal outs must be distinct directories (no same-path compare).
+  if [[ "$(cd "$cpu_out" 2>/dev/null && pwd -P)" == "$(cd "$metal_out" 2>/dev/null && pwd -P)" ]]; then
+    echo "ERROR: cpu_out and metal_out resolve to the same path for $f" | tee -a "$LOG"
+    OVERALL="FAIL"
+  fi
   if [[ "$cpu_journal_sha" == "MISSING" || "$metal_journal_sha" == "MISSING" ]]; then
     echo "ERROR: missing extracted journal.bin for $f (CPU or Metal). Real journal extraction via verify-receipt is required; no hardcoded fallback allowed." | tee -a "$LOG"
     # Force FAIL for this fixture; do not fabricate match even if MISSING==MISSING
@@ -221,10 +224,13 @@ echo "Report: $REPORT"
 cat "$REPORT" | tee -a "$LOG"
 
 # Canonicalize via Rust single-source-of-truth sealer (Gate 11 subcommand).
-# This ensures parity_report.json is produced by shipped code, not post-edits.
+# Layout under OUT_DIR uses distinct per-lane dirs: <fixture>_cpu vs <fixture>_metal.
+# Passing the same OUT_DIR root for --cpu and --metal is intentional: the sealer
+# resolves sibling *_cpu / *_metal paths (not the same bundle twice).
 echo "Canonicalizing report via gate11-metal-parity subcommand..." | tee -a "$LOG"
-cargo run --release -p anubis -- gate11-metal-parity \
-  --cpu "$OUT_DIR" --metal "$OUT_DIR" --out "$OUT_DIR" ${REQUIRE_METAL:+--require-metal} 2>&1 | tee -a "$LOG" || true
+SEAL_RC=0
+./target/release/anubis gate11-metal-parity \
+  --cpu "$OUT_DIR" --metal "$OUT_DIR" --out "$OUT_DIR" ${REQUIRE_METAL:+--require-metal} 2>&1 | tee -a "$LOG" || SEAL_RC=$?
 
 # Re-read the canonical report for final verdict
 if [[ -f "$REPORT" ]]; then
@@ -233,11 +239,17 @@ if [[ -f "$REPORT" ]]; then
   fi
 fi
 
-echo "Final canonical overall_verdict=$OVERALL" | tee -a "$LOG"
+echo "Final canonical overall_verdict=$OVERALL seal_rc=$SEAL_RC" | tee -a "$LOG"
 
-if [[ "$OVERALL" != "PASS" && "$REQUIRE_METAL" == "1" ]]; then
-  echo "Metal parity not fully PASS under --require-metal (observed lanes or verify may be PARTIAL on this run)."
-  exit 1
+# Honesty: sealer must not be ignored under --require-metal
+if [[ "$REQUIRE_METAL" == "1" ]]; then
+  if [[ "$OVERALL" != "PASS" || "$SEAL_RC" -ne 0 ]]; then
+    echo "Metal parity FAIL under --require-metal (overall=$OVERALL seal_rc=$SEAL_RC)." | tee -a "$LOG"
+    exit 1
+  fi
 fi
 
+if [[ "$OVERALL" != "PASS" ]]; then
+  exit 1
+fi
 exit 0
