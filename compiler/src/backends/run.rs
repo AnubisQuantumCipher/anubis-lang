@@ -15,19 +15,79 @@ use anyhow::{anyhow, Result};
 struct EmitCtx<'a> {
     allow_research: bool,
     fns: &'a std::collections::BTreeSet<String>,
+    /// method name -> the `(type, param_count)` of each type defining a method of that name
+    /// (for dispatching `obj.m(..)`). `param_count` includes `self`.
+    methods: &'a std::collections::BTreeMap<String, Vec<(String, usize)>>,
 }
 
-/// A borrowed view of one Anubis function: (name, params, body).
-type FnDef<'a> = (&'a str, &'a [(String, String)], &'a [Stmt]);
+/// A borrowed view of one Anubis function. `impl_type` is `Some(TypeName)` for a method defined
+/// in an `impl TypeName { ... }` block, which mangles its emitted name and takes `self` first.
+struct FnDef<'a> {
+    name: &'a str,
+    params: &'a [(String, String)],
+    body: &'a [Stmt],
+    impl_type: Option<&'a str>,
+}
 
-/// Recursively collect every `fn` item (including inside modules) as (name, params, body).
+/// The emitted Rust function name for an Anubis function or method.
+fn fn_rust_name(name: &str, impl_type: Option<&str>) -> Result<String> {
+    match impl_type {
+        Some(ty) => Ok(format!("anb_{}__method__{}", sanitize_ident(ty)?, sanitize_ident(name)?)),
+        None => Ok(format!("anb_{}", sanitize_ident(name)?)),
+    }
+}
+
+/// Recursively collect every `fn` item (including inside modules and `impl` blocks).
 fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
     for item in items {
         match item {
             Item::Fn {
                 name, params, body, ..
-            } => out.push((name.as_str(), params.as_slice(), body.as_slice())),
+            } => out.push(FnDef {
+                name: name.as_str(),
+                params: params.as_slice(),
+                body: body.as_slice(),
+                impl_type: None,
+            }),
+            Item::Impl { type_name, methods, .. } => {
+                for m in methods {
+                    if let Item::Fn {
+                        name, params, body, ..
+                    } = m
+                    {
+                        out.push(FnDef {
+                            name: name.as_str(),
+                            params: params.as_slice(),
+                            body: body.as_slice(),
+                            impl_type: Some(type_name.as_str()),
+                        });
+                    }
+                }
+            }
             Item::Module { items, .. } => collect_fns(items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Build the method registry: method name -> `(type, param_count)` for each defining type.
+fn collect_methods(
+    items: &[Item],
+    out: &mut std::collections::BTreeMap<String, Vec<(String, usize)>>,
+) {
+    for item in items {
+        match item {
+            Item::Impl { type_name, methods, .. } => {
+                for m in methods {
+                    if let Item::Fn { name, params, .. } = m {
+                        let types = out.entry(name.clone()).or_default();
+                        if !types.iter().any(|(t, _)| t == type_name) {
+                            types.push((type_name.clone(), params.len()));
+                        }
+                    }
+                }
+            }
+            Item::Module { items, .. } => collect_methods(items, out),
             _ => {}
         }
     }
@@ -36,17 +96,12 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
 /// Emit one Anubis function as a Rust function returning `AnubisValue`.
 /// The trailing `AnubisValue::Int(0)` is the implicit return for functions that
 /// fall off the end without an explicit `return`.
-fn emit_fn(
-    name: &str,
-    params: &[(String, String)],
-    body: &[Stmt],
-    ctx: &EmitCtx,
-) -> Result<String> {
+fn emit_fn(def: &FnDef, ctx: &EmitCtx) -> Result<String> {
     let mut sig = Vec::new();
-    for (p, _ty) in params {
+    for (p, _ty) in def.params {
         sig.push(format!("mut {}: AnubisValue", sanitize_ident(p)?));
     }
-    let (head, tail) = split_tail_expr(body);
+    let (head, tail) = split_tail_expr(def.body);
     let mut body_src = String::new();
     for stmt in &head {
         emit_safe_run_stmt(stmt, 1, &mut body_src, ctx)?;
@@ -58,8 +113,8 @@ fn emit_fn(
         None => "AnubisValue::Int(0)".to_string(),
     };
     Ok(format!(
-        "fn anb_{}({}) -> AnubisValue {{\n{}    {}\n}}\n",
-        sanitize_ident(name)?,
+        "fn {}({}) -> AnubisValue {{\n{}    {}\n}}\n",
+        fn_rust_name(def.name, def.impl_type)?,
         sig.join(", "),
         body_src,
         tail_src,
@@ -189,18 +244,25 @@ fn lower_program_with_entry(
 ) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
-    if !fns.iter().any(|(name, _, _)| *name == "main") {
+    if !fns.iter().any(|d| d.name == "main" && d.impl_type.is_none()) {
         return Err(unsupported_run("program has no `fn main()` to run"));
     }
-    let fn_names: std::collections::BTreeSet<String> =
-        fns.iter().map(|(n, _, _)| n.to_string()).collect();
+    // Free-function names only (methods are dispatched by receiver type, never called bare).
+    let fn_names: std::collections::BTreeSet<String> = fns
+        .iter()
+        .filter(|d| d.impl_type.is_none())
+        .map(|d| d.name.to_string())
+        .collect();
+    let mut methods = std::collections::BTreeMap::new();
+    collect_methods(items, &mut methods);
     let ctx = EmitCtx {
         allow_research,
         fns: &fn_names,
+        methods: &methods,
     };
     let mut functions_src = String::new();
-    for (name, params, body) in &fns {
-        functions_src.push_str(&emit_fn(name, params, body, &ctx)?);
+    for def in &fns {
+        functions_src.push_str(&emit_fn(def, &ctx)?);
         functions_src.push('\n');
     }
     let poc_kit_runtime = if allow_research {
@@ -2178,6 +2240,52 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         }
         // Application of an arbitrary callee expression: `obj.f(x)`, `arr[i](x)`, `f(a)(b)`.
         Expr::CallExpr { callee, args } => {
+            // Method call `recv.method(args)`: `method` is defined in some `impl` block. Dispatch
+            // on the receiver's runtime struct/enum type; `recv` becomes the method's `self`.
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                if let Some(types) = ctx.methods.get(field) {
+                    let recv = safe_run_expr(base, ctx)?;
+                    let mut lowered = Vec::new();
+                    for arg in args {
+                        lowered.push(safe_run_expr(arg, ctx)?);
+                    }
+                    let mut arms = String::new();
+                    for (ty, arity) in types {
+                        // The method wants `arity` params including self, i.e. `arity - 1` after
+                        // self. Take that many actual args, padding with 0 (each arm is type-checked
+                        // by Rust even though only the matching one runs, so counts must be exact).
+                        let want = arity.saturating_sub(1);
+                        let mut call_args = vec!["__anb_recv".to_string()];
+                        for k in 0..want {
+                            call_args.push(
+                                lowered.get(k).cloned().unwrap_or_else(|| "AnubisValue::Int(0)".to_string()),
+                            );
+                        }
+                        arms.push_str(&format!(
+                            "{} => {}({}), ",
+                            rust_string_lit(ty)?,
+                            fn_rust_name(field, Some(ty))?,
+                            call_args.join(", ")
+                        ));
+                    }
+                    // Fallback: the receiver's type has no such method — treat `obj.field(args)` as
+                    // reading the field (which may hold a closure) and calling it. This keeps
+                    // `obj.f()` on a closure-valued field working even when some other type defines
+                    // a method named `f`.
+                    let closure_fallback = format!(
+                        "__anb_recv.field_get({}).call_closure(vec![{}])",
+                        rust_string_lit(field)?,
+                        lowered.join(", ")
+                    );
+                    return Ok(format!(
+                        "{{ let __anb_recv = {recv}; \
+                         let __anb_ty = match &__anb_recv {{ \
+                             AnubisValue::Struct {{ ty, .. }} | AnubisValue::Enum {{ ty, .. }} => ty.clone(), \
+                             _ => String::new() }}; \
+                         match __anb_ty.as_str() {{ {arms} _ => {closure_fallback} }} }}"
+                    ));
+                }
+            }
             let callee_src = safe_run_expr(callee, ctx)?;
             let mut lowered = Vec::new();
             for arg in args {
@@ -3175,6 +3283,61 @@ mod run_tests {
         // Regression: `let s = param` must not report the parameter as unknown.
         let src = "fn f(xs) { let s = xs; s[0] + 1 } fn main() { print(f([41, 9])); }";
         assert_eq!(run(src), "42");
+    }
+
+    #[test]
+    fn methods_dispatch_on_receiver_type() {
+        let src = "struct Point { x: int, y: int } \
+                   impl Point { fn dist2(self) { self.x * self.x + self.y * self.y } \
+                                fn translate(self, dx, dy) { Point { x: self.x + dx, y: self.y + dy } } } \
+                   struct Circle { r: int } \
+                   impl Circle { fn area(self) { 3 * self.r * self.r } } \
+                   fn main() { let p = Point { x: 3, y: 4 }; print(p.dist2()); \
+                     print(p.translate(1, 1).dist2()); print((Circle { r: 10 }).area()); }";
+        assert_eq!(run(src), "25\n41\n300");
+    }
+
+    #[test]
+    fn methods_on_enum_and_self_calls() {
+        let src = "enum Shape { Circle(int), Square(int) } \
+                   impl Shape { fn area(self) { return match self { Shape::Circle(r) => 3*r*r, Shape::Square(s) => s*s }; } \
+                                fn twice(self) { self.area() + self.area() } } \
+                   fn main() { print(Shape::Circle(10).area()); print(Shape::Square(5).twice()); }";
+        assert_eq!(run(src), "300\n50");
+    }
+
+    #[test]
+    fn method_on_non_matching_receiver_is_zero() {
+        // Calling a method on a value with no such method (e.g. an int) yields 0, not a crash.
+        let src = "struct P { x: int } impl P { fn area(self) { self.x } } \
+                   fn main() { let n = 5; print(n.area()); }";
+        assert_eq!(run(src), "0");
+    }
+
+    #[test]
+    fn methods_same_name_different_arity() {
+        // Two types share a method name with different arities — each dispatch arm must be
+        // emitted with that type's own argument count.
+        let src = "struct S { v: int } struct C { v: int } \
+                   impl S { fn tag(self) { 1 } } impl C { fn tag(self, e) { e } } \
+                   fn main() { print((S { v: 0 }).tag()); print((C { v: 0 }).tag(9)); }";
+        assert_eq!(run(src), "1\n9");
+    }
+
+    #[test]
+    fn field_closure_not_hijacked_by_method_name() {
+        // `h.f()` on a closure-valued field keeps working even when an unrelated type has a `f` method.
+        let src = "struct Holder { f: int } struct Other { z: int } \
+                   impl Other { fn f(self) { 99 } } \
+                   fn main() { let h = Holder { f: || 42 }; print(h.f()); print((Other { z: 0 }).f()); }";
+        assert_eq!(run(src), "42\n99");
+    }
+
+    #[test]
+    fn bare_trailing_map_literal_returns() {
+        // A `{ k: v }` map literal as a function/method tail is a value, not a mis-parsed block.
+        let src = "fn cfg() { { \"x\": 10, \"y\": 20 } } fn main() { print(cfg()[\"y\"]); }";
+        assert_eq!(run(src), "20");
     }
 
     #[test]

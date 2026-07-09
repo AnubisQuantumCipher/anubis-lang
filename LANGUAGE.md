@@ -229,6 +229,28 @@ fn main() {
 }
 ```
 
+## Methods (`impl` blocks)
+
+An `impl` block attaches methods to a struct or enum type. A method takes the receiver as an
+explicit first parameter named `self`; call it with `receiver.method(args)`. Dispatch is on the
+receiver's runtime type, so different types may share a method name.
+
+```
+struct Point { x: int, y: int }
+impl Point {
+    fn dist2(self) { self.x * self.x + self.y * self.y }
+    fn translate(self, dx, dy) { Point { x: self.x + dx, y: self.y + dy } }
+    fn label(self) { "(${self.x}, ${self.y})" }
+}
+
+let p = Point { x: 3, y: 4 };
+print(p.dist2());                    // 25
+print(p.translate(1, 1).label());    // (4, 5)   — methods chain
+```
+
+Methods work on enums too, and a method may call another via `self.other()`. Calling a method on
+a value whose type doesn't define it yields the default `0` rather than an error.
+
 ## Enums and pattern matching
 
 Enums support unit, tuple, and struct-shaped variants. `match` is an expression (it yields a

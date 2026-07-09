@@ -3454,6 +3454,11 @@ fn first_mode(items: &[Item]) -> Option<Mode> {
             Item::Import { .. } => {}
             Item::Struct { .. } => {}
             Item::Enum { .. } => {}
+            Item::Impl { methods, .. } => {
+                if let Some(mode) = first_mode(methods) {
+                    return Some(mode);
+                }
+            }
         }
     }
     None

@@ -1,0 +1,51 @@
+// EXPECT: (3, 4)|25|(4, 6)|5.0|circle area 300|square area 25|3
+// Methods via `impl` blocks: `self` is the receiver, dispatched on its runtime type.
+
+struct Point { x: int, y: int }
+
+impl Point {
+    fn label(self) { "(${self.x}, ${self.y})" }
+    fn dist2(self) { self.x * self.x + self.y * self.y }
+    fn add(self, other) { Point { x: self.x + other.x, y: self.y + other.y } }
+    fn scale(self, k) { Point { x: self.x * k, y: self.y * k } }
+}
+
+// Methods can dispatch across different types with the same name.
+enum Shape { Circle(int), Square(int) }
+impl Shape {
+    fn area(self) {
+        match self {
+            Shape::Circle(r) => 3 * r * r,
+            Shape::Square(s) => s * s,
+        }
+    }
+    fn report(self) {
+        match self {
+            Shape::Circle(r) => "circle area ${self.area()}",
+            Shape::Square(s) => "square area ${self.area()}",
+        }
+    }
+}
+
+struct Counter { n: int }
+impl Counter {
+    fn inc(self) { Counter { n: self.n + 1 } }
+    fn get(self) { self.n }
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 };
+    print(p.label());                       // (3, 4)
+    print(p.dist2());                       // 25
+
+    // method chaining builds new values
+    let q = p.add(Point { x: 1, y: 2 });
+    print(q.label());                       // (4, 6)
+    print(sqrt(p.dist2()));                 // 5.0
+
+    print(Shape::Circle(10).report());      // circle area 300
+    print(Shape::Square(5).report());       // square area 25
+
+    // chain across method calls
+    print(Counter { n: 0 }.inc().inc().inc().get());   // 3
+}

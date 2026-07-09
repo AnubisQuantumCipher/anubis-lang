@@ -138,6 +138,13 @@ pub enum Item {
         variants: Vec<EnumVariant>,
         span: Span,
     },
+    /// `impl Point { fn dist(self) { ... } ... }` — methods for a struct/enum type. Each method
+    /// is an `Item::Fn` taking `self` as its first parameter.
+    Impl {
+        type_name: String,
+        methods: Vec<Item>,
+        span: Span,
+    },
 }
 
 /// Shape of an enum variant.
@@ -988,7 +995,7 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
                     | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
-                    | "enum" | "match"
+                    | "enum" | "match" | "impl"
                     | "return" | "as" | "while" | "loop" | "break" | "continue" | "mut" | "for"
                     | "in" => Token::Keyword(id),
                     _ => Token::Ident(id),
@@ -1131,6 +1138,10 @@ impl Parser {
                 }
             } else if self.check_keyword("enum") {
                 if let Some(item) = self.parse_enum() {
+                    items.push(item);
+                }
+            } else if self.check_keyword("impl") {
+                if let Some(item) = self.parse_impl() {
                     items.push(item);
                 }
             } else {
@@ -1548,6 +1559,34 @@ impl Parser {
         Pattern::Wildcard
     }
 
+    fn parse_impl(&mut self) -> Option<Item> {
+        let start = self.expect_keyword("impl")?.span;
+        let (type_name, _) = self.expect_ident("expected type name after `impl`")?;
+        let _ = self.expect_token(Token::LBrace, "expected `{` after impl type");
+        let mut methods = vec![];
+        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            let attrs = self.parse_attributes();
+            if self.check_keyword("fn") {
+                if let Some(m) = self.parse_fn(attrs) {
+                    methods.push(m);
+                }
+            } else {
+                self.diagnostic("expected `fn` in impl block", self.current_span());
+                self.bump();
+            }
+        }
+        let _ = self.expect_token(Token::RBrace, "expected `}` after impl block");
+        let end = self.previous_end();
+        Some(Item::Impl {
+            type_name,
+            methods,
+            span: Span {
+                start: start.start,
+                end,
+            },
+        })
+    }
+
     fn parse_enum(&mut self) -> Option<Item> {
         let start = self.expect_keyword("enum")?.span;
         let (name, _) = self.expect_ident("expected enum name")?;
@@ -1800,6 +1839,10 @@ impl Parser {
                 }
             } else if self.check_keyword("enum") {
                 if let Some(item) = self.parse_enum() {
+                    items.push(item);
+                }
+            } else if self.check_keyword("impl") {
+                if let Some(item) = self.parse_impl() {
                     items.push(item);
                 }
             } else {
@@ -2775,6 +2818,9 @@ impl Parser {
             | Token::StringLit(_)
             | Token::LParen
             | Token::LBracket
+            // `{` in statement/tail position is a map literal — the language has no bare-block
+            // statement (blocks only appear as if/while/for/fn/lambda/match bodies).
+            | Token::LBrace
             | Token::Minus
             | Token::Tilde
             | Token::Pipe

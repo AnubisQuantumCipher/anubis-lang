@@ -467,6 +467,11 @@ fn collect_items(
                 let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
                 ctx.enum_variants.insert(name.clone(), names);
             }
+            // Methods are analyzed like free functions (their `self`/params are in scope for the
+            // body); they are not registered as callable-by-name, since they dispatch on receiver.
+            Item::Impl { methods, .. } => {
+                collect_items(methods, module, requested_mode, ctx);
+            }
         }
     }
 }
@@ -1331,6 +1336,7 @@ fn first_fn_body(items: &[Item]) -> Option<Vec<Stmt>> {
             Item::Import { .. } => {}
             Item::Struct { .. } => {}
             Item::Enum { .. } => {}
+            Item::Impl { .. } => {}
         }
     }
     None
