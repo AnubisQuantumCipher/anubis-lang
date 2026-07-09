@@ -1,0 +1,80 @@
+{
+  "backend": "risc0",
+  "cache_used": false,
+  "committed_journal_sha256": "8350694dc4c5858329921b521cda040f4abc90ab3ca4de5b6b052dfdda4a37d8",
+  "dev_mode": false,
+  "fresh_receipt_generated": true,
+  "guest_binding": "anubis-program",
+  "guest_binding_note": "guest is compiled from the input Anubis program's main(); ImageID binds to program; journal = P(I) for parameterized inputs",
+  "guest_elf_sha256": "5a927a406b471e6d51a9861c7aafad16d887f152af08a6a3f989bbea5bbb4df8",
+  "guest_source_sha256": "9285f444a67aeda5583f524170142b9ce1205f7bcc5da297cacdcf5d01ddd87f",
+  "image_id": "1945454059 1401166886 2847633429 859243671 2893448474 2690291901 3315081096 533401275",
+  "image_id_is_placeholder": false,
+  "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
+  "input_binary_magic": "0x414E4250",
+  "input_keys": [
+    "a",
+    "b"
+  ],
+  "input_mode": "json",
+  "input_redacted": false,
+  "input_schema_version": "1",
+  "input_sha256": "6d15d5b9d7596737a14770f5d8761108e4d92ae5107a6335f9c876523f7c9f07",
+  "input_source": "--input-json",
+  "journal_fields": {
+    "encoding": "u32_le_sequence",
+    "field_count": 2,
+    "fields": [
+      {
+        "index": 0,
+        "name": "sum",
+        "value_u32": 7
+      },
+      {
+        "index": 1,
+        "name": "product",
+        "value_u32": 12
+      }
+    ],
+    "named": true,
+    "names_from_guest": [
+      "sum",
+      "product"
+    ],
+    "schema_version": "1"
+  },
+  "lane": "cpu",
+  "lane_normalized": "cpu",
+  "metal_hybrid": {
+    "config_source": "cli:--metal-reference",
+    "cpu_forced_by_r0_disable_metal": true,
+    "enabled": true,
+    "external_r0vm_used": false,
+    "lane_observed": "cpu",
+    "lane_requested": "cpu",
+    "methods_patch_crates_io_active": true,
+    "observation_source": "env+receipt.verify.log+prove.log",
+    "patch_crates_io_active": true,
+    "prover_patch_crates_io_active": true,
+    "reference_path": "/Users/sicarii/Desktop/metal-hybrid-prover",
+    "risc0_circuit_rv32im_version": "4.0.4",
+    "risc0_zkp_version": "3.0.4",
+    "risc0_zkvm_version": "3.0.5",
+    "tier2_metal_available": false,
+    "vendored_patch_path": "/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im"
+  },
+  "method_id_type": "risc0_image_id_u32x8",
+  "methods_build_success": true,
+  "mock_prover": false,
+  "parameterized": true,
+  "placeholder_image_id": false,
+  "proof_detail": "child_success=true receipt_present=true image_id_valid=true elf_present=true; child_status=exit status: 0",
+  "prover": "local-child",
+  "receipt_generated_at": "2026-07-09T16:29:32.901060+00:00",
+  "receipt_sha256": "517549ac2492f73f474ffb196e26ca80e2e712e97f2877fdb3cfcd991a8dafed",
+  "receipt_verified_at": "2026-07-09T16:29:32.901060+00:00",
+  "risc0_version": "3.0.5",
+  "run_stamp": "2026-07-09T16:29:32.901060+00:00",
+  "schema_version": "1.4",
+  "verify_status": "passed"
+}

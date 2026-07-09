@@ -1,0 +1,22 @@
+{
+  "encoding": "u32_le_sequence",
+  "field_count": 2,
+  "fields": [
+    {
+      "index": 0,
+      "name": "sum",
+      "value_u32": 7
+    },
+    {
+      "index": 1,
+      "name": "product",
+      "value_u32": 12
+    }
+  ],
+  "named": true,
+  "names_from_guest": [
+    "sum",
+    "product"
+  ],
+  "schema_version": "1"
+}

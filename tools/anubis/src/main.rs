@@ -1411,8 +1411,29 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     "observation_source": "env+receipt.verify.log+prove.log"
                 });
                 let input_meta = proof_inputs.metadata_json();
+                let guest_src_path = risc0_side.join("guest/src/main.rs");
+                let journal_path = risc0_side.join("journal.bin");
+                let journal_fields = {
+                    let jbytes = std::fs::read(&journal_path).unwrap_or_default();
+                    let gsrc = std::fs::read_to_string(&guest_src_path).unwrap_or_default();
+                    match proof_input::journal_fields_json(&jbytes, &gsrc) {
+                        Ok(v) => {
+                            let _ = std::fs::write(
+                                risc0_side.join("journal_decoded.json"),
+                                serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into()),
+                            );
+                            v
+                        }
+                        Err(e) => serde_json::json!({
+                            "error": e.to_string(),
+                            "field_count": 0,
+                            "named": false,
+                            "fields": [],
+                        }),
+                    }
+                };
                 let meta = serde_json::json!({
-                    "schema_version": "1.3",
+                    "schema_version": "1.4",
                     "backend": "risc0",
                     "risc0_version": "3.0.5",
                     "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
@@ -1420,6 +1441,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     "guest_binding": "anubis-program",
                     "guest_binding_note": "guest is compiled from the input Anubis program's main(); ImageID binds to program; journal = P(I) for parameterized inputs",
                     "committed_journal_sha256": sha256_of_file_or("missing", &risc0_side.join("journal.bin")),
+                    "journal_fields": journal_fields,
                     "image_id": real_id,
                     "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
                     "method_id_type": "risc0_image_id_u32x8",
@@ -1446,6 +1468,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     "input_redacted": input_meta["input_redacted"],
                     "input_schema_version": input_meta["input_schema_version"],
                     "input_keys": input_meta["input_keys"],
+                    "input_binary_magic": input_meta["input_binary_magic"],
                     "parameterized": !proof_inputs.values.is_empty(),
                 });
                 std::fs::write(
@@ -3024,10 +3047,27 @@ fn anubis_proof_input_bool_val(name: &str) -> AnubisValue {
     AnubisValue::Bool(anubis_proof_input_i64(name) != 0)
 }
 
+/// Named public output: commits one u32 to the journal.
+/// The string name is for host-side journal_fields binding (extracted from guest source).
+/// Order of proof_commit_u32 calls = order of journal u32 slots.
+static ANUBIS_NAMED_COMMITS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn anubis_proof_commit_u32(_name: &str, v: AnubisValue) -> AnubisValue {
+    let w: u32 = v.as_i64() as u32;
+    env::commit(&w);
+    ANUBIS_NAMED_COMMITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    AnubisValue::Int(w as i64)
+}
+
 /// Commit public outputs to the RISC0 journal.
+/// - If any `proof_commit_u32` ran, return is ignored (named fields already committed).
 /// - Scalar int/bool/str → one little-endian u32 (v1-compatible).
 /// - List → one u32 per element (multi-field journal). Nested lists use length as u32.
 fn anubis_commit_journal(result: AnubisValue) {
+    if ANUBIS_NAMED_COMMITS.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        return;
+    }
     match result {
         AnubisValue::List(items) => {
             for item in items {
@@ -3380,7 +3420,13 @@ fn is_poc_kit_builtin(callee: &str) -> bool {
 }
 
 fn is_proof_input_builtin(callee: &str) -> bool {
-    matches!(callee, "proof_input_u32" | "proof_input_bool" | "proof_input_u64")
+    matches!(
+        callee,
+        "proof_input_u32"
+            | "proof_input_bool"
+            | "proof_input_u64"
+            | "proof_commit_u32"
+    )
 }
 
 fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
@@ -3435,6 +3481,28 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
                 ));
             }
             if is_proof_input_builtin(callee) {
+                if callee == "proof_commit_u32" {
+                    if args.len() != 2 {
+                        return Err(unsupported_run(
+                            "proof_commit_u32 requires (\"name\", value)",
+                        ));
+                    }
+                    let key = match &args[0] {
+                        Expr::Literal(s) => s.trim_matches('"').to_string(),
+                        Expr::Var(s) => s.clone(),
+                        _ => {
+                            return Err(unsupported_run(
+                                "proof_commit_u32 name must be a string literal",
+                            ))
+                        }
+                    };
+                    let val = safe_run_expr(&args[1], allow_research)?;
+                    return Ok(format!(
+                        "anubis_proof_commit_u32({}, {})",
+                        rust_string_lit(&key)?,
+                        val
+                    ));
+                }
                 let key = match args.first() {
                     Some(Expr::Literal(s)) => s.trim_matches('"').to_string(),
                     Some(Expr::Var(s)) => s.clone(),

@@ -1,0 +1,10 @@
+// Named multi-field journal: proof_commit_u32 binds public output slots by name.
+// Prove with: anubis prove ... --input-json '{"a":3,"b":4}'
+//   → journal [7, 12] with names sum, product in risc0_metadata.journal_fields
+fn main() {
+    let a = proof_input_u32("a");
+    let b = proof_input_u32("b");
+    proof_commit_u32("sum", a + b);
+    proof_commit_u32("product", a * b);
+    return 0;
+}

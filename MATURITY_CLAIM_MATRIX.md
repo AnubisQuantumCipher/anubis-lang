@@ -161,3 +161,5 @@ Public outputs beyond a single u32: `return [a, b, …]` commits each field via
 | Different multi-field inputs → different journals, same ImageID | REAL | a,b=(3,4) vs (5,6) → `[7,12]` vs `[11,30]` | same gate | program-bound |
 | Scalar journal still 4-byte u32 | REAL | factorial n=5 → 120 | same gate regression | no break of parameterized path |
 | Private witness / redacted input split | NOT CLAIMED | inputs already not in journal (env::read only) | — | no selective redaction metadata yet |
+| Named journal fields (`proof_commit_u32`) | REAL | `journal_fields` + `journal_decoded.json` | `bash scripts/run_named_journal_gate.sh` | names from guest source; values from journal |
+| Host journal decode (u32 LE sequence) | REAL | `decode_journal_u32s` / `journal_fields_json` | same gate | synthetic `field_N` if unnamed |

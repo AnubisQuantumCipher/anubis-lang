@@ -71,26 +71,40 @@ for (key, value) in BTreeMap order:
 
 Guest `anubis_load_proof_inputs()` runs before `anb_main()`, fills `OnceLock<HashMap<String,i64>>`.
 
-## Journal (v1 scalar + v2 multi-field)
+## Journal (v1 scalar + v2 multi-field + v3 named)
 
 ```rust
 let r = anb_main();
 anubis_commit_journal(r);
-// scalar return  → one env::commit(u32)   (v1-compatible; journal.bin length 4)
-// list return    → one env::commit(u32) per element (multi-field; length 4*N)
+// proof_commit_u32("name", v) → env::commit(u32) immediately (names extracted from guest source)
+// if any named commits: return is ignored
+// else scalar return  → one env::commit(u32)   (v1-compatible; journal.bin length 4)
+// else list return    → one env::commit(u32) per element (multi-field; length 4*N)
 ```
 
-Example multi-field program (`examples/proof/proof_multi_field.anb`):
+Host decodes `journal.bin` as LE u32 sequence and writes:
+
+- `backend/risc0/journal_decoded.json`
+- `risc0_metadata.json` → `journal_fields` (`name`, `value_u32`, `named`)
+
+Example named fields (`examples/proof/proof_named_fields.anb`):
 
 ```anubis
 fn main() {
     let a = proof_input_u32("a");
     let b = proof_input_u32("b");
-    return [a + b, a * b];  // journal: [7, 12] for a=3,b=4
+    proof_commit_u32("sum", a + b);
+    proof_commit_u32("product", a * b);
+    return 0;
 }
 ```
 
-Gate: `bash scripts/run_multi_field_journal_gate.sh`
+Gates:
+
+```bash
+bash scripts/run_multi_field_journal_gate.sh
+bash scripts/run_named_journal_gate.sh
+```
 
 ## Metadata fields (`risc0_metadata.json`)
 

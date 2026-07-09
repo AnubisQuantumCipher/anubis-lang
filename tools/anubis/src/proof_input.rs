@@ -148,6 +148,73 @@ pub fn decode_anbp_header(blob: &[u8]) -> Result<u32> {
     Ok(u32::from_le_bytes(n))
 }
 
+/// Decode a RISC0 journal as a sequence of little-endian u32 public outputs.
+pub fn decode_journal_u32s(journal: &[u8]) -> Result<Vec<u32>> {
+    if journal.is_empty() {
+        return Ok(vec![]);
+    }
+    if !journal.len().is_multiple_of(4) {
+        return Err(anyhow!(
+            "ANUBIS_JOURNAL_BAD_LENGTH: {} bytes (need multiple of 4)",
+            journal.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(journal.len() / 4);
+    for chunk in journal.chunks_exact(4) {
+        let mut b = [0u8; 4];
+        b.copy_from_slice(chunk);
+        out.push(u32::from_le_bytes(b));
+    }
+    Ok(out)
+}
+
+/// Extract ordered field names from guest source for `anubis_proof_commit_u32("name", …)`.
+/// Names bind journal slots to host-readable labels (program-derived, not hardcoded).
+pub fn extract_commit_field_names(guest_source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = guest_source;
+    while let Some(idx) = rest.find("anubis_proof_commit_u32(") {
+        rest = &rest[idx + "anubis_proof_commit_u32(".len()..];
+        let t = rest.trim_start();
+        if !t.starts_with('"') {
+            continue;
+        }
+        let t = &t[1..];
+        if let Some(end) = t.find('"') {
+            names.push(t[..end].to_string());
+            rest = &t[end + 1..];
+        }
+    }
+    names
+}
+
+/// Pair decoded journal u32s with guest-declared names (or synthetic field_N).
+pub fn journal_fields_json(journal: &[u8], guest_source: &str) -> Result<serde_json::Value> {
+    let values = decode_journal_u32s(journal)?;
+    let names = extract_commit_field_names(guest_source);
+    let mut fields = Vec::new();
+    for (i, v) in values.iter().enumerate() {
+        let name = names
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| format!("field_{i}"));
+        fields.push(serde_json::json!({
+            "index": i,
+            "name": name,
+            "value_u32": v,
+        }));
+    }
+    let named = !names.is_empty() && names.len() == values.len();
+    Ok(serde_json::json!({
+        "schema_version": "1",
+        "field_count": values.len(),
+        "named": named,
+        "names_from_guest": names,
+        "fields": fields,
+        "encoding": "u32_le_sequence",
+    }))
+}
+
 pub fn resolve_proof_inputs(
     input_json: Option<&str>,
     input_file: Option<&Path>,
@@ -191,5 +258,26 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("414E4250"));
+    }
+
+    #[test]
+    fn journal_named_fields_decode() {
+        let journal = {
+            let mut v = Vec::new();
+            v.extend_from_slice(&7u32.to_le_bytes());
+            v.extend_from_slice(&12u32.to_le_bytes());
+            v
+        };
+        let guest = r#"
+            anubis_proof_commit_u32("sum", x);
+            anubis_proof_commit_u32("product", y);
+        "#;
+        let j = journal_fields_json(&journal, guest).unwrap();
+        assert_eq!(j["field_count"], 2);
+        assert_eq!(j["named"], true);
+        assert_eq!(j["fields"][0]["name"], "sum");
+        assert_eq!(j["fields"][0]["value_u32"], 7);
+        assert_eq!(j["fields"][1]["name"], "product");
+        assert_eq!(j["fields"][1]["value_u32"], 12);
     }
 }
