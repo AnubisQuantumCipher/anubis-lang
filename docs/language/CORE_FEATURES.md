@@ -8,8 +8,12 @@ This document lists what is REAL (implemented + tested by fixtures/runner), PART
 - `fn` definitions with typed params (u32 etc.)
 - `let x = e;`, `let x: u32 = e;`
 - Primitives: bool, u8, u32 (literals + ops)
-- Expressions: literals (int/string/bool), vars, + - *, comparisons, &, calls, parens
-- Control: if/else, return (basic)
+- Expressions: literals (int/string/bool), vars, `+ - * / %`, comparisons `== != < <= > >=`,
+  logical `&& || !`, unary `-`/`!`, bitwise `&`, calls, parens
+- Control: `if / else if / else`, `while`, `loop`, `break`, `continue`, `return expr`
+- Mutation: assignment `x = expr;`
+- Recursion: user functions + mutual recursion execute on a real call stack (`anubis run`)
+- **Turing-complete execution** — see TURING_COMPLETENESS.md and tests/fixtures/turing_core/
 - Structs: decl, literal, field access (added/required in slice)
 - Calls: user fns + builtins symbolic/assume/assert/taint_source/declassify/sink
 - Special lowering: taint tracking, declassify policy+reason enforcement, symbolic constraints, solver obligations, assert/assume
@@ -27,7 +31,7 @@ This document lists what is REAL (implemented + tested by fixtures/runner), PART
 ## PLANNED (explicitly not required / out of scope for this slice)
 
 - Enums / tagged unions (document in UNSUPPORTED)
-- while / for loops (if not trivial to add; provide working if/else coverage)
+- `for` loops (range/iterator form; `while` is REAL, use it today)
 - Result / error handling types in language surface
 - Block comments `/* */`
 - Large stdlib (only the 9 minimal builtins listed in plan)

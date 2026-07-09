@@ -44,3 +44,22 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Security language competitive radar (Gate 15) | REAL (this tranche) | docs/research/SECURITY_LANGUAGE_RADAR_2026.md with citations | (this doc) | CodeQL/Semgrep/KLEE/angr/libFuzzer/RISC0/Metal/etc. analysis + honest Anubis positioning |
 | Security capability model + effect system (Gate 15) | PARTIAL (advancing) | parser attrs + mode from @ + effect checks (shell/file/network) + ANUBIS_* errors in middle + CLI | anubis check @research... ; run_security_fixtures | Parser attaches attrs, mode inference, enforcement for safe/poc/auth; more in progress |
 
+## Probe + Core Tranche (2026-07-07)
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| Runtime probe capability evidence | REAL | `runtime-probe.json`, `RUNTIME_PROBE.md`, `MANIFEST.sha256` | `anubis runtime-probe --json --evidence --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --out out/a16_runtime_probe` | Captures host/toolchain/RISC0/Metal reference identity and tree hashes; explicitly not proof execution |
+| Runtime plan embeds probe truth | REAL PLAN-ONLY | `runtime-plan.json` with `runtime_probe`, `probe_hash`, `probe_status` | `anubis runtime-plan examples/risc0_receipt.anb --backend risc0 --lane metal-hybrid --apple-native --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --json --evidence --out out/a16_runtime_plan_probe` | `status=plan-only`, `executed=false`; probe is capability evidence only |
+| Ordinary safe `anubis run` | PARTIAL | `examples/hello_normal.anb`, `run-summary.json`, `stdout.txt`, `RUN.md` | `anubis run examples/hello_normal.anb --evidence --out out/a16_run_hello` | Supports first safe subset: let/literals/vars/arithmetic/comparisons/string concat/print/if/return; unsupported constructs fail closed |
+| Runtime execution / planned-vs-observed enforcement | DEFERRED | future `runtime-exec.json` | future `anubis runtime-exec ...` | Next hard tranche; no current claim that runtime-plan executed a receipt path |
+
+## Turing-Complete Executable Core (2026-07-09)
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| `while` / `loop` / `break` / `continue` execute | REAL | `tests/fixtures/turing_core/while_counter.anb` (→55), `loop_break.anb` (→110); `out/turing_core/report.json` | `bash scripts/run_turing_core_fixtures.sh --out out/turing_core` | Unbounded iteration lowered to native Rust loops in `anubis run` |
+| Mutation (`x = expr;`) executes | REAL | `while_counter.anb`, `collatz.anb` (→111) | `./target/release/anubis run tests/fixtures/turing_core/collatz.anb` | `let` bindings emitted `mut`; assignment mutates state |
+| Recursion + mutual recursion execute (real call stack) | REAL | `recursive_factorial.anb` (→120), `recursive_fibonacci.anb` (→55), `mutual_recursion.anb` (→true) | `bash scripts/run_turing_core_fixtures.sh` | Whole program lowered; each fn → Rust fn; recursion on Rust stack |
+| Operator set `/ % != && || !` + unary `-`/`!` + `else if` | REAL | `parses_unary_and_extended_operators`, `parses_else_if_chain_and_recursion` tests; `ops` fixture | `cargo test -p anubis-compiler` | Short-circuit `&&`/`||`; parser + eval both covered |
+| **Turing completeness (universality witness)** | REAL | `tests/fixtures/turing_core/turing_machine.anb` → `14`/`6`; cross-checked vs BB-3 constants S(3)=14 Σ(3)=6 and an independent reference simulator; `docs/language/TURING_COMPLETENESS.md` | `./target/release/anubis run tests/fixtures/turing_core/turing_machine.anb` ; `jq -e '.overall_verdict=="PASS"' out/turing_core/report.json` | TM simulator written in Anubis (two-integer-stack tape) halts with the known busy-beaver output |
+| Turing-core gate (honest, no false-green) | REAL | `scripts/run_turing_core_fixtures.sh` compares stdout byte-for-byte to `.expected`; verdict derived, never default | `bash scripts/run_turing_core_fixtures.sh` → `Overall: PASS (8/8)` | Missing binary/expected/mismatch/nonzero-exit ⇒ FAIL |

@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// FEATURE: turing-core (tree recursion)
+fn fib(n: u32) {
+    if n < 2 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+fn main() { print(fib(10)); }

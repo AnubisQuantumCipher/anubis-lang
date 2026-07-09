@@ -35,15 +35,21 @@
 5. Expressions
    - Integer, boolean, string literals.
    - Variable references.
-   - Arithmetic: `+ - *`
+   - Arithmetic: `+ - * / %`
    - Comparisons: `== != < <= > >=`
+   - Logical: `&& || !` (short-circuiting `&&`/`||`)
+   - Unary: `-expr` (negation), `!expr` (logical not)
    - Bitwise: `&`
    - Parenthesized: `(expr)`
 
 6. Control flow
-   - `if cond { ... } else { ... }`
-   - `return` (partial)
-   - `while` / `for`: PLANNED (use if/else + recursion or document).
+   - `if cond { ... } else { ... }`, including `else if` chains — REAL.
+   - `while cond { ... }`, `loop { ... }`, `break`, `continue` — REAL and executed by `anubis run`.
+   - `return expr;` — REAL (functions return values; drives recursion).
+   - Assignment `x = expr;` (mutation of an existing binding) — REAL.
+   - `for`: PLANNED (write as `while`; range/iterator `for` not yet in the grammar).
+   - The language is Turing-complete at runtime: loops + mutation + recursion execute.
+     See [TURING_COMPLETENESS.md](TURING_COMPLETENESS.md).
 
 7. Structs (added in this slice)
    - `struct Point { x: u32, y: u32 }`

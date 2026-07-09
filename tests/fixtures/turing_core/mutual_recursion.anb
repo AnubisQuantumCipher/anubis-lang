@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// FEATURE: turing-core (mutual recursion between functions)
+fn is_even(n: u32) {
+    if n == 0 { return true; }
+    return is_odd(n - 1);
+}
+fn is_odd(n: u32) {
+    if n == 0 { return false; }
+    return is_even(n - 1);
+}
+fn main() { print(is_even(10)); }

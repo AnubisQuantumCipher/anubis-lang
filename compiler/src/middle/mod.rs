@@ -510,6 +510,18 @@ fn analyze_stmts(
                     );
                 }
             }
+            Stmt::While { cond, body } => {
+                if expr_taint_source(cond, scope).is_some() {
+                    effects.push("tainted-branch".into());
+                }
+                effects.push("loop".into());
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+            }
+            Stmt::Loop { body } => {
+                effects.push("loop".into());
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+            }
+            Stmt::Break | Stmt::Continue => {}
             Stmt::SpecBlock { .. } => effects.push("spec".into()),
         }
     }
@@ -847,6 +859,14 @@ fn expr_to_smt_with_width(
                 _ => format!("({} {} {})", op, l, r),
             }
         }
+        Expr::Unary { op, expr } => {
+            let inner = expr_to_smt_with_width(expr, widths, expected_width);
+            match op.as_str() {
+                "-" => format!("(bvneg {})", inner),
+                "!" => format!("(not {})", inner),
+                _ => inner,
+            }
+        }
         Expr::Cast { expr, ty } => expr_to_smt_with_width(expr, widths, Some(bitwidth_of(ty))),
         Expr::Declassify { inner, .. } => expr_to_smt_with_width(inner, widths, expected_width),
         Expr::Assume(inner) | Expr::Assert(inner) => {
@@ -867,6 +887,7 @@ fn expr_bitwidth(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<u32> {
         Expr::Binary { lhs, rhs, .. } => {
             expr_bitwidth(lhs, widths).or_else(|| expr_bitwidth(rhs, widths))
         }
+        Expr::Unary { expr, .. } => expr_bitwidth(expr, widths),
         Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
             expr_bitwidth(inner, widths)
         }
@@ -1003,6 +1024,7 @@ fn expr_taint_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Opt
         Expr::Binary { lhs, rhs, .. } => {
             expr_taint_source(lhs, scope).or_else(|| expr_taint_source(rhs, scope))
         }
+        Expr::Unary { expr, .. } => expr_taint_source(expr, scope),
         Expr::Call { args, .. } => args.iter().find_map(|arg| expr_taint_source(arg, scope)),
         Expr::Tainted { inner, .. } => expr_taint_source(inner, scope),
         Expr::Assume(inner) | Expr::Assert(inner) => expr_taint_source(inner, scope),

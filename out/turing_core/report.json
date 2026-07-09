@@ -1,0 +1,15 @@
+{
+  "binary": "target/release/anubis",
+  "fixtures": [
+    {"name": "collatz", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "loop_break", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "mutual_recursion", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "nested_loops", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "recursive_factorial", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "recursive_fibonacci", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "turing_machine", "status": "PASS", "detail": "stdout matches expected"},
+    {"name": "while_counter", "status": "PASS", "detail": "stdout matches expected"}
+  ],
+  "total": 8, "passed": 8, "failed": 0,
+  "overall_verdict": "PASS"
+}

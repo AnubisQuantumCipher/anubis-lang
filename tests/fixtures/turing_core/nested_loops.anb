@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// FEATURE: turing-core (nested while loops)
+fn main() {
+    let product = 0;
+    let i = 0;
+    while i < 7 {
+        let j = 0;
+        while j < 6 {
+            product = product + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    print(product);
+}

@@ -87,6 +87,83 @@ mod tests {
     }
 
     #[test]
+    fn parses_while_loop_and_assignment() {
+        let src = "fn main() { let i = 0; while i < 3 { i = i + 1; } }";
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("expected fn");
+        };
+        let frontend::Stmt::While { body: wbody, .. } = &body[1] else {
+            panic!("expected while statement, got {:?}", body[1]);
+        };
+        assert!(
+            matches!(&wbody[0], frontend::Stmt::Assign { .. }),
+            "while body should contain an assignment, got {:?}",
+            wbody[0]
+        );
+    }
+
+    #[test]
+    fn parses_unary_and_extended_operators() {
+        let src =
+            "fn main() { let a = -5; let b = !a; let c = 17 % 5; let d = a != b; let e = a && b; }";
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("expected fn");
+        };
+        let frontend::Stmt::Let { init, .. } = &body[0] else {
+            panic!("expected let");
+        };
+        assert!(
+            matches!(init, frontend::Expr::Unary { op, .. } if op == "-"),
+            "expected unary negation, got {:?}",
+            init
+        );
+        let frontend::Stmt::Let { init: modinit, .. } = &body[2] else {
+            panic!("expected modulo let");
+        };
+        assert!(
+            matches!(modinit, frontend::Expr::Binary { op, .. } if op == "%"),
+            "expected modulo operator, got {:?}",
+            modinit
+        );
+    }
+
+    #[test]
+    fn parses_else_if_chain_and_recursion() {
+        let src = "fn f(n: u32) { if n < 1 { return 0; } else if n < 2 { return 1; } else { return f(n - 1); } } fn main() { let x = f(3); }";
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        assert_eq!(parsed.ast.items.len(), 2, "expected two fn items");
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("expected fn f");
+        };
+        let frontend::Stmt::If { else_, .. } = &body[0] else {
+            panic!("expected if with else-if chain, got {:?}", body[0]);
+        };
+        let else_body = else_.as_ref().expect("else branch present");
+        assert!(
+            matches!(&else_body[0], frontend::Stmt::If { .. }),
+            "else branch should desugar `else if` into a nested if, got {:?}",
+            else_body[0]
+        );
+    }
+
+    #[test]
     fn parser_records_spans_params_and_precedence() {
         let src = "fn add(x: u32, y: u32) { let z = x + y * 3; }";
         let parsed = frontend::parse_source_detailed(src);

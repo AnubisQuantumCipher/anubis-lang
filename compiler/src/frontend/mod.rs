@@ -18,13 +18,19 @@ pub enum Token {
     Comma,
     Dot,
     Star,
+    Slash,
+    Percent,
     Amp,
+    AmpAmp,
+    PipePipe,
+    Bang,
     Lt,
     Gt,
     Le,
     Ge,
     Eq,
     EqEq,
+    Ne,
     Plus,
     Minus,
     Eof,
@@ -132,6 +138,15 @@ pub enum Stmt {
         then: Vec<Stmt>,
         else_: Option<Vec<Stmt>>,
     },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+    },
+    Loop {
+        body: Vec<Stmt>,
+    },
+    Break,
+    Continue,
     ResearchBlock {
         intent: Option<String>,
         body: Vec<Stmt>,
@@ -163,6 +178,10 @@ pub enum Expr {
         op: String,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
+    },
+    Unary {
+        op: String,
+        expr: Box<Expr>,
     },
     Cast {
         expr: Box<Expr>,
@@ -222,7 +241,60 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     }
                     continue;
                 }
-                // otherwise fallthrough (rare in our examples)
+                tokens.push(SpannedToken {
+                    token: Token::Slash,
+                    span: Span {
+                        start,
+                        end: start + 1,
+                    },
+                });
+            }
+            '%' => tokens.push(SpannedToken {
+                token: Token::Percent,
+                span: Span {
+                    start,
+                    end: start + 1,
+                },
+            }),
+            '!' => {
+                if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken {
+                        token: Token::Ne,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
+                } else {
+                    tokens.push(SpannedToken {
+                        token: Token::Bang,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
+                }
+            }
+            '|' => {
+                if let Some(&(idx, '|')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken {
+                        token: Token::PipePipe,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
+                } else {
+                    tokens.push(SpannedToken {
+                        token: Token::Other("|".into()),
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
+                }
             }
             '{' => tokens.push(SpannedToken {
                 token: Token::LBrace,
@@ -301,13 +373,26 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     end: start + 1,
                 },
             }),
-            '&' => tokens.push(SpannedToken {
-                token: Token::Amp,
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
+            '&' => {
+                if let Some(&(idx, '&')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken {
+                        token: Token::AmpAmp,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
+                } else {
+                    tokens.push(SpannedToken {
+                        token: Token::Amp,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
+                }
+            }
             '<' => {
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
@@ -432,7 +517,9 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
                     | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
-                    | "return" | "as" => Token::Keyword(id),
+                    | "return" | "as" | "while" | "loop" | "break" | "continue" | "mut" => {
+                        Token::Keyword(id)
+                    }
                     _ => Token::Ident(id),
                 };
                 tokens.push(SpannedToken {
@@ -805,6 +892,37 @@ impl Parser {
         if self.check_keyword("if") {
             return self.parse_if_stmt();
         }
+        if self.check_keyword("while") {
+            self.bump();
+            let cond = self.parse_expr(0);
+            let body = if self.check_token(&Token::LBrace) {
+                self.parse_block()
+            } else {
+                self.diagnostic("expected `{` after while cond", self.current_span());
+                vec![]
+            };
+            return Some(Stmt::While { cond, body });
+        }
+        if self.check_keyword("loop") {
+            self.bump();
+            let body = if self.check_token(&Token::LBrace) {
+                self.parse_block()
+            } else {
+                self.diagnostic("expected `{` after loop", self.current_span());
+                vec![]
+            };
+            return Some(Stmt::Loop { body });
+        }
+        if self.check_keyword("break") {
+            self.bump();
+            self.consume_optional_semi();
+            return Some(Stmt::Break);
+        }
+        if self.check_keyword("continue") {
+            self.bump();
+            self.consume_optional_semi();
+            return Some(Stmt::Continue);
+        }
         if self.check_keyword("research") {
             let _start = self.bump()?;
             let body = self.parse_block();
@@ -845,6 +963,16 @@ impl Parser {
         }
         if self.starts_expr() {
             let expr = self.parse_expr(0);
+            // Assignment: `lvalue = expr;` (mutation of an existing binding or field).
+            if self.check_token(&Token::Eq) {
+                self.bump();
+                let value = self.parse_expr(0);
+                self.consume_optional_semi();
+                return Some(Stmt::Assign {
+                    target: expr,
+                    value,
+                });
+            }
             self.consume_optional_semi();
             return Some(Stmt::ExprStmt(expr));
         }
@@ -854,6 +982,10 @@ impl Parser {
 
     fn parse_let(&mut self) -> Option<Stmt> {
         let start = self.expect_keyword("let")?.span;
+        // Optional `mut` — all Anubis bindings are reassignable, so `mut` is accepted but not required.
+        if self.check_keyword("mut") {
+            self.bump();
+        }
         let (name, _) = self.expect_ident("expected binding name after `let`")?;
         let ty = if self.check_token(&Token::Colon) {
             self.bump();
@@ -906,12 +1038,17 @@ impl Parser {
         let mut else_ = None;
         if self.check_keyword("else") {
             let _ = self.bump();
-            else_ = Some(if self.check_token(&Token::LBrace) {
-                self.parse_block()
+            if self.check_keyword("if") {
+                // `else if ...` desugars to an else-block containing a single nested if.
+                else_ = self.parse_if_stmt().map(|nested| vec![nested]);
             } else {
-                self.diagnostic("expected `{` after else", self.current_span());
-                vec![]
-            });
+                else_ = Some(if self.check_token(&Token::LBrace) {
+                    self.parse_block()
+                } else {
+                    self.diagnostic("expected `{` after else", self.current_span());
+                    vec![]
+                });
+            }
         }
         Some(Stmt::If { cond, then, else_ })
     }
@@ -1014,6 +1151,23 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Expr {
+        // Prefix unary operators: `-expr` (negation) and `!expr` (logical not).
+        if self.check_token(&Token::Minus) {
+            self.bump();
+            let inner = self.parse_primary();
+            return Expr::Unary {
+                op: "-".into(),
+                expr: Box::new(inner),
+            };
+        }
+        if self.check_token(&Token::Bang) {
+            self.bump();
+            let inner = self.parse_primary();
+            return Expr::Unary {
+                op: "!".into(),
+                expr: Box::new(inner),
+            };
+        }
         let Some(tok) = self.bump() else {
             return Expr::Other("eof".into());
         };
@@ -1214,21 +1368,32 @@ impl Parser {
 
     fn current_binary_op(&self) -> Option<(String, u8)> {
         match &self.current().token {
-            Token::Plus => Some(("+".into(), 20)),
-            Token::Minus => Some(("-".into(), 20)),
-            Token::Star => Some(("*".into(), 30)),
+            Token::PipePipe => Some(("||".into(), 4)),
+            Token::AmpAmp => Some(("&&".into(), 5)),
+            Token::Amp => Some(("&".into(), 8)),
             Token::Lt => Some(("<".into(), 10)),
             Token::Gt => Some((">".into(), 10)),
             Token::Le => Some(("<=".into(), 10)),
             Token::Ge => Some((">=".into(), 10)),
             Token::EqEq => Some(("==".into(), 10)),
+            Token::Ne => Some(("!=".into(), 10)),
+            Token::Plus => Some(("+".into(), 20)),
+            Token::Minus => Some(("-".into(), 20)),
+            Token::Star => Some(("*".into(), 30)),
+            Token::Slash => Some(("/".into(), 30)),
+            Token::Percent => Some(("%".into(), 30)),
             _ => None,
         }
     }
 
     fn starts_expr(&self) -> bool {
         match &self.current().token {
-            Token::Ident(_) | Token::Number(_) | Token::StringLit(_) | Token::LParen => true,
+            Token::Ident(_)
+            | Token::Number(_)
+            | Token::StringLit(_)
+            | Token::LParen
+            | Token::Minus
+            | Token::Bang => true,
             Token::Keyword(k) => k == "declassify" || k == "true" || k == "false" || k == "unified",
             _ => false,
         }

@@ -2,10 +2,19 @@
 
 **Rule:** Anything not implemented in this slice **must** be listed here and reflected in MATURITY_CLAIM_MATRIX.md + A_PLUS_ACCEPTANCE_CRITERIA.md. No over-claiming "general-purpose language complete".
 
-## Explicitly PLANNED (not real for this slice)
+## NOW REAL (previously planned — implemented 2026-07-09, see TURING_COMPLETENESS.md)
+
+- `while` loops, `loop`, `break`, `continue` — REAL and executed by `anubis run`.
+- Assignment / mutation (`x = expr;`) — REAL.
+- General recursion and mutual recursion (real call stack) — REAL.
+- Operators `/ % != && || !` and unary `-`/`!`, and `else if` chains — REAL.
+- **The executable language is Turing-complete** (loops + mutation + recursion), with a
+  runnable Turing-machine witness. Evidence: `bash scripts/run_turing_core_fixtures.sh`.
+
+## Explicitly PLANNED (not real yet)
 
 - Enums and tagged unions (`enum Color { Red, Blue(u32) }`)
-- `while` loops and `for` loops (C-style or iterator)
+- `for` loops (range / iterator form; use `while` today)
 - `Result<T,E>` / `Option` / error handling in the language surface (beyond assert/assume)
 - Block comments `/* ... */`
 - Full string type + operations beyond label literals (len, concat, etc. may be PARTIAL)
