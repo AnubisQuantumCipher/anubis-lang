@@ -163,3 +163,7 @@ Public outputs beyond a single u32: `return [a, b, …]` commits each field via
 | Private witness / redacted input split | NOT CLAIMED | inputs already not in journal (env::read only) | — | no selective redaction metadata yet |
 | Named journal fields (`proof_commit_u32`) | REAL | `journal_fields` + `journal_decoded.json` | `bash scripts/run_named_journal_gate.sh` | names from guest source; values from journal |
 | Host journal decode (u32 LE sequence) | REAL | `decode_journal_u32s` / `journal_fields_json` | same gate | synthetic `field_N` if unnamed |
+| `proof_assert` fail-closed in guest | REAL | out-of-range fails prove/run | `examples/proof/proof_assert_range.anb` | private x not in journal names |
+| `proof_commit_bool` | REAL | ok=1 in journal_fields | power gate | 0/1 public bit |
+| Engagement action receipt chain | REAL | `evidence/receipts/chain.jsonl` + tip | `anubis receipt-verify` | hash-chained; tamper fail-closed |
+| Power gate (language+proof+receipts) | REAL | `scripts/run_power_gate.sh` | bash gate | compound capability seal |

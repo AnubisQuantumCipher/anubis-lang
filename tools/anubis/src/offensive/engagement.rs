@@ -367,5 +367,9 @@ pub fn engage_status(path: &Path) -> Result<serde_json::Value> {
             "queue_requires": "operator",
             "admin_status_requires": "admin",
         },
+        "receipts": super::receipts::verify_chain(path).unwrap_or_else(|e| serde_json::json!({
+            "ok": false,
+            "error": e.to_string(),
+        })),
     }))
 }

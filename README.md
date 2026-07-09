@@ -17,9 +17,11 @@
 - `anubis runtime-plan --backend risc0 --lane metal-hybrid --apple-native` emits a source-derived UMPG-style operation DAG pointing proof/computation planning at `/Users/sicarii/Desktop/metal-hybrid-prover`
 - `anubis run examples/hello_normal.anb` executes ordinary safe Anubis code through the current native safe subset
 - **Bounty-grade PoC kit** (authorized local lab): packing (`p64`/`cyclic`), `target_run` process harness, mutation fuzz against local binaries, crash evidence — see `docs/language/POC_KIT.md`
-- **Offensive Platform (AOP)**: engagement-scoped C2 listener, agent generator, task queue, exploit modules, evidence — see `docs/language/OFFENSIVE_PLATFORM.md`
+- **Offensive Platform (AOP)**: engagement-scoped C2, agents, RBAC, hash-chained **action receipts** — see `docs/language/OFFENSIVE_PLATFORM.md`
+- **Proof-native language**: program-bound RISC0 guests, parameterized inputs, named journals, `proof_assert` / `proof_commit_*` — private witnesses stay off the journal
+- **Turing-complete executable core** (loops, mutation, recursion) with fixture gate
 - Excellent direct library entrypoints for agents/tests
-- Self-audit + reproducibility first-class
+- Self-audit + reproducibility first-class (`bash scripts/run_power_gate.sh`)
 
 See `docs/spec.md`, `docs/APPLE_NATIVE.md`, `docs/language/POC_KIT.md`, `docs/adr/`, `examples/`, and run `cargo test -p anubis-compiler`.
 

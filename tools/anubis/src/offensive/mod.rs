@@ -14,7 +14,9 @@ pub mod modules;
 pub mod packer;
 pub mod persistence;
 pub mod protocol;
+pub mod receipts;
 pub mod rop;
 pub mod scope;
 
 pub use engagement::{engage_init, engage_status, load_engagement};
+pub use receipts::{seal_action, verify_chain};

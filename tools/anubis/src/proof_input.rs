@@ -168,21 +168,35 @@ pub fn decode_journal_u32s(journal: &[u8]) -> Result<Vec<u32>> {
     Ok(out)
 }
 
-/// Extract ordered field names from guest source for `anubis_proof_commit_u32("name", …)`.
-/// Names bind journal slots to host-readable labels (program-derived, not hardcoded).
+/// Extract ordered field names from guest source for
+/// `anubis_proof_commit_u32("name", …)` / `anubis_proof_commit_bool("name", …)`.
+/// Only call sites with a string-literal first arg count (wrapper defs skipped).
 pub fn extract_commit_field_names(guest_source: &str) -> Vec<String> {
     let mut names = Vec::new();
-    let mut rest = guest_source;
-    while let Some(idx) = rest.find("anubis_proof_commit_u32(") {
-        rest = &rest[idx + "anubis_proof_commit_u32(".len()..];
-        let t = rest.trim_start();
-        if !t.starts_with('"') {
+    let mut pos = 0;
+    while pos < guest_source.len() {
+        let tail = &guest_source[pos..];
+        let u = tail.find("anubis_proof_commit_u32(");
+        let b = tail.find("anubis_proof_commit_bool(");
+        let (rel, nlen) = match (u, b) {
+            (Some(a), Some(c)) if a <= c => (a, "anubis_proof_commit_u32(".len()),
+            (Some(_), Some(c)) => (c, "anubis_proof_commit_bool(".len()),
+            (Some(a), None) => (a, "anubis_proof_commit_u32(".len()),
+            (None, Some(c)) => (c, "anubis_proof_commit_bool(".len()),
+            (None, None) => break,
+        };
+        pos += rel + nlen;
+        let after = guest_source[pos..].trim_start();
+        let skipped = guest_source[pos..].len() - after.len();
+        pos += skipped;
+        if !after.starts_with('"') {
             continue;
         }
-        let t = &t[1..];
-        if let Some(end) = t.find('"') {
-            names.push(t[..end].to_string());
-            rest = &t[end + 1..];
+        let after = &after[1..];
+        pos += 1;
+        if let Some(end) = after.find('"') {
+            names.push(after[..end].to_string());
+            pos += end + 1;
         }
     }
     names
@@ -279,5 +293,18 @@ mod tests {
         assert_eq!(j["fields"][0]["value_u32"], 7);
         assert_eq!(j["fields"][1]["name"], "product");
         assert_eq!(j["fields"][1]["value_u32"], 12);
+    }
+
+    #[test]
+    fn extract_bool_commit_names() {
+        let guest = r#"
+fn anubis_proof_commit_bool(name: &str, v: AnubisValue) -> AnubisValue {
+    anubis_proof_commit_u32(name, AnubisValue::Int(0))
+}
+    anubis_proof_commit_u32("lo", lo);
+    anubis_proof_commit_bool("ok", AnubisValue::Bool(true));
+"#;
+        let names = extract_commit_field_names(guest);
+        assert_eq!(names, vec!["lo".to_string(), "ok".to_string()]);
     }
 }

@@ -497,6 +497,14 @@ enum Commands {
         #[arg(long)]
         text: String,
     },
+
+    /// Verify the engagement action-receipt hash chain (fail-closed).
+    ReceiptVerify {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -905,6 +913,19 @@ fn main() -> Result<()> {
             authorization,
         } => {
             let path = offensive::engage_init(&dir, &name, &authorization)?;
+            if let Ok(eng) = offensive::load_engagement(&dir) {
+                let _ = offensive::seal_action(
+                    &dir,
+                    &eng.engagement_id,
+                    "engage_init",
+                    "system",
+                    serde_json::json!({
+                        "name": name,
+                        "authorization": authorization,
+                        "path": path.display().to_string(),
+                    }),
+                );
+            }
             println!("engagement initialized: {}", path.display());
             println!("  workspace: {}", dir.display());
             Ok(())
@@ -936,13 +957,25 @@ fn main() -> Result<()> {
             sleep_ms,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let _bin = offensive::agent::agent_generate(offensive::agent::AgentGenerateOpts {
+            let bin = offensive::agent::agent_generate(offensive::agent::AgentGenerateOpts {
                 engage: &eng,
                 engage_dir: &engage,
                 os: &os,
                 sleep_ms,
                 name: &name,
             })?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "agent_generate",
+                "operator",
+                serde_json::json!({
+                    "name": name,
+                    "os": os,
+                    "sleep_ms": sleep_ms,
+                    "binary": bin.display().to_string(),
+                }),
+            );
             Ok(())
         }
         Commands::TaskQueue {
@@ -962,9 +995,22 @@ fn main() -> Result<()> {
             };
             let path =
                 offensive::listener::queue_task_file(&engage, &agent_id, &module, &arg_list)?;
+            let receipt = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "task_queue",
+                &operator,
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "module": module,
+                    "args": arg_list,
+                    "inbox": path.display().to_string(),
+                }),
+            )?;
             println!(
-                "queued module=`{module}` agent=`{agent_id}` operator=`{operator}` -> {}",
-                path.display()
+                "queued module=`{module}` agent=`{agent_id}` operator=`{operator}` -> {} (receipt seq={})",
+                path.display(),
+                receipt.seq
             );
             Ok(())
         }
@@ -1025,6 +1071,7 @@ fn main() -> Result<()> {
                     "string_scramble": "REAL",
                     "rbac_queue_and_admin": "REAL",
                     "structured_allowed_targets": "REAL",
+                    "action_receipt_chain": "REAL",
                     "poc_kit_packing": "REAL",
                     "poc_kit_process_fuzz": "REAL",
                 },
@@ -1090,12 +1137,26 @@ fn main() -> Result<()> {
         } => {
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_ssh(&eng, &host, &user, &cmd)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "lateral_ssh",
+                "operator",
+                rep.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&rep)?);
             Ok(())
         }
         Commands::LateralSmb { engage, host } => {
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_smb_plan(&eng, &host)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "lateral_smb_plan",
+                "operator",
+                rep.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&rep)?);
             // PLAN_ONLY is success — never executes SMB.
             Ok(())
@@ -1124,12 +1185,34 @@ fn main() -> Result<()> {
             eng.assert_path(&input)?;
             let packs = engage.join("packs");
             let r = offensive::packer::pack_file(&input, &packs)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "pack_xor",
+                "operator",
+                r.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::StringScramble { text } => {
             let r = offensive::packer::scramble_string(&text);
             println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReceiptVerify { engage, json } => {
+            let report = offensive::verify_chain(&engage)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "receipt chain ok={} count={} tip={}",
+                    report["ok"], report["count"], report["tip"]
+                );
+            }
+            if report.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return Err(anyhow!("ANUBIS_RECEIPT_VERIFY_FAILED"));
+            }
             Ok(())
         }
         Commands::Prove {
@@ -2859,7 +2942,8 @@ fn lower_program_with_entry(
     let proof_input_runtime = if guest_proof_inputs {
         PROOF_INPUT_GUEST_RUNTIME_RS
     } else {
-        ""
+        // Native `anubis run`: commits are no-op (return value); asserts still fail-closed.
+        NATIVE_PROOF_STUBS_RS
     };
     Ok(format!(
         r#"
@@ -3013,6 +3097,42 @@ fn anubis_cmp(op: &str, lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {{
     ))
 }
 
+/// Native run stubs for proof builtins (no RISC0 journal; no serde in rustc-run).
+const NATIVE_PROOF_STUBS_RS: &str = r#"
+fn anubis_proof_input_u32_val(name: &str) -> AnubisValue {
+    // Lightweight env map: ANUBIS_PROOF_INPUTS="k=v,k2=v2"
+    if let Ok(raw) = std::env::var("ANUBIS_PROOF_INPUTS") {
+        for part in raw.split(',') {
+            let mut it = part.splitn(2, '=');
+            if let (Some(k), Some(v)) = (it.next(), it.next()) {
+                if k.trim() == name {
+                    if let Ok(n) = v.trim().parse::<i64>() {
+                        return AnubisValue::Int(n);
+                    }
+                }
+            }
+        }
+    }
+    panic!(
+        "ANUBIS_PROOF_INPUT_MISSING: key `{}` (set ANUBIS_PROOF_INPUTS=k=v for run, or use prove --input-json)",
+        name
+    );
+}
+fn anubis_proof_input_bool_val(name: &str) -> AnubisValue {
+    AnubisValue::Bool(anubis_proof_input_u32_val(name).as_i64() != 0)
+}
+fn anubis_proof_commit_u32(_name: &str, v: AnubisValue) -> AnubisValue { v }
+fn anubis_proof_commit_bool(_name: &str, v: AnubisValue) -> AnubisValue {
+    AnubisValue::Int(if v.as_bool() { 1 } else { 0 })
+}
+fn anubis_proof_assert(cond: AnubisValue) -> AnubisValue {
+    if !cond.as_bool() {
+        panic!("ANUBIS_PROOF_ASSERT_FAILED");
+    }
+    AnubisValue::Bool(true)
+}
+"#;
+
 /// Injected into RISC0 guests so `proof_input_u32` / `proof_input_bool` read host-supplied inputs
 /// and so journals can be multi-field (`return [..]` commits each u32).
 const PROOF_INPUT_GUEST_RUNTIME_RS: &str = r#"
@@ -3058,6 +3178,19 @@ fn anubis_proof_commit_u32(_name: &str, v: AnubisValue) -> AnubisValue {
     env::commit(&w);
     ANUBIS_NAMED_COMMITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     AnubisValue::Int(w as i64)
+}
+
+fn anubis_proof_commit_bool(name: &str, v: AnubisValue) -> AnubisValue {
+    let b: u32 = if v.as_bool() { 1 } else { 0 };
+    anubis_proof_commit_u32(name, AnubisValue::Int(b as i64))
+}
+
+/// In-circuit / guest assertion: false → panic → no valid receipt.
+fn anubis_proof_assert(cond: AnubisValue) -> AnubisValue {
+    if !cond.as_bool() {
+        panic!("ANUBIS_PROOF_ASSERT_FAILED");
+    }
+    AnubisValue::Bool(true)
 }
 
 /// Commit public outputs to the RISC0 journal.
@@ -3426,6 +3559,8 @@ fn is_proof_input_builtin(callee: &str) -> bool {
             | "proof_input_bool"
             | "proof_input_u64"
             | "proof_commit_u32"
+            | "proof_commit_bool"
+            | "proof_assert"
     )
 }
 
@@ -3481,10 +3616,17 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
                 ));
             }
             if is_proof_input_builtin(callee) {
-                if callee == "proof_commit_u32" {
+                if callee == "proof_assert" {
+                    if args.len() != 1 {
+                        return Err(unsupported_run("proof_assert requires one condition"));
+                    }
+                    let c = safe_run_expr(&args[0], allow_research)?;
+                    return Ok(format!("anubis_proof_assert({c})"));
+                }
+                if callee == "proof_commit_u32" || callee == "proof_commit_bool" {
                     if args.len() != 2 {
                         return Err(unsupported_run(
-                            "proof_commit_u32 requires (\"name\", value)",
+                            "proof_commit_* requires (\"name\", value)",
                         ));
                     }
                     let key = match &args[0] {
@@ -3492,13 +3634,18 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
                         Expr::Var(s) => s.clone(),
                         _ => {
                             return Err(unsupported_run(
-                                "proof_commit_u32 name must be a string literal",
+                                "proof_commit_* name must be a string literal",
                             ))
                         }
                     };
                     let val = safe_run_expr(&args[1], allow_research)?;
+                    let fn_name = if callee == "proof_commit_bool" {
+                        "anubis_proof_commit_bool"
+                    } else {
+                        "anubis_proof_commit_u32"
+                    };
                     return Ok(format!(
-                        "anubis_proof_commit_u32({}, {})",
+                        "{fn_name}({}, {})",
                         rust_string_lit(&key)?,
                         val
                     ));

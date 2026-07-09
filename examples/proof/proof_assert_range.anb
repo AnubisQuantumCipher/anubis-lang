@@ -1,0 +1,14 @@
+// Proof-native assert + named fields: prove x is in [lo, hi] without revealing x
+// only through public outputs lo, hi, ok (x stays private via env::read, not committed).
+// Prove: --input-json '{"x":7,"lo":1,"hi":10}' → ok=1, lo=1, hi=10
+fn main() {
+    let x = proof_input_u32("x");
+    let lo = proof_input_u32("lo");
+    let hi = proof_input_u32("hi");
+    proof_assert(x >= lo);
+    proof_assert(x <= hi);
+    proof_commit_u32("lo", lo);
+    proof_commit_u32("hi", hi);
+    proof_commit_bool("ok", true);
+    return 0;
+}

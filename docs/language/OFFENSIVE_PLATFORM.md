@@ -58,7 +58,18 @@ $BIN lateral-ssh --engage out/engagements/lab --host 127.0.0.1 --cmd hostname
 $BIN lateral-smb --engage out/engagements/lab --host 127.0.0.1   # PLAN_ONLY
 $BIN browser-harness --out out/engagements/lab/modules/browser --url http://127.0.0.1:8000/
 $BIN offensive-doctor --json
-$BIN engage-status --dir out/engagements/lab --json   # includes allowed_targets
+$BIN engage-status --dir out/engagements/lab --json   # includes allowed_targets + receipt tip
+$BIN receipt-verify --engage out/engagements/lab --json  # hash-chained action receipts
+```
+
+### Action receipts (tamper-evident)
+
+Every sealed operator action appends to `evidence/receipts/chain.jsonl` with
+`prev_hash` → `receipt_hash` binding. Tip at `evidence/receipts/tip.json`.
+
+```bash
+anubis receipt-verify --engage out/engagements/lab --json
+# tamper tip or rewrite a line → ANUBIS_RECEIPT_* fail-closed
 ```
 
 ## Architecture
