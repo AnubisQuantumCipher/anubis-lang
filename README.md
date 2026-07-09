@@ -20,6 +20,7 @@
 - **Offensive Platform (AOP)**: engagement-scoped C2, agents, RBAC, hash-chained **action receipts** — see `docs/language/OFFENSIVE_PLATFORM.md`
 - **Proof-native language**: program-bound RISC0 guests, parameterized inputs, named journals, `proof_assert` / `proof_commit_*` — private witnesses stay off the journal
 - **Enums + `match`**: unit/tuple variants, pattern bindings, run + prove (`bash scripts/run_enum_match_gate.sh`)
+- **`for x in list`** and `for i in a..b` — collection + range iteration (`bash scripts/run_for_in_gate.sh`)
 - **Turing-complete executable core** (loops, mutation, recursion) with fixture gate
 - Excellent direct library entrypoints for agents/tests
 - Self-audit + reproducibility first-class (`bash scripts/run_power_gate.sh`)

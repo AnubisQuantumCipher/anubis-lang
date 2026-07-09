@@ -1,0 +1,16 @@
+// Prove for-in over a list built from private inputs.
+// inputs a,b,c → journal sum = a+b+c
+// Prove: --input-json '{"a":10,"b":20,"c":30}' → sum=60
+fn main() {
+    let a = proof_input_u32("a");
+    let b = proof_input_u32("b");
+    let c = proof_input_u32("c");
+    let xs = [a, b, c];
+    let total = 0;
+    for x in xs {
+        total = total + x;
+    }
+    proof_assert(total == a + b + c);
+    proof_commit_u32("sum", total);
+    return 0;
+}

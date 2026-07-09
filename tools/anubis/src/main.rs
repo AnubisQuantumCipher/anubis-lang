@@ -3481,35 +3481,74 @@ fn emit_safe_run_stmt(
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
         }
-        Stmt::For {
-            var,
-            start,
-            end,
-            body,
-        } => {
-            // `for v in a..b { .. }` desugars to a counted while loop. The upper bound is
-            // evaluated once (like a real range) into a per-depth temporary.
+        Stmt::For { var, source, body } => {
+            use anubis_compiler::frontend::ForSource;
             let v = sanitize_ident(var)?;
-            let endtmp = format!("__anb_for_end_{}", indent);
-            out.push_str(&format!(
-                "{pad}let mut {} = {};\n",
-                v,
-                safe_run_expr(start, allow_research)?
-            ));
-            out.push_str(&format!("{pad}let {} = {};\n", endtmp, safe_run_expr(end, allow_research)?));
-            out.push_str(&format!(
-                "{pad}while anubis_cmp(\"<\", {}.clone(), {}.clone()).as_bool() {{\n",
-                v, endtmp
-            ));
-            for stmt in body {
-                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+            match source {
+                ForSource::Range { start, end } => {
+                    // `for v in a..b` — half-open range, bound evaluated once.
+                    let endtmp = format!("__anb_for_end_{}", indent);
+                    out.push_str(&format!(
+                        "{pad}let mut {} = {};\n",
+                        v,
+                        safe_run_expr(start, allow_research)?
+                    ));
+                    out.push_str(&format!(
+                        "{pad}let {} = {};\n",
+                        endtmp,
+                        safe_run_expr(end, allow_research)?
+                    ));
+                    out.push_str(&format!(
+                        "{pad}while anubis_cmp(\"<\", {}.clone(), {}.clone()).as_bool() {{\n",
+                        v, endtmp
+                    ));
+                    for stmt in body {
+                        emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                    }
+                    out.push_str(&format!(
+                        "{pad}    {} = anubis_add({}.clone(), AnubisValue::Int(1));\n",
+                        v, v
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                    Ok(())
+                }
+                ForSource::Collection { expr } => {
+                    // `for v in xs` — index walk over list/string.
+                    let col = format!("__anb_for_col_{}", indent);
+                    let idx = format!("__anb_for_i_{}", indent);
+                    let len = format!("__anb_for_len_{}", indent);
+                    out.push_str(&format!(
+                        "{pad}let {} = {};\n",
+                        col,
+                        safe_run_expr(expr, allow_research)?
+                    ));
+                    out.push_str(&format!(
+                        "{pad}let mut {} = AnubisValue::Int(0);\n",
+                        idx
+                    ));
+                    out.push_str(&format!(
+                        "{pad}let {} = {}.len_val();\n",
+                        len, col
+                    ));
+                    out.push_str(&format!(
+                        "{pad}while anubis_cmp(\"<\", {}.clone(), {}.clone()).as_bool() {{\n",
+                        idx, len
+                    ));
+                    out.push_str(&format!(
+                        "{pad}    let mut {} = {}.index_get({}.clone());\n",
+                        v, col, idx
+                    ));
+                    for stmt in body {
+                        emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                    }
+                    out.push_str(&format!(
+                        "{pad}    {} = anubis_add({}.clone(), AnubisValue::Int(1));\n",
+                        idx, idx
+                    ));
+                    out.push_str(&format!("{pad}}}\n"));
+                    Ok(())
+                }
             }
-            out.push_str(&format!(
-                "{pad}    {} = anubis_add({}.clone(), AnubisValue::Int(1));\n",
-                v, v
-            ));
-            out.push_str(&format!("{pad}}}\n"));
-            Ok(())
         }
         Stmt::Break => {
             out.push_str(&format!("{pad}break;\n"));

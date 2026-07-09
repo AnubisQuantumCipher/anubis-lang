@@ -524,17 +524,23 @@ fn analyze_stmts(
                 effects.push("loop".into());
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
             }
-            Stmt::For {
-                var, body, start, ..
-            } => {
+            Stmt::For { var, body, source } => {
                 effects.push("loop".into());
+                let taint_src = match source {
+                    crate::frontend::ForSource::Range { start, .. } => {
+                        expr_taint_source(start, scope)
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        expr_taint_source(expr, scope)
+                    }
+                };
                 // The loop variable is a fresh in-scope binding for the body's analysis.
                 let info = BindingInfo {
                     name: var.clone(),
                     ty: Some("u32".into()),
                     mode: mode_name(mode).into(),
-                    tainted: expr_taint_source(start, scope).is_some(),
-                    taint_source: expr_taint_source(start, scope),
+                    tainted: taint_src.is_some(),
+                    taint_source: taint_src,
                     declassified: false,
                     span: None,
                 };

@@ -199,6 +199,40 @@ mod tests {
     }
 
     #[test]
+    fn parses_for_in_collection() {
+        let src = r#"
+        fn main() {
+            let xs = [1, 2, 3];
+            let s = 0;
+            for x in xs {
+                s = s + x;
+            }
+            return s;
+        }
+        "#;
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "diags: {:?}",
+            parsed.diagnostics
+        );
+        let frontend::Item::Fn { body, .. } = &parsed.ast.items[0] else {
+            panic!("fn");
+        };
+        let has_col = body.iter().any(|s| {
+            matches!(
+                s,
+                frontend::Stmt::For {
+                    source: frontend::ForSource::Collection { .. },
+                    ..
+                }
+            )
+        });
+        assert!(has_col, "expected for-in collection: {:?}", body);
+        typecheck(parsed.ast, frontend::Mode::Safe).expect("tc");
+    }
+
+    #[test]
     fn header_position_is_not_a_struct_literal() {
         // `while running { .. }` and `for i in 0..n { .. }` must NOT parse `running`/`n` as a
         // struct literal; the `{` starts the loop body. Regression for a parser hang.

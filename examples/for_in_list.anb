@@ -1,0 +1,12 @@
+// Collection iteration: for x in list
+// Sum [10, 20, 30] → 60; also nested for-in over enum codes.
+// EXPECT stdout: 60
+fn main() {
+    let xs = [10, 20, 30];
+    let total = 0;
+    for x in xs {
+        total = total + x;
+    }
+    print(total);
+    return total;
+}

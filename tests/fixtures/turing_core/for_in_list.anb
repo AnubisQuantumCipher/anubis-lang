@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// FEATURE: collections (for-in list iteration)
+fn main() {
+    let xs = [1, 2, 3, 4, 5];
+    let s = 0;
+    for x in xs {
+        s = s + x;
+    }
+    print(s);
+}

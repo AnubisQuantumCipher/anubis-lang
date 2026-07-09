@@ -156,6 +156,15 @@ pub struct MatchArm {
     pub body: Expr,
 }
 
+/// Source of a `for` loop: numeric range or collection iteration.
+#[derive(Debug, Clone)]
+pub enum ForSource {
+    /// `for i in a..b` — half-open range [a, b)
+    Range { start: Expr, end: Expr },
+    /// `for x in xs` — iterate list/string elements
+    Collection { expr: Expr },
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Let {
@@ -180,10 +189,10 @@ pub enum Stmt {
     Loop {
         body: Vec<Stmt>,
     },
+    /// `for v in a..b { }` or `for v in collection { }`
     For {
         var: String,
-        start: Expr,
-        end: Expr,
+        source: ForSource,
         body: Vec<Stmt>,
     },
     Break,
@@ -1170,19 +1179,27 @@ impl Parser {
             self.bump();
             let (var, _) = self.expect_ident("expected loop variable after `for`")?;
             let _ = self.expect_keyword("in");
-            let start = self.parse_header_expr();
-            let _ = self.expect_token(Token::DotDot, "expected `..` in for-range");
-            let end = self.parse_header_expr();
+            // Range: `a..b`  |  Collection: any other expression
+            let first = self.parse_header_expr();
+            let source = if self.check_token(&Token::DotDot) {
+                self.bump();
+                let end = self.parse_header_expr();
+                ForSource::Range {
+                    start: first,
+                    end,
+                }
+            } else {
+                ForSource::Collection { expr: first }
+            };
             let body = if self.check_token(&Token::LBrace) {
                 self.parse_block()
             } else {
-                self.diagnostic("expected `{` after for-range", self.current_span());
+                self.diagnostic("expected `{` after for-loop header", self.current_span());
                 vec![]
             };
             return Some(Stmt::For {
                 var,
-                start,
-                end,
+                source,
                 body,
             });
         }

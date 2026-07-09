@@ -170,3 +170,6 @@ Public outputs beyond a single u32: `return [a, b, …]` commits each field via
 | Enums (`enum` + unit/tuple variants) | REAL | `examples/enum_status.anb` | `anubis run` → 42 | `Status::Err(42)` |
 | `match` expressions + bindings | REAL | same + `proof_enum_status.anb` | `bash scripts/run_enum_match_gate.sh` | `_` wildcard supported |
 | Struct-like enum variants / full exhaustiveness TC | PLANNED | — | — | unit+tuple only today |
+| `for x in collection` list iteration | REAL | `examples/for_in_list.anb` → 60 | `bash scripts/run_for_in_gate.sh` | also turing fixture sum 15 |
+| `for i in a..b` range (regression) | REAL | for_range_sum → 5050 | same gate | half-open |
+| Prove for-in sum of private inputs | REAL | proof_for_in_sum journal 60 | same gate | a+b+c with proof_assert |

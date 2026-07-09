@@ -23,10 +23,16 @@
 - Executable via `anubis run`; proof-capable via RISC0 guest lowering
 - Gate: `bash scripts/run_enum_match_gate.sh`
 
+## NOW REAL (for-in collections — 2026-07-09)
+
+- `for x in list { … }` — REAL (index walk over list/string via `len` + `index_get`)
+- `for i in a..b { … }` — REAL (unchanged half-open range)
+- Gate: `bash scripts/run_for_in_gate.sh` + turing fixture `for_in_list`
+
 ## Explicitly PLANNED (not real yet)
 
 - Struct-like enum variants (`Err { code: u32 }`) and full exhaustiveness errors in typecheck
-- Iterator-style `for x in collection` (only numeric `for i in a..b` ranges exist today)
+
 - Maps / dictionaries, and array/list slicing
 - `Result<T,E>` / `Option` / error handling in the language surface (beyond assert/assume)
 - Block comments `/* ... */`
