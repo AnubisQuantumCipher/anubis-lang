@@ -1,0 +1,16 @@
+// EXPECT: 200|not found
+enum HttpResult {
+    Ok { code: u32 },
+    NotFound,
+}
+fn describe(r) {
+    return match r {
+        HttpResult::Ok { code: c } => c,
+        HttpResult::NotFound => "not found",
+        _ => "unknown",
+    };
+}
+fn main() {
+    print(describe(HttpResult::Ok { code: 200 }));
+    print(describe(HttpResult::NotFound));
+}

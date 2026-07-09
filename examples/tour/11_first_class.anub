@@ -1,0 +1,24 @@
+// EXPECT: 35|700|6
+// First-class functions: closures in a map applied by lookup (an RPN calculator),
+// a closure stored in a struct field, and curried application.
+struct Boxed { f: u32 }
+fn main() {
+    let ops = { "+": |a, b| a + b, "*": |a, b| a * b };
+    let stack = [];
+    for t in ["3", "4", "+", "5", "*"] {          // (3 + 4) * 5 = 35
+        if has_key(ops, t) {
+            let b = pop(stack);
+            let a = pop(stack);
+            push(stack, ops[t](a, b));
+        } else {
+            push(stack, parse_int(t));
+        }
+    }
+    print(stack[0]);
+
+    let boxed = Boxed { f: |x| x * 100 };
+    print(boxed.f(7));                             // 700
+
+    let add3 = |a| |b| |c| a + b + c;
+    print(add3(1)(2)(3));                          // 6
+}

@@ -1,0 +1,9 @@
+// EXPECT: HELLO|olleh|a-b-c|3|world|true
+fn main() {
+    print(upper("hello"));
+    print(reverse("hello"));
+    print(join(split("a,b,c", ","), "-"));
+    print(len("abc"));
+    print(replace("hello world", "hello ", ""));
+    print(starts_with("anubis", "anu"));
+}

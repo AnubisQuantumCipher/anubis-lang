@@ -116,6 +116,8 @@ struct SemanticContext {
     enum_variants: BTreeMap<String, Vec<String>>,
     /// Function name → ordered parameter types (for call-site type checks).
     fn_params: BTreeMap<String, Vec<String>>,
+    /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
+    all_fns: BTreeSet<String>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -176,7 +178,17 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
                 ctx.enum_variants.insert(name.clone(), names);
             }
-            Item::Fn { name, params, .. } => {
+            Item::Fn {
+                name, params, span, ..
+            } => {
+                // Flat function namespace: a redefinition is an error.
+                if !ctx.all_fns.insert(name.clone()) {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_DUPLICATE_FUNCTION".into()),
+                        message: format!("function `{}` is defined more than once", name),
+                        span: Some((span.start, span.end)),
+                    });
+                }
                 ctx.fn_params.insert(
                     name.clone(),
                     params.iter().map(|(_, ty)| ty.clone()).collect(),
@@ -184,6 +196,192 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
             }
             _ => {}
         }
+    }
+}
+
+/// Walk a function body flagging calls to names that are neither a user function, a reserved
+/// builtin, nor a local binding (parameter / let / for-variable / lambda-parameter / match-binding).
+/// Closure-valued locals are in `bound`, so `let f = |x| x; f(3)` is fine.
+fn check_calls_stmts(
+    stmts: &[Stmt],
+    fns: &BTreeSet<String>,
+    bound: &mut BTreeSet<String>,
+    ctx: &mut SemanticContext,
+) {
+    use crate::frontend::ForSource;
+    for s in stmts {
+        match s {
+            Stmt::Let { name, init, .. } => {
+                check_calls_expr(init, fns, bound, ctx);
+                bound.insert(name.clone());
+            }
+            Stmt::Assign { target, value } => {
+                check_calls_expr(target, fns, bound, ctx);
+                check_calls_expr(value, fns, bound, ctx);
+            }
+            Stmt::ExprStmt(e) => check_calls_expr(e, fns, bound, ctx),
+            Stmt::If { cond, then, else_ } => {
+                check_calls_expr(cond, fns, bound, ctx);
+                let mut b = bound.clone();
+                check_calls_stmts(then, fns, &mut b, ctx);
+                if let Some(e) = else_ {
+                    let mut b = bound.clone();
+                    check_calls_stmts(e, fns, &mut b, ctx);
+                }
+            }
+            Stmt::While { cond, body } => {
+                check_calls_expr(cond, fns, bound, ctx);
+                let mut b = bound.clone();
+                check_calls_stmts(body, fns, &mut b, ctx);
+            }
+            Stmt::Loop { body } => {
+                let mut b = bound.clone();
+                check_calls_stmts(body, fns, &mut b, ctx);
+            }
+            Stmt::For { var, source, body } => {
+                match source {
+                    ForSource::Range { start, end } => {
+                        check_calls_expr(start, fns, bound, ctx);
+                        check_calls_expr(end, fns, bound, ctx);
+                    }
+                    ForSource::Collection { expr } => check_calls_expr(expr, fns, bound, ctx),
+                }
+                let mut b = bound.clone();
+                b.insert(var.clone());
+                check_calls_stmts(body, fns, &mut b, ctx);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                let mut b = bound.clone();
+                check_calls_stmts(body, fns, &mut b, ctx);
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for blk in [gpu, cpu, prove].into_iter().flatten() {
+                    let mut b = bound.clone();
+                    check_calls_stmts(blk, fns, &mut b, ctx);
+                }
+            }
+            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
+        }
+    }
+}
+
+fn check_calls_expr(
+    e: &Expr,
+    fns: &BTreeSet<String>,
+    bound: &BTreeSet<String>,
+    ctx: &mut SemanticContext,
+) {
+    use crate::frontend::Pattern;
+    match e {
+        Expr::Call { callee, args } => {
+            if !fns.contains(callee)
+                && !bound.contains(callee)
+                && !crate::backends::run::is_builtin_name(callee)
+            {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_UNKNOWN_FUNCTION".into()),
+                    message: format!("call to unknown function `{}`", callee),
+                    span: None,
+                });
+            }
+            for a in args {
+                check_calls_expr(a, fns, bound, ctx);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            check_calls_expr(callee, fns, bound, ctx);
+            for a in args {
+                check_calls_expr(a, fns, bound, ctx);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            check_calls_expr(lhs, fns, bound, ctx);
+            check_calls_expr(rhs, fns, bound, ctx);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr) => check_calls_expr(expr, fns, bound, ctx),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            check_calls_expr(inner, fns, bound, ctx)
+        }
+        Expr::ArrayLiteral { elements } => {
+            for el in elements {
+                check_calls_expr(el, fns, bound, ctx);
+            }
+        }
+        Expr::Index { base, index } => {
+            check_calls_expr(base, fns, bound, ctx);
+            check_calls_expr(index, fns, bound, ctx);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                check_calls_expr(v, fns, bound, ctx);
+            }
+        }
+        Expr::FieldAccess { base, .. } => check_calls_expr(base, fns, bound, ctx),
+        Expr::EnumConstruct { fields, .. } => {
+            for f in fields {
+                check_calls_expr(f, fns, bound, ctx);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            check_calls_expr(scrutinee, fns, bound, ctx);
+            for arm in arms {
+                let mut b = bound.clone();
+                if let Pattern::EnumVariant {
+                    bindings,
+                    named_bindings,
+                    ..
+                } = &arm.pattern
+                {
+                    for x in bindings {
+                        b.insert(x.clone());
+                    }
+                    for (_, x) in named_bindings {
+                        b.insert(x.clone());
+                    }
+                }
+                check_calls_expr(&arm.body, fns, &b, ctx);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            check_calls_expr(cond, fns, bound, ctx);
+            check_calls_expr(then, fns, bound, ctx);
+            check_calls_expr(else_, fns, bound, ctx);
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                check_calls_expr(k, fns, bound, ctx);
+                check_calls_expr(v, fns, bound, ctx);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            let mut b = bound.clone();
+            check_calls_stmts(stmts, fns, &mut b, ctx);
+            if let Some(t) = tail {
+                check_calls_expr(t, fns, &b, ctx);
+            }
+        }
+        Expr::Lambda { params, body } => {
+            let mut b = bound.clone();
+            for p in params {
+                b.insert(p.clone());
+            }
+            check_calls_expr(body, fns, &b, ctx);
+        }
+        Expr::Var(_)
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::RawPtr { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::TaintSource { .. }
+        | Expr::Other(_) => {}
     }
 }
 
@@ -265,6 +463,25 @@ fn analyze_function(
         name.to_string(),
         params.iter().map(|(_, ty)| ty.clone()).collect(),
     );
+
+    // Duplicate parameter names are a hard error.
+    let mut seen_params = BTreeSet::new();
+    for (pname, _) in params {
+        if !seen_params.insert(pname.clone()) {
+            ctx.diagnostics.push(SemanticDiagnostic {
+                code: Some("ANUBIS_DUPLICATE_PARAM".into()),
+                message: format!("duplicate parameter `{}` in function `{}`", pname, name),
+                span: Some((span.start, span.end)),
+            });
+        }
+    }
+
+    // Flag calls to unknown functions in this body (not a user fn, builtin, or local binding).
+    {
+        let fns = ctx.all_fns.clone();
+        let mut bound: BTreeSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
+        check_calls_stmts(body, &fns, &mut bound, ctx);
+    }
 
     let mut scope = BTreeMap::<String, ScopeBinding>::new();
     let mut fn_symbols = vec![];
@@ -1182,6 +1399,11 @@ fn is_numeric_ty(ty: &str) -> bool {
 fn types_compatible(expected: &str, actual: &str) -> bool {
     let e_raw = expected.trim();
     let a_raw = actual.trim();
+    // An absent annotation is dynamically typed: parameters written `fn f(x)` (no `: T`) accept
+    // any argument, and an argument of unknown static type is accepted by any parameter.
+    if e_raw.is_empty() || a_raw.is_empty() {
+        return true;
+    }
     let e = normalize_ty(e_raw);
     let a = normalize_ty(a_raw);
     if e == a || e_raw == a_raw {

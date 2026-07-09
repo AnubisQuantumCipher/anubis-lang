@@ -1,0 +1,12 @@
+// EXPECT: [1, 1, 2, 3, 4, 5, 6, 9]
+fn quicksort(xs) {
+    if len(xs) <= 1 { return xs; }
+    let pivot = xs[0];
+    let rest = slice(xs, 1, len(xs));
+    let less = filter(rest, |x| x < pivot);
+    let more = filter(rest, |x| x >= pivot);
+    return quicksort(less) + [pivot] + quicksort(more);
+}
+fn main() {
+    print(quicksort([3, 6, 1, 5, 2, 9, 4, 1]));
+}

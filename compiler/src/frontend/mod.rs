@@ -25,7 +25,12 @@ pub enum Token {
     Percent,
     Amp,
     AmpAmp,
+    Pipe,
     PipePipe,
+    Caret,
+    Tilde,
+    Shl,
+    Shr,
     Bang,
     Lt,
     Gt,
@@ -36,6 +41,8 @@ pub enum Token {
     Ne,
     Plus,
     Minus,
+    /// A compound-assignment operator; the payload is the base op (`"+"`, `"<<"`, …).
+    OpAssign(String),
     Eof,
     Other(String),
 }
@@ -114,6 +121,8 @@ pub enum Item {
         body: Vec<Stmt>,
         mode: Mode,
         intent: Option<String>,
+        /// Declared return type (`-> T`), captured verbatim; `None` if omitted.
+        ret: Option<String>,
         attributes: Vec<Attribute>,
         span: Span,
     },
@@ -231,9 +240,19 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Var(String),
+    /// Numeric or boolean literal, carried as text (`"42"`, `"3.14"`, `"1e9"`, `"true"`).
     Literal(String),
+    /// String (or char) literal with its decoded value (escapes already resolved).
+    StrLiteral(String),
     Call {
         callee: String,
+        args: Vec<Expr>,
+    },
+    /// Application of an arbitrary callee expression: `expr(args)`. Produced by a postfix `(...)`
+    /// after a field access, index, or call, so `obj.f(x)`, `arr[i](x)`, and `f(a)(b)` all work
+    /// with first-class closure values.
+    CallExpr {
+        callee: Box<Expr>,
         args: Vec<Expr>,
     },
     Binary {
@@ -317,6 +336,18 @@ pub enum Expr {
         entries: Vec<(Expr, Expr)>,
         span: Span,
     },
+    /// A block expression: statements followed by an optional trailing value
+    /// (`{ let t = a + b; t * 2 }`). Appears as the branches of an `if` expression.
+    Block {
+        stmts: Vec<Stmt>,
+        tail: Option<Box<Expr>>,
+    },
+    /// A lambda / closure literal: `|x, y| body` or `|| body`. The body is a single expression
+    /// (which may itself be a block expression).
+    Lambda {
+        params: Vec<String>,
+        body: Box<Expr>,
+    },
     Other(String),
 }
 
@@ -329,7 +360,7 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             '/' => {
                 if let Some(&(_, '/')) = chars.peek() {
                     chars.next();
-                    // skip to end of line (comments)
+                    // Line comment: skip to end of line.
                     while let Some(&(_, nc)) = chars.peek() {
                         if nc == '\n' {
                             break;
@@ -338,21 +369,41 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     }
                     continue;
                 }
-                tokens.push(SpannedToken {
-                    token: Token::Slash,
-                    span: Span {
-                        start,
-                        end: start + 1,
-                    },
-                });
+                if let Some(&(_, '*')) = chars.peek() {
+                    chars.next(); // consume '*'
+                    // Block comment, nesting-aware: `/* ... /* ... */ ... */`.
+                    let mut depth = 1usize;
+                    while depth > 0 {
+                        match chars.next() {
+                            Some((_, '/')) if matches!(chars.peek(), Some(&(_, '*'))) => {
+                                chars.next();
+                                depth += 1;
+                            }
+                            Some((_, '*')) if matches!(chars.peek(), Some(&(_, '/'))) => {
+                                chars.next();
+                                depth -= 1;
+                            }
+                            Some(_) => {}
+                            None => break,
+                        }
+                    }
+                    continue;
+                }
+                if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("/".into()), span: Span { start, end: idx + 1 } });
+                } else {
+                    tokens.push(SpannedToken { token: Token::Slash, span: Span { start, end: start + 1 } });
+                }
             }
-            '%' => tokens.push(SpannedToken {
-                token: Token::Percent,
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
+            '%' => {
+                if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("%".into()), span: Span { start, end: idx + 1 } });
+                } else {
+                    tokens.push(SpannedToken { token: Token::Percent, span: Span { start, end: start + 1 } });
+                }
+            }
             '!' => {
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
@@ -376,21 +427,12 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             '|' => {
                 if let Some(&(idx, '|')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken {
-                        token: Token::PipePipe,
-                        span: Span {
-                            start,
-                            end: idx + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::PipePipe, span: Span { start, end: idx + 1 } });
+                } else if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("|".into()), span: Span { start, end: idx + 1 } });
                 } else {
-                    tokens.push(SpannedToken {
-                        token: Token::Other("|".into()),
-                        span: Span {
-                            start,
-                            end: start + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::Pipe, span: Span { start, end: start + 1 } });
                 }
             }
             '{' => tokens.push(SpannedToken {
@@ -489,71 +531,55 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     });
                 }
             }
-            '*' => tokens.push(SpannedToken {
-                token: Token::Star,
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
+            '*' => {
+                if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("*".into()), span: Span { start, end: idx + 1 } });
+                } else {
+                    tokens.push(SpannedToken { token: Token::Star, span: Span { start, end: start + 1 } });
+                }
+            }
             '&' => {
                 if let Some(&(idx, '&')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken {
-                        token: Token::AmpAmp,
-                        span: Span {
-                            start,
-                            end: idx + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::AmpAmp, span: Span { start, end: idx + 1 } });
+                } else if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("&".into()), span: Span { start, end: idx + 1 } });
                 } else {
-                    tokens.push(SpannedToken {
-                        token: Token::Amp,
-                        span: Span {
-                            start,
-                            end: start + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::Amp, span: Span { start, end: start + 1 } });
                 }
             }
             '<' => {
-                if let Some(&(idx, '=')) = chars.peek() {
+                if let Some(&(_, '<')) = chars.peek() {
+                    let (lidx, _) = chars.next().unwrap();
+                    if let Some(&(idx, '=')) = chars.peek() {
+                        chars.next();
+                        tokens.push(SpannedToken { token: Token::OpAssign("<<".into()), span: Span { start, end: idx + 1 } });
+                    } else {
+                        tokens.push(SpannedToken { token: Token::Shl, span: Span { start, end: lidx + 1 } });
+                    }
+                } else if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken {
-                        token: Token::Le,
-                        span: Span {
-                            start,
-                            end: idx + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::Le, span: Span { start, end: idx + 1 } });
                 } else {
-                    tokens.push(SpannedToken {
-                        token: Token::Lt,
-                        span: Span {
-                            start,
-                            end: start + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::Lt, span: Span { start, end: start + 1 } });
                 }
             }
             '>' => {
-                if let Some(&(idx, '=')) = chars.peek() {
+                if let Some(&(_, '>')) = chars.peek() {
+                    let (ridx, _) = chars.next().unwrap();
+                    if let Some(&(idx, '=')) = chars.peek() {
+                        chars.next();
+                        tokens.push(SpannedToken { token: Token::OpAssign(">>".into()), span: Span { start, end: idx + 1 } });
+                    } else {
+                        tokens.push(SpannedToken { token: Token::Shr, span: Span { start, end: ridx + 1 } });
+                    }
+                } else if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken {
-                        token: Token::Ge,
-                        span: Span {
-                            start,
-                            end: idx + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::Ge, span: Span { start, end: idx + 1 } });
                 } else {
-                    tokens.push(SpannedToken {
-                        token: Token::Gt,
-                        span: Span {
-                            start,
-                            end: start + 1,
-                        },
-                    });
+                    tokens.push(SpannedToken { token: Token::Gt, span: Span { start, end: start + 1 } });
                 }
             }
             '=' => {
@@ -585,20 +611,31 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     });
                 }
             }
-            '+' => tokens.push(SpannedToken {
-                token: Token::Plus,
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
-            '-' => tokens.push(SpannedToken {
-                token: Token::Minus,
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
+            '+' => {
+                if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("+".into()), span: Span { start, end: idx + 1 } });
+                } else {
+                    tokens.push(SpannedToken { token: Token::Plus, span: Span { start, end: start + 1 } });
+                }
+            }
+            '-' => {
+                if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("-".into()), span: Span { start, end: idx + 1 } });
+                } else {
+                    tokens.push(SpannedToken { token: Token::Minus, span: Span { start, end: start + 1 } });
+                }
+            }
+            '^' => {
+                if let Some(&(idx, '=')) = chars.peek() {
+                    chars.next();
+                    tokens.push(SpannedToken { token: Token::OpAssign("^".into()), span: Span { start, end: idx + 1 } });
+                } else {
+                    tokens.push(SpannedToken { token: Token::Caret, span: Span { start, end: start + 1 } });
+                }
+            }
+            '~' => tokens.push(SpannedToken { token: Token::Tilde, span: Span { start, end: start + 1 } }),
             '"' => {
                 let mut s = String::new();
                 let mut end = start + 1;
@@ -608,6 +645,14 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     if nc == '"' {
                         break;
                     }
+                    if nc == '\\' {
+                        if let Some(&(eidx, ec)) = chars.peek() {
+                            chars.next();
+                            end = eidx + ec.len_utf8();
+                            lex_escape(ec, &mut s, &mut chars, &mut end);
+                            continue;
+                        }
+                    }
                     s.push(nc);
                 }
                 tokens.push(SpannedToken {
@@ -615,11 +660,73 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     span: Span { start, end },
                 });
             }
+            '\'' => {
+                // Character literal → one-character string (with escape support).
+                let mut s = String::new();
+                let mut end = start + 1;
+                if let Some(&(idx, nc)) = chars.peek() {
+                    if nc != '\'' {
+                        chars.next();
+                        end = idx + nc.len_utf8();
+                        if nc == '\\' {
+                            if let Some(&(eidx, ec)) = chars.peek() {
+                                chars.next();
+                                end = eidx + ec.len_utf8();
+                                lex_escape(ec, &mut s, &mut chars, &mut end);
+                            }
+                        } else {
+                            s.push(nc);
+                        }
+                    }
+                }
+                if let Some(&(idx, '\'')) = chars.peek() {
+                    chars.next();
+                    end = idx + 1;
+                }
+                tokens.push(SpannedToken {
+                    token: Token::StringLit(s),
+                    span: Span { start, end },
+                });
+            }
             c if c.is_ascii_digit() => {
-                let mut num = c.to_string();
                 let mut end = start + c.len_utf8();
-                // Integer literals only (digits + `_` separators). `.` is never part of a number,
-                // so range syntax `a..b` lexes cleanly as Number DotDot Number.
+                // Radix prefixes `0x`/`0b`/`0o` decode to a decimal integer string, so downstream
+                // integer parsing is uniform.
+                if c == '0' {
+                    let radix = match chars.peek() {
+                        Some(&(_, 'x')) | Some(&(_, 'X')) => Some(16u32),
+                        Some(&(_, 'b')) | Some(&(_, 'B')) => Some(2u32),
+                        Some(&(_, 'o')) | Some(&(_, 'O')) => Some(8u32),
+                        _ => None,
+                    };
+                    if let Some(radix) = radix {
+                        let (pidx, pch) = chars.next().unwrap();
+                        end = pidx + pch.len_utf8();
+                        let mut digits = String::new();
+                        while let Some(&(idx, nc)) = chars.peek() {
+                            if nc == '_' {
+                                chars.next();
+                                end = idx + 1;
+                            } else if nc.is_digit(radix) {
+                                chars.next();
+                                end = idx + nc.len_utf8();
+                                digits.push(nc);
+                            } else {
+                                break;
+                            }
+                        }
+                        let decimal = i64::from_str_radix(&digits, radix)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|_| "0".to_string());
+                        tokens.push(SpannedToken {
+                            token: Token::Number(decimal),
+                            span: Span { start, end },
+                        });
+                        continue;
+                    }
+                }
+                let mut num = c.to_string();
+                // Integer part (digits + `_` separators).
                 while let Some(&(idx, nc)) = chars.peek() {
                     if nc.is_ascii_digit() || nc == '_' {
                         chars.next();
@@ -629,6 +736,62 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                         end = idx + nc.len_utf8();
                     } else {
                         break;
+                    }
+                }
+                // Fractional part: a `.` followed by a digit (so `1.5` is a float but `1..5`
+                // stays a range and `1.foo` stays a field access).
+                if matches!(chars.peek(), Some(&(_, '.'))) {
+                    let mut la = chars.clone();
+                    la.next();
+                    if matches!(la.peek(), Some(&(_, d)) if d.is_ascii_digit()) {
+                        let (didx, _) = chars.next().unwrap();
+                        num.push('.');
+                        end = didx + 1;
+                        while let Some(&(idx, nc)) = chars.peek() {
+                            if nc.is_ascii_digit() || nc == '_' {
+                                chars.next();
+                                if nc != '_' {
+                                    num.push(nc);
+                                }
+                                end = idx + nc.len_utf8();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Exponent part: `e`/`E` with optional sign then digits (`1e9`, `1.5e-3`).
+                if matches!(chars.peek(), Some(&(_, 'e')) | Some(&(_, 'E'))) {
+                    let mut la = chars.clone();
+                    la.next();
+                    let has_exp = match la.peek() {
+                        Some(&(_, d)) if d.is_ascii_digit() => true,
+                        Some(&(_, '+')) | Some(&(_, '-')) => {
+                            la.next();
+                            matches!(la.peek(), Some(&(_, d)) if d.is_ascii_digit())
+                        }
+                        _ => false,
+                    };
+                    if has_exp {
+                        let (eidx, ec) = chars.next().unwrap();
+                        num.push(ec);
+                        end = eidx + ec.len_utf8();
+                        if matches!(chars.peek(), Some(&(_, '+')) | Some(&(_, '-'))) {
+                            let (sidx, sc) = chars.next().unwrap();
+                            num.push(sc);
+                            end = sidx + sc.len_utf8();
+                        }
+                        while let Some(&(idx, nc)) = chars.peek() {
+                            if nc.is_ascii_digit() || nc == '_' {
+                                chars.next();
+                                if nc != '_' {
+                                    num.push(nc);
+                                }
+                                end = idx + nc.len_utf8();
+                            } else {
+                                break;
+                            }
+                        }
                     }
                 }
                 tokens.push(SpannedToken {
@@ -674,6 +837,58 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
         },
     });
     tokens
+}
+
+/// Decode one escape sequence (the char after `\`) into `out`. Consumes extra chars for
+/// `\xNN` and `\u{...}`. Unknown escapes pass the char through verbatim.
+fn lex_escape<I>(ec: char, out: &mut String, chars: &mut std::iter::Peekable<I>, end: &mut usize)
+where
+    I: Iterator<Item = (usize, char)>,
+{
+    match ec {
+        'n' => out.push('\n'),
+        't' => out.push('\t'),
+        'r' => out.push('\r'),
+        '0' => out.push('\0'),
+        '\\' => out.push('\\'),
+        '"' => out.push('"'),
+        '\'' => out.push('\''),
+        'x' => {
+            let mut hex = String::new();
+            for _ in 0..2 {
+                if let Some(&(hidx, hc)) = chars.peek() {
+                    if hc.is_ascii_hexdigit() {
+                        chars.next();
+                        *end = hidx + hc.len_utf8();
+                        hex.push(hc);
+                    }
+                }
+            }
+            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                out.push(byte as char);
+            }
+        }
+        'u' => {
+            if let Some(&(_, '{')) = chars.peek() {
+                chars.next();
+                let mut hex = String::new();
+                while let Some(&(hidx, hc)) = chars.peek() {
+                    chars.next();
+                    *end = hidx + hc.len_utf8();
+                    if hc == '}' {
+                        break;
+                    }
+                    hex.push(hc);
+                }
+                if let Ok(cp) = u32::from_str_radix(&hex, 16) {
+                    if let Some(uc) = char::from_u32(cp) {
+                        out.push(uc);
+                    }
+                }
+            }
+        }
+        other => out.push(other),
+    }
 }
 
 pub fn lex(source: &str) -> Vec<Token> {
@@ -1075,31 +1290,74 @@ impl Parser {
         })
     }
 
-    /// Expression block body: `{ expr }` or `{ expr; }` (last expression wins).
+    /// Expression block body: `{ stmt* tail? }`. Statements execute for effect; a trailing
+    /// expression with no semicolon (if present) is the block's value. Used for the branches of
+    /// an `if` expression, so `if c { let t = a + b; t * 2 } else { 0 }` works.
     fn parse_expr_block(&mut self) -> Expr {
         let _ = self.expect_token(Token::LBrace, "expected `{`");
-        if self.check_token(&Token::RBrace) {
-            self.bump();
-            return Expr::Literal("0".into());
-        }
-        let e = self.with_struct_allowed(|p| p.parse_expr(0));
-        if self.check_token(&Token::Semi) {
-            self.bump();
-        }
-        // Ignore extra statements after first expr for this slice (take first).
+        let mut stmts: Vec<Stmt> = Vec::new();
+        let mut tail: Option<Box<Expr>> = None;
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
-            // skip trailing stmts loosely
+            // Statement-introducing keywords are always statements.
             if self.check_keyword("let")
-                || self.check_keyword("if")
-                || self.check_keyword("return")
                 || self.check_keyword("while")
+                || self.check_keyword("loop")
+                || self.check_keyword("for")
+                || self.check_keyword("return")
+                || self.check_keyword("break")
+                || self.check_keyword("continue")
+                || self.check_keyword("research")
+                || self.check_keyword("exploit")
+                || self.check_keyword("hybrid")
+                || self.check_keyword("spec")
+                || self.check_keyword("assume")
+                || self.check_keyword("assert")
             {
+                if let Some(s) = self.parse_stmt() {
+                    stmts.push(s);
+                } else {
+                    self.bump();
+                }
+                continue;
+            }
+            // Otherwise parse an expression (covers `if`/`match`/calls/values).
+            let e = self.with_struct_allowed(|p| p.parse_expr(0));
+            if self.check_token(&Token::Eq) {
+                self.bump();
+                let value = self.with_struct_allowed(|p| p.parse_expr(0));
+                self.consume_optional_semi();
+                stmts.push(Stmt::Assign { target: e, value });
+            } else if let Token::OpAssign(op) = &self.current().token {
+                let op = op.clone();
+                self.bump();
+                let rhs = self.with_struct_allowed(|p| p.parse_expr(0));
+                self.consume_optional_semi();
+                stmts.push(Stmt::Assign {
+                    target: e.clone(),
+                    value: Expr::Binary {
+                        op,
+                        lhs: Box::new(e),
+                        rhs: Box::new(rhs),
+                    },
+                });
+            } else if self.check_token(&Token::Semi) {
+                self.bump();
+                stmts.push(Stmt::ExprStmt(e));
+            } else {
+                // No trailing separator → this expression is the block's value.
+                tail = Some(Box::new(e));
                 break;
             }
-            self.bump();
         }
         let _ = self.expect_token(Token::RBrace, "expected `}`");
-        e
+        if stmts.is_empty() {
+            match tail {
+                Some(t) => *t,
+                None => Expr::Literal("0".into()),
+            }
+        } else {
+            Expr::Block { stmts, tail }
+        }
     }
 
     fn parse_if_expr(&mut self, start: Span) -> Expr {
@@ -1176,6 +1434,14 @@ impl Parser {
                 if let Some(item) = self.parse_module() {
                     items.push(item);
                 }
+            } else if self.check_keyword("struct") {
+                if let Some(item) = self.parse_struct() {
+                    items.push(item);
+                }
+            } else if self.check_keyword("enum") {
+                if let Some(item) = self.parse_enum() {
+                    items.push(item);
+                }
             } else {
                 self.diagnostic("expected item in module", self.current_span());
                 self.bump();
@@ -1201,17 +1467,18 @@ impl Parser {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
         let params = self.parse_params();
-        // Optional return type: -> Type
+        // Optional return type: `-> Type` (lexed as Minus Gt then the type). Captured in the AST
+        // for tooling/typecheck even though the runtime is dynamically typed.
+        let mut ret: Option<String> = None;
         if self.check_token(&Token::Minus) {
-            // for ->
-            // consume - >
             let _ = self.bump();
             if self.check_token(&Token::Gt) {
                 let _ = self.bump();
             }
-            // consume the type name token (simple ident)
-            let _ = self.bump();
-            // ignore for now; not stored in AST for this slice
+            let ty = self.collect_type_until(&[Token::LBrace, Token::Semi]);
+            if !ty.is_empty() {
+                ret = Some(ty);
+            }
         }
         let body_start = self.current_span();
         let body = if self.check_token(&Token::LBrace) {
@@ -1241,6 +1508,7 @@ impl Parser {
             body,
             mode,
             intent: None,
+            ret,
             attributes: pre_attrs,
             span,
         })
@@ -1259,11 +1527,11 @@ impl Parser {
                 self.synchronize_param();
                 continue;
             };
+            // Parameter type annotations are optional — Anubis values are dynamically typed at
+            // runtime, so `fn f(n)` and `fn f(n: u32)` are both accepted.
             let mut ty = String::new();
-            if self
-                .expect_token(Token::Colon, "expected `:` after parameter name")
-                .is_some()
-            {
+            if self.check_token(&Token::Colon) {
+                self.bump();
                 ty = self.collect_type_until(&[Token::Comma, Token::RParen]);
             }
             params.push((name, ty));
@@ -1398,11 +1666,27 @@ impl Parser {
         }
         if self.starts_expr() {
             let expr = self.parse_expr(0);
-            // Assignment: `lvalue = expr;` (mutation of an existing binding or field).
+            // Assignment: `lvalue = expr;` (mutation of an existing binding or place).
             if self.check_token(&Token::Eq) {
                 self.bump();
                 let value = self.parse_expr(0);
                 self.consume_optional_semi();
+                return Some(Stmt::Assign {
+                    target: expr,
+                    value,
+                });
+            }
+            // Compound assignment `place op= expr` desugars to `place = place op expr`.
+            if let Token::OpAssign(op) = &self.current().token {
+                let op = op.clone();
+                self.bump();
+                let rhs = self.parse_expr(0);
+                self.consume_optional_semi();
+                let value = Expr::Binary {
+                    op,
+                    lhs: Box::new(expr.clone()),
+                    rhs: Box::new(rhs),
+                };
                 return Some(Stmt::Assign {
                     target: expr,
                     value,
@@ -1427,9 +1711,9 @@ impl Parser {
             let ty = self.collect_type_until(&[Token::Eq, Token::Semi, Token::RBrace]);
             if ty.is_empty() {
                 None
-            } else if ty.to_lowercase().contains("tainted") {
-                Some("tainted<u32>".into())
             } else {
+                // Preserve the annotation verbatim, including the inner type of `tainted<T>`
+                // (e.g. `tainted<u8>` keeps its 8-bit width for the solver).
                 Some(ty)
             }
         } else {
@@ -1585,6 +1869,41 @@ impl Parser {
         lhs
     }
 
+    /// Parse a lambda literal: `|p1, p2| body` or `|| body`. `body` is a single expression, which
+    /// may be a block `{ ... }`.
+    fn parse_lambda(&mut self) -> Expr {
+        let mut params = Vec::new();
+        if self.check_token(&Token::PipePipe) {
+            self.bump(); // `||` — no parameters
+        } else {
+            self.bump(); // opening `|`
+            while !self.at_eof() && !self.check_token(&Token::Pipe) {
+                let Some((p, _)) = self.expect_ident("expected lambda parameter") else {
+                    break;
+                };
+                params.push(p);
+                // Optional `: type` annotation (ignored — dynamically typed).
+                if self.check_token(&Token::Colon) {
+                    self.bump();
+                    let _ = self.collect_type_until(&[Token::Comma, Token::Pipe]);
+                }
+                if self.check_token(&Token::Comma) {
+                    self.bump();
+                }
+            }
+            let _ = self.expect_token(Token::Pipe, "expected `|` after lambda parameters");
+        }
+        let body = if self.check_token(&Token::LBrace) {
+            self.parse_expr_block()
+        } else {
+            self.with_struct_allowed(|p| p.parse_expr(0))
+        };
+        Expr::Lambda {
+            params,
+            body: Box::new(body),
+        }
+    }
+
     fn parse_primary(&mut self) -> Expr {
         // Prefix unary operators: `-expr` (negation) and `!expr` (logical not).
         if self.check_token(&Token::Minus) {
@@ -1603,11 +1922,24 @@ impl Parser {
                 expr: Box::new(inner),
             };
         }
+        if self.check_token(&Token::Tilde) {
+            self.bump();
+            let inner = self.parse_primary();
+            return Expr::Unary {
+                op: "~".into(),
+                expr: Box::new(inner),
+            };
+        }
+        // Lambda literal in primary position: `|params| body` or `|| body`.
+        if self.check_token(&Token::Pipe) || self.check_token(&Token::PipePipe) {
+            return self.parse_lambda();
+        }
         let Some(tok) = self.bump() else {
             return Expr::Other("eof".into());
         };
         let primary = match tok.token {
-            Token::Number(n) | Token::StringLit(n) => Expr::Literal(n),
+            Token::Number(n) => Expr::Literal(n),
+            Token::StringLit(s) => Expr::StrLiteral(s),
             Token::Ident(name) => {
                 // Enum construct: Status::Ok / Status::Err(a) / Status::Err { code: a }
                 if self.check_token(&Token::ColonColon) {
@@ -1651,22 +1983,10 @@ impl Parser {
                     }
                 } else if self.check_token(&Token::LParen) {
                     let args = self.parse_call_args();
-                    let mut e = Expr::Call {
+                    Expr::Call {
                         callee: name.clone(),
                         args,
-                    };
-                    // allow field on call result: foo().bar
-                    while self.check_token(&Token::Dot) {
-                        self.bump();
-                        if let Some((f, _)) = self.expect_ident("expected field after .") {
-                            e = Expr::FieldAccess {
-                                base: Box::new(e),
-                                field: f,
-                                span: tok.span,
-                            };
-                        }
                     }
-                    e
                 } else if !self.no_struct && self.check_token(&Token::LBrace) {
                     // struct literal: Name { f: e, ... }
                     self.bump();
@@ -1686,36 +2006,13 @@ impl Parser {
                         }
                     }
                     let _ = self.expect_token(Token::RBrace, "expected } in struct lit");
-                    let mut e = Expr::StructLiteral {
+                    Expr::StructLiteral {
                         name: name.clone(),
                         fields,
                         span: tok.span,
-                    };
-                    while self.check_token(&Token::Dot) {
-                        self.bump();
-                        if let Some((f, _)) = self.expect_ident("expected field") {
-                            e = Expr::FieldAccess {
-                                base: Box::new(e),
-                                field: f,
-                                span: tok.span,
-                            };
-                        }
                     }
-                    e
                 } else {
-                    let mut e = Expr::Var(name.clone());
-                    // field access: p.x or chained
-                    while self.check_token(&Token::Dot) {
-                        self.bump();
-                        if let Some((f, _)) = self.expect_ident("expected field after .") {
-                            e = Expr::FieldAccess {
-                                base: Box::new(e),
-                                field: f,
-                                span: tok.span,
-                            };
-                        }
-                    }
-                    e
+                    Expr::Var(name.clone())
                 }
             }
             Token::Keyword(k) if k == "true" || k == "false" => Expr::Literal(k),
@@ -1734,7 +2031,7 @@ impl Parser {
                     "unknown".to_string()
                 } else {
                     match &args[0] {
-                        Expr::Literal(s) | Expr::Var(s) => s.clone(),
+                        Expr::Literal(s) | Expr::StrLiteral(s) | Expr::Var(s) => s.clone(),
                         _ => "unknown".to_string(),
                     }
                 };
@@ -1763,7 +2060,9 @@ impl Parser {
                                 i += 1;
                                 // if next is literal use it, else take next
                                 if i < args.len() {
-                                    if let Expr::Literal(s) | Expr::Var(s) = &args[i] {
+                                    if let Expr::Literal(s) | Expr::StrLiteral(s) | Expr::Var(s) =
+                                        &args[i]
+                                    {
                                         if name == "policy" {
                                             policy = Some(s.clone());
                                         } else {
@@ -1774,7 +2073,9 @@ impl Parser {
                                     }
                                 }
                             }
-                        } else if let Expr::Literal(s) | Expr::Var(s) = &args[i] {
+                        } else if let Expr::Literal(s) | Expr::StrLiteral(s) | Expr::Var(s) =
+                            &args[i]
+                        {
                             // positional: first extra = policy, second = reason
                             if policy.is_none() {
                                 policy = Some(s.clone());
@@ -1823,16 +2124,40 @@ impl Parser {
             Token::LBrace => self.parse_map_literal(tok.span),
             other => Expr::Other(format!("{:?}", other)),
         };
-        // Postfix indexing: base[index], possibly chained (a[i][j]).
+        // Unified postfix chain: `.field` and `[index]` interleaved and repeated, so
+        // `a[i].b`, `a.b[i]`, `a.b.c[i].d`, and `foo().bar[0]` all parse.
         let mut e = primary;
-        while self.check_token(&Token::LBracket) {
-            self.bump();
-            let index = self.with_struct_allowed(|p| p.parse_expr(0));
-            let _ = self.expect_token(Token::RBracket, "expected `]` after index");
-            e = Expr::Index {
-                base: Box::new(e),
-                index: Box::new(index),
-            };
+        loop {
+            if self.check_token(&Token::Dot) {
+                self.bump();
+                if let Some((field, fspan)) = self.expect_ident("expected field name after `.`") {
+                    e = Expr::FieldAccess {
+                        base: Box::new(e),
+                        field,
+                        span: tok.span.merge(fspan),
+                    };
+                } else {
+                    break;
+                }
+            } else if self.check_token(&Token::LBracket) {
+                self.bump();
+                let index = self.with_struct_allowed(|p| p.parse_expr(0));
+                let _ = self.expect_token(Token::RBracket, "expected `]` after index");
+                e = Expr::Index {
+                    base: Box::new(e),
+                    index: Box::new(index),
+                };
+            } else if self.check_token(&Token::LParen) {
+                // Application of a callee expression: `expr(args)` — e.g. `obj.f(x)`, `arr[i](x)`,
+                // `f(a)(b)`.
+                let args = self.parse_call_args();
+                e = Expr::CallExpr {
+                    callee: Box::new(e),
+                    args,
+                };
+            } else {
+                break;
+            }
         }
         e
     }
@@ -1876,9 +2201,13 @@ impl Parser {
     }
 
     fn current_binary_op(&self) -> Option<(String, u8)> {
+        // Precedence ladder (higher binds tighter), C-like:
+        // || < && < | < ^ < & < (== !=  < <= > >=) < (<< >>) < (+ -) < (* / %)
         match &self.current().token {
             Token::PipePipe => Some(("||".into(), 4)),
             Token::AmpAmp => Some(("&&".into(), 5)),
+            Token::Pipe => Some(("|".into(), 6)),
+            Token::Caret => Some(("^".into(), 7)),
             Token::Amp => Some(("&".into(), 8)),
             Token::Lt => Some(("<".into(), 10)),
             Token::Gt => Some((">".into(), 10)),
@@ -1886,6 +2215,8 @@ impl Parser {
             Token::Ge => Some((">=".into(), 10)),
             Token::EqEq => Some(("==".into(), 10)),
             Token::Ne => Some(("!=".into(), 10)),
+            Token::Shl => Some(("<<".into(), 18)),
+            Token::Shr => Some((">>".into(), 18)),
             Token::Plus => Some(("+".into(), 20)),
             Token::Minus => Some(("-".into(), 20)),
             Token::Star => Some(("*".into(), 30)),
@@ -1903,6 +2234,9 @@ impl Parser {
             | Token::LParen
             | Token::LBracket
             | Token::Minus
+            | Token::Tilde
+            | Token::Pipe
+            | Token::PipePipe
             | Token::Bang => true,
             Token::Keyword(k) => k == "declassify" || k == "true" || k == "false" || k == "unified",
             _ => false,

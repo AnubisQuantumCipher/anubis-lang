@@ -1,0 +1,10 @@
+// EXPECT: 13|6|1|1024|-1|280
+// Integer arithmetic with precedence, min, pow, bitwise-not, and numeric-base literals.
+fn main() {
+    print(2 + 3 * 4 - 1);          // 13
+    print(7 / 2 + 7 % 2 + 2);      // 3 + 1 + 2 = 6
+    print(min(3, 1, 2));           // 1
+    print(pow(2, 10));             // 1024
+    print(~0);                     // -1
+    print(0xFF + 0b1010 + 0o17);   // 255 + 10 + 15 = 280
+}

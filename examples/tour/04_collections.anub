@@ -1,0 +1,9 @@
+// EXPECT: [1, 2, 3, 4, 5]|15|[2, 4]|3
+fn main() {
+    let xs = range(1, 6);
+    print(xs);
+    print(sum(xs));
+    print(filter(xs, |x| x % 2 == 0 && x < 5));
+    let m = { "a": 1, "b": 2, "c": 3 };
+    print(len(keys(m)));
+}

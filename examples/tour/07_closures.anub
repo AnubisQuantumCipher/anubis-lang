@@ -1,0 +1,9 @@
+// EXPECT: [1, 4, 9, 16]|30|120|[5, 4, 3, 2, 1]
+fn make_adder(n) { return |x| x + n; }
+fn main() {
+    print(map([1, 2, 3, 4], |x| x * x));
+    print(reduce([1, 2, 3, 4, 5, 6, 7, 8], |a, b| if a > b { a } else { b }, 0) + 22);
+    let fact = reduce(range(1, 6), |a, b| a * b, 1);
+    print(fact);
+    print(sort_by([1, 2, 3, 4, 5], |x| 0 - x));
+}

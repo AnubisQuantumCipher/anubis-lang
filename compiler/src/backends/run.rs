@@ -8,6 +8,15 @@
 use crate::frontend::{Expr, Item, Stmt};
 use anyhow::{anyhow, Result};
 
+/// Emit-time context threaded through lowering: the research gate plus the set of user function
+/// names, so a call resolves to (in priority order) a user function, a stdlib builtin, or the
+/// application of a closure-valued variable.
+#[derive(Clone, Copy)]
+struct EmitCtx<'a> {
+    allow_research: bool,
+    fns: &'a std::collections::BTreeSet<String>,
+}
+
 /// A borrowed view of one Anubis function: (name, params, body).
 type FnDef<'a> = (&'a str, &'a [(String, String)], &'a [Stmt]);
 
@@ -31,7 +40,7 @@ fn emit_fn(
     name: &str,
     params: &[(String, String)],
     body: &[Stmt],
-    allow_research: bool,
+    ctx: &EmitCtx,
 ) -> Result<String> {
     let mut sig = Vec::new();
     for (p, _ty) in params {
@@ -39,7 +48,7 @@ fn emit_fn(
     }
     let mut body_src = String::new();
     for stmt in body {
-        emit_safe_run_stmt(stmt, 1, &mut body_src, allow_research)?;
+        emit_safe_run_stmt(stmt, 1, &mut body_src, ctx)?;
     }
     Ok(format!(
         "fn anb_{}({}) -> AnubisValue {{\n{}    AnubisValue::Int(0)\n}}\n",
@@ -110,9 +119,15 @@ fn lower_program_with_entry(
     if !fns.iter().any(|(name, _, _)| *name == "main") {
         return Err(unsupported_run("program has no `fn main()` to run"));
     }
+    let fn_names: std::collections::BTreeSet<String> =
+        fns.iter().map(|(n, _, _)| n.to_string()).collect();
+    let ctx = EmitCtx {
+        allow_research,
+        fns: &fn_names,
+    };
     let mut functions_src = String::new();
     for (name, params, body) in &fns {
-        functions_src.push_str(&emit_fn(name, params, body, allow_research)?);
+        functions_src.push_str(&emit_fn(name, params, body, &ctx)?);
         functions_src.push('\n');
     }
     let poc_kit_runtime = if allow_research {
@@ -141,7 +156,7 @@ fn lower_program_with_entry(
 /// The Anubis runtime value model + operator helpers, shared by native `run` and RISC0
 /// guest lowering. Emitted verbatim into every generated Rust program.
 const ANUBIS_CORE_RUNTIME_RS: &str = r#"
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 enum AnubisValue {
     Int(i64),
     Float(f64),
@@ -163,9 +178,25 @@ enum AnubisValue {
     },
     /// Dictionary: string keys (via display_string) -> values.
     Map(Vec<(String, AnubisValue)>),
+    /// A first-class function value (lambda), callable with a positional argument vector.
+    Closure(std::rc::Rc<dyn Fn(Vec<AnubisValue>) -> AnubisValue>),
+}
+
+impl std::fmt::Debug for AnubisValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_string())
+    }
 }
 
 impl AnubisValue {
+    /// Apply a closure value to positional arguments. Non-closures return Int(0).
+    fn call_closure(&self, args: Vec<AnubisValue>) -> AnubisValue {
+        match self {
+            AnubisValue::Closure(f) => f(args),
+            _ => AnubisValue::Int(0),
+        }
+    }
+
     fn as_i64(&self) -> i64 {
         match self {
             AnubisValue::Int(v) => *v,
@@ -176,6 +207,7 @@ impl AnubisValue {
             AnubisValue::Enum { fields, .. } => fields.first().map(|f| f.as_i64()).unwrap_or(0),
             AnubisValue::Struct { fields, .. } => fields.len() as i64,
             AnubisValue::Map(m) => m.len() as i64,
+            AnubisValue::Closure(_) => 0,
         }
     }
 
@@ -207,6 +239,7 @@ impl AnubisValue {
             AnubisValue::Enum { .. } => true,
             AnubisValue::Struct { .. } => true,
             AnubisValue::Map(m) => !m.is_empty(),
+            AnubisValue::Closure(_) => true,
         }
     }
 
@@ -220,6 +253,7 @@ impl AnubisValue {
             AnubisValue::Enum { .. } => "enum",
             AnubisValue::Struct { .. } => "struct",
             AnubisValue::Map(_) => "map",
+            AnubisValue::Closure(_) => "closure",
         }
     }
 
@@ -258,6 +292,7 @@ impl AnubisValue {
                     .collect();
                 format!("{{{}}}", parts.join(", "))
             }
+            AnubisValue::Closure(_) => "<closure>".to_string(),
         }
     }
 
@@ -458,15 +493,32 @@ fn anubis_neg(v: AnubisValue) -> AnubisValue {
     else { AnubisValue::Int(v.as_i64().wrapping_neg()) }
 }
 
+fn anubis_is_int(v: &AnubisValue) -> bool {
+    matches!(v, AnubisValue::Int(_) | AnubisValue::Bool(_))
+}
+
+/// Total order over two values. Integer/integer stays exact (no f64 precision loss above 2^53);
+/// mixed numeric uses f64; everything else compares lexicographically by display form.
+fn anubis_value_cmp(a: &AnubisValue, b: &AnubisValue) -> std::cmp::Ordering {
+    if anubis_is_int(a) && anubis_is_int(b) {
+        a.as_i64().cmp(&b.as_i64())
+    } else if a.is_numeric() && b.is_numeric() {
+        a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal)
+    } else {
+        a.display_string().cmp(&b.display_string())
+    }
+}
+
 fn anubis_cmp(op: &str, lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {
-    let both_numeric = lhs.is_numeric() && rhs.is_numeric();
+    use std::cmp::Ordering;
+    let ord = anubis_value_cmp(&lhs, &rhs);
     let result = match op {
-        "<" => lhs.as_f64() < rhs.as_f64(),
-        "<=" => lhs.as_f64() <= rhs.as_f64(),
-        ">" => lhs.as_f64() > rhs.as_f64(),
-        ">=" => lhs.as_f64() >= rhs.as_f64(),
-        "==" => if both_numeric { lhs.as_f64() == rhs.as_f64() } else { lhs.display_string() == rhs.display_string() },
-        "!=" => if both_numeric { lhs.as_f64() != rhs.as_f64() } else { lhs.display_string() != rhs.display_string() },
+        "<" => ord == Ordering::Less,
+        "<=" => ord != Ordering::Greater,
+        ">" => ord == Ordering::Greater,
+        ">=" => ord != Ordering::Less,
+        "==" => ord == Ordering::Equal,
+        "!=" => ord != Ordering::Equal,
         _ => false,
     };
     AnubisValue::Bool(result)
@@ -531,6 +583,363 @@ impl AnubisValue {
         }
     }
 }
+
+// ---- Anubis standard library runtime (shared by native run + guest) ----
+
+fn anubis_str(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string()) }
+fn anubis_int(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_i64()) }
+fn anubis_float(v: AnubisValue) -> AnubisValue { AnubisValue::Float(v.as_f64()) }
+fn anubis_bool_of(v: AnubisValue) -> AnubisValue { AnubisValue::Bool(v.as_bool()) }
+fn anubis_type_of(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.type_name().to_string()) }
+
+fn anubis_abs(v: AnubisValue) -> AnubisValue {
+    if v.is_float() { AnubisValue::Float(v.as_f64().abs()) } else { AnubisValue::Int(v.as_i64().wrapping_abs()) }
+}
+fn anubis_min2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if a.as_f64() <= b.as_f64() { a } else { b } }
+fn anubis_max2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if a.as_f64() >= b.as_f64() { a } else { b } }
+fn anubis_seq(items: Vec<AnubisValue>) -> Vec<AnubisValue> {
+    if items.len() == 1 { if let AnubisValue::List(l) = &items[0] { return l.clone(); } }
+    items
+}
+fn anubis_min(items: Vec<AnubisValue>) -> AnubisValue {
+    anubis_seq(items).into_iter().reduce(anubis_min2).unwrap_or(AnubisValue::Int(0))
+}
+fn anubis_max(items: Vec<AnubisValue>) -> AnubisValue {
+    anubis_seq(items).into_iter().reduce(anubis_max2).unwrap_or(AnubisValue::Int(0))
+}
+fn anubis_pow(base: AnubisValue, exp: AnubisValue) -> AnubisValue {
+    if base.is_float() || exp.is_float() {
+        AnubisValue::Float(base.as_f64().powf(exp.as_f64()))
+    } else {
+        let e = exp.as_i64();
+        if e < 0 { AnubisValue::Float(base.as_f64().powi(e as i32)) }
+        else { AnubisValue::Int(base.as_i64().wrapping_pow(e as u32)) }
+    }
+}
+fn anubis_sqrt(v: AnubisValue) -> AnubisValue { AnubisValue::Float(v.as_f64().sqrt()) }
+fn anubis_floor(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_f64().floor() as i64) }
+fn anubis_ceil(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_f64().ceil() as i64) }
+fn anubis_round(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_f64().round() as i64) }
+fn anubis_gcd(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    let (mut x, mut y) = (a.as_i64().wrapping_abs(), b.as_i64().wrapping_abs());
+    while y != 0 { let t = y; y = x % y; x = t; }
+    AnubisValue::Int(x)
+}
+
+fn anubis_upper(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string().to_uppercase()) }
+fn anubis_lower(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string().to_lowercase()) }
+fn anubis_trim(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string().trim().to_string()) }
+fn anubis_split(s: AnubisValue, sep: AnubisValue) -> AnubisValue {
+    let hay = s.display_string();
+    let sp = sep.display_string();
+    let parts: Vec<AnubisValue> = if sp.is_empty() {
+        hay.chars().map(|c| AnubisValue::Str(c.to_string())).collect()
+    } else {
+        hay.split(sp.as_str()).map(|p| AnubisValue::Str(p.to_string())).collect()
+    };
+    AnubisValue::List(parts)
+}
+fn anubis_join(list: AnubisValue, sep: AnubisValue) -> AnubisValue {
+    let sp = sep.display_string();
+    match list {
+        AnubisValue::List(items) => AnubisValue::Str(
+            items.iter().map(|x| x.display_string()).collect::<Vec<_>>().join(sp.as_str())
+        ),
+        other => AnubisValue::Str(other.display_string()),
+    }
+}
+fn anubis_contains(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
+    let n = needle.display_string();
+    let result = match &hay {
+        AnubisValue::Str(s) => s.contains(n.as_str()),
+        AnubisValue::List(items) => items.iter().any(|x| x.display_string() == n),
+        AnubisValue::Map(m) => m.iter().any(|(k, _)| k == &n),
+        _ => false,
+    };
+    AnubisValue::Bool(result)
+}
+fn anubis_starts_with(s: AnubisValue, p: AnubisValue) -> AnubisValue {
+    AnubisValue::Bool(s.display_string().starts_with(p.display_string().as_str()))
+}
+fn anubis_ends_with(s: AnubisValue, p: AnubisValue) -> AnubisValue {
+    AnubisValue::Bool(s.display_string().ends_with(p.display_string().as_str()))
+}
+fn anubis_replace(s: AnubisValue, from: AnubisValue, to: AnubisValue) -> AnubisValue {
+    AnubisValue::Str(s.display_string().replace(from.display_string().as_str(), to.display_string().as_str()))
+}
+fn anubis_index_of(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
+    match &hay {
+        AnubisValue::Str(s) => {
+            let n = needle.display_string();
+            match s.find(n.as_str()) {
+                Some(byte) => AnubisValue::Int(s[..byte].chars().count() as i64),
+                None => AnubisValue::Int(-1),
+            }
+        }
+        AnubisValue::List(items) => {
+            let n = needle.display_string();
+            match items.iter().position(|x| x.display_string() == n) {
+                Some(i) => AnubisValue::Int(i as i64),
+                None => AnubisValue::Int(-1),
+            }
+        }
+        _ => AnubisValue::Int(-1),
+    }
+}
+fn anubis_ord(v: AnubisValue) -> AnubisValue {
+    AnubisValue::Int(v.display_string().chars().next().map(|c| c as i64).unwrap_or(0))
+}
+fn anubis_chr(v: AnubisValue) -> AnubisValue {
+    AnubisValue::Str(char::from_u32(v.as_i64() as u32).map(|c| c.to_string()).unwrap_or_default())
+}
+fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
+    let count = n.as_i64().max(0) as usize;
+    match s {
+        AnubisValue::List(items) => {
+            let mut out = Vec::new();
+            for _ in 0..count { out.extend(items.iter().cloned()); }
+            AnubisValue::List(out)
+        }
+        other => AnubisValue::Str(other.display_string().repeat(count)),
+    }
+}
+fn anubis_substr(s: AnubisValue, start: AnubisValue, len: AnubisValue) -> AnubisValue {
+    let chars: Vec<char> = s.display_string().chars().collect();
+    let st = start.as_i64().max(0) as usize;
+    let ln = len.as_i64().max(0) as usize;
+    AnubisValue::Str(chars.into_iter().skip(st).take(ln).collect())
+}
+fn anubis_slice(x: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    let (ai, bi) = (a.as_i64(), b.as_i64());
+    let bound = |i: i64, n: i64| -> usize { (if i < 0 { (i + n).max(0) } else { i.min(n) }) as usize };
+    match x {
+        AnubisValue::List(items) => {
+            let n = items.len() as i64;
+            let (lo, hi) = (bound(ai, n), bound(bi, n));
+            AnubisValue::List(if lo <= hi { items[lo..hi].to_vec() } else { vec![] })
+        }
+        AnubisValue::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            let n = chars.len() as i64;
+            let (lo, hi) = (bound(ai, n), bound(bi, n));
+            AnubisValue::Str(if lo <= hi { chars[lo..hi].iter().collect() } else { String::new() })
+        }
+        other => other,
+    }
+}
+fn anubis_parse_int(v: AnubisValue) -> AnubisValue {
+    AnubisValue::Int(v.display_string().trim().parse::<i64>().unwrap_or(0))
+}
+/// Cast to an integer type of the given bit width: truncate floats toward zero, then wrap into the
+/// unsigned range of `bits` (so `300 as u8` == 44, `-1 as u8` == 255). `bits >= 64` = no wrap.
+fn anubis_cast_int(v: AnubisValue, bits: u32) -> AnubisValue {
+    let n = v.as_i64();
+    if bits == 0 || bits >= 64 {
+        return AnubisValue::Int(n);
+    }
+    let mask: i64 = (1i64 << bits) - 1;
+    AnubisValue::Int(n & mask)
+}
+fn anubis_parse_float(v: AnubisValue) -> AnubisValue {
+    AnubisValue::Float(v.display_string().trim().parse::<f64>().unwrap_or(0.0))
+}
+
+fn anubis_range(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    let (mut i, hi) = (a.as_i64(), b.as_i64());
+    let mut out = Vec::new();
+    while i < hi { out.push(AnubisValue::Int(i)); i += 1; }
+    AnubisValue::List(out)
+}
+fn anubis_range_step(a: AnubisValue, b: AnubisValue, step: AnubisValue) -> AnubisValue {
+    let (mut i, hi, st) = (a.as_i64(), b.as_i64(), step.as_i64());
+    let mut out = Vec::new();
+    if st > 0 { while i < hi { out.push(AnubisValue::Int(i)); i += st; } }
+    else if st < 0 { while i > hi { out.push(AnubisValue::Int(i)); i += st; } }
+    AnubisValue::List(out)
+}
+fn anubis_reverse(x: AnubisValue) -> AnubisValue {
+    match x {
+        AnubisValue::List(mut items) => { items.reverse(); AnubisValue::List(items) }
+        AnubisValue::Str(s) => AnubisValue::Str(s.chars().rev().collect()),
+        other => other,
+    }
+}
+fn anubis_sort(x: AnubisValue) -> AnubisValue {
+    match x {
+        AnubisValue::List(mut items) => {
+            items.sort_by(anubis_value_cmp);
+            AnubisValue::List(items)
+        }
+        other => other,
+    }
+}
+fn anubis_sum(x: AnubisValue) -> AnubisValue {
+    match x {
+        AnubisValue::List(items) => {
+            if items.iter().any(|v| v.is_float()) {
+                AnubisValue::Float(items.iter().map(|v| v.as_f64()).sum())
+            } else {
+                AnubisValue::Int(items.iter().map(|v| v.as_i64()).sum())
+            }
+        }
+        other => other,
+    }
+}
+fn anubis_keys(m: AnubisValue) -> AnubisValue { m.map_keys() }
+fn anubis_values(m: AnubisValue) -> AnubisValue {
+    match m { AnubisValue::Map(e) => AnubisValue::List(e.into_iter().map(|(_, v)| v).collect()), _ => AnubisValue::List(vec![]) }
+}
+fn anubis_has_key(m: AnubisValue, k: AnubisValue) -> AnubisValue {
+    let key = k.display_string();
+    match m { AnubisValue::Map(e) => AnubisValue::Bool(e.iter().any(|(kk, _)| kk == &key)), _ => AnubisValue::Bool(false) }
+}
+
+fn anubis_pop(v: &mut AnubisValue) -> AnubisValue {
+    if let AnubisValue::List(l) = v { l.pop().unwrap_or(AnubisValue::Int(0)) } else { AnubisValue::Int(0) }
+}
+fn anubis_insert(v: &mut AnubisValue, i: AnubisValue, val: AnubisValue) -> AnubisValue {
+    if let AnubisValue::List(l) = v {
+        let raw = i.as_i64();
+        let len = l.len() as i64;
+        // Negative indices count from the end (consistent with element indexing).
+        let idx = if raw < 0 { (raw + len).max(0) } else { raw.min(len) } as usize;
+        l.insert(idx, val);
+    }
+    AnubisValue::Int(0)
+}
+fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
+    match v {
+        AnubisValue::List(l) => {
+            match anubis_norm_index(key.as_i64(), l.len()) { Some(k) => l.remove(k), None => AnubisValue::Int(0) }
+        }
+        AnubisValue::Map(m) => {
+            let k = key.display_string();
+            match m.iter().position(|(kk, _)| kk == &k) { Some(pos) => m.remove(pos).1, None => AnubisValue::Int(0) }
+        }
+        _ => AnubisValue::Int(0),
+    }
+}
+
+fn anubis_assert(cond: AnubisValue) -> AnubisValue {
+    if !cond.as_bool() { panic!("ANUBIS_ASSERT_FAILED"); }
+    AnubisValue::Bool(true)
+}
+fn anubis_panic(msg: AnubisValue) -> AnubisValue { panic!("ANUBIS_PANIC: {}", msg.display_string()); }
+
+fn anubis_input() -> AnubisValue {
+    use std::io::BufRead;
+    let mut line = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut line);
+    while line.ends_with('\n') || line.ends_with('\r') { line.pop(); }
+    AnubisValue::Str(line)
+}
+fn anubis_args() -> AnubisValue {
+    AnubisValue::List(std::env::args().skip(1).map(AnubisValue::Str).collect())
+}
+
+// ---- Higher-order functions over closures ----
+
+fn anubis_map(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    match list {
+        AnubisValue::List(items) => AnubisValue::List(items.into_iter().map(|x| f.call_closure(vec![x])).collect()),
+        other => other,
+    }
+}
+fn anubis_filter(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    match list {
+        AnubisValue::List(items) => AnubisValue::List(
+            items.into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).collect()
+        ),
+        other => other,
+    }
+}
+fn anubis_reduce(list: AnubisValue, f: AnubisValue, init: AnubisValue) -> AnubisValue {
+    match list {
+        AnubisValue::List(items) => {
+            let mut acc = init;
+            for x in items { acc = f.call_closure(vec![acc, x]); }
+            acc
+        }
+        _ => init,
+    }
+}
+fn anubis_each(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    if let AnubisValue::List(items) = list {
+        for x in items { let _ = f.call_closure(vec![x]); }
+    }
+    AnubisValue::Int(0)
+}
+fn anubis_find(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    if let AnubisValue::List(items) = list {
+        for x in items { if f.call_closure(vec![x.clone()]).as_bool() { return x; } }
+    }
+    AnubisValue::Int(0)
+}
+fn anubis_any(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let r = match list {
+        AnubisValue::List(items) => items.into_iter().any(|x| f.call_closure(vec![x]).as_bool()),
+        _ => false,
+    };
+    AnubisValue::Bool(r)
+}
+fn anubis_all(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let r = match list {
+        AnubisValue::List(items) => items.into_iter().all(|x| f.call_closure(vec![x]).as_bool()),
+        _ => true,
+    };
+    AnubisValue::Bool(r)
+}
+fn anubis_count_by(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let c = match list {
+        AnubisValue::List(items) => items.into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).count(),
+        _ => 0,
+    };
+    AnubisValue::Int(c as i64)
+}
+fn anubis_sort_by(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    match list {
+        AnubisValue::List(mut items) => {
+            items.sort_by(|a, b| {
+                let ka = f.call_closure(vec![a.clone()]);
+                let kb = f.call_closure(vec![b.clone()]);
+                anubis_value_cmp(&ka, &kb)
+            });
+            AnubisValue::List(items)
+        }
+        other => other,
+    }
+}
+fn anubis_apply(f: AnubisValue, args: AnubisValue) -> AnubisValue {
+    match args {
+        AnubisValue::List(items) => f.call_closure(items),
+        other => f.call_closure(vec![other]),
+    }
+}
+
+/// Build a map from literal entries, deduplicating keys (last value wins) so `{ "a": 1, "a": 2 }`
+/// is a well-formed single-entry map.
+fn anubis_map_lit(pairs: Vec<(String, AnubisValue)>) -> AnubisValue {
+    let mut out: Vec<(String, AnubisValue)> = Vec::new();
+    for (k, v) in pairs {
+        if let Some(slot) = out.iter_mut().find(|(kk, _)| kk == &k) {
+            slot.1 = v;
+        } else {
+            out.push((k, v));
+        }
+    }
+    AnubisValue::Map(out)
+}
+
+/// Materialize a value's iteration elements: list items, string characters, or map keys.
+fn anubis_iter(v: AnubisValue) -> Vec<AnubisValue> {
+    match v {
+        AnubisValue::List(items) => items,
+        AnubisValue::Str(s) => s.chars().map(|c| AnubisValue::Str(c.to_string())).collect(),
+        AnubisValue::Map(m) => m.into_iter().map(|(k, _)| AnubisValue::Str(k)).collect(),
+        other => vec![other],
+    }
+}
+
 "#;
 
 
@@ -678,6 +1087,7 @@ fn anubis_to_bytes(v: &AnubisValue) -> Vec<u8> {
             fields.iter().flat_map(|(_, x)| anubis_to_bytes(x)).collect()
         }
         AnubisValue::Map(m) => m.iter().flat_map(|(_, x)| anubis_to_bytes(x)).collect(),
+        AnubisValue::Closure(_) => vec![],
     }
 }
 
@@ -796,7 +1206,7 @@ fn emit_safe_run_stmt(
     stmt: &Stmt,
     indent: usize,
     out: &mut String,
-    allow_research: bool,
+    ctx: &EmitCtx,
 ) -> Result<()> {
     let pad = "    ".repeat(indent);
     match stmt {
@@ -804,12 +1214,12 @@ fn emit_safe_run_stmt(
             out.push_str(&format!(
                 "{pad}let mut {} = {};\n",
                 sanitize_ident(name)?,
-                safe_run_expr(init, allow_research)?
+                safe_run_expr(init, ctx)?
             ));
             Ok(())
         }
         Stmt::Assign { target, value } => {
-            let rhs = safe_run_expr(value, allow_research)?;
+            let rhs = safe_run_expr(value, ctx)?;
             match target {
                 // Plain variable: direct rebinding (cheap, common case).
                 Expr::Var(name) => {
@@ -817,7 +1227,7 @@ fn emit_safe_run_stmt(
                 }
                 // Any nested place (`a[i]`, `a.b`, `a.b[i].c`, …): descend and set in place.
                 _ => {
-                    let (root, segs) = emit_place(target, allow_research)?;
+                    let (root, segs) = emit_place(target, ctx)?;
                     out.push_str(&format!(
                         "{pad}{}.set_at(&[{}], {});\n",
                         root,
@@ -834,7 +1244,7 @@ fn emit_safe_run_stmt(
                     out.push_str(&format!(
                         "{pad}{}.push_val({});\n",
                         sanitize_ident(name)?,
-                        safe_run_expr(&args[1], allow_research)?
+                        safe_run_expr(&args[1], ctx)?
                     ));
                     return Ok(());
                 }
@@ -843,38 +1253,55 @@ fn emit_safe_run_stmt(
                 "push(list, value) requires a variable list as its first argument",
             ))
         }
-        Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "print" => {
-            let arg = args
-                .first()
-                .ok_or_else(|| unsupported_run("print requires one argument"))?;
-            out.push_str(&format!(
-                "{pad}println!(\"{{}}\", {}.display_string());\n",
-                safe_run_expr(arg, allow_research)?
-            ));
+        Stmt::ExprStmt(Expr::Call { callee, args })
+            if matches!(callee.as_str(), "print" | "println" | "eprint" | "eprintln") =>
+        {
+            // `print`/`println` -> stdout, `eprint`/`eprintln` -> stderr. Multiple arguments are
+            // space-separated; zero arguments emit a blank line.
+            let macro_name = if callee.starts_with('e') {
+                "eprintln"
+            } else {
+                "println"
+            };
+            let mut parts = Vec::new();
+            for a in args {
+                parts.push(format!("{}.display_string()", safe_run_expr(a, ctx)?));
+            }
+            if parts.is_empty() {
+                out.push_str(&format!("{pad}{}!();\n", macro_name));
+            } else {
+                let fmt = vec!["{}"; parts.len()].join(" ");
+                out.push_str(&format!(
+                    "{pad}{}!(\"{}\", {});\n",
+                    macro_name,
+                    fmt,
+                    parts.join(", ")
+                ));
+            }
             Ok(())
         }
         Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
             let val = match args.first() {
-                Some(expr) => safe_run_expr(expr, allow_research)?,
+                Some(expr) => safe_run_expr(expr, ctx)?,
                 None => "AnubisValue::Int(0)".to_string(),
             };
             out.push_str(&format!("{pad}return {};\n", val));
             Ok(())
         }
         Stmt::ExprStmt(expr) => {
-            out.push_str(&format!("{pad}let _ = {};\n", safe_run_expr(expr, allow_research)?));
+            out.push_str(&format!("{pad}let _ = {};\n", safe_run_expr(expr, ctx)?));
             Ok(())
         }
         Stmt::If { cond, then, else_ } => {
-            out.push_str(&format!("{pad}if {}.as_bool() {{\n", safe_run_expr(cond, allow_research)?));
+            out.push_str(&format!("{pad}if {}.as_bool() {{\n", safe_run_expr(cond, ctx)?));
             for stmt in then {
-                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
             }
             out.push_str(&format!("{pad}}}"));
             if let Some(else_body) = else_ {
                 out.push_str(" else {\n");
                 for stmt in else_body {
-                    emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                    emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
                 }
                 out.push_str(&format!("{pad}}}\n"));
             } else {
@@ -885,10 +1312,10 @@ fn emit_safe_run_stmt(
         Stmt::While { cond, body } => {
             out.push_str(&format!(
                 "{pad}while {}.as_bool() {{\n",
-                safe_run_expr(cond, allow_research)?
+                safe_run_expr(cond, ctx)?
             ));
             for stmt in body {
-                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
             }
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
@@ -896,7 +1323,7 @@ fn emit_safe_run_stmt(
         Stmt::Loop { body } => {
             out.push_str(&format!("{pad}loop {{\n"));
             for stmt in body {
-                emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
             }
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
@@ -904,68 +1331,37 @@ fn emit_safe_run_stmt(
         Stmt::For { var, source, body } => {
             use crate::frontend::ForSource;
             let v = sanitize_ident(var)?;
+            // Both forms lower to a native Rust `for`, so `break`/`continue` behave correctly
+            // (in particular `continue` advances the iterator instead of skipping an increment).
             match source {
                 ForSource::Range { start, end } => {
-                    // `for v in a..b` — half-open range, bound evaluated once.
-                    let endtmp = format!("__anb_for_end_{}", indent);
+                    let iv = format!("__anb_i_{}", indent);
                     out.push_str(&format!(
-                        "{pad}let mut {} = {};\n",
-                        v,
-                        safe_run_expr(start, allow_research)?
+                        "{pad}for {} in ({}).as_i64()..({}).as_i64() {{\n",
+                        iv,
+                        safe_run_expr(start, ctx)?,
+                        safe_run_expr(end, ctx)?
                     ));
                     out.push_str(&format!(
-                        "{pad}let {} = {};\n",
-                        endtmp,
-                        safe_run_expr(end, allow_research)?
-                    ));
-                    out.push_str(&format!(
-                        "{pad}while anubis_cmp(\"<\", {}.clone(), {}.clone()).as_bool() {{\n",
-                        v, endtmp
+                        "{pad}    let mut {} = AnubisValue::Int({});\n",
+                        v, iv
                     ));
                     for stmt in body {
-                        emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                        emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
                     }
-                    out.push_str(&format!(
-                        "{pad}    {} = anubis_add({}.clone(), AnubisValue::Int(1));\n",
-                        v, v
-                    ));
                     out.push_str(&format!("{pad}}}\n"));
                     Ok(())
                 }
                 ForSource::Collection { expr } => {
-                    // `for v in xs` — index walk over list/string/map-keys.
-                    let col = format!("__anb_for_col_{}", indent);
-                    let idx = format!("__anb_for_i_{}", indent);
-                    let len = format!("__anb_for_len_{}", indent);
-                    // Maps iterate keys (as string list) so body can index values.
+                    // Iterate list items / string characters / map keys.
                     out.push_str(&format!(
-                        "{pad}let {} = {{ let __c = {}; match &__c {{ AnubisValue::Map(_) => __c.map_keys(), _ => __c }} }};\n",
-                        col,
-                        safe_run_expr(expr, allow_research)?
-                    ));
-                    out.push_str(&format!(
-                        "{pad}let mut {} = AnubisValue::Int(0);\n",
-                        idx
-                    ));
-                    out.push_str(&format!(
-                        "{pad}let {} = {}.len_val();\n",
-                        len, col
-                    ));
-                    out.push_str(&format!(
-                        "{pad}while anubis_cmp(\"<\", {}.clone(), {}.clone()).as_bool() {{\n",
-                        idx, len
-                    ));
-                    out.push_str(&format!(
-                        "{pad}    let mut {} = {}.index_get({}.clone());\n",
-                        v, col, idx
+                        "{pad}for mut {} in anubis_iter({}) {{\n",
+                        v,
+                        safe_run_expr(expr, ctx)?
                     ));
                     for stmt in body {
-                        emit_safe_run_stmt(stmt, indent + 1, out, allow_research)?;
+                        emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
                     }
-                    out.push_str(&format!(
-                        "{pad}    {} = anubis_add({}.clone(), AnubisValue::Int(1));\n",
-                        idx, idx
-                    ));
                     out.push_str(&format!("{pad}}}\n"));
                     Ok(())
                 }
@@ -980,13 +1376,13 @@ fn emit_safe_run_stmt(
             Ok(())
         }
         Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
-            if !allow_research {
+            if !ctx.allow_research {
                 return Err(unsupported_run(
                     "research/exploit blocks require `anubis run --allow-research`",
                 ));
             }
             for stmt in body {
-                emit_safe_run_stmt(stmt, indent, out, allow_research)?;
+                emit_safe_run_stmt(stmt, indent, out, ctx)?;
             }
             Ok(())
         }
@@ -1044,11 +1440,11 @@ fn is_proof_input_builtin(callee: &str) -> bool {
 /// Decompose an lvalue expression into `(root_variable, path_segments)`, where each segment is
 /// emitted Rust of type `AnubisPathSeg` (`Field` or `Index`). Supports arbitrary nesting such as
 /// `a.b[i].c`. Errors if the place does not bottom out at a variable.
-fn emit_place(target: &Expr, allow_research: bool) -> Result<(String, Vec<String>)> {
+fn emit_place(target: &Expr, ctx: &EmitCtx) -> Result<(String, Vec<String>)> {
     match target {
         Expr::Var(name) => Ok((sanitize_ident(name)?, Vec::new())),
         Expr::FieldAccess { base, field, .. } => {
-            let (root, mut segs) = emit_place(base, allow_research)?;
+            let (root, mut segs) = emit_place(base, ctx)?;
             segs.push(format!(
                 "AnubisPathSeg::Field({}.to_string())",
                 rust_string_lit(field)?
@@ -1056,10 +1452,10 @@ fn emit_place(target: &Expr, allow_research: bool) -> Result<(String, Vec<String
             Ok((root, segs))
         }
         Expr::Index { base, index } => {
-            let (root, mut segs) = emit_place(base, allow_research)?;
+            let (root, mut segs) = emit_place(base, ctx)?;
             segs.push(format!(
                 "AnubisPathSeg::Index({})",
-                safe_run_expr(index, allow_research)?
+                safe_run_expr(index, ctx)?
             ));
             Ok((root, segs))
         }
@@ -1069,7 +1465,295 @@ fn emit_place(target: &Expr, allow_research: bool) -> Result<(String, Vec<String
     }
 }
 
-fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
+/// True if `name` is a reserved builtin (stdlib, statement builtin, proof/poc/analysis construct).
+/// Used to avoid capturing builtin names as free variables in lambdas, and by the typechecker to
+/// decide whether an unknown call is a real error.
+pub fn is_builtin_name(name: &str) -> bool {
+    emit_builtin_call(name, &[]).is_some()
+        || matches!(
+            name,
+            "len" | "pop" | "push" | "insert" | "remove" | "print" | "println" | "eprint"
+                | "eprintln" | "return"
+        )
+        || is_proof_input_builtin(name)
+        || is_poc_kit_builtin(name)
+        || is_non_run_builtin(name)
+}
+
+/// Collect the free identifiers of an expression, split into value uses (`vars`, always captured
+/// by a lambda) and callee uses (`callees`, captured only when they are not a user function or a
+/// builtin — i.e. when they name a closure-valued local). A name used as a value takes precedence.
+fn collect_free_expr(
+    e: &Expr,
+    bound: &std::collections::BTreeSet<String>,
+    vars: &mut std::collections::BTreeSet<String>,
+    callees: &mut std::collections::BTreeSet<String>,
+) {
+    use crate::frontend::Pattern;
+    match e {
+        Expr::Var(n) => {
+            if !bound.contains(n) {
+                vars.insert(n.clone());
+            }
+        }
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::RawPtr { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::TaintSource { .. }
+        | Expr::Other(_) => {}
+        Expr::Call { callee, args } => {
+            if !bound.contains(callee) {
+                callees.insert(callee.clone());
+            }
+            for a in args {
+                collect_free_expr(a, bound, vars, callees);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_free_expr(callee, bound, vars, callees);
+            for a in args {
+                collect_free_expr(a, bound, vars, callees);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_free_expr(lhs, bound, vars, callees);
+            collect_free_expr(rhs, bound, vars, callees);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr) => collect_free_expr(expr, bound, vars, callees),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            collect_free_expr(inner, bound, vars, callees)
+        }
+        Expr::ArrayLiteral { elements } => {
+            for el in elements {
+                collect_free_expr(el, bound, vars, callees);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_free_expr(base, bound, vars, callees);
+            collect_free_expr(index, bound, vars, callees);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                collect_free_expr(v, bound, vars, callees);
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_free_expr(base, bound, vars, callees),
+        Expr::EnumConstruct { fields, .. } => {
+            for f in fields {
+                collect_free_expr(f, bound, vars, callees);
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_free_expr(scrutinee, bound, vars, callees);
+            for arm in arms {
+                let mut b2 = bound.clone();
+                if let Pattern::EnumVariant {
+                    bindings,
+                    named_bindings,
+                    ..
+                } = &arm.pattern
+                {
+                    for x in bindings {
+                        b2.insert(x.clone());
+                    }
+                    for (_, x) in named_bindings {
+                        b2.insert(x.clone());
+                    }
+                }
+                collect_free_expr(&arm.body, &b2, vars, callees);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            collect_free_expr(cond, bound, vars, callees);
+            collect_free_expr(then, bound, vars, callees);
+            collect_free_expr(else_, bound, vars, callees);
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_free_expr(k, bound, vars, callees);
+                collect_free_expr(v, bound, vars, callees);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            let mut b2 = bound.clone();
+            collect_free_stmts(stmts, &mut b2, vars, callees);
+            if let Some(t) = tail {
+                collect_free_expr(t, &b2, vars, callees);
+            }
+        }
+        Expr::Lambda { params, body } => {
+            let mut b2 = bound.clone();
+            for p in params {
+                b2.insert(p.clone());
+            }
+            collect_free_expr(body, &b2, vars, callees);
+        }
+    }
+}
+
+fn collect_free_stmts(
+    stmts: &[Stmt],
+    bound: &mut std::collections::BTreeSet<String>,
+    vars: &mut std::collections::BTreeSet<String>,
+    callees: &mut std::collections::BTreeSet<String>,
+) {
+    use crate::frontend::ForSource;
+    for s in stmts {
+        match s {
+            Stmt::Let { name, init, .. } => {
+                collect_free_expr(init, bound, vars, callees);
+                bound.insert(name.clone());
+            }
+            Stmt::Assign { target, value } => {
+                collect_free_expr(target, bound, vars, callees);
+                collect_free_expr(value, bound, vars, callees);
+            }
+            Stmt::ExprStmt(e) => collect_free_expr(e, bound, vars, callees),
+            Stmt::If { cond, then, else_ } => {
+                collect_free_expr(cond, bound, vars, callees);
+                let mut b = bound.clone();
+                collect_free_stmts(then, &mut b, vars, callees);
+                if let Some(e) = else_ {
+                    let mut b = bound.clone();
+                    collect_free_stmts(e, &mut b, vars, callees);
+                }
+            }
+            Stmt::While { cond, body } => {
+                collect_free_expr(cond, bound, vars, callees);
+                let mut b = bound.clone();
+                collect_free_stmts(body, &mut b, vars, callees);
+            }
+            Stmt::Loop { body } => {
+                let mut b = bound.clone();
+                collect_free_stmts(body, &mut b, vars, callees);
+            }
+            Stmt::For { var, source, body } => {
+                match source {
+                    ForSource::Range { start, end } => {
+                        collect_free_expr(start, bound, vars, callees);
+                        collect_free_expr(end, bound, vars, callees);
+                    }
+                    ForSource::Collection { expr } => collect_free_expr(expr, bound, vars, callees),
+                }
+                let mut b = bound.clone();
+                b.insert(var.clone());
+                collect_free_stmts(body, &mut b, vars, callees);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                let mut b = bound.clone();
+                collect_free_stmts(body, &mut b, vars, callees);
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for blk in [gpu, cpu, prove].into_iter().flatten() {
+                    let mut b = bound.clone();
+                    collect_free_stmts(blk, &mut b, vars, callees);
+                }
+            }
+            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
+        }
+    }
+}
+
+/// Dispatch a standard-library builtin call. Returns `None` if `callee` is not a builtin (so it
+/// falls through to a user-defined function call). `args` are already-lowered Rust expressions.
+fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
+    // Fixed-arity builtin → `anubis_fn(args...)`, with an arity check.
+    fn fixed(fn_name: &str, callee: &str, args: &[String], arity: usize) -> Result<String> {
+        if args.len() != arity {
+            return Err(unsupported_run(format!(
+                "`{}` expects {} argument(s), got {}",
+                callee,
+                arity,
+                args.len()
+            )));
+        }
+        Ok(format!("{}({})", fn_name, args.join(", ")))
+    }
+    let r = match callee {
+        // conversions / reflection
+        "str" => fixed("anubis_str", callee, args, 1),
+        "int" => fixed("anubis_int", callee, args, 1),
+        "float" => fixed("anubis_float", callee, args, 1),
+        "bool" => fixed("anubis_bool_of", callee, args, 1),
+        "type" => fixed("anubis_type_of", callee, args, 1),
+        "parse_int" => fixed("anubis_parse_int", callee, args, 1),
+        "parse_float" => fixed("anubis_parse_float", callee, args, 1),
+        // math
+        "abs" => fixed("anubis_abs", callee, args, 1),
+        "sqrt" => fixed("anubis_sqrt", callee, args, 1),
+        "floor" => fixed("anubis_floor", callee, args, 1),
+        "ceil" => fixed("anubis_ceil", callee, args, 1),
+        "round" => fixed("anubis_round", callee, args, 1),
+        "pow" => fixed("anubis_pow", callee, args, 2),
+        "gcd" => fixed("anubis_gcd", callee, args, 2),
+        "min" => Ok(format!("anubis_min(vec![{}])", args.join(", "))),
+        "max" => Ok(format!("anubis_max(vec![{}])", args.join(", "))),
+        // strings
+        "upper" => fixed("anubis_upper", callee, args, 1),
+        "lower" => fixed("anubis_lower", callee, args, 1),
+        "trim" => fixed("anubis_trim", callee, args, 1),
+        "split" => fixed("anubis_split", callee, args, 2),
+        "join" => fixed("anubis_join", callee, args, 2),
+        "contains" => fixed("anubis_contains", callee, args, 2),
+        "starts_with" => fixed("anubis_starts_with", callee, args, 2),
+        "ends_with" => fixed("anubis_ends_with", callee, args, 2),
+        "replace" => fixed("anubis_replace", callee, args, 3),
+        "index_of" => fixed("anubis_index_of", callee, args, 2),
+        "ord" => fixed("anubis_ord", callee, args, 1),
+        "chr" => fixed("anubis_chr", callee, args, 1),
+        "repeat" => fixed("anubis_repeat", callee, args, 2),
+        "substr" => fixed("anubis_substr", callee, args, 3),
+        "char_at" if args.len() == 2 => Ok(format!("({}).index_get({})", args[0], args[1])),
+        "char_at" => Err(unsupported_run("`char_at` expects 2 arguments")),
+        // sequences
+        "slice" => fixed("anubis_slice", callee, args, 3),
+        "reverse" => fixed("anubis_reverse", callee, args, 1),
+        "sort" => fixed("anubis_sort", callee, args, 1),
+        "sum" => fixed("anubis_sum", callee, args, 1),
+        "range" if args.len() == 2 => Ok(format!("anubis_range({}, {})", args[0], args[1])),
+        "range" if args.len() == 3 => {
+            Ok(format!("anubis_range_step({}, {}, {})", args[0], args[1], args[2]))
+        }
+        "range" => Err(unsupported_run("`range` expects 2 or 3 arguments")),
+        // maps
+        "keys" => fixed("anubis_keys", callee, args, 1),
+        "values" => fixed("anubis_values", callee, args, 1),
+        "has_key" => fixed("anubis_has_key", callee, args, 2),
+        // higher-order (closures)
+        "map" => fixed("anubis_map", callee, args, 2),
+        "filter" => fixed("anubis_filter", callee, args, 2),
+        "reduce" => fixed("anubis_reduce", callee, args, 3),
+        "each" => fixed("anubis_each", callee, args, 2),
+        "find" => fixed("anubis_find", callee, args, 2),
+        "any" => fixed("anubis_any", callee, args, 2),
+        "all" => fixed("anubis_all", callee, args, 2),
+        "count" => fixed("anubis_count_by", callee, args, 2),
+        "sort_by" => fixed("anubis_sort_by", callee, args, 2),
+        "apply" => fixed("anubis_apply", callee, args, 2),
+        "call" if !args.is_empty() => Ok(format!(
+            "({}).call_closure(vec![{}])",
+            args[0],
+            args[1..].join(", ")
+        )),
+        "call" => Err(unsupported_run("`call` requires a closure argument")),
+        // control / io
+        "assert" => fixed("anubis_assert", callee, args, 1),
+        "panic" => fixed("anubis_panic", callee, args, 1),
+        "input" | "read_line" => fixed("anubis_input", callee, args, 0),
+        "args" => fixed("anubis_args", callee, args, 0),
+        _ => return None,
+    };
+    Some(r)
+}
+
+fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
     match expr {
         Expr::Literal(value) => Ok(literal_to_anubis_value(value)),
         Expr::StrLiteral(s) => Ok(format!(
@@ -1078,7 +1762,7 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
         )),
         Expr::Var(name) => Ok(format!("{}.clone()", sanitize_ident(name)?)),
         Expr::Unary { op, expr } => {
-            let inner = safe_run_expr(expr, allow_research)?;
+            let inner = safe_run_expr(expr, ctx)?;
             match op.as_str() {
                 "-" => Ok(format!("anubis_neg({inner})")),
                 "!" => Ok(format!("AnubisValue::Bool(!({inner}).as_bool())")),
@@ -1090,8 +1774,8 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
             }
         }
         Expr::Binary { op, lhs, rhs } => {
-            let lhs = safe_run_expr(lhs, allow_research)?;
-            let rhs = safe_run_expr(rhs, allow_research)?;
+            let lhs = safe_run_expr(lhs, ctx)?;
+            let rhs = safe_run_expr(rhs, ctx)?;
             match op.as_str() {
                 "+" => Ok(format!("anubis_add({lhs}, {rhs})")),
                 "-" => Ok(format!("anubis_sub({lhs}, {rhs})")),
@@ -1120,21 +1804,54 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
             }
         }
         Expr::Call { callee, args } => {
+            // User-defined functions take precedence over every builtin name.
+            if ctx.fns.contains(callee.as_str()) {
+                let lowered = args
+                    .iter()
+                    .map(|a| safe_run_expr(a, ctx))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(format!("anb_{}({})", sanitize_ident(callee)?, lowered.join(", ")));
+            }
             if callee == "len" {
                 let a = args
                     .first()
                     .ok_or_else(|| unsupported_run("len requires one argument"))?;
                 return Ok(format!(
                     "({}).len_val()",
-                    safe_run_expr(a, allow_research)?
+                    safe_run_expr(a, ctx)?
                 ));
+            }
+            // Mutating collection builtins operate on a bound variable by `&mut`.
+            if matches!(callee.as_str(), "pop" | "push" | "insert" | "remove") {
+                let Some(Expr::Var(name)) = args.first() else {
+                    return Err(unsupported_run(format!(
+                        "`{}` requires a variable as its first argument",
+                        callee
+                    )));
+                };
+                let var = sanitize_ident(name)?;
+                let rest = args[1..]
+                    .iter()
+                    .map(|a| safe_run_expr(a, ctx))
+                    .collect::<Result<Vec<_>>>()?;
+                return match (callee.as_str(), rest.len()) {
+                    ("pop", 0) => Ok(format!("anubis_pop(&mut {})", var)),
+                    ("push", 1) => {
+                        Ok(format!("{{ {}.push_val({}); AnubisValue::Int(0) }}", var, rest[0]))
+                    }
+                    ("insert", 2) => {
+                        Ok(format!("anubis_insert(&mut {}, {}, {})", var, rest[0], rest[1]))
+                    }
+                    ("remove", 1) => Ok(format!("anubis_remove(&mut {}, {})", var, rest[0])),
+                    _ => Err(unsupported_run(format!("`{}` arity mismatch", callee))),
+                };
             }
             if is_proof_input_builtin(callee) {
                 if callee == "proof_assert" {
                     if args.len() != 1 {
                         return Err(unsupported_run("proof_assert requires one condition"));
                     }
-                    let c = safe_run_expr(&args[0], allow_research)?;
+                    let c = safe_run_expr(&args[0], ctx)?;
                     return Ok(format!("anubis_proof_assert({c})"));
                 }
                 if callee == "proof_commit_u32" || callee == "proof_commit_bool" {
@@ -1152,7 +1869,7 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
                             ))
                         }
                     };
-                    let val = safe_run_expr(&args[1], allow_research)?;
+                    let val = safe_run_expr(&args[1], ctx)?;
                     let fn_name = if callee == "proof_commit_bool" {
                         "anubis_proof_commit_bool"
                     } else {
@@ -1190,14 +1907,14 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
                 };
             }
             if is_poc_kit_builtin(callee) {
-                if !allow_research {
+                if !ctx.allow_research {
                     return Err(unsupported_run(format!(
                         "PoC kit builtin `{callee}` requires `anubis run --allow-research`"
                     )));
                 }
                 let mut lowered = Vec::new();
                 for arg in args {
-                    lowered.push(safe_run_expr(arg, allow_research)?);
+                    lowered.push(safe_run_expr(arg, ctx)?);
                 }
                 return match callee.as_str() {
                     "p8" if lowered.len() == 1 => Ok(format!("anubis_p8({})", lowered[0])),
@@ -1219,17 +1936,17 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
                 };
             }
             if is_non_run_builtin(callee) {
-                if allow_research && matches!(callee.as_str(), "taint_source" | "declassify" | "sink")
+                if ctx.allow_research && matches!(callee.as_str(), "taint_source" | "declassify" | "sink")
                 {
                     // Modeling no-ops in research execution path.
                     if callee == "taint_source" {
-                        let a = args.first().map(|e| safe_run_expr(e, allow_research)).transpose()?;
+                        let a = args.first().map(|e| safe_run_expr(e, ctx)).transpose()?;
                         return Ok(a.unwrap_or_else(|| {
                             "AnubisValue::Str(\"tainted\".to_string())".into()
                         }));
                     }
                     if let Some(first) = args.first() {
-                        return safe_run_expr(first, allow_research);
+                        return safe_run_expr(first, ctx);
                     }
                     return Ok("AnubisValue::Int(0)".into());
                 }
@@ -1240,18 +1957,36 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
             }
             let mut lowered = Vec::new();
             for arg in args {
-                lowered.push(safe_run_expr(arg, allow_research)?);
+                lowered.push(safe_run_expr(arg, ctx)?);
+            }
+            // Not a user function (checked first) → try a stdlib builtin.
+            if let Some(result) = emit_builtin_call(callee, &lowered) {
+                return result;
+            }
+            // Otherwise it is the application of a closure-valued variable: `f(x)`.
+            Ok(format!(
+                "{}.call_closure(vec![{}])",
+                sanitize_ident(callee)?,
+                lowered.join(", ")
+            ))
+        }
+        // Application of an arbitrary callee expression: `obj.f(x)`, `arr[i](x)`, `f(a)(b)`.
+        Expr::CallExpr { callee, args } => {
+            let callee_src = safe_run_expr(callee, ctx)?;
+            let mut lowered = Vec::new();
+            for arg in args {
+                lowered.push(safe_run_expr(arg, ctx)?);
             }
             Ok(format!(
-                "anb_{}({})",
-                sanitize_ident(callee)?,
+                "({}).call_closure(vec![{}])",
+                callee_src,
                 lowered.join(", ")
             ))
         }
         Expr::ArrayLiteral { elements } => {
             let mut lowered = Vec::new();
             for el in elements {
-                lowered.push(safe_run_expr(el, allow_research)?);
+                lowered.push(safe_run_expr(el, ctx)?);
             }
             Ok(format!("AnubisValue::List(vec![{}])", lowered.join(", ")))
         }
@@ -1264,7 +1999,7 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
         } => {
             let mut fs = Vec::new();
             for f in fields {
-                fs.push(safe_run_expr(f, allow_research)?);
+                fs.push(safe_run_expr(f, ctx)?);
             }
             let names: Vec<String> = field_names
                 .iter()
@@ -1280,13 +2015,13 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
         }
         Expr::Match {
             scrutinee, arms, ..
-        } => lower_match_expr(scrutinee, arms, allow_research),
+        } => lower_match_expr(scrutinee, arms, ctx),
         Expr::If {
             cond, then, else_, ..
         } => {
-            let c = safe_run_expr(cond, allow_research)?;
-            let t = safe_run_expr(then, allow_research)?;
-            let e = safe_run_expr(else_, allow_research)?;
+            let c = safe_run_expr(cond, ctx)?;
+            let t = safe_run_expr(then, ctx)?;
+            let e = safe_run_expr(else_, ctx)?;
             Ok(format!(
                 "if ({c}).as_bool() {{ {t} }} else {{ {e} }}"
             ))
@@ -1294,12 +2029,12 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
         Expr::MapLiteral { entries, .. } => {
             let mut pairs = Vec::new();
             for (k, v) in entries {
-                let ks = safe_run_expr(k, allow_research)?;
-                let vs = safe_run_expr(v, allow_research)?;
+                let ks = safe_run_expr(k, ctx)?;
+                let vs = safe_run_expr(v, ctx)?;
                 pairs.push(format!("(({ks}).display_string(), {vs})"));
             }
             Ok(format!(
-                "AnubisValue::Map(vec![{}])",
+                "anubis_map_lit(vec![{}])",
                 pairs.join(", ")
             ))
         }
@@ -1307,20 +2042,84 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
         Expr::Block { stmts, tail } => {
             let mut body = String::new();
             for s in stmts {
-                emit_safe_run_stmt(s, 0, &mut body, allow_research)?;
+                emit_safe_run_stmt(s, 0, &mut body, ctx)?;
             }
             let tail_src = match tail {
-                Some(t) => safe_run_expr(t, allow_research)?,
+                Some(t) => safe_run_expr(t, ctx)?,
                 None => "AnubisValue::Int(0)".to_string(),
             };
             Ok(format!("{{ {} {} }}", body, tail_src))
         }
+        // Lambda: capture free variables by clone, bind positional params, then run the body.
+        Expr::Lambda { params, body } => {
+            let mut bound = std::collections::BTreeSet::new();
+            for p in params {
+                bound.insert(p.clone());
+            }
+            let mut vars = std::collections::BTreeSet::new();
+            let mut callees = std::collections::BTreeSet::new();
+            collect_free_expr(body, &bound, &mut vars, &mut callees);
+            // Capture every value-use (always a local, even if its name shadows a builtin), plus
+            // callee-uses that name a closure-valued local (not a user function or a builtin).
+            let mut to_capture = vars;
+            for c in callees {
+                if !ctx.fns.contains(&c) && !is_builtin_name(&c) {
+                    to_capture.insert(c);
+                }
+            }
+            let mut captures = String::new();
+            for v in &to_capture {
+                let id = sanitize_ident(v)?;
+                captures.push_str(&format!("let {id} = {id}.clone(); "));
+            }
+            let mut binds = String::new();
+            for (i, p) in params.iter().enumerate() {
+                binds.push_str(&format!(
+                    "let mut {} = __args.get({}usize).cloned().unwrap_or(AnubisValue::Int(0)); ",
+                    sanitize_ident(p)?,
+                    i
+                ));
+            }
+            let body_src = safe_run_expr(body, ctx)?;
+            let closure = format!(
+                "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ {binds}{body_src} }}))"
+            );
+            // Only introduce a capture block when there is something to capture, so lambdas passed
+            // directly as arguments don't trigger `unused_braces`.
+            if captures.is_empty() {
+                Ok(closure)
+            } else {
+                Ok(format!("{{ {captures}{closure} }}"))
+            }
+        }
         Expr::Index { base, index } => Ok(format!(
             "({}).index_get({})",
-            safe_run_expr(base, allow_research)?,
-            safe_run_expr(index, allow_research)?
+            safe_run_expr(base, ctx)?,
+            safe_run_expr(index, ctx)?
         )),
-        Expr::Cast { expr, .. } => safe_run_expr(expr, allow_research),
+        // `expr as T` — numeric conversions truncate/wrap; pointer casts pass through unchanged.
+        Expr::Cast { expr, ty } => {
+            let inner = safe_run_expr(expr, ctx)?;
+            let t = ty.to_ascii_lowercase();
+            if t.contains('*') || t.contains("ptr") {
+                Ok(inner)
+            } else if matches!(t.as_str(), "f32" | "f64" | "float" | "double") {
+                Ok(format!("anubis_float({})", inner))
+            } else {
+                let bits: u32 = match t.as_str() {
+                    "u8" | "i8" => 8,
+                    "u16" | "i16" => 16,
+                    "u32" | "i32" => 32,
+                    "u64" | "i64" | "u128" | "i128" | "usize" | "isize" | "int" | "integer" => 64,
+                    _ => 0,
+                };
+                if bits == 0 {
+                    Ok(inner) // unrecognized target type: leave the value unchanged
+                } else {
+                    Ok(format!("anubis_cast_int({}, {})", inner, bits))
+                }
+            }
+        }
         // Nominal struct construction: `Name { f: e, ... }`.
         Expr::StructLiteral { name, fields, .. } => {
             let mut fs = Vec::new();
@@ -1328,7 +2127,7 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
                 fs.push(format!(
                     "({}.to_string(), {})",
                     rust_string_lit(fname)?,
-                    safe_run_expr(fexpr, allow_research)?
+                    safe_run_expr(fexpr, ctx)?
                 ));
             }
             Ok(format!(
@@ -1340,18 +2139,26 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
         // Field read: struct / struct-enum-variant / map field.
         Expr::FieldAccess { base, field, .. } => Ok(format!(
             "({}).field_get({})",
-            safe_run_expr(base, allow_research)?,
+            safe_run_expr(base, ctx)?,
             rust_string_lit(field)?
         )),
-        Expr::TaintSource { label } if allow_research => Ok(format!(
+        Expr::TaintSource { label } if ctx.allow_research => Ok(format!(
             "AnubisValue::Str({}.to_string())",
             rust_string_lit(label)?
         )),
-        Expr::Declassify { inner, .. } if allow_research => safe_run_expr(inner, allow_research),
+        Expr::Declassify { inner, .. } if ctx.allow_research => safe_run_expr(inner, ctx),
+        // Runtime assertion: `assert(cond)` panics (fail-closed) when the condition is false.
+        Expr::Assert(inner) => Ok(format!(
+            "anubis_assert({})",
+            safe_run_expr(inner, ctx)?
+        )),
+        // `assume(cond)` is a solver hint; at runtime it evaluates the expression and yields true.
+        Expr::Assume(inner) => Ok(format!(
+            "{{ let _ = {}; AnubisValue::Bool(true) }}",
+            safe_run_expr(inner, ctx)?
+        )),
         Expr::Tainted { .. }
         | Expr::Symbolic { .. }
-        | Expr::Assume(_)
-        | Expr::Assert(_)
         | Expr::Declassify { .. }
         | Expr::TaintSource { .. }
         | Expr::UnifiedBuffer { .. }
@@ -1366,15 +2173,15 @@ fn safe_run_expr(expr: &Expr, allow_research: bool) -> Result<String> {
 fn lower_match_expr(
     scrutinee: &Expr,
     arms: &[crate::frontend::MatchArm],
-    allow_research: bool,
+    ctx: &EmitCtx,
 ) -> Result<String> {
     use crate::frontend::Pattern;
-    let scr = safe_run_expr(scrutinee, allow_research)?;
+    let scr = safe_run_expr(scrutinee, ctx)?;
     // Nested if-else chain over enum tag / wildcard.
     let mut out = format!("{{ let __anb_m = {scr}; ");
     let mut first = true;
     for arm in arms {
-        let body = safe_run_expr(&arm.body, allow_research)?;
+        let body = safe_run_expr(&arm.body, ctx)?;
         let cond = match &arm.pattern {
             Pattern::Wildcard => "true".to_string(),
             Pattern::EnumVariant {
@@ -1718,5 +2525,318 @@ mod run_tests {
         let src = "module m { struct P { v: u32 } fn mk() { return P { v: 7 }; } } \
                    fn main() { let p = mk(); print(p.v); }";
         assert_eq!(run(src), "7");
+    }
+
+    #[test]
+    fn stdlib_strings() {
+        assert_eq!(run("fn main() { print(upper(\"abc\")); }"), "ABC");
+        assert_eq!(run("fn main() { print(lower(\"ABC\")); }"), "abc");
+        assert_eq!(run("fn main() { print(trim(\"  hi  \")); }"), "hi");
+        assert_eq!(run("fn main() { print(len(split(\"a,b,c\", \",\"))); }"), "3");
+        assert_eq!(
+            run("fn main() { print(join([\"a\", \"b\", \"c\"], \"-\")); }"),
+            "a-b-c"
+        );
+        assert_eq!(
+            run("fn main() { print(replace(\"aXbXc\", \"X\", \"_\")); }"),
+            "a_b_c"
+        );
+        assert_eq!(run("fn main() { print(contains(\"hello\", \"ell\")); }"), "true");
+        assert_eq!(run("fn main() { print(index_of(\"hello\", \"l\")); }"), "2");
+        assert_eq!(run("fn main() { print(substr(\"hello\", 1, 3)); }"), "ell");
+        assert_eq!(run("fn main() { print(repeat(\"ab\", 3)); }"), "ababab");
+        assert_eq!(run("fn main() { print(ord(\"A\")); }"), "65");
+        assert_eq!(run("fn main() { print(chr(66)); }"), "B");
+        assert_eq!(run("fn main() { print(parse_int(\"42\") + 1); }"), "43");
+    }
+
+    #[test]
+    fn stdlib_math() {
+        assert_eq!(run("fn main() { print(abs(-7)); }"), "7");
+        assert_eq!(run("fn main() { print(pow(2, 10)); }"), "1024");
+        assert_eq!(run("fn main() { print(gcd(48, 36)); }"), "12");
+        assert_eq!(run("fn main() { print(min(3, 1, 2)); }"), "1");
+        assert_eq!(run("fn main() { print(max([4, 9, 2])); }"), "9");
+        assert_eq!(run("fn main() { print(sqrt(9.0)); }"), "3.0");
+        assert_eq!(run("fn main() { print(floor(3.7)); }"), "3");
+        assert_eq!(run("fn main() { print(ceil(3.2)); }"), "4");
+    }
+
+    #[test]
+    fn stdlib_lists() {
+        assert_eq!(run("fn main() { print(sum([1, 2, 3, 4])); }"), "10");
+        assert_eq!(run("fn main() { print(reverse([1, 2, 3])); }"), "[3, 2, 1]");
+        assert_eq!(run("fn main() { print(sort([3, 1, 2])); }"), "[1, 2, 3]");
+        assert_eq!(run("fn main() { print(range(0, 5)); }"), "[0, 1, 2, 3, 4]");
+        assert_eq!(run("fn main() { print(range(0, 10, 2)); }"), "[0, 2, 4, 6, 8]");
+        assert_eq!(run("fn main() { print(slice([1, 2, 3, 4, 5], 1, 4)); }"), "[2, 3, 4]");
+        assert_eq!(
+            run("fn main() { let a = [1, 2, 3]; let x = pop(a); print(x + len(a)); }"),
+            "5"
+        );
+        assert_eq!(
+            run("fn main() { let a = [1, 2, 3]; insert(a, 1, 9); print(a); }"),
+            "[1, 9, 2, 3]"
+        );
+        assert_eq!(
+            run("fn main() { let a = [1, 2, 3]; let r = remove(a, 1); print(r); print(a); }"),
+            "2\n[1, 3]"
+        );
+    }
+
+    #[test]
+    fn stdlib_maps() {
+        assert_eq!(
+            run("fn main() { let m = { \"a\": 1, \"b\": 2 }; print(len(keys(m))); }"),
+            "2"
+        );
+        assert_eq!(
+            run("fn main() { let m = { \"a\": 1, \"b\": 2 }; print(sum(values(m))); }"),
+            "3"
+        );
+        assert_eq!(
+            run("fn main() { let m = { \"a\": 1 }; print(has_key(m, \"a\")); print(has_key(m, \"z\")); }"),
+            "true\nfalse"
+        );
+        assert_eq!(
+            run("fn main() { let m = { \"a\": 1, \"b\": 2 }; remove(m, \"a\"); print(len(keys(m))); }"),
+            "1"
+        );
+    }
+
+    #[test]
+    fn stdlib_assert_and_type() {
+        assert_eq!(run("fn main() { assert(1 + 1 == 2); print(42); }"), "42");
+        assert_eq!(run("fn main() { print(type([1, 2])); }"), "list");
+        assert_eq!(run("fn main() { print(type(3.5)); }"), "float");
+        assert_eq!(run("fn main() { print(type(\"x\")); }"), "string");
+    }
+
+    #[test]
+    fn assert_failure_panics() {
+        let out = compile_and_run_source("fn main() { assert(1 == 2); print(1); }", false, &[])
+            .expect("compile+run");
+        assert!(!out.status.success(), "false assert must fail the program");
+    }
+
+    #[test]
+    fn lambda_direct_call() {
+        assert_eq!(
+            run("fn main() { let inc = |x| x + 1; print(inc(41)); }"),
+            "42"
+        );
+    }
+
+    #[test]
+    fn lambda_captures_environment() {
+        // Capture-by-value: n is captured when the closure is created.
+        let src = "fn main() { let n = 10; let addn = |x| x + n; let n = 999; print(addn(5)); }";
+        assert_eq!(run(src), "15");
+    }
+
+    #[test]
+    fn higher_order_map_filter_reduce() {
+        assert_eq!(
+            run("fn main() { print(map([1, 2, 3], |x| x * x)); }"),
+            "[1, 4, 9]"
+        );
+        assert_eq!(
+            run("fn main() { print(filter([1, 2, 3, 4, 5, 6], |x| x % 2 == 0)); }"),
+            "[2, 4, 6]"
+        );
+        assert_eq!(
+            run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b, 0)); }"),
+            "10"
+        );
+    }
+
+    #[test]
+    fn higher_order_composition_and_block_body() {
+        // pipeline: square evens then sum
+        let src = "fn main() { \
+            let xs = range(1, 7); \
+            let evens = filter(xs, |x| x % 2 == 0); \
+            let squares = map(evens, |x| { let y = x * x; y }); \
+            print(reduce(squares, |a, b| a + b, 0)); \
+        }";
+        assert_eq!(run(src), "56"); // 2^2 + 4^2 + 6^2 = 4 + 16 + 36 = 56
+    }
+
+    #[test]
+    fn closure_returned_from_function() {
+        // A function returns a closure that captures its parameter.
+        let src = "fn adder(n) { return |x| x + n; } \
+                   fn main() { let add10 = adder(10); print(add10(5)); }";
+        assert_eq!(run(src), "15");
+    }
+
+    #[test]
+    fn user_function_shadows_builtin_name() {
+        // A user-defined `sort` takes precedence over the stdlib builtin.
+        let src = "fn sort(x) { return 777; } fn main() { print(sort([3, 1, 2])); }";
+        assert_eq!(run(src), "777");
+    }
+
+    // ---- Regressions for bugs found by the adversarial verification sweep ----
+
+    #[test]
+    fn for_loop_continue_advances() {
+        // `continue` must advance the iterator, not infinite-loop.
+        let src = "fn main() { let s = 0; for i in 0..6 { if i == 2 { continue; } s = s + i; } print(s); }";
+        assert_eq!(run(src), "13"); // 0+1+3+4+5
+    }
+
+    #[test]
+    fn integer_comparison_is_exact_above_2_53() {
+        let src = "fn main() { let a = 9007199254740993; let b = 9007199254740992; \
+                   print(a > b); print(a == b); print(a != b); print(b < a); }";
+        assert_eq!(run(src), "true\nfalse\ntrue\ntrue");
+    }
+
+    #[test]
+    fn string_relational_is_lexicographic() {
+        assert_eq!(run("fn main() { print(\"apple\" < \"banana\"); }"), "true");
+        assert_eq!(run("fn main() { print(\"b\" < \"a\"); }"), "false");
+        assert_eq!(
+            run("fn main() { print(sort([\"banana\", \"apple\", \"cherry\"])); }"),
+            "[apple, banana, cherry]"
+        );
+    }
+
+    #[test]
+    fn sort_preserves_large_integers() {
+        let src = "fn main() { print(sort([9007199254740993, 9007199254740992, 9007199254740994])); }";
+        assert_eq!(run(src), "[9007199254740992, 9007199254740993, 9007199254740994]");
+    }
+
+    #[test]
+    fn closure_capture_of_shadowing_name() {
+        // `map` is a builtin name but here a local variable — it must still be captured by clone.
+        let src = "fn main() { let map = 100; let f = |x| x + map; let g = |x| x - map; \
+                   print(f(5)); print(g(5)); }";
+        assert_eq!(run(src), "105\n-95");
+    }
+
+    #[test]
+    fn map_literal_dedups_keys() {
+        let src = "fn main() { let m = { \"a\": 1, \"a\": 2 }; print(m[\"a\"]); print(len(keys(m))); }";
+        assert_eq!(run(src), "2\n1");
+    }
+
+    #[test]
+    fn cast_to_integer_types() {
+        assert_eq!(run("fn main() { print((3.9 as u32) + 1); }"), "4");
+        assert_eq!(run("fn main() { print(300 as u8); }"), "44");
+        assert_eq!(run("fn main() { print(-1 as u8); }"), "255");
+        assert_eq!(run("fn main() { print(type(3.9 as u32)); }"), "int");
+    }
+
+    #[test]
+    fn call_arbitrary_callee_expression() {
+        // Call a closure obtained from a map, a struct field, and a chained call.
+        assert_eq!(
+            run("fn main() { let ops = { \"add\": |a, b| a + b }; print(ops[\"add\"](2, 3)); }"),
+            "5"
+        );
+        assert_eq!(
+            run("struct B { f: u32 } fn main() { let b = B { f: |x| x * 10 }; print(b.f(4)); }"),
+            "40"
+        );
+        assert_eq!(
+            run("fn main() { let curry = |a| |b| a + b; print(curry(10)(5)); }"),
+            "15"
+        );
+    }
+
+    #[test]
+    fn sort_by_and_any_all() {
+        assert_eq!(
+            run("fn main() { print(sort_by([3, 1, 2], |x| 0 - x)); }"),
+            "[3, 2, 1]"
+        );
+        assert_eq!(run("fn main() { print(any([1, 2, 3], |x| x > 2)); }"), "true");
+        assert_eq!(run("fn main() { print(all([1, 2, 3], |x| x > 0)); }"), "true");
+    }
+
+    #[test]
+    fn typecheck_rejects_duplicate_function() {
+        let ast = crate::frontend::parse_source("fn f() { } fn f() { } fn main() { }").unwrap();
+        let err = crate::typecheck(ast, crate::frontend::Mode::Safe).unwrap_err();
+        assert!(err.contains("ANUBIS_DUPLICATE_FUNCTION"), "{}", err);
+    }
+
+    #[test]
+    fn typecheck_rejects_duplicate_param() {
+        let ast = crate::frontend::parse_source("fn f(x, x) { } fn main() { }").unwrap();
+        let err = crate::typecheck(ast, crate::frontend::Mode::Safe).unwrap_err();
+        assert!(err.contains("ANUBIS_DUPLICATE_PARAM"), "{}", err);
+    }
+
+    #[test]
+    fn typecheck_rejects_unknown_function() {
+        let ast = crate::frontend::parse_source("fn main() { let x = nonexistent(1); }").unwrap();
+        let err = crate::typecheck(ast, crate::frontend::Mode::Safe).unwrap_err();
+        assert!(err.contains("ANUBIS_UNKNOWN_FUNCTION"), "{}", err);
+    }
+
+    #[test]
+    fn typecheck_accepts_closure_and_builtin_calls() {
+        // A local closure `f` and a stdlib builtin `upper` must not be flagged as unknown.
+        let ast = crate::frontend::parse_source(
+            "fn main() { let f = |x| x + 1; let y = f(2); let s = upper(\"hi\"); }",
+        )
+        .unwrap();
+        assert!(crate::typecheck(ast, crate::frontend::Mode::Safe).is_ok());
+    }
+
+    #[test]
+    fn golden_tour_programs() {
+        // Every program in examples/tour/ carries a `// EXPECT: line1|line2|...` header; run it and
+        // assert its stdout (newlines -> `|`) matches. Guards the whole language surface end-to-end.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/tour");
+        let mut count = 0;
+        for entry in std::fs::read_dir(&dir).expect("examples/tour directory") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("anub") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            let expect = src
+                .lines()
+                .next()
+                .and_then(|l| l.trim().strip_prefix("// EXPECT:"))
+                .unwrap_or_else(|| panic!("{:?} missing `// EXPECT:` header", path))
+                .trim()
+                .to_string();
+            let out = compile_and_run_source(&src, false, &[]).expect("run tour program");
+            assert!(
+                out.status.success(),
+                "{:?} exited nonzero: {}",
+                path,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let got = String::from_utf8_lossy(&out.stdout).trim().replace('\n', "|");
+            assert_eq!(got, expect, "output mismatch for {:?}", path);
+            count += 1;
+        }
+        assert!(count >= 10, "expected >= 10 tour programs, ran {}", count);
+    }
+
+    #[test]
+    fn research_path_compiles_poc_kit_runtime() {
+        // Exercises the allow_research lowering so the PoC-kit runtime (which contains its own
+        // exhaustive matches over AnubisValue) is compiled — guards against a missing variant arm.
+        let out = compile_and_run_source(
+            "fn main() { let p = p32(65); print(len(p)); }",
+            true,
+            &[],
+        )
+        .expect("compile+run research");
+        assert!(
+            out.status.success(),
+            "research-path program failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "4");
     }
 }
