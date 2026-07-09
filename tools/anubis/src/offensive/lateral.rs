@@ -63,15 +63,27 @@ pub fn lateral_ssh(
     }
 }
 
-/// Plan-only SMB/WinRM lateral (documented for Windows tranches).
+/// Plan-only SMB/WinRM lateral (Windows tranche).
+///
+/// **Never executes** network SMB/WinRM. Emits a structured plan for operator review
+/// under engagement scope. Live execution remains NOT CLAIMED / Windows-only future work.
 pub fn lateral_smb_plan(eng: &Engagement, host: &str) -> Result<serde_json::Value> {
+    eng.validate_live()?;
     eng.assert_lateral_host(host)?;
     Ok(serde_json::json!({
         "status": "PLAN_ONLY",
         "module": "lateral_smb",
         "host": host,
-        "note": "SMB/WinRM lateral is planned for Windows operator hosts; macOS lab uses SSH + UDS.",
         "engagement_id": eng.engagement_id,
         "implemented": false,
+        "executed": false,
+        "steps": [
+            "Verify host is in allowed_lateral_hosts ∩ host/cidr scope (done)",
+            "On Windows operator host: authenticate with engagement-scoped credentials only",
+            "Enumerate shares / WinRM endpoint (not run on this host)",
+            "Copy lab agent via authorized channel; do not use unscoped credentials",
+        ],
+        "blocked_on_this_host": true,
+        "note": "SMB/WinRM lateral plan only. macOS lab uses lateral-ssh + UDS. No SMB sockets opened.",
     }))
 }

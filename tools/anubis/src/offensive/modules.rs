@@ -104,6 +104,18 @@ pub fn catalog() -> Vec<ModuleInfo> {
             description: "SSH to host in allowed_lateral_hosts (T4)",
         },
         ModuleInfo {
+            name: "lateral_smb",
+            side: "operator",
+            risk: "high",
+            description: "SMB/WinRM lateral PLAN_ONLY (T4) — emits plan, never executes",
+        },
+        ModuleInfo {
+            name: "string_scramble",
+            side: "operator",
+            risk: "low",
+            description: "Lab XOR string scramble for stub notes (T6)",
+        },
+        ModuleInfo {
             name: "pattern_create",
             side: "operator",
             risk: "low",
@@ -156,10 +168,7 @@ pub fn list_json() -> serde_json::Value {
 }
 
 pub fn print_catalog() -> Result<()> {
-    println!(
-        "{:<16} {:<10} {:<10} {}",
-        "MODULE", "SIDE", "RISK", "DESCRIPTION"
-    );
+    println!("{:<16} {:<10} {:<10} DESCRIPTION", "MODULE", "SIDE", "RISK");
     println!("{}", "-".repeat(72));
     for m in catalog() {
         println!(

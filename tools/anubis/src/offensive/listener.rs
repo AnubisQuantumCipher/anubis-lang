@@ -3,6 +3,7 @@
 use super::console;
 use super::crypto;
 use super::engagement::{Engagement, Role};
+use super::scope;
 use super::protocol::{
     Beacon, BeaconResponse, EncryptedEnvelope, Task, TaskResult, PROTOCOL_V1, PROTOCOL_V2,
 };
@@ -61,7 +62,9 @@ pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) ->
         eng.c2_bind, eng.dns_bind, eng.uds_path, PROTOCOL_V2, eng.encrypt_beacons
     );
     println!("  console: http://{}/", eng.c2_bind);
-    println!("  POST /beacon /result /task | GET /health /agents /results /");
+    println!(
+        "  POST /beacon /result /task | GET /health /agents /results /rbac /admin/status /"
+    );
 
     let eng = eng.clone();
     let engage_dir = engage_dir.to_path_buf();
@@ -175,9 +178,51 @@ fn handle_http(
             store_result(engage_dir, state, result)?;
             write_json(stream, 200, &json!({"ok": true}))?;
         }
-        ("POST", "/task") => {
-            if let Err(e) = eng.assert_role(&operator, Role::Operator) {
+        ("GET", "/rbac") => {
+            // Any known operator may inspect their own RBAC surface.
+            if let Err(e) = eng.assert_role(&operator, Role::ReadOnly) {
                 write_json(stream, 403, &json!({"error": e.to_string()}))?;
+                return Ok(());
+            }
+            write_json(
+                stream,
+                200,
+                &json!({
+                    "operator": operator,
+                    "operators": eng.operators,
+                    "queue_ok": console::role_can_queue(eng, &operator).is_ok(),
+                    "admin_ok": console::role_can_admin(eng, &operator).is_ok(),
+                }),
+            )?;
+        }
+        ("GET", "/admin/status") => {
+            if let Err(e) = console::role_can_admin(eng, &operator) {
+                write_json(stream, 403, &json!({"error": e}))?;
+                return Ok(());
+            }
+            let st = state.lock().unwrap();
+            write_json(
+                stream,
+                200,
+                &json!({
+                    "admin": true,
+                    "operator": operator,
+                    "agent_count": st.agents.len(),
+                    "queued_agents": st.queue.len(),
+                    "results": st.results.len(),
+                    "engagement_id": eng.engagement_id,
+                    "allowed_targets": scope::build_allowed_targets(
+                        &eng.allowed_hosts,
+                        &eng.allowed_cidrs,
+                        &eng.allowed_paths,
+                        &eng.allowed_lateral_hosts,
+                    ),
+                }),
+            )?;
+        }
+        ("POST", "/task") => {
+            if let Err(e) = console::role_can_queue(eng, &operator) {
+                write_json(stream, 403, &json!({"error": e}))?;
                 return Ok(());
             }
             let v: serde_json::Value = serde_json::from_str(&body)?;

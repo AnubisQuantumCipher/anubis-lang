@@ -21,7 +21,7 @@ pub fn pattern_offset(pattern_len: usize, needle: &str) -> Result<serde_json::Va
     let bytes = if needle.starts_with("0x") || needle.starts_with("0X") {
         hex::decode(raw).unwrap_or_else(|_| needle.as_bytes().to_vec())
     } else if raw.len() >= 8
-        && raw.len() % 2 == 0
+        && raw.len().is_multiple_of(2)
         && raw.chars().all(|c| c.is_ascii_hexdigit())
         && raw.chars().any(|c| c.is_ascii_digit())
     {

@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const INPUT_SCHEMA_VERSION: &str = "1";
-pub const ANBP_MAGIC: u32 = 0x414E_4250; // reserved for future binary blob mode
+/// Anubis Binary Proof-input container magic (`ANBP` little-endian).
+/// Used by `encode_anbp_blob` for an optional binary sidecar next to JSON v1.
+pub const ANBP_MAGIC: u32 = 0x414E_4250;
 
 #[derive(Debug, Clone)]
 pub struct ProofInputs {
@@ -104,11 +106,46 @@ impl ProofInputs {
             "input_sha256": self.sha256,
             "input_redacted": self.redacted,
             "input_schema_version": INPUT_SCHEMA_VERSION,
+            "input_binary_magic": format!("0x{ANBP_MAGIC:08X}"),
             "input_keys": self.values.keys().cloned().collect::<Vec<_>>(),
             "input_canonical_json": if self.redacted { serde_json::Value::Null } else { serde_json::Value::String(self.canonical_json.clone()) },
         })
     }
 
+    /// Encode inputs as a length-prefixed ANBP blob:
+    /// `magic_u32_le | n_u32_le | (key_len_u16_le, key_utf8, value_i64_le)*` (sorted keys).
+    pub fn encode_anbp_blob(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&ANBP_MAGIC.to_le_bytes());
+        let n = self.values.len() as u32;
+        out.extend_from_slice(&n.to_le_bytes());
+        for (k, v) in &self.values {
+            let kb = k.as_bytes();
+            let klen = kb.len() as u16;
+            out.extend_from_slice(&klen.to_le_bytes());
+            out.extend_from_slice(kb);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+}
+
+/// Decode and validate an ANBP blob; returns entry count on success.
+pub fn decode_anbp_header(blob: &[u8]) -> Result<u32> {
+    if blob.len() < 8 {
+        return Err(anyhow!("ANUBIS_PROOF_INPUT_ANBP_SHORT"));
+    }
+    let mut magic = [0u8; 4];
+    magic.copy_from_slice(&blob[0..4]);
+    let magic = u32::from_le_bytes(magic);
+    if magic != ANBP_MAGIC {
+        return Err(anyhow!(
+            "ANUBIS_PROOF_INPUT_ANBP_BAD_MAGIC: got 0x{magic:08X}, want 0x{ANBP_MAGIC:08X}"
+        ));
+    }
+    let mut n = [0u8; 4];
+    n.copy_from_slice(&blob[4..8]);
+    Ok(u32::from_le_bytes(n))
 }
 
 pub fn resolve_proof_inputs(
@@ -142,5 +179,17 @@ mod tests {
     fn rejects_nested() {
         let e = ProofInputs::from_json_str(r#"{"a":{"b":1}}"#, "json", "t").unwrap_err();
         assert!(e.to_string().contains("UNSUPPORTED_TYPE"));
+    }
+
+    #[test]
+    fn anbp_blob_roundtrip_header() {
+        let a = ProofInputs::from_json_str(r#"{"n":5}"#, "json", "t").unwrap();
+        let blob = a.encode_anbp_blob();
+        assert_eq!(decode_anbp_header(&blob).unwrap(), 1);
+        assert_eq!(&blob[0..4], &ANBP_MAGIC.to_le_bytes());
+        assert!(a.metadata_json()["input_binary_magic"]
+            .as_str()
+            .unwrap()
+            .contains("414E4250"));
     }
 }

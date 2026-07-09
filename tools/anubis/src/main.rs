@@ -378,6 +378,9 @@ enum Commands {
         module: String,
         #[arg(long, default_value = "")]
         args: String,
+        /// Operator identity for RBAC (must be Operator or Admin).
+        #[arg(long, default_value = "operator")]
+        operator: String,
     },
 
     /// List offensive modules (agent + operator).
@@ -443,6 +446,14 @@ enum Commands {
         cmd: String,
     },
 
+    /// T4: SMB/WinRM lateral — PLAN_ONLY (never executes; Windows tranche).
+    LateralSmb {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        host: String,
+    },
+
     /// T5: create cyclic pattern of length N.
     PatternCreate {
         #[arg(long, default_value_t = 100)]
@@ -479,6 +490,12 @@ enum Commands {
         engage: PathBuf,
         #[arg(long)]
         input: PathBuf,
+    },
+
+    /// T6: lab string XOR scramble (notes/stubs — not crypto).
+    StringScramble {
+        #[arg(long)]
+        text: String,
     },
 }
 
@@ -933,8 +950,11 @@ fn main() -> Result<()> {
             agent_id,
             module,
             args,
+            operator,
         } => {
-            let _eng = offensive::load_engagement(&engage)?;
+            let eng = offensive::load_engagement(&engage)?;
+            offensive::console::role_can_queue(&eng, &operator)
+                .map_err(|e| anyhow!("{e}"))?;
             let arg_list: Vec<String> = if args.trim().is_empty() {
                 vec![]
             } else {
@@ -942,7 +962,10 @@ fn main() -> Result<()> {
             };
             let path =
                 offensive::listener::queue_task_file(&engage, &agent_id, &module, &arg_list)?;
-            println!("queued module=`{module}` agent=`{agent_id}` -> {}", path.display());
+            println!(
+                "queued module=`{module}` agent=`{agent_id}` operator=`{operator}` -> {}",
+                path.display()
+            );
             Ok(())
         }
         Commands::ModuleList { json } => {
@@ -995,12 +1018,21 @@ fn main() -> Result<()> {
                     "persist_launchagent": "REAL",
                     "inject_plan_only": "REAL",
                     "lateral_ssh_scoped": "REAL",
-                    "lateral_smb": "PLAN_ONLY",
+                    "lateral_smb_plan_only": "REAL",
                     "rop_pattern_gadgets": "REAL",
                     "browser_harness_lab": "REAL",
                     "xor_packer": "REAL",
+                    "string_scramble": "REAL",
+                    "rbac_queue_and_admin": "REAL",
+                    "structured_allowed_targets": "REAL",
                     "poc_kit_packing": "REAL",
                     "poc_kit_process_fuzz": "REAL",
+                },
+                "security_fixture_contract": {
+                    "pass_ok": poc_kit::security_fixture_matches(false, false, false, false),
+                    "fail_with_needle": poc_kit::security_fixture_matches(true, true, true, true),
+                    "false_green_rejected": !poc_kit::security_fixture_matches(true, true, true, false),
+                    "fail_without_needle_ok": poc_kit::security_fixture_matches(true, true, false, false),
                 },
                 "policy": {
                     "fail_closed_scope": true,
@@ -1008,8 +1040,9 @@ fn main() -> Result<()> {
                     "network_egress_default": false,
                     "evidence_native": true,
                     "encrypt_beacons_default": true,
+                    "smb_lateral_never_executes": true,
                 },
-                "note": "AOP T1–T7 lab surfaces landed. Not unscoped malware.",
+                "note": "AOP T1–T7 lab surfaces. SMB lateral is PLAN_ONLY (no execution). Not unscoped malware.",
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1060,6 +1093,13 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&rep)?);
             Ok(())
         }
+        Commands::LateralSmb { engage, host } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let rep = offensive::lateral::lateral_smb_plan(&eng, &host)?;
+            println!("{}", serde_json::to_string_pretty(&rep)?);
+            // PLAN_ONLY is success — never executes SMB.
+            Ok(())
+        }
         Commands::PatternCreate { len } => {
             println!("{}", offensive::rop::pattern_create(len));
             Ok(())
@@ -1084,6 +1124,11 @@ fn main() -> Result<()> {
             eng.assert_path(&input)?;
             let packs = engage.join("packs");
             let r = offensive::packer::pack_file(&input, &packs)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::StringScramble { text } => {
+            let r = offensive::packer::scramble_string(&text);
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
@@ -1118,6 +1163,10 @@ fn main() -> Result<()> {
             // Persist canonical inputs for the prove child and evidence.
             let proof_input_path = out.join("proof_input_canonical.json");
             std::fs::write(&proof_input_path, &proof_inputs.canonical_json)?;
+            // Optional ANBP binary sidecar (magic + entries) for tooling that prefers blobs.
+            let anbp = proof_inputs.encode_anbp_blob();
+            let _ = proof_input::decode_anbp_header(&anbp)?;
+            std::fs::write(out.join("proof_input.anbp"), &anbp)?;
             std::fs::write(
                 out.join("proof_input_meta.json"),
                 serde_json::to_string_pretty(&proof_inputs.metadata_json())?,
@@ -1310,6 +1359,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
 
                 // Copy canonical inputs into risc0 sidecar for the child prover.
                 let _ = std::fs::copy(&proof_input_path, risc0_side.join("proof_input_canonical.json"));
+                let _ = std::fs::copy(out.join("proof_input.anbp"), risc0_side.join("proof_input.anbp"));
                 let proof_outcome = run_risc0_proof_attempt(
                     &risc0_side,
                     guest_elf_path.as_deref(),

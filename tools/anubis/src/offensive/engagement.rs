@@ -179,7 +179,17 @@ impl Engagement {
 
     pub fn assert_host(&self, host: &str) -> Result<()> {
         self.validate_live()?;
-        scope::host_in_scope(host, &self.allowed_hosts, &self.allowed_cidrs)
+        // Route through structured target validation (same allow-lists).
+        scope::target_in_scope(
+            &scope::AllowedTarget {
+                kind: scope::TargetKind::Host,
+                value: host.to_string(),
+                notes: "assert_host".into(),
+            },
+            &self.allowed_hosts,
+            &self.allowed_cidrs,
+            &self.allowed_paths,
+        )
     }
 
     pub fn assert_lateral_host(&self, host: &str) -> Result<()> {
@@ -199,7 +209,16 @@ impl Engagement {
 
     pub fn assert_path(&self, path: &Path) -> Result<()> {
         self.validate_live()?;
-        scope::path_in_scope(path, &self.allowed_paths)
+        scope::target_in_scope(
+            &scope::AllowedTarget {
+                kind: scope::TargetKind::LocalPath,
+                value: path.display().to_string(),
+                notes: "assert_path".into(),
+            },
+            &self.allowed_hosts,
+            &self.allowed_cidrs,
+            &self.allowed_paths,
+        )
     }
 
     pub fn assert_target_binary(&self, path: &Path) -> Result<()> {
@@ -312,6 +331,12 @@ pub fn load_engagement(path: &Path) -> Result<Engagement> {
 
 pub fn engage_status(path: &Path) -> Result<serde_json::Value> {
     let eng = load_engagement(path)?;
+    let allowed_targets = scope::build_allowed_targets(
+        &eng.allowed_hosts,
+        &eng.allowed_cidrs,
+        &eng.allowed_paths,
+        &eng.allowed_lateral_hosts,
+    );
     Ok(serde_json::json!({
         "engagement_id": eng.engagement_id,
         "name": eng.name,
@@ -329,11 +354,18 @@ pub fn engage_status(path: &Path) -> Result<serde_json::Value> {
         "sleep_ms": eng.sleep_ms,
         "operators": eng.operators,
         "allowed_hosts": eng.allowed_hosts,
+        "allowed_cidrs": eng.allowed_cidrs,
         "allowed_lateral_hosts": eng.allowed_lateral_hosts,
         "allowed_paths": eng.allowed_paths,
+        "allowed_targets": allowed_targets,
         "psk_present": !eng.psk_hex.is_empty(),
         "content_hash": eng.content_hash,
         "live": true,
         "protocol": super::protocol::PROTOCOL_VERSION,
+        "rbac": {
+            "roles": ["admin", "operator", "read_only"],
+            "queue_requires": "operator",
+            "admin_status_requires": "admin",
+        },
     }))
 }

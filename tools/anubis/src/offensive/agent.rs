@@ -41,18 +41,18 @@ pub fn agent_generate(opts: AgentGenerateOpts<'_>) -> Result<PathBuf> {
         opts.engage.sleep_ms
     };
 
-    let src = render_agent_source(
-        &agent_id,
-        &opts.engage.engagement_id,
-        &c2,
-        sleep,
-        opts.engage.jitter_pct,
-        opts.os,
-        &opts.engage.psk_hex,
-        &key_id,
-        opts.engage.encrypt_beacons,
-        &opts.engage.uds_path,
-    );
+    let src = render_agent_source(&AgentRenderParams {
+        agent_id: &agent_id,
+        engagement_id: &opts.engage.engagement_id,
+        c2_bind: &c2,
+        sleep_ms: sleep,
+        jitter_pct: opts.engage.jitter_pct,
+        os: opts.os,
+        psk_hex: &opts.engage.psk_hex,
+        key_id: &key_id,
+        encrypt: opts.engage.encrypt_beacons,
+        uds_path: &opts.engage.uds_path,
+    });
     let src_path = agents_dir.join(format!("{}.rs", opts.name));
     let bin_path = agents_dir.join(opts.name);
     fs::write(&src_path, &src)?;
@@ -111,6 +111,10 @@ fn build_agent_project(
 name = "anubis_agent_{name}"
 version = "0.1.0"
 edition = "2021"
+
+# Standalone package: do not join the parent Anubis workspace.
+[workspace]
+
 [dependencies]
 aes-gcm = "0.10"
 base64 = "0.22"
@@ -169,18 +173,30 @@ fn build_agent_rustc_fallback(src: &str, bin_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn render_agent_source(
-    agent_id: &str,
-    engagement_id: &str,
-    c2_bind: &str,
+struct AgentRenderParams<'a> {
+    agent_id: &'a str,
+    engagement_id: &'a str,
+    c2_bind: &'a str,
     sleep_ms: u64,
     jitter_pct: u8,
-    os: &str,
-    psk_hex: &str,
-    key_id: &str,
+    os: &'a str,
+    psk_hex: &'a str,
+    key_id: &'a str,
     encrypt: bool,
-    uds_path: &str,
-) -> String {
+    uds_path: &'a str,
+}
+
+fn render_agent_source(p: &AgentRenderParams<'_>) -> String {
+    let agent_id = p.agent_id;
+    let engagement_id = p.engagement_id;
+    let c2_bind = p.c2_bind;
+    let sleep_ms = p.sleep_ms;
+    let jitter_pct = p.jitter_pct;
+    let os = p.os;
+    let psk_hex = p.psk_hex;
+    let key_id = p.key_id;
+    let encrypt = p.encrypt;
+    let uds_path = p.uds_path;
     let tpl = r###"
 use aes_gcm::{Aes256Gcm, Nonce};
 use aes_gcm::aead::{Aead, KeyInit};

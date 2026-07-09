@@ -45,6 +45,12 @@ static void unpack(unsigned char *buf, size_t n) {{
             .join(", ")
     );
     fs::write(out_dir.join("unpack_stub.c"), stub)?;
+    let name = input
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("blob");
+    // Lab string scramble of the basename — used by agent string tables / unpack notes.
+    let name_scramble = scramble_string(name);
     Ok(serde_json::json!({
         "module": "xor_pack",
         "input": input,
@@ -52,10 +58,12 @@ static void unpack(unsigned char *buf, size_t n) {{
         "key_hex": hex::encode(key),
         "input_sha256": hex::encode(Sha256::digest(&data)),
         "packed_sha256": hex::encode(Sha256::digest(&packed)),
+        "name_scramble": name_scramble,
         "note": "Lab packer only — not a production crypter",
     }))
 }
 
+/// Lab string XOR scramble (obfuscation helper for notes/stubs — not crypto).
 pub fn scramble_string(s: &str) -> serde_json::Value {
     let mut key = [0u8; 8];
     rand::thread_rng().fill_bytes(&mut key);

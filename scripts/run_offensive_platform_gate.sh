@@ -136,6 +136,28 @@ else
   record "t4_lateral_deny" "FAIL" "rc=$lrc"
 fi
 
+# SMB lateral is PLAN_ONLY for in-scope host — must never claim executed
+set +e
+$BIN lateral-smb --engage "$ENG" --host 127.0.0.1 >"$OUT/smb.json" 2>&1
+src=$?
+set -e
+if [[ $src -eq 0 ]] && grep -q PLAN_ONLY "$OUT/smb.json" && grep -q '"executed": false' "$OUT/smb.json"; then
+  record "t4_lateral_smb_plan" "PASS" "plan-only no exec"
+else
+  record "t4_lateral_smb_plan" "FAIL" "rc=$src $(head -c 200 $OUT/smb.json)"
+fi
+
+# RBAC: unknown operator cannot queue
+set +e
+$BIN task-queue --engage "$ENG" --module whoami --operator no_such_op >"$OUT/rbac_deny.log" 2>&1
+rrc=$?
+set -e
+if [[ $rrc -ne 0 ]] && grep -qiE 'RBAC|UNKNOWN_OPERATOR|DENIED' "$OUT/rbac_deny.log"; then
+  record "t7_rbac_queue" "PASS" "unknown operator denied"
+else
+  record "t7_rbac_queue" "FAIL" "rc=$rrc"
+fi
+
 PAT=$($BIN pattern-create --len 16)
 if [[ ${#PAT} -eq 16 ]]; then
   record "t5_pattern" "PASS" "pattern len 16"
@@ -160,10 +182,16 @@ set +e
 $BIN pack-xor --engage "$ENG" --input "$OUT/blob.bin" >"$OUT/pack.json" 2>&1
 pk=$?
 set -e
-if [[ $pk -eq 0 ]] && grep -q xor_pack "$OUT/pack.json"; then
-  record "t6_packer" "PASS" "xor pack"
+if [[ $pk -eq 0 ]] && grep -q xor_pack "$OUT/pack.json" && grep -q name_scramble "$OUT/pack.json"; then
+  record "t6_packer" "PASS" "xor pack + name scramble"
 else
   record "t6_packer" "FAIL" "rc=$pk"
+fi
+$BIN string-scramble --text lab_note >"$OUT/scramble.json"
+if grep -q string_scramble "$OUT/scramble.json" && grep -q encoded_hex "$OUT/scramble.json"; then
+  record "t6_string_scramble" "PASS" "lab scramble"
+else
+  record "t6_string_scramble" "FAIL" "missing scramble json"
 fi
 
 bash poc_kit/build_vuln.sh >"$OUT/vuln.log" 2>&1 || true
@@ -179,10 +207,19 @@ else
 fi
 
 $BIN offensive-doctor --json >"$OUT/doctor.json"
-if grep -q encrypted_beacons_aop2 "$OUT/doctor.json"; then
-  record "doctor_t17" "PASS" "surfaces listed"
+if grep -q encrypted_beacons_aop2 "$OUT/doctor.json" \
+  && grep -q '"false_green_rejected": true' "$OUT/doctor.json" \
+  && grep -q structured_allowed_targets "$OUT/doctor.json"; then
+  record "doctor_t17" "PASS" "surfaces + fixture contract"
 else
-  record "doctor_t17" "FAIL" "missing surfaces"
+  record "doctor_t17" "FAIL" "missing surfaces/contract"
+fi
+
+$BIN engage-status --dir "$ENG" --json >"$OUT/status2.json"
+if grep -q allowed_targets "$OUT/status2.json"; then
+  record "scope_targets" "PASS" "structured targets"
+else
+  record "scope_targets" "FAIL" "no allowed_targets"
 fi
 
 verdict=FAIL

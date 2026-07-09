@@ -97,7 +97,14 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | XOR packer | REAL | packs/*.xor.pack | `pack-xor` | lab packer |
 | Exploit modules + PoC kit | REAL | exploit success | exploit-run | crash oracle |
 | Offensive gate | REAL | 16/16 | `bash scripts/run_offensive_platform_gate.sh` | T1–T7 |
-| Full rustls mTLS handshake / SMB lateral / live inject | PLANNED/PARTIAL | OFFENSIVE_PLATFORM.md | — | polish beyond lab REAL |
+| Full rustls mTLS handshake / live inject execute | PLANNED/PARTIAL | OFFENSIVE_PLATFORM.md | — | inject remains PLAN_ONLY by design |
+| SMB/WinRM lateral **execution** | NOT CLAIMED | `lateral-smb` CLI | `anubis lateral-smb --host …` | **PLAN_ONLY**: structured plan, `executed=false`, no SMB sockets |
+| RBAC queue + admin status | REAL | listener `/task` + `/admin/status` + `task-queue --operator` | gate `t7_rbac_queue` | `role_can_queue` / `role_can_admin` wired |
+| Structured `allowed_targets` | REAL | engage-status + scope | gate `scope_targets` | Host/Cidr/LocalPath kinds |
+| String scramble (lab) | REAL | packer + `string-scramble` | gate `t6_string_scramble` | XOR note helper, not crypto |
+| ANBP proof-input blob magic | REAL | `proof_input.anbp` + metadata | prove --evidence | magic `0x414E4250`, header validated |
+| Security fixture honesty contract in doctor | REAL | offensive-doctor JSON | gate `doctor_t17` | rejects false-green needle pattern |
+| Agent standalone cargo project | REAL | `[workspace]` empty in agent Cargo.toml | gate `t1_agent_encrypt` | no parent-workspace collision |
 
 ## RISC0 parameterized proofs (2026-07-09)
 
