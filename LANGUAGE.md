@@ -141,6 +141,10 @@ for i in 0..n { print(i); }
 // for over a collection (list, string chars, or map keys)
 for x in [10, 20, 30] { print(x); }
 for k in { "a": 1 } { print(k); }
+
+// if-let / while-let — run the body only while the pattern matches, binding its parts
+if let Some(v) = lookup(key) { use(v); } else { fallback(); }
+while let Some(item) = next() { process(item); }
 ```
 
 ## Functions and recursion
@@ -286,6 +290,36 @@ Exhaustiveness: a `match` on a known enum type must cover every variant or inclu
 irrefutable arm (`_` or a bare binding). Guarded arms do not count toward coverage, since a
 guard may fail. Nested matches compose freely — a match may appear in another match's arm, in a
 loop body, as a function argument, or inside a closure.
+
+## Option, Result, and error handling
+
+`Some(x)`, `None`, `Ok(x)`, and `Err(e)` are built-in constructors — no `enum` declaration
+needed. `Some`/`None` are `Option`; `Ok`/`Err` are `Result`. Match on them like any enum.
+
+```
+fn safe_div(a, b) {
+    if b == 0 { return None }
+    Some(a / b)
+}
+
+match safe_div(10, 2) {
+    Some(v) => print(v),   // 5
+    None    => print("undefined"),
+}
+```
+
+The postfix **`?` operator** unwraps `Ok(v)`/`Some(v)` to `v`, and short-circuits by returning the
+`Err`/`None` from the enclosing function — the standard error-propagation shorthand:
+
+```
+fn add_divs(a, b, c, d) {
+    let x = safe_div(a, b)?;   // returns None here if b == 0
+    let y = safe_div(c, d)?;
+    Some(x + y)
+}
+```
+
+Pair these with `if let` / `while let` (see Control flow) for ergonomic optional handling.
 
 ## Standard library
 

@@ -171,6 +171,14 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
 
 /// Pass-1 registration: enums and function parameter types (A+ call/match surface).
 fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
+    // Built-in Option/Result variants, so a `match` on them can be checked for exhaustiveness.
+    // A user-declared enum of the same name (processed below) overrides these.
+    ctx.enum_variants
+        .entry("Option".into())
+        .or_insert_with(|| vec!["Some".into(), "None".into()]);
+    ctx.enum_variants
+        .entry("Result".into())
+        .or_insert_with(|| vec!["Ok".into(), "Err".into()]);
     for item in items {
         match item {
             Item::Module { items, .. } => register_program_surface(items, ctx),
@@ -240,6 +248,14 @@ fn check_calls_stmts(
                 let mut b = bound.clone();
                 check_calls_stmts(body, fns, &mut b, ctx);
             }
+            Stmt::WhileLet { pattern, expr, body } => {
+                check_calls_expr(expr, fns, bound, ctx);
+                let mut b = bound.clone();
+                for n in pattern.bound_names() {
+                    b.insert(n);
+                }
+                check_calls_stmts(body, fns, &mut b, ctx);
+            }
             Stmt::Loop { body } => {
                 let mut b = bound.clone();
                 check_calls_stmts(body, fns, &mut b, ctx);
@@ -306,7 +322,8 @@ fn check_calls_expr(
         Expr::Unary { expr, .. }
         | Expr::Cast { expr, .. }
         | Expr::Assume(expr)
-        | Expr::Assert(expr) => check_calls_expr(expr, fns, bound, ctx),
+        | Expr::Assert(expr)
+        | Expr::Try(expr) => check_calls_expr(expr, fns, bound, ctx),
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
             check_calls_expr(inner, fns, bound, ctx)
         }
@@ -350,6 +367,17 @@ fn check_calls_expr(
         } => {
             check_calls_expr(cond, fns, bound, ctx);
             check_calls_expr(then, fns, bound, ctx);
+            check_calls_expr(else_, fns, bound, ctx);
+        }
+        Expr::IfLet {
+            pattern, scrutinee, then, else_, ..
+        } => {
+            check_calls_expr(scrutinee, fns, bound, ctx);
+            let mut b = bound.clone();
+            for n in pattern.bound_names() {
+                b.insert(n);
+            }
+            check_calls_expr(then, fns, &b, ctx);
             check_calls_expr(else_, fns, bound, ctx);
         }
         Expr::MapLiteral { entries, .. } => {
@@ -502,6 +530,9 @@ fn analyze_function(
                 ctx.taint_labels.push(format!("{}: {}", name, ty));
             }
             scope.insert(name.clone(), ScopeBinding { info: info.clone() });
+            // Parameters are in-scope for the whole body, so a `let s = param` must not
+            // report the parameter as an unknown variable.
+            ctx.known_bindings.insert(name.clone());
             info
         })
         .collect::<Vec<_>>();
@@ -794,6 +825,23 @@ fn analyze_stmts(
                     effects.push("tainted-branch".into());
                 }
                 effects.push("loop".into());
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+            }
+            Stmt::WhileLet { pattern, body, .. } => {
+                effects.push("loop".into());
+                for n in pattern.bound_names() {
+                    let info = BindingInfo {
+                        name: n.clone(),
+                        ty: None,
+                        mode: mode_name(mode).into(),
+                        tainted: false,
+                        taint_source: None,
+                        declassified: false,
+                        span: None,
+                    };
+                    scope.insert(n.clone(), ScopeBinding { info });
+                    ctx.known_bindings.insert(n);
+                }
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
             }
             Stmt::Loop { body } => {
@@ -1565,6 +1613,19 @@ fn check_match_exhaustiveness(
         _ => infer_expr_type_scoped(scrutinee, scope)
             .filter(|t| ctx.enum_variants.contains_key(t)),
     };
+    // If the scrutinee's type is unknown, fall back to arm-based inference for the built-in
+    // Option/Result only (user enums keep the stricter scrutinee-type check to avoid new
+    // false positives on partially-typed code).
+    let enum_name = enum_name.or_else(|| {
+        arms.iter().find_map(|arm| {
+            let mut pairs = Vec::new();
+            arm.pattern.covered_enum_variants(&mut pairs);
+            pairs
+                .into_iter()
+                .map(|(en, _)| en)
+                .find(|en| en == "Option" || en == "Result")
+        })
+    });
     let Some(enum_name) = enum_name else {
         return; // unknown scrutinee type — do not false-positive
     };

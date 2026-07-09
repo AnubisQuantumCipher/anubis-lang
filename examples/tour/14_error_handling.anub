@@ -1,0 +1,69 @@
+// EXPECT: 5|none|13|div by zero|4|no even|3|2|1
+// Option/Result, the `?` operator, and if-let / while-let.
+
+// Option: Some(x) / None — no enum declaration needed.
+fn safe_div(a, b) {
+    if b == 0 { return None }
+    Some(a / b)
+}
+
+// `?` unwraps Some/Ok and short-circuits on None/Err.
+fn add_divs(a, b, c, d) {
+    let x = safe_div(a, b)?;
+    let y = safe_div(c, d)?;
+    Some(x + y)
+}
+
+// Result: Ok(v) / Err(e).
+fn checked_div(a, b) {
+    if b == 0 { return Err("div by zero") }
+    Ok(a / b)
+}
+
+fn show_opt(o) {
+    match o {
+        Some(v) => v,
+        None => "none",
+    }
+}
+
+fn last(xs) {
+    if len(xs) == 0 { return None }
+    Some(xs[len(xs) - 1])
+}
+fn drop_last(xs) {
+    let mut out = [];
+    let mut i = 0;
+    while i < len(xs) - 1 { push(out, xs[i]); i = i + 1; }
+    out
+}
+
+fn main() {
+    print(show_opt(safe_div(10, 2)));           // 5
+    print(show_opt(safe_div(1, 0)));            // none
+
+    print(show_opt(add_divs(10, 2, 16, 2)));    // 5 + 8 = 13
+    match checked_div(1, 0) {
+        Ok(v)  => print(v),
+        Err(e) => print(e),                     // div by zero
+    }
+
+    // if-let
+    if let Some(v) = safe_div(8, 2) {
+        print(v);                               // 4
+    } else {
+        print("no even");
+    }
+    if let Some(v) = safe_div(8, 0) {
+        print(v);
+    } else {
+        print("no even");                       // no even
+    }
+
+    // while-let: pop a stack until it's empty
+    let mut stack = [1, 2, 3];
+    while let Some(top) = last(stack) {
+        print(top);                             // 3 2 1
+        stack = drop_last(stack);
+    }
+}

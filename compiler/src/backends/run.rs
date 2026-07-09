@@ -1454,6 +1454,19 @@ fn emit_safe_run_stmt(
             }
             Ok(())
         }
+        Stmt::WhileLet { pattern, expr, body } => {
+            let tmp = format!("__anb_wl{}", next_temp_id());
+            out.push_str(&format!("{pad}loop {{\n"));
+            let scr = safe_run_expr(expr, ctx)?;
+            let (test, binds) = pattern_test_and_binds(pattern, &tmp)?;
+            out.push_str(&format!("{pad}    let {tmp} = {scr};\n"));
+            out.push_str(&format!("{pad}    if {test} {{\n{pad}        {binds}\n"));
+            for stmt in body {
+                emit_safe_run_stmt(stmt, indent + 2, out, ctx)?;
+            }
+            out.push_str(&format!("{pad}    }} else {{ break; }}\n{pad}}}\n"));
+            Ok(())
+        }
         Stmt::While { cond, body } => {
             out.push_str(&format!(
                 "{pad}while {}.as_bool() {{\n",
@@ -1668,7 +1681,8 @@ fn collect_free_expr(
         Expr::Unary { expr, .. }
         | Expr::Cast { expr, .. }
         | Expr::Assume(expr)
-        | Expr::Assert(expr) => collect_free_expr(expr, bound, vars, callees),
+        | Expr::Assert(expr)
+        | Expr::Try(expr) => collect_free_expr(expr, bound, vars, callees),
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
             collect_free_expr(inner, bound, vars, callees)
         }
@@ -1710,6 +1724,17 @@ fn collect_free_expr(
         } => {
             collect_free_expr(cond, bound, vars, callees);
             collect_free_expr(then, bound, vars, callees);
+            collect_free_expr(else_, bound, vars, callees);
+        }
+        Expr::IfLet {
+            pattern, scrutinee, then, else_, ..
+        } => {
+            collect_free_expr(scrutinee, bound, vars, callees);
+            let mut b2 = bound.clone();
+            for n in pattern.bound_names() {
+                b2.insert(n);
+            }
+            collect_free_expr(then, &b2, vars, callees);
             collect_free_expr(else_, bound, vars, callees);
         }
         Expr::MapLiteral { entries, .. } => {
@@ -1771,6 +1796,14 @@ fn collect_free_stmts(
             Stmt::While { cond, body } => {
                 collect_free_expr(cond, bound, vars, callees);
                 let mut b = bound.clone();
+                collect_free_stmts(body, &mut b, vars, callees);
+            }
+            Stmt::WhileLet { pattern, expr, body } => {
+                collect_free_expr(expr, bound, vars, callees);
+                let mut b = bound.clone();
+                for n in pattern.bound_names() {
+                    b.insert(n);
+                }
                 collect_free_stmts(body, &mut b, vars, callees);
             }
             Stmt::Loop { body } => {
@@ -2199,6 +2232,42 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 "if ({c}).as_bool() {{ {t} }} else {{ {e} }}"
             ))
         }
+        // `if let PATTERN = scrutinee { then } else { else_ }` as a value: bind the scrutinee once,
+        // yield the matching branch (pattern bindings scoped to `then`).
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            let scr = safe_run_expr(scrutinee, ctx)?;
+            let tmp = format!("__anb_il{}", next_temp_id());
+            let (test, binds) = pattern_test_and_binds(pattern, &tmp)?;
+            let then_src = safe_run_expr(then, ctx)?;
+            let else_src = safe_run_expr(else_, ctx)?;
+            Ok(format!(
+                "{{ let {tmp} = {scr}; if {test} {{ {binds} {then_src} }} else {{ {else_src} }} }}"
+            ))
+        }
+        // Error propagation `expr?`: unwrap `Ok(v)`/`Some(v)`, propagate `Err`/`None` by returning
+        // it from the enclosing function; any other value passes through unchanged.
+        Expr::Try(inner) => {
+            let v = safe_run_expr(inner, ctx)?;
+            // Only the built-in Option/Result enums participate: a user enum that merely happens
+            // to name a variant `Ok`/`None` is a distinct type and passes through unchanged.
+            Ok(format!(
+                "{{ let __anb_q = {v}; match &__anb_q {{ \
+                    AnubisValue::Enum {{ ty, tag, fields, .. }} \
+                        if (ty == \"Result\" && tag == \"Ok\") || (ty == \"Option\" && tag == \"Some\") => \
+                        fields.first().cloned().unwrap_or(AnubisValue::Int(0)), \
+                    AnubisValue::Enum {{ ty, tag, .. }} \
+                        if (ty == \"Result\" && tag == \"Err\") || (ty == \"Option\" && tag == \"None\") => \
+                        return __anb_q, \
+                    _ => __anb_q \
+                }} }}"
+            ))
+        }
         Expr::MapLiteral { entries, .. } => {
             let mut pairs = Vec::new();
             for (k, v) in entries {
@@ -2554,8 +2623,9 @@ fn next_temp_id() -> u64 {
     COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
-/// Rust 2021 keywords plus reserved words — any of these, if used as an Anubis identifier,
-/// must be escaped before being emitted as a bare Rust identifier.
+/// Rust 2021 keywords/reserved words, plus prelude items in the value namespace that a `let`
+/// binding cannot shadow (`None`/`Some`/`Ok`/`Err` are prelude variants — `let mut None = …`
+/// is rejected by rustc as E0530). Any of these, used as an Anubis identifier, must be escaped.
 fn is_rust_keyword(name: &str) -> bool {
     matches!(
         name,
@@ -2566,6 +2636,8 @@ fn is_rust_keyword(name: &str) -> bool {
             | "async" | "await" | "gen" | "abstract" | "become" | "box" | "do" | "final"
             | "macro" | "override" | "priv" | "typeof" | "unsized" | "virtual" | "yield"
             | "try" | "union"
+            // Prelude constructors/variants (value namespace; cannot be shadowed by `let`).
+            | "None" | "Some" | "Ok" | "Err"
     )
 }
 
@@ -2888,6 +2960,94 @@ mod run_tests {
         let src = "fn f(cmd) { return match cmd { [\"add\", a, b] => a + b, [\"neg\", a] => 0 - a, _ => -1 }; } \
                    fn main() { print(f([\"add\", 3, 4])); print(f([\"neg\", 5])); print(f([\"x\"])); }";
         assert_eq!(run(src), "7\n-5\n-1");
+    }
+
+    #[test]
+    fn option_result_construct_and_match() {
+        let src = "fn div(a, b) { if b == 0 { return None } Some(a / b) } \
+                   fn show(o) { return match o { Some(v) => v, None => -1 }; } \
+                   fn main() { print(show(div(10, 2))); print(show(div(1, 0))); \
+                     print(match Ok(7) { Ok(v) => v, Err(e) => 0 }); \
+                     print(match Err(9) { Ok(v) => v, Err(e) => e }); }";
+        assert_eq!(run(src), "5\n-1\n7\n9");
+    }
+
+    #[test]
+    fn question_operator_propagates_and_unwraps() {
+        let src = "fn div(a, b) { if b == 0 { return None } Some(a / b) } \
+                   fn add1(a, b) { let q = div(a, b)?; Some(q + 1) } \
+                   fn show(o) { return match o { Some(v) => v, None => -1 }; } \
+                   fn main() { print(show(add1(10, 2))); print(show(add1(10, 0))); }";
+        assert_eq!(run(src), "6\n-1");
+    }
+
+    #[test]
+    fn if_let_binds_on_match() {
+        let src = "fn first_even(xs) { for x in xs { if x % 2 == 0 { return Some(x) } } None } \
+                   fn main() { \
+                     if let Some(v) = first_even([1, 3, 4, 7]) { print(v) } else { print(\"no\") } \
+                     if let Some(v) = first_even([1, 3, 5]) { print(v) } else { print(\"no\") } }";
+        assert_eq!(run(src), "4\nno");
+    }
+
+    #[test]
+    fn while_let_loops_until_none() {
+        let src = "fn last(xs) { if len(xs) == 0 { return None } Some(xs[len(xs) - 1]) } \
+                   fn ini(xs) { let mut o = []; let mut i = 0; while i < len(xs) - 1 { push(o, xs[i]); i = i + 1; } o } \
+                   fn main() { let mut s = [1, 2, 3]; \
+                     while let Some(t) = last(s) { print(t); s = ini(s); } }";
+        assert_eq!(run(src), "3\n2\n1");
+    }
+
+    #[test]
+    fn binding_named_prelude_constructor() {
+        // `Some(None)` parses `None` as a binding (nested patterns aren't a feature), whose name
+        // collides with the Rust prelude variant — it must be escaped, not crash rustc. The arm
+        // matches any `Some`, so this prints "yes".
+        let src = "fn main() { match Some(9) { Some(None) => print(\"yes\"), _ => print(\"no\") } }";
+        assert_eq!(run(src), "yes");
+    }
+
+    #[test]
+    fn question_operator_respects_enum_type() {
+        // `?` only acts on built-in Option/Result; a user enum with an `Ok`/`None` variant
+        // is a distinct type and passes through unchanged.
+        let src = "enum W { Ok(u32), Bad } fn probe(w) { let x = w?; x } \
+                   fn main() { print(probe(W::Ok(7))); }";
+        assert_eq!(run(src), "W::Ok(7)");
+    }
+
+    #[test]
+    fn if_let_as_expression() {
+        // if-let yields a value: as a function tail and as a let-initializer.
+        let src = "fn label(o) { if let Some(v) = o { v } else { -1 } } \
+                   fn main() { print(label(Some(5))); print(label(None)); \
+                     let r = if let Some(v) = Some(3) { v + 1 } else { 0 }; print(r); }";
+        assert_eq!(run(src), "5\n-1\n4");
+    }
+
+    #[test]
+    fn if_let_while_let_or_patterns() {
+        let src = "fn main() { let mut n = 1; while let 1 | 2 | 3 = n { print(n); n = n + 1; } \
+                     if let 4 | 5 = n { print(\"reached\") } else { print(\"no\") } }";
+        assert_eq!(run(src), "1\n2\n3\nreached");
+    }
+
+    #[test]
+    fn typecheck_rejects_non_exhaustive_option_match() {
+        let ast = crate::frontend::parse_source(
+            "fn f(o) { match o { Some(v) => v } } fn main() { }",
+        )
+        .unwrap();
+        let err = crate::typecheck(ast, crate::frontend::Mode::Safe).unwrap_err();
+        assert!(err.contains("ANUBIS_MATCH_NON_EXHAUSTIVE"), "{}", err);
+    }
+
+    #[test]
+    fn let_binds_a_parameter() {
+        // Regression: `let s = param` must not report the parameter as unknown.
+        let src = "fn f(xs) { let s = xs; s[0] + 1 } fn main() { print(f([41, 9])); }";
+        assert_eq!(run(src), "42");
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub enum Token {
     FatArrow,
     Semi,
     Comma,
+    Question,
     Dot,
     DotDot,
     Star,
@@ -261,6 +262,12 @@ pub enum Stmt {
         init: Expr,
         span: Span,
     },
+    /// `while let PATTERN = expr { body }` — loop while the pattern keeps matching.
+    WhileLet {
+        pattern: Pattern,
+        expr: Expr,
+        body: Vec<Stmt>,
+    },
     Assign {
         target: Expr,
         value: Expr,
@@ -415,7 +422,29 @@ pub enum Expr {
         params: Vec<String>,
         body: Box<Expr>,
     },
+    /// Error-propagation postfix `expr?`: unwrap `Ok(v)`/`Some(v)` to `v`, otherwise return the
+    /// `Err`/`None` value from the enclosing function.
+    Try(Box<Expr>),
+    /// `if let PATTERN = scrutinee { then } else { else_ }` as an expression: yields the matching
+    /// branch's value (bindings from the pattern are in scope in `then`). `else_` defaults to `0`.
+    IfLet {
+        pattern: Pattern,
+        scrutinee: Box<Expr>,
+        then: Box<Expr>,
+        else_: Box<Expr>,
+        span: Span,
+    },
     Other(String),
+}
+
+/// The built-in enum a bare `Some`/`None`/`Ok`/`Err` constructor or pattern belongs to.
+/// `Option` for `Some`/`None`, `Result` for `Ok`/`Err`. These need no `enum` declaration.
+pub fn builtin_variant_enum(name: &str) -> Option<&'static str> {
+    match name {
+        "Some" | "None" => Some("Option"),
+        "Ok" | "Err" => Some("Result"),
+        _ => None,
+    }
 }
 
 pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
@@ -573,6 +602,13 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             }),
             ',' => tokens.push(SpannedToken {
                 token: Token::Comma,
+                span: Span {
+                    start,
+                    end: start + 1,
+                },
+            }),
+            '?' => tokens.push(SpannedToken {
+                token: Token::Question,
                 span: Span {
                     start,
                     end: start + 1,
@@ -1297,6 +1333,35 @@ impl Parser {
             let _ = self.expect_token(Token::RParen, "expected `)` in pattern");
             return first;
         }
+        // Built-in Option/Result variant patterns: Some(x), None, Ok(x), Err(e).
+        if let Token::Ident(name) = &self.current().token {
+            if let Some(en) = builtin_variant_enum(name) {
+                let variant = name.clone();
+                let enum_name = en.to_string();
+                self.bump();
+                let mut bindings = vec![];
+                if self.check_token(&Token::LParen) {
+                    self.bump();
+                    while !self.at_eof() && !self.check_token(&Token::RParen) {
+                        if let Some((b, _)) = self.expect_ident("expected binding in pattern") {
+                            bindings.push(b);
+                        } else {
+                            self.bump();
+                        }
+                        if self.check_token(&Token::Comma) {
+                            self.bump();
+                        }
+                    }
+                    let _ = self.expect_token(Token::RParen, "expected `)` in pattern");
+                }
+                return Pattern::EnumVariant {
+                    enum_name,
+                    variant,
+                    bindings,
+                    named_bindings: vec![],
+                };
+            }
+        }
         // Literal patterns: numbers, negative numbers, booleans, strings/chars.
         match &self.current().token {
             Token::Number(n) => {
@@ -1527,6 +1592,10 @@ impl Parser {
     }
 
     fn parse_if_expr(&mut self, start: Span) -> Expr {
+        // `if let PATTERN = scrutinee { then } else { else_ }` as an expression.
+        if self.check_keyword("let") {
+            return self.parse_if_let(start);
+        }
         let cond = self.parse_header_expr();
         let then = self.parse_expr_block();
         let else_ = if self.check_keyword("else") {
@@ -1543,6 +1612,38 @@ impl Parser {
         };
         Expr::If {
             cond: Box::new(cond),
+            then: Box::new(then),
+            else_: Box::new(else_),
+            span: Span {
+                start: start.start,
+                end: self.previous_end().max(start.end),
+            },
+        }
+    }
+
+    /// Parse `if let PATTERN = scrutinee { then } else { else_ }` into an `Expr::IfLet`.
+    /// Assumes the leading `if` has been consumed and the current token is `let`.
+    fn parse_if_let(&mut self, start: Span) -> Expr {
+        let _ = self.expect_keyword("let");
+        let pattern = self.parse_pattern();
+        let _ = self.expect_token(Token::Eq, "expected `=` in `if let`");
+        let scrutinee = self.parse_header_expr();
+        let then = self.parse_expr_block();
+        let else_ = if self.check_keyword("else") {
+            self.bump();
+            if self.check_keyword("if") {
+                let tok = self.bump().unwrap();
+                self.parse_if_expr(tok.span)
+            } else {
+                self.parse_expr_block()
+            }
+        } else {
+            // No else branch: an unmatched `if let` yields the default `0`.
+            Expr::Literal("0".into())
+        };
+        Expr::IfLet {
+            pattern,
+            scrutinee: Box::new(scrutinee),
             then: Box::new(then),
             else_: Box::new(else_),
             span: Span {
@@ -1735,6 +1836,24 @@ impl Parser {
         }
         if self.check_keyword("while") {
             self.bump();
+            // `while let PATTERN = expr { body }`
+            if self.check_keyword("let") {
+                self.bump();
+                let pattern = self.parse_pattern();
+                let _ = self.expect_token(Token::Eq, "expected `=` in `while let`");
+                let expr = self.parse_header_expr();
+                let body = if self.check_token(&Token::LBrace) {
+                    self.parse_block()
+                } else {
+                    self.diagnostic("expected `{` after `while let`", self.current_span());
+                    vec![]
+                };
+                return Some(Stmt::WhileLet {
+                    pattern,
+                    expr,
+                    body,
+                });
+            }
             let cond = self.parse_header_expr();
             let body = if self.check_token(&Token::LBrace) {
                 self.parse_block()
@@ -1938,7 +2057,11 @@ impl Parser {
     }
 
     fn parse_if_stmt(&mut self) -> Option<Stmt> {
-        let _ = self.expect_keyword("if");
+        let start = self.expect_keyword("if")?.span;
+        // `if let PATTERN = expr { ... } else { ... }` — an expression, used here for side effects.
+        if self.check_keyword("let") {
+            return Some(Stmt::ExprStmt(self.parse_if_let(start)));
+        }
         let cond = self.parse_header_expr();
         let then = if self.check_token(&Token::LBrace) {
             self.parse_block()
@@ -2133,8 +2256,23 @@ impl Parser {
             Token::Number(n) => Expr::Literal(n),
             Token::StringLit(s) => Expr::StrLiteral(s),
             Token::Ident(name) => {
+                // Built-in Option/Result constructors: Some(x), None, Ok(x), Err(x) — no decl needed.
+                if let Some(en) = builtin_variant_enum(&name) {
+                    let fields = if self.check_token(&Token::LParen) {
+                        self.parse_call_args()
+                    } else {
+                        vec![]
+                    };
+                    Expr::EnumConstruct {
+                        enum_name: en.to_string(),
+                        variant: name.clone(),
+                        fields,
+                        field_names: vec![],
+                        span: tok.span,
+                    }
+                }
                 // Enum construct: Status::Ok / Status::Err(a) / Status::Err { code: a }
-                if self.check_token(&Token::ColonColon) {
+                else if self.check_token(&Token::ColonColon) {
                     self.bump();
                     let (variant, _) = self
                         .expect_ident("expected variant after `::`")
@@ -2367,6 +2505,10 @@ impl Parser {
                     callee: Box::new(e),
                     args,
                 };
+            } else if self.check_token(&Token::Question) {
+                // Error-propagation postfix: `expr?`.
+                self.bump();
+                e = Expr::Try(Box::new(e));
             } else {
                 break;
             }
