@@ -1,0 +1,46 @@
+// EXPECT: origin|y-axis: 5|x-axis: 3|(3, 4)|dist2 = 25|Ada turns 31|leaf|node(1, 3)
+// Struct patterns: match and destructure named structs by field.
+
+struct Point { x: int, y: int }
+struct Person { name: string, age: int }
+struct Tree { value: int, left: int, right: int, leaf: bool }
+
+fn mk(a, b) { Point { x: a, y: b } }
+
+fn classify(p) {
+    match p {
+        Point { x: 0, y: 0 } => "origin",
+        Point { x: 0, y }    => "y-axis: ${y}",
+        Point { x, y: 0 }    => "x-axis: ${x}",
+        Point { x, y }       => "(${x}, ${y})",
+    }
+}
+
+fn main() {
+    print(classify(mk(0, 0)));
+    print(classify(mk(0, 5)));
+    print(classify(mk(3, 0)));
+    print(classify(mk(3, 4)));
+
+    // let destructuring, then use the fields
+    let Point { x, y } = mk(3, 4);
+    print("dist2 = ${x * x + y * y}");
+
+    // explicit binding names + interpolation
+    let Person { name: who, age: yrs } = Person { name: "Ada", age: 30 };
+    print("${who} turns ${yrs + 1}");
+
+    // struct pattern with a literal field acts as a guard
+    let t = Tree { value: 1, left: 2, right: 3, leaf: true };
+    print(shape(t));
+
+    let n = Tree { value: 1, left: 2, right: 3, leaf: false };
+    print(shape(n));
+}
+
+fn shape(t) {
+    match t {
+        Tree { leaf: true, value, left, right }  => "leaf",
+        Tree { value, left, right, leaf }        => "node(${value}, ${right})",
+    }
+}

@@ -83,6 +83,7 @@ let (q, r) = divmod(15, 4);        // q = 3, r = 3
 let [first, second, third] = xs;   // list destructuring
 let (_, keep) = pair;              // `_` ignores an element
 let [[p, q], z] = [[1, 2], 3];     // nested
+let Point { x, y } = origin;       // struct destructuring (also `{ x: a }` to rename)
 ```
 
 Assignable *places* can be arbitrarily nested — variables, indices, fields, and any chain of
@@ -259,8 +260,9 @@ fn describe(r) {
 | binding | `n` | anything; binds the scrutinee to `n` (irrefutable) |
 | wildcard | `_` | anything; binds nothing |
 | or-pattern | `1 \| 2 \| 3` | any listed alternative (alternatives may not bind) |
-| enum tuple | `Status::Err(n)`, `Pair(_, b)` | that variant; binds fields positionally (`_` ignores one) |
+| enum tuple | `Status::Err(n)`, `Some(Point { x })` | that variant; each payload is itself a sub-pattern |
 | enum struct | `Http::Ok { code: c }` | that variant; binds named fields |
+| struct | `Point { x, y }`, `Point { x: 0, y }` | a struct of that type; each field is a sub-pattern (`{ x }` binds field `x`) |
 | list/tuple | `[a, b]`, `(x, y)`, `["cmd", arg]` | a list of exactly that length; binds/tests each element |
 
 Literal patterns are **type-exact**: a string pattern matches only strings, a bool pattern only
@@ -296,6 +298,10 @@ fn kind(n) {
     }
 }
 ```
+
+Patterns nest fully: any sub-pattern position — an enum payload, a struct field, or a list
+element — may hold another pattern. So `Some(Point { x, y })`, `Ok([a, b])`, and
+`Line { a: Point { x, y } }` all work, mixing literals, bindings, and wildcards at any depth.
 
 Exhaustiveness: a `match` on a known enum type must cover every variant or include an
 irrefutable arm (`_` or a bare binding). Guarded arms do not count toward coverage, since a

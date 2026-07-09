@@ -2457,6 +2457,40 @@ fn pattern_test_and_binds(
             let bn = sanitize_ident(name)?;
             Ok(("true".to_string(), format!("let mut {bn} = {scr}.clone(); ")))
         }
+        Pattern::Struct { name, fields } => {
+            // Access a named field: its value if present on a struct, else the default 0.
+            let field_expr = |fname: &str| -> Result<String> {
+                Ok(format!(
+                    "(match &{scr} {{ AnubisValue::Struct {{ fields, .. }} => \
+                        fields.iter().find(|(__n, _)| __n == &{}).map(|(_, __v)| __v.clone()).unwrap_or(AnubisValue::Int(0)), \
+                        _ => AnubisValue::Int(0) }})",
+                    rust_string_lit(fname)?
+                ))
+            };
+            let mut cond = format!(
+                "matches!(&{scr}, AnubisValue::Struct {{ ty, .. }} if ty == {})",
+                rust_string_lit(name)?
+            );
+            // Each field's sub-pattern imposes a test on that field's value.
+            for (fname, sub) in fields {
+                let (sub_test, _) = pattern_test_and_binds(sub, &field_expr(fname)?)?;
+                if sub_test != "true" {
+                    cond.push_str(&format!(" && ({sub_test})"));
+                }
+            }
+            // Bindings extract each field into a path-unique temp, then apply the sub-pattern's binds.
+            let mut binds = String::new();
+            for (fname, sub) in fields {
+                if sub.bound_names().is_empty() {
+                    continue;
+                }
+                let temp = format!("{scr}_f_{}", sanitize_ident(fname)?);
+                binds.push_str(&format!("let {temp} = {}; ", field_expr(fname)?));
+                let (_, sub_binds) = pattern_test_and_binds(sub, &temp)?;
+                binds.push_str(&sub_binds);
+            }
+            Ok((cond, binds))
+        }
         Pattern::Literal(text) => {
             // Type-exact literal matching: a literal pattern matches only a value of the same
             // kind. Numeric literals match Int/Float scrutinees by numeric value (int and float
@@ -2543,20 +2577,33 @@ fn pattern_test_and_binds(
             bindings,
             named_bindings,
         } => {
-            let cond = format!(
+            // Positional payload field i, or the default 0 if absent.
+            let payload_expr = |i: usize| -> String {
+                format!(
+                    "(match &{scr} {{ AnubisValue::Enum {{ fields, .. }} if fields.len() > {i} => fields[{i}].clone(), _ => AnubisValue::Int(0) }})"
+                )
+            };
+            let mut cond = format!(
                 "matches!(&{scr}, AnubisValue::Enum {{ ty, tag, .. }} if ty == {} && tag == {})",
                 rust_string_lit(enum_name)?,
                 rust_string_lit(variant)?
             );
+            // Each positional arg is a sub-pattern: it may bind (Some(x)) or test (Some(0), Some(Point{..})).
+            for (i, sub) in bindings.iter().enumerate() {
+                let (sub_test, _) = pattern_test_and_binds(sub, &payload_expr(i))?;
+                if sub_test != "true" {
+                    cond.push_str(&format!(" && ({sub_test})"));
+                }
+            }
             let mut binds = String::new();
-            for (i, b) in bindings.iter().enumerate() {
-                if b == "_" {
+            for (i, sub) in bindings.iter().enumerate() {
+                if sub.bound_names().is_empty() {
                     continue;
                 }
-                let bn = sanitize_ident(b)?;
-                binds.push_str(&format!(
-                    "let mut {bn} = match &{scr} {{ AnubisValue::Enum {{ fields, .. }} if fields.len() > {i} => fields[{i}].clone(), _ => AnubisValue::Int(0) }}; "
-                ));
+                let temp = format!("{scr}_p{i}");
+                binds.push_str(&format!("let {temp} = {}; ", payload_expr(i)));
+                let (_, sub_binds) = pattern_test_and_binds(sub, &temp)?;
+                binds.push_str(&sub_binds);
             }
             for (fname, bname) in named_bindings {
                 if bname == "_" {
@@ -3000,12 +3047,38 @@ mod run_tests {
     }
 
     #[test]
-    fn binding_named_prelude_constructor() {
-        // `Some(None)` parses `None` as a binding (nested patterns aren't a feature), whose name
-        // collides with the Rust prelude variant — it must be escaped, not crash rustc. The arm
-        // matches any `Some`, so this prints "yes".
-        let src = "fn main() { match Some(9) { Some(None) => print(\"yes\"), _ => print(\"no\") } }";
-        assert_eq!(run(src), "yes");
+    fn nested_option_pattern() {
+        // `Some(None)` is a nested pattern (a Some wrapping a None), matched precisely.
+        let src = "fn f(o) { return match o { Some(None) => 1, Some(v) => v, None => 0 }; } \
+                   fn main() { print(f(Some(None))); print(f(Some(7))); print(f(None)); }";
+        assert_eq!(run(src), "1\n7\n0");
+    }
+
+    #[test]
+    fn let_binding_named_prelude_constructor_compiles() {
+        // A `let` bound to a prelude-constructor name must be escaped, not crash rustc.
+        let src = "fn main() { let None = 5; print(\"ok\"); }";
+        assert_eq!(run(src), "ok");
+    }
+
+    #[test]
+    fn enum_struct_variant_shorthand() {
+        // `E::V { a, b }` shorthand binds each field to a variable of the same name.
+        let src = "enum E { Add { l: int, r: int }, Zero } \
+                   fn ev(e) { return match e { E::Add { l, r } => l + r, E::Zero => 0 }; } \
+                   fn main() { print(ev(E::Add { l: 3, r: 4 })); print(ev(E::Zero)); }";
+        assert_eq!(run(src), "7\n0");
+    }
+
+    #[test]
+    fn patterns_nest_fully() {
+        // A sub-pattern (struct, list, literal) may appear inside an enum payload.
+        let src = "struct P { x: int, y: int } fn mk(a, b) { P { x: a, y: b } } \
+                   fn f(o) { return match o { Some(P { x: 0, y }) => y, Some(P { x, y }) => x + y, None => -1 }; } \
+                   fn g(r) { return match r { Ok([a, b]) => a * b, Ok(xs) => 0, Err(e) => 0 - e }; } \
+                   fn main() { print(f(Some(mk(0, 5)))); print(f(Some(mk(3, 4)))); print(f(None)); \
+                     print(g(Ok([6, 7]))); print(g(Err(2))); }";
+        assert_eq!(run(src), "5\n7\n-1\n42\n-2");
     }
 
     #[test]
@@ -3073,6 +3146,28 @@ mod run_tests {
         // be unescaped, and a `}` inside such a nested string must not close the interpolation.
         let src = r#"fn main() { print("call ${upper(\"hi\")}"); print("brace ${\"a}b\"}"); }"#;
         assert_eq!(run(src), "call HI\nbrace a}b");
+    }
+
+    #[test]
+    fn struct_pattern_in_match() {
+        // Field sub-patterns: literals constrain, identifiers bind, shorthand binds field->var.
+        let src = "struct P { x: int, y: int } fn mk(a, b) { P { x: a, y: b } } \
+                   fn quad(p) { return match p { \
+                     P { x: 0, y: 0 } => \"origin\", P { x: 0, y } => \"y-axis\", \
+                     P { x, y: 0 } => \"x-axis\", P { x, y } => \"other\" }; } \
+                   fn main() { print(quad(mk(0,0))); print(quad(mk(0,5))); \
+                     print(quad(mk(3,0))); print(quad(mk(3,4))); }";
+        assert_eq!(run(src), "origin\ny-axis\nx-axis\nother");
+    }
+
+    #[test]
+    fn struct_pattern_let_and_if_let() {
+        let src = "struct P { x: int, y: int } fn mk(a, b) { P { x: a, y: b } } \
+                   fn main() { \
+                     let P { x, y } = mk(7, 9); print(x + y); \
+                     let P { x: a, y: b } = mk(2, 3); print(a * b); \
+                     if let P { x, y } = mk(1, 2) { print(x * 10 + y); } }";
+        assert_eq!(run(src), "16\n6\n12");
     }
 
     #[test]

@@ -175,12 +175,19 @@ pub enum Pattern {
     /// List/tuple pattern: `[a, b, c]` or `(a, b)` — matches a list of exactly this
     /// length, matching each element against the corresponding sub-pattern.
     List(Vec<Pattern>),
+    /// Struct pattern: `Point { x, y }`, `Point { x: 0, y: b }` — matches a struct of the named
+    /// type, matching each listed field against a sub-pattern. `fields` is `(field_name, pattern)`
+    /// (shorthand `{ x }` desugars to `{ x: x }`, binding field `x` to a variable `x`).
+    Struct {
+        name: String,
+        fields: Vec<(String, Pattern)>,
+    },
     /// `Status::Ok`, `Status::Err(n)`, or `Status::Err { code: c }`
     EnumVariant {
         enum_name: String,
         variant: String,
-        /// Positional bindings for tuple variants.
-        bindings: Vec<String>,
+        /// Positional sub-patterns for tuple variants (`Some(Point { x, y })`, `Err(0)`).
+        bindings: Vec<Pattern>,
         /// Named field bindings `(field, bind)` for struct variants.
         named_bindings: Vec<(String, String)>,
     },
@@ -195,12 +202,16 @@ impl Pattern {
             Pattern::Or(pats) | Pattern::List(pats) => {
                 pats.iter().flat_map(|p| p.bound_names()).collect()
             }
+            Pattern::Struct { fields, .. } => {
+                fields.iter().flat_map(|(_, p)| p.bound_names()).collect()
+            }
             Pattern::EnumVariant {
                 bindings,
                 named_bindings,
                 ..
             } => {
-                let mut v: Vec<String> = bindings.iter().filter(|b| *b != "_").cloned().collect();
+                let mut v: Vec<String> =
+                    bindings.iter().flat_map(|p| p.bound_names()).collect();
                 v.extend(named_bindings.iter().map(|(_, b)| b.clone()));
                 v
             }
@@ -1401,11 +1412,7 @@ impl Parser {
                 if self.check_token(&Token::LParen) {
                     self.bump();
                     while !self.at_eof() && !self.check_token(&Token::RParen) {
-                        if let Some((b, _)) = self.expect_ident("expected binding in pattern") {
-                            bindings.push(b);
-                        } else {
-                            self.bump();
-                        }
+                        bindings.push(self.parse_pattern_atom());
                         if self.check_token(&Token::Comma) {
                             self.bump();
                         }
@@ -1469,11 +1476,7 @@ impl Parser {
                 if self.check_token(&Token::LParen) {
                     self.bump();
                     while !self.at_eof() && !self.check_token(&Token::RParen) {
-                        if let Some((b, _)) = self.expect_ident("expected binding") {
-                            bindings.push(b);
-                        } else {
-                            self.bump();
-                        }
+                        bindings.push(self.parse_pattern_atom());
                         if self.check_token(&Token::Comma) {
                             self.bump();
                         }
@@ -1483,10 +1486,15 @@ impl Parser {
                     self.bump();
                     while !self.at_eof() && !self.check_token(&Token::RBrace) {
                         if let Some((fname, _)) = self.expect_ident("expected field in pattern") {
-                            let _ = self.expect_token(Token::Colon, "expected `:` in struct pattern");
-                            let (bname, _) = self
-                                .expect_ident("expected binding after field")
-                                .unwrap_or_else(|| (fname.clone(), Span::default()));
+                            // `field: bind` binds explicitly; shorthand `field` binds to itself.
+                            let bname = if self.check_token(&Token::Colon) {
+                                self.bump();
+                                self.expect_ident("expected binding after field")
+                                    .map(|(b, _)| b)
+                                    .unwrap_or_else(|| fname.clone())
+                            } else {
+                                fname.clone()
+                            };
                             named_bindings.push((fname, bname));
                         } else {
                             self.bump();
@@ -1502,6 +1510,33 @@ impl Parser {
                     variant,
                     bindings,
                     named_bindings,
+                };
+            }
+            // Struct pattern: `Point { x, y }` or `Point { x: a }`.
+            if self.check_token(&Token::LBrace) {
+                self.bump();
+                let mut fields = vec![];
+                while !self.at_eof() && !self.check_token(&Token::RBrace) {
+                    if let Some((fname, _)) = self.expect_ident("expected field in struct pattern") {
+                        let sub = if self.check_token(&Token::Colon) {
+                            self.bump();
+                            self.parse_pattern_atom()
+                        } else {
+                            // shorthand `{ x }` binds field x to a variable x
+                            Pattern::Binding(fname.clone())
+                        };
+                        fields.push((fname, sub));
+                    } else {
+                        self.bump();
+                    }
+                    if self.check_token(&Token::Comma) {
+                        self.bump();
+                    }
+                }
+                let _ = self.expect_token(Token::RBrace, "expected `}` in struct pattern");
+                return Pattern::Struct {
+                    name: enum_name,
+                    fields,
                 };
             }
             // A bare identifier (no `::`) is a binding pattern: it matches anything
@@ -2048,8 +2083,16 @@ impl Parser {
         if self.check_keyword("mut") {
             self.bump();
         }
-        // Destructuring binding: `let [a, b] = xs` / `let (a, b) = pair`.
-        if self.check_token(&Token::LBracket) || self.check_token(&Token::LParen) {
+        // Destructuring binding: `let [a, b] = xs`, `let (a, b) = pair`, `let Point { x, y } = p`.
+        let struct_destructure = matches!(&self.current().token, Token::Ident(_))
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.token),
+                Some(Token::LBrace)
+            );
+        if self.check_token(&Token::LBracket)
+            || self.check_token(&Token::LParen)
+            || struct_destructure
+        {
             let pattern = self.parse_pattern_atom();
             let init = if self.check_token(&Token::Eq) {
                 self.bump();
