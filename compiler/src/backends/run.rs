@@ -369,6 +369,16 @@ impl AnubisValue {
         }
     }
 
+    /// Positional element access for list/tuple destructuring: only lists yield elements.
+    /// Any non-list value, or an out-of-range index, yields the default `0` — this is the
+    /// irrefutable "not-a-list -> 0" contract, and (unlike `index_get`) never char-slices a string.
+    fn list_elem(&self, i: i64) -> AnubisValue {
+        match self {
+            AnubisValue::List(v) if i >= 0 && (i as usize) < v.len() => v[i as usize].clone(),
+            _ => AnubisValue::Int(0),
+        }
+    }
+
     fn index_get(&self, i: AnubisValue) -> AnubisValue {
         match self {
             AnubisValue::List(v) => {
@@ -582,17 +592,67 @@ fn anubis_value_cmp(a: &AnubisValue, b: &AnubisValue) -> std::cmp::Ordering {
     }
 }
 
+/// Structural, type-aware equality (backs `==`/`!=`). Unlike the ordering used for `< > <= >=`
+/// (which falls back to display form to give a total order), equality does NOT collapse across
+/// types: a string never equals a number, a bool never equals an int, and compound values are
+/// compared element-by-element. Int and float remain equal when numerically equal (`5 == 5.0`).
+fn anubis_value_eq(a: &AnubisValue, b: &AnubisValue) -> bool {
+    match (a, b) {
+        (AnubisValue::Int(x), AnubisValue::Int(y)) => x == y,
+        (AnubisValue::Bool(x), AnubisValue::Bool(y)) => x == y,
+        (AnubisValue::Float(_), AnubisValue::Float(_))
+        | (AnubisValue::Int(_), AnubisValue::Float(_))
+        | (AnubisValue::Float(_), AnubisValue::Int(_)) => a.as_f64() == b.as_f64(),
+        (AnubisValue::Str(x), AnubisValue::Str(y)) => x == y,
+        (AnubisValue::List(x), AnubisValue::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| anubis_value_eq(p, q))
+        }
+        (AnubisValue::Map(x), AnubisValue::Map(y)) => {
+            x.len() == y.len()
+                && x.iter().all(|(k, v)| {
+                    y.iter().any(|(k2, v2)| k == k2 && anubis_value_eq(v, v2))
+                })
+        }
+        (
+            AnubisValue::Enum { ty, tag, fields, .. },
+            AnubisValue::Enum { ty: ty2, tag: tag2, fields: f2, .. },
+        ) => {
+            ty == ty2
+                && tag == tag2
+                && fields.len() == f2.len()
+                && fields.iter().zip(f2.iter()).all(|(p, q)| anubis_value_eq(p, q))
+        }
+        (
+            AnubisValue::Struct { ty, fields },
+            AnubisValue::Struct { ty: ty2, fields: f2 },
+        ) => {
+            ty == ty2
+                && fields.len() == f2.len()
+                && fields
+                    .iter()
+                    .zip(f2.iter())
+                    .all(|((n, v), (n2, v2))| n == n2 && anubis_value_eq(v, v2))
+        }
+        // Closures are never equal; mismatched kinds (string vs int, bool vs int, …) are not equal.
+        _ => false,
+    }
+}
+
 fn anubis_cmp(op: &str, lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {
     use std::cmp::Ordering;
-    let ord = anubis_value_cmp(&lhs, &rhs);
     let result = match op {
-        "<" => ord == Ordering::Less,
-        "<=" => ord != Ordering::Greater,
-        ">" => ord == Ordering::Greater,
-        ">=" => ord != Ordering::Less,
-        "==" => ord == Ordering::Equal,
-        "!=" => ord != Ordering::Equal,
-        _ => false,
+        "==" => anubis_value_eq(&lhs, &rhs),
+        "!=" => !anubis_value_eq(&lhs, &rhs),
+        _ => {
+            let ord = anubis_value_cmp(&lhs, &rhs);
+            match op {
+                "<" => ord == Ordering::Less,
+                "<=" => ord != Ordering::Greater,
+                ">" => ord == Ordering::Greater,
+                ">=" => ord != Ordering::Less,
+                _ => false,
+            }
+        }
     };
     AnubisValue::Bool(result)
 }
@@ -1291,6 +1351,18 @@ fn emit_safe_run_stmt(
             ));
             Ok(())
         }
+        Stmt::LetPattern { pattern, init, .. } => {
+            // Destructuring binding: evaluate the initializer once into a temp, then bind the
+            // pattern's names into the current scope (irrefutable — the test is not enforced).
+            let init_src = safe_run_expr(init, ctx)?;
+            let tmp = format!("__anb_dst{}", next_temp_id());
+            out.push_str(&format!("{pad}let {tmp} = {init_src};\n"));
+            let (_test, binds) = pattern_test_and_binds(pattern, &tmp)?;
+            if !binds.trim().is_empty() {
+                out.push_str(&format!("{pad}{binds}\n"));
+            }
+            Ok(())
+        }
         Stmt::Assign { target, value } => {
             let rhs = safe_run_expr(value, ctx)?;
             match target {
@@ -1675,6 +1747,12 @@ fn collect_free_stmts(
             Stmt::Let { name, init, .. } => {
                 collect_free_expr(init, bound, vars, callees);
                 bound.insert(name.clone());
+            }
+            Stmt::LetPattern { pattern, init, .. } => {
+                collect_free_expr(init, bound, vars, callees);
+                for n in pattern.bound_names() {
+                    bound.insert(n);
+                }
             }
             Stmt::Assign { target, value } => {
                 collect_free_expr(target, bound, vars, callees);
@@ -2363,6 +2441,33 @@ fn pattern_test_and_binds(
                 Ok((conds.join(" || "), String::new()))
             }
         }
+        Pattern::List(subs) => {
+            // A list/tuple pattern matches a list of exactly this length, matching each
+            // element against its sub-pattern. Structural test short-circuits before any
+            // element access; bindings extract elements into path-unique temps so nested
+            // list patterns never collide.
+            let n = subs.len();
+            let mut cond =
+                format!("matches!(&{scr}, AnubisValue::List(__anb_lv) if __anb_lv.len() == {n})");
+            for (i, sub) in subs.iter().enumerate() {
+                let elem = format!("{scr}.list_elem({i}i64)");
+                let (sub_test, _) = pattern_test_and_binds(sub, &elem)?;
+                if sub_test != "true" {
+                    cond.push_str(&format!(" && ({sub_test})"));
+                }
+            }
+            let mut binds = String::new();
+            for (i, sub) in subs.iter().enumerate() {
+                if sub.bound_names().is_empty() {
+                    continue; // wildcard / literal element binds nothing
+                }
+                let temp = format!("{scr}_el{i}");
+                binds.push_str(&format!("let {temp} = {scr}.list_elem({i}i64); "));
+                let (_, sub_binds) = pattern_test_and_binds(sub, &temp)?;
+                binds.push_str(&sub_binds);
+            }
+            Ok((cond, binds))
+        }
         Pattern::EnumVariant {
             enum_name,
             variant,
@@ -2439,6 +2544,14 @@ fn sanitize_ident(name: &str) -> Result<String> {
     } else {
         Ok(name.to_string())
     }
+}
+
+/// A process-wide counter for generating unique codegen temporaries (e.g. destructuring
+/// scrutinees). Order is deterministic within a single compilation, so output is stable.
+fn next_temp_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
 /// Rust 2021 keywords plus reserved words — any of these, if used as an Anubis identifier,
@@ -2714,6 +2827,67 @@ mod run_tests {
         let src2 = "fn g(n) { if n < 0 { \"neg\" } else if n == 0 { let z = \"ze\"; z } else { \"pos\" } } \
                     fn main() { print(g(-1)); print(g(0)); print(g(5)); }";
         assert_eq!(run(src2), "neg\nze\npos");
+    }
+
+    #[test]
+    fn tuple_values_and_list_patterns() {
+        // `(a, b)` is a list value; list/tuple patterns match by length and destructure.
+        let src = "fn kind(p) { return match p { [0, 0] => \"origin\", [0, y] => \"y-axis\", \
+                     [x, 0] => \"x-axis\", [x, y] => \"point\", _ => \"?\" }; } \
+                   fn main() { print(kind((0,0))); print(kind((0,5))); print(kind((3,0))); print(kind((3,4))); }";
+        assert_eq!(run(src), "origin\ny-axis\nx-axis\npoint");
+    }
+
+    #[test]
+    fn list_pattern_by_arity() {
+        let src = "fn sz(xs) { return match xs { [] => \"none\", [a] => \"one\", [a, b] => \"two\", _ => \"many\" }; } \
+                   fn main() { print(sz([])); print(sz([1])); print(sz([1,2])); print(sz([1,2,3])); }";
+        assert_eq!(run(src), "none\none\ntwo\nmany");
+    }
+
+    #[test]
+    fn let_destructuring_and_multiple_return() {
+        let src = "fn bounds(xs) { let lo = xs[0]; let hi = xs[0]; \
+                     for x in xs { if x < lo { lo = x } if x > hi { hi = x } } (lo, hi) } \
+                   fn main() { let (lo, hi) = bounds([5,2,9,1,7]); print(lo); print(hi); \
+                     let [a, b, c] = [10, 20, 30]; print(a + b + c); \
+                     let (_, y) = (\"x\", \"y\"); print(y); }";
+        assert_eq!(run(src), "1\n9\n60\ny");
+    }
+
+    #[test]
+    fn nested_destructuring() {
+        let src = "fn main() { let [[p, q], r] = [[1, 2], 3]; print(p + q + r); }";
+        assert_eq!(run(src), "6");
+    }
+
+    #[test]
+    fn equality_is_structural_and_type_exact() {
+        // `==` compares by structure/type, not by display string.
+        let src = "fn main() { \
+                     print((1, 2) == [\"1, 2\"]); \
+                     print(\"5\" == 5); \
+                     print(true == 1); \
+                     print([1, [2, 3]] == [1, [2, 3]]); \
+                     print([1, 2] == [1, 2, 3]); \
+                     print(5 == 5.0); }";
+        assert_eq!(run(src), "false\nfalse\nfalse\ntrue\nfalse\ntrue");
+    }
+
+    #[test]
+    fn destructure_non_list_defaults_to_zero() {
+        // Destructuring a non-list (or too-short list) binds the default 0 — no string char-slicing.
+        let src = "fn main() { let [a, b] = \"xy\"; let [c, d] = 42; let [e, f, g] = [1]; \
+                   print(a, b, c, d, e, f, g); }";
+        assert_eq!(run(src), "0 0 0 0 1 0 0");
+    }
+
+    #[test]
+    fn list_pattern_with_literal_element() {
+        // A literal element in a list pattern constrains that position.
+        let src = "fn f(cmd) { return match cmd { [\"add\", a, b] => a + b, [\"neg\", a] => 0 - a, _ => -1 }; } \
+                   fn main() { print(f([\"add\", 3, 4])); print(f([\"neg\", 5])); print(f([\"x\"])); }";
+        assert_eq!(run(src), "7\n-5\n-1");
     }
 
     #[test]

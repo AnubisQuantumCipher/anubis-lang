@@ -171,6 +171,9 @@ pub enum Pattern {
     /// Or-pattern: `1 | 2 | 3` — matches if any alternative matches. Alternatives
     /// may not bind variables (they must be literals, wildcards, or unit variants).
     Or(Vec<Pattern>),
+    /// List/tuple pattern: `[a, b, c]` or `(a, b)` — matches a list of exactly this
+    /// length, matching each element against the corresponding sub-pattern.
+    List(Vec<Pattern>),
     /// `Status::Ok`, `Status::Err(n)`, or `Status::Err { code: c }`
     EnumVariant {
         enum_name: String,
@@ -188,7 +191,9 @@ impl Pattern {
         match self {
             Pattern::Wildcard | Pattern::Literal(_) | Pattern::StrLiteral(_) => Vec::new(),
             Pattern::Binding(n) => vec![n.clone()],
-            Pattern::Or(pats) => pats.iter().flat_map(|p| p.bound_names()).collect(),
+            Pattern::Or(pats) | Pattern::List(pats) => {
+                pats.iter().flat_map(|p| p.bound_names()).collect()
+            }
             Pattern::EnumVariant {
                 bindings,
                 named_bindings,
@@ -246,6 +251,13 @@ pub enum Stmt {
     Let {
         name: String,
         ty: Option<String>,
+        init: Expr,
+        span: Span,
+    },
+    /// Destructuring binding: `let [a, b] = xs` or `let (a, b) = pair`. The pattern is
+    /// irrefutable — missing/short values bind the default `0`.
+    LetPattern {
+        pattern: Pattern,
         init: Expr,
         span: Span,
     },
@@ -1247,6 +1259,44 @@ impl Parser {
 
     /// Parse a single (non-or) pattern.
     fn parse_pattern_atom(&mut self) -> Pattern {
+        // List pattern `[p, p, …]`.
+        if self.check_token(&Token::LBracket) {
+            self.bump();
+            let mut subs = vec![];
+            while !self.at_eof() && !self.check_token(&Token::RBracket) {
+                subs.push(self.parse_pattern_atom());
+                if self.check_token(&Token::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            let _ = self.expect_token(Token::RBracket, "expected `]` in list pattern");
+            return Pattern::List(subs);
+        }
+        // Tuple pattern `(p, p, …)`, or a parenthesized grouping `(p)`.
+        if self.check_token(&Token::LParen) {
+            self.bump();
+            if self.check_token(&Token::RParen) {
+                self.bump();
+                return Pattern::List(vec![]);
+            }
+            let first = self.parse_pattern_atom();
+            if self.check_token(&Token::Comma) {
+                let mut subs = vec![first];
+                while self.check_token(&Token::Comma) {
+                    self.bump();
+                    if self.check_token(&Token::RParen) {
+                        break;
+                    }
+                    subs.push(self.parse_pattern_atom());
+                }
+                let _ = self.expect_token(Token::RParen, "expected `)` in tuple pattern");
+                return Pattern::List(subs);
+            }
+            let _ = self.expect_token(Token::RParen, "expected `)` in pattern");
+            return first;
+        }
         // Literal patterns: numbers, negative numbers, booleans, strings/chars.
         match &self.current().token {
             Token::Number(n) => {
@@ -1821,6 +1871,30 @@ impl Parser {
         if self.check_keyword("mut") {
             self.bump();
         }
+        // Destructuring binding: `let [a, b] = xs` / `let (a, b) = pair`.
+        if self.check_token(&Token::LBracket) || self.check_token(&Token::LParen) {
+            let pattern = self.parse_pattern_atom();
+            let init = if self.check_token(&Token::Eq) {
+                self.bump();
+                self.parse_expr(0)
+            } else {
+                self.diagnostic("expected `=` in destructuring binding", self.current_span());
+                Expr::Other("missing-init".into())
+            };
+            let end = if self.check_token(&Token::Semi) {
+                self.bump().map(|t| t.span.end).unwrap_or(start.end)
+            } else {
+                self.previous_end()
+            };
+            return Some(Stmt::LetPattern {
+                pattern,
+                init,
+                span: Span {
+                    start: start.start,
+                    end,
+                },
+            });
+        }
         let (name, _) = self.expect_ident("expected binding name after `let`")?;
         let ty = if self.check_token(&Token::Colon) {
             self.bump();
@@ -2222,9 +2296,29 @@ impl Parser {
                 Expr::UnifiedBuffer { ty }
             }
             Token::LParen => {
-                let expr = self.with_struct_allowed(|p| p.parse_expr(0));
-                let _ = self.expect_token(Token::RParen, "expected `)` after expression");
-                expr
+                // `(e)` is grouping; `(a, b, …)` is a tuple, represented as a list value;
+                // `()` is the empty tuple / unit, an empty list.
+                if self.check_token(&Token::RParen) {
+                    self.bump();
+                    Expr::ArrayLiteral { elements: vec![] }
+                } else {
+                    let first = self.with_struct_allowed(|p| p.parse_expr(0));
+                    if self.check_token(&Token::Comma) {
+                        let mut elements = vec![first];
+                        while self.check_token(&Token::Comma) {
+                            self.bump();
+                            if self.check_token(&Token::RParen) {
+                                break; // allow a trailing comma
+                            }
+                            elements.push(self.with_struct_allowed(|p| p.parse_expr(0)));
+                        }
+                        let _ = self.expect_token(Token::RParen, "expected `)` after tuple");
+                        Expr::ArrayLiteral { elements }
+                    } else {
+                        let _ = self.expect_token(Token::RParen, "expected `)` after expression");
+                        first
+                    }
+                }
             }
             Token::LBracket => {
                 let mut elements = vec![];

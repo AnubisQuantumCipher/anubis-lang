@@ -1,0 +1,55 @@
+// EXPECT: 3 3|1 9|7|-5|origin|point|10 20 30|hi
+// Tuples, list/tuple patterns, and destructuring bindings.
+
+// Multiple return values via a tuple (represented as a list).
+fn divmod(a, b) {
+    (a / b, a % b)
+}
+
+fn bounds(xs) {
+    let lo = xs[0];
+    let hi = xs[0];
+    for x in xs {
+        if x < lo { lo = x }
+        if x > hi { hi = x }
+    }
+    (lo, hi)
+}
+
+// Match on list shape + literal command dispatch.
+fn eval(cmd) {
+    match cmd {
+        ["add", a, b] => a + b,
+        ["neg", a]    => 0 - a,
+        _             => -1,
+    }
+}
+
+fn classify(p) {
+    match p {
+        [0, 0] => "origin",
+        [x, y] => "point",
+        _      => "?",
+    }
+}
+
+fn main() {
+    let (q, r) = divmod(15, 4);
+    print(q, r);                 // 3 4
+
+    let (lo, hi) = bounds([5, 2, 9, 1, 7]);
+    print(lo, hi);               // 1 9
+
+    print(eval(["add", 3, 4]));  // 7
+    print(eval(["neg", 5]));     // -5
+
+    print(classify((0, 0)));     // origin
+    print(classify((3, 4)));     // point
+
+    // list destructuring, including a wildcard
+    let [a, b, c] = [10, 20, 30];
+    print(a, b, c);              // 10 20 30
+
+    let (_, second) = ("bye", "hi");
+    print(second);               // hi
+}

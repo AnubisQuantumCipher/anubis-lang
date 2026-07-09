@@ -62,6 +62,18 @@ x = x + 1;          // reassign
 let mut y = 10;     // `mut` is optional
 ```
 
+**Tuples and destructuring.** `(a, b, c)` builds a tuple (represented as a list value), which is
+convenient for returning several values from a function. A `let` binding may destructure a list
+or tuple, including nested and wildcard elements:
+
+```
+fn divmod(a, b) { (a / b, a % b) }
+let (q, r) = divmod(15, 4);        // q = 3, r = 3
+let [first, second, third] = xs;   // list destructuring
+let (_, keep) = pair;              // `_` ignores an element
+let [[p, q], z] = [[1, 2], 3];     // nested
+```
+
 Assignable *places* can be arbitrarily nested — variables, indices, fields, and any chain of
 them:
 
@@ -97,9 +109,13 @@ Notes:
 - Integer `+ - * /` wrap on overflow; **integer division/modulo by zero panics** (fail-closed).
 - If either operand is a float, arithmetic promotes to float; float division follows IEEE
   (`1.0 / 0.0` is `inf`).
-- Comparisons between two integers are exact `i64` comparisons (no float rounding, even above
-  2^53); mixed int/float comparisons use `f64`; strings and other values compare by their display
-  form (lexicographic for `< <= > >=`). So `1 == 1.0` is `true` and `"apple" < "banana"` is `true`.
+- Ordering (`< <= > >=`) between two integers is an exact `i64` comparison (no float rounding,
+  even above 2^53); mixed int/float ordering uses `f64`; strings and other values order by their
+  display form (so `"apple" < "banana"`).
+- Equality (`== !=`) is **structural and type-exact**: numbers compare numerically (`1 == 1.0` is
+  `true`), but a string never equals a number, a bool never equals an int, and lists/enums/structs
+  compare element-by-element. So `"5" == 5` is `false`, `true == 1` is `false`, and
+  `[1, [2]] == [1, [2]]` is `true`.
 - `&&` and `\|\|` short-circuit.
 - Bitwise/shift operate on the integer view of their operands.
 - `expr as T` converts: casts to an integer type truncate toward zero and wrap to that width
@@ -230,6 +246,7 @@ fn describe(r) {
 | or-pattern | `1 \| 2 \| 3` | any listed alternative (alternatives may not bind) |
 | enum tuple | `Status::Err(n)`, `Pair(_, b)` | that variant; binds fields positionally (`_` ignores one) |
 | enum struct | `Http::Ok { code: c }` | that variant; binds named fields |
+| list/tuple | `[a, b]`, `(x, y)`, `["cmd", arg]` | a list of exactly that length; binds/tests each element |
 
 Literal patterns are **type-exact**: a string pattern matches only strings, a bool pattern only
 bools, and a numeric pattern only numbers. Unlike the `==` operator (which coerces across types),

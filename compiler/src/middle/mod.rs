@@ -215,6 +215,12 @@ fn check_calls_stmts(
                 check_calls_expr(init, fns, bound, ctx);
                 bound.insert(name.clone());
             }
+            Stmt::LetPattern { pattern, init, .. } => {
+                check_calls_expr(init, fns, bound, ctx);
+                for n in pattern.bound_names() {
+                    bound.insert(n);
+                }
+            }
             Stmt::Assign { target, value } => {
                 check_calls_expr(target, fns, bound, ctx);
                 check_calls_expr(value, fns, bound, ctx);
@@ -667,6 +673,13 @@ fn analyze_stmts(
                     ctx.symbolic_defs.push(def_smt.clone());
                     ctx.constraints.push(format!("(assert {})", def_smt));
                     assumptions.push(def_smt); // so it is included in subsequent obligations
+                }
+            }
+            Stmt::LetPattern { pattern, .. } => {
+                // Destructuring binding: register each bound name so later statements don't
+                // flag it as unknown. (No type annotation, so no raw-pointer/type-mismatch check.)
+                for n in pattern.bound_names() {
+                    ctx.known_bindings.insert(n);
                 }
             }
             Stmt::ResearchBlock { body, .. } => {
