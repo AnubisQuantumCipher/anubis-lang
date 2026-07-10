@@ -1,0 +1,42 @@
+// Codex language study: a safe, executable data-checksum program.
+// It exercises lists, for-in iteration, maps, if-expressions,
+// struct-like enum variants, match, functions, and typed parameters.
+//
+// Expected stdout:
+// 42
+// 46
+
+enum StudyResult {
+    Match { total: u32, samples: u32 },
+    Drift(u32),
+}
+
+fn review_code(result: StudyResult) {
+    return match result {
+        StudyResult::Match { total: value, samples: count } => value + count,
+        StudyResult::Drift(value) => value,
+        _ => 0,
+    };
+}
+
+fn main() {
+    // A small sequence with a deliberately known checksum: 5 + 8 + 13 + 16 = 42.
+    let readings = [5, 8, 13, 16];
+    let total = 0;
+    for reading in readings {
+        total = total + reading;
+    }
+
+    // Keep the expected and observed values in a map, then choose a meaningful result.
+    let ledger = { "expected": 42, "actual": total };
+    let result = if ledger["actual"] == ledger["expected"] {
+        StudyResult::Match { total: ledger["actual"], samples: len(readings) }
+    } else {
+        StudyResult::Drift(ledger["actual"])
+    };
+
+    let code = review_code(result);
+    print(total);
+    print(code);
+    return code;
+}

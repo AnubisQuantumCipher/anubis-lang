@@ -1,0 +1,43 @@
+// Classic sieve + functional polish — lists, while, filter, join, interpolation.
+
+fn sieve(n) {
+    let mut mark = [];
+    for i in 0..(n + 1) {
+        push(mark, true);
+    }
+    if n >= 0 { mark[0] = false }
+    if n >= 1 { mark[1] = false }
+    let mut p = 2;
+    while p * p <= n {
+        if mark[p] {
+            let mut k = p * p;
+            while k <= n {
+                mark[k] = false;
+                k = k + p;
+            }
+        }
+        p = p + 1;
+    }
+    let mut out = [];
+    for i in 2..(n + 1) {
+        if mark[i] {
+            push(out, i);
+        }
+    }
+    out
+}
+
+fn main() {
+    let ps = sieve(50);
+    print("primes <= 50: ${ps}");
+    print("count=${len(ps)}");
+    print("sum=${sum(ps)}");
+    // twin primes among them
+    let mut twins = [];
+    for i in 0..(len(ps) - 1) {
+        if ps[i + 1] - ps[i] == 2 {
+            push(twins, [ps[i], ps[i + 1]]);
+        }
+    }
+    print("twins: ${twins}");
+}

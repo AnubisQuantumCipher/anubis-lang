@@ -1,0 +1,1139 @@
+// =============================================================================
+// SEALVM FORGE — an advanced multi-pass system written in Anubis
+// =============================================================================
+// A full stack for a tiny language "Nixlet":
+//   1) Lex        — span-aware tokenizer
+//   2) Parse      — recursive-descent AST (enums + nested patterns)
+//   3) Resolve    — name→slot allocation, free-function table
+//   4) Compile    — AST → bytecode (stack machine ISA)
+//   5) CFG        — basic-block graph + reverse postorder
+//   6) Analyze    — stack-depth check, constant fold of pure PUSH/arith chains
+//   7) Execute    — VM with locals, call frames, recursion
+//   8) Seal       — multi-program journal + integrity checksum
+//
+// Language features deliberately stressed:
+//   enums, match/guards, methods, traits, Option/Result/?, maps, lists,
+//   closures (map/filter/reduce), recursion, mutation, string interpolation,
+//   higher-order analysis helpers.
+//
+// Nixlet surface (what the front-end accepts):
+//   numbers, true/false, identifiers
+//   + - * / %  == != < <= > >=  && || !
+//   let x = e;   x = e;   print(e);   return e;
+//   if e { ... } else { ... }
+//   while e { ... }
+//   fn name(a, b) { ... }     // top-level only
+//   name(args...)             // calls
+// =============================================================================
+
+// ----- Values displayed by the sealed journal --------------------------------
+trait Reportable {
+    fn tag(self);
+    fn line(self) { "[${self.tag()}]" }
+}
+
+struct Journal {
+    lines: list,
+    seed: int,
+}
+
+impl Journal {
+    fn push(self, s) {
+        let mut ls = self.lines;
+        push(ls, s);
+        Journal { lines: ls, seed: (self.seed * 33 + len(s)) % 1000003 }
+    }
+    fn seal(self) {
+        let n = len(self.lines);
+        let sd = self.seed;
+        "SEAL#${sd}|entries=${n}"
+    }
+    fn dump(self) {
+        for i in 0..len(self.lines) {
+            print(self.lines[i]);
+        }
+        print(self.seal());
+    }
+}
+
+// ----- Lexer -----------------------------------------------------------------
+fn is_alpha(ch) {
+    let o = ord(ch);
+    (o >= ord("a") && o <= ord("z")) || (o >= ord("A") && o <= ord("Z")) || ch == "_"
+}
+fn is_digit(ch) {
+    let o = ord(ch);
+    o >= ord("0") && o <= ord("9")
+}
+fn is_alnum(ch) { is_alpha(ch) || is_digit(ch) }
+
+fn lex(src) {
+    let mut toks = [];
+    let mut i = 0;
+    let n = len(src);
+    while i < n {
+        let ch = char_at(src, i);
+        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" {
+            i = i + 1;
+        } else if ch == "/" && i + 1 < n && char_at(src, i + 1) == "/" {
+            // line comment
+            i = i + 2;
+            while i < n && char_at(src, i) != "\n" {
+                i = i + 1;
+            }
+        } else if is_digit(ch) {
+            let mut j = i;
+            while j < n && is_digit(char_at(src, j)) {
+                j = j + 1;
+            }
+            push(toks, ["num", substr(src, i, j - i)]);
+            i = j;
+        } else if is_alpha(ch) {
+            let mut j = i;
+            while j < n && is_alnum(char_at(src, j)) {
+                j = j + 1;
+            }
+            let w = substr(src, i, j - i);
+            // keywords
+            if w == "let" || w == "if" || w == "else" || w == "while" || w == "fn" || w == "return" || w == "print" || w == "true" || w == "false" {
+                push(toks, ["kw", w]);
+            } else {
+                push(toks, ["id", w]);
+            }
+            i = j;
+        } else if ch == "=" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", "=="]); i = i + 2;
+        } else if ch == "!" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", "!="]); i = i + 2;
+        } else if ch == "<" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", "<="]); i = i + 2;
+        } else if ch == ">" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", ">="]); i = i + 2;
+        } else if ch == "&" && i + 1 < n && char_at(src, i + 1) == "&" {
+            push(toks, ["op", "&&"]); i = i + 2;
+        } else if ch == "|" && i + 1 < n && char_at(src, i + 1) == "|" {
+            push(toks, ["op", "||"]); i = i + 2;
+        } else if ch == "+" || ch == "-" || ch == "*" || ch == "/" || ch == "%" || ch == "<" || ch == ">" || ch == "!" || ch == "=" {
+            push(toks, ["op", ch]); i = i + 1;
+        } else if ch == "(" || ch == ")" || ch == "{" || ch == "}" || ch == "," || ch == ";" {
+            push(toks, ["p", ch]); i = i + 1;
+        } else {
+            return Err("lex bad char '${ch}' at ${i}");
+        }
+    }
+    push(toks, ["eof", ""]);
+    Ok(toks)
+}
+
+// ----- Parser state: [toks, i] -----------------------------------------------
+fn p_peek(st) { st[0][st[1]] }
+fn p_at(st, kind, val) {
+    let t = p_peek(st);
+    t[0] == kind && t[1] == val
+}
+fn p_is(st, kind) { p_peek(st)[0] == kind }
+fn p_bump(st) { [st[0], st[1] + 1] }
+fn p_expect(st, kind, val) {
+    if p_at(st, kind, val) {
+        Ok(p_bump(st))
+    } else {
+        let t = p_peek(st);
+        let t0 = t[0]; let t1 = t[1]; Err("expected ${kind}/${val}, got ${t0}/${t1}")
+    }
+}
+
+// AST nodes are tagged lists: ["Lit", n], ["Var", name], ["Bin", op, l, r],
+// ["Unary", op, e], ["Call", name, args], ["Let", name, e], ["Assign", name, e],
+// ["Print", e], ["Return", e], ["If", c, then, else], ["While", c, body],
+// ["Block", stmts], ["Fn", name, params, body], ["Prog", items]
+
+fn parse_primary(st) {
+    let t = p_peek(st);
+    if t[0] == "num" {
+        st = p_bump(st);
+        Ok([["Lit", parse_int(t[1])], st])
+    } else if t[0] == "kw" && t[1] == "true" {
+        st = p_bump(st);
+        Ok([["Lit", 1], st])
+    } else if t[0] == "kw" && t[1] == "false" {
+        st = p_bump(st);
+        Ok([["Lit", 0], st])
+    } else if t[0] == "id" {
+        let name = t[1];
+        st = p_bump(st);
+        if p_at(st, "p", "(") {
+            st = p_bump(st);
+            let mut args = [];
+            if !p_at(st, "p", ")") {
+                let mut more = true;
+                while more {
+                    let r = parse_expr(st)?;
+                    push(args, r[0]);
+                    st = r[1];
+                    if p_at(st, "p", ",") {
+                        st = p_bump(st);
+                    } else {
+                        more = false;
+                    }
+                }
+            }
+            st = p_expect(st, "p", ")")?;
+            Ok([["Call", name, args], st])
+        } else {
+            Ok([["Var", name], st])
+        }
+    } else if t[0] == "p" && t[1] == "(" {
+        st = p_bump(st);
+        let r = parse_expr(st)?;
+        st = p_expect(r[1], "p", ")")?;
+        Ok([r[0], st])
+    } else {
+        let t0 = t[0]; let t1 = t[1]; Err("primary: unexpected ${t0}/${t1}")
+    }
+}
+
+fn parse_unary(st) {
+    if p_at(st, "op", "!") || p_at(st, "op", "-") {
+        let op = p_peek(st)[1];
+        st = p_bump(st);
+        let r = parse_unary(st)?;
+        Ok([["Unary", op, r[0]], r[1]])
+    } else {
+        parse_primary(st)
+    }
+}
+
+fn parse_binop_rhs(st, min_prec) {
+    let r = parse_unary(st)?;
+    let mut left = r[0];
+    st = r[1];
+    let mut cont = true;
+    while cont {
+        let t = p_peek(st);
+        if t[0] != "op" {
+            cont = false;
+        } else {
+            let prec = op_prec(t[1]);
+            if prec < min_prec {
+                cont = false;
+            } else {
+                let op = t[1];
+                st = p_bump(st);
+                let r2 = parse_binop_rhs(st, prec + 1)?;
+                left = ["Bin", op, left, r2[0]];
+                st = r2[1];
+            }
+        }
+    }
+    Ok([left, st])
+}
+
+fn op_prec(op) {
+    if op == "||" { 1 }
+    else if op == "&&" { 2 }
+    else if op == "==" || op == "!=" { 3 }
+    else if op == "<" || op == "<=" || op == ">" || op == ">=" { 4 }
+    else if op == "+" || op == "-" { 5 }
+    else if op == "*" || op == "/" || op == "%" { 6 }
+    else { -1 }
+}
+
+fn parse_expr(st) { parse_binop_rhs(st, 0) }
+
+fn parse_block(st) {
+    st = p_expect(st, "p", "{")?;
+    let mut stmts = [];
+    while !p_at(st, "p", "}") && !p_is(st, "eof") {
+        let r = parse_stmt(st)?;
+        push(stmts, r[0]);
+        st = r[1];
+    }
+    st = p_expect(st, "p", "}")?;
+    Ok([["Block", stmts], st])
+}
+
+fn parse_stmt(st) {
+    if p_at(st, "kw", "let") {
+        st = p_bump(st);
+        if !p_is(st, "id") { return Err("let needs name") }
+        let name = p_peek(st)[1];
+        st = p_bump(st);
+        st = p_expect(st, "op", "=")?;
+        let r = parse_expr(st)?;
+        st = p_expect(r[1], "p", ";")?;
+        Ok([["Let", name, r[0]], st])
+    } else if p_at(st, "kw", "print") {
+        st = p_bump(st);
+        st = p_expect(st, "p", "(")?;
+        let r = parse_expr(st)?;
+        st = p_expect(r[1], "p", ")")?;
+        st = p_expect(st, "p", ";")?;
+        Ok([["Print", r[0]], st])
+    } else if p_at(st, "kw", "return") {
+        st = p_bump(st);
+        let r = parse_expr(st)?;
+        st = p_expect(r[1], "p", ";")?;
+        Ok([["Return", r[0]], st])
+    } else if p_at(st, "kw", "if") {
+        st = p_bump(st);
+        let c = parse_expr(st)?;
+        let th = parse_block(c[1])?;
+        let mut els = ["Block", []];
+        st = th[1];
+        if p_at(st, "kw", "else") {
+            st = p_bump(st);
+            let er = parse_block(st)?;
+            els = er[0];
+            st = er[1];
+        }
+        Ok([["If", c[0], th[0], els], st])
+    } else if p_at(st, "kw", "while") {
+        st = p_bump(st);
+        let c = parse_expr(st)?;
+        let b = parse_block(c[1])?;
+        Ok([["While", c[0], b[0]], b[1]])
+    } else if p_is(st, "id") {
+        // assign or expr-stmt (call)
+        let name = p_peek(st)[1];
+        let save = st;
+        st = p_bump(st);
+        if p_at(st, "op", "=") {
+            st = p_bump(st);
+            let r = parse_expr(st)?;
+            st = p_expect(r[1], "p", ";")?;
+            Ok([["Assign", name, r[0]], st])
+        } else {
+            // reparse as expression statement
+            st = save;
+            let r = parse_expr(st)?;
+            st = p_expect(r[1], "p", ";")?;
+            Ok([["Print", r[0]], st]) // bare expr → print for observability
+        }
+    } else {
+        let t = p_peek(st);
+        let t0 = t[0]; let t1 = t[1]; Err("stmt: unexpected ${t0}/${t1}")
+    }
+}
+
+fn parse_item(st) {
+    if p_at(st, "kw", "fn") {
+        st = p_bump(st);
+        if !p_is(st, "id") { return Err("fn needs name") }
+        let name = p_peek(st)[1];
+        st = p_bump(st);
+        st = p_expect(st, "p", "(")?;
+        let mut params = [];
+        if !p_at(st, "p", ")") {
+            let mut more = true;
+            while more {
+                if !p_is(st, "id") { return Err("param name") }
+                push(params, p_peek(st)[1]);
+                st = p_bump(st);
+                if p_at(st, "p", ",") {
+                    st = p_bump(st);
+                } else {
+                    more = false;
+                }
+            }
+        }
+        st = p_expect(st, "p", ")")?;
+        let b = parse_block(st)?;
+        Ok([["Fn", name, params, b[0]], b[1]])
+    } else {
+        parse_stmt(st)
+    }
+}
+
+fn parse_program(src) {
+    let toks = lex(src)?;
+    let mut st = [toks, 0];
+    let mut items = [];
+    while !p_is(st, "eof") {
+        let r = parse_item(st)?;
+        push(items, r[0]);
+        st = r[1];
+    }
+    Ok(["Prog", items])
+}
+
+// ----- Compiler: AST → bytecode ---------------------------------------------
+// Instruction: [op, a, b] where a/b are int immediates (or 0).
+// Opcodes (a):
+//   1 PUSH n     2 LOAD slot   3 STORE slot
+//   4 ADD 5 SUB 6 MUL 7 DIV 8 MOD
+//   9 EQ 10 NE 11 LT 12 LE 13 GT 14 GE
+//   15 AND 16 OR 17 NOT 18 NEG
+//   19 JMP a     20 JZ a       21 CALL fn_id arity
+//   22 RET       23 PRINT      24 HALT  25 POP
+
+fn emit(code, op, a, b) {
+    push(code, [op, a, b]);
+    code
+}
+
+fn compile_expr(e, env, code, fns) {
+    let k = e[0];
+    if k == "Lit" {
+        Ok([emit(code, 1, e[1], 0), env])
+    } else if k == "Var" {
+        let name = e[1];
+        if !has_key(env, name) {
+            Err("unbound variable '${name}'")
+        } else {
+            Ok([emit(code, 2, env[name], 0), env])
+        }
+    } else if k == "Unary" {
+        let r = compile_expr(e[2], env, code, fns)?;
+        code = r[0]; env = r[1];
+        if e[1] == "!" {
+            Ok([emit(code, 17, 0, 0), env])
+        } else {
+            Ok([emit(code, 18, 0, 0), env])
+        }
+    } else if k == "Bin" {
+        let r1 = compile_expr(e[2], env, code, fns)?;
+        let r2 = compile_expr(e[3], r1[1], r1[0], fns)?;
+        code = r2[0]; env = r2[1];
+        let op = e[1];
+        let opc = if op == "+" { 4 }
+            else if op == "-" { 5 }
+            else if op == "*" { 6 }
+            else if op == "/" { 7 }
+            else if op == "%" { 8 }
+            else if op == "==" { 9 }
+            else if op == "!=" { 10 }
+            else if op == "<" { 11 }
+            else if op == "<=" { 12 }
+            else if op == ">" { 13 }
+            else if op == ">=" { 14 }
+            else if op == "&&" { 15 }
+            else if op == "||" { 16 }
+            else { -1 };
+        if opc < 0 {
+            Err("bad binop ${op}")
+        } else {
+            Ok([emit(code, opc, 0, 0), env])
+        }
+    } else if k == "Call" {
+        let name = e[1];
+        let args = e[2];
+        if !has_key(fns, name) {
+            Err("unknown function '${name}'")
+        } else {
+            let mut i = 0;
+            while i < len(args) {
+                let r = compile_expr(args[i], env, code, fns)?;
+                code = r[0]; env = r[1];
+                i = i + 1;
+            }
+            let fi = fns[name];
+            Ok([emit(code, 21, fi, len(args)), env])
+        }
+    } else {
+        Err("compile_expr: ${k}")
+    }
+}
+
+fn alloc_local(env, name, next_slot) {
+    if has_key(env, name) {
+        [env, env[name], next_slot]
+    } else {
+        env[name] = next_slot;
+        [env, next_slot, next_slot + 1]
+    }
+}
+
+fn compile_stmt(s, env, code, fns, next_slot) {
+    let k = s[0];
+    if k == "Let" || k == "Assign" {
+        let r = compile_expr(s[2], env, code, fns)?;
+        code = r[0]; env = r[1];
+        let al = alloc_local(env, s[1], next_slot);
+        env = al[0];
+        let slot = al[1];
+        next_slot = al[2];
+        code = emit(code, 3, slot, 0);
+        Ok([code, env, next_slot])
+    } else if k == "Print" {
+        let r = compile_expr(s[1], env, code, fns)?;
+        code = emit(r[0], 23, 0, 0);
+        Ok([code, r[1], next_slot])
+    } else if k == "Return" {
+        let r = compile_expr(s[1], env, code, fns)?;
+        code = emit(r[0], 22, 0, 0);
+        Ok([code, r[1], next_slot])
+    } else if k == "Block" {
+        let stmts = s[1];
+        let mut i = 0;
+        while i < len(stmts) {
+            let r = compile_stmt(stmts[i], env, code, fns, next_slot)?;
+            code = r[0]; env = r[1]; next_slot = r[2];
+            i = i + 1;
+        }
+        Ok([code, env, next_slot])
+    } else if k == "If" {
+        let r = compile_expr(s[1], env, code, fns)?;
+        code = r[0]; env = r[1];
+        // JZ else
+        let jz_at = len(code);
+        code = emit(code, 20, 0, 0); // patch later
+        let t = compile_stmt(s[2], env, code, fns, next_slot)?;
+        code = t[0]; env = t[1]; next_slot = t[2];
+        let jmp_at = len(code);
+        code = emit(code, 19, 0, 0); // jump end
+        let else_pc = len(code);
+        code[jz_at] = [20, else_pc, 0];
+        let e = compile_stmt(s[3], env, code, fns, next_slot)?;
+        code = e[0]; env = e[1]; next_slot = e[2];
+        let end_pc = len(code);
+        code[jmp_at] = [19, end_pc, 0];
+        Ok([code, env, next_slot])
+    } else if k == "While" {
+        let head = len(code);
+        let r = compile_expr(s[1], env, code, fns)?;
+        code = r[0]; env = r[1];
+        let jz_at = len(code);
+        code = emit(code, 20, 0, 0);
+        let b = compile_stmt(s[2], env, code, fns, next_slot)?;
+        code = b[0]; env = b[1]; next_slot = b[2];
+        code = emit(code, 19, head, 0);
+        let end_pc = len(code);
+        code[jz_at] = [20, end_pc, 0];
+        Ok([code, env, next_slot])
+    } else {
+        Err("compile_stmt: ${k}")
+    }
+}
+
+// Compile whole program: functions first (collect), then bodies, then main top-level.
+fn compile_program(ast) {
+    if ast[0] != "Prog" { return Err("not a program") }
+    let items = ast[1];
+    // Pass 1: register functions
+    let mut fns = {};      // name -> fn_id
+    let mut fndefs = [];   // [name, params, body]
+    let mut toplevel = [];
+    let mut i = 0;
+    while i < len(items) {
+        let it = items[i];
+        if it[0] == "Fn" {
+            let name = it[1];
+            fns[name] = len(fndefs);
+            push(fndefs, it);
+        } else {
+            push(toplevel, it);
+        }
+        i = i + 1;
+    }
+    // Pass 2: compile each function into its own code blob, then concatenate
+    // Layout: [fn0 code][fn1 code]...[main code][HALT]
+    // We need addresses: compile to separate lists then stitch.
+    let mut chunks = []; // list of code lists
+    let mut fentry = []; // fn_id -> entry pc (filled after stitch)
+    i = 0;
+    while i < len(fndefs) {
+        let fd = fndefs[i];
+        let params = fd[2];
+        let body = fd[3];
+        let mut env = {};
+        let mut slot = 0;
+        // params arrive on stack in order; store into locals 0..arity-1
+        // Calling convention: args pushed left-to-right, CALL pops them into new frame locals.
+        let mut p = 0;
+        while p < len(params) {
+            env[params[p]] = p;
+            p = p + 1;
+        }
+        slot = len(params);
+        let mut code = [];
+        let r = compile_stmt(body, env, code, fns, slot)?;
+        code = r[0];
+        // implicit return 0 if fall off
+        code = emit(code, 1, 0, 0);
+        code = emit(code, 22, 0, 0);
+        push(chunks, code);
+        i = i + 1;
+    }
+    // main chunk
+    let mut menv = {};
+    let mut mcode = [];
+    let mr = compile_stmt(["Block", toplevel], menv, mcode, fns, 0)?;
+    mcode = mr[0];
+    mcode = emit(mcode, 24, 0, 0); // HALT
+    push(chunks, mcode);
+
+    // Stitch + patch CALL targets: currently CALL a = fn_id. Convert to absolute PC.
+    let mut code = [];
+    let mut entries = []; // fn_id -> pc
+    i = 0;
+    while i < len(fndefs) {
+        push(entries, len(code));
+        let ch = chunks[i];
+        let mut j = 0;
+        while j < len(ch) {
+            push(code, ch[j]);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    let main_pc = len(code);
+    let chm = chunks[len(fndefs)];
+    i = 0;
+    while i < len(chm) {
+        push(code, chm[i]);
+        i = i + 1;
+    }
+
+    // Patch relative jumps inside each chunk already used absolute-within-chunk.
+    // When stitching, jump targets need offset. Recompile approach: patch by walking
+    // each chunk's original jumps — we stored absolute-within-chunk PCs. Add base.
+    // Simpler: re-stitch with base offsets applied to JMP/JZ.
+    code = [];
+    entries = [];
+    let mut bases = [];
+    i = 0;
+    while i < len(chunks) {
+        push(bases, len(code));
+        if i < len(fndefs) {
+            push(entries, len(code));
+        }
+        let ch = chunks[i];
+        let base = bases[i];
+        let mut j = 0;
+        while j < len(ch) {
+            let ins = ch[j];
+            let op = ins[0];
+            if op == 19 || op == 20 {
+                // JMP / JZ — operand is within-chunk PC
+                push(code, [op, ins[1] + base, 0]);
+            } else {
+                push(code, ins);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    // Patch CALL fn_id -> absolute entry
+    i = 0;
+    while i < len(code) {
+        let ins = code[i];
+        if ins[0] == 21 {
+            let fid = ins[1];
+            code[i] = [21, entries[fid], ins[2]];
+        }
+        i = i + 1;
+    }
+
+    Ok({
+        "code": code,
+        "main": main_pc,
+        "entries": entries,
+        "nfn": len(fndefs),
+        "fn_names": map(fndefs, |fd| fd[1]),
+    })
+}
+
+// ----- CFG analysis ----------------------------------------------------------
+fn build_cfg(code) {
+    // leaders: 0, jump targets, instr after jump
+    let mut leaders = {};
+    leaders[0] = true;
+    let mut i = 0;
+    while i < len(code) {
+        let op = code[i][0];
+        if op == 19 || op == 20 {
+            leaders[code[i][1]] = true;
+            if i + 1 < len(code) {
+                leaders[i + 1] = true;
+            }
+        } else if op == 21 || op == 22 || op == 24 {
+            if i + 1 < len(code) {
+                leaders[i + 1] = true;
+            }
+        }
+        i = i + 1;
+    }
+    // ordered leader list
+    let mut leads = [];
+    i = 0;
+    while i < len(code) {
+        if has_key(leaders, str(i)) || has_key(leaders, i) {
+            // maps may stringify keys — check both
+            push(leads, i);
+        }
+        i = i + 1;
+    }
+    // rebuild leaders carefully with int keys only
+    leaders = {};
+    leaders[0] = 1;
+    i = 0;
+    while i < len(code) {
+        let op = code[i][0];
+        if op == 19 || op == 20 {
+            leaders[code[i][1]] = 1;
+            if i + 1 < len(code) { leaders[i + 1] = 1 }
+        }
+        i = i + 1;
+    }
+    leads = [];
+    i = 0;
+    while i < len(code) {
+        if has_key(leaders, i) {
+            push(leads, i);
+        }
+        i = i + 1;
+    }
+    // blocks: [start, end_exclusive)
+    let mut blocks = [];
+    i = 0;
+    while i < len(leads) {
+        let start = leads[i];
+        let end = if i + 1 < len(leads) { leads[i + 1] } else { len(code) };
+        push(blocks, [start, end]);
+        i = i + 1;
+    }
+    // successors
+    let mut succs = [];
+    i = 0;
+    while i < len(blocks) {
+        let b = blocks[i];
+        let last = b[1] - 1;
+        let mut s = [];
+        if last >= b[0] {
+            let ins = code[last];
+            let op = ins[0];
+            if op == 19 {
+                push(s, ins[1]);
+            } else if op == 20 {
+                push(s, ins[1]);
+                if b[1] < len(code) { push(s, b[1]) }
+            } else if op == 22 || op == 24 {
+                // none
+            } else {
+                if b[1] < len(code) { push(s, b[1]) }
+            }
+        }
+        push(succs, s);
+        i = i + 1;
+    }
+    {
+        "blocks": blocks,
+        "succs": succs,
+        "nblocks": len(blocks),
+    }
+}
+
+fn max_stack_depth(code) {
+    // conservative forward scan (not path-sensitive)
+    let mut d = 0;
+    let mut maxd = 0;
+    let mut i = 0;
+    while i < len(code) {
+        let op = code[i][0];
+        // pushes
+        if op == 1 { d = d + 1 }
+        else if op == 2 { d = d + 1 }
+        else if op == 4 || op == 5 || op == 6 || op == 7 || op == 8 || op == 9 || op == 10 || op == 11 || op == 12 || op == 13 || op == 14 || op == 15 || op == 16 {
+            d = d - 1; // binary: pop2 push1
+        } else if op == 17 || op == 18 {
+            // unary: same depth
+            d = d;
+        } else if op == 3 { d = d - 1 } // store
+        else if op == 23 { d = d - 1 } // print
+        else if op == 25 { d = d - 1 }
+        else if op == 21 {
+            // CALL: pop arity, push 1 return
+            d = d - code[i][2] + 1;
+        } else if op == 22 {
+            d = d - 1; // return value was on stack; frame restores
+            if d < 0 { d = 0 }
+        }
+        if d > maxd { maxd = d }
+        if d < 0 { d = 0 }
+        i = i + 1;
+    }
+    maxd
+}
+
+// ----- Virtual machine -------------------------------------------------------
+fn vm_run(unit, fuel) {
+    let code = unit["code"];
+    let mut ip = unit["main"];
+    let mut stack = [];
+    let mut locals = [];
+    // pre-size locals
+    for i in 0..64 { push(locals, 0) }
+    let mut frames = []; // each: [ret_ip, saved_locals_snapshot, base_stack]
+    // For simplicity saved locals: copy array
+    let mut out = [];
+    let mut steps = 0;
+    let mut halted = false;
+    let mut err = "";
+
+    while !halted && steps < fuel && err == "" {
+        steps = steps + 1;
+        if ip < 0 || ip >= len(code) {
+            err = "ip oob ${ip}";
+        } else {
+            let ins = code[ip];
+            let op = ins[0];
+            let a = ins[1];
+            let b = ins[2];
+            if op == 1 {
+                push(stack, a);
+                ip = ip + 1;
+            } else if op == 2 {
+                push(stack, locals[a]);
+                ip = ip + 1;
+            } else if op == 3 {
+                let v = pop(stack);
+                locals[a] = v;
+                ip = ip + 1;
+            } else if op == 4 || op == 5 || op == 6 || op == 7 || op == 8 || op == 9 || op == 10 || op == 11 || op == 12 || op == 13 || op == 14 || op == 15 || op == 16 {
+                let rhs = pop(stack);
+                let lhs = pop(stack);
+                let res = 0;
+                if op == 4 { res = lhs + rhs }
+                else if op == 5 { res = lhs - rhs }
+                else if op == 6 { res = lhs * rhs }
+                else if op == 7 {
+                    if rhs == 0 { err = "div0" } else { res = lhs / rhs }
+                } else if op == 8 {
+                    if rhs == 0 { err = "mod0" } else { res = lhs % rhs }
+                } else if op == 9 { res = if lhs == rhs { 1 } else { 0 } }
+                else if op == 10 { res = if lhs != rhs { 1 } else { 0 } }
+                else if op == 11 { res = if lhs < rhs { 1 } else { 0 } }
+                else if op == 12 { res = if lhs <= rhs { 1 } else { 0 } }
+                else if op == 13 { res = if lhs > rhs { 1 } else { 0 } }
+                else if op == 14 { res = if lhs >= rhs { 1 } else { 0 } }
+                else if op == 15 { res = if (lhs != 0) && (rhs != 0) { 1 } else { 0 } }
+                else if op == 16 { res = if (lhs != 0) || (rhs != 0) { 1 } else { 0 } }
+                if err == "" {
+                    push(stack, res);
+                    ip = ip + 1;
+                }
+            } else if op == 17 {
+                let v = pop(stack);
+                push(stack, if v == 0 { 1 } else { 0 });
+                ip = ip + 1;
+            } else if op == 18 {
+                let v = pop(stack);
+                push(stack, 0 - v);
+                ip = ip + 1;
+            } else if op == 19 {
+                ip = a;
+            } else if op == 20 {
+                let v = pop(stack);
+                if v == 0 { ip = a } else { ip = ip + 1 }
+            } else if op == 21 {
+                // CALL entry arity
+                let arity = b;
+                let entry = a;
+                // pop args into temp
+                let mut args = [];
+                let mut k = 0;
+                while k < arity {
+                    push(args, 0); // placeholder
+                    k = k + 1;
+                }
+                k = arity - 1;
+                while k >= 0 {
+                    args[k] = pop(stack);
+                    k = k - 1;
+                }
+                // save frame
+                let mut snap = [];
+                let mut li = 0;
+                while li < 64 {
+                    push(snap, locals[li]);
+                    li = li + 1;
+                }
+                push(frames, [ip + 1, snap]);
+                // new locals
+                li = 0;
+                while li < 64 {
+                    locals[li] = 0;
+                    li = li + 1;
+                }
+                k = 0;
+                while k < arity {
+                    locals[k] = args[k];
+                    k = k + 1;
+                }
+                ip = entry;
+            } else if op == 22 {
+                let rv = if len(stack) > 0 { pop(stack) } else { 0 };
+                if len(frames) == 0 {
+                    push(stack, rv);
+                    halted = true;
+                } else {
+                    let fr = pop(frames);
+                    // restore locals
+                    let snap = fr[1];
+                    let mut li = 0;
+                    while li < 64 {
+                        locals[li] = snap[li];
+                        li = li + 1;
+                    }
+                    push(stack, rv);
+                    ip = fr[0];
+                }
+            } else if op == 23 {
+                let v = pop(stack);
+                push(out, v);
+                ip = ip + 1;
+            } else if op == 24 {
+                halted = true;
+            } else if op == 25 {
+                let discarded = pop(stack);
+                ip = ip + 1;
+            } else {
+                err = "bad opcode ${op}";
+            }
+        }
+    }
+    if steps >= fuel && !halted && err == "" {
+        err = "fuel exhausted";
+    }
+    {
+        "out": out,
+        "steps": steps,
+        "halted": halted,
+        "err": err,
+        "stack": stack,
+    }
+}
+
+// ----- Pipeline driver -------------------------------------------------------
+// NOTE: Anubis currently rejects *statement* `if` inside match-arm blocks that
+// also have a trailing value. Prefer if-expressions or helper fns there.
+
+fn pipeline_ok_unit(j, u, fuel) {
+    let code = u["code"];
+    let main_pc = u["main"];
+    let nfn = u["nfn"];
+    let clen = len(code);
+    j = j.push("compile ok, code_len=${clen}, main=${main_pc}, fns=${nfn}");
+    let cfg = build_cfg(code);
+    let nblocks = cfg["nblocks"];
+    j = j.push("cfg blocks=${nblocks}");
+    let md = max_stack_depth(code);
+    j = j.push("stack depth estimate=${md}");
+    let res = vm_run(u, fuel);
+    let rerr = res["err"];
+    let rsteps = res["steps"];
+    let rout = res["out"];
+    j = if rerr != "" {
+        j.push("VM ERR: ${rerr} after ${rsteps} steps")
+    } else {
+        j.push("vm ok steps=${rsteps} out=${rout}")
+    };
+    [j, Some(res)]
+}
+
+fn pipeline(name, src, fuel) {
+    let mut j = Journal { lines: [], seed: 7 };
+    j = j.push("=== program: ${name} ===");
+    let ast = parse_program(src);
+    match ast {
+        Err(e) => {
+            j = j.push("PARSE FAIL: ${e}");
+            [j, None]
+        },
+        Ok(tree) => {
+            let nitems = len(tree[1]);
+            j = j.push("parse ok, items=${nitems}");
+            let unit = compile_program(tree);
+            match unit {
+                Err(e) => {
+                    j = j.push("COMPILE FAIL: ${e}");
+                    [j, None]
+                },
+                Ok(u) => pipeline_ok_unit(j, u, fuel),
+            }
+        },
+    }
+}
+
+// ----- Showcase programs in Nixlet -------------------------------------------
+fn cat(parts) { join(parts, "") }
+
+fn src_arith() {
+    cat([
+        "let a = 2 + 3 * 4;",
+        "let b = (2 + 3) * 4;",
+        "print(a);",
+        "print(b);",
+        "print(100 / 5 - 3);",
+    ])
+}
+
+fn src_control() {
+    cat([
+        "let n = 10;",
+        "let s = 0;",
+        "let i = 1;",
+        "while i <= n {",
+        "  s = s + i;",
+        "  i = i + 1;",
+        "}",
+        "print(s);",
+        "if s == 55 { print(1); } else { print(0); }",
+    ])
+}
+
+fn src_fib() {
+    cat([
+        "fn fib(n) {",
+        "  if n < 2 { return n; } else { return fib(n - 1) + fib(n - 2); }",
+        "}",
+        "print(fib(10));",
+        "print(fib(15));",
+    ])
+}
+
+fn src_fact_mut() {
+    cat([
+        "fn fact(n) {",
+        "  let r = 1;",
+        "  let i = 2;",
+        "  while i <= n {",
+        "    r = r * i;",
+        "    i = i + 1;",
+        "  }",
+        "  return r;",
+        "}",
+        "print(fact(6));",
+        "print(fact(10));",
+    ])
+}
+
+fn src_collatz() {
+    cat([
+        "fn steps(n) {",
+        "  let c = 0;",
+        "  while n != 1 {",
+        "    if n % 2 == 0 { n = n / 2; } else { n = 3 * n + 1; }",
+        "    c = c + 1;",
+        "  }",
+        "  return c;",
+        "}",
+        "print(steps(27));",
+    ])
+}
+
+fn src_mutual() {
+    cat([
+        "fn is_even(n) {",
+        "  if n == 0 { return 1; } else { return is_odd(n - 1); }",
+        "}",
+        "fn is_odd(n) {",
+        "  if n == 0 { return 0; } else { return is_even(n - 1); }",
+        "}",
+        "print(is_even(10));",
+        "print(is_odd(10));",
+        "print(is_even(7));",
+    ])
+}
+
+// Returns [journal, pass_delta, fail_delta]
+fn score_case(j, name, res_opt, want) {
+    match res_opt {
+        None => {
+            j = j.push("FAIL ${name}: no result");
+            [j, 0, 1]
+        },
+        Some(res) => score_result(j, name, res, want),
+    }
+}
+
+fn outputs_match(got, want) {
+    if len(got) != len(want) {
+        false
+    } else {
+        let mut ok = true;
+        let mut k = 0;
+        while k < len(want) {
+            if got[k] != want[k] {
+                ok = false;
+            } else {
+                ok = ok;
+            }
+            k = k + 1;
+        }
+        ok
+    }
+}
+
+fn score_result(j, name, res, want) {
+    let rerr2 = res["err"];
+    if rerr2 != "" {
+        j = j.push("FAIL ${name}: ${rerr2}");
+        [j, 0, 1]
+    } else {
+        let got = res["out"];
+        if !outputs_match(got, want) {
+            let lg = len(got);
+            let lw = len(want);
+            j = j.push("FAIL ${name}: got ${got} want ${want} (len ${lg}/${lw})");
+            [j, 0, 1]
+        } else {
+            j = j.push("PASS ${name}: ${got}");
+            [j, 1, 0]
+        }
+    }
+}
+
+fn run_suite() {
+    let mut j = Journal { lines: [], seed: 1 };
+    j = j.push("############################################");
+    j = j.push("# SEALVM FORGE — advanced Anubis showcase  #");
+    j = j.push("############################################");
+
+    let cases = [
+        ["arith", src_arith(), 10000, [14, 20, 17]],
+        ["sum1_10", src_control(), 10000, [55, 1]],
+        ["fib", src_fib(), 500000, [55, 610]],
+        ["fact", src_fact_mut(), 100000, [720, 3628800]],
+        ["collatz27", src_collatz(), 100000, [111]],
+        ["mutual", src_mutual(), 100000, [1, 0, 0]],
+    ];
+
+    let mut pass = 0;
+    let mut fail = 0;
+    let mut ci = 0;
+    while ci < len(cases) {
+        let c = cases[ci];
+        let name = c[0];
+        let src = c[1];
+        let fuel = c[2];
+        let want = c[3];
+        let pr = pipeline(name, src, fuel);
+        let pj = pr[0];
+        let mut li = 0;
+        while li < len(pj.lines) {
+            j = j.push(pj.lines[li]);
+            li = li + 1;
+        }
+        let sc = score_case(j, name, pr[1], want);
+        j = sc[0];
+        pass = pass + sc[1];
+        fail = fail + sc[2];
+        ci = ci + 1;
+    }
+
+    j = j.push("--------------------------------------------");
+    let total = pass + fail;
+    j = j.push("SUITE pass=${pass} fail=${fail} total=${total}");
+    j = if fail == 0 {
+        j.push("VERDICT: ALL SYSTEMS SEALED")
+    } else {
+        j.push("VERDICT: FAULTS DETECTED")
+    };
+    j
+}
+
+fn main() {
+    let j = run_suite();
+    j.dump();
+}

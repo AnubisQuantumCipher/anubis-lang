@@ -1,0 +1,53 @@
+// hermes_poc_threshold.anb
+// Original authorized local PoC: prove length-gated crash on gold oracle.
+// Short payload stable; long cyclic crashes. Network never used.
+//
+// Run: anubis run this.anb --allow-research
+// EXPECT:
+//   0    short crashed?
+//   1    long crashed?
+//   6    long signal (SIGABRT)
+//   32   short len
+//   80   long len
+//   1    ok (short stable AND long crash)
+
+@research(
+  authorization: "local-lab-or-bug-bounty-program",
+  scope: "local-fixture",
+  reason: "Hermes original threshold PoC against intentionally vulnerable local oracle",
+  non_destructive: true
+)
+fn main() {
+    // short: under 64-byte lab limit
+    let short_payload = cyclic(32);
+    let short_r = target_run("poc_kit/bin/vuln_local", short_payload);
+
+    // long: over limit → abort
+    let long_payload = cyclic(80) + p64(0);
+    let long_r = target_run("poc_kit/bin/vuln_local", long_payload);
+
+    let short_crash = short_r.crashed;
+    let long_crash = long_r.crashed;
+    let long_sig = long_r.signal;
+    let short_len = short_r.payload_len;
+    let long_len = long_r.payload_len;
+
+    // ok when control is stable and treatment crashes
+    let ok = if short_crash == 0 {
+        if long_crash == 1 { 1 } else { 0 }
+    } else {
+        0
+    };
+
+    print(short_crash);
+    print(long_crash);
+    print(long_sig);
+    print(short_len);
+    print(long_len);
+    print(ok);
+
+    if ok == 0 {
+        print("ANUBIS_POC_THRESHOLD_FAIL");
+    }
+    return ok;
+}

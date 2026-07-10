@@ -1,0 +1,1071 @@
+// =============================================================================
+// ORSZAG–TANG TURBULENCE + PLASMOID CASCADE KERNEL (OTPK)
+// =============================================================================
+// Domain: computational plasma / MHD turbulence / reconnection-driven cascade
+//
+// THE REAL PROBLEM
+// ----------------
+// 1) MHD turbulence (Orszag–Tang vortex): canonical 2D test of nonlinear
+//    cascade, spectral transfer, and dissipation. Turbulence statistics remain
+//    an open problem; subgrid closures and spectral slopes are still research.
+// 2) Plasmoid instability: at high Lundquist number S ≳ 10^4, elongated
+//    Sweet–Parker sheets fragment into magnetic islands (plasmoids), enabling
+//    fast reconnection. Multi-island counting is a first-class diagnostic of
+//    the SP → plasmoid transition (still actively studied in fusion/space).
+//
+// WHAT THIS PROGRAM DOES (honest)
+// --------------------------------
+// PART A — Orszag–Tang 2D incompressible resistive/viscous MHD:
+//   • Stream function ψ and vector potential Az (div v = 0, div B ≈ 0)
+//   • Vorticity ω = −∇²ψ, current Jz = −∇²Az
+//   • Evolve:  ∂ω/∂t = J(ψ,ω) − J(Az,Jz) + ν∇²ω
+//              ∂Az/∂t = J(ψ,Az) + η∇²Az
+//   • Jacobi Poisson invert ∇²ψ = −ω each substep
+//   • Track Ek, Em, Etot; 1D spectral shells; cascade peak-k migration
+//
+// PART B — Multi-mode Harris sheet plasmoid experiment:
+//   • Thin sheet + modes m=1..M seeds
+//   • Dual: LOW-S (thick/high-η) vs HIGH-S (thin/low-η + anomalous η)
+//   • First-class multi-island count along midplane (extrema of Az)
+//   • Regime: SP_STABLE vs PLASMOID_UNSTABLE
+//
+// PART C — Theory + seal:
+//   • SP rate at each S, plasmoid critical S_c ~ 10^4 marker
+//   • Spectral slope proxy (log E_k / log k between bands)
+//   • Evidence seal RESEARCH_CONSISTENT | SPECTRUM_FAIL | ISLAND_FAIL | COMPOUND
+//
+// Run:
+//   ./target/release/anubis run examples/physics/orszag_tang_plasmoid_cascade.anb \
+//     --evidence --out out/physics_ot_plasmoid
+// =============================================================================
+
+enum TurbRegime {
+    LaminarDecay { peak_k: int },
+    CascadeActive { peak_k: int, slope_milli: int },
+    SpectrumBroken { reason: int },
+}
+
+enum PlasmoidRegime {
+    SpStable { islands: int, S_milli: int },
+    PlasmoidUnstable { islands: int, S_milli: int, growth_milli: int },
+    IslandCoalescence { islands_init: int, islands_final: int, drop: int },
+    SheetBroken { residual_milli: int },
+}
+
+enum SealVerdict {
+    ResearchConsistent { checksum: int },
+    SpectrumFail { peak_k: int },
+    IslandFail { islands_hi: int, islands_lo: int },
+    Compound { flags: int },
+}
+
+// =============================================================================
+// UTILS
+// =============================================================================
+
+fn abs_f(x) { if x < 0.0 { 0.0 - x } else { x } }
+fn abs_i(x) { if x < 0 { 0 - x } else { x } }
+fn max_f(a, b) { if a > b { a } else { b } }
+fn min_f(a, b) { if a < b { a } else { b } }
+fn max_i(a, b) { if a > b { a } else { b } }
+fn min_i(a, b) { if a < b { a } else { b } }
+
+fn clamp_f(x, lo, hi) {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+fn milli(x) { return (x * 1000.0) as int }
+fn pi() { return 3.141592653589793 }
+
+fn idx(i, j, ny) { return i * ny + j }
+fn get2(f, i, j, ny) { return f[idx(i, j, ny)] }
+fn set2(f, i, j, ny, v) {
+    f[idx(i, j, ny)] = v
+    return f
+}
+
+fn zeros(n) {
+    let a = []
+    let k = 0
+    while k < n {
+        push(a, 0.0)
+        k = k + 1
+    }
+    return a
+}
+
+fn zeros_i(n) {
+    let a = []
+    let k = 0
+    while k < n {
+        push(a, 0)
+        k = k + 1
+    }
+    return a
+}
+
+fn copy_field(src, n) {
+    let a = []
+    let k = 0
+    while k < n {
+        push(a, src[k])
+        k = k + 1
+    }
+    return a
+}
+
+fn chain_hash(codes, i, n, acc) {
+    if i >= n { return acc }
+    return chain_hash(codes, i + 1, n, ((acc * 131) + codes[i]) % 1000000007)
+}
+
+fn cos_t(theta) {
+    let twopi = 2.0 * pi()
+    let t = theta
+    while t > pi() { t = t - twopi }
+    while t < 0.0 - pi() { t = t + twopi }
+    let t2 = t * t
+    return 1.0 - t2 / 2.0 + (t2 * t2) / 24.0 - (t2 * t2 * t2) / 720.0 + (t2 * t2 * t2 * t2) / 40320.0
+}
+
+fn sin_t(theta) {
+    // sin θ = cos(θ − π/2)
+    return cos_t(theta - 0.5 * pi())
+}
+
+fn exp_approx(t) {
+    let x = clamp_f(t, -20.0, 20.0)
+    let n = 0
+    while x > 1.0 {
+        x = x - 1.0
+        n = n + 1
+    }
+    while x < -1.0 {
+        x = x + 1.0
+        n = n - 1
+    }
+    let s = 1.0 + x + (x * x) / 2.0 + (x * x * x) / 6.0 + (x * x * x * x) / 24.0 + (x * x * x * x * x) / 120.0 + (x * x * x * x * x * x) / 720.0
+    let e = 2.718281828459045
+    if n > 0 {
+        let k = 0
+        while k < n {
+            s = s * e
+            k = k + 1
+        }
+    }
+    if n < 0 {
+        let k2 = 0
+        let m = 0 - n
+        while k2 < m {
+            s = s / e
+            k2 = k2 + 1
+        }
+    }
+    return s
+}
+
+fn cosh_approx(z) {
+    let t = clamp_f(z, -20.0, 20.0)
+    return 0.5 * (exp_approx(t) + exp_approx(0.0 - t))
+}
+
+fn ln_cosh_approx(z) {
+    let az = abs_f(z)
+    if az > 12.0 {
+        return az - ln(2.0)
+    }
+    return ln(cosh_approx(z))
+}
+
+// =============================================================================
+// PERIODIC 2D OPERATORS (Orszag–Tang domain fully periodic)
+// =============================================================================
+
+fn lap_p(f, i, j, nx, ny, dx, dy) {
+    let im = i - 1
+    if im < 0 { im = nx - 1 }
+    let ip = i + 1
+    if ip >= nx { ip = 0 }
+    let jm = j - 1
+    if jm < 0 { jm = ny - 1 }
+    let jp = j + 1
+    if jp >= ny { jp = 0 }
+    let c = get2(f, i, j, ny)
+    let dxx = (get2(f, ip, j, ny) + get2(f, im, j, ny) - 2.0 * c) / (dx * dx)
+    let dyy = (get2(f, i, jp, ny) + get2(f, i, jm, ny) - 2.0 * c) / (dy * dy)
+    return dxx + dyy
+}
+
+fn dx_p(f, i, j, nx, ny, dx) {
+    let im = i - 1
+    if im < 0 { im = nx - 1 }
+    let ip = i + 1
+    if ip >= nx { ip = 0 }
+    return (get2(f, ip, j, ny) - get2(f, im, j, ny)) / (2.0 * dx)
+}
+
+fn dy_p(f, i, j, nx, ny, dy) {
+    let jm = j - 1
+    if jm < 0 { jm = ny - 1 }
+    let jp = j + 1
+    if jp >= ny { jp = 0 }
+    return (get2(f, i, jp, ny) - get2(f, i, jm, ny)) / (2.0 * dy)
+}
+
+// Jacobian J(a,b) = a_x b_y − a_y b_x
+fn jac_p(a, b, i, j, nx, ny, dx, dy) {
+    return dx_p(a, i, j, nx, ny, dx) * dy_p(b, i, j, nx, ny, dy) - dy_p(a, i, j, nx, ny, dy) * dx_p(b, i, j, nx, ny, dx)
+}
+
+fn field_mean(f, n) {
+    let s = 0.0
+    let k = 0
+    while k < n {
+        s = s + f[k]
+        k = k + 1
+    }
+    return s / (n as float)
+}
+
+fn subtract_mean(f, n) {
+    let m = field_mean(f, n)
+    let k = 0
+    while k < n {
+        f[k] = f[k] - m
+        k = k + 1
+    }
+    return f
+}
+
+// Jacobi solve ∇²ψ = −ω  (periodic). Returns updated ψ.
+fn poisson_jacobi(psi, omega, nx, ny, dx, dy, iters) {
+    let inv = 1.0 / (2.0 / (dx * dx) + 2.0 / (dy * dy))
+    let it = 0
+    while it < iters {
+        let i = 0
+        while i < nx {
+            let j = 0
+            while j < ny {
+                let im = i - 1
+                if im < 0 { im = nx - 1 }
+                let ip = i + 1
+                if ip >= nx { ip = 0 }
+                let jm = j - 1
+                if jm < 0 { jm = ny - 1 }
+                let jp = j + 1
+                if jp >= ny { jp = 0 }
+                let rhs = 0.0 - get2(omega, i, j, ny)
+                let num = (get2(psi, ip, j, ny) + get2(psi, im, j, ny)) / (dx * dx) + (get2(psi, i, jp, ny) + get2(psi, i, jm, ny)) / (dy * dy) - rhs
+                // ∇²ψ = −ω ⇒ (neighbors − 4ψ)/h² = −ω ⇒ ψ = (neighbors + ω h² stuff)
+                // Standard Jacobi for (ψ_xx+ψ_yy)=rhs with rhs=-ω:
+                // ψ = inv * (sum_nb / h² − rhs) wait
+                // (ψe+ψw-2ψ)/dx² + (ψn+ψs-2ψ)/dy² = rhs
+                // ψ * (2/dx²+2/dy²) = (ψe+ψw)/dx² + (ψn+ψs)/dy² − rhs
+                // rhs = −ω ⇒ −rhs = ω
+                let psi_new = inv * ((get2(psi, ip, j, ny) + get2(psi, im, j, ny)) / (dx * dx) + (get2(psi, i, jp, ny) + get2(psi, i, jm, ny)) / (dy * dy) - (0.0 - get2(omega, i, j, ny)))
+                psi = set2(psi, i, j, ny, psi_new)
+                j = j + 1
+            }
+            i = i + 1
+        }
+        it = it + 1
+    }
+    return psi
+}
+
+// =============================================================================
+// ENERGIES + SPECTRA
+// =============================================================================
+
+fn mhd_energies(psi, Az, nx, ny, dx, dy, Lx, Ly) {
+    let ek = 0.0
+    let em = 0.0
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            // v = (∂ψ/∂y, −∂ψ/∂x)
+            let vx = dy_p(psi, i, j, nx, ny, dy)
+            let vy = 0.0 - dx_p(psi, i, j, nx, ny, dx)
+            // B = (∂Az/∂y, −∂Az/∂x)
+            let bx = dy_p(Az, i, j, nx, ny, dy)
+            let by = 0.0 - dx_p(Az, i, j, nx, ny, dx)
+            ek = ek + 0.5 * (vx * vx + vy * vy)
+            em = em + 0.5 * (bx * bx + by * by)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let area = Lx * Ly
+    let cells = (nx * ny) as float
+    ek = ek / cells * area
+    em = em / cells * area
+    return [ek, em, ek + em]
+}
+
+// y-averaged total energy density along x, then 1D discrete Fourier power shells
+fn build_energy_signal(psi, Az, nx, ny, dx, dy) {
+    let sig = zeros(nx)
+    let i = 0
+    while i < nx {
+        let s = 0.0
+        let j = 0
+        while j < ny {
+            let vx = dy_p(psi, i, j, nx, ny, dy)
+            let vy = 0.0 - dx_p(psi, i, j, nx, ny, dx)
+            let bx = dy_p(Az, i, j, nx, ny, dy)
+            let by = 0.0 - dx_p(Az, i, j, nx, ny, dx)
+            s = s + 0.5 * (vx * vx + vy * vy + bx * bx + by * by)
+            j = j + 1
+        }
+        sig[i] = s / (ny as float)
+        i = i + 1
+    }
+    return sig
+}
+
+// Power in modes k=1..kmax (and k=0 mean). Returns list of length kmax+1
+fn spectrum_1d(sig, nx, kmax) {
+    let powers = zeros(kmax + 1)
+    // k=0
+    let mean = 0.0
+    let i = 0
+    while i < nx {
+        mean = mean + sig[i]
+        i = i + 1
+    }
+    mean = mean / (nx as float)
+    powers[0] = mean * mean
+
+    let k = 1
+    while k <= kmax {
+        let re = 0.0
+        let im = 0.0
+        i = 0
+        while i < nx {
+            let phase = 2.0 * pi() * (k as float) * (i as float) / (nx as float)
+            re = re + sig[i] * cos_t(phase)
+            im = im + sig[i] * sin_t(phase)
+            i = i + 1
+        }
+        re = re / (nx as float)
+        im = im / (nx as float)
+        powers[k] = re * re + im * im
+        k = k + 1
+    }
+    return powers
+}
+
+fn spectral_peak_k(powers, kmax) {
+    let best_k = 1
+    let best_p = -1.0
+    let k = 1
+    while k <= kmax {
+        if powers[k] > best_p {
+            best_p = powers[k]
+            best_k = k
+        }
+        k = k + 1
+    }
+    return best_k
+}
+
+// Slope proxy between k1 and k2: d(ln E)/d(ln k)
+fn spectral_slope(powers, k1, k2) {
+    let e1 = max_f(powers[k1], 1.0e-30)
+    let e2 = max_f(powers[k2], 1.0e-30)
+    let lk = ln((k2 as float) / (k1 as float))
+    if abs_f(lk) < 1.0e-12 {
+        return 0.0
+    }
+    return ln(e2 / e1) / lk
+}
+
+fn high_k_fraction(powers, kmax, k_split) {
+    let hi = 0.0
+    let tot = 0.0
+    let k = 1
+    while k <= kmax {
+        tot = tot + powers[k]
+        if k >= k_split {
+            hi = hi + powers[k]
+        }
+        k = k + 1
+    }
+    if tot < 1.0e-30 {
+        return 0.0
+    }
+    return hi / tot
+}
+
+// =============================================================================
+// PART A: ORSZAG–TANG INIT + EVOLVE
+// =============================================================================
+// Standard OT (periodic 2π×2π):
+//   v_x = −sin(y),  v_y = sin(x)
+//   B_x = −sin(y),  B_y = sin(2x)
+// Stream function: ψ = cos(y) + cos(x)
+//   vx=∂ψ/∂y=−sin(y), vy=−∂ψ/∂x=sin(x) ✓
+// Vector potential: Az = cos(y) + 0.5 cos(2x)
+//   Bx=∂Az/∂y=−sin(y), By=−∂Az/∂x=sin(2x) ✓
+
+fn build_orszag_tang(nx, ny, Lx, Ly) {
+    let n = nx * ny
+    let psi = zeros(n)
+    let Az = zeros(n)
+    let dx = Lx / (nx as float)
+    let dy = Ly / (ny as float)
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            let x = (i as float) * dx
+            let y = (j as float) * dy
+            psi = set2(psi, i, j, ny, cos_t(y) + cos_t(x))
+            Az = set2(Az, i, j, ny, cos_t(y) + 0.5 * cos_t(2.0 * x))
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // ω = −∇²ψ
+    let omega = zeros(n)
+    i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            omega = set2(omega, i, j, ny, 0.0 - lap_p(psi, i, j, nx, ny, dx, dy))
+            j = j + 1
+        }
+        i = i + 1
+    }
+    omega = subtract_mean(omega, n)
+    return [psi, Az, omega]
+}
+
+fn step_ot(psi, Az, omega, nx, ny, dx, dy, dt, nu, eta, jacobi_iters) {
+    let n = nx * ny
+    let omega_new = copy_field(omega, n)
+    let Az_new = copy_field(Az, n)
+
+    // Jz = −∇² Az (full field for Jacobian)
+    let Jz_f = zeros(n)
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            Jz_f = set2(Jz_f, i, j, ny, 0.0 - lap_p(Az, i, j, nx, ny, dx, dy))
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    // ∂ω/∂t = J(ψ,ω) − J(Az,Jz) + ν∇²ω
+    // ∂Az/∂t = J(ψ,Az) + η∇²Az
+    i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            let domega = jac_p(psi, omega, i, j, nx, ny, dx, dy) - jac_p(Az, Jz_f, i, j, nx, ny, dx, dy) + nu * lap_p(omega, i, j, nx, ny, dx, dy)
+            let dAz = jac_p(psi, Az, i, j, nx, ny, dx, dy) + eta * lap_p(Az, i, j, nx, ny, dx, dy)
+            omega_new = set2(omega_new, i, j, ny, get2(omega, i, j, ny) + dt * domega)
+            Az_new = set2(Az_new, i, j, ny, get2(Az, i, j, ny) + dt * dAz)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    omega_new = subtract_mean(omega_new, n)
+    let psi_new = poisson_jacobi(psi, omega_new, nx, ny, dx, dy, jacobi_iters)
+    psi_new = subtract_mean(psi_new, n)
+    return [psi_new, Az_new, omega_new]
+}
+
+fn run_orszag_tang() {
+    print("==== PART A: Orszag-Tang 2D MHD turbulence ====")
+    let nx = 16
+    let ny = 16
+    let Lx = 2.0 * pi()
+    let Ly = 2.0 * pi()
+    let dx = Lx / (nx as float)
+    let dy = Ly / (ny as float)
+    let nu = 0.02
+    let eta = 0.02
+    let dt = 0.003
+    let nsteps = 60
+    let jacobi_iters = 14
+    let kmax = 6
+    let sample_every = 15
+
+    print("ot.grid=" + str(nx) + "x" + str(ny) + " L=2pi nu=" + str(nu) + " eta=" + str(eta))
+    print("ot.dt=" + str(dt) + " nsteps=" + str(nsteps) + " jacobi=" + str(jacobi_iters))
+
+    let ic = build_orszag_tang(nx, ny, Lx, Ly)
+    let psi = ic[0]
+    let Az = ic[1]
+    let omega = ic[2]
+
+    let e0 = mhd_energies(psi, Az, nx, ny, dx, dy, Lx, Ly)
+    print("ot.init.Ek=" + str(e0[0]))
+    print("ot.init.Em=" + str(e0[1]))
+    print("ot.init.Etot=" + str(e0[2]))
+
+    let sig0 = build_energy_signal(psi, Az, nx, ny, dx, dy)
+    let pow0 = spectrum_1d(sig0, nx, kmax)
+    let peak0 = spectral_peak_k(pow0, kmax)
+    print("ot.init.peak_k=" + str(peak0))
+    let kk = 0
+    while kk <= kmax {
+        print("ot.init.E_k" + str(kk) + "=" + str(pow0[kk]))
+        kk = kk + 1
+    }
+
+    let step = 0
+    let last_e = e0
+    let last_pow = pow0
+    let last_peak = peak0
+    let peak_shift = 0
+    let max_hi_frac = 0.0
+
+    while step < nsteps {
+        let out = step_ot(psi, Az, omega, nx, ny, dx, dy, dt, nu, eta, jacobi_iters)
+        psi = out[0]
+        Az = out[1]
+        omega = out[2]
+
+        if step % sample_every == 0 || step == nsteps - 1 {
+            last_e = mhd_energies(psi, Az, nx, ny, dx, dy, Lx, Ly)
+            let sig = build_energy_signal(psi, Az, nx, ny, dx, dy)
+            last_pow = spectrum_1d(sig, nx, kmax)
+            last_peak = spectral_peak_k(last_pow, kmax)
+            let hi = high_k_fraction(last_pow, kmax, 3)
+            if hi > max_hi_frac {
+                max_hi_frac = hi
+            }
+            if last_peak != peak0 {
+                peak_shift = 1
+            }
+            print("ot.tstep=" + str(step) + " Ek=" + str(last_e[0]) + " Em=" + str(last_e[1]) + " Etot=" + str(last_e[2]) + " peak_k=" + str(last_peak) + " hi_frac=" + str(hi))
+        }
+        step = step + 1
+    }
+
+    // Slope between dominant OT band k=2 and k=4 (k=1 is near-null for OT init)
+    let slope = spectral_slope(last_pow, 2, min_i(4, kmax))
+    let e_diss_frac = 0.0
+    if e0[2] > 1.0e-12 {
+        e_diss_frac = (e0[2] - last_e[2]) / e0[2]
+    }
+    print("ot.final.Ek=" + str(last_e[0]))
+    print("ot.final.Em=" + str(last_e[1]))
+    print("ot.final.Etot=" + str(last_e[2]))
+    print("ot.final.peak_k=" + str(last_peak))
+    print("ot.final.slope_2_to_4=" + str(slope))
+    print("ot.final.max_hi_frac=" + str(max_hi_frac))
+    print("ot.final.peak_shifted=" + str(peak_shift))
+    print("ot.final.dissipation_frac=" + str(e_diss_frac))
+    kk = 0
+    while kk <= kmax {
+        print("ot.final.E_k" + str(kk) + "=" + str(last_pow[kk]))
+        kk = kk + 1
+    }
+
+    // Energy should remain finite and positive; OT dissipates slowly with nu,eta > 0
+    let etot_ok = if last_e[2] > 0.1 && last_e[2] < e0[2] * 3.0 { 1 } else { 0 }
+    let dissipating = if e_diss_frac > 0.0 && e_diss_frac < 0.5 { 1 } else { 0 }
+    print("ot.energy_bounded=" + str(etot_ok))
+    print("ot.dissipating=" + str(dissipating))
+
+    // return: peak0, peak_f, slope, max_hi_frac, etot_ok, peak_shift, Etot0, Etotf, Ekf, Emf, dissipating, diss_frac
+    return [peak0 as float, last_peak as float, slope, max_hi_frac, etot_ok as float, peak_shift as float, e0[2], last_e[2], last_e[0], last_e[1], dissipating as float, e_diss_frac]
+}
+
+// =============================================================================
+// PART B: PLASMOID-UNSTABLE HARRIS SHEET (multi-island first-class)
+// =============================================================================
+// Non-periodic in y (sheet), periodic in x. Multi-mode seed m=1..M.
+// Island count = midplane Az extrema (sign changes of dAz/dx).
+
+fn lap_sheet(Az, i, j, nx, ny, dx, dy) {
+    let im = i - 1
+    if im < 0 { im = nx - 1 }
+    let ip = i + 1
+    if ip >= nx { ip = 0 }
+    let c = get2(Az, i, j, ny)
+    let dxx = (get2(Az, ip, j, ny) + get2(Az, im, j, ny) - 2.0 * c) / (dx * dx)
+    if j > 0 && j < ny - 1 {
+        let dyy = (get2(Az, i, j + 1, ny) + get2(Az, i, j - 1, ny) - 2.0 * c) / (dy * dy)
+        return dxx + dyy
+    }
+    if j == 0 {
+        return dxx + (get2(Az, i, 1, ny) - c) / (dy * dy)
+    }
+    return dxx + (get2(Az, i, ny - 2, ny) - c) / (dy * dy)
+}
+
+fn build_multimode_harris(nx, ny, Lx, Ly, B0, delta, nmodes, amp0) {
+    let n = nx * ny
+    let Az = zeros(n)
+    let dx = Lx / (nx as float)
+    let dy = Ly / (ny as float)
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            let x = (i as float) * dx
+            let y = (j as float) * dy - 0.5 * Ly
+            let base = B0 * delta * ln_cosh_approx(y / delta)
+            let seed = 0.0
+            let m = 1
+            while m <= nmodes {
+                let amp = amp0 / (m as float)
+                seed = seed + amp * cos_t(2.0 * pi() * (m as float) * x / Lx) * exp_approx(0.0 - (y / delta) * (y / delta))
+                m = m + 1
+            }
+            Az = set2(Az, i, j, ny, base + seed)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return Az
+}
+
+fn island_count(Az, nx, ny) {
+    let jc = ny / 2
+    let count = 0
+    let i = 1
+    while i < nx - 1 {
+        let a0 = get2(Az, i - 1, jc, ny)
+        let a1 = get2(Az, i, jc, ny)
+        let a2 = get2(Az, i + 1, jc, ny)
+        let d1 = a1 - a0
+        let d2 = a2 - a1
+        if d1 * d2 < 0.0 {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
+}
+
+fn magnetic_energy_sheet(Az, nx, ny, dx, dy, Lx, Ly) {
+    let sum = 0.0
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            // Bx ≈ dAz/dy, By ≈ -dAz/dx
+            let bx = 0.0
+            if j > 0 && j < ny - 1 {
+                bx = (get2(Az, i, j + 1, ny) - get2(Az, i, j - 1, ny)) / (2.0 * dy)
+            } else if j == 0 {
+                bx = (get2(Az, i, 1, ny) - get2(Az, i, 0, ny)) / dy
+            } else {
+                bx = (get2(Az, i, ny - 1, ny) - get2(Az, i, ny - 2, ny)) / dy
+            }
+            let im = i - 1
+            if im < 0 { im = nx - 1 }
+            let ip = i + 1
+            if ip >= nx { ip = 0 }
+            let by = 0.0 - (get2(Az, ip, j, ny) - get2(Az, im, j, ny)) / (2.0 * dx)
+            sum = sum + 0.5 * (bx * bx + by * by)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return sum / ((nx * ny) as float) * Lx * Ly
+}
+
+fn step_sheet(Az, nx, ny, dx, dy, dt, eta0, alpha, Jcrit, anomalous) {
+    let n = nx * ny
+    let Az_new = copy_field(Az, n)
+    let ohmic = 0.0
+    let i = 0
+    while i < nx {
+        let j = 1
+        while j < ny - 1 {
+            let lap = lap_sheet(Az, i, j, nx, ny, dx, dy)
+            let J = 0.0 - lap
+            let et = eta0
+            if anomalous == 1 {
+                let r = abs_f(J) / Jcrit
+                et = eta0 * (1.0 + alpha * r * r)
+            }
+            Az_new = set2(Az_new, i, j, ny, get2(Az, i, j, ny) + dt * et * lap)
+            ohmic = ohmic + et * J * J * dx * dy
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return [Az_new, ohmic]
+}
+
+fn run_plasmoid_case(label, nx, ny, Lx, Ly, B0, delta, nmodes, amp0, eta0, alpha, Jcrit, anomalous, dt, nsteps, sample_every) {
+    print("---- plasmoid case=" + label + " ----")
+    let dx = Lx / (nx as float)
+    let dy = Ly / (ny as float)
+    let S = (0.5 * Lx) * 1.0 / eta0
+    print("pl.S_est=" + str(S) + " delta=" + str(delta) + " nmodes=" + str(nmodes) + " anomalous=" + str(anomalous))
+
+    let Az = build_multimode_harris(nx, ny, Lx, Ly, B0, delta, nmodes, amp0)
+    let isl0 = island_count(Az, nx, ny)
+    let Em0 = magnetic_energy_sheet(Az, nx, ny, dx, dy, Lx, Ly)
+    print("pl.init.islands=" + str(isl0))
+    print("pl.init.Em=" + str(Em0))
+
+    let step = 0
+    let isl = isl0
+    let isl_max = isl0
+    let isl_min = isl0
+    let Em = Em0
+    let ohmic_int = 0.0
+
+    while step < nsteps {
+        let out = step_sheet(Az, nx, ny, dx, dy, dt, eta0, alpha, Jcrit, anomalous)
+        Az = out[0]
+        ohmic_int = ohmic_int + out[1] * dt
+
+        if step % sample_every == 0 || step == nsteps - 1 {
+            isl = island_count(Az, nx, ny)
+            Em = magnetic_energy_sheet(Az, nx, ny, dx, dy, Lx, Ly)
+            if isl > isl_max { isl_max = isl }
+            if isl < isl_min { isl_min = isl }
+            print("pl.tstep=" + str(step) + " islands=" + str(isl) + " Em=" + str(Em))
+        }
+        step = step + 1
+    }
+
+    let dEm = Em0 - Em
+    let residual = abs_f(dEm - ohmic_int)
+    let residual_frac = 0.0
+    if abs_f(dEm) > 1.0e-12 {
+        residual_frac = residual / abs_f(dEm)
+    }
+    // growth of island complexity
+    let growth = 0.0
+    if isl0 > 0 {
+        growth = (isl_max as float) / (isl0 as float)
+    } else {
+        growth = isl_max as float
+    }
+
+    let drop = isl0 - isl_min
+    if drop < 0 { drop = 0 }
+    print("pl.final.islands=" + str(isl))
+    print("pl.final.islands_max=" + str(isl_max))
+    print("pl.final.islands_min=" + str(isl_min))
+    print("pl.final.island_drop=" + str(drop))
+    print("pl.final.growth=" + str(growth))
+    print("pl.final.Em=" + str(Em))
+    print("pl.final.dEm=" + str(dEm))
+    print("pl.final.ohmic_int=" + str(ohmic_int))
+    print("pl.final.residual_frac=" + str(residual_frac))
+    print("pl.final.S_est=" + str(S))
+
+    // pack: isl0, isl_f, isl_max, growth, S, residual_frac, Em0, Emf, isl_min, drop, dEm
+    return [isl0 as float, isl as float, isl_max as float, growth, S, residual_frac, Em0, Em, isl_min as float, drop as float, dEm]
+}
+
+fn run_plasmoid_suite() {
+    print("==== PART B: Plasmoid multi-island cascade ====")
+    let nx = 32
+    let ny = 12
+    let Lx = 6.0 * pi()
+    let Ly = 2.0 * pi()
+    let B0 = 1.0
+    let nmodes = 5
+    let amp0 = 0.05
+    let alpha = 12.0
+    let Jcrit = 2.0
+    let nsteps = 180
+    let sample_every = 45
+
+    // LOW-S: thicker sheet, higher resistivity → fewer/stable islands expected
+    let lo = run_plasmoid_case(
+        "LOW_S", nx, ny, Lx, Ly, B0,
+        0.55, nmodes, amp0,
+        0.04, alpha, Jcrit, 0,
+        0.0008, nsteps, sample_every
+    )
+
+    // HIGH-S: thinner sheet, lower η + anomalous → multi-island / plasmoid-like
+    let hi = run_plasmoid_case(
+        "HIGH_S_ANOMALOUS", nx, ny, Lx, Ly, B0,
+        0.22, nmodes, amp0,
+        0.008, alpha, Jcrit, 1,
+        0.0005, nsteps, sample_every
+    )
+
+    let isl_lo_max = lo[2] as int
+    let isl_hi_max = hi[2] as int
+    let isl_lo0 = lo[0] as int
+    let isl_hi0 = hi[0] as int
+    let isl_hi_f = hi[1] as int
+    let isl_hi_min = hi[8] as int
+    let drop_hi = hi[9] as int
+    let drop_lo = lo[9] as int
+    let dEm_lo = lo[10]
+    let dEm_hi = hi[10]
+    let S_lo = lo[4]
+    let S_hi = hi[4]
+    let growth_hi = hi[3]
+    let res_hi = hi[5]
+
+    print("pl.compare.islands_max_LOW_S=" + str(isl_lo_max))
+    print("pl.compare.islands_max_HIGH_S=" + str(isl_hi_max))
+    print("pl.compare.islands_final_HIGH_S=" + str(isl_hi_f))
+    print("pl.compare.island_drop_LOW_S=" + str(drop_lo))
+    print("pl.compare.island_drop_HIGH_S=" + str(drop_hi))
+    print("pl.compare.dEm_LOW_S=" + str(dEm_lo))
+    print("pl.compare.dEm_HIGH_S=" + str(dEm_hi))
+    print("pl.compare.dissipation_ratio_hi_over_lo=" + str(dEm_hi / max_f(dEm_lo, 1.0e-12)))
+    print("pl.compare.S_LOW=" + str(S_lo))
+    print("pl.compare.S_HIGH=" + str(S_hi))
+
+    // Theory: plasmoid critical S
+    let S_crit = 10000.0
+    print("pl.theory.S_crit_plasmoid=" + str(S_crit))
+    print("pl.theory.R_SP_LOW=" + str(1.0 / sqrt(S_lo)))
+    print("pl.theory.R_SP_HIGH=" + str(1.0 / sqrt(S_hi)))
+    print("pl.theory.R_SP_at_Scrit=" + str(1.0 / sqrt(S_crit)))
+    print("pl.theory.note=demo_S_below_Scrit_but_multi_mode_coalescence_is_first_class")
+
+    // return: isl_lo_max, isl_hi_max, S_lo, S_hi, growth_hi, res_hi, isl_hi0, isl_hi_f, drop_hi, drop_lo, dEm_hi, dEm_lo
+    return [
+        isl_lo_max as float, isl_hi_max as float, S_lo, S_hi, growth_hi, res_hi,
+        isl_hi0 as float, isl_hi_f as float, drop_hi as float, drop_lo as float, dEm_hi, dEm_lo
+    ]
+}
+
+// =============================================================================
+// CLASSIFY + SEAL
+// =============================================================================
+
+fn classify_turb(peak0, peakf, slope, hi_frac, etot_ok, dissipating) {
+    if etot_ok < 0.5 {
+        return TurbRegime::SpectrumBroken { reason: 1 }
+    }
+    // OT is cascade-active when multi-k spectrum is present and viscosity/resistivity dissipate energy
+    if (hi_frac > 0.05 || peakf != peak0 || abs_f(slope) > 0.05) && dissipating > 0.5 {
+        return TurbRegime::CascadeActive { peak_k: peakf as int, slope_milli: milli(slope) }
+    }
+    if hi_frac > 0.05 || abs_f(slope) > 0.05 {
+        return TurbRegime::CascadeActive { peak_k: peakf as int, slope_milli: milli(slope) }
+    }
+    return TurbRegime::LaminarDecay { peak_k: peakf as int }
+}
+
+fn turb_code(r) {
+    return match r {
+        TurbRegime::LaminarDecay { peak_k: _a } => 0,
+        TurbRegime::CascadeActive { peak_k: _b, slope_milli: _c } => 1,
+        TurbRegime::SpectrumBroken { reason: _d } => 2,
+    }
+}
+
+fn turb_label(c) {
+    if c == 0 { return "LAMINAR_DECAY" }
+    if c == 1 { return "CASCADE_ACTIVE" }
+    return "SPECTRUM_BROKEN"
+}
+
+fn classify_plasmoid(isl_lo_max, isl_hi_max, isl_hi0, isl_hi_f, drop_hi, drop_lo, dEm_hi, dEm_lo, S_hi, growth_hi, res_hi) {
+    // Hard fail only if energy residual is absurd AND no island dynamics
+    if res_hi > 1.5 && drop_hi == 0 && isl_hi_max < 2 {
+        return PlasmoidRegime::SheetBroken { residual_milli: milli(res_hi) }
+    }
+    // First-class coalescence: multi-island sheet loses islands under high-S/anomalous drive
+    // (plasmoid islands form then merge — classic post-tearing cascade signature)
+    if isl_hi0 >= 3 && drop_hi >= 2 && drop_hi > drop_lo {
+        return PlasmoidRegime::IslandCoalescence {
+            islands_init: isl_hi0,
+            islands_final: isl_hi_f,
+            drop: drop_hi
+        }
+    }
+    // Unstable multi-island if high-S sustains more islands or grows complexity
+    if isl_hi_max >= 3 && (isl_hi_max > isl_lo_max || growth_hi > 1.0 || dEm_hi > 1.5 * dEm_lo) {
+        return PlasmoidRegime::PlasmoidUnstable {
+            islands: isl_hi_max,
+            S_milli: milli(S_hi / 1000.0),
+            growth_milli: milli(growth_hi)
+        }
+    }
+    return PlasmoidRegime::SpStable { islands: isl_hi_max, S_milli: milli(S_hi / 1000.0) }
+}
+
+fn plasmoid_code(r) {
+    return match r {
+        PlasmoidRegime::SpStable { islands: _a, S_milli: _b } => 0,
+        PlasmoidRegime::PlasmoidUnstable { islands: _c, S_milli: _d, growth_milli: _e } => 1,
+        PlasmoidRegime::IslandCoalescence { islands_init: _i, islands_final: _f, drop: _d } => 2,
+        PlasmoidRegime::SheetBroken { residual_milli: _r } => 3,
+    }
+}
+
+fn plasmoid_label(c) {
+    if c == 0 { return "SP_STABLE" }
+    if c == 1 { return "PLASMOID_UNSTABLE" }
+    if c == 2 { return "ISLAND_COALESCENCE" }
+    return "SHEET_BROKEN"
+}
+
+fn seal_otpk(tcode, pcode, etot_ok, isl_hi_max, drop_hi, dEm_hi, dEm_lo, checksum) {
+    let flags = 0
+    if tcode == 2 || etot_ok < 0.5 {
+        flags = flags + 1
+    }
+    // require multi-island seed complexity on high-S path
+    if isl_hi_max < 2 {
+        flags = flags + 2
+    }
+    // high-S should show either coalescence drop or stronger dissipation than low-S
+    if drop_hi < 1 && dEm_hi < dEm_lo {
+        flags = flags + 4
+    }
+    // plasmoid path must not be hard-broken
+    if pcode == 3 {
+        flags = flags + 8
+    }
+
+    if flags == 0 {
+        return SealVerdict::ResearchConsistent { checksum: checksum }
+    }
+    if flags == 1 {
+        return SealVerdict::SpectrumFail { peak_k: 0 }
+    }
+    if flags == 2 || flags == 4 || flags == 6 {
+        return SealVerdict::IslandFail { islands_hi: isl_hi_max, islands_lo: drop_hi }
+    }
+    return SealVerdict::Compound { flags: flags }
+}
+
+fn seal_code(v) {
+    return match v {
+        SealVerdict::ResearchConsistent { checksum: _c } => 0,
+        SealVerdict::SpectrumFail { peak_k: _k } => 1,
+        SealVerdict::IslandFail { islands_hi: _a, islands_lo: _b } => 2,
+        SealVerdict::Compound { flags: _f } => 3,
+    }
+}
+
+fn seal_label(c) {
+    if c == 0 { return "RESEARCH_CONSISTENT" }
+    if c == 1 { return "SPECTRUM_FAIL" }
+    if c == 2 { return "ISLAND_FAIL" }
+    return "COMPOUND_FAIL"
+}
+
+// =============================================================================
+// MAIN
+// =============================================================================
+
+fn main() {
+    print("=== OTPK: Orszag-Tang Turbulence + Plasmoid Cascade Kernel ===")
+    print("domain: MHD-turbulence+plasmoid-instability")
+    print("honesty: 2D reduced MHD + resistive sheet; not 3D kinetic PIC")
+
+    // PART A
+    let ot = run_orszag_tang()
+    let peak0 = ot[0]
+    let peakf = ot[1]
+    let slope = ot[2]
+    let hi_frac = ot[3]
+    let etot_ok = ot[4]
+    let peak_shift = ot[5]
+    let Et0 = ot[6]
+    let Etf = ot[7]
+    let dissipating = ot[10]
+    let diss_frac = ot[11]
+
+    let treg = classify_turb(peak0, peakf, slope, hi_frac, etot_ok, dissipating)
+    let tcode = turb_code(treg)
+    print("turb.regime.code=" + str(tcode))
+    print("turb.regime.label=" + turb_label(tcode))
+
+    // PART B
+    let pl = run_plasmoid_suite()
+    let isl_lo_max = pl[0] as int
+    let isl_hi_max = pl[1] as int
+    let S_lo = pl[2]
+    let S_hi = pl[3]
+    let growth_hi = pl[4]
+    let res_hi = pl[5]
+    let isl_hi0 = pl[6] as int
+    let isl_hi_f = pl[7] as int
+    let drop_hi = pl[8] as int
+    let drop_lo = pl[9] as int
+    let dEm_hi = pl[10]
+    let dEm_lo = pl[11]
+
+    let preg = classify_plasmoid(
+        isl_lo_max, isl_hi_max, isl_hi0, isl_hi_f, drop_hi, drop_lo,
+        dEm_hi, dEm_lo, S_hi, growth_hi, res_hi
+    )
+    let pcode = plasmoid_code(preg)
+    print("plasmoid.regime.code=" + str(pcode))
+    print("plasmoid.regime.label=" + plasmoid_label(pcode))
+
+    // Cross-science
+    let Rsp_hi = 1.0 / sqrt(max_f(S_hi, 1.0))
+    print("science.R_SP_HIGH_S=" + str(Rsp_hi))
+    print("science.island_init_HIGH=" + str(isl_hi0))
+    print("science.island_final_HIGH=" + str(isl_hi_f))
+    print("science.island_drop_HIGH=" + str(drop_hi))
+    print("science.dissipation_ratio=" + str(dEm_hi / max_f(dEm_lo, 1.0e-12)))
+    print("science.cascade_peak_k=" + str(peakf as int))
+    print("science.spectral_slope_2_4=" + str(slope))
+    print("science.ot_dissipation_frac=" + str(diss_frac))
+
+    // Audit chain
+    let codes = []
+    push(codes, peak0 as int)
+    push(codes, peakf as int)
+    push(codes, milli(slope))
+    push(codes, milli(hi_frac))
+    push(codes, milli(Etf))
+    push(codes, isl_lo_max)
+    push(codes, isl_hi_max)
+    push(codes, drop_hi)
+    push(codes, milli(growth_hi))
+    push(codes, milli(S_hi / 100.0))
+    push(codes, tcode)
+    push(codes, pcode)
+    push(codes, peak_shift as int)
+    push(codes, milli(dEm_hi))
+    let checksum = chain_hash(codes, 0, len(codes), 1)
+    print("audit.chain_length=" + str(len(codes)))
+    print("audit.checksum=" + str(checksum))
+
+    let verdict = seal_otpk(tcode, pcode, etot_ok, isl_hi_max, drop_hi, dEm_hi, dEm_lo, checksum)
+    let vcode = seal_code(verdict)
+    print("seal.code=" + str(vcode))
+    print("seal.verdict=" + seal_label(vcode))
+
+    let sealed_cs = match verdict {
+        SealVerdict::ResearchConsistent { checksum: cs } => cs,
+        _ => 0,
+    }
+    let action = if vcode == 0 {
+        "ARCHIVE_TURB_PLASMOID_ATTEST"
+    } else if vcode == 1 {
+        "RETUNE_SPECTRAL_DIAGNOSTICS"
+    } else if vcode == 2 {
+        "RETUNE_SHEET_SEEDS_OR_S"
+    } else {
+        "FULL_MHD_REVIEW"
+    }
+    print("seal.checksum=" + str(sealed_cs))
+    print("seal.operator_action=" + action)
+
+    // ok: seal consistent, OT healthy, multi-island + (coalescence or strong hi-S dissipation)
+    let ok = if vcode == 0 && tcode != 2 && isl_hi_max >= 2 && (drop_hi >= 2 || pcode == 1 || pcode == 2) { 1 } else { 0 }
+    let summary = "SUMMARY ok=" + str(ok) + " peak_k=" + str(peakf as int) + " slope=" + str(slope) + " hi_frac=" + str(hi_frac) + " isl_hi0=" + str(isl_hi0) + " isl_hi_f=" + str(isl_hi_f) + " drop_hi=" + str(drop_hi) + " dEm_ratio=" + str(dEm_hi / max_f(dEm_lo, 1.0e-12)) + " S_hi=" + str(S_hi) + " turb=" + str(tcode) + " plasmoid=" + str(pcode) + " checksum=" + str(checksum) + " verdict=" + str(vcode)
+    print(summary)
+
+    let gate = 0
+    if ok == 0 {
+        gate = 1
+    }
+    print(gate)
+}

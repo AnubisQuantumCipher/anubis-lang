@@ -1,0 +1,44 @@
+// A small safe Anubis program written after studying the current executable core.
+// It combines functions, typed parameters, lists, for-in, maps, an if-expression,
+// a struct-like enum variant, and exhaustive match.
+//
+// Expected stdout:
+// 42  (sum of the readings)
+// 46  (verified sum + number of readings)
+
+enum Review {
+    Verified { total: u32, samples: u32 },
+    Drift(u32),
+}
+
+fn sum_readings(readings: list) {
+    let total = 0;
+    for reading in readings {
+        total = total + reading;
+    }
+    return total;
+}
+
+fn public_code(review: Review) {
+    return match review {
+        Review::Verified { total: total, samples: samples } => total + samples,
+        Review::Drift(total) => total,
+    };
+}
+
+fn main() {
+    let readings = [5, 8, 13, 16];
+    let total = sum_readings(readings);
+    let ledger = { "expected": 42, "observed": total };
+
+    let review = if ledger["observed"] == ledger["expected"] {
+        Review::Verified { total: total, samples: len(readings) }
+    } else {
+        Review::Drift(total)
+    };
+
+    let code = public_code(review);
+    print(total);
+    print(code);
+    return code;
+}

@@ -1,0 +1,83 @@
+// Operator-shaped program: risk ledger with traits, enums, maps, fold, match.
+// Walk authorized actions, accumulate risk, seal a verdict, print a journal.
+
+enum Verdict {
+    Clear,
+    Watch { score: int },
+    Hold { score: int, reason: string },
+    Abort { score: int },
+}
+
+trait Scoreable {
+    fn weight(self);
+    fn label(self);
+}
+
+struct Action { name: string, pts: int }
+
+impl Scoreable for Action {
+    fn weight(self) { self.pts }
+    fn label(self) { self.name }
+}
+
+fn fold_risk(actions, i, acc) {
+    if i >= len(actions) { return acc }
+    fold_risk(actions, i + 1, acc + actions[i].weight())
+}
+
+fn checksum(codes, i, acc) {
+    if i >= len(codes) { return acc }
+    checksum(codes, i + 1, ((acc * 31) + codes[i]) % 10007)
+}
+
+fn seal(score) {
+    if score < 5 {
+        Verdict::Clear
+    } else if score < 12 {
+        Verdict::Watch { score: score }
+    } else if score < 25 {
+        Verdict::Hold { score: score, reason: "elevated cumulative" }
+    } else {
+        Verdict::Abort { score: score }
+    }
+}
+
+fn code_of(v) {
+    match v {
+        Verdict::Clear => 0,
+        Verdict::Watch { score: _s } => 1,
+        Verdict::Hold { score: _s, reason: _r } => 2,
+        Verdict::Abort { score: _s } => 3,
+    }
+}
+
+fn describe(v) {
+    match v {
+        Verdict::Clear => "CLEAR",
+        Verdict::Watch { score: s } => "WATCH@${s}",
+        Verdict::Hold { score: s, reason: r } => "HOLD@${s}:${r}",
+        Verdict::Abort { score: s } => "ABORT@${s}",
+    }
+}
+
+fn main() {
+    let actions = [
+        Action { name: "recon", pts: 1 },
+        Action { name: "scan", pts: 2 },
+        Action { name: "prove", pts: 1 },
+        Action { name: "lateral", pts: 5 },
+        Action { name: "report", pts: 1 },
+        Action { name: "scan", pts: 2 },
+        Action { name: "exfil-plan", pts: 1 },
+    ];
+    let codes = map(actions, |a| a.weight());
+    let total = fold_risk(actions, 0, 0);
+    let chk = checksum(codes, 0, 0);
+    let v = seal(total);
+    print("risk=${total}");
+    print("checksum=${chk}");
+    print("verdict=${describe(v)}");
+    print("code=${code_of(v)}");
+    // names journal
+    print("trail: ${join(map(actions, |a| a.label()), " -> ")}");
+}

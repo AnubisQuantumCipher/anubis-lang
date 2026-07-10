@@ -1,0 +1,604 @@
+// =============================================================================
+// SOVEREIGN GENERAL LEDGER + RISK & SETTLEMENT ENGINE (SGLE)
+// =============================================================================
+// Industry domain: financial-services core bookkeeping + treasury controls.
+// Used (in spirit) by banks, fintechs, payment processors, and crypto custodians
+// for: double-entry GL, trial balance, bank recon, multi-party netting, and
+// period-close audit seals.
+//
+// Money is INTEGER CENTS. No floating-point currency (industry rule #1).
+//
+// Pipeline this program runs:
+//   1) Seed chart of accounts + opening balances
+//   2) Post a day's journal (double-entry enforced)
+//   3) Detect unbalanced / incomplete entries (control failure)
+//   4) Build trial balance + prove assets = liabilities + equity
+//   5) Reconcile bank statement vs cash book (outstanding checks / deposits)
+//   6) Multilateral payment netting across counterparties (treasury)
+//   7) Concentration risk + single-name exposure limits
+//   8) Hash-chained audit trail over all postings
+//   9) Seal period close with industry-grade control verdict
+//
+// Output lines are labeled for operators / auditors / evidence bundles.
+// Run:  ./target/release/anubis run examples/industry/sovereign_gl_risk_engine.anb
+// =============================================================================
+
+// --- Account types (GAAP-ish classification) --------------------------------
+enum AcctClass {
+    Asset,
+    Liability,
+    Equity,
+    Revenue,
+    Expense,
+}
+
+// --- Control / period-close verdict (what the auditor signs) -----------------
+enum CloseVerdict {
+    Balanced { checksum: int },
+    Imbalance { delta_cents: int },
+    ReconBreak { open_items: int },
+    LimitBreach { name: string, exposure: int },
+    Compound { flags: int },
+}
+
+// --- Counterparty obligation for netting ------------------------------------
+struct Obligation {
+    from_party: string,
+    to_party: string,
+    amount_cents: int,
+}
+
+// --- Journal line ------------------------------------------------------------
+struct JLine {
+    account: string,
+    debit: int,
+    credit: int,
+    memo: string,
+}
+
+// =============================================================================
+// UTILITIES
+// =============================================================================
+
+fn abs_i(x) {
+    if x < 0 { 0 - x } else { x }
+}
+
+fn max_i(a, b) {
+    if a > b { a } else { b }
+}
+
+fn min_i(a, b) {
+    if a < b { a } else { b }
+}
+
+// Rolling audit hash over a list of integer codes (tamper-evident seal seed).
+// h = ((h * 131) + x) mod 1_000_000_007   — industry-style chain step
+fn chain_hash(codes, i, n, acc) {
+    if i >= n {
+        return acc
+    }
+    let x = codes[i]
+    let next = ((acc * 131) + x) % 1000000007
+    return chain_hash(codes, i + 1, n, next)
+}
+
+// Fold sum of list
+fn sum_list(xs, i, n, acc) {
+    if i >= n { return acc }
+    return sum_list(xs, i + 1, n, acc + xs[i])
+}
+
+// String-key map get with default (safe; no panic on missing)
+fn mget(m, k, default) {
+    return get(m, k, default)
+}
+
+// Put: return a new map with k -> v (by-value map update)
+fn mput(m, k, v) {
+    let out = m
+    out[k] = v
+    return out
+}
+
+// Add delta to map[k] (cents)
+fn madd(m, k, delta) {
+    let cur = mget(m, k, 0)
+    return mput(m, k, cur + delta)
+}
+
+// =============================================================================
+// CHART OF ACCOUNTS + NORMAL BALANCE
+// =============================================================================
+// Debit-normal: Asset, Expense
+// Credit-normal: Liability, Equity, Revenue
+
+fn is_debit_normal(class_code) {
+    // 1=Asset 2=Liability 3=Equity 4=Revenue 5=Expense
+    return class_code == 1 || class_code == 5
+}
+
+// Apply a journal line to balances map: balance is signed in *natural* direction
+// (positive = normal side). Debit increases debit-normal accounts; credit increases
+// credit-normal accounts.
+fn apply_line(balances, classes, line) {
+    let acct = line.account
+    let cls = mget(classes, acct, 0)
+    let bal = balances
+    if is_debit_normal(cls) {
+        bal = madd(bal, acct, line.debit - line.credit)
+    } else {
+        bal = madd(bal, acct, line.credit - line.debit)
+    }
+    return bal
+}
+
+// Post entire journal (list of JLine). Returns (balances, total_debit, total_credit, line_count)
+fn post_journal(balances, classes, lines, i, n, td, tc) {
+    if i >= n {
+        return [balances, td, tc, n]
+    }
+    let line = lines[i]
+    let b2 = apply_line(balances, classes, line)
+    return post_journal(b2, classes, lines, i + 1, n, td + line.debit, tc + line.credit)
+}
+
+// Validate each entry group is balanced: for this demo, the full day journal
+// must have sum(debits) == sum(credits). Also flag any line with both sides set.
+fn validate_journal_shape(lines, i, n, td, tc, dual_side_errors) {
+    if i >= n {
+        return [td, tc, dual_side_errors, if td == tc { 1 } else { 0 }]
+    }
+    let line = lines[i]
+    let err = dual_side_errors
+    if line.debit > 0 && line.credit > 0 {
+        err = err + 1
+    }
+    if line.debit < 0 || line.credit < 0 {
+        err = err + 1
+    }
+    return validate_journal_shape(lines, i + 1, n, td + line.debit, tc + line.credit, err)
+}
+
+// =============================================================================
+// TRIAL BALANCE + ACCOUNTING EQUATION
+// =============================================================================
+// Assets = Liabilities + Equity + (Revenue - Expense)  [expanded accounting eq]
+// In balances map, each account holds natural balance (>=0 if no overdraft).
+
+fn classify_totals(balances, classes, keys, i, n, a, l, e, r, x) {
+    if i >= n {
+        return [a, l, e, r, x]
+    }
+    let k = keys[i]
+    let v = mget(balances, k, 0)
+    let c = mget(classes, k, 0)
+    if c == 1 { return classify_totals(balances, classes, keys, i + 1, n, a + v, l, e, r, x) }
+    if c == 2 { return classify_totals(balances, classes, keys, i + 1, n, a, l + v, e, r, x) }
+    if c == 3 { return classify_totals(balances, classes, keys, i + 1, n, a, l, e + v, r, x) }
+    if c == 4 { return classify_totals(balances, classes, keys, i + 1, n, a, l, e, r + v, x) }
+    if c == 5 { return classify_totals(balances, classes, keys, i + 1, n, a, l, e, r, x + v) }
+    return classify_totals(balances, classes, keys, i + 1, n, a, l, e, r, x)
+}
+
+// Accounting equation residual (cents). 0 means books balance.
+fn equation_residual(a, l, e, r, x) {
+    // A = L + E + R - X
+    return a - (l + e + r - x)
+}
+
+// =============================================================================
+// BANK RECONCILIATION
+// =============================================================================
+// Classic industry recon:
+//   Book cash
+//   + deposits in transit
+//   - outstanding checks
+//   ± bank charges / interest not yet booked
+//   = Statement balance  (or surface the break)
+
+fn bank_recon(book_cash, deposits_in_transit, outstanding_checks, unbooked_bank_charge, unbooked_interest, statement_balance) {
+    let adjusted_book = book_cash + deposits_in_transit - outstanding_checks - unbooked_bank_charge + unbooked_interest
+    let break_amt = adjusted_book - statement_balance
+    return [adjusted_book, break_amt, if break_amt == 0 { 1 } else { 0 }]
+}
+
+// =============================================================================
+// MULTILATERAL NETTING (treasury / clearing)
+// =============================================================================
+// For each party, net obligation = sum(to receive) - sum(to pay).
+// Gross settlement volume vs netted volume → funding efficiency.
+
+fn net_party_delta(obligations, party, i, n, acc) {
+    if i >= n {
+        return acc
+    }
+    let o = obligations[i]
+    let d = acc
+    if o.to_party == party {
+        d = d + o.amount_cents
+    }
+    if o.from_party == party {
+        d = d - o.amount_cents
+    }
+    return net_party_delta(obligations, party, i + 1, n, d)
+}
+
+fn gross_volume(obligations, i, n, acc) {
+    if i >= n { return acc }
+    return gross_volume(obligations, i + 1, n, acc + obligations[i].amount_cents)
+}
+
+// Collect unique party names from obligations into a list (linear, small-n industrial demo)
+fn party_seen(parties, name, i, n) {
+    if i >= n { return 0 }
+    if parties[i] == name { return 1 }
+    return party_seen(parties, name, i + 1, n)
+}
+
+fn collect_parties(obligations, i, n, parties) {
+    if i >= n {
+        return parties
+    }
+    let o = obligations[i]
+    // Mutate the same list in place (push returns 0).
+    if party_seen(parties, o.from_party, 0, len(parties)) == 0 {
+        push(parties, o.from_party)
+    }
+    if party_seen(parties, o.to_party, 0, len(parties)) == 0 {
+        push(parties, o.to_party)
+    }
+    return collect_parties(obligations, i + 1, n, parties)
+}
+
+// Sum of absolute net positions (should equal 0 if closed system — each debit is someone's credit)
+fn sum_abs_nets(obligations, parties, i, n, acc) {
+    if i >= n { return acc }
+    let d = net_party_delta(obligations, parties[i], 0, len(obligations), 0)
+    return sum_abs_nets(obligations, parties, i + 1, n, acc + abs_i(d))
+}
+
+// Net funding requirement: sum of positive nets (what must still move after netting)
+fn net_funding(obligations, parties, i, n, acc) {
+    if i >= n { return acc }
+    let d = net_party_delta(obligations, parties[i], 0, len(obligations), 0)
+    let add = if d > 0 { d } else { 0 }
+    return net_funding(obligations, parties, i + 1, n, acc + add)
+}
+
+// =============================================================================
+// CONCENTRATION / SINGLE-NAME RISK
+// =============================================================================
+// Industry limit: no single counterparty exposure > limit_bps of total assets (basis points).
+
+fn exposure_of(balances, counterparty_asset_key) {
+    return mget(balances, counterparty_asset_key, 0)
+}
+
+fn concentration_bps(exposure, total_assets) {
+    if total_assets <= 0 { return 0 }
+    // bps = exposure * 10000 / total_assets
+    return (exposure * 10000) / total_assets
+}
+
+// =============================================================================
+// SEAL PERIOD CLOSE
+// =============================================================================
+
+fn seal_close(eq_residual, recon_ok, open_recon_items, limit_breach, limit_name, limit_exp, audit_checksum) {
+    let flags = 0
+    if eq_residual != 0 { flags = flags + 1 }
+    if recon_ok == 0 { flags = flags + 2 }
+    if limit_breach == 1 { flags = flags + 4 }
+
+    if flags == 0 {
+        return CloseVerdict::Balanced { checksum: audit_checksum }
+    }
+    if flags == 1 {
+        return CloseVerdict::Imbalance { delta_cents: eq_residual }
+    }
+    if flags == 2 {
+        return CloseVerdict::ReconBreak { open_items: open_recon_items }
+    }
+    if flags == 4 {
+        return CloseVerdict::LimitBreach { name: limit_name, exposure: limit_exp }
+    }
+    return CloseVerdict::Compound { flags: flags }
+}
+
+fn verdict_code(v) {
+    return match v {
+        CloseVerdict::Balanced { checksum: _c } => 0,
+        CloseVerdict::Imbalance { delta_cents: _d } => 1,
+        CloseVerdict::ReconBreak { open_items: _o } => 2,
+        CloseVerdict::LimitBreach { name: _n, exposure: _e } => 3,
+        CloseVerdict::Compound { flags: _f } => 4,
+    }
+}
+
+fn verdict_label(code) {
+    if code == 0 { return "PERIOD_CLOSED_BALANCED" }
+    if code == 1 { return "PERIOD_IMBALANCE" }
+    if code == 2 { return "PERIOD_RECON_BREAK" }
+    if code == 3 { return "PERIOD_LIMIT_BREACH" }
+    return "PERIOD_COMPOUND_CONTROL_FAIL"
+}
+
+// =============================================================================
+// DEMO DAY BOOK — realistic fintech micro-day
+// =============================================================================
+// Story (cents):
+//   Opening:
+//     Cash 1_000_000 ($10,000.00)
+//     Receivables 250_000
+//     Customer advances (liability) 100_000
+//     Capital 1_150_000
+//   Day activity:
+//     1) Receive customer payment on AR: Dr Cash 80_000 / Cr AR 80_000
+//     2) Recognize fee revenue: Dr Cash 15_000 / Cr Fee Revenue 15_000
+//     3) Pay cloud vendor: Dr OpEx 12_000 / Cr Cash 12_000
+//     4) Disburse to merchant: Dr Merchant Payable 45_000 / Cr Cash 45_000
+//        (first fund the payable: Dr Expense/Settlement 45_000 / Cr Merchant Payable 45_000
+//         simplified as: Dr Settlement Expense 45_000 / Cr Cash 45_000)
+//     5) Accrue interest income: Dr Interest Rec 2_500 / Cr Interest Income 2_500
+//
+// Bank statement ends at a figure that should match after outstanding checks.
+
+fn build_classes() {
+    let c = {}
+    c = mput(c, "1000_Cash", 1)
+    c = mput(c, "1100_AR", 1)
+    c = mput(c, "1200_InterestRec", 1)
+    c = mput(c, "1300_Receivable_Alpha", 1)   // single-name exposure asset
+    c = mput(c, "2000_MerchantPayable", 2)
+    c = mput(c, "2100_CustomerAdvances", 2)
+    c = mput(c, "3000_Capital", 3)
+    c = mput(c, "4000_FeeRevenue", 4)
+    c = mput(c, "4100_InterestIncome", 4)
+    c = mput(c, "5000_OpEx", 5)
+    c = mput(c, "5100_SettlementExpense", 5)
+    return c
+}
+
+fn build_opening() {
+    let b = {}
+    b = mput(b, "1000_Cash", 1000000)
+    b = mput(b, "1100_AR", 250000)
+    b = mput(b, "1200_InterestRec", 0)
+    b = mput(b, "1300_Receivable_Alpha", 180000)  // concentrated exposure
+    b = mput(b, "2000_MerchantPayable", 50000)
+    b = mput(b, "2100_CustomerAdvances", 100000)
+    b = mput(b, "3000_Capital", 1150000)
+    b = mput(b, "4000_FeeRevenue", 0)
+    b = mput(b, "4100_InterestIncome", 0)
+    b = mput(b, "5000_OpEx", 0)
+    b = mput(b, "5100_SettlementExpense", 0)
+    // Opening identity check (should residual 0):
+    // A=1000000+250000+0+180000=1430000
+    // L=50000+100000=150000; E=1150000; R=0; X=0
+    // 1430000 - (150000+1150000) = 130000 — wait, opening is intentionally
+    // consistent if Capital absorbs: actually 150000+1150000=1300000, residual 130000.
+    // Fix: Capital should be 1_280_000 so equation holds at open.
+    // A=1_430_000; L=150_000; want E = A-L = 1_280_000.
+    b = mput(b, "3000_Capital", 1280000)
+    return b
+}
+
+fn line(acct, dr, cr, memo) {
+    return JLine { account: acct, debit: dr, credit: cr, memo: memo }
+}
+
+fn build_day_journal() {
+    // NOTE: `push` mutates in place and returns 0 — never write `xs = push(xs, v)`.
+    let lines = []
+    // 1) Customer pays invoice
+    push(lines, line("1000_Cash", 80000, 0, "AR collection wire"))
+    push(lines, line("1100_AR", 0, 80000, "AR collection wire"))
+    // 2) Fee revenue
+    push(lines, line("1000_Cash", 15000, 0, "payment fee"))
+    push(lines, line("4000_FeeRevenue", 0, 15000, "payment fee"))
+    // 3) OpEx
+    push(lines, line("5000_OpEx", 12000, 0, "cloud invoice"))
+    push(lines, line("1000_Cash", 0, 12000, "cloud invoice"))
+    // 4) Merchant settlement
+    push(lines, line("5100_SettlementExpense", 45000, 0, "merchant payout"))
+    push(lines, line("1000_Cash", 0, 45000, "merchant payout"))
+    // 5) Accrue interest
+    push(lines, line("1200_InterestRec", 2500, 0, "accrue interest"))
+    push(lines, line("4100_InterestIncome", 0, 2500, "accrue interest"))
+    return lines
+}
+
+// Audit codes derived from journal for hash chain (account id hash-ish + amounts)
+fn audit_codes_from_journal(lines, i, n, codes) {
+    if i >= n {
+        return codes
+    }
+    let line = lines[i]
+    // Stable integer fingerprint: debit*10007 + credit*10009 + len(account)*13
+    let fp = line.debit * 10007 + line.credit * 10009 + len(line.account) * 13 + i * 17
+    push(codes, fp)
+    return audit_codes_from_journal(lines, i + 1, n, codes)
+}
+
+// =============================================================================
+// MAIN — run the industrial day
+// =============================================================================
+
+fn main() {
+    print("=== SGLE: Sovereign General Ledger + Risk Engine ===")
+    print("domain: fintech-core-ledger currency: USD-cents")
+
+    let classes = build_classes()
+    let balances = build_opening()
+    let keys = [
+        "1000_Cash", "1100_AR", "1200_InterestRec", "1300_Receivable_Alpha",
+        "2000_MerchantPayable", "2100_CustomerAdvances", "3000_Capital",
+        "4000_FeeRevenue", "4100_InterestIncome", "5000_OpEx", "5100_SettlementExpense"
+    ]
+
+    // Opening equation
+    let open_tot = classify_totals(balances, classes, keys, 0, len(keys), 0, 0, 0, 0, 0)
+    let open_res = equation_residual(open_tot[0], open_tot[1], open_tot[2], open_tot[3], open_tot[4])
+    print("open.assets_cents=" + str(open_tot[0]))
+    print("open.liabilities_cents=" + str(open_tot[1]))
+    print("open.equity_cents=" + str(open_tot[2]))
+    print("open.equation_residual_cents=" + str(open_res))
+    print("open.books_balanced=" + str(if open_res == 0 { 1 } else { 0 }))
+
+    // Journal
+    let journal = build_day_journal()
+    let shape = validate_journal_shape(journal, 0, len(journal), 0, 0, 0)
+    // shape = [td, tc, dual_side_errors, balanced_flag]
+    print("journal.lines=" + str(len(journal)))
+    print("journal.total_debit_cents=" + str(shape[0]))
+    print("journal.total_credit_cents=" + str(shape[1]))
+    print("journal.dual_side_errors=" + str(shape[2]))
+    print("journal.entry_balanced=" + str(shape[3]))
+
+    let posted = post_journal(balances, classes, journal, 0, len(journal), 0, 0)
+    let bal2 = posted[0]
+    print("post.total_debit_cents=" + str(posted[1]))
+    print("post.total_credit_cents=" + str(posted[2]))
+
+    // Trial balance
+    let tot = classify_totals(bal2, classes, keys, 0, len(keys), 0, 0, 0, 0, 0)
+    let a = tot[0]
+    let l = tot[1]
+    let e = tot[2]
+    let r = tot[3]
+    let x = tot[4]
+    let residual = equation_residual(a, l, e, r, x)
+    print("tb.assets_cents=" + str(a))
+    print("tb.liabilities_cents=" + str(l))
+    print("tb.equity_cents=" + str(e))
+    print("tb.revenue_cents=" + str(r))
+    print("tb.expense_cents=" + str(x))
+    print("tb.equation_residual_cents=" + str(residual))
+    print("tb.books_balanced=" + str(if residual == 0 { 1 } else { 0 }))
+    print("tb.cash_cents=" + str(mget(bal2, "1000_Cash", 0)))
+
+    // Bank reconciliation
+    // Book cash after post; statement reflects same after outstanding check 7_000 and deposit in transit 3_000
+    let book_cash = mget(bal2, "1000_Cash", 0)
+    let deposits_in_transit = 3000
+    let outstanding_checks = 7000
+    let unbooked_bank_charge = 0
+    let unbooked_interest = 0
+    // Construct statement so recon should clear:
+    // adjusted = book + 3000 - 7000 = book - 4000
+    let statement_balance = book_cash - 4000
+    let recon = bank_recon(book_cash, deposits_in_transit, outstanding_checks, unbooked_bank_charge, unbooked_interest, statement_balance)
+    print("recon.adjusted_book_cents=" + str(recon[0]))
+    print("recon.statement_cents=" + str(statement_balance))
+    print("recon.break_cents=" + str(recon[1]))
+    print("recon.cleared=" + str(recon[2]))
+    let open_items = if recon[2] == 1 { 0 } else { 1 }
+    // Count operational open items (DIT + O/S checks still "open" even when recon math clears)
+    let open_recon_items = 2
+
+    // Multilateral netting (treasury)
+    let ob = []
+    push(ob, Obligation { from_party: "Alpha", to_party: "Bank", amount_cents: 50000 })
+    push(ob, Obligation { from_party: "Bank", to_party: "Beta", amount_cents: 30000 })
+    push(ob, Obligation { from_party: "Beta", to_party: "Alpha", amount_cents: 20000 })
+    push(ob, Obligation { from_party: "Gamma", to_party: "Bank", amount_cents: 15000 })
+    push(ob, Obligation { from_party: "Bank", to_party: "Gamma", amount_cents: 10000 })
+    push(ob, Obligation { from_party: "Alpha", to_party: "Gamma", amount_cents: 8000 })
+    let parties = collect_parties(ob, 0, len(ob), [])
+    let gross = gross_volume(ob, 0, len(ob), 0)
+    let funding = net_funding(ob, parties, 0, len(parties), 0)
+    let abs_nets = sum_abs_nets(ob, parties, 0, len(parties), 0)
+    // Efficiency: (gross - funding) / gross in bps
+    let saved = gross - funding
+    let efficiency_bps = if gross > 0 { (saved * 10000) / gross } else { 0 }
+    print("netting.parties=" + str(len(parties)))
+    print("netting.gross_cents=" + str(gross))
+    print("netting.net_funding_cents=" + str(funding))
+    print("netting.abs_net_sum_cents=" + str(abs_nets))
+    print("netting.liquidity_saved_cents=" + str(saved))
+    print("netting.efficiency_bps=" + str(efficiency_bps))
+    // Per-party nets (operator report)
+    let pi = 0
+    while pi < len(parties) {
+        let pname = parties[pi]
+        let nd = net_party_delta(ob, pname, 0, len(ob), 0)
+        print("netting.party." + pname + ".net_cents=" + str(nd))
+        pi = pi + 1
+    }
+
+    // Concentration risk: Alpha receivable vs total assets; limit 1500 bps (15%)
+    let alpha_exp = exposure_of(bal2, "1300_Receivable_Alpha")
+    let conc = concentration_bps(alpha_exp, a)
+    let limit_bps = 1500
+    let limit_breach = if conc > limit_bps { 1 } else { 0 }
+    print("risk.alpha_exposure_cents=" + str(alpha_exp))
+    print("risk.alpha_concentration_bps=" + str(conc))
+    print("risk.limit_bps=" + str(limit_bps))
+    print("risk.limit_breach=" + str(limit_breach))
+
+    // Audit chain
+    let codes = audit_codes_from_journal(journal, 0, len(journal), [])
+    // Mix in control outcomes
+    push(codes, residual + 1000003)
+    push(codes, recon[1] + 1000033)
+    push(codes, funding + 1000037)
+    push(codes, conc)
+    let checksum = chain_hash(codes, 0, len(codes), 1)
+    print("audit.chain_length=" + str(len(codes)))
+    print("audit.checksum=" + str(checksum))
+
+    // Period close seal
+    let verdict = seal_close(residual, recon[2], open_recon_items, limit_breach, "Alpha", alpha_exp, checksum)
+    let vcode = verdict_code(verdict)
+    print("close.verdict_code=" + str(vcode))
+    print("close.verdict=" + verdict_label(vcode))
+
+    // Unpack verdict payload for evidence (expression-style match arms)
+    let sealed_checksum = match verdict {
+        CloseVerdict::Balanced { checksum: cs } => cs,
+        _ => 0,
+    }
+    let imbalance = match verdict {
+        CloseVerdict::Imbalance { delta_cents: d } => d,
+        _ => 0,
+    }
+    let recon_open = match verdict {
+        CloseVerdict::ReconBreak { open_items: oi } => oi,
+        _ => 0,
+    }
+    let breach_exp = match verdict {
+        CloseVerdict::LimitBreach { name: _nm, exposure: ex } => ex,
+        _ => 0,
+    }
+    let compound_flags = match verdict {
+        CloseVerdict::Compound { flags: f } => f,
+        _ => 0,
+    }
+    let action = if vcode == 0 {
+        "ARCHIVE_AND_ATTEST"
+    } else if vcode == 1 {
+        "BLOCK_CLOSE_INVESTIGATE"
+    } else if vcode == 2 {
+        "CLEAR_RECON_ITEMS"
+    } else if vcode == 3 {
+        "ESCALATE_CREDIT_RISK"
+    } else {
+        "FULL_CONTROL_REVIEW"
+    }
+    print("close.sealed_checksum=" + str(sealed_checksum))
+    print("close.imbalance_cents=" + str(imbalance))
+    print("close.open_recon_items=" + str(recon_open))
+    print("close.breach_exposure_cents=" + str(breach_exp))
+    print("close.compound_flags=" + str(compound_flags))
+    print("close.operator_action=" + action)
+
+    // Machine-readable summary line for CI / evidence grep
+    // ok=1 only if books balance, recon cleared, no limit breach
+    let ok = if residual == 0 && recon[2] == 1 && limit_breach == 0 { 1 } else { 0 }
+    let summary = "SUMMARY ok=" + str(ok) + " residual=" + str(residual) + " recon_break=" + str(recon[1]) + " net_funding=" + str(funding) + " efficiency_bps=" + str(efficiency_bps) + " conc_bps=" + str(conc) + " checksum=" + str(checksum) + " verdict=" + str(vcode)
+    print(summary)
+
+    // Final single status code for gate scripts (0 = fully clean close)
+    print(vcode)
+}

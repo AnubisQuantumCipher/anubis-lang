@@ -1,0 +1,877 @@
+// =============================================================================
+// FAST MAGNETIC RECONNECTION RESEARCH KERNEL (FMRK)
+// =============================================================================
+// Domain: plasma physics / solar–magnetospheric / fusion confinement
+//
+// THE REAL PROBLEM (still open in the field)
+// ------------------------------------------
+// Observed reconnection (solar flares, magnetotail substorms, tokamak sawteeth)
+// proceeds ORDERS OF MAGNITUDE faster than the classical Sweet–Parker (SP)
+// resistive-MHD rate R_SP ~ S^{-1/2}, where S is the Lundquist number.
+// Solar flares can be ~10^13–10^14× faster than naive global diffusion and
+// still several orders above pure SP at coronal S ~ 10^12–10^14.
+// Mechanisms under active research: Petschek geometry, plasmoid instability
+// (S ≳ 10^4), anomalous resistivity from turbulence, Hall/collisionless
+// two-fluid physics, stochastic reconnection (Lazarian–Vishniac).
+// Multi-scale plasma turbulence is also the bottleneck for fusion power
+// (confinement, transport, disruptions).
+//
+// WHAT THIS ANUBIS PROGRAM ACTUALLY DOES (honest scope)
+// ------------------------------------------------------
+// Not "solves quantum gravity." Not a full GEM-challenge PIC code.
+// It is a sealed research CONTROL KERNEL that:
+//   1) Initializes a Harris current sheet + tearing seed (vector potential Az)
+//   2) Evolves reduced 2D resistive induction:  ∂Az/∂t = η(J) ∇² Az
+//   3) Runs CLASSICAL uniform η vs ANOMALOUS η(|J|) experiments side-by-side
+//   4) Measures reconnection rate R = |E|/(B_in V_A) at the X-point
+//   5) Computes theoretical SP, Petschek, and stochastic upper-bound rates
+//      across a Lundquist-number scan (S = 10^2 … 10^12)
+//   6) Tracks magnetic-energy decay vs cumulative ohmic heating residual
+//   7) Diagnoses sheet half-width, midplane island-extrema, cascade bands
+//   8) Classifies regime: SP_SLOW / FAST_ANOMALOUS / PLASMOID_CANDIDATE
+//   9) Hash-chains diagnostics into an evidence seal + operator action
+//
+// Units: Alfvénic (μ0 = 1, ρ0 = 1, V_A = B0/√ρ0 = 1 when B0 = 1).
+// Float physics is intentional here (unlike cash-integer SGLE).
+//
+// Run:
+//   ./target/release/anubis run examples/physics/fast_magnetic_reconnection.anb \
+//     --evidence --out out/physics_reconnection
+// =============================================================================
+
+// --- Scientific regime classification ----------------------------------------
+enum ReconRegime {
+    SpSlow { rate_milli: int },
+    FastAnomalous { rate_milli: int, boost_milli: int },
+    PlasmoidCandidate { islands: int, rate_milli: int },
+    NumericallyBroken { energy_residual_milli: int },
+}
+
+enum SealVerdict {
+    ResearchConsistent { checksum: int },
+    RateDiscrepancy { classical_milli: int, anomalous_milli: int },
+    ConservationFail { residual_milli: int },
+    Compound { flags: int },
+}
+
+// =============================================================================
+// MATH / GRID UTILS
+// =============================================================================
+
+fn abs_f(x) {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+fn abs_i(x) {
+    if x < 0 { 0 - x } else { x }
+}
+
+fn max_f(a, b) {
+    if a > b { a } else { b }
+}
+
+fn min_f(a, b) {
+    if a < b { a } else { b }
+}
+
+fn max_i(a, b) {
+    if a > b { a } else { b }
+}
+
+fn min_i(a, b) {
+    if a < b { a } else { b }
+}
+
+fn clamp_f(x, lo, hi) {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+// Integer milliscale of a float (×1000, rounded toward zero)
+fn milli(x) {
+    return (x * 1000.0) as int
+}
+
+// Flat index into Nx×Ny field stored row-major in x then y
+fn idx(i, j, ny) {
+    return i * ny + j
+}
+
+fn get2(field, i, j, ny) {
+    return field[idx(i, j, ny)]
+}
+
+fn set2(field, i, j, ny, v) {
+    field[idx(i, j, ny)] = v
+    return field
+}
+
+// Zero-filled flat field of length n
+fn zeros(n) {
+    let a = []
+    let k = 0
+    while k < n {
+        push(a, 0.0)
+        k = k + 1
+    }
+    return a
+}
+
+// Copy flat field
+fn copy_field(src, n) {
+    let a = []
+    let k = 0
+    while k < n {
+        push(a, src[k])
+        k = k + 1
+    }
+    return a
+}
+
+// π constant (sufficient for grid geometry)
+fn pi() {
+    return 3.141592653589793
+}
+
+// Rolling audit chain over integer codes
+fn chain_hash(codes, i, n, acc) {
+    if i >= n {
+        return acc
+    }
+    let next = ((acc * 131) + codes[i]) % 1000000007
+    return chain_hash(codes, i + 1, n, next)
+}
+
+// =============================================================================
+// THEORETICAL RECONNECTION RATES (closed-form, field-standard)
+// =============================================================================
+// S = L V_A / η
+// R_SP      = S^{-1/2}
+// R_Pets   = π / (8 ln S)          (Petschek upper-ish form)
+// R_stoch  = (v_ℓ/V_A)^2 * min(√(L/ℓ), √(ℓ/L))   (LV-style upper bound)
+
+fn sweet_parker_rate(S) {
+    return 1.0 / sqrt(S)
+}
+
+fn petschek_rate(S) {
+    // guard ln
+    if S <= 1.0 {
+        return 1.0
+    }
+    return pi() / (8.0 * ln(S))
+}
+
+fn stochastic_rate(v_ell_over_va, ell_over_L) {
+    // v_turb / V_A  ≈ (v_ℓ/V_A)^2 in strong-turbulence scaling used here
+    let vt = v_ell_over_va * v_ell_over_va
+    let a = sqrt(1.0 / ell_over_L)
+    let b = sqrt(ell_over_L)
+    return vt * min_f(a, b)
+}
+
+// Naive global resistive diffusion rate across system size L: R ~ 1/S
+fn global_diffusion_rate(S) {
+    return 1.0 / S
+}
+
+// =============================================================================
+// DIFFERENTIAL OPERATORS ON Az (2D)
+// =============================================================================
+// Coordinates: x ∈ [0, Lx) periodic, y ∈ [-Ly/2, Ly/2] with one-sided edges.
+// B_x = ∂Az/∂y ,  B_y = −∂Az/∂x ,  J_z = −∇² Az
+
+fn laplacian_at(Az, i, j, nx, ny, dx, dy) {
+    // neighbors in x (periodic)
+    let im = i - 1
+    if im < 0 { im = nx - 1 }
+    let ip = i + 1
+    if ip >= nx { ip = 0 }
+
+    let jm = j - 1
+    let jp = j + 1
+    // interior y
+    if j > 0 && j < ny - 1 {
+        let c = get2(Az, i, j, ny)
+        let dxx = (get2(Az, ip, j, ny) + get2(Az, im, j, ny) - 2.0 * c) / (dx * dx)
+        let dyy = (get2(Az, i, jp, ny) + get2(Az, i, jm, ny) - 2.0 * c) / (dy * dy)
+        return dxx + dyy
+    }
+    // edges: reduced y second derivative
+    if j == 0 {
+        let c = get2(Az, i, j, ny)
+        let dxx = (get2(Az, ip, j, ny) + get2(Az, im, j, ny) - 2.0 * c) / (dx * dx)
+        let dyy = (get2(Az, i, 1, ny) - c) / (dy * dy)
+        return dxx + dyy
+    }
+    let c2 = get2(Az, i, j, ny)
+    let dxx2 = (get2(Az, ip, j, ny) + get2(Az, im, j, ny) - 2.0 * c2) / (dx * dx)
+    let dyy2 = (c2 - get2(Az, i, ny - 2, ny)) / (dy * dy) * -1.0 + 0.0
+    // one-sided: (A_{n-2} - 2 A_{n-1} + A_n) but A_n fixed-ish → use (A_{n-2} - A_{n-1}) / dy^2
+    dyy2 = (get2(Az, i, ny - 2, ny) - c2) / (dy * dy)
+    return dxx2 + dyy2
+}
+
+fn bx_at(Az, i, j, nx, ny, dy) {
+    if j > 0 && j < ny - 1 {
+        return (get2(Az, i, j + 1, ny) - get2(Az, i, j - 1, ny)) / (2.0 * dy)
+    }
+    if j == 0 {
+        return (get2(Az, i, 1, ny) - get2(Az, i, 0, ny)) / dy
+    }
+    return (get2(Az, i, ny - 1, ny) - get2(Az, i, ny - 2, ny)) / dy
+}
+
+fn by_at(Az, i, j, nx, ny, dx) {
+    let im = i - 1
+    if im < 0 { im = nx - 1 }
+    let ip = i + 1
+    if ip >= nx { ip = 0 }
+    // By = -dAz/dx
+    return 0.0 - (get2(Az, ip, j, ny) - get2(Az, im, j, ny)) / (2.0 * dx)
+}
+
+// =============================================================================
+// HARRIS SHEET INITIAL CONDITION + TEARING SEED
+// =============================================================================
+// Equilibrium: B_x = B0 tanh(y/δ), B_y = 0
+// Az = B0 * δ * ln(cosh(y/δ))
+// Perturbation: ε cos(2π x / Lx) exp(-(y/δ)^2)  → seeds an X-point
+
+fn cosh_approx(z) {
+    // stable-ish cosh via exp; clamp extreme
+    let t = clamp_f(z, -20.0, 20.0)
+    // cosh = (e^t + e^{-t})/2 ; use series for small, exp for large
+    // e^t via exp if available? use series + identity
+    // Implement exp via series for |t| modest after clamp
+    return (exp_approx(t) + exp_approx(0.0 - t)) * 0.5
+}
+
+fn exp_approx(t) {
+    // Taylor / Horner for exp on [-20,20] via reduction
+    // For simplicity use series around 0 with enough terms after range reduction
+    let x = t
+    // range reduction by e^n ≈ (e)^n using integer steps of 1
+    let n = 0
+    while x > 1.0 {
+        x = x - 1.0
+        n = n + 1
+    }
+    while x < -1.0 {
+        x = x + 1.0
+        n = n - 1
+    }
+    // series e^x
+    let s = 1.0 + x + (x * x) / 2.0 + (x * x * x) / 6.0 + (x * x * x * x) / 24.0 + (x * x * x * x * x) / 120.0 + (x * x * x * x * x * x) / 720.0
+    // multiply by e^n, e≈2.718281828
+    let e = 2.718281828459045
+    if n > 0 {
+        let k = 0
+        while k < n {
+            s = s * e
+            k = k + 1
+        }
+    }
+    if n < 0 {
+        let k2 = 0
+        let m = 0 - n
+        while k2 < m {
+            s = s / e
+            k2 = k2 + 1
+        }
+    }
+    return s
+}
+
+fn ln_cosh_approx(z) {
+    // ln(cosh z) stable: for |z| large → |z| - ln(2)
+    let az = abs_f(z)
+    if az > 12.0 {
+        return az - ln(2.0)
+    }
+    return ln(cosh_approx(z))
+}
+
+fn build_harris(nx, ny, Lx, Ly, B0, delta, eps_seed) {
+    let dx = Lx / (nx as float)
+    let dy = Ly / (ny as float)
+    let n = nx * ny
+    let Az = zeros(n)
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            let x = (i as float) * dx
+            let y = (j as float) * dy - 0.5 * Ly
+            let base = B0 * delta * ln_cosh_approx(y / delta)
+            let seed = eps_seed * cos_approx(2.0 * pi() * x / Lx) * exp_approx(0.0 - (y / delta) * (y / delta))
+            Az = set2(Az, i, j, ny, base + seed)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return Az
+}
+
+fn cos_approx(theta) {
+    // reduce to [-pi, pi]
+    let twopi = 2.0 * pi()
+    let t = theta
+    while t > pi() {
+        t = t - twopi
+    }
+    while t < 0.0 - pi() {
+        t = t + twopi
+    }
+    // Taylor
+    let t2 = t * t
+    return 1.0 - t2 / 2.0 + (t2 * t2) / 24.0 - (t2 * t2 * t2) / 720.0 + (t2 * t2 * t2 * t2) / 40320.0
+}
+
+// Prefer builtin sin if available for seed phase; keep cos_approx for independence
+
+// =============================================================================
+// DIAGNOSTICS
+// =============================================================================
+
+fn magnetic_energy(Az, nx, ny, dx, dy, Lx, Ly) {
+    // volume mean of B²/2 * area
+    let sum = 0.0
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            let bx = bx_at(Az, i, j, nx, ny, dy)
+            let by = by_at(Az, i, j, nx, ny, dx)
+            sum = sum + 0.5 * (bx * bx + by * by)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let mean = sum / ((nx * ny) as float)
+    return mean * Lx * Ly
+}
+
+fn max_abs_jz(Az, nx, ny, dx, dy) {
+    let m = 0.0
+    let i = 0
+    while i < nx {
+        let j = 1
+        while j < ny - 1 {
+            let J = 0.0 - laplacian_at(Az, i, j, nx, ny, dx, dy)
+            let a = abs_f(J)
+            if a > m { m = a }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return m
+}
+
+fn reconnection_observables(Az, nx, ny, dx, dy, eta0, alpha_anom, Jcrit, anomalous, B0, VA) {
+    // X-point at domain center
+    let ic = nx / 2
+    let jc = ny / 2
+    let J = 0.0 - laplacian_at(Az, ic, jc, nx, ny, dx, dy)
+    let et = eta0
+    if anomalous == 1 {
+        let ratio = abs_f(J) / Jcrit
+        et = eta0 * (1.0 + alpha_anom * ratio * ratio)
+    }
+    let E = et * J
+    // upstream Bin: |Bx| sampled away from midplane
+    let j_up = jc + ny / 6
+    if j_up >= ny { j_up = ny - 2 }
+    let bx_sum = 0.0
+    let i = 0
+    while i < nx {
+        bx_sum = bx_sum + abs_f(bx_at(Az, i, j_up, nx, ny, dy))
+        i = i + 1
+    }
+    let Bin = bx_sum / (nx as float)
+    if Bin < 1.0e-9 {
+        Bin = B0
+    }
+    let R = abs_f(E) / (Bin * VA)
+    return [R, abs_f(E), Bin, J, et]
+}
+
+fn sheet_half_width(Az, nx, ny, dx, dy) {
+    // FWHM of |Jz| along y at mid-x
+    let ic = nx / 2
+    let peak = 0.0
+    let j = 0
+    while j < ny {
+        let J = abs_f(0.0 - laplacian_at(Az, ic, j, nx, ny, dx, dy))
+        if J > peak { peak = J }
+        j = j + 1
+    }
+    if peak <= 0.0 {
+        return 0.0
+    }
+    let half = 0.5 * peak
+    let j0 = -1
+    let j1 = -1
+    j = 0
+    while j < ny {
+        let J2 = abs_f(0.0 - laplacian_at(Az, ic, j, nx, ny, dx, dy))
+        if J2 >= half {
+            if j0 < 0 { j0 = j }
+            j1 = j
+        }
+        j = j + 1
+    }
+    if j0 < 0 {
+        return 0.0
+    }
+    return 0.5 * ((j1 - j0) as float) * dy
+}
+
+fn island_extrema_count(Az, nx, ny) {
+    // sign changes of dAz/dx along midplane → island/X-point complexity proxy
+    let jc = ny / 2
+    let count = 0
+    let i = 1
+    while i < nx - 1 {
+        let a0 = get2(Az, i - 1, jc, ny)
+        let a1 = get2(Az, i, jc, ny)
+        let a2 = get2(Az, i + 1, jc, ny)
+        let d1 = a1 - a0
+        let d2 = a2 - a1
+        if d1 * d2 < 0.0 {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
+}
+
+// Simple 3-band energy cascade proxy via spatial box-car residuals
+// coarse (4-cell), mid (2-cell), fine (1-cell) magnetic energy fractions
+fn cascade_bands(Az, nx, ny, dx, dy) {
+    let e_fine = 0.0
+    let e_mid = 0.0
+    let e_coarse = 0.0
+    let i = 0
+    while i < nx {
+        let j = 0
+        while j < ny {
+            let bx = bx_at(Az, i, j, nx, ny, dy)
+            let by = by_at(Az, i, j, nx, ny, dx)
+            let e = 0.5 * (bx * bx + by * by)
+            e_fine = e_fine + e
+            // mid: difference from 2-point x average
+            let ip = i + 1
+            if ip >= nx { ip = 0 }
+            let bxm = 0.5 * (bx + bx_at(Az, ip, j, nx, ny, dy))
+            let bym = 0.5 * (by + by_at(Az, ip, j, nx, ny, dx))
+            let em = 0.5 * (bxm * bxm + bym * bym)
+            e_mid = e_mid + abs_f(e - em)
+            // coarse: 4-point
+            let ip2 = i + 2
+            if ip2 >= nx { ip2 = ip2 - nx }
+            let bxc = 0.25 * (bx + bx_at(Az, ip, j, nx, ny, dy) + bx_at(Az, ip2, j, nx, ny, dy) + bx_at(Az, i, j, nx, ny, dy))
+            // simplify coarse residual
+            e_coarse = e_coarse + abs_f(e - 0.5 * (e + em))
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let norm = e_fine
+    if norm < 1.0e-12 {
+        return [0.0, 0.0, 0.0]
+    }
+    return [e_fine, e_mid / norm, e_coarse / norm]
+}
+
+// =============================================================================
+// TIME EVOLUTION: reduced resistive induction
+// =============================================================================
+// ∂Az/∂t = η(J) ∇² Az = −η(J) J_z
+// classical: η = η0
+// anomalous: η = η0 (1 + α ( |J|/Jcrit )^2 )   — toy model of turbulent resistivity
+
+fn eta_at(J, eta0, alpha_anom, Jcrit, anomalous) {
+    if anomalous == 0 {
+        return eta0
+    }
+    let r = abs_f(J) / Jcrit
+    return eta0 * (1.0 + alpha_anom * r * r)
+}
+
+fn step_resistive(Az, nx, ny, dx, dy, dt, eta0, alpha_anom, Jcrit, anomalous) {
+    let n = nx * ny
+    let Az_new = copy_field(Az, n)
+    let ohmic = 0.0
+    let i = 0
+    while i < nx {
+        let j = 1
+        while j < ny - 1 {
+            let lap = laplacian_at(Az, i, j, nx, ny, dx, dy)
+            let J = 0.0 - lap
+            let et = eta_at(J, eta0, alpha_anom, Jcrit, anomalous)
+            let dA = et * lap * dt
+            let old = get2(Az, i, j, ny)
+            Az_new = set2(Az_new, i, j, ny, old + dA)
+            ohmic = ohmic + et * J * J
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // area element weight for ohmic integral proxy
+    ohmic = ohmic * dx * dy
+    return [Az_new, ohmic]
+}
+
+fn evolve_experiment(label, anomalous, nx, ny, Lx, Ly, B0, delta, eps_seed, eta0, alpha_anom, Jcrit, VA, dt, nsteps, sample_every) {
+    print("---- experiment=" + label + " anomalous=" + str(anomalous) + " ----")
+    let dx = Lx / (nx as float)
+    let dy = Ly / (ny as float)
+    let Az = build_harris(nx, ny, Lx, Ly, B0, delta, eps_seed)
+    let Em0 = magnetic_energy(Az, nx, ny, dx, dy, Lx, Ly)
+    print("init.Em=" + str(Em0))
+    print("init.Jmax=" + str(max_abs_jz(Az, nx, ny, dx, dy)))
+    print("init.islands=" + str(island_extrema_count(Az, nx, ny)))
+
+    let ohmic_int = 0.0
+    let step = 0
+    let last_R = 0.0
+    let last_Em = Em0
+    let last_width = sheet_half_width(Az, nx, ny, dx, dy)
+    let last_islands = island_extrema_count(Az, nx, ny)
+    let last_E = 0.0
+    let last_Bin = B0
+    let last_J = 0.0
+    let last_eta = eta0
+    let peak_R = 0.0
+
+    while step < nsteps {
+        let out = step_resistive(Az, nx, ny, dx, dy, dt, eta0, alpha_anom, Jcrit, anomalous)
+        Az = out[0]
+        ohmic_int = ohmic_int + out[1] * dt
+
+        if step % sample_every == 0 || step == nsteps - 1 {
+            let obs = reconnection_observables(Az, nx, ny, dx, dy, eta0, alpha_anom, Jcrit, anomalous, B0, VA)
+            last_R = obs[0]
+            last_E = obs[1]
+            last_Bin = obs[2]
+            last_J = obs[3]
+            last_eta = obs[4]
+            last_Em = magnetic_energy(Az, nx, ny, dx, dy, Lx, Ly)
+            last_width = sheet_half_width(Az, nx, ny, dx, dy)
+            last_islands = island_extrema_count(Az, nx, ny)
+            if last_R > peak_R {
+                peak_R = last_R
+            }
+            print("tstep=" + str(step) + " R=" + str(last_R) + " Em=" + str(last_Em) + " width=" + str(last_width) + " islands=" + str(last_islands) + " eta_x=" + str(last_eta))
+        }
+        step = step + 1
+    }
+
+    let dEm = Em0 - last_Em
+    // For pure resistive decay, ΔEm should track ohmic heat (same order)
+    let residual = abs_f(dEm - ohmic_int)
+    let residual_frac = 0.0
+    if abs_f(dEm) > 1.0e-12 {
+        residual_frac = residual / abs_f(dEm)
+    }
+    let bands = cascade_bands(Az, nx, ny, dx, dy)
+
+    print("final.R=" + str(last_R))
+    print("final.peak_R=" + str(peak_R))
+    print("final.Em=" + str(last_Em))
+    print("final.dEm=" + str(dEm))
+    print("final.ohmic_int=" + str(ohmic_int))
+    print("final.energy_residual=" + str(residual))
+    print("final.energy_residual_frac=" + str(residual_frac))
+    print("final.width=" + str(last_width))
+    print("final.islands=" + str(last_islands))
+    print("final.E_xpoint=" + str(last_E))
+    print("final.Bin=" + str(last_Bin))
+    print("final.Jz_xpoint=" + str(last_J))
+    print("cascade.Em_proxy=" + str(bands[0]))
+    print("cascade.mid_frac=" + str(bands[1]))
+    print("cascade.coarse_frac=" + str(bands[2]))
+
+    // return pack: R, peak_R, dEm, ohmic, residual_frac, width, islands, Em0, Em1
+    return [last_R, peak_R, dEm, ohmic_int, residual_frac, last_width, last_islands as float, Em0, last_Em]
+}
+
+// =============================================================================
+// LUNDQUIST SCAN — theory confrontation (the core scientific claim surface)
+// =============================================================================
+
+fn lundquist_scan() {
+    print("---- lundquist theoretical scan ----")
+    // S values as floats
+    let Ss = [100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 100000000.0, 1000000000000.0]
+    let v_ell = 0.1
+    let ell_over_L = 0.25
+    let Rstoch = stochastic_rate(v_ell, ell_over_L)
+    print("stoch.v_ell_over_va=" + str(v_ell))
+    print("stoch.ell_over_L=" + str(ell_over_L))
+    print("stoch.R_upper=" + str(Rstoch))
+
+    let i = 0
+    let n = len(Ss)
+    // accumulate how many S have Petschek >> SP (fast-theory regime)
+    let fast_theory_count = 0
+    let max_boost = 0.0
+    let S_solar = 1000000000000.0
+    while i < n {
+        let S = Ss[i]
+        let Rsp = sweet_parker_rate(S)
+        let Rp = petschek_rate(S)
+        let Rg = global_diffusion_rate(S)
+        let boost_ps = Rp / Rsp
+        let boost_st = Rstoch / Rsp
+        let boost_global = Rsp / Rg
+        if boost_ps > 2.0 {
+            fast_theory_count = fast_theory_count + 1
+        }
+        if boost_st > max_boost {
+            max_boost = boost_st
+        }
+        print("S=" + str(S) + " R_global=" + str(Rg) + " R_SP=" + str(Rsp) + " R_Pets=" + str(Rp) + " R_stoch=" + str(Rstoch) + " Pets/SP=" + str(boost_ps) + " stoch/SP=" + str(boost_st) + " SP/global=" + str(boost_global))
+        i = i + 1
+    }
+
+    // Explicit solar-flare style discrepancy report
+    let Rsp_s = sweet_parker_rate(S_solar)
+    let Rp_s = petschek_rate(S_solar)
+    let Rg_s = global_diffusion_rate(S_solar)
+    print("solar_like.S=" + str(S_solar))
+    print("solar_like.R_global=" + str(Rg_s))
+    print("solar_like.R_SP=" + str(Rsp_s))
+    print("solar_like.R_Pets=" + str(Rp_s))
+    print("solar_like.R_stoch=" + str(Rstoch))
+    print("solar_like.SP_over_global=" + str(Rsp_s / Rg_s))
+    print("solar_like.stoch_over_SP=" + str(Rstoch / Rsp_s))
+    print("solar_like.Pets_over_SP=" + str(Rp_s / Rsp_s))
+    // flare observation order-of-magnitude: often cited as needing R ~ 0.01–0.1
+    let R_obs_target = 0.01
+    print("solar_like.obs_target_R=" + str(R_obs_target))
+    print("solar_like.SP_shortfall_factor=" + str(R_obs_target / Rsp_s))
+    print("scan.fast_theory_count=" + str(fast_theory_count))
+    return [Rstoch, Rsp_s, Rp_s, R_obs_target / Rsp_s, fast_theory_count as float]
+}
+
+// =============================================================================
+// REGIME CLASSIFICATION + SEAL
+// =============================================================================
+
+fn classify_regime(R_classical, R_anomalous, islands, residual_frac) {
+    if residual_frac > 0.5 {
+        return ReconRegime::NumericallyBroken { energy_residual_milli: milli(residual_frac) }
+    }
+    // plasmoid candidate if multi-extrema + elevated rate
+    if islands >= 3 && R_anomalous > 1.5 * R_classical {
+        return ReconRegime::PlasmoidCandidate { islands: islands, rate_milli: milli(R_anomalous) }
+    }
+    if R_anomalous > 1.5 * R_classical {
+        let boost = R_anomalous / max_f(R_classical, 1.0e-12)
+        return ReconRegime::FastAnomalous { rate_milli: milli(R_anomalous), boost_milli: milli(boost) }
+    }
+    return ReconRegime::SpSlow { rate_milli: milli(R_classical) }
+}
+
+fn regime_code(r) {
+    return match r {
+        ReconRegime::SpSlow { rate_milli: _a } => 0,
+        ReconRegime::FastAnomalous { rate_milli: _b, boost_milli: _c } => 1,
+        ReconRegime::PlasmoidCandidate { islands: _d, rate_milli: _e } => 2,
+        ReconRegime::NumericallyBroken { energy_residual_milli: _f } => 3,
+    }
+}
+
+fn regime_label(code) {
+    if code == 0 { return "SP_SLOW" }
+    if code == 1 { return "FAST_ANOMALOUS" }
+    if code == 2 { return "PLASMOID_CANDIDATE" }
+    return "NUMERICALLY_BROKEN"
+}
+
+fn seal_research(R_c, R_a, residual_c, residual_a, stoch_over_sp_solar, checksum) {
+    let flags = 0
+    // expect anomalous faster than classical
+    if R_a <= R_c {
+        flags = flags + 1
+    }
+    // energy bookkeeping should not be wild on either run
+    if residual_c > 0.5 || residual_a > 0.5 {
+        flags = flags + 2
+    }
+    // solar-like theory must show stoch >> SP (the open-problem signature)
+    if stoch_over_sp_solar < 10.0 {
+        flags = flags + 4
+    }
+
+    if flags == 0 {
+        return SealVerdict::ResearchConsistent { checksum: checksum }
+    }
+    if flags == 1 {
+        return SealVerdict::RateDiscrepancy { classical_milli: milli(R_c), anomalous_milli: milli(R_a) }
+    }
+    if flags == 2 {
+        let res = residual_c
+        if residual_a > residual_c { res = residual_a }
+        return SealVerdict::ConservationFail { residual_milli: milli(res) }
+    }
+    return SealVerdict::Compound { flags: flags }
+}
+
+fn seal_code(v) {
+    return match v {
+        SealVerdict::ResearchConsistent { checksum: _c } => 0,
+        SealVerdict::RateDiscrepancy { classical_milli: _a, anomalous_milli: _b } => 1,
+        SealVerdict::ConservationFail { residual_milli: _r } => 2,
+        SealVerdict::Compound { flags: _f } => 3,
+    }
+}
+
+fn seal_label(code) {
+    if code == 0 { return "RESEARCH_CONSISTENT" }
+    if code == 1 { return "RATE_DISCREPANCY" }
+    if code == 2 { return "CONSERVATION_FAIL" }
+    return "COMPOUND_FAIL"
+}
+
+// =============================================================================
+// MAIN
+// =============================================================================
+
+fn main() {
+    print("=== FMRK: Fast Magnetic Reconnection Research Kernel ===")
+    print("domain: plasma-MHD problem: Sweet-Parker vs fast reconnection")
+    print("honesty: reduced 2D resistive induction + theory scan; not full 3D kinetic PIC")
+
+    // ---- Grid / physics parameters (Alfvén units) ----
+    let nx = 24
+    let ny = 12
+    let Lx = 4.0 * pi()
+    let Ly = 2.0 * pi()
+    let B0 = 1.0
+    let VA = 1.0
+    let delta = 0.45
+    let eps_seed = 0.08
+    let eta0 = 0.025
+    let alpha_anom = 10.0
+    let Jcrit = 2.2
+    let dt = 0.0007
+    let nsteps = 220
+    let sample_every = 55
+
+    // Local Lundquist estimate S = L V_A / η with L = Lx/2
+    let L_half = 0.5 * Lx
+    let S_local = L_half * VA / eta0
+    print("grid.nx=" + str(nx) + " ny=" + str(ny))
+    print("grid.Lx=" + str(Lx) + " Ly=" + str(Ly))
+    print("param.eta0=" + str(eta0) + " alpha_anom=" + str(alpha_anom) + " Jcrit=" + str(Jcrit))
+    print("param.dt=" + str(dt) + " nsteps=" + str(nsteps))
+    print("param.S_local_classical=" + str(S_local))
+    print("theory.R_SP_local=" + str(sweet_parker_rate(S_local)))
+    print("theory.R_Pets_local=" + str(petschek_rate(S_local)))
+
+    // ---- Theory scan (the discrepancy physics cares about) ----
+    let scan = lundquist_scan()
+    let R_stoch = scan[0]
+    let R_sp_solar = scan[1]
+    let R_pets_solar = scan[2]
+    let solar_shortfall = scan[3]
+    let fast_theory_count = scan[4]
+
+    // ---- Dual experiments ----
+    let classic = evolve_experiment("CLASSICAL_ETA", 0, nx, ny, Lx, Ly, B0, delta, eps_seed, eta0, alpha_anom, Jcrit, VA, dt, nsteps, sample_every)
+    let anom = evolve_experiment("ANOMALOUS_ETA", 1, nx, ny, Lx, Ly, B0, delta, eps_seed, eta0, alpha_anom, Jcrit, VA, dt, nsteps, sample_every)
+
+    let Rc = classic[0]
+    let Rc_peak = classic[1]
+    let res_c = classic[4]
+    let islands_c = classic[6] as int
+
+    let Ra = anom[0]
+    let Ra_peak = anom[1]
+    let res_a = anom[4]
+    let islands_a = anom[6] as int
+    let width_a = anom[5]
+
+    let boost = Ra / max_f(Rc, 1.0e-15)
+    let boost_peak = Ra_peak / max_f(Rc_peak, 1.0e-15)
+    print("compare.R_classical=" + str(Rc))
+    print("compare.R_anomalous=" + str(Ra))
+    print("compare.boost=" + str(boost))
+    print("compare.peak_boost=" + str(boost_peak))
+    print("compare.islands_classical=" + str(islands_c))
+    print("compare.islands_anomalous=" + str(islands_a))
+
+    // SP consistency check: measured classical R vs theoretical local SP (order-of-magnitude)
+    let Rsp_loc = sweet_parker_rate(S_local)
+    let sp_ratio = Rc / max_f(Rsp_loc, 1.0e-15)
+    print("compare.classical_over_SP_theory=" + str(sp_ratio))
+
+    // Aspect-ratio SP proxy: R ~ δ/L
+    let R_aspect = width_a / L_half
+    print("compare.aspect_proxy_R=" + str(R_aspect))
+
+    // ---- Regime + seal ----
+    let regime = classify_regime(Rc, Ra, islands_a, max_f(res_c, res_a))
+    let rcode = regime_code(regime)
+    print("regime.code=" + str(rcode))
+    print("regime.label=" + regime_label(rcode))
+
+    let stoch_over_sp = R_stoch / max_f(R_sp_solar, 1.0e-30)
+    print("science.stoch_over_SP_solar=" + str(stoch_over_sp))
+    print("science.solar_SP_shortfall_vs_0p01=" + str(solar_shortfall))
+
+    // Audit codes
+    let codes = []
+    push(codes, milli(Rc))
+    push(codes, milli(Ra))
+    push(codes, milli(boost))
+    push(codes, milli(res_c))
+    push(codes, milli(res_a))
+    push(codes, islands_a)
+    push(codes, milli(R_sp_solar * 1.0e6))
+    push(codes, milli(R_stoch * 1000.0))
+    push(codes, milli(solar_shortfall / 1.0e6))
+    push(codes, rcode)
+    push(codes, fast_theory_count as int)
+    let checksum = chain_hash(codes, 0, len(codes), 1)
+    print("audit.chain_length=" + str(len(codes)))
+    print("audit.checksum=" + str(checksum))
+
+    let verdict = seal_research(Rc, Ra, res_c, res_a, stoch_over_sp, checksum)
+    let vcode = seal_code(verdict)
+    print("seal.code=" + str(vcode))
+    print("seal.verdict=" + seal_label(vcode))
+
+    let sealed_cs = match verdict {
+        SealVerdict::ResearchConsistent { checksum: cs } => cs,
+        _ => 0,
+    }
+    let action = if vcode == 0 {
+        "ARCHIVE_THEORY_PLUS_SIM_ATTEST"
+    } else if vcode == 1 {
+        "INVESTIGATE_RATE_MODEL"
+    } else if vcode == 2 {
+        "TIGHTEN_CONSERVATION_DIAGNOSTICS"
+    } else {
+        "FULL_PHYSICS_REVIEW"
+    }
+    print("seal.checksum=" + str(sealed_cs))
+    print("seal.operator_action=" + action)
+
+    // Machine summary
+    let ok = if vcode == 0 && rcode >= 1 { 1 } else { 0 }
+    // ok means: seal consistent AND we demonstrated a fast channel (anomalous/plasmoid)
+    let summary = "SUMMARY ok=" + str(ok) + " Rc=" + str(Rc) + " Ra=" + str(Ra) + " boost=" + str(boost) + " stoch_over_SP_solar=" + str(stoch_over_sp) + " solar_shortfall=" + str(solar_shortfall) + " regime=" + str(rcode) + " checksum=" + str(checksum) + " verdict=" + str(vcode)
+    print(summary)
+
+    // Final gate code: 0 = research-consistent with demonstrated fast channel
+    let gate = 0
+    if ok == 0 {
+        gate = 1
+    }
+    print(gate)
+}

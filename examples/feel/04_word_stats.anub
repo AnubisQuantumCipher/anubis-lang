@@ -1,0 +1,34 @@
+// Word frequency + ranking — maps, functional stdlib, string tools, sort_by.
+
+fn count_words(text) {
+    let ws = words(lower(text));
+    let mut freq = {};
+    for w in ws {
+        if has_key(freq, w) {
+            freq[w] = freq[w] + 1;
+        } else {
+            freq[w] = 1;
+        }
+    }
+    freq
+}
+
+fn top_n(freq, n) {
+    let pairs = entries(freq); // [[k,v], ...]
+    let sorted = sort_by(pairs, |p| 0 - p[1]); // desc by count
+    take(sorted, n)
+}
+
+fn main() {
+    let text = "Anubis proves what it can seal. Anubis seals what it can prove. "
+        + "Prove seal prove. The language walks. The language runs. The language proves.";
+    let freq = count_words(text);
+    let top = top_n(freq, 5);
+    print("vocab=${len(freq)}");
+    print("total_words=${len(words(lower(text)))}");
+    for p in top {
+        print("${p[0]}: ${p[1]}");
+    }
+    // phrase check
+    print(if has_key(freq, "anubis") { "knows its name" } else { "lost" });
+}

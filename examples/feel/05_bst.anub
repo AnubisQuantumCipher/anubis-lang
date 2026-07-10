@@ -1,0 +1,63 @@
+// Binary search tree with Option, methods, recursive insert/search/inorder.
+
+enum Tree {
+    Empty,
+    Node { val: int, left: Tree, right: Tree },
+}
+
+impl Tree {
+    fn insert(self, x) {
+        match self {
+            Tree::Empty => Tree::Node { val: x, left: Tree::Empty, right: Tree::Empty },
+            Tree::Node { val: v, left: l, right: r } => {
+                if x < v {
+                    Tree::Node { val: v, left: l.insert(x), right: r }
+                } else if x > v {
+                    Tree::Node { val: v, left: l, right: r.insert(x) }
+                } else {
+                    self // no dups
+                }
+            },
+        }
+    }
+
+    fn contains(self, x) {
+        match self {
+            Tree::Empty => false,
+            Tree::Node { val: v, left: l, right: r } => {
+                if x == v { true }
+                else if x < v { l.contains(x) }
+                else { r.contains(x) }
+            },
+        }
+    }
+
+    fn inorder(self) {
+        match self {
+            Tree::Empty => [],
+            Tree::Node { val: v, left: l, right: r } => l.inorder() + [v] + r.inorder(),
+        }
+    }
+
+    fn size(self) {
+        match self {
+            Tree::Empty => 0,
+            Tree::Node { val: _v, left: l, right: r } => 1 + l.size() + r.size(),
+        }
+    }
+}
+
+fn main() {
+    let vals = [5, 3, 8, 1, 4, 7, 9, 2];
+    let mut t = Tree::Empty;
+    for x in vals {
+        t = t.insert(x);
+    }
+    print("size=${t.size()}");
+    print("sorted=${t.inorder()}");
+    print("has 4: ${t.contains(4)}");
+    print("has 6: ${t.contains(6)}");
+    // fold a checksum over inorder
+    let s = reduce(t.inorder(), |a, b| a + b, 0);
+    print("sum=${s}");
+}

@@ -1,0 +1,149 @@
+// Tiny expression language: tokens + recursive descent + Result/? + match.
+// Grammar: expr = term ((+|-) term)* ; term = factor ((*|/) factor)* ; factor = num | (expr)
+// Parser state is [toks, i]. Uses while-flags instead of loop/break (clearer for this surface).
+
+fn tokenize(s) {
+    let mut toks = [];
+    let mut i = 0;
+    let n = len(s);
+    while i < n {
+        let ch = char_at(s, i);
+        if ch == " " {
+            i = i + 1;
+        } else if ch == "+" || ch == "-" || ch == "*" || ch == "/" || ch == "(" || ch == ")" {
+            push(toks, ch);
+            i = i + 1;
+        } else if ord(ch) >= ord("0") && ord(ch) <= ord("9") {
+            let mut j = i;
+            let mut digit = true;
+            while j < n && digit {
+                let c = char_at(s, j);
+                if ord(c) >= ord("0") && ord(c) <= ord("9") {
+                    j = j + 1;
+                } else {
+                    digit = false;
+                }
+            }
+            push(toks, substr(s, i, j - i));
+            i = j;
+        } else {
+            return Err("bad char: ${ch}");
+        }
+    }
+    Ok(toks)
+}
+
+fn peek(st) {
+    let toks = st[0];
+    let i = st[1];
+    if i >= len(toks) {
+        None
+    } else {
+        Some(toks[i])
+    }
+}
+
+fn bump(st) { [st[0], st[1] + 1] }
+
+fn parse_factor(st) {
+    match peek(st) {
+        None => Err("unexpected end"),
+        Some(tok) => {
+            if tok == "(" {
+                st = bump(st);
+                let r = parse_expr(st)?;
+                let v = r[0];
+                st = r[1];
+                match peek(st) {
+                    Some(")") => Ok([v, bump(st)]),
+                    _ => Err("expected )"),
+                }
+            } else if tok == "+" || tok == "-" || tok == "*" || tok == "/" || tok == ")" {
+                Err("expected number or (, got ${tok}")
+            } else {
+                Ok([parse_int(tok), bump(st)])
+            }
+        },
+    }
+}
+
+fn parse_term(st) {
+    let r = parse_factor(st)?;
+    let mut v = r[0];
+    st = r[1];
+    let mut cont = true;
+    while cont {
+        match peek(st) {
+            Some("*") => {
+                st = bump(st);
+                let r2 = parse_factor(st)?;
+                v = v * r2[0];
+                st = r2[1];
+            },
+            Some("/") => {
+                st = bump(st);
+                let r2 = parse_factor(st)?;
+                if r2[0] == 0 {
+                    return Err("div by zero");
+                } else {
+                    v = v / r2[0];
+                    st = r2[1];
+                }
+            },
+            _ => { cont = false; },
+        }
+    }
+    Ok([v, st])
+}
+
+fn parse_expr(st) {
+    let r = parse_term(st)?;
+    let mut v = r[0];
+    st = r[1];
+    let mut cont = true;
+    while cont {
+        match peek(st) {
+            Some("+") => {
+                st = bump(st);
+                let r2 = parse_term(st)?;
+                v = v + r2[0];
+                st = r2[1];
+            },
+            Some("-") => {
+                st = bump(st);
+                let r2 = parse_term(st)?;
+                v = v - r2[0];
+                st = r2[1];
+            },
+            _ => { cont = false; },
+        }
+    }
+    Ok([v, st])
+}
+
+fn eval_src(src) {
+    let toks = tokenize(src)?;
+    let r = parse_expr([toks, 0])?;
+    if r[1][1] != len(toks) {
+        Err("trailing junk at ${r[1][1]}")
+    } else {
+        Ok(r[0])
+    }
+}
+
+fn show(r) {
+    match r {
+        Ok(v) => "ok ${v}",
+        Err(e) => "err ${e}",
+    }
+}
+
+fn main() {
+    print(show(eval_src("2 + 3 * 4")));
+    print(show(eval_src("(2 + 3) * 4")));
+    print(show(eval_src("100 / 5 - 3")));
+    print(show(eval_src("1 + 2 + 3 + 4")));
+    print(show(eval_src("10 / 0")));
+    print(show(eval_src("2 +")));
+    print(show(eval_src("(((7)))")));
+}
