@@ -99,6 +99,13 @@ grid["row"][col].value = v;
 
 Compound assignment works on any place: `+= -= *= /= %= &= |= ^= <<= >>=`.
 
+**Indexing is fail-closed.** An explicit index expression asserts the position exists:
+`xs[i]` on a list past its bounds, `s[i]` / `char_at(s, i)` past a string's length, and `m[k]`
+on an absent map key all **panic** (`ANUBIS_INDEX_OUT_OF_BOUNDS` / `ANUBIS_MISSING_KEY`) rather
+than silently returning `0`; indexing a non-collection panics `ANUBIS_NOT_INDEXABLE`. Negative
+list/string indices are valid (`xs[-1]` is the last element). For *optional* access that must not
+trap, use `get(coll, key, default)` and `has_key(m, k)`.
+
 ## Operators
 
 From highest precedence to lowest:
@@ -435,11 +442,15 @@ Pair these with `if let` / `while let` (see Control flow) for ergonomic optional
 `product`, `range` (2- or 3-arg), `contains`, `index_of`, `position`, `first`, `last`, `take`,
 `drop`, `take_while`, `drop_while`, `concat`, `zip`, `enumerate`, `flatten`, `flat_map`, `unique`,
 `chunk`, `window`, `partition`, `min_by`, `max_by`, `map`, `filter`, `reduce`, `each`, `find`,
-`any`, `all`, `count`. Indexing accepts negatives (`xs[-1]` is the last element). Most list
-functions also accept a string (over its characters) or a map (over its keys).
+`any`, `all`, `count`. Indexing accepts negatives (`xs[-1]` is the last element) and is
+**fail-closed**: `xs[i]` out of bounds panics rather than returning `0` — use `get(xs, i, default)`
+for optional access. Most list functions also accept a string (over its characters) or a map (over
+its keys).
 
 **Maps:** `keys`, `values`, `entries`, `has_key`, `get(m, k, default)`, `merge(a, b)`,
-`map_values(m, f)`, `remove`, `len`. `for k in m` iterates keys.
+`map_values(m, f)`, `remove`, `len`. `for k in m` iterates keys. Reading an absent key with `m[k]`
+is **fail-closed** (panics `ANUBIS_MISSING_KEY`); use `get(m, k, default)` or guard with
+`has_key(m, k)` for optional access.
 
 **Map keys are strings.** A map's keys are always strings; a non-string index is coerced to its
 display form for lookup and storage. So `m[5]` and `m["5"]` address the **same** entry (both key

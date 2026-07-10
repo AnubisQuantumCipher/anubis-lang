@@ -303,3 +303,28 @@ bundle and a public key, without trusting the author — and the prove edge can 
 is a later upgrade of the same key story. `tier` is still `"checked"`. Next on the arc: optional
 ZK-receipt binding into the claim block (re-verify a receipt against its ImageID when present; never
 invent one), then tier grading toward T2.
+
+## Fail-closed indexing (2026-07-10) — finish-the-language wave
+
+The completeness audit flagged a core contradiction: a self-described *fail-closed* language silently
+returned `0` on out-of-bounds list index, past-the-end string index, and missing map key. Fixed in
+`index_get` (`compiler/src/backends/run.rs`, inside the emitted `ANUBIS_CORE_RUNTIME_RS`):
+
+| Access | Before | After |
+|--------|--------|-------|
+| `xs[i]` list OOB | `0` | panic `ANUBIS_INDEX_OUT_OF_BOUNDS` (message names the length + points to `get`) |
+| `s[i]` / `char_at` OOB | `""` | panic `ANUBIS_INDEX_OUT_OF_BOUNDS` |
+| `m[k]` absent key | `0` | panic `ANUBIS_MISSING_KEY` (points to `get`/`has_key`) |
+| index a non-collection | `0` | panic `ANUBIS_NOT_INDEXABLE` |
+
+**Deliberately unchanged (documented contracts):** `list_elem` (destructuring keeps its not-a-list→0
+contract), `field_get` (method/field-default→0), struct list-view compat (`r[0]` for TargetRun), and
+the safe accessors `get(coll, key, default)` / `has_key(m, k)`. Negative indexing (`xs[-1]`) still valid.
+
+**Evidence:** regression tests `index_out_of_bounds_fails_closed`, `missing_map_key_fails_closed`,
+`safe_accessors_survive_fail_closed_indexing` (assert nonzero exit + trap message via
+`compile_and_run_source`). Verified no regression: **215 compiler tests, 0 failed**; turing core 13/13;
+language fixtures 26/26; PCA gate 13/13; language-core repro PASS; all 8 `examples/feel/*` dogfood
+programs run (the two hand-written lexers guard every `char_at` with `i < n`, so trapping is safe).
+LANGUAGE.md updated (indexing + maps sections). Re-run:
+`cargo test -p anubis-compiler --release -- fail_closed index_out_of_bounds missing_map_key`.

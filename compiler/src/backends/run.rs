@@ -634,20 +634,42 @@ impl AnubisValue {
 
     fn index_get(&self, i: AnubisValue) -> AnubisValue {
         match self {
+            // Fail-closed: an explicit `xs[i]` on a list asserts `i` is in range.
+            // Out-of-bounds is a bug, not a silent 0. Use get(xs, i, default) for optional access.
             AnubisValue::List(v) => {
-                let idx = anubis_norm_index(i.as_i64(), v.len());
-                match idx { Some(k) => v[k].clone(), None => AnubisValue::Int(0) }
+                match anubis_norm_index(i.as_i64(), v.len()) {
+                    Some(k) => v[k].clone(),
+                    None => panic!(
+                        "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a list of length {} (use get(xs, i, default) for optional access)",
+                        i.as_i64(), v.len()
+                    ),
+                }
             }
+            // Fail-closed: `s[i]` / char_at(s, i) asserts `i` is a valid character position.
             AnubisValue::Str(s) => {
                 let chars: Vec<char> = s.chars().collect();
-                let idx = anubis_norm_index(i.as_i64(), chars.len());
-                match idx { Some(k) => AnubisValue::Str(chars[k].to_string()), None => AnubisValue::Str(String::new()) }
+                match anubis_norm_index(i.as_i64(), chars.len()) {
+                    Some(k) => AnubisValue::Str(chars[k].to_string()),
+                    None => panic!(
+                        "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a string of length {}",
+                        i.as_i64(), chars.len()
+                    ),
+                }
             }
+            // Fail-closed: `m[k]` asserts key `k` is present. Missing key is a bug, not a silent 0.
+            // Use get(m, k, default) or has_key(m, k) for optional access.
             AnubisValue::Map(m) => {
                 let key = i.display_string();
-                m.iter().find(|(k, _)| k == &key).map(|(_, v)| v.clone()).unwrap_or(AnubisValue::Int(0))
+                match m.iter().find(|(k, _)| k == &key) {
+                    Some((_, v)) => v.clone(),
+                    None => panic!(
+                        "ANUBIS_MISSING_KEY: map has no key {:?} (use get(m, k, default) or has_key(m, k) for optional access)",
+                        key
+                    ),
+                }
             }
             // A+: struct field order supports list-style r[0] (TargetRun and friends).
+            // Kept as a compat accessor: a missing struct index/key stays 0 (documented list-view semantics).
             AnubisValue::Struct { fields, .. } => {
                 let idx = i.as_i64();
                 if idx >= 0 && (idx as usize) < fields.len() {
@@ -657,7 +679,11 @@ impl AnubisValue {
                     fields.iter().find(|(k, _)| k == &key).map(|(_, v)| v.clone()).unwrap_or(AnubisValue::Int(0))
                 }
             }
-            _ => AnubisValue::Int(0),
+            // Fail-closed: indexing a value that is not a collection is a type error, not a silent 0.
+            other => panic!(
+                "ANUBIS_NOT_INDEXABLE: cannot index a value of type {} with []",
+                other.type_name()
+            ),
         }
     }
 
@@ -3521,9 +3547,63 @@ mod run_tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// Compile+run a program that is expected to FAIL CLOSED at runtime:
+    /// assert the process exits nonzero and its stderr carries `needle`.
+    fn run_expect_trap(src: &str, needle: &str) {
+        let out = compile_and_run_source(src, false, &[]).expect("compile+run");
+        assert!(
+            !out.status.success(),
+            "program was expected to trap ({needle}) but exited 0.\nstdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(needle),
+            "expected trap {needle}, got stderr:\n{stderr}"
+        );
+    }
+
     #[test]
     fn arithmetic_precedence() {
         assert_eq!(run("fn main() { print(2 + 3 * 4 - 1); }"), "13");
+    }
+
+    #[test]
+    fn index_out_of_bounds_fails_closed() {
+        // Fail-closed: an explicit list index past the end traps, it does not silently return 0.
+        run_expect_trap(
+            "fn main() { let xs = [10, 20, 30]; print(xs[10]); }",
+            "ANUBIS_INDEX_OUT_OF_BOUNDS",
+        );
+        // Negative-out-of-range also traps.
+        run_expect_trap(
+            "fn main() { let xs = [1, 2]; print(xs[-9]); }",
+            "ANUBIS_INDEX_OUT_OF_BOUNDS",
+        );
+        // String index past the end traps too.
+        run_expect_trap(
+            "fn main() { print(char_at(\"abc\", 7)); }",
+            "ANUBIS_INDEX_OUT_OF_BOUNDS",
+        );
+    }
+
+    #[test]
+    fn missing_map_key_fails_closed() {
+        // Fail-closed: `m[k]` on an absent key traps instead of returning 0.
+        run_expect_trap(
+            "fn main() { let mut m = {}; m[\"a\"] = 1; print(m[\"zzz\"]); }",
+            "ANUBIS_MISSING_KEY",
+        );
+    }
+
+    #[test]
+    fn safe_accessors_survive_fail_closed_indexing() {
+        // get()/has_key() and valid negative indexing remain the optional-access path.
+        let src = "fn main() { \
+            let xs = [10, 20, 30]; let mut m = {}; m[\"a\"] = 1; \
+            print(get(xs, 10, -1)); print(get(m, \"zzz\", -2)); \
+            print(has_key(m, \"a\")); print(xs[-1]); }";
+        assert_eq!(run(src), "-1\n-2\ntrue\n30");
     }
 
     #[test]
