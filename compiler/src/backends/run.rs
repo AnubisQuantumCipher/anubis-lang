@@ -4736,6 +4736,22 @@ mod run_tests {
     }
 
     #[test]
+    fn direct_method_call_arity_is_checked() {
+        let bad = crate::frontend::parse_source(
+            "struct P { x: int } impl P { fn add(self, a, b) { self.x + a + b } } \
+             fn main(){ print(P { x: 1 }.add(2)); }",
+        )
+        .unwrap();
+        assert!(crate::middle::typecheck(bad, crate::frontend::Mode::Safe).is_err());
+        let good = crate::frontend::parse_source(
+            "struct P { x: int } impl P { fn add(self, a, b) { self.x + a + b } } \
+             fn main(){ print(P { x: 1 }.add(2, 3)); }",
+        )
+        .unwrap();
+        assert!(crate::middle::typecheck(good, crate::frontend::Mode::Safe).is_ok());
+    }
+
+    #[test]
     fn stdlib_maps() {
         assert_eq!(
             run("fn main() { let m = { \"a\": 1, \"b\": 2 }; print(len(keys(m))); }"),

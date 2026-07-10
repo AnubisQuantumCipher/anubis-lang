@@ -233,13 +233,21 @@ regression test. Suite: **204 compiler tests, 0 failed** (`cargo test -p anubis-
 
 Suite after Wave 2: **206 compiler tests, 0 failed.** 18 defects fixed across both waves.
 
-**Remaining (14) — mostly design calls for operator input, plus a low-severity tail:**
-- **Map key identity** (int-indexing a string key collides; int vs float key differ) — a design question
-  (string-keyed vs typed keys); maps are documented string-keyed, so deferred pending a decision.
-- **Method/closure/function arity** — currently pads missing args with `0` (a deliberate convention the
-  higher-order path relies on). Whether a *direct* call with the wrong arity should error is a design call.
-- Mutating builtins (`push`) on a struct-field place — currently a clean fail-closed limitation (workaround: a
-  local var); struct display in declaration vs insertion order (cosmetic); unknown-var in an `if` condition
-  (coverage-completeness, false-positive risk); plus low-severity edge cases (#23–32).
-- **Fixture-harness debt:** `run_language_fixtures.sh` is state-sensitive (stale `out/` false-fails);
-  `missing_semicolon.anb` is stale (semicolons are optional now).
+### Wave 3 (2026-07-10) — design decisions resolved
+
+Two deferred design calls were decided by the operator:
+- **Arity policy → strict direct, pad higher-order.** A *direct* call with the wrong arity errors
+  (`ANUBIS_ARITY_MISMATCH`); higher-order/pipeline use (`map`/`filter`) keeps padding. **Functions** were
+  already strict; **methods** now are too (`direct_method_call_arity_is_checked`; ambiguous same-name
+  arities across impls are left unchecked). *Remaining:* direct **closure** calls (`let f = |x,y|…; f(1)`)
+  still pad — needs closure-arity tracking in the scope.
+- **Map keys → keep string-keyed, documented.** LANGUAGE.md now states keys are strings and non-string
+  indices coerce via display form (`m[5]`==`m["5"]`; `m[1]`≠`m[1.0]`). No code change.
+
+Suite: **207 compiler tests, 0 failed.** 19 defects fixed + 2 design decisions resolved across three waves.
+
+**Remaining tail (low-severity / follow-up):** direct closure-call arity; mutating builtins (`push`) on a
+struct-field place (clean fail-closed limitation, local-var workaround); struct display in declaration vs
+insertion order (cosmetic); unknown-var in an `if` condition (coverage, false-positive risk); low-severity
+edge cases (#23–32). **Harness debt:** `run_language_fixtures.sh` is state-sensitive (stale `out/`
+false-fails); `missing_semicolon.anb` is stale (semicolons are optional now).

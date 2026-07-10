@@ -441,6 +441,11 @@ functions also accept a string (over its characters) or a map (over its keys).
 **Maps:** `keys`, `values`, `entries`, `has_key`, `get(m, k, default)`, `merge(a, b)`,
 `map_values(m, f)`, `remove`, `len`. `for k in m` iterates keys.
 
+**Map keys are strings.** A map's keys are always strings; a non-string index is coerced to its
+display form for lookup and storage. So `m[5]` and `m["5"]` address the **same** entry (both key
+`"5"`), and `m[1]` and `m[1.0]` address **different** entries (keys `"1"` and `"1.0"`) — key identity
+follows the string form, not the `==` operator. Use string keys explicitly to avoid surprises.
+
 **Functional:** `compose(f, g)` (→ `x ↦ f(g(x))`), `identity`, `apply(f, args_list)`, `call`,
 `times(n, f)` (→ `[f(0), …, f(n-1)]`).
 

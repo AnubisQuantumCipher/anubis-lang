@@ -118,6 +118,9 @@ struct SemanticContext {
     fn_params: BTreeMap<String, Vec<String>>,
     /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
     all_fns: BTreeSet<String>,
+    /// Method name → parameter count (including `self`). `None` marks a name defined with more than
+    /// one arity across impls, so its direct-call arity is ambiguous and left unchecked.
+    method_arities: BTreeMap<String, Option<usize>>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -201,6 +204,23 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     name.clone(),
                     params.iter().map(|(_, ty)| ty.clone()).collect(),
                 );
+            }
+            // Collect method arities (including `self`) so direct method calls can be arity-checked;
+            // a name defined with differing arities across impls is marked ambiguous (None).
+            Item::Impl { methods, .. } => {
+                for m in methods {
+                    if let Item::Fn { name, params, .. } = m {
+                        let arity = params.len();
+                        ctx.method_arities
+                            .entry(name.clone())
+                            .and_modify(|e| {
+                                if *e != Some(arity) {
+                                    *e = None;
+                                }
+                            })
+                            .or_insert(Some(arity));
+                    }
+                }
             }
             _ => {}
         }
@@ -1634,6 +1654,30 @@ fn check_expr_semantics(
                 check_expr_semantics(&arm.body, scope, ctx);
             }
             check_match_exhaustiveness(scrutinee, arms, scope, ctx);
+        }
+        Expr::CallExpr { callee, args } => {
+            check_expr_semantics(callee, scope, ctx);
+            for a in args {
+                check_expr_semantics(a, scope, ctx);
+            }
+            // Direct method call `recv.method(args)`: arity-check when the method name resolves to a
+            // single known arity. `self` is the receiver, so `args.len() + 1` must equal that arity.
+            if let Expr::FieldAccess { field, .. } = &**callee {
+                if let Some(Some(arity)) = ctx.method_arities.get(field).copied() {
+                    if args.len() + 1 != arity {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_ARITY_MISMATCH".into()),
+                            message: format!(
+                                "method `{}` expects {} argument(s), got {}",
+                                field,
+                                arity.saturating_sub(1),
+                                args.len()
+                            ),
+                            span: None,
+                        });
+                    }
+                }
+            }
         }
         Expr::Declassify { inner, .. } => check_expr_semantics(inner, scope, ctx),
         Expr::Cast { expr, .. } => check_expr_semantics(expr, scope, ctx),
