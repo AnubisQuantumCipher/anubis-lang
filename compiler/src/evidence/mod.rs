@@ -28,8 +28,11 @@ pub struct EvidenceManifest {
     pub sarif_hash: String,
     #[serde(default)]
     pub bounty_report_hash: String,
-    #[serde(default)]
-    pub manifest_signature: String,
+    /// SHA-256 digest binding the core manifest fields (source/build/tree hashes + verdict). This
+    /// is a *digest*, not a cryptographic signature — the real Ed25519 signature lives in `pca.sig`.
+    /// Renamed from the misleading `manifest_signature`; the alias keeps older bundles readable.
+    #[serde(default, alias = "manifest_signature")]
+    pub manifest_sha256: String,
     pub checks: Vec<Check>,
     pub verdict: String,
     // Gate 15 security superpowers
@@ -306,7 +309,7 @@ pub fn build_evidence_bundle(
 
     let all_pass = checks.iter().all(|c| c.status == "PASS");
     let verdict = if all_pass { "PASS" } else { "FAIL" }.to_string();
-    let manifest_signature = sha256_bytes(
+    let manifest_sha256 = sha256_bytes(
         format!(
             "{}:{}:{}:{}",
             source_hash, build_log_hash, source_tree_hash, verdict
@@ -326,7 +329,7 @@ pub fn build_evidence_bundle(
         source_tree_hash,
         sarif_hash,
         bounty_report_hash,
-        manifest_signature,
+        manifest_sha256,
         checks,
         verdict,
         security: security.or_else(|| Some(serde_json::json!({
