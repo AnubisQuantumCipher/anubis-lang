@@ -1,0 +1,30 @@
+// EXPECT: 14|20|5|13
+fn parse_factor(ts, i) {
+    if ts[i] == "(" { let r = parse_expr(ts, i + 1); [r[0], r[1] + 1] }
+    else { [parse_int(ts[i]), i + 1] }
+}
+fn parse_term(ts, i) {
+    let r = parse_factor(ts, i); let val = r[0]; let j = r[1];
+    while j < len(ts) && (ts[j] == "*" || ts[j] == "/") {
+        let r2 = parse_factor(ts, j + 1);
+        if ts[j] == "*" { val = val * r2[0]; } else { val = val / r2[0]; }
+        j = r2[1];
+    }
+    [val, j]
+}
+fn parse_expr(ts, i) {
+    let r = parse_term(ts, i); let val = r[0]; let j = r[1];
+    while j < len(ts) && (ts[j] == "+" || ts[j] == "-") {
+        let r2 = parse_term(ts, j + 1);
+        if ts[j] == "+" { val = val + r2[0]; } else { val = val - r2[0]; }
+        j = r2[1];
+    }
+    [val, j]
+}
+fn eval(s) { let r = parse_expr(words(s), 0); r[0] }
+fn main() {
+    print(eval("2 + 3 * 4"));
+    print(eval("( 2 + 3 ) * 4"));
+    print(eval("10 - 2 - 3"));
+    print(eval("2 * ( 3 + 4 ) - 1"));
+}

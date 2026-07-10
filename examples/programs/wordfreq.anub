@@ -1,0 +1,8 @@
+// EXPECT: the -> 3|fox -> 2|quick -> 1
+fn main() {
+    let text = "the quick brown fox the lazy dog the fox jumps";
+    let counts = {};
+    for w in words(text) { counts[w] = get(counts, w, 0) + 1; }
+    let ranked = sort_by(keys(counts), |k| 0 - counts[k]);
+    for k in take(ranked, 3) { print("${k} -> ${counts[k]}"); }
+}

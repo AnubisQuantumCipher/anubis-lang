@@ -1,0 +1,12 @@
+// EXPECT: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+fn merge(a, b) {
+    let out = []; let i = 0; let j = 0;
+    while i < len(a) && j < len(b) {
+        if a[i] <= b[j] { out = out + [a[i]]; i = i + 1; } else { out = out + [b[j]]; j = j + 1; }
+    }
+    out + slice(a, i, len(a)) + slice(b, j, len(b))
+}
+fn msort(xs) {
+    if len(xs) <= 1 { xs } else { let m = len(xs) / 2; merge(msort(slice(xs, 0, m)), msort(slice(xs, m, len(xs)))) }
+}
+fn main() { print(msort([5, 2, 8, 1, 9, 3, 7, 4, 6, 0])); }

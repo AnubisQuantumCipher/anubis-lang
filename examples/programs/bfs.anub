@@ -1,0 +1,22 @@
+// EXPECT: shortest path length: 6
+fn main() {
+    let grid = [[0,0,0,1],[1,1,0,1],[0,0,0,0],[0,1,1,0]];
+    let rows = len(grid); let cols = len(grid[0]);
+    let q = [[0, 0, 0]];
+    let seen = { "0,0": true };
+    let ans = -1;
+    while len(q) > 0 {
+        let cell = q[0]; q = drop(q, 1);
+        let r = cell[0]; let c = cell[1]; let d = cell[2];
+        if r == rows - 1 && c == cols - 1 { ans = d; break; }
+        let dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+        for dv in dirs {
+            let nr = r + dv[0]; let nc = c + dv[1];
+            if nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc] == 0 {
+                let key = "${nr},${nc}";
+                if !has_key(seen, key) { seen[key] = true; q = q + [[nr, nc, d + 1]]; }
+            }
+        }
+    }
+    print("shortest path length: ${ans}");
+}

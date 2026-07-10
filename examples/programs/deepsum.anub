@@ -1,0 +1,9 @@
+// EXPECT: 45
+fn deep_sum(x) {
+    if type(x) == "list" {
+        let acc = 0;
+        for e in x { acc = acc + deep_sum(e); }
+        acc
+    } else { x }
+}
+fn main() { print(deep_sum([1, [2, 3, [4, [5, 6]]], 7, [[8], 9]])); }

@@ -1,0 +1,21 @@
+// EXPECT: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+enum Tree { Leaf, Node { val: int, left: Tree, right: Tree } }
+fn insert(t, v) {
+    match t {
+        Tree::Leaf => Tree::Node { val: v, left: Tree::Leaf, right: Tree::Leaf },
+        Tree::Node { val: x, left: l, right: r } =>
+            if v < x { Tree::Node { val: x, left: insert(l, v), right: r } }
+            else { Tree::Node { val: x, left: l, right: insert(r, v) } },
+    }
+}
+fn inorder(t) {
+    match t {
+        Tree::Leaf => [],
+        Tree::Node { val: x, left: l, right: r } => inorder(l) + [x] + inorder(r),
+    }
+}
+fn main() {
+    let t = Tree::Leaf;
+    for v in [5, 3, 8, 1, 4, 7, 9, 2, 6] { t = insert(t, v); }
+    print(inorder(t));
+}

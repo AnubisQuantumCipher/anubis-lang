@@ -5010,6 +5010,41 @@ mod run_tests {
     }
 
     #[test]
+    fn golden_program_examples() {
+        // The examples/programs/ corpus — larger, real programs (a recursive-descent calculator, a
+        // BST over a recursive enum, a stack VM, grid BFS, merge sort, trait polymorphism, `?`
+        // chains) — each with a `// EXPECT:` header. Dogfooding kept as regression coverage: proves
+        // the language runs substantial real programs end-to-end and never silently regresses.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/programs");
+        let mut count = 0;
+        for entry in std::fs::read_dir(&dir).expect("examples/programs directory") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("anub") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            let expect = src
+                .lines()
+                .next()
+                .and_then(|l| l.trim().strip_prefix("// EXPECT:"))
+                .unwrap_or_else(|| panic!("{:?} missing `// EXPECT:` header", path))
+                .trim()
+                .to_string();
+            let out = compile_and_run_source(&src, false, &[]).expect("run program example");
+            assert!(
+                out.status.success(),
+                "{:?} exited nonzero: {}",
+                path,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let got = String::from_utf8_lossy(&out.stdout).trim().replace('\n', "|");
+            assert_eq!(got, expect, "output mismatch for {:?}", path);
+            count += 1;
+        }
+        assert!(count >= 8, "expected >= 8 program examples, ran {}", count);
+    }
+
+    #[test]
     fn research_path_compiles_poc_kit_runtime() {
         // Exercises the allow_research lowering so the PoC-kit runtime (which contains its own
         // exhaustive matches over AnubisValue) is compiled — guards against a missing variant arm.

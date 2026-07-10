@@ -1,0 +1,8 @@
+// EXPECT: 16|[8, 10, 12]
+fn adder(n) { |x| x + n }
+fn main() {
+    let inc = adder(1); let add10 = adder(10);
+    print(inc(add10(5)));
+    let pipe = compose(|x| x * 2, |x| x + 3);
+    print(map([1, 2, 3], pipe));
+}

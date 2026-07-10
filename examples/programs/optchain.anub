@@ -1,0 +1,8 @@
+// EXPECT: Some(6)|None
+fn lookup(m, k) { if has_key(m, k) { Some(m[k]) } else { None } }
+fn chain(m, a, b, c) { let x = lookup(m, a)?; let y = lookup(m, b)?; let z = lookup(m, c)?; Some(x + y + z) }
+fn main() {
+    let m = { "a": 1, "b": 2, "c": 3 };
+    print(chain(m, "a", "b", "c"));
+    print(chain(m, "a", "x", "c"));
+}
