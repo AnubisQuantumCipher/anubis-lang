@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+mod ty;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BindingInfo {
     pub name: String,
@@ -1113,12 +1115,37 @@ fn analyze_stmts(
                 }
                 // A reassigned binding can no longer be modeled from its initial `let` value: the
                 // solver does straight-line analysis and cannot follow a loop/branch update, so its
-                // concrete-let assumption goes stale. Drop it from the modelable set — an assertion
-                // over it is then left to the runtime instead of being (unsoundly) "disproved"
-                // against its pre-assignment value (e.g. `for i in 1..5 { total = total + i }
-                // assert(total == 10)` must not be refuted with the stale `total == 0`).
+                // concrete-let assumption goes stale. Drop it from the modelable set AND remove any
+                // stale fact about it from the assumptions — an assertion over it is then left to the
+                // runtime instead of being (unsoundly) "disproved" against its pre-assignment value
+                // (e.g. `for i in 1..5 { total = total + i } assert(total == 10)` must not be refuted
+                // with the stale `total == 0`). Removing the stale fact — not just dropping
+                // modelability — is essential: a loop invariant later RE-MODELS the variable, and a
+                // surviving `x == <old>` would then launder a false invariant/postcondition.
                 if let Some(root) = assign_target_root(target) {
                     ctx.solver_int_vars.remove(root);
+                    let mangled = smt_var(root);
+                    assumptions.retain(|a| {
+                        let mut vs = BTreeSet::new();
+                        collect_vars_from_smt(a, &mut vs);
+                        !vs.contains(&mangled)
+                    });
+                    // Re-establish a fresh fact when the new value is modelable and does NOT reference
+                    // the reassigned variable itself — a constant or an expression over OTHER modelable
+                    // variables (an `x`-referencing RHS is now unmodelable, since `x` was just removed
+                    // from the modelable set, so `x = x + 1` correctly adds nothing). This keeps the
+                    // common `i = 0;` reset before a counted loop provable without introducing a
+                    // self-referential false fact.
+                    if matches!(target, Expr::Var(_))
+                        && is_int_modelable(value, &ctx.solver_int_vars)
+                    {
+                        let smt = expr_to_smt(value, &ctx.symbolic_widths);
+                        let def = format!("(= {} {})", mangled, smt);
+                        ctx.solver_int_vars.insert(root.to_string());
+                        ctx.symbolic_widths.entry(root.to_string()).or_insert(64);
+                        ctx.constraints.push(format!("(assert {})", def));
+                        assumptions.push(def);
+                    }
                 }
                 check_expr_semantics(value, scope, ctx);
                 // Reassignment changes what a closure-valued binding holds: recompute its arity
@@ -1163,8 +1190,14 @@ fn analyze_stmts(
                 if expr_taint_source(cond, scope).is_some() {
                     effects.push("tainted-branch".into());
                 }
+                // A branch may not execute, so a fact it asserts (e.g. `x = 5`) must not leak out as
+                // unconditional. Analyze each branch under the pre-`if` assumptions (the branches are
+                // ALTERNATIVES — reset between them so `then`'s facts don't leak into `else`), then
+                // discard the branch facts and drop every variable either branch conditionally writes.
+                let snapshot = assumptions.clone();
                 analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
                 if let Some(else_body) = else_ {
+                    *assumptions = snapshot.clone();
                     analyze_stmts(
                         else_body,
                         mode,
@@ -1175,6 +1208,8 @@ fn analyze_stmts(
                         ctx,
                     );
                 }
+                let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
+                drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
             }
             Stmt::While {
                 cond,
@@ -1192,21 +1227,18 @@ fn analyze_stmts(
                 } else {
                     verify_while_invariants(ctx, cond, invariant, body, assumptions)
                 };
+                // Snapshot the pre-loop assumptions. A loop can run ZERO times, so no fact its body
+                // accumulates survives it: after analysis we restore this snapshot and drop every
+                // written variable. Havoc the written variables first so an in-body `assert` is not
+                // discharged against a stale pre-loop value the loop mutates each iteration.
+                let snapshot = assumptions.clone();
+                havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
-                if let Some((post, written, readmit)) = admit {
-                    // Post-loop, drop the STALE pre-loop concrete assumption of EVERY variable the
-                    // loop writes (e.g. `i == 0`, or an auxiliary `z == 0`) — otherwise a post-loop
-                    // assertion could be "proved" against a value the loop has since changed. An outer
-                    // fact about a variable the loop never writes (e.g. `n < 1000`) is still true and
-                    // is KEPT. Then re-model only the TRACKED variables (constrained by the proved
-                    // invariants) so a later `ensures`/`assert` can use them.
-                    let written_mangled: BTreeSet<String> =
-                        written.iter().map(|v| smt_var(v)).collect();
-                    assumptions.retain(|a| {
-                        let mut vs = BTreeSet::new();
-                        collect_vars_from_smt(a, &mut vs);
-                        vs.is_disjoint(&written_mangled)
-                    });
+                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
+                if let Some((post, _written, readmit)) = admit {
+                    // A VERIFIED invariant DOES hold after the loop: re-model the tracked variables
+                    // (constrained by the proved invariants ∧ ¬cond) so a later `ensures`/`assert` can
+                    // rely on them.
                     for v in &readmit {
                         ctx.solver_int_vars.insert(v.clone());
                         ctx.symbolic_widths.entry(v.clone()).or_insert(64);
@@ -1238,7 +1270,10 @@ fn analyze_stmts(
                     );
                     ctx.known_bindings.insert(n);
                 }
+                let snapshot = assumptions.clone();
+                havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::Loop { body, invariant } => {
                 effects.push("loop".into());
@@ -1252,7 +1287,10 @@ fn analyze_stmts(
                         span: None,
                     });
                 }
+                let snapshot = assumptions.clone();
+                havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::For {
                 var,
@@ -1304,7 +1342,10 @@ fn analyze_stmts(
                     },
                 );
                 ctx.known_bindings.insert(var.clone());
+                let snapshot = assumptions.clone();
+                havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::Break | Stmt::Continue => {}
             Stmt::SpecBlock { .. } => effects.push("spec".into()),
@@ -2069,6 +2110,40 @@ fn collect_expr_vars(e: &Expr, out: &mut BTreeSet<String>) {
     }
 }
 
+/// True when an expression contains NO statement-bearing construct — no block, `if`/`match`/`if let`
+/// expression, or lambda — so it cannot hide an assignment or an escape. A loop body made only of
+/// such simple expressions (plus plain assignments) is a flat straight-line sequence the transition
+/// extractor can model soundly. This is the robust guard against writes hidden inside expressions
+/// (e.g. `let z = if c { x = x + 1; 0 } else { 0 }`), which a statement-only scan never sees.
+fn expr_is_simple(e: &Expr) -> bool {
+    match e {
+        Expr::Block { .. }
+        | Expr::If { .. }
+        | Expr::Match { .. }
+        | Expr::IfLet { .. }
+        | Expr::Lambda { .. } => false,
+        Expr::Call { args, .. } | Expr::ArrayLiteral { elements: args } => {
+            args.iter().all(expr_is_simple)
+        }
+        Expr::EnumConstruct { fields, .. } => fields.iter().all(expr_is_simple),
+        Expr::CallExpr { callee, args } => {
+            expr_is_simple(callee) && args.iter().all(expr_is_simple)
+        }
+        Expr::Binary { lhs, rhs, .. } => expr_is_simple(lhs) && expr_is_simple(rhs),
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr_is_simple(expr),
+        Expr::Try(expr) | Expr::Assume(expr) | Expr::Assert(expr) => expr_is_simple(expr),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_is_simple(inner),
+        Expr::Index { base, index } => expr_is_simple(base) && expr_is_simple(index),
+        Expr::FieldAccess { base, .. } => expr_is_simple(base),
+        Expr::StructLiteral { fields, .. } => fields.iter().all(|(_, e)| expr_is_simple(e)),
+        Expr::MapLiteral { entries, .. } => {
+            entries.iter().all(|(k, v)| expr_is_simple(k) && expr_is_simple(v))
+        }
+        // Leaves: Var / Literal / StrLiteral / Symbolic / TaintSource / UnifiedBuffer / RawPtr / Other.
+        _ => true,
+    }
+}
+
 /// Collect the ROOT of every place the loop body assigns, at ANY depth and in ANY form (a plain
 /// `x = ...`, a compound `x += ...`, an `a[i] = ...` / `p.f = ...` place, or a write nested in an
 /// `if`/nested loop). These are exactly the variables whose value can change across iterations, so a
@@ -2078,21 +2153,48 @@ fn collect_expr_vars(e: &Expr, out: &mut BTreeSet<String>) {
 fn collect_assigned_roots(body: &[Stmt], out: &mut BTreeSet<String>) {
     for s in body {
         match s {
-            Stmt::Assign { target, .. } => {
+            Stmt::Assign { target, value } => {
                 if let Some(r) = assign_target_root(target) {
                     out.insert(r.to_string());
                 }
+                expr_assigned_roots(target, out);
+                expr_assigned_roots(value, out);
             }
-            Stmt::If { then, else_, .. } => {
+            // A `let`/`let-pattern`/expression statement can hide a write inside an `if`/`match`/block
+            // EXPRESSION (`let z = if c { x = x + 1; 0 } else { 0 };`) which a statement-only scan would
+            // miss — walk the expressions too.
+            Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+                expr_assigned_roots(init, out)
+            }
+            Stmt::ExprStmt(e) => expr_assigned_roots(e, out),
+            Stmt::If { cond, then, else_ } => {
+                expr_assigned_roots(cond, out);
                 collect_assigned_roots(then, out);
                 if let Some(e) = else_ {
                     collect_assigned_roots(e, out);
                 }
             }
-            Stmt::While { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::WhileLet { body, .. }
+            Stmt::While { cond, body, .. } => {
+                expr_assigned_roots(cond, out);
+                collect_assigned_roots(body, out);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                expr_assigned_roots(expr, out);
+                collect_assigned_roots(body, out);
+            }
+            Stmt::For { source, body, .. } => {
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        expr_assigned_roots(start, out);
+                        expr_assigned_roots(end, out);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        expr_assigned_roots(expr, out)
+                    }
+                }
+                collect_assigned_roots(body, out);
+            }
+            Stmt::Loop { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => collect_assigned_roots(body, out),
             Stmt::HybridBlock { gpu, cpu, prove } => {
@@ -2105,32 +2207,137 @@ fn collect_assigned_roots(body: &[Stmt], out: &mut BTreeSet<String>) {
     }
 }
 
-/// True when statement `s` (recursively) assigns to any variable in `vars`. Used to decide whether a
-/// loop body's branch / nested loop touches a loop-carried variable in a way straight-line transition
-/// extraction cannot model.
-fn stmt_assigns_any(s: &Stmt, vars: &BTreeSet<String>) -> bool {
-    match s {
-        Stmt::Assign { target, .. } => {
-            assign_target_root(target).is_some_and(|r| vars.contains(r))
+/// Collect assignment roots hidden INSIDE an expression — an assignment can live in a block, `if`,
+/// `match`, or `if let` used in expression position (a `let` initializer, a call argument, a branch
+/// value). Mutually recursive with `collect_assigned_roots` via `Expr::Block`.
+fn expr_assigned_roots(e: &Expr, out: &mut BTreeSet<String>) {
+    match e {
+        Expr::Block { stmts, tail } => {
+            collect_assigned_roots(stmts, out);
+            if let Some(t) = tail {
+                expr_assigned_roots(t, out);
+            }
         }
-        Stmt::If { then, else_, .. } => {
-            then.iter().any(|s| stmt_assigns_any(s, vars))
-                || else_
-                    .as_ref()
-                    .is_some_and(|e| e.iter().any(|s| stmt_assigns_any(s, vars)))
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            expr_assigned_roots(cond, out);
+            expr_assigned_roots(then, out);
+            expr_assigned_roots(else_, out);
         }
-        Stmt::While { body, .. }
-        | Stmt::Loop { body, .. }
-        | Stmt::For { body, .. }
-        | Stmt::WhileLet { body, .. }
-        | Stmt::ResearchBlock { body, .. }
-        | Stmt::ExploitBlock { body, .. } => body.iter().any(|s| stmt_assigns_any(s, vars)),
-        Stmt::HybridBlock { gpu, cpu, prove } => [gpu, cpu, prove]
-            .into_iter()
-            .flatten()
-            .any(|b| b.iter().any(|s| stmt_assigns_any(s, vars))),
-        _ => false,
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            expr_assigned_roots(scrutinee, out);
+            expr_assigned_roots(then, out);
+            expr_assigned_roots(else_, out);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_assigned_roots(scrutinee, out);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    expr_assigned_roots(g, out);
+                }
+                expr_assigned_roots(&a.body, out);
+            }
+        }
+        Expr::Lambda { body, .. } => expr_assigned_roots(body, out),
+        Expr::Call { args, .. }
+        | Expr::ArrayLiteral { elements: args }
+        | Expr::EnumConstruct { fields: args, .. } => {
+            for x in args {
+                expr_assigned_roots(x, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            expr_assigned_roots(callee, out);
+            for x in args {
+                expr_assigned_roots(x, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_assigned_roots(lhs, out);
+            expr_assigned_roots(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr_assigned_roots(expr, out),
+        Expr::Try(expr) | Expr::Assume(expr) | Expr::Assert(expr) => {
+            expr_assigned_roots(expr, out)
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            expr_assigned_roots(inner, out)
+        }
+        Expr::Index { base, index } => {
+            expr_assigned_roots(base, out);
+            expr_assigned_roots(index, out);
+        }
+        Expr::FieldAccess { base, .. } => expr_assigned_roots(base, out),
+        Expr::StructLiteral { fields, .. } => {
+            for (_, x) in fields {
+                expr_assigned_roots(x, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                expr_assigned_roots(k, out);
+                expr_assigned_roots(v, out);
+            }
+        }
+        _ => {}
     }
+}
+
+
+/// After a scope that MAY NOT fully execute — a loop body that can run zero times, or an `if` branch
+/// that may not be taken — the variables it writes are UNCERTAIN. Restore the pre-scope assumptions
+/// (discarding whatever facts the scope accumulated) and drop the fact + modelability of every
+/// variable the scope writes. Without this, a fact asserted on a conditional path (e.g. `x = 5` inside
+/// `while i < n { … }` or `if c { … }`) would leak out as an UNCONDITIONAL fact, letting `check`
+/// certify an `ensures`/`assert` that is false when the path does not run.
+fn drop_written_after_scope(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    snapshot: Vec<String>,
+    bodies: &[&[Stmt]],
+) {
+    *assumptions = snapshot;
+    let mut written = BTreeSet::new();
+    for b in bodies {
+        collect_assigned_roots(b, &mut written);
+    }
+    let wm: BTreeSet<String> = written.iter().map(|v| smt_var(v)).collect();
+    assumptions.retain(|a| {
+        let mut vs = BTreeSet::new();
+        collect_vars_from_smt(a, &mut vs);
+        vs.is_disjoint(&wm)
+    });
+    for v in &written {
+        ctx.solver_int_vars.remove(v);
+    }
+}
+
+/// Havoc (invalidate) every variable a loop body writes BEFORE the body is analyzed: drop it from the
+/// modelable set and remove its stale pre-loop fact. Without this, an obligation INSIDE the loop body
+/// (e.g. `assert(x < 2)` before `x = x + 1`) is discharged against the pre-loop value of a variable
+/// the loop mutates every iteration — a false proof that `check` accepts but the runtime panics on.
+/// After havoc, an in-body assertion over a loop-written variable is left to the runtime (which does
+/// enforce `assert`), rather than "proved" from a value the loop has moved past.
+fn havoc_loop_written(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, body: &[Stmt]) {
+    let mut written = BTreeSet::new();
+    collect_assigned_roots(body, &mut written);
+    let mangled: BTreeSet<String> = written.iter().map(|v| smt_var(v)).collect();
+    for v in &written {
+        ctx.solver_int_vars.remove(v);
+    }
+    assumptions.retain(|a| {
+        let mut vs = BTreeSet::new();
+        collect_vars_from_smt(a, &mut vs);
+        vs.is_disjoint(&mangled)
+    });
 }
 
 /// True when statement `s` can break/continue/return OUT of the enclosing loop being analyzed. A
@@ -2186,11 +2393,17 @@ fn extract_loop_transition(
     model_vars: &BTreeSet<String>,
 ) -> Option<BTreeMap<String, Expr>> {
     // A break/continue/return anywhere in the body (including nested inside an `if`) can exit the
-    // loop while its condition is still true, so the post-loop `¬cond` assumption would be unsound —
-    // reject. (A top-level occurrence is also caught in the match below; this covers nested ones.)
+    // loop while its condition is still true, so the post-loop `¬cond` assumption would be unsound.
     if body.iter().any(stmt_escapes_loop) {
         return None;
     }
+    // The body must be a FLAT, SIMPLE straight-line sequence: only plain `x = <simple expr>`
+    // assignments, `let` bindings with a simple initializer, and neutral expression statements
+    // (print/assert with no embedded assignment). A branch (`if`), a nested loop, a `match`, an
+    // index/field-place assignment, or ANY expression that embeds a block/`if`/`match` (which could
+    // hide a conditional write, e.g. `let z = if c { x = x + 1; 0 }`) is not soundly modelable as a
+    // single unconditional transition — reject. This flat-body rule is the robust guard: it does not
+    // depend on chasing writes through every expression form.
     let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
     for st in body {
         match st {
@@ -2198,35 +2411,49 @@ fn extract_loop_transition(
                 target: Expr::Var(v),
                 value,
             } => {
+                if !expr_is_simple(value) {
+                    return None;
+                }
                 let concrete = substitute_vars(value, &sub);
-                // The update's right-hand side must be modelable (so the transition is sound in
-                // QF_BV). A non-modelable update to a tracked variable defeats verification.
+                // A non-modelable update to a TRACKED variable defeats verification. A non-modelable
+                // update to an auxiliary is allowed here, but its stale fact is dropped by the
+                // caller's `written`/frame handling so it cannot be read as a frozen constant.
                 if tracked.contains(v) && !is_int_modelable(&concrete, model_vars) {
                     return None;
                 }
                 if is_int_modelable(&concrete, model_vars) {
                     sub.insert(v.clone(), concrete);
                 } else {
-                    // An untracked variable assigned a non-modelable value: harmless to the
-                    // invariant, but drop any stale mapping for it.
                     sub.remove(v);
                 }
             }
-            // A `let` of a loop-local binding does not change the outer loop-carried variables.
-            Stmt::Let { .. } | Stmt::LetPattern { .. } => {}
-            // Any escape or non-straight-line control flow makes the per-iteration transition
-            // impossible to model soundly.
-            Stmt::Break | Stmt::Continue => return None,
-            Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => return None,
-            // A print/assert/assume or other expression statement cannot mutate an integer binding
-            // (Anubis is by-value), so it is transition-neutral.
-            Stmt::ExprStmt(_) => {}
-            // A branch or nested loop is fine ONLY if it does not write a tracked variable.
-            other => {
-                if stmt_assigns_any(other, tracked) {
+            // A `let` with a simple initializer is a loop-local binding, neutral for the transition —
+            // UNLESS it SHADOWS a modeled variable. A shadowing `let y = 5` would make a later in-body
+            // read of `y` resolve, in the model, to the outer symbolic (carrying its stale pre-loop
+            // fact `y == 0`) while the runtime uses the shadow (5), certifying a false invariant.
+            // Reject such a shadow rather than mis-model it (a fresh, non-shadowing name is fine).
+            Stmt::Let { name, init, .. } => {
+                if !expr_is_simple(init) || model_vars.contains(name) {
                     return None;
                 }
             }
+            Stmt::LetPattern { pattern, init, .. } => {
+                if !expr_is_simple(init)
+                    || pattern.bound_names().iter().any(|n| model_vars.contains(n))
+                {
+                    return None;
+                }
+            }
+            // A print/assert/assume with a simple argument cannot mutate an integer binding (Anubis
+            // is by-value); a call whose argument embeds a block could, so require simplicity.
+            Stmt::ExprStmt(e) => {
+                if !expr_is_simple(e) {
+                    return None;
+                }
+            }
+            // Anything else — a branch, a nested loop, a `match` statement, an index/field-place
+            // assignment, a bare break/continue — is not a flat straight-line statement.
+            _ => return None,
         }
     }
     Some(sub)
@@ -2582,51 +2809,23 @@ fn static_non_indexable(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> 
     (is_numeric_ty(&n) || n == "bool").then_some(n)
 }
 
+// The type-reasoning predicates now live in `middle/ty.rs` (the single source of truth and the
+// foundation for the structured `Ty` enum). These are thin shims delegating to it; behavior is
+// pinned identical by the `ty_parity` test below.
 fn normalize_ty(ty: &str) -> String {
-    let t = ty.trim().to_ascii_lowercase();
-    match t.as_str() {
-        "int" | "i8" | "i16" | "i32" | "i64" | "i128" | "u128" | "usize" | "isize" | "number" => {
-            "u32".into()
-        }
-        "u8" | "u16" | "u32" | "u64" => t,
-        "str" | "string" => "string".into(),
-        "bool" | "boolean" => "bool".into(),
-        "list" | "array" | "vec" => "list".into(),
-        "map" | "dict" | "dictionary" => "map".into(),
-        other => other.to_string(),
-    }
+    ty::normalize(ty)
 }
 
 fn is_numeric_ty(ty: &str) -> bool {
-    matches!(
-        normalize_ty(ty).as_str(),
-        "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "float"
-    )
+    ty::is_numeric(ty)
 }
 
-/// An INTEGER type the solver may soundly model as a 64-bit bit-vector (matching the i64 runtime).
-/// Floats are deliberately excluded: modeling an `f64` as an integer bit-vector is unsound (it
-/// "proved" `2*x != 1` for `x = 0.5`). `tainted<T>` is a qualifier — unwrap it first.
 fn is_integer_ty(ty: &str) -> bool {
-    let inner = ty.trim();
-    let inner = if let Some(rest) = inner.strip_prefix("tainted<") {
-        rest.strip_suffix('>').unwrap_or(rest)
-    } else {
-        inner
-    };
-    matches!(normalize_ty(inner).as_str(), "u8" | "u16" | "u32" | "u64")
+    ty::is_integer(ty)
 }
 
-/// True when `x as ty` cannot change the underlying i64 value, so the cast may be modeled as the
-/// identity in QF_BV. The runtime (`backends/run.rs`) truncates/sign-extends to the target width, so
-/// only 64-bit targets are value-preserving; `as u8`/`as u16`/`as u32` (and any float target) DO
-/// change the value and must be treated as non-modelable (the solver ignored the truncation and
-/// "proved" `(x as u8) == x`).
 fn cast_preserves_i64(ty: &str) -> bool {
-    matches!(
-        ty.trim().to_ascii_lowercase().as_str(),
-        "u64" | "i64" | "int" | "integer" | "usize" | "isize" | "u128" | "i128"
-    )
+    ty::cast_preserves_i64(ty)
 }
 
 /// Mangle an Anubis identifier into an SMT symbol that can never collide with an SMT-LIB keyword or
@@ -2640,69 +2839,10 @@ fn smt_var(name: &str) -> String {
 
 /// A+ compatibility: numeric widths interoperate; bool/string/enums do not cross.
 /// `tainted<T>` is a *qualifier*: clean `T` may flow into a tainted binding (labeling),
-/// and tainted flows are still policed by the separate taint analysis.
-/// Whether a type annotation is a generic type parameter (a short all-uppercase name like `T`)
-/// or a generic instantiation (contains `<`, e.g. `Opt<T>`). Such types are erased at runtime.
-fn is_generic_type(t: &str) -> bool {
-    let t = t.trim();
-    if t.contains('<') {
-        return true;
-    }
-    !t.is_empty() && t.len() <= 2 && t.chars().all(|c| c.is_ascii_uppercase())
-}
-
+/// and tainted flows are still policed by the separate taint analysis. (Generic-parameter and
+/// `tainted<T>` handling now live inside `ty::compatible`.)
 fn types_compatible(expected: &str, actual: &str) -> bool {
-    let e_raw = expected.trim();
-    let a_raw = actual.trim();
-    // An absent annotation is dynamically typed: parameters written `fn f(x)` (no `: T`) accept
-    // any argument, and an argument of unknown static type is accepted by any parameter.
-    if e_raw.is_empty() || a_raw.is_empty() {
-        return true;
-    }
-    // Generic type parameters (`T`, `U`) and generic instantiations (`Opt<T>`, `Box<int>`) are
-    // erased at runtime, so they cannot be soundly checked — treat them as compatible with anything.
-    if is_generic_type(e_raw) || is_generic_type(a_raw) {
-        return true;
-    }
-    let e = normalize_ty(e_raw);
-    let a = normalize_ty(a_raw);
-    if e == a || e_raw == a_raw {
-        return true;
-    }
-    if e == "any" || a == "any" || e == "unknown" || a == "unknown" {
-        return true;
-    }
-    // Pointer forms: any *mut/*const pair is treated as compatible at this slice.
-    if (e_raw.contains('*') || e.contains("rawptr")) && (a_raw.contains('*') || a.contains("rawptr"))
-    {
-        return true;
-    }
-    // tainted<T> ↔ T (qualifier, not a distinct value type for annotation matching)
-    if let Some(inner) = tainted_inner(e_raw) {
-        if types_compatible(&inner, a_raw) {
-            return true;
-        }
-    }
-    if let Some(inner) = tainted_inner(a_raw) {
-        if types_compatible(e_raw, &inner) {
-            return true;
-        }
-    }
-    if is_numeric_ty(&e) && is_numeric_ty(&a) {
-        return true;
-    }
-    false
-}
-
-fn tainted_inner(ty: &str) -> Option<String> {
-    let t = ty.trim();
-    let lower = t.to_ascii_lowercase();
-    if lower.starts_with("tainted<") && lower.ends_with('>') {
-        let start = t.find('<')? + 1;
-        let end = t.rfind('>')?;
-        return Some(t[start..end].trim().to_string());
-    }
-    None
+    ty::compatible(expected, actual)
 }
 
 /// Walk expressions for A+ call typing + match exhaustiveness (fail-closed).
@@ -3104,15 +3244,7 @@ fn mode_name(mode: Mode) -> &'static str {
 }
 
 fn bitwidth_of(ty: &str) -> u32 {
-    if ty.contains("u8") || ty == "u8" {
-        8
-    } else if ty.contains("u16") || ty == "u16" {
-        16
-    } else if ty.contains("u64") || ty == "u64" {
-        64
-    } else {
-        32 // default u32
-    }
+    ty::bitwidth(ty)
 }
 
 fn smt_bv_type(width: u32) -> String {
