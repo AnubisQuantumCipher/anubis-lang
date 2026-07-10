@@ -465,7 +465,7 @@ which return `Some(n)` on success and `None` on malformed input.
 `repeat`, `reverse`, `pad_start(s, w[, fill])`, `pad_end(s, w[, fill])`.
 
 **Lists:** `push`, `pop`, `insert`, `remove`, `slice`, `reverse`, `sort`, `sort_by`, `sum`,
-`product`, `range` (2- or 3-arg), `contains`, `index_of`, `position`, `first`, `last`, `take`,
+`product`, `range` (2- or 3-arg), `contains`, `index_of`, `position`, `first`, `last`, `is_empty`, `take`,
 `drop`, `take_while`, `drop_while`, `concat`, `zip`, `enumerate`, `flatten`, `flat_map`, `unique`,
 `chunk`, `window`, `partition`, `min_by`, `max_by`, `map`, `filter`, `reduce`, `each`, `find`,
 `any`, `all`, `count`. Indexing accepts negatives (`xs[-1]` is the last element) and is

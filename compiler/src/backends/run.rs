@@ -1535,6 +1535,19 @@ fn anubis_product(a: AnubisValue) -> AnubisValue {
 }
 fn anubis_first(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().next().unwrap_or(AnubisValue::Int(0)) }
 fn anubis_last(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().last().unwrap_or(AnubisValue::Int(0)) }
+/// True when a collection has no elements (empty ⟺ `len == 0`, matching `len`'s type coverage).
+/// Lets programs guard `pop`/`last`/index access without hand-writing `len(xs) > 0` everywhere.
+fn anubis_is_empty(v: AnubisValue) -> AnubisValue {
+    let n = match &v {
+        AnubisValue::List(l) => l.len(),
+        AnubisValue::Str(s) => s.chars().count(),
+        AnubisValue::Map(m) => m.len(),
+        AnubisValue::Struct { fields, .. } => fields.len(),
+        AnubisValue::Enum { fields, .. } => fields.len(),
+        _ => 0,
+    };
+    AnubisValue::Bool(n == 0)
+}
 fn anubis_concat(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     let mut out = anubis_iter(a);
     out.extend(anubis_iter(b));
@@ -2519,6 +2532,7 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "product" => fixed("anubis_product", callee, args, 1),
         "first" => fixed("anubis_first", callee, args, 1),
         "last" => fixed("anubis_last", callee, args, 1),
+        "is_empty" => fixed("anubis_is_empty", callee, args, 1),
         "concat" => fixed("anubis_concat", callee, args, 2),
         "min_by" => fixed("anubis_min_by", callee, args, 2),
         "max_by" => fixed("anubis_max_by", callee, args, 2),
@@ -3748,6 +3762,15 @@ mod run_tests {
             print(get(xs, 10, -1)); print(get(m, \"zzz\", -2)); \
             print(has_key(m, \"a\")); print(xs[-1]); }";
         assert_eq!(run(src), "-1\n-2\ntrue\n30");
+    }
+
+    #[test]
+    fn is_empty_covers_collections() {
+        let src = "fn main() { \
+            print(is_empty([])); print(is_empty([1])); \
+            print(is_empty(\"\")); print(is_empty(\"x\")); \
+            let mut m = {}; print(is_empty(m)); m[\"a\"] = 1; print(is_empty(m)); }";
+        assert_eq!(run(src), "true\nfalse\ntrue\nfalse\ntrue\nfalse");
     }
 
     #[test]
