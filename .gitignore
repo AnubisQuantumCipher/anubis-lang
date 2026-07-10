@@ -19,6 +19,15 @@ out/*_tampered/
 out/current_*/
 implementer/a_plus_audit_run/*/proof_bundle/
 
+# Gate / audit / study run output (generated, regenerable — never dirty the tree)
+out/
+implementer/a_plus_audit_run/
+AGENT_STUDY/
+forensics/
+examples/**/out/
+poc_kit/bin/
+**/__pycache__/
+
 # OS / editor
 .DS_Store
 *.swp
