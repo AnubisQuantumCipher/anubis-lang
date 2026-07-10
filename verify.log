@@ -1,2 +1,0 @@
-standalone verify PASSED using real risc0_zkvm::Receipt::verify(image_id) API
-journal_sha256=e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc
