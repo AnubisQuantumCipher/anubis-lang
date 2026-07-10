@@ -8,7 +8,7 @@ mod proof_input;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{lower_program_to_guest, lower_program_to_rust},
-    evidence::{build_evidence_bundle, validate_bundle, EvidenceManifest},
+    evidence::{build_evidence_bundle, verify_pca, EvidenceManifest},
     frontend::{Item, Mode},
     gate11_fixture_verdict,
     middle::{SymbolicEngine, TaintPass},
@@ -2045,7 +2045,9 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             Ok(())
         }
         Commands::Verify { bundle } | Commands::Validate { bundle } => {
-            let ok = validate_bundle(&bundle).map_err(|e| anyhow!("{}", e))?;
+            // PCA verification: hash/tamper validation PLUS re-deriving the claim block from the
+            // bundle's own source and confirming it matches the recorded pca.json (fail-closed).
+            let ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
             println!("bundle valid: {}", ok);
             if !ok {
                 std::process::exit(1);

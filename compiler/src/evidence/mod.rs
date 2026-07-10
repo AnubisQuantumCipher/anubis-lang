@@ -338,6 +338,9 @@ pub fn build_evidence_bundle(
     std::fs::write(dir.join("evidence.json"), &json).map_err(|e| e.to_string())?;
     // v1 schema prefers manifest.json as well
     std::fs::write(dir.join("manifest.json"), &json).map_err(|e| e.to_string())?;
+    // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
+    // source. Written before the manifest hashing so it is covered by MANIFEST.sha256.
+    write_json(&dir.join("pca.json"), &derive_claim_block(source, mode))?;
     write_manifest_hashes(&dir)?;
 
     Ok(EvidenceBundle { dir, manifest })
@@ -384,6 +387,96 @@ pub fn validate_bundle(dir: &Path) -> Result<bool, String> {
         && report_ok
         && checks_ok
         && manifest.verdict == "PASS")
+}
+
+/// The Proof-Carrying Artifact claim block: a deterministic, independently-checkable summary of what
+/// a program is claimed to be. Unlike the hash-based manifest, it records the *semantic* verdict
+/// (parse / typecheck / taint / solver), so `anubis verify` can RE-DERIVE it from the source and
+/// confirm the recorded claim is honest — not merely untampered. It carries no timestamp: the same
+/// source + mode always yields the same block, which is what makes re-derivation a real cross-check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimBlock {
+    pub pca_version: u32,
+    pub source_sha256: String,
+    pub mode: String,
+    /// Assurance tier actually reached. v0: `"checked"` — parse + typecheck + taint + solver ran.
+    pub tier: String,
+    pub parse_ok: bool,
+    pub typecheck_ok: bool,
+    /// No tainted value reaches a sink without declassification.
+    pub taint_clean: bool,
+    pub solver_obligations: usize,
+    pub solver_all_discharged: bool,
+    pub verdict: String,
+    pub tool: String,
+}
+
+/// Re-derive the claim block from source. Deterministic and side-effect free — the single source of
+/// truth used both when emitting a PCA and when verifying one, so the two agree exactly.
+pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
+    let source_sha256 = sha256_bytes(source.as_bytes());
+    let tc_mode = if mode == "research" {
+        crate::frontend::Mode::Research
+    } else {
+        crate::frontend::Mode::Safe
+    };
+    let parse_res = crate::frontend::parse_source(source);
+    let parse_ok = parse_res.is_ok();
+    let mut typecheck_ok = false;
+    let mut taint_clean = false;
+    let mut solver_obligations = 0usize;
+    let mut solver_all_discharged = true;
+    if let Ok(ast) = parse_res {
+        if let Ok(ir) = crate::middle::typecheck(ast, tc_mode) {
+            typecheck_ok = true;
+            let tainted = crate::middle::TaintPass::apply(ir);
+            // A tainted flow that reaches a sink must be declassified to count as clean.
+            taint_clean = tainted
+                .taint_traces
+                .iter()
+                .all(|t| t.sink.is_none() || t.declassified);
+            let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
+            solver_obligations = solver_checks.len();
+            solver_all_discharged = solver_checks.iter().all(|c| c.status == "PASS");
+        }
+    }
+    let verdict = if parse_ok && typecheck_ok && taint_clean && solver_all_discharged {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    ClaimBlock {
+        pca_version: 1,
+        source_sha256,
+        mode: mode.to_string(),
+        tier: "checked".into(),
+        parse_ok,
+        typecheck_ok,
+        taint_clean,
+        solver_obligations,
+        solver_all_discharged,
+        verdict: verdict.into(),
+        tool: "anubis 0.2.0".into(),
+    }
+}
+
+/// Verify a Proof-Carrying Artifact: first the hash / tamper validation, then — the PCA hardening —
+/// RE-DERIVE the claim block from the bundle's own source and confirm it matches the recorded
+/// `pca.json` exactly. A bundle whose recorded verdict does not match what the source actually
+/// proves fails closed, even if every hash was recomputed to look internally consistent.
+pub fn verify_pca(dir: &Path) -> Result<bool, String> {
+    let hashes_ok = validate_bundle(dir)?;
+    let pca_path = dir.join("pca.json");
+    if !pca_path.exists() {
+        // Legacy bundle without a claim block: hash validation is all that is available.
+        return Ok(hashes_ok);
+    }
+    let recorded: ClaimBlock =
+        serde_json::from_str(&std::fs::read_to_string(&pca_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let source = std::fs::read_to_string(dir.join("source.anubis")).map_err(|e| e.to_string())?;
+    let fresh = derive_claim_block(&source, &recorded.mode);
+    Ok(hashes_ok && fresh == recorded)
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -791,4 +884,51 @@ fn validate_manifest_hashes(dir: &Path) -> Result<bool, String> {
         }
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod pca_tests {
+    use super::*;
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        let mut d = std::env::temp_dir();
+        d.push(format!("anubis-pca-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn derive_claim_block_is_deterministic() {
+        let src = "fn main() { let x = 2 + 3; print(x); }";
+        assert_eq!(
+            derive_claim_block(src, "safe"),
+            derive_claim_block(src, "safe")
+        );
+        assert_eq!(derive_claim_block(src, "safe").verdict, "PASS");
+    }
+
+    #[test]
+    fn verify_pca_rederives_claim_and_catches_a_consistent_lie() {
+        let base = unique_dir("rederive");
+        let good = "fn main() { let x = 1; print(x); }";
+        let bundle = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        // A freshly built PCA verifies.
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // Forge the claim block so it disagrees with the source, then regenerate the manifest so
+        // every hash is internally consistent — a hash-only check would now be satisfied.
+        let mut lie = derive_claim_block(good, "safe");
+        lie.taint_clean = !lie.taint_clean;
+        lie.solver_obligations += 1;
+        write_json(&bundle.dir.join("pca.json"), &lie).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+
+        // The hash / tamper layer alone is satisfied (recorded checks PASS, hashes consistent)...
+        assert!(validate_bundle(&bundle.dir).unwrap());
+        // ...but re-deriving the claim from the source catches the lie and fails closed.
+        assert!(!verify_pca(&bundle.dir).unwrap());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

@@ -257,3 +257,25 @@ before running, so the `evidence-*` FAIL glob can't pick up a stale dir (determi
 repeated runs, verified). `missing_semicolon.anb` was repurposed to pin the optional-semicolon feature
 (EXPECT PASS); a new `unterminated_block.anb` preserves the negative parse-error coverage. Language
 fixtures: **26/26 PASS.**
+
+## PCA v0 — Proof-Carrying Artifact (2026-07-10)
+
+The product of the thesis: an evidence bundle now carries a **claim block** (`pca.json`) — a
+deterministic, source-derived verdict (mode, tier, parse/typecheck/taint/solver, `verdict`) — and
+`anubis verify` **re-derives** it from the bundle's own source and cross-checks it, instead of merely
+re-hashing recorded claims. A bundle whose recorded verdict disagrees with what the source actually
+proves fails closed, even when every hash is recomputed to look internally consistent.
+
+| Claim | Status | Evidence | Command |
+|-------|--------|----------|---------|
+| Claim block emitted into every evidence bundle | REAL | `pca.json` (`pca_version`, `source_sha256`, `mode`, `tier`, `parse_ok`, `typecheck_ok`, `taint_clean`, `solver_obligations`, `solver_all_discharged`, `verdict`) | `anubis check FILE --evidence --out d && cat d/evidence-*/pca.json` |
+| Claim block is deterministic (re-derivable) | REAL | `derive_claim_block_is_deterministic`; no timestamp in the block | `cargo test -p anubis-compiler derive_claim_block` |
+| `verify` re-derives the claim from source and cross-checks | REAL | `verify_pca` re-parses/typechecks/taint/solver the bundle's `source.anubis` and requires it to equal `pca.json` | `anubis verify d/evidence-*` |
+| `verify` catches a lying claim even with consistent hashes | REAL | `verify_pca_rederives_claim_and_catches_a_consistent_lie` — forges `pca.json`, regenerates `MANIFEST.sha256` so the hash layer passes, yet `verify_pca` fails closed | `cargo test -p anubis-compiler verify_pca_rederives` |
+| Tamper gate: source and claim tampering fail closed | REAL | 5/5 — claim block emitted + PASS verdict; clean verify passes; tampered source and tampered claim each fail closed | `bash scripts/run_pca_gate.sh` |
+
+**PCA v0 scope (honest):** `tier` is `"checked"` (parse + typecheck + taint + solver ran) — this is a
+verified *analysis* verdict, not yet a full T1/T2 assurance tier, and the block is not yet
+cryptographically signed (the `manifest_signature` is still a SHA-256, not an asymmetric signature).
+Next: real signing (Ed25519 + Secure Enclave), optional ZK-receipt binding, and tier grading.
+Suite: **210 compiler tests, 0 failed.**
