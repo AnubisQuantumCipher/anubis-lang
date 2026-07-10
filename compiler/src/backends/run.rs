@@ -1518,11 +1518,24 @@ fn anubis_entries(m: AnubisValue) -> AnubisValue {
         _ => AnubisValue::List(vec![]),
     }
 }
+// The fail-SOFT counterpart to fail-closed `coll[key]`: returns the element if the key is present
+// (map) or the index is in range (list/string, negatives allowed), else the caller's `default`.
 fn anubis_get(m: AnubisValue, k: AnubisValue, default: AnubisValue) -> AnubisValue {
     match &m {
         AnubisValue::Map(mm) => {
             let key = k.display_string();
             mm.iter().find(|(kk, _)| kk == &key).map(|(_, v)| v.clone()).unwrap_or(default)
+        }
+        AnubisValue::List(v) => match anubis_norm_index(k.as_i64(), v.len()) {
+            Some(idx) => v[idx].clone(),
+            None => default,
+        },
+        AnubisValue::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            match anubis_norm_index(k.as_i64(), chars.len()) {
+                Some(idx) => AnubisValue::Str(chars[idx].to_string()),
+                None => default,
+            }
         }
         _ => default,
     }
@@ -3667,6 +3680,20 @@ mod run_tests {
             print(get(xs, 10, -1)); print(get(m, \"zzz\", -2)); \
             print(has_key(m, \"a\")); print(xs[-1]); }";
         assert_eq!(run(src), "-1\n-2\ntrue\n30");
+    }
+
+    #[test]
+    fn get_returns_element_for_lists_strings_and_maps() {
+        // `get` is the fail-SOFT accessor: in-bounds / present keys must return the ELEMENT,
+        // not the default (regression: it used to only handle maps and defaulted lists/strings).
+        let src = "fn main() { \
+            let xs = [10, 20, 30]; \
+            print(get(xs, 0, -1)); print(get(xs, 2, -1)); print(get(xs, -1, -1)); \
+            print(get(\"hello\", 1, \"?\")); \
+            let mut m = {}; m[\"a\"] = 7; print(get(m, \"a\", -1)); \
+            print(get(xs, 99, -1)); print(get(\"hi\", 9, \"?\")); print(get(m, \"z\", -1)); }";
+        // in-bounds: 10, 30, 30(last), "e", 7 ; out-of-range/missing fall to default: -1, "?", -1
+        assert_eq!(run(src), "10\n30\n30\ne\n7\n-1\n?\n-1");
     }
 
     #[test]
