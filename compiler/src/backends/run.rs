@@ -4752,6 +4752,26 @@ mod run_tests {
     }
 
     #[test]
+    fn direct_closure_call_arity_is_checked() {
+        let tc = |s: &str| {
+            crate::middle::typecheck(
+                crate::frontend::parse_source(s).unwrap(),
+                crate::frontend::Mode::Safe,
+            )
+        };
+        // Direct call with the wrong arity errors.
+        assert!(tc("fn main(){ let f = |x, y| x + y; print(f(1)); }").is_err());
+        // Correct arity is fine.
+        assert!(tc("fn main(){ let f = |x, y| x + y; print(f(1, 2)); }").is_ok());
+        // Higher-order use still pads (no error) — strict-direct, pad-HOF policy.
+        assert!(tc("fn main(){ print(map([1, 2, 3], |x| x + x)); }").is_ok());
+        // A named-function reference is arity-checked too.
+        assert!(tc("fn add(a, b) { a + b } fn main(){ let h = add; print(h(1)); }").is_err());
+        // Reassigning to a different-arity closure does not false-positive.
+        assert!(tc("fn main(){ let f = |x, y| x + y; f = |z| z; print(f(3)); }").is_ok());
+    }
+
+    #[test]
     fn stdlib_maps() {
         assert_eq!(
             run("fn main() { let m = { \"a\": 1, \"b\": 2 }; print(len(keys(m))); }"),

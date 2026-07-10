@@ -236,18 +236,19 @@ Suite after Wave 2: **206 compiler tests, 0 failed.** 18 defects fixed across bo
 ### Wave 3 (2026-07-10) — design decisions resolved
 
 Two deferred design calls were decided by the operator:
-- **Arity policy → strict direct, pad higher-order.** A *direct* call with the wrong arity errors
-  (`ANUBIS_ARITY_MISMATCH`); higher-order/pipeline use (`map`/`filter`) keeps padding. **Functions** were
-  already strict; **methods** now are too (`direct_method_call_arity_is_checked`; ambiguous same-name
-  arities across impls are left unchecked). *Remaining:* direct **closure** calls (`let f = |x,y|…; f(1)`)
-  still pad — needs closure-arity tracking in the scope.
+- **Arity policy → strict direct, pad higher-order (COMPLETE).** A *direct* call with the wrong arity
+  errors (`ANUBIS_ARITY_MISMATCH`); higher-order/pipeline use (`map`/`filter`) keeps padding. Enforced
+  for **functions** (already), **methods** (`direct_method_call_arity_is_checked`; ambiguous same-name
+  arities across impls left unchecked), and **closures / named-fn references**
+  (`direct_closure_call_arity_is_checked`; arity tracked in the scope, recomputed on reassignment so a
+  different-arity reassign does not false-positive; unknown-arity params left unchecked).
 - **Map keys → keep string-keyed, documented.** LANGUAGE.md now states keys are strings and non-string
   indices coerce via display form (`m[5]`==`m["5"]`; `m[1]`≠`m[1.0]`). No code change.
 
 Suite: **207 compiler tests, 0 failed.** 19 defects fixed + 2 design decisions resolved across three waves.
 
-**Remaining tail (low-severity / follow-up):** direct closure-call arity; mutating builtins (`push`) on a
-struct-field place (clean fail-closed limitation, local-var workaround); struct display in declaration vs
-insertion order (cosmetic); unknown-var in an `if` condition (coverage, false-positive risk); low-severity
-edge cases (#23–32). **Harness debt:** `run_language_fixtures.sh` is state-sensitive (stale `out/`
+**Remaining tail (low-severity / follow-up — NOT mainline; do not clear before PCA):** mutating builtins
+(`push`) on a struct-field place (clean fail-closed limitation, local-var workaround); struct display in
+declaration vs insertion order (cosmetic); unknown-var in an `if` condition (coverage, false-positive
+risk); low-severity edge cases (#23–32). **Harness debt:** `run_language_fixtures.sh` is state-sensitive (stale `out/`
 false-fails); `missing_semicolon.anb` is stale (semicolons are optional now).

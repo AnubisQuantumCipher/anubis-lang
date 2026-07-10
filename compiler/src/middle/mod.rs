@@ -96,6 +96,28 @@ pub struct TypedIR {
 #[derive(Debug, Clone)]
 struct ScopeBinding {
     info: BindingInfo,
+    /// Arity of the value when it is a closure / first-class function bound here (a lambda literal or
+    /// a named-function reference); `None` when unknown. Used to arity-check direct closure calls.
+    closure_arity: Option<usize>,
+}
+
+/// Arity of an initializer if it is a closure or first-class function reference, else `None`.
+/// Conservative: only a lambda literal, a named-function reference, or an alias of a known-arity
+/// closure yields an arity — anything else is unknown and left unchecked (no false positives).
+fn closure_arity_of(
+    init: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<usize> {
+    match init {
+        Expr::Lambda { params, .. } => Some(params.len()),
+        Expr::Var(n) => ctx
+            .fn_params
+            .get(n)
+            .map(|p| p.len())
+            .or_else(|| scope.get(n).and_then(|b| b.closure_arity)),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -577,7 +599,13 @@ fn analyze_function(
             if tainted {
                 ctx.taint_labels.push(format!("{}: {}", name, ty));
             }
-            scope.insert(name.clone(), ScopeBinding { info: info.clone() });
+            scope.insert(
+                name.clone(),
+                ScopeBinding {
+                    info: info.clone(),
+                    closure_arity: None,
+                },
+            );
             // Parameters are in-scope for the whole body, so a `let s = param` must not
             // report the parameter as an unknown variable.
             ctx.known_bindings.insert(name.clone());
@@ -731,7 +759,14 @@ fn analyze_stmts(
                         .push(format!("{}: derived_from {}", name, source));
                     effects.push("taint-propagate".into());
                 }
-                scope.insert(name.clone(), ScopeBinding { info: info.clone() });
+                let ca = closure_arity_of(init, scope, ctx);
+                scope.insert(
+                    name.clone(),
+                    ScopeBinding {
+                        info: info.clone(),
+                        closure_arity: ca,
+                    },
+                );
                 fn_symbols.push(info);
 
                 // Record width for solver per-var BV
@@ -837,6 +872,16 @@ fn analyze_stmts(
                     }
                 }
                 check_expr_semantics(value, scope, ctx);
+                // Reassignment changes what a closure-valued binding holds: recompute its arity
+                // (or clear it) so a later direct call checks the current value, not a stale one.
+                if let Expr::Var(name) = target {
+                    if scope.contains_key(name) {
+                        let ca = closure_arity_of(value, scope, ctx);
+                        if let Some(b) = scope.get_mut(name) {
+                            b.closure_arity = ca;
+                        }
+                    }
+                }
                 // A+: if target is a typed variable, value must be compatible.
                 if let Expr::Var(name) = target {
                     if let Some(binding) = scope.get(name) {
@@ -893,7 +938,13 @@ fn analyze_stmts(
                         declassified: false,
                         span: None,
                     };
-                    scope.insert(n.clone(), ScopeBinding { info });
+                    scope.insert(
+                        n.clone(),
+                        ScopeBinding {
+                            info,
+                            closure_arity: None,
+                        },
+                    );
                     ctx.known_bindings.insert(n);
                 }
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
@@ -922,7 +973,13 @@ fn analyze_stmts(
                     declassified: false,
                     span: None,
                 };
-                scope.insert(var.clone(), ScopeBinding { info: info.clone() });
+                scope.insert(
+                    var.clone(),
+                    ScopeBinding {
+                        info: info.clone(),
+                        closure_arity: None,
+                    },
+                );
                 ctx.known_bindings.insert(var.clone());
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
             }
@@ -1604,6 +1661,22 @@ fn check_expr_semantics(
                             }
                         }
                     }
+                }
+            } else if let Some(arity) = scope.get(callee).and_then(|b| b.closure_arity) {
+                // Direct call of a closure-valued local (`let f = |x, y| …; f(1)`): arity-check it.
+                // Higher-order use (`map(xs, f)`) is an internal call, not a source `f(args)`, so it
+                // still pads — matching the strict-direct / pad-higher-order arity policy.
+                if args.len() != arity {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_ARITY_MISMATCH".into()),
+                        message: format!(
+                            "closure `{}` expects {} argument(s), got {}",
+                            callee,
+                            arity,
+                            args.len()
+                        ),
+                        span: None,
+                    });
                 }
             }
             for a in args {
