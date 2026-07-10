@@ -924,6 +924,15 @@ fn analyze_stmts(
                         });
                     }
                 }
+                // A reassigned binding can no longer be modeled from its initial `let` value: the
+                // solver does straight-line analysis and cannot follow a loop/branch update, so its
+                // concrete-let assumption goes stale. Drop it from the modelable set — an assertion
+                // over it is then left to the runtime instead of being (unsoundly) "disproved"
+                // against its pre-assignment value (e.g. `for i in 1..5 { total = total + i }
+                // assert(total == 10)` must not be refuted with the stale `total == 0`).
+                if let Some(root) = assign_target_root(target) {
+                    ctx.solver_int_vars.remove(root);
+                }
                 check_expr_semantics(value, scope, ctx);
                 // Reassignment changes what a closure-valued binding holds: recompute its arity
                 // (or clear it) so a later direct call checks the current value, not a stale one.
@@ -1361,6 +1370,17 @@ pub fn replay_counterexample_for_ir(_ir: &TypedIR, model: &str) -> bool {
 
 fn expr_to_smt(e: &Expr, widths: &BTreeMap<String, u32>) -> String {
     expr_to_smt_with_width(e, widths, None)
+}
+
+/// The root variable of an assignment place (`x` in `x`, `xs[i]`, `p.f.g`), if any. Used to drop
+/// a reassigned binding from the solver's modelable set.
+fn assign_target_root(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Var(v) => Some(v),
+        Expr::Index { base, .. } => assign_target_root(base),
+        Expr::FieldAccess { base, .. } => assign_target_root(base),
+        _ => None,
+    }
 }
 
 /// True when `e` is a genuine integer term over solver-modelable variables: an integer literal,

@@ -1080,6 +1080,23 @@ fn main() {
     }
 
     #[test]
+    fn solver_does_not_disprove_loop_carried_assertions() {
+        // A binding mutated after its `let` (here, accumulated in a loop) cannot be modeled from
+        // its initial value; the checker must not disprove a TRUE post-loop assertion against the
+        // stale pre-loop value. `total` ends at 10, so `assert(total == 10)` must not FAIL.
+        let src = "fn main() { let mut total = 0; for i in 1..5 { total = total + i; } \
+                   assert(total == 10); }";
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks.iter().all(|c| c.status != "FAIL"),
+            "must not disprove a true loop-carried assertion: {:?}",
+            checks
+        );
+    }
+
+    #[test]
     fn solver_model_replay_failed_for_inconsistent_model() {
         // Hostile test: bad model that violates assumption should cause replay fail
         use crate::middle;
