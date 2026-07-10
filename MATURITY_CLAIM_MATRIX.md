@@ -389,3 +389,24 @@ agents as under-documented, now a dedicated LANGUAGE.md section with a verified 
 
 Net: **224 compiler tests (was 212 at sweep start), 0 failed**; language fixtures 26/26; PCA 13/13;
 turing 13/13; all 8 `examples/feel/*` run. Sweep transcript: workflow `wf_d8a05288-c83`.
+
+## Dogfood sweep round 2 — 15 harder domains, 2 confirmed bugs fixed (2026-07-10)
+
+Second round on the fixed binary (Lisp interpreter, Brainfuck, Sudoku solver, CSV query pipeline,
+exact fractions, trie, LRU+Bloom, LCS diff, base64/URL, template engine, A* pathfinding, lambda
+calculus, big-decimal, state machine, JSONPath). **~40 programs, ~all ran first-try; 13 of 15 domains
+completely zero-defect** — cleaner than round 1, confirming the round-1 fixes hold in real programs.
+Two confirmed HIGH bugs, both fixed:
+
+| Bug (severity) | Root cause | Fix commit | Test |
+|----------------|-----------|-----------|------|
+| `check` disproved a TRUE loop-carried assertion (`for..{ total=total+i } assert(total==10)`) (HIGH) | reassigned var kept its stale pre-loop concrete assumption | `f20ad27` | `solver_does_not_disprove_loop_carried_assertions` |
+| research words (`unified`/`symbolic`/`cpu`/`gpu`/`prove`/…) reserved → rejected as ordinary identifiers / user fn names on the run path (HIGH) | global lexer keywords | `33196ae` | `research_words_usable_as_identifiers` |
+
+**Deliberately not changed:** deep metacircular recursion (~20k interpreter levels ≈ ~200k heavy native
+frames) can still exhaust the 1 GiB stack and abort — inherent (Rust can't catch stack overflow), and
+1 GiB is already generous (direct recursion succeeds at 500k). Documented limitation, not a fix target.
+
+Also added `is_empty` (many agents hand-wrote `len(x) > 0`). Net across rounds 1+2: **227 compiler
+tests, 0 failed**; fixtures 26/26; PCA 13/13; POC kit 4/4; proof-binding PASS. Round-2 transcript:
+workflow `wf_7abc8eda-302`. A third round (15 more domains) is running to confirm the tail is dry.
