@@ -204,8 +204,9 @@ pub enum Pattern {
         variant: String,
         /// Positional sub-patterns for tuple variants (`Some(Point { x, y })`, `Err(0)`).
         bindings: Vec<Pattern>,
-        /// Named field bindings `(field, bind)` for struct variants.
-        named_bindings: Vec<(String, String)>,
+        /// Named field sub-patterns `(field, pattern)` for struct variants
+        /// (`Http::Ok { code: 200 }`, `Shape::Circle { r }`).
+        named_bindings: Vec<(String, Pattern)>,
     },
 }
 
@@ -228,7 +229,7 @@ impl Pattern {
             } => {
                 let mut v: Vec<String> =
                     bindings.iter().flat_map(|p| p.bound_names()).collect();
-                v.extend(named_bindings.iter().map(|(_, b)| b.clone()));
+                v.extend(named_bindings.iter().flat_map(|(_, p)| p.bound_names()));
                 v
             }
         }
@@ -1590,16 +1591,14 @@ impl Parser {
                     self.bump();
                     while !self.at_eof() && !self.check_token(&Token::RBrace) {
                         if let Some((fname, _)) = self.expect_ident("expected field in pattern") {
-                            // `field: bind` binds explicitly; shorthand `field` binds to itself.
-                            let bname = if self.check_token(&Token::Colon) {
+                            // `field: <sub-pattern>` matches the field; shorthand `field` binds it.
+                            let sub = if self.check_token(&Token::Colon) {
                                 self.bump();
-                                self.expect_ident("expected binding after field")
-                                    .map(|(b, _)| b)
-                                    .unwrap_or_else(|| fname.clone())
+                                self.parse_pattern_atom()
                             } else {
-                                fname.clone()
+                                Pattern::Binding(fname.clone())
                             };
-                            named_bindings.push((fname, bname));
+                            named_bindings.push((fname, sub));
                         } else {
                             self.bump();
                         }

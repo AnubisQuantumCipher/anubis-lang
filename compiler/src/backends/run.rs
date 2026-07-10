@@ -813,12 +813,23 @@ fn anubis_is_int(v: &AnubisValue) -> bool {
 }
 
 /// Total order over two values. Integer/integer stays exact (no f64 precision loss above 2^53);
-/// mixed numeric uses f64; everything else compares lexicographically by display form.
+/// mixed numeric uses f64; two lists compare element-wise (lexicographic over element order, each
+/// element by this same order — consistent with structural equality, so a tuple/list sort key
+/// like `[grp, val]` orders as expected); everything else compares by display form.
 fn anubis_value_cmp(a: &AnubisValue, b: &AnubisValue) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
     if anubis_is_int(a) && anubis_is_int(b) {
         a.as_i64().cmp(&b.as_i64())
     } else if a.is_numeric() && b.is_numeric() {
-        a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(std::cmp::Ordering::Equal)
+        a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(Ordering::Equal)
+    } else if let (AnubisValue::List(x), AnubisValue::List(y)) = (a, b) {
+        for (p, q) in x.iter().zip(y.iter()) {
+            match anubis_value_cmp(p, q) {
+                Ordering::Equal => continue,
+                ord => return ord,
+            }
+        }
+        x.len().cmp(&y.len())
     } else {
         a.display_string().cmp(&b.display_string())
     }
@@ -1016,11 +1027,14 @@ fn anubis_join(list: AnubisValue, sep: AnubisValue) -> AnubisValue {
     }
 }
 fn anubis_contains(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
-    let n = needle.display_string();
     let result = match &hay {
-        AnubisValue::Str(s) => s.contains(n.as_str()),
-        AnubisValue::List(items) => items.iter().any(|x| x.display_string() == n),
-        AnubisValue::Map(m) => m.iter().any(|(k, _)| k == &n),
+        // Substring test for strings; structural (`==`) membership for a list, so `2 != "2"`.
+        AnubisValue::Str(s) => s.contains(needle.display_string().as_str()),
+        AnubisValue::List(items) => items.iter().any(|x| anubis_value_eq(x, &needle)),
+        AnubisValue::Map(m) => {
+            let n = needle.display_string();
+            m.iter().any(|(k, _)| k == &n)
+        }
         _ => false,
     };
     AnubisValue::Bool(result)
@@ -1044,8 +1058,7 @@ fn anubis_index_of(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
             }
         }
         AnubisValue::List(items) => {
-            let n = needle.display_string();
-            match items.iter().position(|x| x.display_string() == n) {
+            match items.iter().position(|x| anubis_value_eq(x, &needle)) {
                 Some(i) => AnubisValue::Int(i as i64),
                 None => AnubisValue::Int(-1),
             }
@@ -3180,21 +3193,31 @@ fn pattern_test_and_binds(
                 let (_, sub_binds) = pattern_test_and_binds(sub, &temp)?;
                 binds.push_str(&sub_binds);
             }
-            for (fname, bname) in named_bindings {
-                if bname == "_" {
-                    continue; // `Rec::Full { x: _ }` ignores the field
-                }
-                let bn = sanitize_ident(bname)?;
-                let fstr = rust_string_lit(fname)?;
-                binds.push_str(&format!(
-                    "let mut {bn} = match &{scr} {{ AnubisValue::Enum {{ fields, field_names, .. }} => {{ \
+            // A struct-variant field's value by name, or the default 0.
+            let named_field_expr = |fname: &str| -> Result<String> {
+                Ok(format!(
+                    "(match &{scr} {{ AnubisValue::Enum {{ fields, field_names, .. }} => {{ \
                         let mut __v = AnubisValue::Int(0); \
                         for (__i, __n) in field_names.iter().enumerate() {{ \
-                            if __n == &{fstr} {{ if let Some(__f) = fields.get(__i) {{ __v = __f.clone(); }} break; }} \
+                            if __n == &{} {{ if let Some(__f) = fields.get(__i) {{ __v = __f.clone(); }} break; }} \
                         }} \
                         __v \
-                    }}, _ => AnubisValue::Int(0) }}; "
-                ));
+                    }}, _ => AnubisValue::Int(0) }})",
+                    rust_string_lit(fname)?
+                ))
+            };
+            // Each named field's sub-pattern imposes a test and may bind.
+            for (fname, sub) in named_bindings {
+                let (sub_test, _) = pattern_test_and_binds(sub, &named_field_expr(fname)?)?;
+                if sub_test != "true" {
+                    cond.push_str(&format!(" && ({sub_test})"));
+                }
+                if !sub.bound_names().is_empty() {
+                    let temp = format!("{scr}_nf_{}", sanitize_ident(fname)?);
+                    binds.push_str(&format!("let {temp} = {}; ", named_field_expr(fname)?));
+                    let (_, sub_binds) = pattern_test_and_binds(sub, &temp)?;
+                    binds.push_str(&sub_binds);
+                }
             }
             Ok((cond, binds))
         }
@@ -3643,6 +3666,36 @@ mod run_tests {
                    fn ev(e) { return match e { E::Add { l, r } => l + r, E::Zero => 0 }; } \
                    fn main() { print(ev(E::Add { l: 3, r: 4 })); print(ev(E::Zero)); }";
         assert_eq!(run(src), "7\n0");
+    }
+
+    #[test]
+    fn enum_struct_variant_field_subpatterns() {
+        // A struct-variant field may hold any sub-pattern (literal, nested), like a plain struct.
+        let src = "enum Shape { Circle { r: int }, Rect { w: int, h: int } } \
+                   fn f(s) { return match s { Shape::Circle { r: 0 } => \"point\", \
+                     Shape::Circle { r } => \"circle \" + str(r), \
+                     Shape::Rect { w, h } => \"rect \" + str(w * h) }; } \
+                   fn main() { print(f(Shape::Circle { r: 0 })); print(f(Shape::Circle { r: 5 })); \
+                     print(f(Shape::Rect { w: 3, h: 4 })); }";
+        assert_eq!(run(src), "point\ncircle 5\nrect 12");
+    }
+
+    #[test]
+    fn list_membership_is_structural() {
+        // contains/index_of honor `==` (type-exact), not display form.
+        let src = "fn main() { print(contains([1, 2, 3], \"2\")); print(index_of([1, 2, 3], \"2\")); \
+                   print(contains([1, 2, 3], 2)); print(index_of([1, 2, 3], 3)); \
+                   print(contains([\"a\", \"b\"], \"b\")); }";
+        assert_eq!(run(src), "false\n-1\ntrue\n2\ntrue");
+    }
+
+    #[test]
+    fn ordering_compares_lists_elementwise() {
+        // sort_by/min_by/max_by with list (tuple) keys order element-wise, not by display string.
+        let src = "fn main() { print(sort_by([9, 100, 25, 8], |x| [x])); \
+                   print(min_by([[9], [100], [25]], |p| p)); print(max_by([[9], [100], [25]], |p| p)); \
+                   print(map(sort_by([[\"a\", 90], [\"a\", 100], [\"a\", 85]], |r| r), |r| r[1])); }";
+        assert_eq!(run(src), "[8, 9, 25, 100]\n[9]\n[100]\n[85, 90, 100]");
     }
 
     #[test]
