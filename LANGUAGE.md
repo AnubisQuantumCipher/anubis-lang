@@ -235,8 +235,9 @@ a function whose postcondition does not hold (`ANUBIS_ASSERTION_UNPROVEN`). Cont
 call site the caller must satisfy the callee's `requires` (`inc(0)` is rejected — `0 > 0` fails) and may
 rely on its `ensures` (after `let a = inc(5)`, `assert(a > 0)` is proved). Only integer/arithmetic
 contracts are discharged (over `+ - * & | ^` and comparisons, in i64); a contract over strings, lists,
-or division is left to the runtime rather than proved. Verification currently covers a function's
-**tail return** — see `MATURITY_CLAIM_MATRIX.md` for the exact, honest scope.
+or division is left to the runtime rather than proved. Every return path is checked — an early
+`return` that violates the postcondition is rejected — so a green check never certifies a violable
+integer contract. See `MATURITY_CLAIM_MATRIX.md` for the exact, honest scope.
 
 ## Closures and higher-order functions
 

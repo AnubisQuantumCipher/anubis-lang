@@ -1130,6 +1130,17 @@ fn main() {
         // A plain function's parameter assertion keeps its prior param-opaque semantics (no contract
         // means params are not modeled), so it is not newly disproved.
         assert!(discharged("fn g(x: u32) { assert(x > 5); }"), "no-contract param assert stays skipped");
+        // EVERY return path is verified, not just the tail: an early return that violates the
+        // postcondition is disproved (no false proof), while a multi-return function whose every
+        // path satisfies the postcondition passes.
+        assert!(
+            !discharged("fn f(x: u32) -> u32 ensures(result > 0) { if x > 5 { return 0; } return x + 1; }"),
+            "early return 0 violates result>0"
+        );
+        assert!(
+            discharged("fn g2(x: u32) -> u32 requires(x > 0) ensures(result > 0) { if x > 5 { return x; } return x + 1; }"),
+            "both return paths satisfy result>0"
+        );
     }
 
     #[test]

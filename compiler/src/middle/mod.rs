@@ -744,6 +744,9 @@ fn analyze_function(
             }
         }
     }
+    // The precondition (parameter ranges + `requires`) dominates EVERY return; the body assumptions
+    // added below (lets, composition) only dominate the tail return.
+    let precondition_assumptions = assumptions.clone();
 
     analyze_stmts(
         body,
@@ -755,29 +758,29 @@ fn analyze_function(
         ctx,
     );
 
-    // Discharge each `ensures` at the tail return: substitute `result` with the returned expression
-    // and assert it, given the precondition + the body's accumulated path assumptions. Only the tail
-    // return is verified (a straight-line, sound MVP); modeling is best-effort — a postcondition the
-    // solver cannot express (over strings/lists/etc.) is left un-obligated rather than mis-disproved.
+    // Discharge each `ensures` at EVERY return, so no return path can violate the postcondition:
+    //   - the TAIL return is verified under the full body assumptions (they all dominate it);
+    //   - each EARLY/nested return is verified under the precondition alone (a sound subset — this
+    //     catches an unconditionally-violating early return like `return 0` vs `ensures(result>0)`,
+    //     and can only ever mis-DISPROVE a path-dependent return, never mis-prove one).
+    // Modeling is best-effort: a postcondition the solver cannot express (strings/lists/division) is
+    // left un-obligated rather than mis-disproved.
     if !ensures.is_empty() {
-        if let Some(ret_expr) = fn_tail_return_expr(body) {
-            for ens in ensures {
-                let concrete = substitute_result(ens, ret_expr);
-                if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
-                    let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
-                    let mut vars = BTreeSet::new();
-                    collect_vars_from_smt(&smt, &mut vars);
-                    for a in &assumptions {
-                        collect_vars_from_smt(a, &mut vars);
-                    }
-                    ctx.solver_obligations.push(SolverObligation {
-                        name: format!("ensures:{}", smt),
-                        assumptions: assumptions.clone(),
-                        assertion: smt,
-                        vars: vars.into_iter().collect(),
-                    });
-                }
+        if let Some(tail) = fn_tail_return_expr(body) {
+            push_ensures_obligations(ctx, ensures, tail, &assumptions);
+        }
+        // Every explicit return except the tail return-call (the last statement).
+        let n = body.len();
+        let mut early = Vec::new();
+        for (i, s) in body.iter().enumerate() {
+            let is_tail_ret = i + 1 == n
+                && matches!(s, Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return");
+            if !is_tail_ret {
+                collect_returns_in_stmt(s, &mut early);
             }
+        }
+        for r in &early {
+            push_ensures_obligations(ctx, ensures, r, &precondition_assumptions);
         }
     }
 
@@ -1873,6 +1876,73 @@ fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
     let mut m = BTreeMap::new();
     m.insert("result".to_string(), repl.clone());
     substitute_vars(e, &m)
+}
+
+/// Create an `ensures` obligation for a return: substitute `result` with the returned expression and
+/// assert it under the given assumptions. Only modelable (integer) postconditions become obligations.
+fn push_ensures_obligations(
+    ctx: &mut SemanticContext,
+    ensures: &[Expr],
+    ret_expr: &Expr,
+    assumptions: &[String],
+) {
+    for ens in ensures {
+        let concrete = substitute_result(ens, ret_expr);
+        if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+            let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+            let mut vars = BTreeSet::new();
+            collect_vars_from_smt(&smt, &mut vars);
+            for a in assumptions {
+                collect_vars_from_smt(a, &mut vars);
+            }
+            ctx.solver_obligations.push(SolverObligation {
+                name: format!("ensures:{smt}"),
+                assumptions: assumptions.to_vec(),
+                assertion: smt,
+                vars: vars.into_iter().collect(),
+            });
+        }
+    }
+}
+
+/// Collect every explicit `return X` expression in a statement (recursing into nested blocks), so a
+/// contract's `ensures` can be checked at every return point, not only the tail.
+fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
+    match s {
+        Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
+            if let Some(e) = args.first() {
+                out.push(e.clone());
+            }
+        }
+        Stmt::If { then, else_, .. } => {
+            for st in then {
+                collect_returns_in_stmt(st, out);
+            }
+            if let Some(e) = else_ {
+                for st in e {
+                    collect_returns_in_stmt(st, out);
+                }
+            }
+        }
+        Stmt::While { body, .. }
+        | Stmt::Loop { body }
+        | Stmt::For { body, .. }
+        | Stmt::WhileLet { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => {
+            for st in body {
+                collect_returns_in_stmt(st, out);
+            }
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for b in [gpu, cpu, prove].into_iter().flatten() {
+                for st in b {
+                    collect_returns_in_stmt(st, out);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Check a function's declared `-> rty` against the value it returns, but only where that value is
