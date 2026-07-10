@@ -1,0 +1,9 @@
+// The same egress WITHOUT the declassification gate — the EchoLeak shape.
+// `anubis check` must reject it: this is the static lethal-trifecta firewall.
+fn echoleak_exfiltration() {
+    let email: tainted<u64> = symbolic();                 // crafted inbound email (untrusted)
+    let stolen = email + 0;                               // agent reads private data + composes
+    sink(stolen);                                         // exfiltrate to attacker URL — NO gate
+    return 0;
+}
+fn main() { return 0; }

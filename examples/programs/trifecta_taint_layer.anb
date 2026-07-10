@@ -1,0 +1,14 @@
+// The COMPILER-ENFORCED layer. A representative agent egress written with real
+// tainted types. In safe mode, an untrusted value reaching sink() WITHOUT an
+// explicit declassify(policy, reason) is a COMPILE ERROR (see the companion
+// trifecta_attack_rejected.anb). This program compiles because the value passes
+// through the audited redaction gate first — the static lethal-trifecta invariant.
+fn certified_agent_egress() {
+    let email: tainted<u64> = symbolic();                 // untrusted inbound content
+    let composed = email + 0;                             // agent transform (taint propagates)
+    let redacted = declassify(composed, "policy:redact-to-recipient-domains",
+                              "flow certified: secrecy subset proven, taint cleared at gate");
+    sink(redacted);                                       // external egress — statically safe
+    return 0;
+}
+fn main() { return 0; }
