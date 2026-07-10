@@ -1,6 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
-     Running `target/debug/anubis check tests/fixtures/language_core/declassify_policy_pass.anb --evidence --out out/a15_gate15_language_fixtures_real/declassify_policy_pass`
-anubis check tests/fixtures/language_core/declassify_policy_pass.anb (evidence=true)
-evidence bundle: out/a15_gate15_language_fixtures_real/declassify_policy_pass/evidence-20260706-204845-safe
-verdict: PASS
-check passed (no policy violations)

@@ -1,6 +1,0 @@
-// EXPECT: PASS
-// FEATURE: attribute parse/preserve (@safe etc)
-@safe
-fn main() {
-    let x: u32 = 1;
-}

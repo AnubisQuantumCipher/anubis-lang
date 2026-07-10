@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/gate12_t4/evidence-20260706-175729-safe",
-  "check_error": "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: safe mode tainted flow from `password` to sink `sink` requires declassify() or research boundary",
-  "source_hash": "47b24ff998978fde2827a15bb834653c051e8f37f2f73238f92f603f78bc39eb",
-  "verdict": "FAIL"
-}

@@ -1,4 +1,0 @@
-anubis check examples/security/research_authorized_taint_model.anb (evidence=true)
-evidence bundle: out/gate15_security_fixtures_real/research_authorized_taint_model/evidence-20260706-192933-research
-verdict: PASS
-check passed (no policy violations)

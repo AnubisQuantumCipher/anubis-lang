@@ -1,3 +1,0 @@
-check input: examples/security/bounty_report_from_taint.anb
-mode: Research
-taint pass: applied (if typecheck succeeded)

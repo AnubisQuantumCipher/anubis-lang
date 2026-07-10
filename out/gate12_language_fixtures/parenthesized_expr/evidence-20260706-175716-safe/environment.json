@@ -1,8 +1,0 @@
-{
-  "os": "macos",
-  "arch": "aarch64",
-  "rustc": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
-  "cargo": "cargo 1.97.0-nightly (a343accce 2026-05-08)",
-  "z3": "Z3 version 4.15.4 - 64 bit",
-  "anubis": "0.1.0"
-}

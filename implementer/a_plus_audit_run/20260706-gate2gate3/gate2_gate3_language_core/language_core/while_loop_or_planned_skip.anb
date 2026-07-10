@@ -1,9 +1,0 @@
-// EXPECT: PASS
-// FEATURE: while or documented skip (if not yet, basic if loop shape)
-fn main() {
-    let i: u32 = 0;
-    // while not fully wired in surface for all; use if-based equivalent for now
-    if i < 3 {
-        let j = i + 1;
-    }
-}

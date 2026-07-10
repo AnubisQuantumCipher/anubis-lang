@@ -1,3 +1,0 @@
-check input: examples/taint_declassify.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

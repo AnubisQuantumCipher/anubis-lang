@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION\n\n@poc\nfn main() {\n    // PoC without authorizat"
-}

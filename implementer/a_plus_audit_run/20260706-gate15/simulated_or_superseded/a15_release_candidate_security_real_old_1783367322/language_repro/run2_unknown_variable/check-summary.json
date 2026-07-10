@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/release_candidate_security_real/20260706-153147/language_repro/run2_unknown_variable/evidence-20260706-193250-safe",
-  "check_error": "ANUBIS_UNKNOWN_VARIABLE: unknown variable `x`",
-  "source_hash": "34e44a2f7efa6658234df907c8caeacc65698e48fa082bfc501ba55e2cec06d1",
-  "verdict": "FAIL"
-}

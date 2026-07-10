@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: PASS\n\n@research(\n  authorization: \"bug-bounty\",\n  scope: \"local\",\n  reason: \"redact for report\",\n  non_destru"
-}

@@ -1,3 +1,0 @@
-=== Simulated fuzz ===
-anubis fuzz examples/security/fuzz_crash_demo.anb --runs 1 --evidence --out ...
-crashes:1

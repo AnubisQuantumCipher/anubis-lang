@@ -1,1 +1,0 @@
-./target/release/anubis check examples/security/proof_backed_policy_check.anb --evidence --out out/gate15_security_fixtures_real_task2/proof_backed_policy_check

@@ -1,3 +1,0 @@
-check input: examples/security/research_authorized_taint_model.anb
-mode: Research
-taint pass: applied (if typecheck succeeded)

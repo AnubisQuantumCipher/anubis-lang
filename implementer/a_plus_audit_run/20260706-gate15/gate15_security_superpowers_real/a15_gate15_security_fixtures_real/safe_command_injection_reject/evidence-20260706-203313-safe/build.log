@@ -1,3 +1,0 @@
-check input: examples/security/safe_command_injection_reject.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "other",
-  "num_items": 0,
-  "preview": "fn main() {\n    let secret: u32 = symbolic(\"secret\");\n    assume(secret > 10);\n    assume(secret < 10000);\n    let deriv"
-}

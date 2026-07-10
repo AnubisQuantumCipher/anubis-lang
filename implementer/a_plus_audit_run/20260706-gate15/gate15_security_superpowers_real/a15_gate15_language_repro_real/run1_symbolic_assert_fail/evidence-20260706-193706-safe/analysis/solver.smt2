@@ -1,6 +1,0 @@
-(set-logic QF_BV)
-(declare-const x (_ BitVec 32))
-(assert (bvult x (_ bv10 32)))
-(assert (not (bvugt x (_ bv20 32))))
-(check-sat)
-(get-model)

@@ -1,5 +1,0 @@
-=== canonical sealer final ===
-overall_verdict=PASS
-metal_parity_hello verdict=PASS journal_match=True
-metal_parity_arithmetic verdict=PASS journal_match=True
-metal_parity_symbolic_safe verdict=PASS journal_match=True

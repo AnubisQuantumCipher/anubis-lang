@@ -1,3 +1,0 @@
-check input: tests/fixtures/language_core/typed_let_u32.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

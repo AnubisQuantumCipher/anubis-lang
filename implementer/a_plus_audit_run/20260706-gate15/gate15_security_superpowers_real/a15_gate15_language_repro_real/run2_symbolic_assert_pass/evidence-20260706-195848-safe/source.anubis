@@ -1,9 +1,0 @@
-// EXPECT: PASS
-// FEATURE: symbolic + assume + assert (solver path)
-fn main() {
-    let secret: u32 = symbolic("secret");
-    assume(secret > 10);
-    assume(secret < 10000);
-    let derived = secret + 42;
-    assert(derived > 30);
-}

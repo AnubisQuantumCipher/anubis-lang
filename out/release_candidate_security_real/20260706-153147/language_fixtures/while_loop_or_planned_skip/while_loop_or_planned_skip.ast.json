@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: PASS\n// FEATURE: if based loop shape (while PLANNED)\nfn main() {\n    let i: u32 = 0;\n    if i < 3 {\n        l"
-}

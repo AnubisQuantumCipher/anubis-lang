@@ -1,3 +1,0 @@
-check input: tests/fixtures/language_core/struct_field_access.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

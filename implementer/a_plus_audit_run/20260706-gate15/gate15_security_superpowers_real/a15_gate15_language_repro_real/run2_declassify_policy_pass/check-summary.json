@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/a15_gate15_language_repro_real/run2_declassify_policy_pass/evidence-20260706-203117-safe",
-  "check_error": null,
-  "source_hash": "d75e993ec75a716d3217b962ffe279852110fa5abca82005a7f1627e0f8a726f",
-  "verdict": "PASS"
-}

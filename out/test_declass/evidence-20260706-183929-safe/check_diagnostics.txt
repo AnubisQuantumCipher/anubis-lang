@@ -1,1 +1,0 @@
-expected `)` after call arguments; expected `;` after let binding; expected statement; expected statement; expected statement; expected statement; expected statement

@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/a15_gate15_security_fixtures_real/research_authorized_taint_model/evidence-20260706-203313-research",
-  "check_error": null,
-  "source_hash": "84fc3d50c8d171356d2dd346b85d2e9ab13d352b1770e9da0e139823d26c8ddb",
-  "verdict": "PASS"
-}

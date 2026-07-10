@@ -1,8 +1,0 @@
-// EXPECT: PASS
-
-@audit(authorization: "local-audit", effects: "file_read", reason: "local source scan for security review")
-fn main() {
-    let secret = taint_source("data");
-    let public = declassify(secret, "scan", "audit");
-    sink(public);
-}

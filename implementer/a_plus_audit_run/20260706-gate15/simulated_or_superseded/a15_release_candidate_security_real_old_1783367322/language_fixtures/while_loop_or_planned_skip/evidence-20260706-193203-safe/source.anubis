@@ -1,8 +1,0 @@
-// EXPECT: PASS
-// FEATURE: if based loop shape (while PLANNED)
-fn main() {
-    let i: u32 = 0;
-    if i < 3 {
-        let j = i + 1;
-    }
-}

@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/regress_gate7_pass/evidence-20260706-061611-safe",
-  "check_error": null,
-  "source_hash": "47be1220ddf427b4dc9747ae8c86680a5c9d7f0c0fd93320df9c1b74a1bb6ba0",
-  "verdict": "FAIL"
-}

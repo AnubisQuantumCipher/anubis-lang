@@ -1,5 +1,0 @@
-// EXPECT: FAIL
-// ERROR_CONTAINS: semicolon|; |expected
-fn main() {
-    let x = 1
-}

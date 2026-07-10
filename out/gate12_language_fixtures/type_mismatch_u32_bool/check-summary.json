@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/gate12_language_fixtures/type_mismatch_u32_bool/evidence-20260706-175739-safe",
-  "check_error": "ANUBIS_TYPE_MISMATCH: type mismatch: expected u32, got bool",
-  "source_hash": "48f2a89c2e12e4d0770a9f29b814578418e1d78fa8a5428d9fb14b779ba715ac",
-  "verdict": "FAIL"
-}

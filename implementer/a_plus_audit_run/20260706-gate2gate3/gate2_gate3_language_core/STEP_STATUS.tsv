@@ -1,8 +1,0 @@
-step	status
-re-gen A15 runner	PASS
-copy to A15D	PASS
-update report	PASS
-fix-stale-evidence	PASS
-append-full-verbatim-to-GATING	PASS
-update-16item-report	PASS
-sync-claim-matrix	PASS

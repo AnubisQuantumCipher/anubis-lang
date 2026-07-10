@@ -1,8 +1,0 @@
-fn report() {
-    research {
-        let raw: tainted<u32> = symbolic();
-        sink(raw);
-        let clean = declassify(raw);
-        sink(clean);
-    }
-}

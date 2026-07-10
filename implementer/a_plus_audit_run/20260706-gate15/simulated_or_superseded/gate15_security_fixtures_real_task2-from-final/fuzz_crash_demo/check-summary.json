@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/gate15_security_fixtures_real_task2/fuzz_crash_demo/evidence-20260706-203850-research",
-  "check_error": "ANUBIS_RESEARCH_MISSING_AUTHORIZATION: research/poc/fuzz/proof/defensive/audit requires authorization=... metadata",
-  "source_hash": "a25233870373da430eff65fade1819dd3842aff5029a14656f532c25025d7eeb",
-  "verdict": "FAIL"
-}

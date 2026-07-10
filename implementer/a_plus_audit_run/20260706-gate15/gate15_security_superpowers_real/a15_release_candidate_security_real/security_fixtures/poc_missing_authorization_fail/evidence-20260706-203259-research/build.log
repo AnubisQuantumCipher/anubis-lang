@@ -1,3 +1,0 @@
-check input: examples/security/poc_missing_authorization_fail.anb
-mode: Research
-taint pass: applied (if typecheck succeeded)

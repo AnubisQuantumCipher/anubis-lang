@@ -1,8 +1,0 @@
-// EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_FUZZ_CRASH
-
-@fuzz(target: "crash_demo", runs: 1, sandbox: true, effects: ["fuzz_exec", "crash_capture"])
-fn main(input: bytes) {
-    let s = taint_source("crash");
-    sink(s);
-}

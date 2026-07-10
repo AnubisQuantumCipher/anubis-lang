@@ -1,4 +1,0 @@
-check input: examples/security/bounty_report_from_taint.anb
-mode: Research
-taint pass: applied (if typecheck succeeded)
-security_attr: research [AttrArg { key: "authorization", value: "bounty" }, AttrArg { key: "scope", value: "local" }, AttrArg { key: "reason", value: "taint to report" }, AttrArg { key: "non_destructive", value: "true" }]

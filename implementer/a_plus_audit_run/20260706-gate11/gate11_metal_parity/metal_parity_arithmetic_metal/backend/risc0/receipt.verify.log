@@ -1,3 +1,0 @@
-receipt.verify(ANUBIS_ID) PASSED (real risc0_zkvm::Receipt::verify)
-lane_observed=metal-hybrid
-R0_DISABLE_METAL_forced_cpu=false

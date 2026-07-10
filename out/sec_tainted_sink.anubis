@@ -1,5 +1,0 @@
-fn main() {
-    let t: tainted<u32> = symbolic();
-    // assume no declassify; direct use as sink (e.g. in lowered would be dangerous)
-    let sink = t;  // simulate
-}

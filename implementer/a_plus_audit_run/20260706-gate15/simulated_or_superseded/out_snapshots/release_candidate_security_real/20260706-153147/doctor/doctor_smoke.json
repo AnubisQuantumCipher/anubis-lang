@@ -1,1 +1,0 @@
-{"smoke":true,"reason":"metal ref missing","real_security_executed":"fixtures 10/10 + fuzz + bounty"}

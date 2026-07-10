@@ -1,6 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
-     Running `target/debug/anubis check tests/fixtures/language_core/missing_semicolon.anb --evidence --out out/a15_release_candidate_security_real/20260706-163157/language_fixtures/missing_semicolon`
-anubis check tests/fixtures/language_core/missing_semicolon.anb (evidence=true)
-evidence bundle: out/a15_release_candidate_security_real/20260706-163157/language_fixtures/missing_semicolon/evidence-20260706-203202-safe
-verdict: FAIL
-check failed: expected `;` after let binding

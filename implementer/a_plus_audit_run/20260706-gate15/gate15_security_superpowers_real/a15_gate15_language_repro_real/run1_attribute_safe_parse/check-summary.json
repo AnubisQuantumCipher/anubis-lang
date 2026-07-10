@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/a15_gate15_language_repro_real/run1_attribute_safe_parse/evidence-20260706-203108-safe",
-  "check_error": null,
-  "source_hash": "fecde23c324d8760dc7cf79ea2696022efe9b9d30117ecd7fa841c950a687fa0",
-  "verdict": "PASS"
-}

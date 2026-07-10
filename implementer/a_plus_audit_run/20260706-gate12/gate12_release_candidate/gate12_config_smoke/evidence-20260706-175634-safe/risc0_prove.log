@@ -1,1 +1,0 @@
-risc0 methods build success=true; proof status=passed; child_success=true receipt_present=true image_id_valid=true elf_present=true; child_status=exit status: 0 current_exe=/Users/sicarii/anubis-lang/target/release/anubis child_exe=/Users/sicarii/anubis-lang/target/release/anubis

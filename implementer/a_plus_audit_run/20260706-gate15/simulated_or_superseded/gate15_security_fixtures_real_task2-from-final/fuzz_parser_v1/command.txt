@@ -1,1 +1,0 @@
-./target/release/anubis check examples/security/fuzz_parser_v1.anb --evidence --out out/gate15_security_fixtures_real_task2/fuzz_parser_v1

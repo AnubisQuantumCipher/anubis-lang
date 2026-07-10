@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: PASS\n// FEATURE: comparisons produce bool context for assert\nfn main() {\n    let x: u32 = 5;\n    assert(x > 0"
-}

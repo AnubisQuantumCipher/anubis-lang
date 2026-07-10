@@ -1,7 +1,0 @@
-   Compiling anubis v0.1.0 (/Users/sicarii/anubis-lang/tools/anubis)
-    Finished `release` profile [optimized] target(s) in 1.84s
-warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
-note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
-     Running `target/release/anubis gate11-metal-parity --cpu out/a_plus_gate11_parity --metal out/a_plus_gate11_parity --out out/a15_gate11_parity --require-metal`
-gate11-metal-parity --cpu out/a_plus_gate11_parity --metal out/a_plus_gate11_parity --out out/a15_gate11_parity (require_metal=true)
-wrote canonical out/a15_gate11_parity/parity_report.json

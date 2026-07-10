@@ -1,7 +1,0 @@
-// EXPECT: FAIL
-// ERROR_CONTAINS: reason|policy|declassify|ANUBIS
-fn main() {
-    let s = taint_source("s");
-    let p = declassify(s);
-    sink(p);
-}

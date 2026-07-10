@@ -1,4 +1,0 @@
-anubis check examples/security/proof_backed_policy_check.anb (evidence=true)
-evidence bundle: out/a15_gate15_security_fixtures_real/proof_backed_policy_check/evidence-20260706-203313-research
-verdict: PASS
-check passed (no policy violations)

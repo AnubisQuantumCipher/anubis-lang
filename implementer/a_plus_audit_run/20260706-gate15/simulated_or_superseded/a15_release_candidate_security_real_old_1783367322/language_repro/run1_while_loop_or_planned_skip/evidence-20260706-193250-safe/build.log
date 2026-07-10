@@ -1,3 +1,0 @@
-check input: tests/fixtures/language_core/while_loop_or_planned_skip.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

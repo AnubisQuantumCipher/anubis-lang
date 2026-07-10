@@ -1,4 +1,0 @@
-anubis check examples/security/fuzz_crash_demo.anb (evidence=true)
-evidence bundle: implementer/a_plus_audit_run/20260706-1935/gate15_security_superpowers_real/a15_gate15_security_fixtures_real/fuzz_crash_demo/evidence-20260706-193443-research
-verdict: FAIL
-check failed: ANUBIS_RESEARCH_MISSING_AUTHORIZATION: research/poc/fuzz/proof/defensive/audit requires authorization=... metadata

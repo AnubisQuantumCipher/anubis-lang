@@ -1,4 +1,0 @@
-build input: out/audit/program_c.anubis
-mode: Research
-taint pass: applied
-symbolic: constraints generated

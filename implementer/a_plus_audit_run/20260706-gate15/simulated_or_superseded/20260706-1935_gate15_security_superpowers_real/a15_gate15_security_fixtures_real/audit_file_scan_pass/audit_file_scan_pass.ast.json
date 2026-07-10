@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: PASS\n\n@audit(authorization: \"local-audit\", effects: \"file_read\", reason: \"local source scan for security revi"
-}

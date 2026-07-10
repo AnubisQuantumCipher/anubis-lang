@@ -1,5 +1,0 @@
-// EXPECT: PASS
-// FEATURE: typed let u8
-fn main() {
-    let b: u8 = 7;
-}

@@ -1,4 +1,0 @@
-check input: examples/security/declassify_report_pass.anb
-mode: Research
-taint pass: applied (if typecheck succeeded)
-security_attr: research [AttrArg { key: "authorization", value: "bug-bounty" }, AttrArg { key: "scope", value: "local" }, AttrArg { key: "reason", value: "redact for report" }, AttrArg { key: "non_destructive", value: "true" }]

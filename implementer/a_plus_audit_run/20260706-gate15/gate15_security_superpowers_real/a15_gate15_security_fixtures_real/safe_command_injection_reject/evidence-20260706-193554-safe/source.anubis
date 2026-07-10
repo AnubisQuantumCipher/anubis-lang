@@ -1,8 +1,0 @@
-// EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
-
-@safe
-fn main() {
-    // shell effect is forbidden in @safe mode
-    shell("whoami");
-}

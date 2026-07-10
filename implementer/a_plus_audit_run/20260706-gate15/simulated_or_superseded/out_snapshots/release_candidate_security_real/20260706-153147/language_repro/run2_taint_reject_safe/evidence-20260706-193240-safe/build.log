@@ -1,3 +1,0 @@
-check input: tests/fixtures/language_core/taint_reject_safe.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

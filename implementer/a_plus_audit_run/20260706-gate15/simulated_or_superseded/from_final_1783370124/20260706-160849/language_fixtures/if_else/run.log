@@ -1,6 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
-     Running `target/debug/anubis check tests/fixtures/language_core/if_else.anb --evidence --out out/a15_release_candidate_security_real/20260706-160849/language_fixtures/if_else`
-anubis check tests/fixtures/language_core/if_else.anb (evidence=true)
-evidence bundle: out/a15_release_candidate_security_real/20260706-160849/language_fixtures/if_else/evidence-20260706-200855-safe
-verdict: PASS
-check passed (no policy violations)

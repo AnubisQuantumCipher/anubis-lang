@@ -1,3 +1,0 @@
-check input: examples/security/proof_backed_policy_check.anb
-mode: Research
-taint pass: applied (if typecheck succeeded)

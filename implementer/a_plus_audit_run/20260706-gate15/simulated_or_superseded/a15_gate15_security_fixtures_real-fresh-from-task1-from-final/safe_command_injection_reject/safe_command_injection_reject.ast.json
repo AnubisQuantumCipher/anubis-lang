@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE\n\n@safe\nfn main() {\n    // shell effect is forbidden i"
-}

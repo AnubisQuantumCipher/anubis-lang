@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/gate12_language_repro/run2_missing_semicolon/evidence-20260706-180016-safe",
-  "check_error": "expected `;` after let binding",
-  "source_hash": "1fb1f2ba5f57b588c67eb3c6583323b9b7449bec5253ea92bce05fc7ff45f1b3",
-  "verdict": "FAIL"
-}

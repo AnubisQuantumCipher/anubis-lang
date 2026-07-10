@@ -1,4 +1,0 @@
-anubis check examples/security/declassify_report_pass.anb (evidence=true)
-evidence bundle: implementer/a_plus_audit_run/20260706-1935/gate15_security_superpowers_real/a15_gate15_security_fixtures_real/declassify_report_pass/evidence-20260706-193443-research
-verdict: PASS
-check passed (no policy violations)

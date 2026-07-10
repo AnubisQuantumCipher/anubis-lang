@@ -1,8 +1,0 @@
-// EXPECT: PASS
-
-@research(authorization: "bounty", scope: "local", reason: "taint to report", non_destructive: true)
-fn main() {
-    let secret = taint_source("token");
-    let public = declassify(secret, "hash-only", "report");
-    sink(public);
-}

@@ -1,2 +1,0 @@
-fn trigger() { research { let buf: *mut u8 = 0 as *mut u8; let x: tainted<u32> = symbolic(); assume(x < 191); assume(x > 0); assert(x > 0); } }
-tamper

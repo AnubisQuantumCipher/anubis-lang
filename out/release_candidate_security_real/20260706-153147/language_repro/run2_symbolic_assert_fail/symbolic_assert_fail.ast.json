@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: assertion\nfn main() {\n    let x: u32 = symbolic(\"x\");\n    assume(x < 10);\n    assert("
-}

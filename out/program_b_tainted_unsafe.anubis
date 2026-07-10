@@ -1,6 +1,0 @@
-fn main() {
-    // Attempt tainted unsafe flow without research - should flag/reject in safe
-    let p: *mut u8 = 0 as *mut u8;
-    let t: tainted<u32> = symbolic();
-    // sink without declassify
-}

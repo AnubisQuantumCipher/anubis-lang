@@ -1,4 +1,0 @@
-fn main() {
-    let t: tainted<u32> = symbolic();
-    let s = t;
-}

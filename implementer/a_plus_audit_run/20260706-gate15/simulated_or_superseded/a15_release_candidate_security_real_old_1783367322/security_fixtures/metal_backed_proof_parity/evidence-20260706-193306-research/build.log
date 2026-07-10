@@ -1,3 +1,0 @@
-check input: examples/security/metal_backed_proof_parity.anb
-mode: Research
-taint pass: applied (if typecheck succeeded)

@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "implementer/a_plus_audit_run/20260706-1935/gate15_security_superpowers_real/a15_gate15_security_fixtures_real/declassify_report_pass/evidence-20260706-193443-research",
-  "check_error": null,
-  "source_hash": "dbf93b017d3fe6744a1cdf216d291419c7df596407c9c49430883d5b431ff454",
-  "verdict": "PASS"
-}

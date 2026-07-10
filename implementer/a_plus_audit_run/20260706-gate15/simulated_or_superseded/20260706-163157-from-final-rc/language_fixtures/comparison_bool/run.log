@@ -1,6 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
-     Running `target/debug/anubis check tests/fixtures/language_core/comparison_bool.anb --evidence --out out/a15_release_candidate_security_real/20260706-163157/language_fixtures/comparison_bool`
-anubis check tests/fixtures/language_core/comparison_bool.anb (evidence=true)
-evidence bundle: out/a15_release_candidate_security_real/20260706-163157/language_fixtures/comparison_bool/evidence-20260706-203159-safe
-verdict: PASS
-check passed (no policy violations)

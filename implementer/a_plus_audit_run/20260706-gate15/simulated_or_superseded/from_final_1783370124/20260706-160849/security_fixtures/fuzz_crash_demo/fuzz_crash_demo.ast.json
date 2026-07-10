@@ -1,5 +1,0 @@
-{
-  "first_item_kind": "fn:main",
-  "num_items": 1,
-  "preview": "// EXPECT: FAIL\n// ERROR_CONTAINS: ANUBIS_FUZZ_CRASH\n\n@fuzz(target: \"crash_demo\", runs: 1, sandbox: true, effects: [\"fuz"
-}

@@ -1,8 +1,0 @@
-// EXPECT: PASS
-
-@proof(backend: "risc0", lane: "metal-hybrid", authorization: "local-metal-proof")
-fn main() {
-    // references Gate 11
-    let x = 42;
-    sink(x);
-}

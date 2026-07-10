@@ -1,9 +1,0 @@
-[
-  {
-    "detail": "assertion proved: assumptions imply assertion",
-    "model": null,
-    "name": "assert:(> x 0)",
-    "smt": "(set-logic QF_LIA)\n(declare-const x Int)\n(assert (< x 191))\n(assert (> x 0))\n(assert (not (> x 0)))\n(check-sat)\n(get-model)\n",
-    "status": "PASS"
-  }
-]

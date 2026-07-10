@@ -1,8 +1,0 @@
-// EXPECT: PASS
-
-@proof(backend: "risc0", lane: "cpu")
-fn main() {
-    // proof mode for policy
-    let x = 1;
-    assert(x == 1);
-}

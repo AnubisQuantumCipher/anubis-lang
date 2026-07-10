@@ -1,3 +1,0 @@
-check input: examples/security/declassify_report_pass.anb
-mode: Safe
-taint pass: applied (if typecheck succeeded)

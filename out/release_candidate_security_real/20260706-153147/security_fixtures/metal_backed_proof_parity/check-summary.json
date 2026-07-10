@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/release_candidate_security_real/20260706-153147/security_fixtures/metal_backed_proof_parity/evidence-20260706-193306-research",
-  "check_error": null,
-  "source_hash": "16b741153cec430bc60d24471ee4d837a7c5b712f8198328a043d2e2d9e5d2a5",
-  "verdict": "PASS"
-}

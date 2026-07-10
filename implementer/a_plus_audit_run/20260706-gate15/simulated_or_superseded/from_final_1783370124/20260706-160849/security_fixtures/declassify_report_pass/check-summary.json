@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/a15_release_candidate_security_real/20260706-160849/security_fixtures/declassify_report_pass/evidence-20260706-200952-research",
-  "check_error": null,
-  "source_hash": "dbf93b017d3fe6744a1cdf216d291419c7df596407c9c49430883d5b431ff454",
-  "verdict": "PASS"
-}

@@ -1,7 +1,0 @@
-{
-  "bounty_ready": true,
-  "bundle": "out/gate12_language_fixtures/attribute_safe_parse/evidence-20260706-175644-safe",
-  "check_error": null,
-  "source_hash": "fecde23c324d8760dc7cf79ea2696022efe9b9d30117ecd7fa841c950a687fa0",
-  "verdict": "PASS"
-}

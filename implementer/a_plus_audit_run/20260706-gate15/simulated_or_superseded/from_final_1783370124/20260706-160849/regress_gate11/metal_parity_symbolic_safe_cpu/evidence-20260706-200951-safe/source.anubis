@@ -1,7 +1,0 @@
-fn main() {
-    // Deterministic constant workload (replaces potential solver-obligations version).
-    // Pure constants ensure no failing obligations for parity; journal matches across lanes.
-    let x: u32 = 7;
-    let y: u32 = x * 6;
-    assert(y == 42);
-}

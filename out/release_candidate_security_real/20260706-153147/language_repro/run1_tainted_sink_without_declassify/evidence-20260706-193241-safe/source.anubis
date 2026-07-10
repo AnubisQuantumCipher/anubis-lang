@@ -1,6 +1,0 @@
-// EXPECT: FAIL
-// ERROR_CONTAINS: tainted|ANUBIS_TAINTED|declassify
-fn main() {
-    let s = taint_source("s");
-    sink(s);
-}

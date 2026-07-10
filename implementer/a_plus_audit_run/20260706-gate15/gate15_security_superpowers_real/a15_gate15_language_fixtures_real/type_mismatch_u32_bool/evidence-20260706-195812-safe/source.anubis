@@ -1,5 +1,0 @@
-// EXPECT: FAIL
-// ERROR_CONTAINS: type|ANUBIS_TYPE_MISMATCH
-fn main() {
-    let x: u32 = true;
-}

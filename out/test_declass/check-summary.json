@@ -1,7 +1,0 @@
-{
-  "bounty_ready": false,
-  "bundle": "out/test_declass/evidence-20260706-183929-safe",
-  "check_error": "expected `)` after call arguments; expected `;` after let binding; expected statement; expected statement; expected statement; expected statement; expected statement",
-  "source_hash": "1a3df4b35448beb66a064b185c6190a2d8835977c528673cd057e92980c76e8d",
-  "verdict": "FAIL"
-}
