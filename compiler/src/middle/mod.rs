@@ -147,6 +147,10 @@ struct SemanticContext {
     enum_variants: BTreeMap<String, Vec<String>>,
     /// Function name → ordered parameter types (for call-site type checks).
     fn_params: BTreeMap<String, Vec<String>>,
+    /// Function name → (parameter names, `requires` clauses, `ensures` clauses). Registered in
+    /// pass 1 so a caller can, at a call site, ASSERT the callee's precondition and ASSUME its
+    /// postcondition — the composition that makes contracts chain.
+    fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
     /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
     all_fns: BTreeSet<String>,
     /// Method name → parameter count (including `self`). `None` marks a name defined with more than
@@ -221,7 +225,12 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 ctx.enum_variants.insert(name.clone(), names);
             }
             Item::Fn {
-                name, params, span, ..
+                name,
+                params,
+                span,
+                requires,
+                ensures,
+                ..
             } => {
                 // Flat function namespace: a redefinition is an error.
                 if !ctx.all_fns.insert(name.clone()) {
@@ -235,6 +244,16 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     name.clone(),
                     params.iter().map(|(_, ty)| ty.clone()).collect(),
                 );
+                if !requires.is_empty() || !ensures.is_empty() {
+                    ctx.fn_contracts.insert(
+                        name.clone(),
+                        (
+                            params.iter().map(|(n, _)| n.clone()).collect(),
+                            requires.clone(),
+                            ensures.clone(),
+                        ),
+                    );
+                }
             }
             // Collect method arities (including `self`) so direct method calls can be arity-checked;
             // a name defined with differing arities across impls is marked ambiguous (None).
@@ -969,6 +988,50 @@ fn analyze_stmts(
                         ctx.symbolic_defs.push(range.clone());
                         ctx.constraints.push(format!("(assert {})", range));
                         assumptions.push(range);
+                    }
+                }
+
+                // B2 composition: when the initializer calls a CONTRACTED function, specialize the
+                // callee's contract to this call — ASSERT its precondition (the caller must satisfy
+                // it) and ASSUME its postcondition with `result` bound to this variable, so a later
+                // assertion can rely on it. This is how one function's `ensures` satisfies the next.
+                if let Expr::Call { callee, args } = init {
+                    if let Some((pnames, creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
+                        if pnames.len() == args.len() {
+                            let mut sub: BTreeMap<String, Expr> =
+                                pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                            for req in &creq {
+                                let concrete = substitute_vars(req, &sub);
+                                if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+                                    let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+                                    let mut vars = BTreeSet::new();
+                                    collect_vars_from_smt(&smt, &mut vars);
+                                    for a in assumptions.iter() {
+                                        collect_vars_from_smt(a, &mut vars);
+                                    }
+                                    ctx.solver_obligations.push(SolverObligation {
+                                        name: format!("requires@{callee}:{smt}"),
+                                        assumptions: assumptions.clone(),
+                                        assertion: smt,
+                                        vars: vars.into_iter().collect(),
+                                    });
+                                }
+                            }
+                            if !cens.is_empty() {
+                                // The callee guarantees an integer postcondition about its result,
+                                // so this binding is solver-modelable.
+                                ctx.solver_int_vars.insert(name.clone());
+                                sub.insert("result".to_string(), Expr::Var(name.clone()));
+                                for ens in &cens {
+                                    let concrete = substitute_vars(ens, &sub);
+                                    if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+                                        let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+                                        ctx.constraints.push(format!("(assert {})", smt));
+                                        assumptions.push(smt);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1781,26 +1844,35 @@ fn fn_tail_return_expr(body: &[Stmt]) -> Option<&Expr> {
     }
 }
 
-/// Replace every `result` variable in a contract expression with the returned expression, so an
-/// `ensures(result > x)` over `return x + 1` becomes `(x + 1) > x`.
-fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
+/// Substitute variables in a contract expression by name. Used to specialize a callee's contract at
+/// a call site (`result` -> the returned expression, each parameter -> its argument), so
+/// `ensures(result > x)` over `return x + 1` becomes `(x + 1) > x`, and a caller's
+/// `ensures(result > 0)` with `x := 5` at `let a = f(5)` becomes `a > 0`.
+fn substitute_vars(e: &Expr, map: &BTreeMap<String, Expr>) -> Expr {
     match e {
-        Expr::Var(v) if v == "result" => repl.clone(),
+        Expr::Var(v) => map.get(v).cloned().unwrap_or_else(|| e.clone()),
         Expr::Binary { op, lhs, rhs } => Expr::Binary {
             op: op.clone(),
-            lhs: Box::new(substitute_result(lhs, repl)),
-            rhs: Box::new(substitute_result(rhs, repl)),
+            lhs: Box::new(substitute_vars(lhs, map)),
+            rhs: Box::new(substitute_vars(rhs, map)),
         },
         Expr::Unary { op, expr } => Expr::Unary {
             op: op.clone(),
-            expr: Box::new(substitute_result(expr, repl)),
+            expr: Box::new(substitute_vars(expr, map)),
         },
         Expr::Cast { expr, ty } => Expr::Cast {
-            expr: Box::new(substitute_result(expr, repl)),
+            expr: Box::new(substitute_vars(expr, map)),
             ty: ty.clone(),
         },
         other => other.clone(),
     }
+}
+
+/// Convenience: substitute a single `result` variable.
+fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
+    let mut m = BTreeMap::new();
+    m.insert("result".to_string(), repl.clone());
+    substitute_vars(e, &m)
 }
 
 /// Check a function's declared `-> rty` against the value it returns, but only where that value is

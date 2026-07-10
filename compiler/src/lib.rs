@@ -1133,6 +1133,33 @@ fn main() {
     }
 
     #[test]
+    fn b2_contract_composition() {
+        // Composition: a caller ASSUMES a callee's postcondition and must satisfy its precondition.
+        let discharged = |src: &str| {
+            let ast = parse_source(src).expect("parse");
+            let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+            SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL")
+        };
+        let pos = "fn pos(x: u32) -> u32 requires(x > 0) ensures(result > 0) { return x; }";
+        // The caller learns `a > 0` from pos's postcondition.
+        assert!(discharged(&format!("{pos} fn u(){{ let a = pos(5); assert(a > 0); }}")), "learns ensures");
+        assert!(!discharged(&format!("{pos} fn u(){{ let a = pos(5); assert(a > 100); }}")), "ensures too weak for a>100");
+        // The caller must satisfy pos's precondition.
+        assert!(discharged(&format!("{pos} fn u(){{ let a = pos(5); }}")), "5 > 0 satisfies requires");
+        assert!(!discharged(&format!("{pos} fn u(){{ let a = pos(0); }}")), "0 > 0 violates requires");
+        // Chaining: g proves its own `ensures` via f's `ensures`.
+        assert!(
+            discharged(
+                "fn f(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; } \
+                 fn g(y: u32) -> u32 requires(y > 0) ensures(result > y) { let z = f(y); return z; }"
+            ),
+            "g's postcondition follows from f's"
+        );
+    }
+
+    #[test]
     fn solver_does_not_disprove_loop_carried_assertions() {
         // A binding mutated after its `let` (here, accumulated in a loop) cannot be modeled from
         // its initial value; the checker must not disprove a TRUE post-loop assertion against the
