@@ -5171,28 +5171,32 @@ mod run_tests {
                 crate::frontend::Mode::Safe,
             )
         };
-        let rejected = |s: &str| {
-            tc(s)
-                .unwrap_err()
-                .contains("ANUBIS_TYPE_MISMATCH")
-        };
-        // Statically-known type errors are rejected.
-        assert!(rejected("fn main(){ print(\"a\" - 1); }"), "string in `-`");
-        assert!(rejected("fn main(){ print([1, 2] * 3); }"), "list in `*`");
-        assert!(rejected("fn main(){ let s = \"hi\"; print(s % 2); }"), "string var in `%`");
-        assert!(rejected("fn main(){ print(5[0]); }"), "index a number");
-        assert!(rejected("fn main(){ let b = true; print(b[0]); }"), "index a bool");
-        assert!(rejected("fn main(){ print(-\"x\"); }"), "unary minus on string");
-        assert!(rejected("fn main(){ let m = {\"a\": 1}; print(m & 1); }"), "map in bitwise");
-        // Dynamic and valid code is untouched (zero false positives).
+        let rejected = |s: &str| tc(s).unwrap_err().contains("ANUBIS_TYPE_MISMATCH");
+        // Statically-known LITERAL type errors are rejected (a literal's type is immutable).
+        assert!(rejected("fn main(){ print(\"a\" - 1); }"), "string literal in `-`");
+        assert!(rejected("fn main(){ print([1, 2] * 3); }"), "list literal in `*`");
+        assert!(rejected("fn main(){ print({\"a\": 1} & 1); }"), "map literal in bitwise");
+        assert!(rejected("fn main(){ print(-\"x\"); }"), "unary minus on string literal");
+        assert!(rejected("fn main(){ print(5[0]); }"), "index a number literal");
+        assert!(rejected("fn main(){ print(true[0]); }"), "index a bool literal");
+        // Dynamic code (variables, calls, indices) is left untouched — zero false positives. A
+        // variable's type is NOT stable (it may be reassigned a dynamic value), so B1 never trusts
+        // it: this is the reassignment idiom (`v` starts numeric, becomes a list, is indexed) that a
+        // variable-based check false-flagged.
         assert!(tc("fn f(x){ x - 1 } fn main(){ print(f(5)); }").is_ok(), "dynamic param");
+        assert!(tc("fn main(){ let s = \"hi\"; print(len(s) % 2); }").is_ok(), "variable untouched");
+        assert!(
+            tc("fn main(){ let scopes = [[1, 2], [3, 4]]; let mut v = 0; v = scopes[0]; print(v[1]); }")
+                .is_ok(),
+            "reassignment idiom (numeric var later holds a list) is not flagged"
+        );
         assert!(tc("fn main(){ let xs = [1, 2, 3]; print(xs[0] - 1); }").is_ok(), "indexed element");
         assert!(tc("fn main(){ let xs = [1, 2]; print(len(xs) - 1); }").is_ok(), "call result");
         assert!(tc("fn main(){ print(\"a\" + 1); }").is_ok(), "`+` is overloaded concat");
         assert!(tc("fn main(){ let hit = 3 > 2; print(hit - 0); }").is_ok(), "bool 0/1 arithmetic");
         assert!(tc("fn main(){ let x = 5; print(x * 2 - 1); }").is_ok(), "numeric");
         assert!(tc("fn main(){ print(3.5 * 2.0); }").is_ok(), "float");
-        assert!(tc("fn main(){ let xs = [1, 2]; print(xs[1]); }").is_ok(), "index a list");
+        assert!(tc("fn main(){ print([10, 20, 30][1]); }").is_ok(), "index a list literal");
     }
 
     #[test]

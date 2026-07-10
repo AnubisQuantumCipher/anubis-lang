@@ -1782,30 +1782,38 @@ fn infer_expr_type_scoped(
     }
 }
 
-/// B1 static type checking. A statically-known string/list/map operand is never a valid arithmetic
-/// operand (bool is excluded — 0/1 arithmetic is idiomatic; generic/dynamic operands return None,
-/// so nothing dynamic is ever flagged). Returns the normalized offending type when it should be
-/// rejected.
+/// A LITERAL expression, whose type is intrinsic and immutable. B1 only acts on literals: a
+/// variable's type is NOT stable in a language with `let mut` rebinding (a `let mut v = 0` reassigned
+/// from a dynamic value keeps its stale numeric type), so trusting a variable's inferred type for a
+/// type check would produce false positives. Literals cannot be reassigned — checking them is sound.
+fn is_literal_expr(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Literal(_) | Expr::StrLiteral(_) | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. }
+    )
+}
+
+/// B1 static type checking. A statically-known string/list/map LITERAL is never a valid arithmetic
+/// operand (a number/bool literal is fine — bool 0/1 arithmetic is idiomatic). Non-literals return
+/// None, so every dynamic operand (variable, call, index) is left untouched — zero false positives.
 fn static_non_numeric_operand(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
 ) -> Option<String> {
-    let t = infer_expr_type_scoped(expr, scope)?;
-    if is_generic_type(&t) {
+    if !is_literal_expr(expr) {
         return None;
     }
-    let n = normalize_ty(&t);
+    let n = normalize_ty(&infer_expr_type_scoped(expr, scope)?);
     matches!(n.as_str(), "string" | "list" | "map").then_some(n)
 }
 
-/// B1: a statically-known non-indexable operand (a number or bool). Only lists, strings, maps, and
-/// structs are indexable; generic/dynamic operands return None.
+/// B1: a statically-known non-indexable LITERAL (a number or bool literal). Only lists/strings/maps/
+/// structs are indexable. Non-literals return None (dynamic bases stay fail-closed at runtime).
 fn static_non_indexable(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
-    let t = infer_expr_type_scoped(expr, scope)?;
-    if is_generic_type(&t) {
+    if !is_literal_expr(expr) {
         return None;
     }
-    let n = normalize_ty(&t);
+    let n = normalize_ty(&infer_expr_type_scoped(expr, scope)?);
     (is_numeric_ty(&n) || n == "bool").then_some(n)
 }
 
