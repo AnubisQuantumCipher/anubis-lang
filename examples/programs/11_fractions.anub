@@ -1,0 +1,59 @@
+// EXPECT: 1/2 + 1/3 = 5/6|2/3 * 3/4 = 1/2|7/6 - 1/2 = 2/3|H(5) = 137/60|3/4 > 2/3 = true|checks: 6/6 OK
+// Exact rational arithmetic: reduced fractions over a gcd, built from structs + recursion + match.
+// Exercises structs, impl-less helper functions, recursion, Option, and structural equality.
+
+struct Fraction { num: int, den: int }
+
+fn gcd(a, b) { if b == 0 { abs(a) } else { gcd(b, a % b) } }
+
+// A fraction is a struct {num, den}; every constructor reduces and normalises the sign to the num.
+fn frac(n, d) {
+    if d == 0 { panic("zero denominator"); }
+    let g = gcd(n, d);
+    let mut num = n / g;
+    let mut den = d / g;
+    if den < 0 { num = 0 - num; den = 0 - den; }
+    Fraction { num: num, den: den }
+}
+
+fn fadd(a, b) { frac(a.num * b.den + b.num * a.den, a.den * b.den) }
+fn fsub(a, b) { frac(a.num * b.den - b.num * a.den, a.den * b.den) }
+fn fmul(a, b) { frac(a.num * b.num, a.den * b.den) }
+fn feq(a, b)  { a.num == b.num && a.den == b.den }
+fn fgt(a, b)  { a.num * b.den > b.num * a.den }
+fn fstr(a)    { "${a.num}/${a.den}" }
+
+// The n-th harmonic number as an exact fraction, summed by recursion.
+fn harmonic(n) {
+    if n == 1 { frac(1, 1) } else { fadd(harmonic(n - 1), frac(1, n)) }
+}
+
+fn main() {
+    let mut checks = 0;
+    let mut total = 0;
+
+    let s1 = fadd(frac(1, 2), frac(1, 3));      // 5/6
+    total = total + 1; if feq(s1, frac(5, 6)) { checks = checks + 1; }
+    print("1/2 + 1/3 = " + fstr(s1));
+
+    let p1 = fmul(frac(2, 3), frac(3, 4));       // 1/2
+    total = total + 1; if feq(p1, frac(1, 2)) { checks = checks + 1; }
+    print("2/3 * 3/4 = " + fstr(p1));
+
+    let d1 = fsub(frac(7, 6), frac(1, 2));       // 2/3
+    total = total + 1; if feq(d1, frac(2, 3)) { checks = checks + 1; }
+    print("7/6 - 1/2 = " + fstr(d1));
+
+    let h5 = harmonic(5);                          // 137/60
+    total = total + 1; if feq(h5, frac(137, 60)) { checks = checks + 1; }
+    print("H(5) = " + fstr(h5));
+
+    let cmp = fgt(frac(3, 4), frac(2, 3));         // true
+    total = total + 1; if cmp { checks = checks + 1; }
+    print("3/4 > 2/3 = ${cmp}");
+
+    // Reduction: 4/8 must normalise to 1/2.
+    total = total + 1; if feq(frac(4, 8), frac(1, 2)) { checks = checks + 1; }
+
+    print("checks: ${checks}/${total} OK");
+}
