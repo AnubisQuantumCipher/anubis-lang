@@ -1169,6 +1169,29 @@ fn main() {
             discharged("fn g(c: u32) -> u32 requires(c >= 0) requires(c < 10) ensures(result >= 5) { match c { 0 => { return 10; } _ => {} } return 7; }"),
             "a match whose every return path satisfies the ensures proves"
         );
+        // ENSURES-OVER-REASSIGNED-PARAM false proof (adversarial-sweep round 13): an `ensures` over a
+        // parameter denotes the CALL-ENTRY value (composition substitutes the caller's argument), but a
+        // body that REASSIGNS or SHADOWS the parameter would discharge it against the mutated value —
+        // `ensures(result == x) { x = 9; return x; }` is certified though f(1000) returns 9. Fail closed.
+        assert!(
+            !discharged("fn f(x: i64) -> i64 ensures(result == x) { x = 9; return x; }"),
+            "an ensures over a reassigned parameter must fail closed (false proof)"
+        );
+        assert!(
+            !discharged("fn f(x: i64) -> i64 ensures(result == x) { let x = 3; return x; }"),
+            "an ensures over a shadowed parameter must fail closed"
+        );
+        // Laundered through composition into the CALLER's ensures.
+        assert!(
+            !discharged("fn f(x: i64) -> i64 requires(x > 0) ensures(result == x) { x = 3; return x; } fn caller(n: i64) -> i64 requires(n > 0) ensures(result == n) { let a = f(n); return a; }"),
+            "a bogus ensures over a reassigned param must not launder into a caller's ensures"
+        );
+        // Control: reassigning a PARAMETER the ensures does NOT reference is allowed (the ensures
+        // over the returned value still holds; `x` isn't named in the postcondition).
+        assert!(
+            discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > 5) { x = 10; return x; }"),
+            "reassigning a parameter the ensures does not reference is allowed"
+        );
         // IMPLICIT TAIL-VALUE false proof (adversarial-sweep round 11): a body ending in a bare `if/else`
         // (the idiomatic tail expression) — or a `let`/loop that yields the default 0 — had its `ensures`
         // obligated at ZERO points and was silently certified. Every tail branch value (and the fall-off

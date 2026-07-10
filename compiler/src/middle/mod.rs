@@ -777,6 +777,33 @@ fn analyze_function(
     // Modeling is best-effort: a postcondition the solver cannot express (strings/lists/division) is
     // left un-obligated rather than mis-disproved.
     if !ensures.is_empty() {
+        // A parameter named in an `ensures` denotes the CALL-ENTRY value — composition substitutes the
+        // caller's original argument into the callee's `ensures`. Anubis has no `old()`, so if the body
+        // REASSIGNS or SHADOWS such a parameter, its `ensures` would be discharged against the mutated
+        // value while the caller assumes the entry value — a false certification laundered through
+        // composition (`ensures(result == x) { x = 9; return x; }`). Fail closed.
+        let param_names: BTreeSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
+        let mut ensures_vars = BTreeSet::new();
+        for e in ensures {
+            collect_expr_vars(e, &mut ensures_vars);
+        }
+        let mut rebound = BTreeSet::new();
+        collect_assigned_roots(body, &mut rebound);
+        collect_let_bound(body, &mut rebound);
+        for p in ensures_vars.intersection(&param_names) {
+            if rebound.contains(p) {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
+                    message: format!(
+                        "cannot verify a postcondition over parameter `{p}`: it is reassigned or \
+                         shadowed in the body, but `ensures` refers to the parameter's call-entry \
+                         value (there is no `old()`). Keep the parameter unmodified and return a \
+                         local instead (`let r = ...; return r;`)"
+                    ),
+                    span: Some((span.start, span.end)),
+                });
+            }
+        }
         // Every value the body can yield at its tail (a bare tail `if`/`match`'s arms, a block tail,
         // or `0` when it falls off the end) is checked under the full body assumptions.
         let mut tail_vals = Vec::new();
@@ -2310,6 +2337,41 @@ fn collect_assigned_roots(body: &[Stmt], out: &mut BTreeSet<String>) {
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     collect_assigned_roots(b, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect every name a body BINDS with `let`/`let (…)` at any depth (used to detect a `let` that
+/// shadows a parameter named in an `ensures`).
+fn collect_let_bound(body: &[Stmt], out: &mut BTreeSet<String>) {
+    for s in body {
+        match s {
+            Stmt::Let { name, .. } => {
+                out.insert(name.clone());
+            }
+            Stmt::LetPattern { pattern, .. } => {
+                for n in pattern.bound_names() {
+                    out.insert(n);
+                }
+            }
+            Stmt::If { then, else_, .. } => {
+                collect_let_bound(then, out);
+                if let Some(e) = else_ {
+                    collect_let_bound(e, out);
+                }
+            }
+            Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => collect_let_bound(body, out),
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    collect_let_bound(b, out);
                 }
             }
             _ => {}
