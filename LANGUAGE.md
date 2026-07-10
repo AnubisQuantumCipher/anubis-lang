@@ -433,7 +433,10 @@ Pair these with `if let` / `while let` (see Control flow) for ergonomic optional
 ## Standard library
 
 **Conversions / reflection:** `str`, `int`, `float`, `bool`, `type`, `parse_int`, `parse_float`,
-`len`.
+`parse_int_opt`, `parse_float_opt`, `len`. `int`/`float`/`parse_int`/`parse_float` are **lenient**:
+malformed input yields `0`/`0.0` (convenient for `int(read_line())`, but it cannot distinguish the
+number `0` from "not a number"). For fail-closed parsing use `parse_int_opt(s)` / `parse_float_opt(s)`,
+which return `Some(n)` on success and `None` on malformed input.
 
 **Math:** `abs`, `min`, `max` (variadic or over a list), `pow`, `sqrt`, `cbrt`, `floor`, `ceil`,
 `round`, `trunc`, `gcd`, `sign`, `clamp(x, lo, hi)`, `factorial`, `hypot`, `exp`, `ln`, `log10`,

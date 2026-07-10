@@ -1195,6 +1195,40 @@ fn anubis_cast_int(v: AnubisValue, bits: u32, signed: bool) -> AnubisValue {
 fn anubis_parse_float(v: AnubisValue) -> AnubisValue {
     AnubisValue::Float(v.display_string().trim().parse::<f64>().unwrap_or(0.0))
 }
+/// Fail-closed parse: `Some(n)` on success, `None` on malformed input (unlike lenient `parse_int`,
+/// which returns 0). Lets a program distinguish "the number 0" from "not a number".
+fn anubis_parse_int_opt(v: AnubisValue) -> AnubisValue {
+    match v.display_string().trim().parse::<i64>() {
+        Ok(n) => AnubisValue::Enum {
+            ty: "Option".to_string(),
+            tag: "Some".to_string(),
+            fields: vec![AnubisValue::Int(n)],
+            field_names: vec![],
+        },
+        Err(_) => AnubisValue::Enum {
+            ty: "Option".to_string(),
+            tag: "None".to_string(),
+            fields: vec![],
+            field_names: vec![],
+        },
+    }
+}
+fn anubis_parse_float_opt(v: AnubisValue) -> AnubisValue {
+    match v.display_string().trim().parse::<f64>() {
+        Ok(f) => AnubisValue::Enum {
+            ty: "Option".to_string(),
+            tag: "Some".to_string(),
+            fields: vec![AnubisValue::Float(f)],
+            field_names: vec![],
+        },
+        Err(_) => AnubisValue::Enum {
+            ty: "Option".to_string(),
+            tag: "None".to_string(),
+            fields: vec![],
+            field_names: vec![],
+        },
+    }
+}
 
 fn anubis_range(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     let (mut i, hi) = (a.as_i64(), b.as_i64());
@@ -2376,6 +2410,8 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "type" => fixed("anubis_type_of", callee, args, 1),
         "parse_int" => fixed("anubis_parse_int", callee, args, 1),
         "parse_float" => fixed("anubis_parse_float", callee, args, 1),
+        "parse_int_opt" => fixed("anubis_parse_int_opt", callee, args, 1),
+        "parse_float_opt" => fixed("anubis_parse_float_opt", callee, args, 1),
         // math
         "abs" => fixed("anubis_abs", callee, args, 1),
         "sqrt" => fixed("anubis_sqrt", callee, args, 1),
@@ -3712,6 +3748,18 @@ mod run_tests {
             print(get(xs, 10, -1)); print(get(m, \"zzz\", -2)); \
             print(has_key(m, \"a\")); print(xs[-1]); }";
         assert_eq!(run(src), "-1\n-2\ntrue\n30");
+    }
+
+    #[test]
+    fn parse_opt_returns_matchable_option() {
+        // Fail-closed parse variants return Some(n)/None so a program can tell "the number 0"
+        // from "not a number" (unlike lenient parse_int, which returns 0 for both).
+        let src = "fn go(s) { match parse_int_opt(s) { Some(n) => n, None => -1 } } \
+                   fn main() { print(go(\"42\")); print(go(\"0\")); print(go(\"abc\")); print(go(\"12x\")); }";
+        assert_eq!(run(src), "42\n0\n-1\n-1");
+        let fsrc = "fn main() { print(match parse_float_opt(\"3.5\") { Some(f) => f, None => 0.0 }); \
+                    print(match parse_float_opt(\"x\") { Some(f) => f, None => -1.0 }); }";
+        assert_eq!(run(fsrc), "3.5\n-1.0");
     }
 
     #[test]
