@@ -3197,11 +3197,17 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             ))
         }
         // Field read: struct / struct-enum-variant / map field.
-        Expr::FieldAccess { base, field, .. } => Ok(format!(
-            "({}).field_get({})",
-            safe_run_expr(base, ctx)?,
-            rust_string_lit(field)?
-        )),
+        Expr::FieldAccess { base, field, .. } => {
+            let fname = rust_string_lit(field)?;
+            // Fast path: read a field off a local by borrow instead of cloning the whole struct
+            // (same reasoning as indexing — field_get takes `&self` and clones only the field).
+            if let Expr::Var(name) = base.as_ref() {
+                if ctx.locals.contains(name) {
+                    return Ok(format!("{}.field_get({})", sanitize_ident(name)?, fname));
+                }
+            }
+            Ok(format!("({}).field_get({})", safe_run_expr(base, ctx)?, fname))
+        }
         Expr::TaintSource { label } if ctx.allow_research => Ok(format!(
             "AnubisValue::Str({}.to_string())",
             rust_string_lit(label)?
