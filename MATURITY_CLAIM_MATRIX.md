@@ -592,8 +592,15 @@ never certifies a violable one.
 
 B3 adds `while ... invariant(P) { }` clauses verified by the Hoare rule (base case + inductive step +
 frame + post-loop admit), readmitting loop-carried variables the solver otherwise drops. It was
-dogfooded HARDEST: **TWELVE consecutive adversarial sweeps**, each of which found and closed a distinct
-soundness defect (every one firsthand-reproduced — `check` accept + a concrete `anubis run` violation —
+dogfooded HARDEST: **FIFTEEN consecutive adversarial sweeps. Rounds 1-14 each found and closed a
+distinct soundness defect; round 15 (70 programs, every combination of the 14 fixed areas, mandatory
+assert flip-tests) found NO FALSE PROOFS — CONVERGED, firsthand-confirmed by a 15-case battery (10 hard
+false-proof combinations all REJECT, 5 valid contracts/invariants all ACCEPT).** Two later defects
+beyond the twelve tabulated below were also closed: (13) an `ensures` over a reassigned/shadowed
+parameter proved against the mutated value while composition substitutes the entry argument — now
+fail-closed (no `old()`); (14) `expr_to_smt_value` modeled a truncating cast as the identity, a false
+`y == x` fact a loop invariant could force-model — now returns None for non-value-preserving casts.
+Every defect was firsthand-reproduced (`check` accept + a concrete `anubis run` violation —
 before fixing, and locked with a regression test in `b3_loop_invariants_verify_inductively`,
 `loop_body_assert_not_discharged_against_stale_state`, `solver_modelability_is_function_local_and_shadow_safe`,
 and the B2 contract tests). The inductive-invariant ENGINE proved sound from round ~7 onward; the later
