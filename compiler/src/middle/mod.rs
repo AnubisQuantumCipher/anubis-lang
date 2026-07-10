@@ -880,6 +880,31 @@ fn analyze_stmts(
                     ctx.symbolic_defs.push(def_smt.clone());
                     ctx.constraints.push(format!("(assert {})", def_smt));
                     assumptions.push(def_smt); // so it is included in subsequent obligations
+                } else if matches!(init, Expr::Symbolic { .. }) {
+                    // A symbolic input with an explicit UNSIGNED type ranges over that type. In the
+                    // 64-bit signed model, bound it to [0, 2^w-1] so the solver never treats it as
+                    // negative or wider than the runtime can produce — omitting this would let the
+                    // solver falsely disprove e.g. `assert(x >= 0)` for a `u32` input.
+                    let range_w = ty.as_deref().and_then(|t| {
+                        if t.contains("u8") {
+                            Some(8u32)
+                        } else if t.contains("u16") {
+                            Some(16)
+                        } else if t.contains("u32") {
+                            Some(32)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(rw) = range_w {
+                        let max = (1u128 << rw) - 1;
+                        let range = format!(
+                            "(and (bvsle (_ bv0 64) {name}) (bvsle {name} (_ bv{max} 64)))"
+                        );
+                        ctx.symbolic_defs.push(range.clone());
+                        ctx.constraints.push(format!("(assert {})", range));
+                        assumptions.push(range);
+                    }
                 }
             }
             Stmt::LetPattern { pattern, .. } => {
@@ -1295,8 +1320,11 @@ impl SymbolicEngine {
                 let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
                 for v in &vars {
                     if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
-                        let w = *ir.symbolic_widths.get(v).unwrap_or(&32u32);
-                        smt.push_str(&format!("(declare-const {} {})\n", v, smt_bv_type(w)));
+                        // Every integer variable is a 64-bit bit-vector: the runtime is i64 and
+                        // type-annotation widths are inert, so a narrower declaration would be an
+                        // unsound abstraction. Typed symbolic inputs carry a [0, 2^w-1] range
+                        // assumption instead (added where they are bound).
+                        smt.push_str(&format!("(declare-const {} {})\n", v, smt_bv_type(64)));
                     }
                 }
                 for a in &obl.assumptions {
@@ -1440,10 +1468,12 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         Expr::Var(v) => int_vars.contains(v),
         Expr::Literal(l) => !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()),
         Expr::Binary { op, lhs, rhs } => {
-            matches!(
-                op.as_str(),
-                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>"
-            ) && is_int_modelable(lhs, int_vars)
+            // Only ops that model i64 EXACTLY as 64-bit bit-vectors: add/sub/mul (wrap like i64) and
+            // bitwise and/or/xor. `/` and `%` (division-by-zero traps at runtime) and `<<`/`>>`
+            // (runtime masks the shift mod 64, SMT does not) are left unmodelable, so an assertion
+            // over them is skipped rather than unsoundly disproved.
+            matches!(op.as_str(), "+" | "-" | "*" | "&" | "|" | "^")
+                && is_int_modelable(lhs, int_vars)
                 && is_int_modelable(rhs, int_vars)
         }
         Expr::Unary { op, expr } => op == "-" && is_int_modelable(expr, int_vars),
@@ -1509,32 +1539,38 @@ fn expr_to_smt_with_width(
         // Boolean literals are SMT `Bool`, not bit-vectors: emitting `(_ bvtrue 32)` produced the
         // Z3 error "unknown constant bvtrue" that made `check` reject `assert(true)`.
         Expr::Literal(l) if l == "true" || l == "false" => l.clone(),
-        Expr::Literal(l) => format!("(_ bv{} {})", l, expected_width.unwrap_or(32)),
+        // The runtime represents EVERY integer as i64 (type annotations like u8/u32 are inert —
+        // plain arithmetic never wraps to the annotated width, e.g. `let x: u8 = 200; x + 100` is
+        // 300, not 44). So integers are modeled as 64-bit bit-vectors with SIGNED comparisons,
+        // matching i64 exactly. A 32-bit unsigned model was unsound: it "disproved" true statements
+        // like `65536 * 65536 != 0` (wrapped to 0) and `0 - 1 < 0` (unsigned bvult).
+        Expr::Literal(l) => format!("(_ bv{} 64)", l),
         Expr::Binary { op, lhs, rhs } => {
-            // Logical connectives combine Bool operands, not bit-vectors — do not width-propagate.
+            // Logical connectives combine Bool operands, not bit-vectors.
             if op == "&&" || op == "||" {
                 let l = expr_to_smt_with_width(lhs, widths, None);
                 let r = expr_to_smt_with_width(rhs, widths, None);
                 let smt_op = if op == "&&" { "and" } else { "or" };
                 return format!("({} {} {})", smt_op, l, r);
             }
-            let width = expr_bitwidth(lhs, widths)
-                .or_else(|| expr_bitwidth(rhs, widths))
-                .or(expected_width)
-                .unwrap_or(32);
-            let l = expr_to_smt_with_width(lhs, widths, Some(width));
-            let r = expr_to_smt_with_width(rhs, widths, Some(width));
+            let l = expr_to_smt_with_width(lhs, widths, Some(64));
+            let r = expr_to_smt_with_width(rhs, widths, Some(64));
             match op.as_str() {
                 "+" => format!("(bvadd {} {})", l, r),
                 "-" => format!("(bvsub {} {})", l, r),
                 "*" => format!("(bvmul {} {})", l, r),
                 "&" => format!("(bvand {} {})", l, r),
+                "|" => format!("(bvor {} {})", l, r),
+                "^" => format!("(bvxor {} {})", l, r),
                 "==" => format!("(= {} {})", l, r),
                 "!=" => format!("(not (= {} {}))", l, r),
-                "<" => format!("(bvult {} {})", l, r),
-                "<=" => format!("(bvule {} {})", l, r),
-                ">" => format!("(bvugt {} {})", l, r),
-                ">=" => format!("(bvuge {} {})", l, r),
+                "<" => format!("(bvslt {} {})", l, r),
+                "<=" => format!("(bvsle {} {})", l, r),
+                ">" => format!("(bvsgt {} {})", l, r),
+                ">=" => format!("(bvsge {} {})", l, r),
+                // `/ % << >>` are intentionally NOT encoded here: they are excluded from
+                // is_int_modelable (division-by-zero and shift-by-≥64 do not match the i64 runtime),
+                // so a modeled assertion never reaches this arm with them.
                 _ => format!("({} {} {})", op, l, r),
             }
         }

@@ -723,14 +723,14 @@ fn trigger() {
         assert!(
             ir.constraints
                 .iter()
-                .any(|c| c.contains("bvult y") || c.contains("(< y 77)")),
+                .any(|c| c.contains("bvslt y") || c.contains("(< y 77)")),
             "constraints must include nested assume(y < 77), got {:?}",
             ir.constraints
         );
         assert!(
             ir.constraints
                 .iter()
-                .any(|c| c.contains("bvugt y") || c.contains("(> y 0)")),
+                .any(|c| c.contains("bvsgt y") || c.contains("(> y 0)")),
             "constraints must include nested assert(y > 0), got {:?}",
             ir.constraints
         );
@@ -1007,15 +1007,16 @@ fn poc() {
         );
         assert!(
             checks.iter().all(|check| !check.detail.contains("sort")
-                && !check.smt.contains("(bvugt x (_ bv0 8))")),
-            "u32 symbolic obligation must not be narrowed by unrelated u8 bindings: {:?}",
+                && !check.smt.contains("(_ BitVec 8)")
+                && !check.smt.contains("(_ BitVec 32)")),
+            "obligations model integers as i64 (64-bit), never narrowed: {:?}",
             checks
         );
         assert!(
             checks
                 .iter()
-                .any(|check| check.smt.contains("(bvugt x (_ bv0 32))")),
-            "x > 0 must use x's 32-bit width: {:?}",
+                .any(|check| check.smt.contains("(bvsgt x (_ bv0 64))")),
+            "x > 0 must use a 64-bit SIGNED comparison (matching the i64 runtime): {:?}",
             checks
         );
     }
@@ -1042,9 +1043,9 @@ fn main() {
         assert!(
             checks
                 .iter()
-                .any(|check| check.smt.contains("(assert (= x (_ bv7 32)))")
-                    && check.smt.contains("(assert (= y (bvmul x (_ bv6 32))))")),
-            "SMT must include concrete let assumptions for x and y: {:?}",
+                .any(|check| check.smt.contains("(assert (= x (_ bv7 64)))")
+                    && check.smt.contains("(assert (= y (bvmul x (_ bv6 64))))")),
+            "SMT must include concrete let assumptions for x and y (64-bit i64 model): {:?}",
             checks
         );
     }
@@ -1076,6 +1077,35 @@ fn main() {
             checks.iter().any(|c| c.status == "FAIL"),
             "must still disprove a false arithmetic assertion: {:?}",
             checks
+        );
+    }
+
+    #[test]
+    fn solver_models_i64_signed_not_32bit_unsigned() {
+        // The runtime is i64: the solver must model 64-bit SIGNED arithmetic, not 32-bit unsigned.
+        // These are all TRUE at runtime and must be PROVED (a 32-bit unsigned model disproved them:
+        // width wrap and unsigned comparison).
+        let proved = |src: &str| {
+            let ast = parse_source(src).expect("parse");
+            let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+            let checks = SymbolicEngine::check_obligations(&ir);
+            checks.iter().all(|c| c.status != "FAIL")
+        };
+        assert!(proved("fn main(){ let a=65536; let b=65536; assert(a*b != 0); }"), "2^32 must not wrap to 0");
+        assert!(proved("fn main(){ let x=0; assert(x - 1 < x); }"), "0-1 = -1 < 0 (signed)");
+        assert!(proved("fn main(){ let a=3000000000; let b=2000000000; assert(a + b > a); }"), "3e9+2e9 must not wrap");
+        // A u32 symbolic input carries a [0, 2^32-1] range, so a nonnegativity claim is PROVED —
+        // not falsely disproved by a hypothetical negative value the runtime cannot produce.
+        assert!(
+            proved("fn ok(){ research { let x: tainted<u32> = symbolic(); assert(x >= 0); } }"),
+            "u32 range assumption must hold x >= 0"
+        );
+        // Soundness preserved: a genuinely-false assertion is still disproved.
+        let ast = parse_source("fn main(){ let x=3; assert(x > 20); }").expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        assert!(
+            SymbolicEngine::check_obligations(&ir).iter().any(|c| c.status == "FAIL"),
+            "x=3, assert(x>20) must still be disproved"
         );
     }
 
