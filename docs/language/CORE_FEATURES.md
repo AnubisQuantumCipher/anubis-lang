@@ -28,11 +28,20 @@ This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **P
 - Recursion / mutual recursion (real call stack)
 
 ### Data
-- Arrays/lists: `[..]`, `len`, `push`, index R/W
+- Arrays/lists: `[..]`, `len`, `push`, index R/W (**fail-closed** OOB — `xs[i]`/`m[k]` trap; use `get`/`has_key`)
 - **Maps** `{ k: v }` + index get/set + for-in keys
 - Structs: decl, literal, field access
-- **Enums**: unit, tuple, **struct-like** variants
+- **Enums**: unit, tuple, **struct-like** variants; construction **validated** (`ANUBIS_UNKNOWN_ENUM`/`ANUBIS_UNKNOWN_VARIANT`)
 - **match** with bindings; **A+ exhaustiveness** (`ANUBIS_MATCH_NON_EXHAUSTIVE` without `_` or full arms)
+
+### Abstraction, generics, error handling
+- **Closures** `|x| expr` / `|x, y| { … }` — first-class, capturing; direct-call arity checked
+- **Traits + `impl`** — default methods, overrides, inherent-beats-trait resolution
+- **Generics** — parse and erase (`Box<T>`, `trait A<T>`); type params are dynamically checked at runtime
+- **`Option` / `Result` + `?`** — built-in `Some`/`None`/`Ok`/`Err`; `?` short-circuits on `None`/`Err`
+- **Block comments** `/* … */` (nesting-aware), in addition to line comments `//`
+- **`input()` / `read_line()`** — read a line from stdin (forwarded to the run binary)
+- **~150 builtins** across string/list/map/math/functional/io — see `STDLIB_CORE.md`
 
 ### Turing completeness
 - REAL — see `TURING_COMPLETENESS.md` + `scripts/run_turing_core_fixtures.sh`
@@ -52,15 +61,15 @@ This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **P
 - See `POC_KIT.md`
 
 ## PARTIAL
-- Full string API (beyond len/concat/index)
-- Module/import name resolution across files
-- Column-perfect diagnostics everywhere
-- Return-type checking on all paths
+- Single-file `module { … }` grouping works (flat call namespace); **multi-file** import resolution does not
+- Column-perfect diagnostics everywhere (line:col + caret exist; not every path is column-perfect)
+- **Return-type checking** on all paths — a body whose value type mismatches the declared return type is
+  not yet rejected (`fn f() -> u32 { "s" }` type-checks). Known gap.
 
 ## PLANNED (not claimed)
-- Array/list slicing sugar
-- `Option`/`Result` sugar beyond enums
-- Async, networking language surface, large stdlib, LSP, packaging
+- Array/list slicing **sugar** `xs[1..3]` (use explicit list builtins today)
+- Multi-file modules + an Anubis-level standard library (`stdlib/` is empty; builtins are baked in)
+- Async, networking language surface, LSP, packaging
 - Automatic remote exploit chains / ROP (explicitly out of scope for PoC kit)
 
 ## Gates

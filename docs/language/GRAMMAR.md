@@ -1,6 +1,9 @@
 # Anubis Grammar (Minimum Core — Gate 2/3)
 
-Approximate EBNF for the slice. This is the grammar the 25 fixtures and runner must exercise. Anything outside is UNSUPPORTED or PLANNED.
+Approximate EBNF for an early slice. **This grammar is intentionally partial and now under-describes the
+language** — the authoritative, current syntax reference is [`../../LANGUAGE.md`](../../LANGUAGE.md)
+(structs, enums, traits/impls, generics, closures, `match`, `for`/`while`/`loop`, `Option`/`Result` + `?`,
+block comments, etc. are all real and specified there). This file is kept for the fixture/runner history.
 
 ```ebnf
 program     = { item } ;
@@ -16,7 +19,7 @@ block       = "{" { stmt } "}" ;
 
 stmt        = let_stmt
             | if_stmt
-            | while_stmt          (* PLANNED or limited *)
+            | while_stmt          (* REAL — also for/loop/break/continue; see LANGUAGE.md *)
             | return_stmt
             | expr_stmt
             | research_block

@@ -46,18 +46,35 @@
 - Hex / binary / octal integer literals (`0x`/`0b`/`0o`) — REAL
 - `target_run` returns named **TargetRun** struct (`r.crashed`, …) with list-index compat — REAL
 
-## Explicitly PLANNED (not real yet)
+## NOW REAL (shipped after this slice — verified firsthand 2026-07-10)
 
-- Array/list slicing sugar
-- `Result<T,E>` / `Option` sugar beyond user-defined enums
-- Block comments `/* ... */`
-- Full string library (beyond len/concat/index)
-- Module system with real multi-file name resolution + stdlib imports
-- Generics / traits / impls
+These were listed as PLANNED below in an earlier slice and have since shipped. Moved up so the ledger
+is honest in **both** directions (never over-claim, never under-claim):
+
+- **Traits, `impl` blocks, and (erased) generics** — REAL and golden-tested
+  (`generic_syntax_is_accepted_and_erased`, `generic_trait_with_nested_params`,
+  `traits_default_methods_and_overrides`, `inherent_method_beats_trait_default`). Default methods,
+  overrides, and inherent-beats-trait resolution all work. Generics parse and erase.
+- **Built-in `Option` / `Result` + the `?` operator** — REAL. `Some`/`None`/`Ok`/`Err` need no decl;
+  `?` short-circuits on `None`/`Err` (verified: an `Err` propagates out through `?`).
+- **Block comments `/* ... */`** — REAL and nesting-aware (`frontend/mod.rs`).
+- **Full string / list / map library** — REAL: ~150 builtins including
+  `upper`/`lower`/`trim`/`split`/`contains`/`starts_with`/`ends_with`/`replace`/`index_of`/`repeat`/
+  `substr`/`char_at` (strings); `map`/`filter`/`reduce`/`sort`/`zip`/`enumerate`/`flatten`/`any`/`all`
+  (lists); `keys`/`values`/`entries`/`has_key`/`get`/`merge` (maps). See `docs/language/STDLIB_CORE.md`.
+- **Fail-closed indexing** — `xs[i]` / `m[k]` trap on out-of-bounds / missing key (2026-07-10);
+  `get(coll, key, default)` / `has_key` are the optional-access path.
+- **`input()` / `read_line()`** — REAL (stdin forwarded to the run binary, 2026-07-10).
+
+## Explicitly PLANNED (not real yet — verified still-unshipped 2026-07-10)
+
+- Array/list slicing **sugar** `xs[1..3]` (clean parse error today; use explicit list builtins)
+- Module system with real **multi-file** name resolution + stdlib imports (single-file `module {}`
+  grouping works; the call namespace is flat; `import` parses but does not yet resolve across files)
+- An Anubis-level standard library (`stdlib/` is empty; the ~150 builtins are baked into the Rust emitter)
 - Async / await / tasks / language-level networking
 - Package manager, crates, publishing
 - LSP / IDE support
-- Large standard library
 - Automatic remote exploit / ROP / C2 (out of scope by design — not a gap to “close” for A+)
 
 ## Current Gaps That Must Be Addressed in Fixtures / Tests (but are targeted for this slice)
@@ -71,8 +88,12 @@
 
 ## What Must Never Be Claimed
 
-- "General-purpose language complete"
-- Full enums, modules, Result, async, or stdlib
-- Mature package / build / release story
+- "General-purpose language complete" (Anubis targets a niche: a proof-carrying, evidence-native
+  systems language — not a Python/Haskell/Swift replacement)
+- **Multi-file** modules, an Anubis-level stdlib, async, or language-level networking (all PLANNED above)
+- Mature package / build / release story; LSP / IDE tooling
+
+(Note: full enums — unit/tuple/struct variants — and built-in `Option`/`Result` + `?` **are** real now,
+so they are no longer on this never-claim list; see the NOW REAL sections above.)
 
 See CORE_FEATURES.md for the exact minimum that **is** supported and must be proven by the 25 fixtures + A15.
