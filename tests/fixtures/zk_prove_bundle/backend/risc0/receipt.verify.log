@@ -1,0 +1,3 @@
+receipt.verify(ANUBIS_ID) PASSED
+lane_observed=metal-hybrid
+journal_sha256=66a0b53312c1d72c6bdc384d5a7e06a470c8a118c9599f59efe112a66cf85c37

@@ -1,0 +1,11 @@
+// Parameterized proof: journal = factorial(proof_input_u32("n"))
+// Prove with: anubis prove ... --input-json '{"n":5}'  → journal 120
+//              anubis prove ... --input-json '{"n":6}'  → journal 720
+fn factorial(n: u32) {
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+fn main() {
+    let n = proof_input_u32("n");
+    return factorial(n);
+}

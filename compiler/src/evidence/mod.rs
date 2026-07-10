@@ -340,8 +340,9 @@ pub fn build_evidence_bundle(
     // v1 schema prefers manifest.json as well
     std::fs::write(dir.join("manifest.json"), &json).map_err(|e| e.to_string())?;
     // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
-    // source. Written before the manifest hashing so it is covered by MANIFEST.sha256.
-    write_json(&dir.join("pca.json"), &derive_claim_block(source, mode))?;
+    // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Written before
+    // the manifest hashing so it is covered by MANIFEST.sha256.
+    write_json(&dir.join("pca.json"), &derive_claim_block_bound(&dir, source, mode))?;
     write_manifest_hashes(&dir)?;
 
     Ok(EvidenceBundle { dir, manifest })
@@ -408,11 +409,23 @@ pub struct ClaimBlock {
     pub taint_clean: bool,
     pub solver_obligations: usize,
     pub solver_all_discharged: bool,
-    /// Whether a zero-knowledge receipt is bound to this claim. Always `false` in v0 — stated
-    /// explicitly so the block never silently implies a ZK proof it does not carry. (Populated when
-    /// receipt binding lands.)
+    /// Whether a zero-knowledge receipt is bound to this claim. `false` when the bundle carries no
+    /// genuine receipt — stated explicitly so the block never silently implies a ZK proof it does
+    /// not carry.
     #[serde(default)]
     pub zk_present: bool,
+    /// When `zk_present`, the RISC Zero ImageID (guest-bound) the receipt attests to. `None`
+    /// otherwise. Naming it makes the claim specific: `verify` re-derives it from the bundle and
+    /// cryptographically re-checks the receipt against it (a wrong ImageID fails closed).
+    #[serde(default)]
+    pub zk_image_id: Option<String>,
+    /// When `zk_present`, the SHA-256 of the receipt artifact — re-derived from the bundle's own
+    /// `receipt.bin`, so a tampered receipt makes the re-derived claim mismatch.
+    #[serde(default)]
+    pub zk_receipt_sha256: Option<String>,
+    /// When `zk_present`, the SHA-256 of the receipt's committed journal (the public output).
+    #[serde(default)]
+    pub zk_journal_sha256: Option<String>,
     pub verdict: String,
     pub tool: String,
 }
@@ -462,9 +475,90 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         solver_obligations,
         solver_all_discharged,
         zk_present: false,
+        zk_image_id: None,
+        zk_receipt_sha256: None,
+        zk_journal_sha256: None,
         verdict: verdict.into(),
         tool: "anubis 0.2.0".into(),
     }
+}
+
+/// A ZK receipt binding derived STRUCTURALLY from a bundle's risc0 sidecars: the guest-bound
+/// ImageID, the receipt digest (recomputed from the bundle's own `receipt.bin`), and the committed
+/// journal digest. `Some` only when the bundle carries a genuine receipt — non-placeholder,
+/// non-dev, non-mock, `verify_status=passed`. The CRYPTOGRAPHIC re-verification of the receipt
+/// against the ImageID happens in the CLI (which links risc0); this derives the deterministic facts
+/// the claim records so `verify` can re-derive and cross-check them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZkBinding {
+    pub image_id: String,
+    pub receipt_sha256: String,
+    pub journal_sha256: String,
+}
+
+pub fn derive_zk_binding(dir: &Path) -> Option<ZkBinding> {
+    let r = dir.join("backend").join("risc0");
+    let receipt_path = r.join("receipt.bin");
+    let image_id_path = r.join("image_id.txt");
+    let meta_path = r.join("risc0_metadata.json");
+    if !receipt_path.exists() || !image_id_path.exists() || !meta_path.exists() {
+        return None;
+    }
+    let receipt_bytes = std::fs::read(&receipt_path).ok()?;
+    // A placeholder receipt is written when proving failed — it is never a binding.
+    if receipt_bytes.starts_with(b"RISC0_RECEIPT_NOT_GENERATED") {
+        return None;
+    }
+    let image_id = std::fs::read_to_string(&image_id_path)
+        .ok()?
+        .trim()
+        .to_string();
+    // A real ImageID is eight whitespace-separated u32 words (not the failure sentinel).
+    let words: Vec<&str> = image_id.split_whitespace().collect();
+    if words.len() != 8 || words.iter().any(|w| w.parse::<u32>().is_err()) {
+        return None;
+    }
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
+    let is_real = meta.get("verify_status").and_then(|v| v.as_str()) == Some("passed")
+        && meta.get("fresh_receipt_generated").and_then(|v| v.as_bool()) == Some(true)
+        && meta.get("dev_mode").and_then(|v| v.as_bool()) == Some(false)
+        && meta.get("mock_prover").and_then(|v| v.as_bool()) == Some(false)
+        && meta
+            .get("image_id_is_placeholder")
+            .and_then(|v| v.as_bool())
+            == Some(false);
+    if !is_real {
+        return None;
+    }
+    // Recompute the receipt digest from the bundle's own bytes (so a tampered receipt mismatches),
+    // and the ImageID recorded in metadata must agree with image_id.txt.
+    if meta.get("image_id").and_then(|v| v.as_str()) != Some(image_id.as_str()) {
+        return None;
+    }
+    let journal_sha256 = meta
+        .get("committed_journal_sha256")
+        .and_then(|v| v.as_str())?
+        .to_string();
+    Some(ZkBinding {
+        image_id,
+        receipt_sha256: sha256_bytes(&receipt_bytes),
+        journal_sha256,
+    })
+}
+
+/// The full claim block for a bundle: the source-derived analysis claim, plus a ZK receipt binding
+/// when the bundle carries a genuine receipt. Used both when emitting a PCA and when verifying one,
+/// so the two agree exactly (including the ZK fields).
+pub fn derive_claim_block_bound(dir: &Path, source: &str, mode: &str) -> ClaimBlock {
+    let mut cb = derive_claim_block(source, mode);
+    if let Some(zk) = derive_zk_binding(dir) {
+        cb.zk_present = true;
+        cb.zk_image_id = Some(zk.image_id);
+        cb.zk_receipt_sha256 = Some(zk.receipt_sha256);
+        cb.zk_journal_sha256 = Some(zk.journal_sha256);
+    }
+    cb
 }
 
 /// Verify a Proof-Carrying Artifact: first the hash / tamper validation, then — the PCA hardening —
@@ -486,7 +580,11 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // source. (Also implied by `fresh == recorded`, but asserted directly so the source↔claim tie
     // can never drift.)
     let source_bound = recorded.source_sha256 == sha256_bytes(source.as_bytes());
-    let fresh = derive_claim_block(&source, &recorded.mode);
+    // Re-derive the full claim — including the ZK binding — from the bundle's own artifacts. A
+    // tampered receipt, a swapped ImageID, or a claim that lies about carrying a receipt makes the
+    // re-derived block differ from the recorded one and fails closed here (the CLI additionally
+    // re-verifies the receipt cryptographically against the ImageID).
+    let fresh = derive_claim_block_bound(dir, &source, &recorded.mode);
     // If the bundle is signed, the signature must verify over the current claim + manifest. An
     // unsigned bundle is still a valid (unsigned) PCA. A forged/invalid signature fails closed.
     let sig_ok = match pca_signature_status(dir)? {
@@ -1032,6 +1130,87 @@ mod pca_tests {
         // ...but re-deriving the claim from the source catches the lie and fails closed.
         assert!(!verify_pca(&bundle.dir).unwrap());
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Plant risc0 sidecars into a bundle so `derive_zk_binding` sees a (structurally) genuine
+    /// receipt. `real` toggles the metadata flags that gate a real binding.
+    fn plant_receipt(dir: &Path, image_id: &str, receipt: &[u8], real: bool) {
+        let r = dir.join("backend").join("risc0");
+        std::fs::create_dir_all(&r).unwrap();
+        std::fs::write(r.join("receipt.bin"), receipt).unwrap();
+        std::fs::write(r.join("image_id.txt"), image_id).unwrap();
+        let journal_sha = sha256_bytes(b"journal-120");
+        let meta = serde_json::json!({
+            "verify_status": if real { "passed" } else { "failed" },
+            "fresh_receipt_generated": real,
+            "dev_mode": !real,
+            "mock_prover": false,
+            "image_id_is_placeholder": false,
+            "image_id": image_id,
+            "committed_journal_sha256": journal_sha,
+        });
+        std::fs::write(
+            r.join("risc0_metadata.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn derive_zk_binding_only_binds_a_genuine_receipt() {
+        let base = unique_dir("zkbind");
+        let id = "1 2 3 4 5 6 7 8";
+        // No sidecars → no binding.
+        let d0 = base.join("none");
+        std::fs::create_dir_all(&d0).unwrap();
+        assert!(derive_zk_binding(&d0).is_none());
+        // A genuine (real=true) receipt → a binding naming the ImageID + digests.
+        let d1 = base.join("real");
+        std::fs::create_dir_all(&d1).unwrap();
+        plant_receipt(&d1, id, b"a-real-looking-receipt-blob", true);
+        let zk = derive_zk_binding(&d1).expect("genuine receipt binds");
+        assert_eq!(zk.image_id, id);
+        assert_eq!(zk.receipt_sha256, sha256_bytes(b"a-real-looking-receipt-blob"));
+        // dev_mode receipt → not a binding.
+        let d2 = base.join("dev");
+        std::fs::create_dir_all(&d2).unwrap();
+        plant_receipt(&d2, id, b"blob", false);
+        assert!(derive_zk_binding(&d2).is_none());
+        // placeholder receipt → not a binding.
+        let d3 = base.join("placeholder");
+        std::fs::create_dir_all(&d3).unwrap();
+        plant_receipt(&d3, id, b"RISC0_RECEIPT_NOT_GENERATED\n", true);
+        assert!(derive_zk_binding(&d3).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_pca_binds_receipt_and_catches_receipt_tamper() {
+        let base = unique_dir("zkverify");
+        let good = "fn main() { print(1); }";
+        let bundle = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        let id = "168166999 2647531960 2381486741 2168976393 291594100 2287811983 3816763757 3860919363";
+        // Plant a genuine receipt, re-derive the (now zk-bound) claim, re-hash the manifest.
+        plant_receipt(&bundle.dir, id, b"receipt-blob-v1", true);
+        write_json(
+            &bundle.dir.join("pca.json"),
+            &derive_claim_block_bound(&bundle.dir, good, "safe"),
+        )
+        .unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        // The recorded claim now carries the binding, and verify re-derives it → passes.
+        let recorded: ClaimBlock =
+            serde_json::from_str(&std::fs::read_to_string(bundle.dir.join("pca.json")).unwrap())
+                .unwrap();
+        assert!(recorded.zk_present && recorded.zk_image_id.as_deref() == Some(id));
+        assert!(verify_pca(&bundle.dir).unwrap());
+        // Swap the receipt for different bytes and re-hash the manifest (hash layer satisfied) but
+        // leave the recorded claim naming the old receipt digest → re-derivation fails closed.
+        std::fs::write(bundle.dir.join("backend/risc0/receipt.bin"), b"receipt-blob-TAMPERED").unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        assert!(validate_bundle(&bundle.dir).unwrap());
+        assert!(!verify_pca(&bundle.dir).unwrap());
         let _ = std::fs::remove_dir_all(&base);
     }
 

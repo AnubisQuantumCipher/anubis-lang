@@ -1,0 +1,136 @@
+{
+  "timestamp": "20260710-114445",
+  "tool": "anubis 0.2.0",
+  "mode": "safe",
+  "source_hash": "99f113aa5f6536809f16b22619696aae8a0dc0822f8168af9f3a7bb89e515de3",
+  "build_log_hash": "2be3879d90b98ae8c7e9470d3688d7f405f5e90550f17d9475c96aa008183685",
+  "artifact_hash": "741ef1a85c4be5864a022d9f6c7b2d99a88bffa139cf03c17d5fb1f5d9235606",
+  "lane": "risc0-risc0",
+  "environment_hash": "8f3d96015bd4b19d6a4193bda74d0d3a34856f7499e059b0ad845da91d6d6d6a",
+  "source_tree_hash": "3af52ceb0bfe14b045b91517d832540670ae735b5d73cf77531f0625b7cb9757",
+  "sarif_hash": "f6c6aed06511b98502f72baaec3baca70faa6c0a8dd58d2a29fa626725f970df",
+  "bounty_report_hash": "e11da5772449a257335f440fb8422f5b19df627359a83dcb316d80120b3e857e",
+  "manifest_signature": "67db86f7be7c5058627cab31cf19e546b9ce1a70545114efa59a2eefec9b4470",
+  "checks": [
+    {
+      "name": "parse",
+      "status": "PASS",
+      "detail": "ok"
+    },
+    {
+      "name": "typecheck",
+      "status": "PASS",
+      "detail": "mode=safe symbols=1 functions=2"
+    },
+    {
+      "name": "symbolic",
+      "status": "PASS",
+      "detail": "constraints=1"
+    },
+    {
+      "name": "solver",
+      "status": "PASS",
+      "detail": "solver:no-obligations=PASS"
+    },
+    {
+      "name": "source_hash",
+      "status": "PASS",
+      "detail": "99f113aa5f6536809f16b22619696aae8a0dc0822f8168af9f3a7bb89e515de3"
+    },
+    {
+      "name": "build_log_hash",
+      "status": "PASS",
+      "detail": "2be3879d90b98ae8c7e9470d3688d7f405f5e90550f17d9475c96aa008183685"
+    },
+    {
+      "name": "artifact",
+      "status": "PASS",
+      "detail": "native emitted"
+    },
+    {
+      "name": "artifact_hash",
+      "status": "PASS",
+      "detail": "741ef1a85c4be5864a022d9f6c7b2d99a88bffa139cf03c17d5fb1f5d9235606"
+    },
+    {
+      "name": "hybrid_receipt_artifacts",
+      "status": "PASS",
+      "detail": "guest.elf,image_id.txt,generated-methods.rs,risc0_guest.elf,risc0_image_id.txt,risc0_receipt.bin,risc0_risc0_metadata.json,risc0_receipt.verify.log,risc0_prove.log,risc0_guest_src_main.rs,risc0_receipt,risc0_metadata.json,risc0_receipt.rs"
+    },
+    {
+      "name": "hybrid_guest_elf_hash",
+      "status": "PASS",
+      "detail": "246575e6ab618980d7a8158a94ae89669eb1dffd6d569da708df1d39eb3ecc27"
+    },
+    {
+      "name": "hybrid_image_id_txt_hash",
+      "status": "PASS",
+      "detail": "a096eb35bee0ce51dbc236f151295a7f0b7bdc6f281fc8b894b9ef39eabf3842"
+    },
+    {
+      "name": "hybrid_generated_methods_rs_hash",
+      "status": "PASS",
+      "detail": "2cc3dd0b3c2f3a87fca984fad9360ca2670d8108731d40bd483d1b1fc9c291b0"
+    },
+    {
+      "name": "hybrid_risc0_guest_elf_hash",
+      "status": "PASS",
+      "detail": "246575e6ab618980d7a8158a94ae89669eb1dffd6d569da708df1d39eb3ecc27"
+    },
+    {
+      "name": "hybrid_risc0_image_id_txt_hash",
+      "status": "PASS",
+      "detail": "a096eb35bee0ce51dbc236f151295a7f0b7bdc6f281fc8b894b9ef39eabf3842"
+    },
+    {
+      "name": "hybrid_risc0_receipt_bin_hash",
+      "status": "PASS",
+      "detail": "8adb7bbc288970db5e3766a2c7e3e938ca6aa1ba14525997afda91ca433c492a"
+    },
+    {
+      "name": "hybrid_risc0_risc0_metadata_json_hash",
+      "status": "PASS",
+      "detail": "f04873b4f9063b4bbba060a70858e4ccb32ec94821f0e08a9ab115732c5db9a3"
+    },
+    {
+      "name": "hybrid_risc0_receipt_verify_log_hash",
+      "status": "PASS",
+      "detail": "536c99c89a6ebf9185d371f9faf23242b9b976fff5389d9562a4d43849d6da5d"
+    },
+    {
+      "name": "hybrid_risc0_prove_log_hash",
+      "status": "PASS",
+      "detail": "32e478af9f8aeffb2536736de3d852b2f452e7489461645bc39bcfffc783a2e1"
+    },
+    {
+      "name": "hybrid_risc0_guest_src_main_rs_hash",
+      "status": "PASS",
+      "detail": "4fa9d3f5972a67bedcb6a6354ed2b52422dc32bf217f889854e70cf98e91d634"
+    },
+    {
+      "name": "hybrid_risc0_receipt_hash",
+      "status": "PASS",
+      "detail": "741ef1a85c4be5864a022d9f6c7b2d99a88bffa139cf03c17d5fb1f5d9235606"
+    },
+    {
+      "name": "hybrid_risc0_metadata_json_hash",
+      "status": "PASS",
+      "detail": "f04873b4f9063b4bbba060a70858e4ccb32ec94821f0e08a9ab115732c5db9a3"
+    },
+    {
+      "name": "hybrid_risc0_receipt_rs_hash",
+      "status": "PASS",
+      "detail": "e0288511e1350c63d5ea77123241553d43c43e5a75c1847117a2c317bc0fd8cf"
+    },
+    {
+      "name": "risc0_receipt_verify",
+      "status": "PASS",
+      "detail": "verify_status=passed fresh_receipt_generated=true dev_mode=false mock_prover=false cache_used=false placeholder_image_id=false patch_crates_io_active=true methods_patch_crates_io_active=true prover_patch_crates_io_active=true reference_ok=true vendor_ok=true"
+    }
+  ],
+  "verdict": "PASS",
+  "security": {
+    "mode": "safe",
+    "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+  }
+}

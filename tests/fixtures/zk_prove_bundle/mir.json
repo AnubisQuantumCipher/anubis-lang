@@ -1,0 +1,14 @@
+[
+  {
+    "effects": [],
+    "function": "factorial",
+    "mode": "safe",
+    "statement_count": 3
+  },
+  {
+    "effects": [],
+    "function": "main",
+    "mode": "safe",
+    "statement_count": 2
+  }
+]

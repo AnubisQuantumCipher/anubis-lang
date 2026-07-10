@@ -1,0 +1,1 @@
+prove input: examples/proof/proof_factorial_input.anb backend: risc0

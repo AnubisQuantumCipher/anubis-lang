@@ -2092,6 +2092,15 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             // PCA verification: hash/tamper validation PLUS re-deriving the claim block from the
             // bundle's own source and confirming it matches the recorded pca.json (fail-closed).
             let mut ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
+            // A2: when the PCA claims a ZK receipt, cryptographically re-verify it against the
+            // ImageID (re-derive, not re-trust). A tampered receipt, a wrong ImageID, or a
+            // mismatched journal fails closed here.
+            if ok {
+                if let Err(e) = verify_bundle_zk_receipt(&bundle) {
+                    eprintln!("zk receipt verification FAILED: {}", e);
+                    ok = false;
+                }
+            }
             // Report (and optionally require) the signature.
             match pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))? {
                 Some((sig_ok, signer)) => {
@@ -3348,6 +3357,91 @@ fn verify_risc0_receipt_bytes(receipt_data: &[u8], id_words: [u32; 8]) -> Result
     Ok(receipt_obj.journal.bytes.clone())
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = sha2::Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
+
+/// A2: cryptographically re-verify the ZK receipt a PCA claims to carry. Nothing here is trusted
+/// from the recorded claim — it re-reads the bundle's own receipt, ImageID, and guest ELF and:
+///   1. ties the ImageID to the bundle's guest ELF (`compute_image_id(elf) == ImageID`), which
+///      defends against a valid receipt swapped in from a *different* program;
+///   2. runs the real `risc0_zkvm::Receipt::verify` against that ImageID — a tampered receipt or a
+///      wrong ImageID fails here;
+///   3. confirms the receipt's committed journal matches the digest the claim records.
+/// The bundle's ImageID / receipt digest must also equal what the claim names (belt-and-suspenders
+/// with the structural re-derivation in `verify_pca`). Returns `Ok(())` when the bundle carries no
+/// receipt (`zk_present=false`) — there is nothing to re-verify.
+fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
+    let pca_path = bundle.join("pca.json");
+    if !pca_path.exists() {
+        return Ok(());
+    }
+    let pca: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&pca_path)?)?;
+    if pca.get("zk_present").and_then(|v| v.as_bool()) != Some(true) {
+        return Ok(());
+    }
+    let claimed_id = pca
+        .get("zk_image_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("zk_present=true but the claim carries no zk_image_id"))?;
+    let claimed_receipt_sha = pca
+        .get("zk_receipt_sha256")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("zk_present=true but the claim carries no zk_receipt_sha256"))?;
+    let claimed_journal_sha = pca
+        .get("zk_journal_sha256")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("zk_present=true but the claim carries no zk_journal_sha256"))?;
+
+    let r = bundle.join("backend").join("risc0");
+    let receipt_data =
+        std::fs::read(r.join("receipt.bin")).map_err(|e| anyhow!("read receipt.bin: {}", e))?;
+    let id_text = std::fs::read_to_string(r.join("image_id.txt"))
+        .map_err(|e| anyhow!("read image_id.txt: {}", e))?;
+
+    if id_text.trim() != claimed_id.trim() {
+        return Err(anyhow!("bundle ImageID does not match the claim's zk_image_id"));
+    }
+    if sha256_hex(&receipt_data) != claimed_receipt_sha {
+        return Err(anyhow!(
+            "bundle receipt.bin does not match the claim's zk_receipt_sha256"
+        ));
+    }
+    let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("bundle ImageID: {}", e))?;
+
+    // Tie the ImageID to the bundle's guest ELF (which is hash-bound in the manifest).
+    let elf_path = r.join("guest.elf");
+    if elf_path.exists() {
+        let elf_bytes = std::fs::read(&elf_path)?;
+        let computed = risc0_zkvm::compute_image_id(&elf_bytes)
+            .map_err(|e| anyhow!("compute_image_id(guest.elf): {}", e))?;
+        let claimed_digest: risc0_zkvm::Digest = id_words.into();
+        if computed != claimed_digest {
+            return Err(anyhow!(
+                "guest.elf ImageID {} does not match the receipt's ImageID {}",
+                computed,
+                claimed_digest
+            ));
+        }
+    }
+
+    // The real cryptographic check: the receipt verifies against the ImageID and yields its journal.
+    let journal_bytes =
+        verify_risc0_receipt_bytes(&receipt_data, id_words).map_err(|e| anyhow!("ZK {}", e))?;
+    if sha256_hex(&journal_bytes) != claimed_journal_sha {
+        return Err(anyhow!(
+            "receipt journal does not match the claim's zk_journal_sha256"
+        ));
+    }
+    println!(
+        "zk: receipt re-verified against ImageID (journal sha256 {})",
+        sha256_hex(&journal_bytes)
+    );
+    Ok(())
+}
+
 fn classify_risc0_proof_result(
     child_success: bool,
     receipt_present: bool,
@@ -3608,6 +3702,91 @@ fn first_mode(items: &[Item]) -> Option<Mode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A2/A3: the ZK receipt binding is cryptographically re-verified. These exercise the crypto
+    // layer directly (past the structural hash layer) against the committed real-receipt fixture.
+    fn zk_fixture_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/zk_prove_bundle")
+    }
+
+    fn stage_zk_bundle(tag: &str) -> PathBuf {
+        let fix = zk_fixture_dir();
+        let dir =
+            std::env::temp_dir().join(format!("anubis-zk-test-{}-{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&dir);
+        let r = dir.join("backend").join("risc0");
+        std::fs::create_dir_all(&r).unwrap();
+        for f in ["receipt.bin", "image_id.txt", "guest.elf", "risc0_metadata.json"] {
+            std::fs::copy(fix.join("backend/risc0").join(f), r.join(f)).unwrap();
+        }
+        std::fs::copy(fix.join("pca.json"), dir.join("pca.json")).unwrap();
+        dir
+    }
+
+    fn edit_pca(dir: &Path, key: &str, val: &str) {
+        let mut pca: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("pca.json")).unwrap()).unwrap();
+        pca[key] = serde_json::json!(val);
+        std::fs::write(
+            dir.join("pca.json"),
+            serde_json::to_string_pretty(&pca).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn zk_receipt_reverifies_from_fixture() {
+        let fix = zk_fixture_dir();
+        if !fix.join("backend/risc0/receipt.bin").exists() {
+            panic!("missing committed zk receipt fixture at {}", fix.display());
+        }
+        let dir = stage_zk_bundle("ok");
+        // The genuine receipt re-verifies against the ImageID and its journal matches the claim.
+        verify_bundle_zk_receipt(&dir).expect("genuine receipt must re-verify");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zk_receipt_tamper_fails_closed() {
+        if !zk_fixture_dir().join("backend/risc0/receipt.bin").exists() {
+            panic!("missing committed zk receipt fixture");
+        }
+        // (1) Corrupted receipt bytes — even with the receipt digest updated so the belt-and-
+        // suspenders check passes, the real Receipt::verify rejects the invalid proof.
+        let dir = stage_zk_bundle("corrupt");
+        let rp = dir.join("backend/risc0/receipt.bin");
+        let mut bytes = std::fs::read(&rp).unwrap();
+        for i in [5000usize, 10_000, 50_000, 100_000] {
+            bytes[i] ^= 0xFF;
+        }
+        std::fs::write(&rp, &bytes).unwrap();
+        edit_pca(&dir, "zk_receipt_sha256", &sha256_hex(&bytes));
+        assert!(
+            verify_bundle_zk_receipt(&dir).is_err(),
+            "corrupted receipt must fail closed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (2) Mismatched journal — the claim records a journal digest the receipt does not carry.
+        let dir = stage_zk_bundle("journal");
+        edit_pca(&dir, "zk_journal_sha256", &"0".repeat(64));
+        assert!(
+            verify_bundle_zk_receipt(&dir).is_err(),
+            "mismatched journal must fail closed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (3) Wrong ImageID — a valid-but-different ID breaks the guest.elf<->ImageID tie and the
+        // receipt's own claim digest.
+        let dir = stage_zk_bundle("wrongid");
+        std::fs::write(dir.join("backend/risc0/image_id.txt"), "1 2 3 4 5 6 7 8").unwrap();
+        edit_pca(&dir, "zk_image_id", "1 2 3 4 5 6 7 8");
+        assert!(
+            verify_bundle_zk_receipt(&dir).is_err(),
+            "wrong ImageID must fail closed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn prove_uses_full_hybrid_only_for_risc0_backend() {

@@ -1,0 +1,17 @@
+{
+  "pca_version": 1,
+  "source_sha256": "99f113aa5f6536809f16b22619696aae8a0dc0822f8168af9f3a7bb89e515de3",
+  "mode": "safe",
+  "tier": "checked",
+  "parse_ok": true,
+  "typecheck_ok": true,
+  "taint_clean": true,
+  "solver_obligations": 1,
+  "solver_all_discharged": true,
+  "zk_present": true,
+  "zk_image_id": "168166999 2647531960 2381486741 2168976393 291594100 2287811983 3816763757 3860919363",
+  "zk_receipt_sha256": "8adb7bbc288970db5e3766a2c7e3e938ca6aa1ba14525997afda91ca433c492a",
+  "zk_journal_sha256": "66a0b53312c1d72c6bdc384d5a7e06a470c8a118c9599f59efe112a66cf85c37",
+  "verdict": "PASS",
+  "tool": "anubis 0.2.0"
+}
