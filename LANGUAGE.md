@@ -227,17 +227,34 @@ between its signature and body. `requires(P)` is a precondition; `ensures(Q)` is
 `result` names the return value:
 
 ```
-fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }
+fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; }
 ```
 
 `anubis check` proves each `ensures` from the body and the `requires` using the SMT solver, and rejects
 a function whose postcondition does not hold (`ANUBIS_ASSERTION_UNPROVEN`). Contracts **compose**: at a
 call site the caller must satisfy the callee's `requires` (`inc(0)` is rejected — `0 > 0` fails) and may
-rely on its `ensures` (after `let a = inc(5)`, `assert(a > 0)` is proved). Only integer/arithmetic
-contracts are discharged (over `+ - * & | ^` and comparisons, in i64); a contract over strings, lists,
-or division is left to the runtime rather than proved. Every return path is checked — an early
-`return` that violates the postcondition is rejected — so a green check never certifies a violable
-integer contract. See `MATURITY_CLAIM_MATRIX.md` for the exact, honest scope.
+rely on its `ensures` (after `let a = inc(5)`, `assert(a > 0)` is proved).
+
+**Bounds must be stated, not assumed from the type.** A `u32` (or any width) annotation is
+runtime-inert — a value holds any `i64` and arithmetic wraps — so the solver will NOT assume `x` lies
+in `[0, 2^32)`. The upper `requires(x < 1000000)` above is load-bearing: without it, `x + 1` can wrap
+at `i64::MAX` and `result > x` becomes false, so the checker (correctly) rejects the unbounded form
+rather than certify a violable contract.
+
+**Contracts are compile-time only and FAIL CLOSED.** `requires`/`ensures` are *not* checked at
+runtime — the transpiler emits no runtime guard for them — so a contract the solver does not prove is
+enforced nowhere. Therefore every `ensures` must be either discharged by the solver or **rejected**
+(`ANUBIS_CONTRACT_UNPROVABLE`); it is never silently accepted. A postcondition the bit-vector solver
+cannot faithfully model is rejected, including: a value from a call whose contract isn't carried (bind
+it via `let r = f(x); return r;`), a **float** (`f64` is not an i64 bit-vector), a **truncating cast**
+(`x as u8` changes the value), an **oversized integer literal** (beyond `i64::MAX`), and an **untyped
+or reassigned** variable in the predicate. Only integer/arithmetic predicates over `+ - * & | ^` and
+comparisons (in i64) are provable; `/ % << >>` and string/list/bool predicates are not — for a *dynamic*
+postcondition, use a runtime `assert(...)` in the body (which **is** enforced at runtime) instead of an
+`ensures`. Every return path is checked, and a self-contradictory precondition (`requires`/`assume`
+that cannot both hold) is rejected as a vacuous proof rather than used to certify anything. So a green
+`anubis check` means every declared contract was actually proved — nothing more, nothing skipped. See
+`MATURITY_CLAIM_MATRIX.md` for the exact, honest scope.
 
 ## Closures and higher-order functions
 

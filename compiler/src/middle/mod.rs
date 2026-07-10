@@ -726,16 +726,18 @@ fn analyze_function(
     // function's assertions keep their prior (param-opaque) semantics — no regression.
     let has_contract = !requires.is_empty() || !ensures.is_empty();
     if has_contract {
+        // Make integer parameters solver-modelable. NOTE: a `u32`/`u8` annotation is INERT at
+        // runtime (a parameter holds any i64; the call boundary applies no width clamp), so we must
+        // NOT assume it lies in [0, 2^w-1] — doing so let the solver "prove" `x + 1 > x` while
+        // `f(i64::MAX)` wraps and violates it. A contract that needs bounds must state them via
+        // `requires`; unbounded i64 arithmetic that can overflow is (correctly) not provable.
         for (pname, pty) in params {
-            if is_numeric_ty(pty) || normalize_ty(pty) == "u32" {
+            // Only INTEGER params are solver-modelable. A float param must NOT be modeled as an i64
+            // bit-vector (that "proved" `2*x != 1` for `x = 0.5`); an integer `ensures` that then
+            // references it becomes non-modelable and fails closed below.
+            if is_integer_ty(pty) {
                 ctx.solver_int_vars.insert(pname.clone());
-                ctx.symbolic_widths.insert(pname.clone(), bitwidth_of(pty));
-                if let Some(rw) = unsigned_range_width(pty) {
-                    let max = (1u128 << rw) - 1;
-                    let range =
-                        format!("(and (bvsle (_ bv0 64) {pname}) (bvsle {pname} (_ bv{max} 64)))");
-                    assumptions.push(range);
-                }
+                ctx.symbolic_widths.insert(pname.clone(), 64);
             }
         }
         for req in requires {
@@ -767,7 +769,7 @@ fn analyze_function(
     // left un-obligated rather than mis-disproved.
     if !ensures.is_empty() {
         if let Some(tail) = fn_tail_return_expr(body) {
-            push_ensures_obligations(ctx, ensures, tail, &assumptions);
+            push_ensures_obligations(ctx, ensures, tail, &assumptions, span);
         }
         // Every explicit return except the tail return-call (the last statement).
         let n = body.len();
@@ -780,7 +782,7 @@ fn analyze_function(
             }
         }
         for r in &early {
-            push_ensures_obligations(ctx, ensures, r, &precondition_assumptions);
+            push_ensures_obligations(ctx, ensures, r, &precondition_assumptions, span);
         }
     }
 
@@ -963,36 +965,16 @@ fn analyze_stmts(
                 // For solver faithfulness: concrete lets become path assumptions.
                 // Symbolic sources remain unconstrained until assume()/assert() shape them.
                 if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
-                    let def_smt = format!("(= {} {})", name, init_smt);
+                    let def_smt = format!("(= {} {})", smt_var(name), init_smt);
                     ctx.symbolic_defs.push(def_smt.clone());
                     ctx.constraints.push(format!("(assert {})", def_smt));
                     assumptions.push(def_smt); // so it is included in subsequent obligations
-                } else if matches!(init, Expr::Symbolic { .. }) {
-                    // A symbolic input with an explicit UNSIGNED type ranges over that type. In the
-                    // 64-bit signed model, bound it to [0, 2^w-1] so the solver never treats it as
-                    // negative or wider than the runtime can produce — omitting this would let the
-                    // solver falsely disprove e.g. `assert(x >= 0)` for a `u32` input.
-                    let range_w = ty.as_deref().and_then(|t| {
-                        if t.contains("u8") {
-                            Some(8u32)
-                        } else if t.contains("u16") {
-                            Some(16)
-                        } else if t.contains("u32") {
-                            Some(32)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(rw) = range_w {
-                        let max = (1u128 << rw) - 1;
-                        let range = format!(
-                            "(and (bvsle (_ bv0 64) {name}) (bvsle {name} (_ bv{max} 64)))"
-                        );
-                        ctx.symbolic_defs.push(range.clone());
-                        ctx.constraints.push(format!("(assert {})", range));
-                        assumptions.push(range);
-                    }
                 }
+                // NOTE: a symbolic input's `u8`/`u32` type annotation is NOT turned into a
+                // [0, 2^w-1] range assumption — the annotation is runtime-inert, so assuming a range
+                // the runtime does not enforce would be unsound (it would let the solver "prove"
+                // overflow-free facts that the i64 runtime violates). The value is modeled as an
+                // unconstrained i64.
 
                 // B2 composition: when the initializer calls a CONTRACTED function, specialize the
                 // callee's contract to this call — ASSERT its precondition (the caller must satisfy
@@ -1003,6 +985,8 @@ fn analyze_stmts(
                         if pnames.len() == args.len() {
                             let mut sub: BTreeMap<String, Expr> =
                                 pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                            // ASSERT each precondition; note whether ALL were checkable.
+                            let mut all_requires_checkable = true;
                             for req in &creq {
                                 let concrete = substitute_vars(req, &sub);
                                 if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
@@ -1018,9 +1002,15 @@ fn analyze_stmts(
                                         assertion: smt,
                                         vars: vars.into_iter().collect(),
                                     });
+                                } else {
+                                    all_requires_checkable = false;
                                 }
                             }
-                            if !cens.is_empty() {
+                            // ASSUME the postcondition ONLY when every precondition was verifiable:
+                            // the ensures holds only under the precondition, so assuming it when a
+                            // `requires` was SKIPPED (a dynamic/unmodelable argument) would be an
+                            // unsound false proof (the caller could be violating the precondition).
+                            if !cens.is_empty() && all_requires_checkable {
                                 // The callee guarantees an integer postcondition about its result,
                                 // so this binding is solver-modelable.
                                 ctx.solver_int_vars.insert(name.clone());
@@ -1461,8 +1451,8 @@ impl SymbolicEngine {
                     if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
                         // Every integer variable is a 64-bit bit-vector: the runtime is i64 and
                         // type-annotation widths are inert, so a narrower declaration would be an
-                        // unsound abstraction. Typed symbolic inputs carry a [0, 2^w-1] range
-                        // assumption instead (added where they are bound).
+                        // unsound abstraction. (A contract that needs a bound must state it via
+                        // `requires`; parameter type widths carry no range assumption.)
                         smt.push_str(&format!("(declare-const {} {})\n", v, smt_bv_type(64)));
                     }
                 }
@@ -1471,9 +1461,59 @@ impl SymbolicEngine {
                 }
                 smt.push_str(&format!("(assert (not {}))\n", obl.assertion));
                 smt.push_str("(check-sat)\n(get-model)\n");
-                run_z3_obligation_with_smt(obl, smt)
+                let mut check = run_z3_obligation_with_smt(obl, smt);
+                // Vacuity guard for CONTRACT obligations: `A ⟹ P` is proved by `A ∧ ¬P` UNSAT, but
+                // that is also UNSAT when the assumptions `A` are self-contradictory — a VACUOUS
+                // "proof". A precondition + `assume` that cannot both hold (e.g. `requires(x < 100)`
+                // with `assume(x > 1000)`) would otherwise certify any postcondition while the code
+                // runs and violates it. If a passing contract obligation has contradictory
+                // assumptions, fail closed.
+                let is_contract =
+                    obl.name.starts_with("ensures:") || obl.name.starts_with("requires@");
+                if check.status == "PASS" && is_contract && !obl.assumptions.is_empty() {
+                    if let Some(false) = assumptions_satisfiable(obl) {
+                        check.status = "FAIL".into();
+                        check.detail = "vacuous proof: the contract's assumptions are \
+                             self-contradictory (unsatisfiable), so the postcondition is not really \
+                             established — check for a `requires`/`assume` that cannot hold"
+                            .into();
+                    }
+                }
+                check
             })
             .collect()
+    }
+}
+
+/// Whether a contract obligation's assumptions are jointly satisfiable. `Some(true)`/`Some(false)`
+/// from z3; `None` if the solver did not cleanly decide (in which case the caller keeps the original
+/// verdict rather than fabricating a vacuity failure).
+fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
+    let mut smt = String::from("(set-logic QF_BV)\n");
+    for v in obl.vars.iter().collect::<BTreeSet<_>>() {
+        if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
+            smt.push_str(&format!("(declare-const {} {})\n", v, smt_bv_type(64)));
+        }
+    }
+    for a in &obl.assumptions {
+        smt.push_str(&format!("(assert {})\n", a));
+    }
+    smt.push_str("(check-sat)\n");
+    let out = Command::new("z3")
+        .args(["-in", "-smt2"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()
+        .and_then(|mut child| {
+            child.stdin.as_mut()?.write_all(smt.as_bytes()).ok()?;
+            child.wait_with_output().ok()
+        })?;
+    match String::from_utf8_lossy(&out.stdout).lines().next()?.trim() {
+        "sat" => Some(true),
+        "unsat" => Some(false),
+        _ => None,
     }
 }
 
@@ -1541,10 +1581,25 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
             model: Some(stdout),
             smt,
         },
-        // Anything that is neither a clean `unsat` (proved) nor `sat` (disproved) — a solver
-        // `unknown`, a parse/sort error, or empty output — is NOT a counterexample. Reporting it
-        // as FAIL would be an unsound "disproof" of a statement the solver never actually refuted.
-        // Fail-open on the solver here is correct: the assertion is still enforced at runtime.
+        // A z3 parse/sort ERROR means the SMT WE emitted is malformed (e.g. an undeclared symbol).
+        // That is our bug, not an undecidable query — treat it as FAIL so it fails CLOSED. Emitting a
+        // malformed obligation and then calling it "not a disproof" was the fail-OPEN hole that let a
+        // parameter named `model`/`set`/`bvx` slip an unverified overflow contract past `check`.
+        other if other.starts_with("(error") || stderr.contains("error") => SolverCheck {
+            name: obligation.name.clone(),
+            status: "FAIL".into(),
+            detail: format!(
+                "solver rejected the emitted SMT (z3: `{}` stderr `{}`); failing closed — a \
+                 malformed obligation is not a proof",
+                other,
+                stderr.trim()
+            ),
+            model: None,
+            smt,
+        },
+        // A genuine `unknown` (or empty output) on a well-formed query is NOT a counterexample.
+        // Reporting it as FAIL would be an unsound "disproof". A runtime `assert` is still enforced at
+        // runtime; QF_BV is decidable, so this branch is effectively unreachable for our obligations.
         other => SolverCheck {
             name: obligation.name.clone(),
             status: "UNKNOWN".into(),
@@ -1605,7 +1660,10 @@ fn assign_target_root(e: &Expr) -> Option<&str> {
 fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => int_vars.contains(v),
-        Expr::Literal(l) => !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()),
+        // Only a literal that fits i64 is modelable: the runtime holds integers as i64, and a literal
+        // beyond i64::MAX (e.g. 2^64) is parsed as f64 at runtime while `(_ bv… 64)` would silently
+        // reduce it mod 2^64 — the solver "proved" `x + 2^64 <= x` because it saw `x + 0`.
+        Expr::Literal(l) => !l.is_empty() && l.parse::<i64>().is_ok(),
         Expr::Binary { op, lhs, rhs } => {
             // Only ops that model i64 EXACTLY as 64-bit bit-vectors: add/sub/mul (wrap like i64) and
             // bitwise and/or/xor. `/` and `%` (division-by-zero traps at runtime) and `<<`/`>>`
@@ -1616,7 +1674,10 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
                 && is_int_modelable(rhs, int_vars)
         }
         Expr::Unary { op, expr } => op == "-" && is_int_modelable(expr, int_vars),
-        Expr::Cast { expr, .. } => is_int_modelable(expr, int_vars),
+        // A cast is modelable only when it cannot change the i64 value. `x as u8`/`u16`/`u32` truncate
+        // at runtime, so modeling them as the identity is unsound (it "proved" `(x as u8) == x` while
+        // `ident8(256)` runs to 0). Only 64-bit-target casts are value-preserving.
+        Expr::Cast { expr, ty } => cast_preserves_i64(ty) && is_int_modelable(expr, int_vars),
         Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
             is_int_modelable(inner, int_vars)
         }
@@ -1650,8 +1711,10 @@ fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
 
 fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String> {
     match e {
-        Expr::Var(v) if widths.contains_key(v) => Some(v.clone()),
-        Expr::Literal(l) if l.chars().all(|c| c.is_ascii_digit()) => Some(expr_to_smt(e, widths)),
+        Expr::Var(v) if widths.contains_key(v) => Some(smt_var(v)),
+        Expr::Literal(l) if !l.is_empty() && l.parse::<i64>().is_ok() => {
+            Some(expr_to_smt(e, widths))
+        }
         Expr::Binary { lhs, rhs, .. } => {
             expr_to_smt_value(lhs, widths)?;
             expr_to_smt_value(rhs, widths)?;
@@ -1674,7 +1737,7 @@ fn expr_to_smt_with_width(
     expected_width: Option<u32>,
 ) -> String {
     match e {
-        Expr::Var(v) => v.clone(),
+        Expr::Var(v) => smt_var(v),
         // Boolean literals are SMT `Bool`, not bit-vectors: emitting `(_ bvtrue 32)` produced the
         // Z3 error "unknown constant bvtrue" that made `check` reject `assert(true)`.
         Expr::Literal(l) if l == "true" || l == "false" => l.clone(),
@@ -1824,19 +1887,6 @@ fn is_tainted_type(ty: Option<&str>) -> bool {
     ty.is_some_and(|ty| ty.to_ascii_lowercase().contains("tainted"))
 }
 
-/// The unsigned bit width of a u8/u16/u32 type (for bounding a solver-modeled value), else None.
-fn unsigned_range_width(ty: &str) -> Option<u32> {
-    if ty.contains("u8") {
-        Some(8)
-    } else if ty.contains("u16") {
-        Some(16)
-    } else if ty.contains("u32") {
-        Some(32)
-    } else {
-        None
-    }
-}
-
 /// The expression a function returns at its tail: the last statement when it is `return X` or a bare
 /// value expression. None when the body ends in a statement (which yields the default `0`).
 fn fn_tail_return_expr(body: &[Stmt]) -> Option<&Expr> {
@@ -1879,12 +1929,27 @@ fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
 }
 
 /// Create an `ensures` obligation for a return: substitute `result` with the returned expression and
-/// assert it under the given assumptions. Only modelable (integer) postconditions become obligations.
+/// assert it under the given assumptions.
+///
+/// Soundness rule (FAIL-CLOSED — discharge or reject, never silently skip). `ensures`/`requires`
+/// contracts are compile-time only: the transpiler (`backends/run.rs`) emits NO runtime check for
+/// them, so a contract the checker does not prove is enforced NOWHERE. Therefore every `ensures`
+/// must be either discharged by the solver or reported as an error — a silent skip would let a green
+/// `anubis check` certify a postcondition that is false at runtime (e.g. `ensures(result == "wrong")`
+/// returning `"ok"`, or a float/cast/untyped-param contract the bit-vector solver cannot model).
+///
+/// So: substitute `result` with the returned expression; if the concrete predicate is modelable in
+/// QF_BV, emit the obligation (the solver proves or disproves it); otherwise REJECT with
+/// `ANUBIS_CONTRACT_UNPROVABLE`. A postcondition that needs a value the solver cannot reason about
+/// (a string/list, a float, a truncating cast, a call whose contract we did not carry) must be
+/// rewritten as a provable integer bound, or expressed as a runtime `assert` in the body (which IS
+/// enforced at runtime), not as an `ensures`.
 fn push_ensures_obligations(
     ctx: &mut SemanticContext,
     ensures: &[Expr],
     ret_expr: &Expr,
     assumptions: &[String],
+    span: Span,
 ) {
     for ens in ensures {
         let concrete = substitute_result(ens, ret_expr);
@@ -1900,6 +1965,20 @@ fn push_ensures_obligations(
                 assumptions: assumptions.to_vec(),
                 assertion: smt,
                 vars: vars.into_iter().collect(),
+            });
+        } else {
+            // A postcondition the solver cannot faithfully model. Contracts are NOT runtime-enforced,
+            // so certifying this would be a silent overclaim: fail closed.
+            ctx.diagnostics.push(SemanticDiagnostic {
+                code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
+                message: "cannot verify this `ensures` postcondition: it is not statically \
+                     modelable (a float, a string/list, a truncating cast, an unmodeled or reassigned \
+                     variable, or a value from a call whose contract is not carried). Contracts are \
+                     compile-time only and are never checked at runtime, so an unprovable one is \
+                     rejected — restate it as a provable integer bound, or use a runtime `assert` in \
+                     the body instead"
+                    .to_string(),
+                span: Some((span.start, span.end)),
             });
         }
     }
@@ -2139,6 +2218,40 @@ fn is_numeric_ty(ty: &str) -> bool {
         normalize_ty(ty).as_str(),
         "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "float"
     )
+}
+
+/// An INTEGER type the solver may soundly model as a 64-bit bit-vector (matching the i64 runtime).
+/// Floats are deliberately excluded: modeling an `f64` as an integer bit-vector is unsound (it
+/// "proved" `2*x != 1` for `x = 0.5`). `tainted<T>` is a qualifier — unwrap it first.
+fn is_integer_ty(ty: &str) -> bool {
+    let inner = ty.trim();
+    let inner = if let Some(rest) = inner.strip_prefix("tainted<") {
+        rest.strip_suffix('>').unwrap_or(rest)
+    } else {
+        inner
+    };
+    matches!(normalize_ty(inner).as_str(), "u8" | "u16" | "u32" | "u64")
+}
+
+/// True when `x as ty` cannot change the underlying i64 value, so the cast may be modeled as the
+/// identity in QF_BV. The runtime (`backends/run.rs`) truncates/sign-extends to the target width, so
+/// only 64-bit targets are value-preserving; `as u8`/`as u16`/`as u32` (and any float target) DO
+/// change the value and must be treated as non-modelable (the solver ignored the truncation and
+/// "proved" `(x as u8) == x`).
+fn cast_preserves_i64(ty: &str) -> bool {
+    matches!(
+        ty.trim().to_ascii_lowercase().as_str(),
+        "u64" | "i64" | "int" | "integer" | "usize" | "isize" | "u128" | "i128"
+    )
+}
+
+/// Mangle an Anubis identifier into an SMT symbol that can never collide with an SMT-LIB keyword or
+/// a `bv…` literal/operator. Without this, a parameter named `model`, `set`, `check`, or `bvx` was
+/// dropped by `collect_vars_from_smt` (it looked like a keyword), left undeclared, and z3 returned a
+/// parse error that `check` treated as "not a disproof" — a fail-OPEN hole. Every variable emitted
+/// into SMT goes through here so declaration, emission, and collection agree.
+fn smt_var(name: &str) -> String {
+    format!("anb_{}", name)
 }
 
 /// A+ compatibility: numeric widths interoperate; bool/string/enums do not cross.

@@ -723,14 +723,14 @@ fn trigger() {
         assert!(
             ir.constraints
                 .iter()
-                .any(|c| c.contains("bvslt y") || c.contains("(< y 77)")),
+                .any(|c| c.contains("bvslt anb_y") || c.contains("(< anb_y 77)")),
             "constraints must include nested assume(y < 77), got {:?}",
             ir.constraints
         );
         assert!(
             ir.constraints
                 .iter()
-                .any(|c| c.contains("bvsgt y") || c.contains("(> y 0)")),
+                .any(|c| c.contains("bvsgt anb_y") || c.contains("(> anb_y 0)")),
             "constraints must include nested assert(y > 0), got {:?}",
             ir.constraints
         );
@@ -1015,7 +1015,7 @@ fn poc() {
         assert!(
             checks
                 .iter()
-                .any(|check| check.smt.contains("(bvsgt x (_ bv0 64))")),
+                .any(|check| check.smt.contains("(bvsgt anb_x (_ bv0 64))")),
             "x > 0 must use a 64-bit SIGNED comparison (matching the i64 runtime): {:?}",
             checks
         );
@@ -1043,8 +1043,8 @@ fn main() {
         assert!(
             checks
                 .iter()
-                .any(|check| check.smt.contains("(assert (= x (_ bv7 64)))")
-                    && check.smt.contains("(assert (= y (bvmul x (_ bv6 64))))")),
+                .any(|check| check.smt.contains("(assert (= anb_x (_ bv7 64)))")
+                    && check.smt.contains("(assert (= anb_y (bvmul anb_x (_ bv6 64))))")),
             "SMT must include concrete let assumptions for x and y (64-bit i64 model): {:?}",
             checks
         );
@@ -1094,12 +1094,11 @@ fn main() {
         assert!(proved("fn main(){ let a=65536; let b=65536; assert(a*b != 0); }"), "2^32 must not wrap to 0");
         assert!(proved("fn main(){ let x=0; assert(x - 1 < x); }"), "0-1 = -1 < 0 (signed)");
         assert!(proved("fn main(){ let a=3000000000; let b=2000000000; assert(a + b > a); }"), "3e9+2e9 must not wrap");
-        // A u32 symbolic input carries a [0, 2^32-1] range, so a nonnegativity claim is PROVED —
-        // not falsely disproved by a hypothetical negative value the runtime cannot produce.
-        assert!(
-            proved("fn ok(){ research { let x: tainted<u32> = symbolic(); assert(x >= 0); } }"),
-            "u32 range assumption must hold x >= 0"
-        );
+        // A `u32` annotation is INERT at runtime (a value holds any i64; no width clamp), so the
+        // solver must NOT fabricate a `[0, 2^32-1]` range for it. A symbolic u32 whose only claimed
+        // bound comes from the (nonexistent) range is therefore left unmodeled, never proved from a
+        // range that does not exist at runtime — see the contract-level guard in
+        // `b2_contracts_verify_postconditions` (unbounded `x + 1 > x` must be DISPROVED, not proved).
         // Soundness preserved: a genuinely-false assertion is still disproved.
         let ast = parse_source("fn main(){ let x=3; assert(x > 20); }").expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
@@ -1112,18 +1111,29 @@ fn main() {
     #[test]
     fn b2_contracts_verify_postconditions() {
         // B2: a function's `ensures` postcondition must be PROVED from its body + `requires`
-        // precondition (discharged by the solver); a violated one is disproved.
-        let discharged = |src: &str| {
-            let ast = parse_source(src).expect("parse");
-            let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
-            SymbolicEngine::check_obligations(&ir)
+        // precondition (discharged by the solver); a violated one is disproved. A contract the
+        // checker cannot discharge is REJECTED at typecheck (a semantic diagnostic) — that counts as
+        // NOT discharged, exactly like a solver FAIL.
+        let discharged = |src: &str| match typecheck(
+            parse_source(src).expect("parse"),
+            frontend::Mode::Safe,
+        ) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
-                .all(|c| c.status != "FAIL")
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
         };
-        // Provable postconditions.
-        assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }"), "x>0 => x+1>x");
-        assert!(discharged("fn dbl(x: u32) -> u32 ensures(result >= x) { return x + x; }"), "u32: x+x >= x");
-        assert!(discharged("fn f(x: u32) -> u32 requires(x >= 0) ensures(result > 0) { return x + 1; }"), "x>=0 => x+1>0");
+        // Provable postconditions. NOTE the upper `requires` bound: a `u32` annotation is inert at
+        // runtime (values are i64), so a contract that needs no-overflow must STATE the bound. With
+        // `x < 1_000_000`, `x + 1` and `x + x` cannot wrap, so the postcondition is discharged.
+        assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; }"), "bounded x => x+1>x");
+        assert!(discharged("fn dbl(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result >= x) { return x + x; }"), "bounded x => x+x >= x");
+        assert!(discharged("fn f(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result > 0) { return x + 1; }"), "bounded x => x+1>0");
+        // Range-removal soundness (the false proof the sweep found): WITHOUT an upper bound, `x + 1`
+        // can wrap at i64::MAX, so `result > x` is genuinely violable and must NOT be proved. The old
+        // (unsound) `[0, 2^32-1]` param range let this pass; it must now be DISPROVED.
+        assert!(!discharged("fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }"), "unbounded x+1>x can overflow: must be disproved");
+        assert!(!discharged("fn dbl(x: u32) -> u32 ensures(result >= x) { return x + x; }"), "unbounded x+x can overflow: must be disproved");
         // Violated postconditions are disproved.
         assert!(!discharged("fn dec(x: u32) -> u32 ensures(result > x) { return x - 1; }"), "x-1 > x is false");
         assert!(!discharged("fn same(x: u32) -> u32 ensures(result > x) { return x; }"), "x > x is false");
@@ -1134,24 +1144,37 @@ fn main() {
         // postcondition is disproved (no false proof), while a multi-return function whose every
         // path satisfies the postcondition passes.
         assert!(
-            !discharged("fn f(x: u32) -> u32 ensures(result > 0) { if x > 5 { return 0; } return x + 1; }"),
+            !discharged("fn f(x: u32) -> i64 requires(x < 100) ensures(result > 0) { if x > 5 { return 0; } return x + 1; }"),
             "early return 0 violates result>0"
         );
         assert!(
-            discharged("fn g2(x: u32) -> u32 requires(x > 0) ensures(result > 0) { if x > 5 { return x; } return x + 1; }"),
+            discharged("fn g2(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > 0) { if x > 5 { return x; } return x + 1; }"),
             "both return paths satisfy result>0"
+        );
+        // Fail-closed integer contract: an `ensures` over an integer predicate whose returned value
+        // cannot be modeled (a call whose contract we did not carry) must be REJECTED, not silently
+        // skipped — this is the `evil` false proof (a skipped precondition erasing the postcondition).
+        assert!(
+            !discharged(
+                "fn ident(n: i32) -> i32 { return n; } \
+                 fn f(x: i32) -> i32 requires(x >= 100) ensures(result >= 100) { return x; } \
+                 fn evil() -> i32 ensures(result >= 100) { let bad = ident(0 - 5); let a = f(bad); return a; }"
+            ),
+            "evil's ensures over an unmodeled return must fail closed"
         );
     }
 
     #[test]
     fn b2_contract_composition() {
         // Composition: a caller ASSUMES a callee's postcondition and must satisfy its precondition.
-        let discharged = |src: &str| {
-            let ast = parse_source(src).expect("parse");
-            let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
-            SymbolicEngine::check_obligations(&ir)
+        let discharged = |src: &str| match typecheck(
+            parse_source(src).expect("parse"),
+            frontend::Mode::Safe,
+        ) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
-                .all(|c| c.status != "FAIL")
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
         };
         let pos = "fn pos(x: u32) -> u32 requires(x > 0) ensures(result > 0) { return x; }";
         // The caller learns `a > 0` from pos's postcondition.
@@ -1160,14 +1183,72 @@ fn main() {
         // The caller must satisfy pos's precondition.
         assert!(discharged(&format!("{pos} fn u(){{ let a = pos(5); }}")), "5 > 0 satisfies requires");
         assert!(!discharged(&format!("{pos} fn u(){{ let a = pos(0); }}")), "0 > 0 violates requires");
-        // Chaining: g proves its own `ensures` via f's `ensures`.
+        // Chaining: g proves its own `ensures` via f's `ensures`. Both carry the upper bound that
+        // makes `x + 1` non-overflowing, and g's bound satisfies f's precondition at the call site.
         assert!(
             discharged(
-                "fn f(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; } \
-                 fn g(y: u32) -> u32 requires(y > 0) ensures(result > y) { let z = f(y); return z; }"
+                "fn f(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; } \
+                 fn g(y: u32) -> u32 requires(y > 0) requires(y < 1000000) ensures(result > y) { let z = f(y); return z; }"
             ),
             "g's postcondition follows from f's"
         );
+        // Composition guard (the sweep's skipped-precondition false proof): if a callee's `requires`
+        // cannot be checked at the call site (the argument is not modelable), the caller must NOT get
+        // to assume the callee's `ensures`. Here `bad` comes from an un-contracted call, so f's
+        // `requires(x >= 100)` is unverifiable and f's `ensures` must not be assumed — evil is rejected.
+        assert!(
+            !discharged(
+                "fn ident(n: i32) -> i32 { return n; } \
+                 fn f(x: i32) -> i32 requires(x >= 100) ensures(result >= 100) { return x; } \
+                 fn evil() -> i32 ensures(result >= 100) { let bad = ident(0 - 5); let a = f(bad); return a; }"
+            ),
+            "skipped precondition must not let the caller assume the callee's ensures"
+        );
+    }
+
+    #[test]
+    fn b2_soundness_fail_closed_regressions() {
+        // Locks the SIX false-proof root causes an adversarial sweep found: each program's contract
+        // is VIOLATED at runtime but was previously ACCEPTED by `check`. `discharged` returns false
+        // when the program is rejected — either at typecheck (a fail-closed `ANUBIS_CONTRACT_UNPROVABLE`
+        // diagnostic) or by a solver FAIL (a disproof / vacuity failure). Every case must be rejected.
+        let discharged = |src: &str| match typecheck(
+            parse_source(src).expect("parse"),
+            frontend::Mode::Safe,
+        ) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+
+        // A — a truncating cast (`x as u8`) modeled as the identity: `ident8(256)` runs to 0.
+        assert!(!discharged("fn ident8(x: u32) -> u32 ensures(result == x) { return x as u8; }"), "A: truncating cast must not be modeled as identity");
+        // B — a parameter named like an SMT keyword (`model`) dropped from the SMT, z3 errored, the
+        // error was treated as fail-open. It must now be a real disproof (overflow at i64::MAX).
+        assert!(!discharged("fn inc(model: u32) -> u32 ensures(result > model) { return model + 1; }"), "B: keyword-named param must not fail open");
+        // B (other direction) — a VALID contract with a keyword-named param must still PROVE.
+        assert!(discharged("fn inc(model: u32) -> u32 requires(model > 0) requires(model < 100) ensures(result > model) { return model + 1; }"), "B: valid keyword-named contract still proves");
+        // C — an integer `ensures` over a non-modeled variable (untyped param / reassigned param)
+        // silently vanished. It must fail closed.
+        assert!(!discharged("fn inc(x) requires(x > 0) ensures(result < x) { return x + 1; }"), "C: untyped-param integer ensures must not vanish");
+        assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > x) { x = 0; return x + 1; }"), "C: reassigned-param ensures must not vanish");
+        // D — a float param modeled as an i64 bit-vector: `dbl(0.5)` runs to 1.0.
+        assert!(!discharged("fn dbl(x: f64) -> f64 requires(x > 0) requires(x < 10) ensures(result != 1) { return x + x; }"), "D: float param must not be modeled as i64");
+        // E — an integer literal beyond i64::MAX reduced mod 2^64 by the solver but f64 at runtime.
+        assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result <= x) { return x + 18446744073709551616; }"), "E: oversized literal must not reduce mod 2^64");
+        // F — self-contradictory assumptions (`requires(x<100)` + `assume(x>1000)`) proving any
+        // postcondition vacuously.
+        assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > 999999) { assume(x > 1000); return x + 1; }"), "F: vacuous proof under contradictory assumptions");
+        // G — a non-integer (string) `ensures` is compile-time only and NOT runtime-enforced, so a
+        // violated one must be rejected, never silently skipped.
+        assert!(!discharged("fn nm() -> string ensures(result == \"wrong\") { return \"ok\"; }"), "G: unprovable string ensures must fail closed");
+
+        // Controls: genuinely valid integer contracts still PROVE (no over-rejection).
+        assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; }"), "valid bounded contract still proves");
+        // Note the LOWER bound too: without `requires(x >= 0)` this is violable (the `u32` annotation
+        // is inert, so `x` may be negative and `2x >= x` fails) — the checker correctly rejects that.
+        assert!(discharged("fn ok(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result >= x) { return x + x; }"), "valid doubling contract still proves");
     }
 
     #[test]

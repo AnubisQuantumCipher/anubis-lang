@@ -490,9 +490,12 @@ positives and false negatives. Every finding was firsthand-reproduced before fix
   reassignment false positives; then `caec2e8`-era loop-var typing fix.
 - `343bbc2` **solver soundness (i64)** — the check/solver modeled integers as 32-bit UNSIGNED but the
   runtime is i64 signed (verified: `u8 200+100=300`, `(-8)>>1=-4`), so it DISPROVED true assertions
-  (`65536*65536 != 0`, `3e9+2e9 > 3e9`, `0-1 < 0`). Now 64-bit signed with signed comparisons; typed
-  symbolic inputs carry a `[0,2^w-1]` range; `/ % << >>` are non-modelable (div-by-zero / shift-mask
-  mismatch → skipped, sound). Genuinely-false assertions still disproved. This unblocks B2–B4.
+  (`65536*65536 != 0`, `3e9+2e9 > 3e9`, `0-1 < 0`). Now 64-bit signed with signed comparisons; `/ %
+  << >>` are non-modelable (div-by-zero / shift-mask mismatch → skipped, sound). Genuinely-false
+  assertions still disproved. This unblocks B2–B4. **Superseded in the B2 wave below:** an early draft
+  gave typed symbolic inputs / u32 params a `[0,2^w-1]` range — that was UNSOUND (a `u32` annotation is
+  runtime-inert; `f(i64::MAX)` wraps), so the range was removed; a contract that needs bounds must
+  state them via `requires`.
 - `c9030a2` **type-coercion FPs** — i8/i16 now numeric; `+` inference returns string/list when either
   operand is (fixing `let s: string = 404+"x"` FP and `let n: u32 = 1+"a"` FN); reassigning an
   INFERRED binding is dynamic (only explicit annotations are held to their type; inferred types update
@@ -511,3 +514,76 @@ enum/Option/Result-payload arithmetic (`match Some("hi") { Some(v) => v*2 }`), s
 (`b.v - 1`), cast-to-inert-target laundering (`42 as string`), generic-instantiation over-erasure
 (`Vec<u32>` param accepts a string), and `?` in a non-Result function. These need FieldAccess / enum
 / struct-field / generic type inference — structural typing that belongs to B4, not B1.
+
+## Refinement-type foundation — B2 (first-class contracts: requires / ensures) (2026-07-10)
+
+B2 adds `requires(P)` preconditions and `ensures(Q)` postconditions to functions, discharged by the
+(now-sound i64) solver. A function's body + precondition must PROVE the postcondition at EVERY return;
+callers ASSUME a callee's `ensures` and must SATISFY its `requires`. Dogfooded HARDEST: a 6-angle
+adversarial workflow (overflow / ranges / multi-return / composition / body-mismatch / valid-rejected)
+that hunted false proofs. It found **three real false proofs**, each firsthand-reproduced, fixed, and
+locked with a regression test in the same wave:
+
+| Category | Contract | Sig | Value | Sig |
+|---|---|---|---|---|
+| Contract discharge at tail return | REAL | `b2_contracts_verify_postconditions` | bounded `x+1>x` proved; `x-1>x` disproved | `cargo test -p anubis-compiler b2_contracts` |
+| Multi-return: every path checked | REAL | `9381903` | early `return 0` vs `ensures(result>0)` disproved | in `b2_contracts_verify_postconditions` |
+| Range-assumption soundness | REAL | this wave | unbounded `x+1>x` DISPROVED (was a false proof under the removed u32 range) | in `b2_contracts_verify_postconditions` |
+| Composition guard (skipped precondition) | REAL | this wave | a callee's `ensures` is assumed ONLY when all its `requires` were checkable at the call site | `b2_contract_composition` |
+| Fail-closed integer contract | REAL | this wave | an integer `ensures` over an unmodelable return is REJECTED, not skipped | in both B2 tests |
+
+The three false proofs and their fixes:
+1. **Multi-return** (`9381903`): only the tail return was verified, so `if x>5 { return 0 } return x+1`
+   with `ensures(result>0)` passed while the early `return 0` violated it. Fix: discharge `ensures` at
+   every return — tail under full body assumptions, each early/nested return under the precondition
+   alone (a sound subset; can only mis-disprove a path, never mis-prove one).
+2. **Range assumption**: u32/typed params were assumed in `[0,2^w-1]`, letting the solver "prove"
+   `x+1 > x` even though `f(i64::MAX)` wraps to `i64::MIN` at runtime (annotations are inert). Fix:
+   remove the range; params model as unbounded 64-bit. Overflow-vulnerable contracts are now correctly
+   DISPROVED; a contract that needs bounds must state them via `requires`.
+3. **Composition skipped-precondition**: at `let a = f(bad)` where `bad` is unmodelable, f's
+   `requires` obligation was silently skipped yet f's `ensures` was still assumed — so `evil`, which
+   returns `f(bad)`, "proved" its own `ensures` while returning a violating value. Fix (two parts):
+   (a) assume a callee's `ensures` ONLY when EVERY `requires` was checkable at the call site; (b)
+   fail-closed — an `ensures` whose returned value cannot be modeled is REJECTED
+   (`ANUBIS_CONTRACT_UNPROVABLE`), never skipped.
+
+## Refinement-type foundation — B2 soundness hardening (second adversarial sweep, 2026-07-10)
+
+A second, harder adversarial sweep against the post-fix binary found **6 more independent false
+proofs** — B2 was still unsound beyond the first three. Every one was firsthand-reproduced on the
+release binary (`check` ACCEPT + a concrete runtime violation via `anubis run`) before any fix, then
+closed and locked in `b2_soundness_fail_closed_regressions`. The unifying defect: several paths failed
+**open** (silently accept) where they had to fail **closed**. The decisive realization: **contracts
+are compile-time only — the transpiler emits NO runtime check for `requires`/`ensures`** (verified: a
+violated `ensures(result == "wrong")` returning `"ok"` was accepted). So a *skipped* contract is
+enforced nowhere; the old "non-integer contracts are left to runtime" claim was false. The fix makes
+the whole class fail closed: an `ensures` is either discharged by the solver or the function is
+rejected.
+
+| Root cause | Firsthand violation (check ACCEPT → run) | Fix |
+|---|---|---|
+| A · truncating cast modeled as identity | `ident8(256)==256` "proved"; runs to `0` | `is_int_modelable`: a cast is modelable only if value-preserving (64-bit target); `x as u8/u16/u32` → non-modelable → fail closed |
+| B · SMT-keyword / `bv*` param name dropped → z3 error → fail-open | `inc(model)` overflow contract accepted | mangle every SMT variable (`x`→`anb_x`) so it can't collide; a z3 parse error now fails **closed** |
+| C · integer `ensures` over a non-modeled var vanishes | untyped `inc(x)` and reassigned-param contracts accepted-but-violated | `push_ensures_obligations` never skips: unmodelable concrete → REJECT |
+| D · float param modeled as i64 bit-vector | `dbl(0.5)` "proves" `2x!=1`; runs to `1.0` | params modeled only when `is_integer_ty` (floats excluded) → float contract non-modelable → fail closed |
+| E · integer literal > i64::MAX reduced mod 2^64 | `x + 2^64 <= x` "proved"; runs to a bigger f64 | `is_int_modelable` literal requires `parse::<i64>()` |
+| F · self-contradictory assumptions → vacuous proof | `requires(x<100)` + `assume(x>1000)` "proves" `result>999999` | vacuity guard: a passing contract obligation whose assumptions are UNSAT fails closed |
+
+Each row's verify command: `cargo test -p anubis-compiler b2_soundness_fail_closed_regressions`. The
+binary-level battery (all REJECT / all valid-ACCEPT) is reproducible under `scratchpad/repro`.
+
+**Firsthand-verified**: all 6 root-cause programs (+ the string-violation case) now REJECT; a *valid*
+keyword-named contract (`inc(model)` with bounds) still PROVES — showing mangling fixed B in both
+directions, not by blanket-rejecting. Valid bounded/composed/multi-return contracts still ACCEPT.
+**238 compiler tests; 49 binary; fixtures 26/26; PCA 13/13; prove 11/11; turing 13/13; 41/41 example
+corpus with 0 false positives.**
+
+**Honest scope (what B2 does NOT prove — now fail-closed, not silently skipped):** `/ % << >>` in a
+contract, string/list/bool-variable postconditions, floats, truncating casts, and any value the QF_BV
+solver cannot model are all **rejected** (`ANUBIS_CONTRACT_UNPROVABLE`) — use a runtime `assert` in the
+body for a dynamic check (that IS enforced at runtime). A tail-position direct call
+`fn g()->u32 { helper(x) }` is rejected — bind via `let r = helper(x); return r;` to carry the
+`ensures`. Loop-carried reasoning is B3. The checker is SOUND: a green `anubis check` means every
+declared contract was actually proved — it may decline to certify a contract it cannot model, but it
+never certifies a violable one.
