@@ -195,7 +195,10 @@ parametric code that runs on any type.
 
 ## Closures and higher-order functions
 
-Lambdas are first-class values that capture their environment by value:
+Lambdas are first-class values that capture their environment **by value** (each captured binding
+is a snapshot). Mutating a captured binding inside the closure changes only the closure's own copy;
+the outer binding is unaffected. To accumulate, return a new value and fold it (`reduce`) rather
+than mutating a captured list.
 
 ```
 let inc = |x| x + 1;

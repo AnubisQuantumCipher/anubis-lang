@@ -1410,6 +1410,7 @@ impl Parser {
         let start = self.expect_keyword("struct")?.span;
         let (name, _) = self.expect_ident("expected struct name")?;
         self.skip_generic_params();
+        self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after struct name");
         let mut fields = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
@@ -1726,6 +1727,7 @@ impl Parser {
         let start = self.expect_keyword("trait")?.span;
         let (name, _) = self.expect_ident("expected trait name")?;
         self.skip_generic_params();
+        self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after trait name");
         let mut methods = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
@@ -1755,6 +1757,7 @@ impl Parser {
         let start = self.expect_keyword("enum")?.span;
         let (name, _) = self.expect_ident("expected enum name")?;
         self.skip_generic_params();
+        self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after enum name");
         let mut variants = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {

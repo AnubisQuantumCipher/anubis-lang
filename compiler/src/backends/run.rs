@@ -2875,17 +2875,24 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             let mut callees = std::collections::BTreeSet::new();
             collect_free_expr(body, &bound, &mut vars, &mut callees);
             // Capture every value-use (always a local, even if its name shadows a builtin), plus
-            // callee-uses that name a closure-valued local (not a user function or a builtin).
+            // callee-uses that name a closure-valued local (a local binding, or a name that is
+            // neither a user function nor a builtin).
             let mut to_capture = vars;
             for c in callees {
-                if !ctx.fns.contains(&c) && !is_builtin_name(&c) {
+                if ctx.locals.contains(&c) || (!ctx.fns.contains(&c) && !is_builtin_name(&c)) {
                     to_capture.insert(c);
                 }
             }
+            // Outer capture block: snapshot each free var by clone, then `move` it into the closure.
             let mut captures = String::new();
+            // Inside the closure, re-clone each captured var into a fresh `mut` local per call, so a
+            // body that mutates a captured binding compiles (value-capture: the mutation is on the
+            // per-call copy) while the closure stays `Fn` (it only reads the captured snapshot).
+            let mut reclone = String::new();
             for v in &to_capture {
                 let id = sanitize_ident(v)?;
                 captures.push_str(&format!("let {id} = {id}.clone(); "));
+                reclone.push_str(&format!("let mut {id} = {id}.clone(); "));
             }
             let mut binds = String::new();
             for (i, p) in params.iter().enumerate() {
@@ -2897,7 +2904,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             }
             let body_src = safe_run_expr(body, ctx)?;
             let closure = format!(
-                "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ {binds}{body_src} }}))"
+                "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ {reclone}{binds}{body_src} }}))"
             );
             // Only introduce a capture block when there is something to capture, so lambdas passed
             // directly as arguments don't trigger `unused_braces`.
@@ -2997,20 +3004,28 @@ fn lower_match_expr(
     // collide on a label, and guard failures fall through to the next arm cleanly.
     let mut out = format!("{{ let __anb_m = {scr}; loop {{ ");
     for arm in arms {
-        let (cond, binds) = pattern_test_and_binds(&arm.pattern, "__anb_m")?;
-        out.push_str(&format!("if {cond} {{ "));
-        out.push_str(&binds);
-        let body = safe_run_expr(&arm.body, ctx)?;
-        match &arm.guard {
-            Some(guard) => {
-                let gs = safe_run_expr(guard, ctx)?;
-                out.push_str(&format!("if ({gs}).as_bool() {{ break ({body}); }} "));
+        // A top-level or-pattern arm `A | B => body` desugars to one sub-arm per alternative,
+        // so alternatives may bind (each is matched and bound with its own sub-pattern).
+        let alts: Vec<&crate::frontend::Pattern> = match &arm.pattern {
+            crate::frontend::Pattern::Or(ps) => ps.iter().collect(),
+            p => vec![p],
+        };
+        for pat in alts {
+            let (cond, binds) = pattern_test_and_binds(pat, "__anb_m")?;
+            out.push_str(&format!("if {cond} {{ "));
+            out.push_str(&binds);
+            let body = safe_run_expr(&arm.body, ctx)?;
+            match &arm.guard {
+                Some(guard) => {
+                    let gs = safe_run_expr(guard, ctx)?;
+                    out.push_str(&format!("if ({gs}).as_bool() {{ break ({body}); }} "));
+                }
+                None => {
+                    out.push_str(&format!("break ({body}); "));
+                }
             }
-            None => {
-                out.push_str(&format!("break ({body}); "));
-            }
+            out.push_str("} ");
         }
-        out.push_str("} ");
     }
     out.push_str("break AnubisValue::Int(0); } }");
     Ok(out)
@@ -3859,6 +3874,47 @@ mod run_tests {
                    let f = compose(|x| x + 1, |x| x * 2); print(f(5)); \
                    print(times(3, |i| i * i)); print(identity(42)); }";
         assert_eq!(run(src), "[[a, 1], [b, 2]]\n2\n-1\n10\n9\n11\n[0, 1, 4]\n42");
+    }
+
+    #[test]
+    fn where_clause_on_all_item_forms() {
+        let src = "struct Box<T> where T: Ord { value: T } \
+                   enum Opt<T> where T: Ord { Has(T), Empty } \
+                   trait D<X> where X: Ord { fn val(self); fn describe(self) { \"v=\" + str(self.val()) } } \
+                   struct W { inner: int } impl D<int> for W where int: Ord { fn val(self) { self.inner } } \
+                   fn id<T>(x: T) -> T where T: Ord { x } \
+                   fn main() { print((Box { value: 5 }).value); print((W { inner: 7 }).describe()); print(id(9)); }";
+        assert_eq!(run(src), "5\nv=7\n9");
+    }
+
+    #[test]
+    fn closure_mutating_captured_var_compiles() {
+        // Closures capture by value: mutating a captured binding compiles and mutates the closure's
+        // own copy (the outer binding is unchanged), rather than failing to compile.
+        let src = "fn main() { let mut count = 0; let inc = || { count = count + 1; count }; \
+                   print(inc()); print(inc()); print(count); \
+                   let acc = []; each([1, 2, 3], |x| push(acc, x)); print(\"ok\"); }";
+        assert_eq!(run(src), "1\n1\n0\nok");
+    }
+
+    #[test]
+    fn or_pattern_with_bindings() {
+        // Alternatives of an or-pattern may bind the same variable (desugared to one arm each).
+        let src = "fn combine(a, b) { return match (a, b) { \
+                     (Some(x), Some(y)) => Some(x + y), \
+                     (Some(x), None) | (None, Some(x)) => Some(x), \
+                     (None, None) => None }; } \
+                   fn show(o) { return match o { Some(v) => v, None => -1 }; } \
+                   fn main() { print(show(combine(Some(3), Some(4)))); print(show(combine(Some(3), None))); \
+                     print(show(combine(None, Some(9)))); print(show(combine(None, None))); }";
+        assert_eq!(run(src), "7\n3\n9\n-1");
+    }
+
+    #[test]
+    fn local_closure_named_like_builtin_captured_in_lambda() {
+        let src = "fn main() { let f = |x| x + 1; let map = |g, xs| g(xs[0]); \
+                   let lam = || map(f, [10, 20, 30]); print(lam()); }";
+        assert_eq!(run(src), "11");
     }
 
     #[test]
