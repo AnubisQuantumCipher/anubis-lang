@@ -554,7 +554,7 @@ fn main() -> Result<()> {
             );
 
             let src = std::fs::read_to_string(&input)?;
-            let ast = parse_source(&src).map_err(|e| anyhow!("parse: {}", e))?;
+            let ast = parse_or_diag(&src, &input)?;
 
             // Use parsed AST for mode (from first Fn item if present)
             let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
@@ -640,19 +640,9 @@ fn main() -> Result<()> {
             println!("anubis check {} (evidence={})", input.display(), evidence);
 
             let src = std::fs::read_to_string(&input)?;
-            let detailed = anubis_compiler::frontend::parse_source_detailed(&src);
-            let parse_err = if detailed.diagnostics.is_empty() {
-                None
-            } else {
-                Some(
-                    detailed
-                        .diagnostics
-                        .iter()
-                        .map(|d| d.message.clone())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                )
-            };
+            // Rich, rustc-grade parse diagnostics (path:line:col + source line + caret) for the
+            // check verdict, instead of a bare `; `-joined message.
+            let parse_err = anubis_compiler::frontend::render_parse_errors(&src, input.to_str());
             let ast = if parse_err.is_none() {
                 parse_source(&src).ok()
             } else {
@@ -670,12 +660,36 @@ fn main() -> Result<()> {
             } else {
                 Err(parse_err.clone().unwrap_or_else(|| "parse failed".into()))
             };
-            let (typed, check_error) = match typed_res {
+            let (typed, mut check_error) = match typed_res {
                 Ok(ref t) => (Some(t.clone()), parse_err.clone()),
                 Err(ref e) => (None, parse_err.clone().or(Some(e.clone()))),
             };
 
-            let _tainted = typed.as_ref().map(|t| TaintPass::apply(t.clone()));
+            let tainted = typed.as_ref().map(|t| TaintPass::apply(t.clone()));
+
+            // Proof-carrying gate: an assertion the solver DISPROVES (e.g. `assume(x < 10);
+            // assert(x > 20)`) must fail the check — a proof-carrying language does not accept a
+            // program whose own asserted proof is false. The evidence bundle already recorded this;
+            // here it becomes the command's verdict (and exit code), not just a bundle field.
+            if check_error.is_none() {
+                if let Some(t) = &tainted {
+                    let disproven: Vec<String> = SymbolicEngine::check_obligations(t)
+                        .into_iter()
+                        .filter(|c| c.status == "FAIL")
+                        .map(|c| match &c.model {
+                            Some(m) => format!("{} (counterexample: {})", c.name, m),
+                            None => c.name.clone(),
+                        })
+                        .collect();
+                    if !disproven.is_empty() {
+                        check_error = Some(format!(
+                            "ANUBIS_ASSERTION_UNPROVEN: the solver disproved {} assertion(s): {}",
+                            disproven.len(),
+                            disproven.join("; ")
+                        ));
+                    }
+                }
+            }
 
             std::fs::create_dir_all(&out)?;
 
@@ -2510,7 +2524,7 @@ fn build_runtime_plan_report(
     apple_native: bool,
     metal_reference: Option<&Path>,
 ) -> Result<serde_json::Value> {
-    let ast = parse_source(source).map_err(|e| anyhow!("parse: {}", e))?;
+    let ast = parse_or_diag(source, input)?;
     let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
     let typed = typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
     let _tainted = TaintPass::apply(typed);
@@ -2838,6 +2852,19 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+/// Parse a program, rendering a rustc-grade diagnostic (`path:line:col` + the source line + a caret)
+/// on failure instead of a bare `; `-joined message.
+fn parse_or_diag(source: &str, path: &Path) -> Result<anubis_compiler::frontend::AST> {
+    match parse_source(source) {
+        Ok(ast) => Ok(ast),
+        Err(_) => Err(anyhow!(
+            "{}",
+            anubis_compiler::frontend::render_parse_errors(source, path.to_str())
+                .unwrap_or_else(|| "parse error".to_string())
+        )),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RunOutcome {
     input: PathBuf,
@@ -2858,7 +2885,7 @@ fn run_anubis_source(
     allow_research: bool,
     args: &[String],
 ) -> Result<RunOutcome> {
-    let ast = parse_source(source).map_err(|e| anyhow!("parse: {}", e))?;
+    let ast = parse_or_diag(source, input)?;
     let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
