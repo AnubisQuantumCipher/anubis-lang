@@ -5164,6 +5164,33 @@ mod run_tests {
     }
 
     #[test]
+    fn return_type_literal_mismatch_is_rejected() {
+        let tc = |s: &str| {
+            crate::middle::typecheck(
+                crate::frontend::parse_source(s).unwrap(),
+                crate::frontend::Mode::Safe,
+            )
+        };
+        // A literal return of an unambiguously wrong type is rejected.
+        assert!(tc("fn f() -> u32 { \"s\" } fn main(){ print(f()); }")
+            .unwrap_err()
+            .contains("ANUBIS_RETURN_TYPE_MISMATCH"));
+        assert!(tc("fn g() -> bool { return 42; } fn main(){ print(g()); }")
+            .unwrap_err()
+            .contains("ANUBIS_RETURN_TYPE_MISMATCH"));
+        // Dynamic and correctly-typed returns pass (no false positives): typed literals, a numeric
+        // literal into a float, a variable, a call, an if-expression, a list, and the
+        // trailing-statement-yields-0 case.
+        assert!(tc(
+            "fn a() -> u32 { 42 } fn b() -> string { \"hi\" } fn c() -> f64 { 3.5 } \
+             fn d(x) -> u32 { x + 1 } fn e() -> u32 { a() } fn g2(n) -> u32 { if n > 0 { 1 } else { 0 } } \
+             fn h() -> list { [1, 2, 3] } fn lg(m) -> u32 { print(m); 0 } \
+             fn main(){ print(a()); }"
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn enum_construct_is_validated() {
         let tc = |s: &str| {
             crate::middle::typecheck(

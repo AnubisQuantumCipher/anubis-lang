@@ -509,6 +509,7 @@ fn collect_items(
                 mode,
                 span,
                 attributes,
+                ret,
                 ..
             } => {
                 let effective_mode = if *mode == Mode::Safe {
@@ -535,7 +536,17 @@ fn collect_items(
                         });
                     }
                 }
-                analyze_function(name, module, params, body, effective_mode, *span, false, ctx);
+                analyze_function(
+                    name,
+                    module,
+                    params,
+                    body,
+                    ret.as_deref(),
+                    effective_mode,
+                    *span,
+                    false,
+                    ctx,
+                );
             }
             Item::Struct { .. } => {
                 // Minimal support for this slice: structs are parsed and preserved in AST;
@@ -551,7 +562,7 @@ fn collect_items(
             Item::Impl { methods, .. } => {
                 for m in methods {
                     if let Item::Fn {
-                        name, params, body, mode, span, ..
+                        name, params, body, mode, span, ret, ..
                     } = m
                     {
                         let effective_mode = if *mode == Mode::Safe {
@@ -560,7 +571,8 @@ fn collect_items(
                             *mode
                         };
                         analyze_function(
-                            name, module, params, body, effective_mode, *span, true, ctx,
+                            name, module, params, body, ret.as_deref(), effective_mode, *span,
+                            true, ctx,
                         );
                     }
                 }
@@ -577,6 +589,7 @@ fn analyze_function(
     module: Option<&str>,
     params: &[(String, String)],
     body: &[Stmt],
+    ret: Option<&str>,
     mode: Mode,
     span: Span,
     is_method: bool,
@@ -584,6 +597,34 @@ fn analyze_function(
 ) {
     if mode != Mode::Safe {
         ctx.has_research = true;
+    }
+
+    // A declared `-> T` return type is checked against any return value that is a LITERAL of an
+    // unambiguously incompatible type (a bare string/number/bool/list/map/enum). Non-literal
+    // returns (variables, calls, if/match, a trailing statement that yields 0) are left unchecked
+    // — the type is dynamic — so this catches `fn f() -> u32 { "s" }` with zero false positives.
+    if let Some(rty) = ret {
+        let pscope: BTreeMap<String, ScopeBinding> = params
+            .iter()
+            .map(|(n, t)| {
+                (
+                    n.clone(),
+                    ScopeBinding {
+                        info: BindingInfo {
+                            name: n.clone(),
+                            ty: Some(t.clone()),
+                            mode: String::new(),
+                            tainted: false,
+                            taint_source: None,
+                            declassified: false,
+                            span: None,
+                        },
+                        closure_arity: None,
+                    },
+                )
+            })
+            .collect();
+        check_return_types(body, rty, &pscope, span, ctx);
     }
 
     // A+ call-site typing: record this function's parameter types for later calls. Methods are
@@ -1616,6 +1657,62 @@ fn type_has_raw_pointer(ty: Option<&str>) -> bool {
 
 fn is_tainted_type(ty: Option<&str>) -> bool {
     ty.is_some_and(|ty| ty.to_ascii_lowercase().contains("tainted"))
+}
+
+/// Check a function's declared `-> rty` against the value it returns, but only where that value is
+/// a LITERAL of a statically-known type (so a dynamic return is never falsely rejected). Covers the
+/// implicit tail expression and top-level explicit `return X;` (which parses as a `return(...)` call).
+fn check_return_types(
+    body: &[Stmt],
+    rty: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    span: Span,
+    ctx: &mut SemanticContext,
+) {
+    // Implicit-return tail: the last statement when it is a bare value expression.
+    if let Some(Stmt::ExprStmt(e)) = body.last() {
+        check_one_return(e, rty, scope, span, ctx);
+    }
+    // Explicit `return X;` at the top level (deeper returns are left dynamic — conservative).
+    for st in body {
+        if let Stmt::ExprStmt(Expr::Call { callee, args }) = st {
+            if callee == "return" {
+                if let Some(v) = args.first() {
+                    check_one_return(v, rty, scope, span, ctx);
+                }
+            }
+        }
+    }
+}
+
+fn check_one_return(
+    expr: &Expr,
+    rty: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    span: Span,
+    ctx: &mut SemanticContext,
+) {
+    // Only a literal has a reliable static type; anything else (variable, call, if/match, a trailing
+    // statement that yields the default 0) is dynamic and must be left unchecked.
+    let is_literal = matches!(
+        expr,
+        Expr::Literal(_) | Expr::StrLiteral(_) | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. }
+    );
+    if !is_literal {
+        return;
+    }
+    if let Some(actual) = infer_expr_type_scoped(expr, scope) {
+        if !types_compatible(rty, &actual) {
+            ctx.diagnostics.push(SemanticDiagnostic {
+                code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
+                message: format!(
+                    "function declared `-> {}` but returns a value of type `{}`",
+                    rty, actual
+                ),
+                span: Some((span.start, span.end)),
+            });
+        }
+    }
 }
 
 fn infer_expr_type_scoped(
