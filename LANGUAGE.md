@@ -222,6 +222,22 @@ optional bounds and `where` clauses. Because values are dynamically typed, gener
 syntactic — the type parameters are erased — but they let you write familiar, self-documenting
 parametric code that runs on any type.
 
+**Contracts (`requires` / `ensures`).** A function may declare preconditions and postconditions
+between its signature and body. `requires(P)` is a precondition; `ensures(Q)` is a postcondition where
+`result` names the return value:
+
+```
+fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }
+```
+
+`anubis check` proves each `ensures` from the body and the `requires` using the SMT solver, and rejects
+a function whose postcondition does not hold (`ANUBIS_ASSERTION_UNPROVEN`). Contracts **compose**: at a
+call site the caller must satisfy the callee's `requires` (`inc(0)` is rejected — `0 > 0` fails) and may
+rely on its `ensures` (after `let a = inc(5)`, `assert(a > 0)` is proved). Only integer/arithmetic
+contracts are discharged (over `+ - * & | ^` and comparisons, in i64); a contract over strings, lists,
+or division is left to the runtime rather than proved. Verification currently covers a function's
+**tail return** — see `MATURITY_CLAIM_MATRIX.md` for the exact, honest scope.
+
 ## Closures and higher-order functions
 
 Lambdas are first-class values that capture their environment **by value** (each captured binding
