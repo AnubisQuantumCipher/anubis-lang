@@ -1169,6 +1169,23 @@ fn main() {
             discharged("fn g(c: u32) -> u32 requires(c >= 0) requires(c < 10) ensures(result >= 5) { match c { 0 => { return 10; } _ => {} } return 7; }"),
             "a match whose every return path satisfies the ensures proves"
         );
+        // IMPLICIT TAIL-VALUE false proof (adversarial-sweep round 11): a body ending in a bare `if/else`
+        // (the idiomatic tail expression) — or a `let`/loop that yields the default 0 — had its `ensures`
+        // obligated at ZERO points and was silently certified. Every tail branch value (and the fall-off
+        // 0) is now checked. `f(0)` yields 0, violating `ensures(result > 5)`.
+        assert!(
+            !discharged("fn f(c: i64) -> u32 ensures(result > 5) { if c > 0 { 1 } else { 0 } }"),
+            "a bare tail if/else's arm values must be checked against the ensures (false proof)"
+        );
+        assert!(
+            !discharged("fn f() -> u32 ensures(result > 5) { let z = 3; }"),
+            "a body that falls off the end (yields 0) must be checked against the ensures"
+        );
+        // Control: a tail if/else whose BOTH arms satisfy the ensures still proves.
+        assert!(
+            discharged("fn f(c: i64) -> u32 ensures(result > 5) { if c > 0 { 10 } else { 20 } }"),
+            "a tail if/else whose every arm satisfies the ensures proves"
+        );
         // Fail-closed integer contract: an `ensures` over an integer predicate whose returned value
         // cannot be modeled (a call whose contract we did not carry) must be REJECTED, not silently
         // skipped — this is the `evil` false proof (a skipped precondition erasing the postcondition).
@@ -1270,6 +1287,42 @@ fn main() {
         // Note the LOWER bound too: without `requires(x >= 0)` this is violable (the `u32` annotation
         // is inert, so `x` may be negative and `2x >= x` fails) — the checker correctly rejects that.
         assert!(discharged("fn ok(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result >= x) { return x + x; }"), "valid doubling contract still proves");
+    }
+
+    #[test]
+    fn solver_modelability_is_function_local_and_shadow_safe() {
+        // Solver integer-modelability must be FUNCTION-LOCAL and invalidated on a shadowing `let`.
+        // Otherwise a name modeled as an i64 in one place leaks its modelability to a same-named
+        // binding holding a string/list/bool, and an integer predicate over it is "proved" (a
+        // bit-vector tautology like `v + 0 == v`) though the runtime string/list semantics differ.
+        let checks_pass = |src: &str| match typecheck(
+            parse_source(src).expect("parse"),
+            frontend::Mode::Safe,
+        ) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // A shadowing `let` must drop the shadowed integer's model: a genuinely-false integer assert
+        // over the new (string) binding must NOT be disproved from the stale `v == 0` — it is skipped
+        // (deferred to runtime). If the model leaked, `assert(v == 99)` would be DISPROVED (FAIL).
+        assert!(
+            checks_pass("fn main() { let v = 0; let v = \"hello\"; assert(v == 99); }"),
+            "a shadowing string `let` must drop the shadowed integer's model (no stale disproof)"
+        );
+        // The cross-function leak: a helper that models `s` as an integer must not make another
+        // function's `s` param modelable. Here `f`'s `ensures(result == s + 0)` over an untyped/string
+        // param must fail closed (rejected), not be certified via a leaked integer model.
+        assert!(
+            !checks_pass("fn poison() { let s = 0; print(s); } fn f(s) -> i64 ensures(result == s + 0) { return s; }"),
+            "integer-modelability must not leak across function boundaries"
+        );
+        // Control: a genuine same-function integer let is still modeled and provable.
+        assert!(
+            checks_pass("fn main() { let x = 7; let y = x * 6; assert(y == 42); }"),
+            "a genuine integer let chain still proves"
+        );
     }
 
     #[test]

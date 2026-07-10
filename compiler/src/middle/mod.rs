@@ -630,6 +630,13 @@ fn analyze_function(
         ctx.has_research = true;
     }
 
+    // Solver integer-modelability and symbolic widths are FUNCTION-LOCAL: a variable modeled as an
+    // i64 in one function must not leak that modelability to a same-named binding in another function
+    // (which could hold a string/list/bool), or an integer predicate over the second would be "proved"
+    // against the first's model. Reset per function. (Obligations/constraints accumulate globally.)
+    ctx.solver_int_vars.clear();
+    ctx.symbolic_widths.clear();
+
     // A declared `-> T` return type is checked against any return value that is a LITERAL of an
     // unambiguously incompatible type (a bare string/number/bool/list/map/enum). Non-literal
     // returns (variables, calls, if/match, a trailing statement that yields 0) are left unchecked
@@ -770,8 +777,12 @@ fn analyze_function(
     // Modeling is best-effort: a postcondition the solver cannot express (strings/lists/division) is
     // left un-obligated rather than mis-disproved.
     if !ensures.is_empty() {
-        if let Some(tail) = fn_tail_return_expr(body) {
-            push_ensures_obligations(ctx, ensures, tail, &assumptions, span);
+        // Every value the body can yield at its tail (a bare tail `if`/`match`'s arms, a block tail,
+        // or `0` when it falls off the end) is checked under the full body assumptions.
+        let mut tail_vals = Vec::new();
+        tail_values(body, true, &mut tail_vals);
+        for tv in &tail_vals {
+            push_ensures_obligations(ctx, ensures, tv, &assumptions, span);
         }
         // Every explicit return except the tail return-call (the last statement).
         let n = body.len();
@@ -952,6 +963,19 @@ fn analyze_stmts(
                 } else {
                     32u32
                 };
+                // A `let` that SHADOWS an existing binding invalidates the old one's solver state:
+                // drop its modelability and any stale fact, so an integer predicate over the NEW
+                // binding (which may hold a string/list/bool) is not "proved" against the shadowed
+                // integer's model (e.g. `let v = 0; let v = "hi"; assert(v + 0 == v)`).
+                ctx.solver_int_vars.remove(name);
+                {
+                    let mangled = smt_var(name);
+                    assumptions.retain(|a| {
+                        let mut vs = BTreeSet::new();
+                        collect_vars_from_smt(a, &mut vs);
+                        !vs.contains(&mangled)
+                    });
+                }
                 ctx.symbolic_widths.insert(name.clone(), w);
 
                 // Track whether this binding is genuinely integer-modelable for the solver: a
@@ -2000,12 +2024,65 @@ fn is_tainted_type(ty: Option<&str>) -> bool {
 
 /// The expression a function returns at its tail: the last statement when it is `return X` or a bare
 /// value expression. None when the body ends in a statement (which yields the default `0`).
-fn fn_tail_return_expr(body: &[Stmt]) -> Option<&Expr> {
-    match body.last()? {
-        Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => args.first(),
-        Stmt::ExprStmt(e) => Some(e),
-        _ => None,
+/// Collect the IMPLICIT tail values a function body (or an `if`-arm) can yield: every branch of a
+/// tail `if`/`match`, a block's tail expression, or the literal `0` when the body falls off the end
+/// (ends in a `let`/assign/loop, or a tail `if` with no `else`). Without this, a function whose body
+/// is a bare tail `if/else` (the idiomatic tail expression) has its `ensures` obligated at ZERO points
+/// and is silently certified. `collect_tail_return` collects a bare tail `return X` value here (true
+/// at the function level, where the early-return scan excludes it); inside an `if`-arm it is false
+/// (the early-return scan already covers those explicit returns — avoids a double, weaker check).
+fn tail_values(body: &[Stmt], collect_tail_return: bool, out: &mut Vec<Expr>) {
+    match body.last() {
+        None => out.push(zero_literal()),
+        Some(Stmt::ExprStmt(Expr::Call { callee, args })) if callee == "return" => {
+            if collect_tail_return {
+                if let Some(e) = args.first() {
+                    out.push(e.clone());
+                }
+            }
+        }
+        Some(Stmt::ExprStmt(e)) => expr_tail_values(e, out),
+        Some(Stmt::If { then, else_, .. }) => {
+            tail_values(then, false, out);
+            match else_ {
+                Some(e) => tail_values(e, false, out),
+                None => out.push(zero_literal()),
+            }
+        }
+        // A tail `let`/assign/`while`/`for`/`loop`/etc. yields the default `0`.
+        Some(_) => out.push(zero_literal()),
     }
+}
+
+/// The tail values of an expression in value position (an `if`/`match`/block used as a tail value).
+fn expr_tail_values(e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::If {
+            then, else_, ..
+        }
+        | Expr::IfLet {
+            then, else_, ..
+        } => {
+            expr_tail_values(then, out);
+            expr_tail_values(else_, out);
+        }
+        Expr::Match { arms, .. } => {
+            for a in arms {
+                expr_tail_values(&a.body, out);
+            }
+        }
+        Expr::Block { stmts, tail } => match tail {
+            Some(t) => expr_tail_values(t, out),
+            None => tail_values(stmts, false, out),
+        },
+        // An explicit `return` in expression position is handled by the early-return scan.
+        Expr::Call { callee, .. } if callee == "return" => {}
+        other => out.push(other.clone()),
+    }
+}
+
+fn zero_literal() -> Expr {
+    Expr::Literal("0".to_string())
 }
 
 /// Substitute variables in a contract expression by name. Used to specialize a callee's contract at
@@ -2632,12 +2709,16 @@ fn verify_while_invariants(
 /// contract's `ensures` can be checked at every return point, not only the tail.
 fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
     match s {
-        Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
-            if let Some(e) = args.first() {
-                out.push(e.clone());
-            }
+        // A statement's expressions can hide a `return` inside a `match`-arm / `if`/block expression or
+        // a `let`/assign initializer — walk them, else such a return escapes the `ensures` check.
+        Stmt::ExprStmt(e) => expr_returns(e, out),
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => expr_returns(init, out),
+        Stmt::Assign { target, value } => {
+            expr_returns(target, out);
+            expr_returns(value, out);
         }
-        Stmt::If { then, else_, .. } => {
+        Stmt::If { cond, then, else_ } => {
+            expr_returns(cond, out);
             for st in then {
                 collect_returns_in_stmt(st, out);
             }
@@ -2647,10 +2728,31 @@ fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
                 }
             }
         }
-        Stmt::While { body, .. }
-        | Stmt::Loop { body, .. }
-        | Stmt::For { body, .. }
-        | Stmt::WhileLet { body, .. }
+        Stmt::While { cond, body, .. } => {
+            expr_returns(cond, out);
+            for st in body {
+                collect_returns_in_stmt(st, out);
+            }
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            expr_returns(expr, out);
+            for st in body {
+                collect_returns_in_stmt(st, out);
+            }
+        }
+        Stmt::For { source, body, .. } => {
+            match source {
+                crate::frontend::ForSource::Range { start, end } => {
+                    expr_returns(start, out);
+                    expr_returns(end, out);
+                }
+                crate::frontend::ForSource::Collection { expr } => expr_returns(expr, out),
+            }
+            for st in body {
+                collect_returns_in_stmt(st, out);
+            }
+        }
+        Stmt::Loop { body, .. }
         | Stmt::ResearchBlock { body, .. }
         | Stmt::ExploitBlock { body, .. } => {
             for st in body {
@@ -2662,6 +2764,97 @@ fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
                 for st in b {
                     collect_returns_in_stmt(st, out);
                 }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect the values of `return X` calls hidden INSIDE an expression — a `match` arm, an `if`/block
+/// expression, or any subexpression. Mirrors `expr_assigned_roots`; without it, a postcondition is not
+/// checked at a return embedded in expression position (e.g. `match c { 0 => return 0, _ => 1 }`). A
+/// `Lambda` body is NOT descended into — its `return` belongs to the closure, not the enclosing fn.
+fn expr_returns(e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::Call { callee, args } if callee == "return" => {
+            if let Some(first) = args.first() {
+                out.push(first.clone());
+            }
+            for a in args {
+                expr_returns(a, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            for st in stmts {
+                collect_returns_in_stmt(st, out);
+            }
+            if let Some(t) = tail {
+                expr_returns(t, out);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            expr_returns(cond, out);
+            expr_returns(then, out);
+            expr_returns(else_, out);
+        }
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            expr_returns(scrutinee, out);
+            expr_returns(then, out);
+            expr_returns(else_, out);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_returns(scrutinee, out);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    expr_returns(g, out);
+                }
+                expr_returns(&a.body, out);
+            }
+        }
+        Expr::Lambda { .. } => {}
+        Expr::Call { args, .. }
+        | Expr::ArrayLiteral { elements: args }
+        | Expr::EnumConstruct { fields: args, .. } => {
+            for x in args {
+                expr_returns(x, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            expr_returns(callee, out);
+            for x in args {
+                expr_returns(x, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_returns(lhs, out);
+            expr_returns(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr_returns(expr, out),
+        Expr::Try(expr) | Expr::Assume(expr) | Expr::Assert(expr) => expr_returns(expr, out),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_returns(inner, out),
+        Expr::Index { base, index } => {
+            expr_returns(base, out);
+            expr_returns(index, out);
+        }
+        Expr::FieldAccess { base, .. } => expr_returns(base, out),
+        Expr::StructLiteral { fields, .. } => {
+            for (_, x) in fields {
+                expr_returns(x, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                expr_returns(k, out);
+                expr_returns(v, out);
             }
         }
         _ => {}

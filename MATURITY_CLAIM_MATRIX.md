@@ -587,3 +587,47 @@ body for a dynamic check (that IS enforced at runtime). A tail-position direct c
 `ensures`. Loop-carried reasoning is B3. The checker is SOUND: a green `anubis check` means every
 declared contract was actually proved — it may decline to certify a contract it cannot model, but it
 never certifies a violable one.
+
+## Refinement-type foundation — B3 (loop invariants) + control-flow soundness (2026-07-10)
+
+B3 adds `while ... invariant(P) { }` clauses verified by the Hoare rule (base case + inductive step +
+frame + post-loop admit), readmitting loop-carried variables the solver otherwise drops. It was
+dogfooded HARDEST: **TWELVE consecutive adversarial sweeps**, each of which found and closed a distinct
+soundness defect (every one firsthand-reproduced — `check` accept + a concrete `anubis run` violation —
+before fixing, and locked with a regression test in `b3_loop_invariants_verify_inductively`,
+`loop_body_assert_not_discharged_against_stale_state`, `solver_modelability_is_function_local_and_shadow_safe`,
+and the B2 contract tests). The inductive-invariant ENGINE proved sound from round ~7 onward; the later
+rounds surfaced pre-existing weaknesses in the general checker's control-flow/state handling that B3's
+rigor exposed. The twelve closed defects:
+
+| # | Class | Defect (all were `check`-accepted, runtime-violated) | Fix |
+|---|---|---|---|
+| 1 | Hoare | only the tail return verified (multi-return) | verify EVERY return path |
+| 2 | Hoare | unsound `[0,2^w)` range on u32 params | removed; bounds must be stated |
+| 3 | Hoare | composition assumed a callee's ensures when a `requires` was skipped | guard on all-requires-checkable |
+| 4 | invariant | vacuous base case (contradictory pre-loop `assume`/`requires`) | vacuity guard on the base obligation |
+| 5 | invariant | a nested `break`/`continue`/`return` escaped the loop | reject any escape at any depth |
+| 6 | invariant | an auxiliary variable written in a branch/nested-loop frozen at a stale value | flat-body rule + drop every written var's frame fact |
+| 7 | invariant | stale reassign before/between loops; loop-local `let` leak | drop+re-establish on reassign; scope body assumptions |
+| 8 | invariant | a `let` shadowing a modeled variable reused its stale model | reject a shadowing loop-body `let` |
+| 9 | general | an in-body `assert` discharged against the stale pre-loop value | HAVOC loop-written vars before the body |
+| 10 | general | a write hidden in an `if`/`match`/block EXPRESSION missed by the write-scan | expression-aware `collect_assigned_roots` |
+| 11 | general | conditional-path facts (zero-trip loop / untaken `if`) leaked as unconditional | scope + drop facts of conditionally-written vars |
+| 12 | contract | a `return` in a `match`-arm / the implicit tail `if/else` value not checked against `ensures` | expression-aware return + tail-value scan |
+| 12b | general | integer-modelability leaked across `let` shadowing and function boundaries | invalidate on shadow; reset per function |
+
+**Firsthand-verified**: the demonstration (`ensures`/`assert` over a loop-carried variable, unprovable
+without an invariant, provable with one) works; base-case/preservation failures reject; every one of
+the twelve false proofs above now REJECTS; valid inductive invariants and bounded/composed contracts
+still ACCEPT. **~248 compiler tests; 49 binary; fixtures 26/26; PCA 13/13; prove 11/11; turing 13/13;
+41/41 `.anub` example corpus with 0 false positives.**
+
+**Honest scope (what B3 does NOT do — all fail-closed, not silent):** invariants only on `while`
+(for/loop rejected); the body must be a flat straight-line integer sequence (branches, nested loops,
+`match`, escapes, shadowing lets, and expression-embedded writes are rejected — a real usability limit,
+sound not silent); an accumulator invariant needs an explicit overflow bound; an in-body `assert` over
+a loop-carried variable is deferred to the runtime (which enforces `assert`) rather than proved. A
+call's `requires` in pure expression position (`g(bad)+1`) is not yet enforced — but no `ensures` is
+assumed there either, so nothing is laundered (a completeness gap, not a false proof). The checker is
+SOUND for its supported subset: a green `anubis check` over an invariant loop or a contract means it was
+actually proved; anything it cannot model soundly is rejected, never silently accepted.

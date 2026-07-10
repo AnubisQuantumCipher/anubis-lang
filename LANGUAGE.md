@@ -256,6 +256,30 @@ that cannot both hold) is rejected as a vacuous proof rather than used to certif
 `anubis check` means every declared contract was actually proved — nothing more, nothing skipped. See
 `MATURITY_CLAIM_MATRIX.md` for the exact, honest scope.
 
+**Loop invariants (`invariant`).** A `while` loop may declare `invariant(P)` clauses between its
+condition and body. The checker verifies each by the Hoare rule — it holds on entry (base case) and is
+preserved by one iteration (inductive step, under the invariants + the loop condition + the loop's
+*frame*: facts about variables the loop never writes) — and then, after the loop, may assume each
+invariant together with the negated condition. This readmits a loop-carried variable that the solver
+otherwise drops, letting an `ensures`/`assert` over it be proved:
+
+```
+fn count(n: u32) -> u32 requires(n < 1000000) ensures(result >= 0) {
+    let mut i = 0;
+    while i < n invariant(i >= 0) { i = i + 1; }
+    return i;   // provable ONLY because the invariant readmits `i` after the loop
+}
+```
+
+The invariant must be genuinely *inductive*, not merely true — a bound that only holds at exit (e.g.
+`i == n`) is rejected. It is FAIL-CLOSED and conservative: the body must be a flat straight-line
+sequence of integer assignments (a branch, nested loop, `match`, `break`/`continue`/`return`, a
+shadowing `let`, or an expression that embeds a write is rejected — those cannot be modeled as one
+transition), and the invariant must be provable in i64 without overflow (so an accumulator usually
+needs an explicit upper bound). Invariants on `for`/`loop` are rejected (rewrite as a `while`). A
+green check over an invariant loop means the invariant was actually proved inductive — a loop whose
+body the checker cannot model soundly is rejected, never silently accepted.
+
 ## Closures and higher-order functions
 
 Lambdas are first-class values that capture their environment **by value** (each captured binding
