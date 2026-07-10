@@ -441,3 +441,40 @@ list representation, not a hashmap); generated Rust is compiled without `-O`.
 **Dogfooding phase: CONVERGED.** 3 rounds, 45 domains, ~150 real programs; 8 correctness bugs found +
 fixed in rounds 1–2, round 3 dry. The language runs substantial real software (interpreters, solvers,
 parsers, data structures, numerics, simulations) correctly and now performantly for in-place algorithms.
+
+## ZK Receipt Binding — Track A (2026-07-10, commit 3cc4779)
+
+The Proof-Carrying Artifact now binds a real RISC Zero receipt and re-verifies it cold. All firsthand
+on this M4 Max; nothing simulated.
+
+**A0 — substrate proven (firsthand, hard gate).** `anubis prove --backend risc0 --lane metal-hybrid`
+on `examples/proof/proof_factorial_input.anb` produces a GENUINE receipt in ~28s: 221 KB bincode
+receipt, `dev_mode=false`, `mock_prover=false`, `image_id_is_placeholder=false`,
+`lane_observed=metal-hybrid`, correct journal (n=5→120, n=6→720), program-bound deterministic ImageID
+(same across inputs). `verify-receipt` re-verifies (exit 0) and fails closed on a wrong ImageID
+("claim digest does not match", exit 1) or a corrupted receipt ("proof is invalid", exit 1).
+
+**A1 — bound into the claim block.** `ClaimBlock` gains `zk_present` + `zk_image_id` +
+`zk_receipt_sha256` + `zk_journal_sha256`. `derive_zk_binding` (compiler/src/evidence) derives them
+structurally from the bundle's own risc0 sidecars, but only for a genuine receipt (non-placeholder,
+non-dev, non-mock, `verify_status=passed`); otherwise `zk_present=false` — never fabricated. A
+check/run bundle (no receipt) stays `zk_present=false` (PCA gate 13/13 still confirms this).
+
+**A2 — verify re-derives, not re-trusts.** `verify_pca` re-derives the ZK binding from the bundle and
+cross-checks (a tampered receipt hash / swapped ImageID / lying claim fail closed structurally). The
+CLI (`verify_bundle_zk_receipt`, links risc0) additionally: ties the ImageID to the bundle's
+`guest.elf` via `compute_image_id`, runs the real `risc0_zkvm::Receipt::verify` against it, and
+confirms the receipt's journal matches the recorded digest. Corrupted receipt / wrong ImageID /
+mismatched journal → exit nonzero.
+
+**A3 — prove gate (`scripts/run_prove_gate.sh`, 11/11).** `tests/fixtures/zk_prove_bundle` is a
+committed REAL receipt (from A0). The gate verifies it COLD in a fresh dir that never ran the prover:
+claim binds the receipt; cold verify re-verifies the receipt against the ImageID; corrupted receipt +
+swapped ImageID fail closed; a no-receipt bundle honestly reports `zk_present=false`. Re-run:
+`bash scripts/run_prove_gate.sh`.
+
+**Honest scope.** verify ties receipt → ImageID → `guest.elf` (hash-bound in the manifest) and
+re-verifies cryptographically, but the `guest.elf` ← `source.anubis` compilation is TRUSTED —
+recompiling to re-derive the ImageID needs the risc0 toolchain, which cold verify deliberately avoids.
+`tier` is still `"checked"` (T2 tier grading is future work). Tests: +2 evidence (231 compiler), +2
+CLI crypto (49 binary). Gates: prove 11/11, PCA 13/13, turing 13/13, fixtures 26/26. No regressions.
