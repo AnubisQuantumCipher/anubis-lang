@@ -1,5 +1,10 @@
-// EXPECT: FAIL
-// ERROR_CONTAINS: semicolon|; |expected
+// EXPECT: PASS
+// FEATURE: trailing semicolons are optional on every statement (LANGUAGE.md).
+// This fixture previously asserted a "missing semicolon" parse error; that error was removed
+// when semicolons became optional, so it now pins the actual feature. Real parse-error coverage
+// lives in unterminated_block.anb.
 fn main() {
     let x = 1
+    let y = 2
+    print(x + y)
 }

@@ -250,5 +250,10 @@ Suite: **207 compiler tests, 0 failed.** 19 defects fixed + 2 design decisions r
 **Remaining tail (low-severity / follow-up — NOT mainline; do not clear before PCA):** mutating builtins
 (`push`) on a struct-field place (clean fail-closed limitation, local-var workaround); struct display in
 declaration vs insertion order (cosmetic); unknown-var in an `if` condition (coverage, false-positive
-risk); low-severity edge cases (#23–32). **Harness debt:** `run_language_fixtures.sh` is state-sensitive (stale `out/`
-false-fails); `missing_semicolon.anb` is stale (semicolons are optional now).
+risk); low-severity edge cases (#23–32).
+
+**Harness debt — RESOLVED (2026-07-10).** `run_language_fixtures.sh` now cleans each per-fixture dir
+before running, so the `evidence-*` FAIL glob can't pick up a stale dir (deterministic PASS across
+repeated runs, verified). `missing_semicolon.anb` was repurposed to pin the optional-semicolon feature
+(EXPECT PASS); a new `unterminated_block.anb` preserves the negative parse-error coverage. Language
+fixtures: **26/26 PASS.**

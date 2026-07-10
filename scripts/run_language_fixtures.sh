@@ -25,6 +25,10 @@ for f in "$FIXTURE_DIR"/*.anb; do
   echo "=== $base ==="
 
   outd="$OUT_DIR/$base"
+  # Start from a clean per-fixture dir: `check --evidence` writes a fresh timestamped
+  # `evidence-*/` each run, and the FAIL-detection below globs `evidence-*`, so a stale dir from
+  # a prior run would produce a false failure. Removing it first makes the runner deterministic.
+  rm -rf "$outd"
   mkdir -p "$outd"
   set +e
   cargo run -- check "$f" --evidence --out "$outd" > "$outd/run.log" 2>&1

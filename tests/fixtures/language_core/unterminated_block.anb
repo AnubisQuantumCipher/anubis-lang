@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: expected
+// FEATURE: an unterminated block is a fail-closed parse error (preserves the negative parse
+// coverage that missing_semicolon.anb used to provide, now that semicolons are optional).
+fn main() {
+    let x = 1
