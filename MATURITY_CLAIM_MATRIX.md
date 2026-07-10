@@ -279,3 +279,27 @@ verified *analysis* verdict, not yet a full T1/T2 assurance tier, and the block 
 cryptographically signed (the `manifest_signature` is still a SHA-256, not an asymmetric signature).
 Next: real signing (Ed25519 + Secure Enclave), optional ZK-receipt binding, and tier grading.
 Suite: **210 compiler tests, 0 failed.**
+
+## PCA v0.1 — portable, attributable, prove-honest (2026-07-10)
+
+Hardens PCA v0 into a portable product: a PCA built here verifies on another machine, with only the
+bundle and a public key, without trusting the author — and the prove edge can no longer lie.
+
+| Claim | Status | Evidence | Command |
+|-------|--------|----------|---------|
+| Prove fails closed when a program can't be lowered to a guest | REAL | echo-guest fallback removed; `ANUBIS_UNSUPPORTED_GUEST_LOWERING`, 0 receipts / 0 echo-guest files written | `anubis prove <no-fn-main>.anb --backend risc0` → error, no receipt |
+| Portable / cold verify (no Metal, no prove path) | REAL | `verify` re-derives the claim with no Metal dependency | `ANUBIS_RISC0_METAL_REFERENCE=/nonexistent R0_DISABLE_METAL=1 anubis verify d/evidence-*` → valid |
+| Claim block states `tier="checked"`, `zk_present=false` (no overclaim) | REAL | honest fields; source binding asserted explicitly in `verify_pca` | `jq '.tier,.zk_present' d/evidence-*/pca.json` |
+| Ed25519 keygen / sign / attributable verify | REAL | `anubis keygen`, `anubis sign`, `pca.sig` (algorithm/public_key/signature over `sha256(pca.json)‖sha256(MANIFEST.sha256)`); `verify` reports `signed: <bool> (signer …)` | `anubis keygen --out k; anubis sign d/evidence-* --key k/signing.key; anubis verify d/evidence-*` |
+| Unsigned PCA still valid; missing sig → `signed: false` | REAL | `verify` passes unsigned, prints `signed: false (unsigned PCA)` | `anubis verify <unsigned-bundle>` |
+| Wrong / forged signature or `--pubkey` mismatch fails closed | REAL | `verify --pubkey <wrong>` → exit 1; tampering a signed claim invalidates the sig → exit 1 | `anubis verify d/evidence-* --pubkey <wrong>` |
+| Tamper gate (cold + tamper + sign) | REAL | 13/13 | `bash scripts/run_pca_gate.sh` |
+
+**Unit tests:** `verify_pca_rederives_claim_and_catches_a_consistent_lie`,
+`sign_and_verify_pca_roundtrip_then_tamper_fails`, `derive_claim_block_is_deterministic`. Suite:
+**211 compiler tests, 0 failed; PCA gate 13/13.** Deps added: `ed25519-dalek 2`, `getrandom 0.2`.
+
+**Honest scope / next:** signing is software Ed25519 (file-based keys); Secure Enclave / hybrid ML-DSA
+is a later upgrade of the same key story. `tier` is still `"checked"`. Next on the arc: optional
+ZK-receipt binding into the claim block (re-verify a receipt against its ImageID when present; never
+invent one), then tier grading toward T2.

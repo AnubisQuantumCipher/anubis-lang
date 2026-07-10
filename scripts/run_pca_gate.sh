@@ -56,5 +56,20 @@ cp -r "$BND" "$OUT_DIR/b_claim"
 jq '.verdict = "FAIL"' "$BND/pca.json" > "$OUT_DIR/b_claim/pca.json"
 "$BIN" verify "$OUT_DIR/b_claim" >/dev/null 2>&1; step "$?" 1 tamper_claim_fails_closed
 
+# 6. Ed25519 signing: keygen, sign, and attributable verify.
+"$BIN" keygen --out "$OUT_DIR/keys" >/dev/null 2>&1
+VK=$(cat "$OUT_DIR/keys/verifying.key" 2>/dev/null)
+cp -r "$BND" "$OUT_DIR/b_signed"
+"$BIN" sign "$OUT_DIR/b_signed" --key "$OUT_DIR/keys/signing.key" >/dev/null 2>&1
+[[ -f "$OUT_DIR/b_signed/pca.sig" ]] && step yes yes signature_written || step no yes signature_written
+"$BIN" verify "$OUT_DIR/b_signed" >/dev/null 2>&1; step "$?" 0 verify_signed_passes
+"$BIN" verify "$OUT_DIR/b_signed" --pubkey "$VK" >/dev/null 2>&1; step "$?" 0 verify_pubkey_match
+"$BIN" verify "$OUT_DIR/b_signed" --pubkey deadbeef >/dev/null 2>&1; step "$?" 1 verify_pubkey_mismatch_fails
+
+# 7. Tampering a SIGNED claim invalidates the signature -> fail closed.
+cp -r "$OUT_DIR/b_signed" "$OUT_DIR/b_signed_tampered"
+jq '.verdict = "FAIL"' "$OUT_DIR/b_signed/pca.json" > "$OUT_DIR/b_signed_tampered/pca.json"
+"$BIN" verify "$OUT_DIR/b_signed_tampered" >/dev/null 2>&1; step "$?" 1 tamper_signed_claim_fails
+
 echo "Report: $OUT_DIR"
 if [[ $pass -eq $total ]]; then echo "Overall: PASS ($pass/$total)"; else echo "Overall: FAIL ($pass/$total)"; exit 1; fi

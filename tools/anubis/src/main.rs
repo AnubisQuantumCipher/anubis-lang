@@ -8,7 +8,10 @@ mod proof_input;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{lower_program_to_guest, lower_program_to_rust},
-    evidence::{build_evidence_bundle, verify_pca, EvidenceManifest},
+    evidence::{
+        build_evidence_bundle, generate_keypair, pca_signature_status, sign_pca, verify_pca,
+        EvidenceManifest,
+    },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
     middle::{SymbolicEngine, TaintPass},
@@ -193,11 +196,33 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Verify an evidence bundle
-    Verify { bundle: PathBuf },
+    /// Verify a Proof-Carrying Artifact / evidence bundle (re-derives the claim, checks tamper and
+    /// any signature).
+    Verify {
+        bundle: PathBuf,
+        /// Require the PCA to be signed by this Ed25519 public key (hex). Fail if unsigned or signed
+        /// by a different key.
+        #[arg(long)]
+        pubkey: Option<String>,
+    },
 
     /// Alias for verify; validates bundle hashes and PASS verdict.
     Validate { bundle: PathBuf },
+
+    /// Generate an Ed25519 keypair for signing Proof-Carrying Artifacts.
+    Keygen {
+        /// Directory to write `signing.key` (private) and `verifying.key` (public).
+        #[arg(long)]
+        out: PathBuf,
+    },
+
+    /// Sign a PCA / evidence bundle with an Ed25519 signing key (writes `pca.sig`).
+    Sign {
+        bundle: PathBuf,
+        /// Path to the signing key file (hex), e.g. from `anubis keygen`.
+        #[arg(long)]
+        key: PathBuf,
+    },
 
     /// Print the Markdown bounty/evidence report from a bundle.
     Report { bundle: PathBuf },
@@ -2049,14 +2074,56 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             }
             Ok(())
         }
-        Commands::Verify { bundle } | Commands::Validate { bundle } => {
+        Commands::Verify { bundle, pubkey } => {
             // PCA verification: hash/tamper validation PLUS re-deriving the claim block from the
             // bundle's own source and confirming it matches the recorded pca.json (fail-closed).
+            let mut ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
+            // Report (and optionally require) the signature.
+            match pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))? {
+                Some((sig_ok, signer)) => {
+                    println!("signed: {} (signer {})", sig_ok, signer);
+                    if let Some(expected) = &pubkey {
+                        if !sig_ok || signer != expected.trim() {
+                            eprintln!("signature required by --pubkey did not match");
+                            ok = false;
+                        }
+                    }
+                }
+                None => {
+                    println!("signed: false (unsigned PCA)");
+                    if pubkey.is_some() {
+                        eprintln!("--pubkey given but the bundle is unsigned");
+                        ok = false;
+                    }
+                }
+            }
+            println!("bundle valid: {}", ok);
+            if !ok {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::Validate { bundle } => {
             let ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
             println!("bundle valid: {}", ok);
             if !ok {
                 std::process::exit(1);
             }
+            Ok(())
+        }
+        Commands::Keygen { out } => {
+            std::fs::create_dir_all(&out)?;
+            let (sk, vk) = generate_keypair().map_err(|e| anyhow!("{}", e))?;
+            std::fs::write(out.join("signing.key"), &sk)?;
+            std::fs::write(out.join("verifying.key"), &vk)?;
+            println!("keypair written to {}", out.display());
+            println!("public key: {}", vk);
+            Ok(())
+        }
+        Commands::Sign { bundle, key } => {
+            let sk = std::fs::read_to_string(&key)?;
+            let signer = sign_pca(&bundle, &sk).map_err(|e| anyhow!("{}", e))?;
+            println!("signed {} by {}", bundle.display(), signer);
             Ok(())
         }
         Commands::Report { bundle } => {

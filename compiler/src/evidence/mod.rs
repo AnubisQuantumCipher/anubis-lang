@@ -2,6 +2,7 @@
 //! Produces timestamped tamper-evident bundles modeled on risc0-metal-hybrid evidence.
 
 use chrono::Utc;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -486,7 +487,99 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     // can never drift.)
     let source_bound = recorded.source_sha256 == sha256_bytes(source.as_bytes());
     let fresh = derive_claim_block(&source, &recorded.mode);
-    Ok(hashes_ok && source_bound && fresh == recorded)
+    // If the bundle is signed, the signature must verify over the current claim + manifest. An
+    // unsigned bundle is still a valid (unsigned) PCA. A forged/invalid signature fails closed.
+    let sig_ok = match pca_signature_status(dir)? {
+        Some((ok, _signer)) => ok,
+        None => true,
+    };
+    Ok(hashes_ok && source_bound && sig_ok && fresh == recorded)
+}
+
+/// The `pca.sig` sidecar: an Ed25519 signature over the PCA, written OUTSIDE `MANIFEST.sha256` (it
+/// signs the manifest, so it cannot be part of it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcaSignature {
+    pub algorithm: String,
+    pub public_key: String,
+    pub signature: String,
+    pub signed: String,
+}
+
+/// Generate a fresh Ed25519 keypair as `(signing_key_hex, verifying_key_hex)` — 32 bytes each.
+pub fn generate_keypair() -> Result<(String, String), String> {
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| e.to_string())?;
+    let sk = SigningKey::from_bytes(&seed);
+    let vk = sk.verifying_key();
+    Ok((hex::encode(sk.to_bytes()), hex::encode(vk.to_bytes())))
+}
+
+/// The bytes a PCA signature covers: `sha256(pca.json) || sha256(MANIFEST.sha256)`. Signing this
+/// binds the signer to both the semantic claim and the whole hashed file tree.
+fn pca_signed_message(dir: &Path) -> Result<Vec<u8>, String> {
+    let pca = std::fs::read(dir.join("pca.json")).map_err(|e| format!("read pca.json: {e}"))?;
+    let manifest =
+        std::fs::read(dir.join("MANIFEST.sha256")).map_err(|e| format!("read manifest: {e}"))?;
+    let mut msg = Vec::with_capacity(64);
+    msg.extend_from_slice(&Sha256::digest(&pca));
+    msg.extend_from_slice(&Sha256::digest(&manifest));
+    Ok(msg)
+}
+
+/// Sign a PCA with an Ed25519 signing key (hex). Writes `pca.sig` and returns the signer's public
+/// key (hex). The signature covers the claim block and the manifest root, so any later tamper to
+/// either invalidates it.
+pub fn sign_pca(dir: &Path, signing_key_hex: &str) -> Result<String, String> {
+    let sk_bytes: [u8; 32] = hex::decode(signing_key_hex.trim())
+        .map_err(|e| e.to_string())?
+        .try_into()
+        .map_err(|_| "signing key must be 32 bytes".to_string())?;
+    let sk = SigningKey::from_bytes(&sk_bytes);
+    let sig = sk.sign(&pca_signed_message(dir)?);
+    let vk_hex = hex::encode(sk.verifying_key().to_bytes());
+    write_json(
+        &dir.join("pca.sig"),
+        &PcaSignature {
+            algorithm: "ed25519".into(),
+            public_key: vk_hex.clone(),
+            signature: hex::encode(sig.to_bytes()),
+            signed: "sha256(pca.json)||sha256(MANIFEST.sha256)".into(),
+        },
+    )?;
+    Ok(vk_hex)
+}
+
+/// Signature status of a bundle: `None` when unsigned, `Some((verified, signer_public_key))` when a
+/// `pca.sig` is present — `verified` is whether the signature checks out over the current PCA.
+pub fn pca_signature_status(dir: &Path) -> Result<Option<(bool, String)>, String> {
+    let sig_path = dir.join("pca.sig");
+    if !sig_path.exists() {
+        return Ok(None);
+    }
+    let rec: PcaSignature =
+        serde_json::from_str(&std::fs::read_to_string(&sig_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let vk_bytes: [u8; 32] = match hex::decode(&rec.public_key)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+    {
+        Some(b) => b,
+        None => return Ok(Some((false, rec.public_key))),
+    };
+    let sig_bytes: [u8; 64] = match hex::decode(&rec.signature)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+    {
+        Some(b) => b,
+        None => return Ok(Some((false, rec.public_key))),
+    };
+    let msg = pca_signed_message(dir)?;
+    let verified = match VerifyingKey::from_bytes(&vk_bytes) {
+        Ok(vk) => vk.verify(&msg, &Signature::from_bytes(&sig_bytes)).is_ok(),
+        Err(_) => false,
+    };
+    Ok(Some((verified, rec.public_key)))
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -937,6 +1030,33 @@ mod pca_tests {
         // The hash / tamper layer alone is satisfied (recorded checks PASS, hashes consistent)...
         assert!(validate_bundle(&bundle.dir).unwrap());
         // ...but re-deriving the claim from the source catches the lie and fails closed.
+        assert!(!verify_pca(&bundle.dir).unwrap());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sign_and_verify_pca_roundtrip_then_tamper_fails() {
+        let base = unique_dir("sign");
+        let good = "fn main() { print(1); }";
+        let bundle = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        // Unsigned bundle: valid, and reports no signature.
+        assert!(pca_signature_status(&bundle.dir).unwrap().is_none());
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // Sign, then verify reports the signature verified by that signer.
+        let (sk, vk) = generate_keypair().unwrap();
+        assert_eq!(sign_pca(&bundle.dir, &sk).unwrap(), vk);
+        let (ok, pk) = pca_signature_status(&bundle.dir).unwrap().unwrap();
+        assert!(ok && pk == vk);
+        assert!(verify_pca(&bundle.dir).unwrap());
+
+        // Tamper the signed claim block: the signature no longer verifies → fail closed.
+        let mut lie = derive_claim_block(good, "safe");
+        lie.verdict = "FAIL".into();
+        write_json(&bundle.dir.join("pca.json"), &lie).unwrap();
+        let (ok2, _) = pca_signature_status(&bundle.dir).unwrap().unwrap();
+        assert!(!ok2);
         assert!(!verify_pca(&bundle.dir).unwrap());
 
         let _ = std::fs::remove_dir_all(&base);

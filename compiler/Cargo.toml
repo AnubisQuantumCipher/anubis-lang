@@ -13,6 +13,8 @@ serde_json.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 hex.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
 tracing.workspace = true
 ariadne.workspace = true
 
