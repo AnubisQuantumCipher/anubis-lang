@@ -1883,8 +1883,14 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
             Some(expr_to_smt(e, widths))
         }
         Expr::Cast { expr, ty } => {
-            expr_to_smt_value(expr, widths)?;
-            Some(expr_to_smt_with_width(expr, widths, Some(bitwidth_of(ty))))
+            // A TRUNCATING cast (`x as u8`) has NO sound integer value fact — modeling it as the
+            // identity recorded a false `y == x` that a loop invariant could later force-model and
+            // "prove" against the pre-truncation value. Only a value-preserving (64-bit) cast keeps
+            // the inner's value. (Mirrors `is_int_modelable`'s cast rule.)
+            if !cast_preserves_i64(ty) {
+                return None;
+            }
+            expr_to_smt_value(expr, widths)
         }
         Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
             expr_to_smt_value(inner, widths)

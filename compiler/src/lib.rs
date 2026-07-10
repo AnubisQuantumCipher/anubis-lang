@@ -1346,6 +1346,18 @@ fn main() {
             checks_pass("fn main() { let x = 7; let y = x * 6; assert(y == 42); }"),
             "a genuine integer let chain still proves"
         );
+        // Truncating-cast fact leak (adversarial-sweep round 14): `let y = x as u8` recorded a false
+        // `y == x` fact that a loop invariant force-modeling `y` could "prove" against the
+        // pre-truncation value. `y = 300 as u8 == 44` at runtime, so `invariant(y == 300)` is false.
+        assert!(
+            !checks_pass("fn main() { let x = 300; let y = x as u8; let mut i = 0; while i < 0 invariant(y == 300) { i = i + 1; } assert(y == 300); }"),
+            "a truncating-cast binding must not record an identity fact a loop invariant can force-model"
+        );
+        // Control: a value-preserving cast (`as i64`) keeps the inner's value.
+        assert!(
+            checks_pass("fn main() { let x = 5; let y = x as i64; assert(y == 5); }"),
+            "a value-preserving cast keeps the inner integer value"
+        );
     }
 
     #[test]
