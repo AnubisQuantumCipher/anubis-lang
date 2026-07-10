@@ -271,7 +271,8 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     };
     let mut sig = Vec::new();
     for (p, _ty) in def.params {
-        sig.push(format!("mut {}: AnubisValue", sanitize_ident(p)?));
+        let id = sanitize_ident(p)?;
+        sig.push(format!("{}{}: AnubisValue", mut_prefix(&id), id));
     }
     let (head, tail) = split_tail_expr(def.body);
     let mut body_src = String::new();
@@ -1840,9 +1841,11 @@ fn emit_safe_run_stmt(
     let pad = "    ".repeat(indent);
     match stmt {
         Stmt::Let { name, init, .. } => {
+            let id = sanitize_ident(name)?;
             out.push_str(&format!(
-                "{pad}let mut {} = {};\n",
-                sanitize_ident(name)?,
+                "{pad}let {}{} = {};\n",
+                mut_prefix(&id),
+                id,
                 safe_run_expr(init, ctx)?
             ));
             Ok(())
@@ -1997,8 +2000,10 @@ fn emit_safe_run_stmt(
                         safe_run_expr(end, ctx)?
                     ));
                     out.push_str(&format!(
-                        "{pad}    let mut {} = AnubisValue::Int({});\n",
-                        v, iv
+                        "{pad}    let {}{} = AnubisValue::Int({});\n",
+                        mut_prefix(&v),
+                        v,
+                        iv
                     ));
                     for stmt in body {
                         emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
@@ -2009,7 +2014,8 @@ fn emit_safe_run_stmt(
                 ForSource::Collection { expr } => {
                     // Iterate list items / string characters / map keys.
                     out.push_str(&format!(
-                        "{pad}for mut {} in anubis_iter({}) {{\n",
+                        "{pad}for {}{} in anubis_iter({}) {{\n",
+                        mut_prefix(&v),
                         v,
                         safe_run_expr(expr, ctx)?
                     ));
@@ -3053,9 +3059,11 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             }
             let mut binds = String::new();
             for (i, p) in params.iter().enumerate() {
+                let id = sanitize_ident(p)?;
                 binds.push_str(&format!(
-                    "let mut {} = __args.get({}usize).cloned().unwrap_or(AnubisValue::Int(0)); ",
-                    sanitize_ident(p)?,
+                    "let {}{} = __args.get({}usize).cloned().unwrap_or(AnubisValue::Int(0)); ",
+                    mut_prefix(&id),
+                    id,
                     i
                 ));
             }
@@ -3453,6 +3461,17 @@ fn sanitize_ident(name: &str) -> Result<String> {
     }
 }
 
+/// The `mut` prefix for a binding site. Every real Anubis binding is `mut` (assignment is
+/// pervasive), but Rust forbids `mut _` — the wildcard is never mutable — so a `_` binding
+/// (`let _ = e;`, `for _ in …`, `|_| …`, `fn f(_)`) must be emitted bare.
+fn mut_prefix(sanitized_ident: &str) -> &'static str {
+    if sanitized_ident == "_" {
+        ""
+    } else {
+        "mut "
+    }
+}
+
 /// A process-wide counter for generating unique codegen temporaries (e.g. destructuring
 /// scrutinees). Order is deterministic within a single compilation, so output is stable.
 fn next_temp_id() -> u64 {
@@ -3680,6 +3699,32 @@ mod run_tests {
             print(get(xs, 10, -1)); print(get(m, \"zzz\", -2)); \
             print(has_key(m, \"a\")); print(xs[-1]); }";
         assert_eq!(run(src), "-1\n-2\ntrue\n30");
+    }
+
+    #[test]
+    fn wildcard_binding_lowers_without_mut() {
+        // Rust forbids `mut _`; the wildcard `_` in a let, for-loop, closure param, or fn param
+        // must lower bare. Regression: the emitter used to emit `let mut _` / `for mut _`.
+        assert_eq!(run("fn main() { let _ = 1; print(42); }"), "42");
+        assert_eq!(
+            run("fn main() { let mut n = 0; for _ in 0..3 { n = n + 1; } print(n); }"),
+            "3"
+        );
+        // wildcard over a collection
+        assert_eq!(
+            run("fn main() { let mut c = 0; for _ in [10, 20, 30] { c = c + 1; } print(c); }"),
+            "3"
+        );
+        // wildcard closure param
+        assert_eq!(
+            run("fn main() { let f = |_| 7; print(f(999)); }"),
+            "7"
+        );
+        // wildcard fn param
+        assert_eq!(
+            run("fn g(_, y) { y * 2 } fn main() { print(g(100, 21)); }"),
+            "42"
+        );
     }
 
     #[test]
