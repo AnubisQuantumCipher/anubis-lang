@@ -1,0 +1,77 @@
+// EXPECT: ...../...../.###./...../...../|...../..#../..#../..#../...../|...../...../.###./...../...../
+// Capstone: Conway's Game of Life — a real program using structs, methods,
+// 2D lists, nested iteration with negative ranges, closures, and stdlib.
+
+struct Board { cells: list, w: int, h: int }
+
+impl Board {
+    fn get(self, r, c) {
+        if r < 0 { return 0 }
+        if c < 0 { return 0 }
+        if r >= self.h { return 0 }
+        if c >= self.w { return 0 }
+        self.cells[r][c]
+    }
+
+    fn neighbors(self, r, c) {
+        let mut n = 0;
+        for dr in -1..2 {
+            for dc in -1..2 {
+                if dr != 0 || dc != 0 {
+                    n = n + self.get(r + dr, c + dc);
+                }
+            }
+        }
+        n
+    }
+
+    fn step(self) {
+        let mut next = [];
+        for r in 0..self.h {
+            let mut row = [];
+            for c in 0..self.w {
+                let alive = self.get(r, c);
+                let n = self.neighbors(r, c);
+                // B3/S23: born on 3 neighbors, survives on 2 or 3
+                let cell = if alive == 1 {
+                    if n == 2 || n == 3 { 1 } else { 0 }
+                } else {
+                    if n == 3 { 1 } else { 0 }
+                };
+                push(row, cell);
+            }
+            push(next, row);
+        }
+        Board { cells: next, w: self.w, h: self.h }
+    }
+
+    fn render(self) {
+        let mut out = "";
+        for r in 0..self.h {
+            for c in 0..self.w {
+                out = out + (if self.get(r, c) == 1 { "#" } else { "." });
+            }
+            out = out + "/";
+        }
+        out
+    }
+}
+
+fn main() {
+    // a blinker (period-2 oscillator) in a 5x5 world
+    let b0 = Board {
+        cells: [
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+        ],
+        w: 5, h: 5,
+    };
+    print(b0.render());              // .###. (horizontal)
+    let b1 = b0.step();
+    print(b1.render());              // ..#.. x3 (vertical)
+    let b2 = b1.step();
+    print(b2.render());              // .###. again
+}
