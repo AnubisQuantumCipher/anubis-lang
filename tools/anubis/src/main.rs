@@ -2895,22 +2895,52 @@ fn run_anubis_source(
     let work = std::env::temp_dir().join(format!("anubis-run-{unique}"));
     std::fs::create_dir_all(&work)?;
     let work_rs = work.join("anubis_run.rs");
-    let work_exe = work.join("anubis_run");
     std::fs::write(&work_rs, &rust_source)?;
-    let status = std::process::Command::new("rustc")
-        // Pin edition 2021 so `anubis run`, `anubis build`, and `anubis prove` compile the
-        // byte-identical lowering the same way (see native::compile_rust_to_exe).
-        .arg("--edition")
-        .arg("2021")
-        .arg(&work_rs)
-        .arg("-o")
-        .arg(&work_exe)
-        .status()
-        .map_err(|e| anyhow!("rustc spawn failed: {}", e))?;
-    if !status.success() {
-        let _ = std::fs::remove_dir_all(&work);
-        return Err(anyhow!("ANUBIS_UNSUPPORTED_NATIVE_LOWERING: rustc failed"));
-    }
+
+    // Content-addressed compile cache. The emitted Rust is deterministic, so the same program
+    // always compiles to the same binary; reuse a cached one and skip rustc entirely on a repeat
+    // run (turning the ~1-2s rustc baseline into a near-instant re-run). Correctness is preserved
+    // because the key is the emitted source itself. Opt out with ANUBIS_NO_CACHE=1.
+    let cache_disabled = std::env::var("ANUBIS_NO_CACHE").is_ok();
+    let cache_key = sha256_bytes(format!("edition=2021\n{}", rust_source).as_bytes());
+    let cache_dir = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".anubis").join("run-cache"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("anubis-run-cache"));
+    let cached_exe = cache_dir.join(&cache_key);
+
+    let work_exe = if !cache_disabled && cached_exe.is_file() {
+        cached_exe.clone() // cache hit — no rustc
+    } else {
+        let tmp_exe = work.join("anubis_run");
+        let status = std::process::Command::new("rustc")
+            // Pin edition 2021 so `anubis run`, `anubis build`, and `anubis prove` compile the
+            // byte-identical lowering the same way (see native::compile_rust_to_exe).
+            .arg("--edition")
+            .arg("2021")
+            .arg(&work_rs)
+            .arg("-o")
+            .arg(&tmp_exe)
+            .status()
+            .map_err(|e| anyhow!("rustc spawn failed: {}", e))?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&work);
+            return Err(anyhow!("ANUBIS_UNSUPPORTED_NATIVE_LOWERING: rustc failed"));
+        }
+        // Publish to the cache atomically (copy to a staging name on the same filesystem, then
+        // rename), capped so the cache cannot grow without bound.
+        if !cache_disabled && std::fs::create_dir_all(&cache_dir).is_ok() {
+            let entries = std::fs::read_dir(&cache_dir).map(|d| d.count()).unwrap_or(0);
+            if entries < 512 {
+                let staging = cache_dir.join(format!("{cache_key}.{unique}.staging"));
+                if std::fs::copy(&tmp_exe, &staging).is_ok() {
+                    if std::fs::rename(&staging, &cached_exe).is_err() {
+                        let _ = std::fs::remove_file(&staging);
+                    }
+                }
+            }
+        }
+        tmp_exe
+    };
 
     let output = std::process::Command::new(&work_exe)
         .args(args)
