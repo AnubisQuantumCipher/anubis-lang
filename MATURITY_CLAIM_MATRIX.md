@@ -410,3 +410,34 @@ frames) can still exhaust the 1 GiB stack and abort — inherent (Rust can't cat
 Also added `is_empty` (many agents hand-wrote `len(x) > 0`). Net across rounds 1+2: **227 compiler
 tests, 0 failed**; fixtures 26/26; PCA 13/13; POC kit 4/4; proof-binding PASS. Round-2 transcript:
 workflow `wf_7abc8eda-302`. A third round (15 more domains) is running to confirm the tail is dry.
+
+## Dogfood sweep round 3 — DRY (15/15 zero-defect) + the O(n²) indexing fix (2026-07-10)
+
+Third round on the fixed binary across 15 entirely new hard domains (minimax game AI w/ alpha-beta,
+spreadsheet engine w/ dependency recalc, ray tracer, Verlet physics sim, memoizing PEG parser, π to
+30-50 digits via Machin+spigot bignum, LZ77/LZW compressors, Thompson NFA→DFA regex, dimensional-units
+calculator, cron scheduler, genetic algorithm, KV store w/ WAL replay, roman/base-N numerals, skip
+list, Turing machine). **~53 programs built, ~all ran first-try; 15 of 15 domains ZERO-DEFECT — zero
+confirmed and zero suspected language bugs.** This is the loop-until-dry convergence signal: after 8
+fixes across rounds 1–2, a fresh 15-domain round finds nothing. The executable core is mature for the
+niche.
+
+The one recurring theme (spreadsheet, pi-digits, peg-parser agents each pinpointed it) was
+**performance, not correctness**: indexed reads `a[i]` and field reads `p.f` on a local routed through
+`var_as_value`, which cloned the WHOLE collection/struct (`(a.clone()).index_get(i)`) — so an indexed
+read in a loop was O(n) and in-place array algorithms went O(n²). Fixed by borrowing the local directly
+(`a.index_get(i)` / `p.field_get("f")`; both take `&self` and clone only the element/field):
+
+| Fix | commit | Evidence |
+|-----|--------|----------|
+| `a[i]` on a local borrows instead of cloning the collection | `caec2e8` | 2500-elem insertion sort: **>5 min (timed out) → 0.89 s**; test `indexed_reads_fast_path_is_correct` |
+| `p.f` on a local borrows instead of cloning the struct | `d76464b` | field read is copy-not-alias; 228 tests |
+
+Value semantics are unchanged (the element/field is still copied out). **228 compiler tests, 0 failed;
+fixtures 26/26; PCA 13/13; all 8 examples/feel run.** Round-3 transcript: workflow `wf_d6f70170-634`.
+Residual perf notes (not fixed, lower priority): map `m[k]` is still an O(n) linear scan (association-
+list representation, not a hashmap); generated Rust is compiled without `-O`.
+
+**Dogfooding phase: CONVERGED.** 3 rounds, 45 domains, ~150 real programs; 8 correctness bugs found +
+fixed in rounds 1–2, round 3 dry. The language runs substantial real software (interpreters, solvers,
+parsers, data structures, numerics, simulations) correctly and now performantly for in-place algorithms.
