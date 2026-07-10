@@ -407,6 +407,11 @@ pub struct ClaimBlock {
     pub taint_clean: bool,
     pub solver_obligations: usize,
     pub solver_all_discharged: bool,
+    /// Whether a zero-knowledge receipt is bound to this claim. Always `false` in v0 — stated
+    /// explicitly so the block never silently implies a ZK proof it does not carry. (Populated when
+    /// receipt binding lands.)
+    #[serde(default)]
+    pub zk_present: bool,
     pub verdict: String,
     pub tool: String,
 }
@@ -455,6 +460,7 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         taint_clean,
         solver_obligations,
         solver_all_discharged,
+        zk_present: false,
         verdict: verdict.into(),
         tool: "anubis 0.2.0".into(),
     }
@@ -475,8 +481,12 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
         serde_json::from_str(&std::fs::read_to_string(&pca_path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let source = std::fs::read_to_string(dir.join("source.anubis")).map_err(|e| e.to_string())?;
+    // Explicit source binding: the claim's recorded hash must be the hash of the bundle's own
+    // source. (Also implied by `fresh == recorded`, but asserted directly so the source↔claim tie
+    // can never drift.)
+    let source_bound = recorded.source_sha256 == sha256_bytes(source.as_bytes());
     let fresh = derive_claim_block(&source, &recorded.mode);
-    Ok(hashes_ok && fresh == recorded)
+    Ok(hashes_ok && source_bound && fresh == recorded)
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
