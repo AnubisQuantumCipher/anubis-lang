@@ -1341,8 +1341,12 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 // Compile the ACTUAL Anubis program into the guest: `anb_main()` runs in the
                 // zkVM and commits its result. risc0-build derives the ImageID from this guest's
                 // ELF, so the ImageID (and the receipt) is cryptographically bound to THIS
-                // program — not a fixed x*6 circuit. Falls back to a clearly-labelled minimal
-                // guest only if the program cannot be lowered to the safe run subset.
+                // program — not a fixed circuit.
+                //
+                // Fail closed: if the program cannot be lowered to a guest, refuse to prove. The
+                // former fallback substituted a trivial `env::read()/commit()` echo guest and
+                // proved THAT, which would let a lowering failure masquerade as a real, program-bound
+                // proof — exactly the honesty gap PCA verification must not permit.
                 let guest_src = match lower_program_to_guest(&ast.items) {
                     Ok(s) => {
                         println!(
@@ -1351,11 +1355,12 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                         s
                     }
                     Err(e) => {
-                        println!(
-                            "warning: program not lowerable to guest ({}); using minimal input-echo guest",
+                        return Err(anyhow!(
+                            "ANUBIS_UNSUPPORTED_GUEST_LOWERING: this program cannot be compiled into \
+                             a RISC0 guest, so `prove` cannot produce a program-bound receipt (a \
+                             substitute echo guest would not prove this program): {}",
                             e
-                        );
-                        "use risc0_zkvm::guest::env;\nfn main() {\n    let x: u32 = env::read();\n    env::commit(&x);\n}\n".to_string()
+                        ));
                     }
                 };
                 std::fs::write(methods_dir.join("guest/src/main.rs"), &guest_src)?;
