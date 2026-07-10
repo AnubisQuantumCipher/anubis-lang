@@ -5164,6 +5164,38 @@ mod run_tests {
     }
 
     #[test]
+    fn b1_static_type_checks_arithmetic_and_indexing() {
+        let tc = |s: &str| {
+            crate::middle::typecheck(
+                crate::frontend::parse_source(s).unwrap(),
+                crate::frontend::Mode::Safe,
+            )
+        };
+        let rejected = |s: &str| {
+            tc(s)
+                .unwrap_err()
+                .contains("ANUBIS_TYPE_MISMATCH")
+        };
+        // Statically-known type errors are rejected.
+        assert!(rejected("fn main(){ print(\"a\" - 1); }"), "string in `-`");
+        assert!(rejected("fn main(){ print([1, 2] * 3); }"), "list in `*`");
+        assert!(rejected("fn main(){ let s = \"hi\"; print(s % 2); }"), "string var in `%`");
+        assert!(rejected("fn main(){ print(5[0]); }"), "index a number");
+        assert!(rejected("fn main(){ let b = true; print(b[0]); }"), "index a bool");
+        assert!(rejected("fn main(){ print(-\"x\"); }"), "unary minus on string");
+        assert!(rejected("fn main(){ let m = {\"a\": 1}; print(m & 1); }"), "map in bitwise");
+        // Dynamic and valid code is untouched (zero false positives).
+        assert!(tc("fn f(x){ x - 1 } fn main(){ print(f(5)); }").is_ok(), "dynamic param");
+        assert!(tc("fn main(){ let xs = [1, 2, 3]; print(xs[0] - 1); }").is_ok(), "indexed element");
+        assert!(tc("fn main(){ let xs = [1, 2]; print(len(xs) - 1); }").is_ok(), "call result");
+        assert!(tc("fn main(){ print(\"a\" + 1); }").is_ok(), "`+` is overloaded concat");
+        assert!(tc("fn main(){ let hit = 3 > 2; print(hit - 0); }").is_ok(), "bool 0/1 arithmetic");
+        assert!(tc("fn main(){ let x = 5; print(x * 2 - 1); }").is_ok(), "numeric");
+        assert!(tc("fn main(){ print(3.5 * 2.0); }").is_ok(), "float");
+        assert!(tc("fn main(){ let xs = [1, 2]; print(xs[1]); }").is_ok(), "index a list");
+    }
+
+    #[test]
     fn return_type_literal_mismatch_is_rejected() {
         let tc = |s: &str| {
             crate::middle::typecheck(

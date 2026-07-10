@@ -1066,10 +1066,17 @@ fn analyze_stmts(
                         expr_taint_source(expr, scope)
                     }
                 };
-                // The loop variable is a fresh in-scope binding for the body's analysis.
+                // The loop variable is a fresh in-scope binding for the body's analysis. A range
+                // loop (`for i in a..b`) binds a number; a collection loop (`for x in xs`) binds an
+                // element whose type is dynamic (unknown) — typing it `u32` was a heuristic that
+                // mis-flagged `for x in xs { x[0] }` as "indexing a number".
+                let var_ty = match source {
+                    crate::frontend::ForSource::Range { .. } => Some("u32".into()),
+                    crate::frontend::ForSource::Collection { .. } => None,
+                };
                 let info = BindingInfo {
                     name: var.clone(),
-                    ty: Some("u32".into()),
+                    ty: var_ty,
                     mode: mode_name(mode).into(),
                     tainted: taint_src.is_some(),
                     taint_source: taint_src,
@@ -1775,6 +1782,33 @@ fn infer_expr_type_scoped(
     }
 }
 
+/// B1 static type checking. A statically-known string/list/map operand is never a valid arithmetic
+/// operand (bool is excluded — 0/1 arithmetic is idiomatic; generic/dynamic operands return None,
+/// so nothing dynamic is ever flagged). Returns the normalized offending type when it should be
+/// rejected.
+fn static_non_numeric_operand(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> Option<String> {
+    let t = infer_expr_type_scoped(expr, scope)?;
+    if is_generic_type(&t) {
+        return None;
+    }
+    let n = normalize_ty(&t);
+    matches!(n.as_str(), "string" | "list" | "map").then_some(n)
+}
+
+/// B1: a statically-known non-indexable operand (a number or bool). Only lists, strings, maps, and
+/// structs are indexable; generic/dynamic operands return None.
+fn static_non_indexable(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
+    let t = infer_expr_type_scoped(expr, scope)?;
+    if is_generic_type(&t) {
+        return None;
+    }
+    let n = normalize_ty(&t);
+    (is_numeric_ty(&n) || n == "bool").then_some(n)
+}
+
 fn normalize_ty(ty: &str) -> String {
     let t = ty.trim().to_ascii_lowercase();
     match t.as_str() {
@@ -1919,11 +1953,44 @@ fn check_expr_semantics(
                 check_expr_semantics(a, scope, ctx);
             }
         }
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::Binary { op, lhs, rhs } => {
             check_expr_semantics(lhs, scope, ctx);
             check_expr_semantics(rhs, scope, ctx);
+            // B1: arithmetic/bitwise operators require numeric operands. `+` is overloaded
+            // (string/list concat), comparisons and `&&`/`||` are lenient, so only these numeric-only
+            // operators are checked — and only against a statically-known string/list/map operand.
+            if matches!(
+                op.as_str(),
+                "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>"
+            ) {
+                for operand in [lhs.as_ref(), rhs.as_ref()] {
+                    if let Some(bad) = static_non_numeric_operand(operand, scope) {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                            message: format!(
+                                "operator `{}` requires numeric operands, but an operand has type `{}`",
+                                op, bad
+                            ),
+                            span: None,
+                        });
+                        break;
+                    }
+                }
+            }
         }
-        Expr::Unary { expr, .. } => check_expr_semantics(expr, scope, ctx),
+        Expr::Unary { op, expr } => {
+            check_expr_semantics(expr, scope, ctx);
+            // B1: unary `-` requires a numeric operand.
+            if op == "-" {
+                if let Some(bad) = static_non_numeric_operand(expr, scope) {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                        message: format!("unary `-` requires a numeric operand, got `{}`", bad),
+                        span: None,
+                    });
+                }
+            }
+        }
         Expr::If {
             cond, then, else_, ..
         } => {
@@ -1950,6 +2017,18 @@ fn check_expr_semantics(
         Expr::Index { base, index } => {
             check_expr_semantics(base, scope, ctx);
             check_expr_semantics(index, scope, ctx);
+            // B1: only lists, strings, maps, and structs are indexable. A statically-known numeric
+            // or bool base is a type error (dynamic bases are left to the fail-closed runtime).
+            if let Some(bad) = static_non_indexable(base, scope) {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                    message: format!(
+                        "cannot index a value of type `{}` (only lists, strings, and maps are indexable)",
+                        bad
+                    ),
+                    span: None,
+                });
+            }
         }
         Expr::FieldAccess { base, .. } => check_expr_semantics(base, scope, ctx),
         Expr::Match {
