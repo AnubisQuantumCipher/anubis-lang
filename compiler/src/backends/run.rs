@@ -18,6 +18,165 @@ struct EmitCtx<'a> {
     /// method name -> the `(type, param_count)` of each type defining a method of that name
     /// (for dispatching `obj.m(..)`). `param_count` includes `self`.
     methods: &'a std::collections::BTreeMap<String, Vec<(String, usize)>>,
+    /// Names bound locally in the current function (params + all let/for/match/… bindings). A
+    /// call to one of these is a closure application, shadowing any builtin of the same name.
+    locals: &'a std::collections::BTreeSet<String>,
+}
+
+/// Collect every name bound anywhere in a function (params + let/for/match/if-let/while-let/
+/// lambda bindings). Over-approximates scope per function, which is enough to let a local shadow
+/// a builtin of the same name at call sites.
+fn collect_local_names(
+    params: &[(String, String)],
+    body: &[Stmt],
+) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for (p, _) in params {
+        out.insert(p.clone());
+    }
+    collect_bound_in_stmts(body, &mut out);
+    out
+}
+
+fn collect_bound_in_stmts(stmts: &[Stmt], out: &mut std::collections::BTreeSet<String>) {
+    use crate::frontend::ForSource;
+    for s in stmts {
+        match s {
+            Stmt::Let { name, init, .. } => {
+                out.insert(name.clone());
+                collect_bound_in_expr(init, out);
+            }
+            Stmt::LetPattern { pattern, init, .. } => {
+                for n in pattern.bound_names() {
+                    out.insert(n);
+                }
+                collect_bound_in_expr(init, out);
+            }
+            Stmt::Assign { target, value } => {
+                collect_bound_in_expr(target, out);
+                collect_bound_in_expr(value, out);
+            }
+            Stmt::ExprStmt(e) => collect_bound_in_expr(e, out),
+            Stmt::If { cond, then, else_ } => {
+                collect_bound_in_expr(cond, out);
+                collect_bound_in_stmts(then, out);
+                if let Some(e) = else_ {
+                    collect_bound_in_stmts(e, out);
+                }
+            }
+            Stmt::While { cond, body } => {
+                collect_bound_in_expr(cond, out);
+                collect_bound_in_stmts(body, out);
+            }
+            Stmt::Loop { body } => collect_bound_in_stmts(body, out),
+            Stmt::For { var, source, body } => {
+                out.insert(var.clone());
+                match source {
+                    ForSource::Range { start, end } => {
+                        collect_bound_in_expr(start, out);
+                        collect_bound_in_expr(end, out);
+                    }
+                    ForSource::Collection { expr } => collect_bound_in_expr(expr, out),
+                }
+                collect_bound_in_stmts(body, out);
+            }
+            Stmt::WhileLet { pattern, expr, body } => {
+                for n in pattern.bound_names() {
+                    out.insert(n);
+                }
+                collect_bound_in_expr(expr, out);
+                collect_bound_in_stmts(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_bound_in_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match e {
+        Expr::Lambda { params, body } => {
+            for p in params {
+                out.insert(p.clone());
+            }
+            collect_bound_in_expr(body, out);
+        }
+        Expr::IfLet { pattern, scrutinee, then, else_, .. } => {
+            for n in pattern.bound_names() {
+                out.insert(n);
+            }
+            collect_bound_in_expr(scrutinee, out);
+            collect_bound_in_expr(then, out);
+            collect_bound_in_expr(else_, out);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_bound_in_expr(scrutinee, out);
+            for a in arms {
+                for n in a.pattern.bound_names() {
+                    out.insert(n);
+                }
+                if let Some(g) = &a.guard {
+                    collect_bound_in_expr(g, out);
+                }
+                collect_bound_in_expr(&a.body, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            collect_bound_in_stmts(stmts, out);
+            if let Some(t) = tail {
+                collect_bound_in_expr(t, out);
+            }
+        }
+        Expr::If { cond, then, else_, .. } => {
+            collect_bound_in_expr(cond, out);
+            collect_bound_in_expr(then, out);
+            collect_bound_in_expr(else_, out);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_bound_in_expr(lhs, out);
+            collect_bound_in_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
+            collect_bound_in_expr(expr, out)
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_bound_in_expr(a, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_bound_in_expr(callee, out);
+            for a in args {
+                collect_bound_in_expr(a, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_bound_in_expr(base, out);
+            collect_bound_in_expr(index, out);
+        }
+        Expr::FieldAccess { base, .. } => collect_bound_in_expr(base, out),
+        Expr::ArrayLiteral { elements } => {
+            for el in elements {
+                collect_bound_in_expr(el, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_bound_in_expr(k, out);
+                collect_bound_in_expr(v, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                collect_bound_in_expr(v, out);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for f in fields {
+                collect_bound_in_expr(f, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A borrowed view of one Anubis function. `impl_type` is `Some(TypeName)` for a method defined
@@ -96,7 +255,16 @@ fn collect_methods(
 /// Emit one Anubis function as a Rust function returning `AnubisValue`.
 /// The trailing `AnubisValue::Int(0)` is the implicit return for functions that
 /// fall off the end without an explicit `return`.
-fn emit_fn(def: &FnDef, ctx: &EmitCtx) -> Result<String> {
+fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
+    // Per-function local scope: params + everything bound in the body. A call to one of these
+    // names is a closure application, not a builtin.
+    let locals = collect_local_names(def.params, def.body);
+    let ctx = &EmitCtx {
+        allow_research: base.allow_research,
+        fns: base.fns,
+        methods: base.methods,
+        locals: &locals,
+    };
     let mut sig = Vec::new();
     for (p, _ty) in def.params {
         sig.push(format!("mut {}: AnubisValue", sanitize_ident(p)?));
@@ -255,10 +423,12 @@ fn lower_program_with_entry(
         .collect();
     let mut methods = std::collections::BTreeMap::new();
     collect_methods(items, &mut methods);
+    let empty_locals = std::collections::BTreeSet::new();
     let ctx = EmitCtx {
         allow_research,
         fns: &fn_names,
         methods: &methods,
+        locals: &empty_locals,
     };
     let mut functions_src = String::new();
     for def in &fns {
@@ -812,9 +982,11 @@ fn anubis_pow(base: AnubisValue, exp: AnubisValue) -> AnubisValue {
     }
 }
 fn anubis_sqrt(v: AnubisValue) -> AnubisValue { AnubisValue::Float(v.as_f64().sqrt()) }
-fn anubis_floor(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_f64().floor() as i64) }
-fn anubis_ceil(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_f64().ceil() as i64) }
-fn anubis_round(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_f64().round() as i64) }
+// floor/ceil/round/trunc are the identity on an integer (an i64 has no fractional part, and
+// routing it through f64 would corrupt magnitudes above 2^53). Only floats are rounded.
+fn anubis_floor(v: AnubisValue) -> AnubisValue { match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().floor() as i64) } }
+fn anubis_ceil(v: AnubisValue) -> AnubisValue { match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().ceil() as i64) } }
+fn anubis_round(v: AnubisValue) -> AnubisValue { match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().round() as i64) } }
 fn anubis_gcd(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     let (mut x, mut y) = (a.as_i64().wrapping_abs(), b.as_i64().wrapping_abs());
     while y != 0 { let t = y; y = x % y; x = t; }
@@ -1150,7 +1322,7 @@ fn anubis_log2(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().lo
 fn anubis_logb(x: AnubisValue, base: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().log(base.as_f64())) }
 fn anubis_cbrt(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().cbrt()) }
 fn anubis_hypot(x: AnubisValue, y: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().hypot(y.as_f64())) }
-fn anubis_trunc(x: AnubisValue) -> AnubisValue { AnubisValue::Int(x.as_f64().trunc() as i64) }
+fn anubis_trunc(x: AnubisValue) -> AnubisValue { match x { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(x.as_f64().trunc() as i64) } }
 fn anubis_sign(x: AnubisValue) -> AnubisValue { let v = x.as_f64(); AnubisValue::Int(if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }) }
 fn anubis_clamp(x: AnubisValue, lo: AnubisValue, hi: AnubisValue) -> AnubisValue {
     if x.is_float() || lo.is_float() || hi.is_float() {
@@ -1218,11 +1390,11 @@ fn anubis_flat_map(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     AnubisValue::List(out)
 }
 fn anubis_unique(a: AnubisValue) -> AnubisValue {
-    let mut seen: Vec<String> = Vec::new();
-    let mut out = Vec::new();
+    let mut out: Vec<AnubisValue> = Vec::new();
     for x in anubis_iter(a) {
-        let k = x.display_string();
-        if !seen.contains(&k) { seen.push(k); out.push(x); }
+        // Deduplicate by structural equality (matching `==`), not display form: `1` and `"1"`
+        // are distinct, while `1` and `1.0` are the same.
+        if !out.iter().any(|y| anubis_value_eq(y, &x)) { out.push(x); }
     }
     AnubisValue::List(out)
 }
@@ -2331,6 +2503,19 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     .map(|a| safe_run_expr(a, ctx))
                     .collect::<Result<Vec<_>>>()?;
                 return Ok(format!("anb_{}({})", sanitize_ident(callee)?, lowered.join(", ")));
+            }
+            // A local binding (parameter or let-bound variable) shadows any builtin of the same
+            // name — `fn f(map, x) { map(x) }` calls the parameter, not the stdlib `map`.
+            if ctx.locals.contains(callee.as_str()) {
+                let lowered = args
+                    .iter()
+                    .map(|a| safe_run_expr(a, ctx))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(format!(
+                    "{}.call_closure(vec![{}])",
+                    sanitize_ident(callee)?,
+                    lowered.join(", ")
+                ));
             }
             // Void output builtins in expression position (e.g. a `match` arm body or a
             // block-tail): perform the side effect, then yield Int(0) so the expression
@@ -3596,6 +3781,36 @@ mod run_tests {
             run(src),
             "[[1, a], [2, b]]\n[[0, x], [1, y]]\n[1, 2, 3]\n[1, 2, 3]\n[1, 2]\n[3, 4]\n[1, 2]\n[[1, 2], [3, 4], [5]]\n[[1, 2], [2, 3]]\n1\n24\n9\n8\n[1, 2, 3]\n[2, 1]\n[[2, 4], [1, 3]]\n[1, 1, 2, 2]"
         );
+    }
+
+    #[test]
+    fn unique_uses_structural_equality() {
+        // `unique` dedups by `==` (structural/type-exact), not display form.
+        let src = "fn main() { print(len(unique([1, \"1\"]))); print(unique([1, 1.0])); \
+                   print(unique([2, \"2\", 2, 2.0])); }";
+        assert_eq!(run(src), "2\n[1]\n[2, 2]");
+    }
+
+    #[test]
+    fn rounding_preserves_large_ints() {
+        // floor/ceil/round/trunc are the identity on an int (no f64 precision loss above 2^53).
+        let src = "fn main() { let n = 9007199254740993; \
+                   print(trunc(n)); print(floor(n)); print(ceil(n)); print(round(n)); }";
+        assert_eq!(
+            run(src),
+            "9007199254740993\n9007199254740993\n9007199254740993\n9007199254740993"
+        );
+    }
+
+    #[test]
+    fn local_shadows_builtin_when_called() {
+        // A parameter or let-binding named like a builtin, when called, is the local closure.
+        let src = "fn use_it(map, x) { return map(x); } \
+                   fn main() { print(use_it(|v| v * 3, 10)); \
+                     let first = |xs| xs[0] * 10; print(first([4, 5])); \
+                     print(first([9, 8])); }"; // last: builtin `first` (no local in main? there is: shadowed)
+        // In main, `first` is a local closure, so both `first(...)` calls use it.
+        assert_eq!(run(src), "30\n40\n90");
     }
 
     #[test]
