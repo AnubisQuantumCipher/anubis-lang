@@ -370,10 +370,23 @@ fn block_as_tail_expr(stmts: &[Stmt]) -> Expr {
 /// When `allow_research` is true, the PoC kit surface is enabled: `target_run`, packing
 /// (`p8`/`p16`/`p32`/`p64`), `cyclic`, research/exploit block bodies, and local-only process control.
 pub fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<String> {
+    // Run the program on a worker thread with a large (1 GiB) stack instead of the OS main-thread
+    // stack (8 MiB on macOS), so naturally-recursive Anubis code reaches ~1M frames before
+    // overflowing (the native call stack IS the recursion, per the Turing-completeness claim). The
+    // stack is lazily committed, so this reserves address space, not RAM. A fail-closed trap panics
+    // the worker: the default panic hook still prints the ANUBIS_* message to stderr, `join()`
+    // returns Err, and we exit non-zero — so fail-closed behavior and diagnostics are preserved.
+    // No AnubisValue crosses the thread boundary (values are created and dropped inside the worker),
+    // so the Rc in AnubisValue::Closure never needs to be Send.
     lower_program_with_entry(
         items,
         "",
-        "fn main() {\n    let _ = anb_main();\n}\n",
+        "fn main() {\n    \
+             let child = std::thread::Builder::new()\n        \
+                 .stack_size(1024 * 1024 * 1024)\n        \
+                 .spawn(|| { let _ = anb_main(); })\n        \
+                 .expect(\"anubis: failed to spawn main thread\");\n    \
+             if child.join().is_err() { std::process::exit(101); }\n}\n",
         allow_research,
         false,
     )
@@ -3699,6 +3712,27 @@ mod run_tests {
             print(get(xs, 10, -1)); print(get(m, \"zzz\", -2)); \
             print(has_key(m, \"a\")); print(xs[-1]); }";
         assert_eq!(run(src), "-1\n-2\ntrue\n30");
+    }
+
+    #[test]
+    fn deep_recursion_runs_on_large_stack() {
+        // The program runs on a 1 GiB worker stack, so recursion far past the 8 MiB main-thread
+        // ceiling (~8500 frames) succeeds. 100k deep would overflow the OS main stack.
+        assert_eq!(
+            run("fn walk(n, acc) { if n == 0 { acc } else { walk(n - 1, acc + 1) } } \
+                 fn main() { print(walk(100000, 0)); }"),
+            "100000"
+        );
+    }
+
+    #[test]
+    fn trap_still_fails_closed_on_worker_thread() {
+        // A fail-closed trap must still surface (stderr message + nonzero exit) now that the
+        // program runs on a worker thread rather than the main thread.
+        run_expect_trap(
+            "fn main() { let xs = [1, 2]; print(xs[9]); }",
+            "ANUBIS_INDEX_OUT_OF_BOUNDS",
+        );
     }
 
     #[test]
