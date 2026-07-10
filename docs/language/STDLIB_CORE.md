@@ -1,8 +1,14 @@
-# Minimal Stdlib Core (Gate 2/3)
+# Stdlib Core — analysis, proof & PoC builtins
 
-Classifications for this slice only.
+This document covers only the **analysis / proof / PoC** builtin subset (taint, symbolic,
+declassify, proof-surface, PoC-kit). The **general-purpose** builtin surface is much larger —
+~116 builtins (conversions, ~24 math, ~19 string, ~30 list, map, and higher-order functions) all
+REAL in `anubis run` — and is documented authoritatively in `LANGUAGE.md` ("Standard library"),
+which matches the codegen in `backends/run.rs` (`emit_builtin_call`) 1:1. There is no separate
+`stdlib/` source tree yet (Phase 5 of the roadmap adds an Anubis-source stdlib over these
+primitives).
 
-- print : PARTIAL (supported by `anubis run` safe subset; not a broad stdlib yet)
+- print / println / eprint / eprintln : REAL (general-purpose I/O in `anubis run`)
 - sink : REAL (recognized in taint/safe enforcement)
 - taint_source(label) : REAL
 - declassify(v [, policy, reason]) : REAL (policy+reason required in safe)

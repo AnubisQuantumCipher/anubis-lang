@@ -34,10 +34,10 @@
 - `middle/mod.rs`:
   - `SymbolicEngine::generate_constraints(source) -> Vec<String>` (re-parses, typechecks in Safe, returns ir.constraints)
   - `SymbolicEngine::check_obligations(ir) -> Vec<SolverCheck>`
-  - `obligation_to_smt(obligation) -> String`: builds QF_LIA, (declare-const ... Int), (assert ...), (assert (not ...)), check-sat, get-model.
-  - `expr_to_smt(e: &Expr) -> String`: crude (Var, Literal, (op lhs rhs), declass inner, assume/assert inner, taint_source_..., else "true").
+  - `run_z3_obligation_with_smt(obligation, smt) -> SolverCheck`: builds `(set-logic QF_BV)`, `(declare-const ... (_ BitVec 64))`, `(assert ...)`, `(assert (not ...))`, check-sat, get-model.
+  - `expr_to_smt_with_width(e, widths) -> String`: i64-exact QF_BV — `bvadd/bvsub/bvmul/bvand/bvor/bvxor`, signed comparisons `bvslt/bvsle/…`, literals `(_ bv<n> 64)`; guarded by `is_int_modelable`/`is_bool_modelable` (refuses `/ % << >>`, truncating casts, floats — fail-closed).
   - `collect_vars_from_smt`, `run_z3_obligation` (spawns z3 -in -smt2, parses sat/unsat).
-- No proper bitvector support yet (uses Int, QF_LIA).
+- Bitvector-based: 64-bit `(_ BitVec 64)`, signed-i64-exact (landed after this doc's original draft; see git `343bbc2`).
 - Called from:
   - `lib.rs` tests
   - `evidence/mod.rs`: `let solver_checks = ...::check_obligations(&tainted);`
@@ -62,12 +62,10 @@
 - Tamper detection via MANIFEST.sha256.
 
 ## 8. Known Limitations (from Prior Audit + Inspection)
-- Uses Int (no bitvec widths) — violates "bitvector widths and overflow explicit".
-- `expr_to_smt` incomplete for & * + in complex expr; often falls to "true".
+- Theory is QF_BV/64-bit only: no strings, floats, arrays/lists, quantifiers, or `/ % << >>` and truncating casts (all refused fail-closed, not mismodeled).
 - Variables declared unconstrained in some paths (collect_vars may miss defs).
-- Prior bug class: Unconstrained `result = 30` despite `secret * 3 + masked` and constraints (result not bound to expression in SMT).
-- No replay validation.
-- Assumes QF_LIA, no wrapping/checked semantics explicit.
+- `replay_counterexample` is currently a stub (not a real model re-execution) — Phase 4 makes it a genuine cross-check with `ANUBIS_REPLAY_MISMATCH`.
+- Wrapping semantics ARE explicit now: `bvadd/bvsub/bvmul` match the i64 `wrapping_*` runtime exactly.
 - generate_constraints re-parses source (fragile).
 - Models not mapped back to source spans/vars reliably.
 - In research lowering, assumes/bounds from AST, but solver separate.
@@ -84,7 +82,7 @@ This must be impossible after Gate 7 fixes.
 
 ## 10. Files Involved
 - frontend/mod.rs (AST)
-- middle/mod.rs (typecheck, analyze, SymbolicEngine, expr_to_smt, obligation_to_smt, run_z3)
+- middle/mod.rs (typecheck, analyze, SymbolicEngine, expr_to_smt_with_width, run_z3_obligation_with_smt)
 - evidence/mod.rs (integration, solver.json, sarif)
 - lib.rs (tests, re-exports)
 - examples/ (symbolic_*.anb)

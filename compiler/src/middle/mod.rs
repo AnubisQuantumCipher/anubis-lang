@@ -1625,8 +1625,12 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
 }
 
 fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> SolverCheck {
-    // debug: write smt for inspection
-    let _ = std::fs::write("/tmp/anubis_last_solver.smt2", &smt);
+    // Optional debug dump of the exact SMT handed to z3. Opt-in (ANUBIS_DUMP_SMT) and written to a
+    // per-process path so concurrent `anubis check` runs never clobber a shared /tmp file.
+    if std::env::var_os("ANUBIS_DUMP_SMT").is_some() {
+        let path = std::env::temp_dir().join(format!("anubis_solver_{}.smt2", std::process::id()));
+        let _ = std::fs::write(path, &smt);
+    }
     let mut child = match Command::new("z3")
         .args(["-in", "-smt2"])
         .stdin(Stdio::piped())
@@ -2075,9 +2079,11 @@ fn push_ensures_obligations(
             });
         } else {
             // A postcondition the solver cannot faithfully model. Contracts are NOT runtime-enforced,
-            // so certifying this would be a silent overclaim: fail closed.
+            // so certifying this would be a silent overclaim: fail closed. Name the detectable cause
+            // precisely (float vs string) so the diagnostic tells the truth about *why*, rather than
+            // lumping every non-modelable case under one code.
             ctx.diagnostics.push(SemanticDiagnostic {
-                code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
+                code: Some(unmodelable_contract_code(&concrete).into()),
                 message: "cannot verify this `ensures` postcondition: it is not statically \
                      modelable (a float, a string/list, a truncating cast, an unmodeled or reassigned \
                      variable, or a value from a call whose contract is not carried). Contracts are \
@@ -2089,6 +2095,33 @@ fn push_ensures_obligations(
             });
         }
     }
+}
+
+/// Best-effort precise diagnostic code for a non-modelable `ensures`. A float or string literal in
+/// the (result-substituted) predicate is the common, cheaply-detectable cause; anything else
+/// (truncating cast, reassigned/unmodeled variable, uncarried call contract) stays under the
+/// general `ANUBIS_CONTRACT_UNPROVABLE`. Honest by construction: a specific code is emitted only
+/// when that specific cause is actually present in the predicate.
+fn unmodelable_contract_code(e: &Expr) -> &'static str {
+    fn scan(e: &Expr) -> Option<&'static str> {
+        match e {
+            Expr::StrLiteral(_) => Some("ANUBIS_STRING_CONTRACT_UNMODELED"),
+            Expr::Literal(s) => {
+                let t = s.trim();
+                if t.starts_with('"') || t.starts_with('\'') {
+                    Some("ANUBIS_STRING_CONTRACT_UNMODELED")
+                } else if t.parse::<i64>().is_err() && t.parse::<f64>().is_ok() {
+                    Some("ANUBIS_FLOAT_CONTRACT_UNMODELED")
+                } else {
+                    None
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => scan(lhs).or_else(|| scan(rhs)),
+            Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => scan(expr),
+            _ => None,
+        }
+    }
+    scan(e).unwrap_or("ANUBIS_CONTRACT_UNPROVABLE")
 }
 
 /// Collect the variable names referenced by an expression (for deciding which loop-carried

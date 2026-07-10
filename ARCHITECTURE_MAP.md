@@ -30,7 +30,7 @@ Top-level layout (non-generated source tree):
 │   ├── Cargo.toml
 │   ├── CHANGES.md (records canonical edits to compiler/src)
 │   └── src/
-│       ├── lib.rs (reexports + 25+ unit tests; core pipeline tests)
+│       ├── lib.rs (reexports + crate test suite; 243 unit tests across the compiler crate)
 │       ├── frontend/mod.rs (lexer + parser; ~1063 LOC)
 │       ├── middle/mod.rs (typecheck, TypedIR, TaintPass, SymbolicEngine; ~800+ LOC)
 │       ├── backends/
