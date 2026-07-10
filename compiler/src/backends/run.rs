@@ -5164,6 +5164,29 @@ mod run_tests {
     }
 
     #[test]
+    fn b1_catches_nested_constants_and_closure_bodies() {
+        let tc = |s: &str| {
+            crate::middle::typecheck(
+                crate::frontend::parse_source(s).unwrap(),
+                crate::frontend::Mode::Safe,
+            )
+        };
+        let rej = |s: &str| tc(s).unwrap_err().contains("ANUBIS_TYPE_MISMATCH");
+        // Constant (variable-free) errors nested one level deep are caught.
+        assert!(rej("fn main(){ let y = (2 + 3)[0]; print(y); }"), "index a constant number");
+        assert!(rej("fn main(){ print((\"a\" + \"b\") - 1); }"), "constant string in `-`");
+        assert!(rej("fn main(){ let _x = (1 == 1)[0]; print(0); }"), "index a constant bool");
+        // Constant errors inside closure and block bodies are caught (the body is now walked).
+        assert!(rej("fn main(){ let f = |q| 5[0]; print(f(0)); }"), "index in closure body");
+        assert!(rej("fn main(){ print(map([1, 2, 3], |x| 9[0])); }"), "index in map closure");
+        assert!(rej("fn main(){ let f = |q| { let z = 7[2]; z + 1 }; print(f(0)); }"), "index in block closure");
+        // Dynamic operands inside closures/blocks are still untouched (zero false positives).
+        assert!(tc("fn main(){ let xs = [1, 2, 3]; let f = |i| xs[i]; print(f(0)); }").is_ok(), "closure over var index");
+        assert!(tc("fn main(){ let n = 5; let f = |x| x + n; print(f(1)); }").is_ok(), "closure captured arithmetic");
+        assert!(tc("fn main(){ print(map([1, 2, 3], |x| x * 2)); }").is_ok(), "valid map closure");
+    }
+
+    #[test]
     fn b1_type_coercions_and_reassignment() {
         let tc = |s: &str| {
             crate::middle::typecheck(

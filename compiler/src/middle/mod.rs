@@ -1847,35 +1847,47 @@ fn infer_expr_type_scoped(
     }
 }
 
-/// A LITERAL expression, whose type is intrinsic and immutable. B1 only acts on literals: a
-/// variable's type is NOT stable in a language with `let mut` rebinding (a `let mut v = 0` reassigned
-/// from a dynamic value keeps its stale numeric type), so trusting a variable's inferred type for a
-/// type check would produce false positives. Literals cannot be reassigned — checking them is sound.
-fn is_literal_expr(e: &Expr) -> bool {
-    matches!(
-        e,
-        Expr::Literal(_) | Expr::StrLiteral(_) | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. }
-    )
+/// A CONSTANT expression — one built solely from literals and operators, with NO variables, calls,
+/// or index/field accesses. Its type is intrinsic and immutable, so B1 can act on it soundly. B1
+/// only acts on constants: a variable's type is NOT stable in a language with `let mut` rebinding
+/// (a `let mut v = 0` reassigned from a dynamic value keeps its stale numeric type), so trusting a
+/// variable's inferred type would produce false positives. This widens the earlier bare-literal
+/// gate so nested-but-still-constant errors like `(2 + 3)[0]` and `("a" + "b") - 1` are caught.
+fn is_constant_expr(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(_) | Expr::StrLiteral(_) => true,
+        Expr::ArrayLiteral { elements } => elements.iter().all(is_constant_expr),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .all(|(k, v)| is_constant_expr(k) && is_constant_expr(v)),
+        Expr::Binary { lhs, rhs, .. } => is_constant_expr(lhs) && is_constant_expr(rhs),
+        Expr::Unary { expr, .. } => is_constant_expr(expr),
+        Expr::If {
+            cond, then, else_, ..
+        } => is_constant_expr(cond) && is_constant_expr(then) && is_constant_expr(else_),
+        Expr::Cast { expr, .. } => is_constant_expr(expr),
+        _ => false, // Var, Call, Index, FieldAccess, Match, … are dynamic
+    }
 }
 
-/// B1 static type checking. A statically-known string/list/map LITERAL is never a valid arithmetic
-/// operand (a number/bool literal is fine — bool 0/1 arithmetic is idiomatic). Non-literals return
-/// None, so every dynamic operand (variable, call, index) is left untouched — zero false positives.
+/// B1 static type checking. A statically-known string/list/map CONSTANT is never a valid arithmetic
+/// operand (a number/bool constant is fine — bool 0/1 arithmetic is idiomatic). A non-constant
+/// (variable, call, index) returns None and is left untouched — zero false positives.
 fn static_non_numeric_operand(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
 ) -> Option<String> {
-    if !is_literal_expr(expr) {
+    if !is_constant_expr(expr) {
         return None;
     }
     let n = normalize_ty(&infer_expr_type_scoped(expr, scope)?);
     matches!(n.as_str(), "string" | "list" | "map").then_some(n)
 }
 
-/// B1: a statically-known non-indexable LITERAL (a number or bool literal). Only lists/strings/maps/
-/// structs are indexable. Non-literals return None (dynamic bases stay fail-closed at runtime).
+/// B1: a statically-known non-indexable CONSTANT (a number or bool). Only lists/strings/maps/structs
+/// are indexable. A non-constant base returns None (dynamic bases stay fail-closed at runtime).
 fn static_non_indexable(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
-    if !is_literal_expr(expr) {
+    if !is_constant_expr(expr) {
         return None;
     }
     let n = normalize_ty(&infer_expr_type_scoped(expr, scope)?);
@@ -2160,7 +2172,73 @@ fn check_expr_semantics(
                 check_expr_semantics(fexpr, scope, ctx);
             }
         }
+        // Descend into closure and block bodies so B1's constant-type checks apply there too —
+        // otherwise `|q| 5[0]` or `{ let z = 7[2]; z }` slipped past the checker and crashed at run.
+        Expr::Lambda { body, .. } => check_expr_semantics(body, scope, ctx),
+        Expr::Block { stmts, tail } => check_block_exprs(stmts, tail.as_deref(), scope, ctx),
         _ => {}
+    }
+}
+
+/// Walk the expressions inside a block / closure body for B1's constant-type checks. The checks are
+/// constant-only (they never flag a variable), so re-using the enclosing scope is sound.
+fn check_block_exprs(
+    stmts: &[Stmt],
+    tail: Option<&Expr>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    for s in stmts {
+        check_stmt_exprs(s, scope, ctx);
+    }
+    if let Some(t) = tail {
+        check_expr_semantics(t, scope, ctx);
+    }
+}
+
+fn check_stmt_exprs(s: &Stmt, scope: &BTreeMap<String, ScopeBinding>, ctx: &mut SemanticContext) {
+    use crate::frontend::ForSource;
+    match s {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+            check_expr_semantics(init, scope, ctx)
+        }
+        Stmt::Assign { value, .. } => check_expr_semantics(value, scope, ctx),
+        Stmt::ExprStmt(e) => check_expr_semantics(e, scope, ctx),
+        Stmt::If { cond, then, else_ } => {
+            check_expr_semantics(cond, scope, ctx);
+            check_block_exprs(then, None, scope, ctx);
+            if let Some(e) = else_ {
+                check_block_exprs(e, None, scope, ctx);
+            }
+        }
+        Stmt::While { cond, body } => {
+            check_expr_semantics(cond, scope, ctx);
+            check_block_exprs(body, None, scope, ctx);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            check_expr_semantics(expr, scope, ctx);
+            check_block_exprs(body, None, scope, ctx);
+        }
+        Stmt::Loop { body } => check_block_exprs(body, None, scope, ctx),
+        Stmt::For { source, body, .. } => {
+            match source {
+                ForSource::Range { start, end } => {
+                    check_expr_semantics(start, scope, ctx);
+                    check_expr_semantics(end, scope, ctx);
+                }
+                ForSource::Collection { expr } => check_expr_semantics(expr, scope, ctx),
+            }
+            check_block_exprs(body, None, scope, ctx);
+        }
+        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+            check_block_exprs(body, None, scope, ctx)
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for b in [gpu, cpu, prove].into_iter().flatten() {
+                check_block_exprs(b, None, scope, ctx);
+            }
+        }
+        Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
     }
 }
 
