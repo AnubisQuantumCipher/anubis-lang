@@ -222,10 +222,24 @@ regression test. Suite: **204 compiler tests, 0 failed** (`cargo test -p anubis-
 | Built-in `Some/None/Ok/Err` render bare; maps show quoted keys | REAL | `display_forms_option_result_map_and_user_enum` | `Option::Some(x)`, `{a: 1}` |
 | Actionable "unsupported expression" errors (no `Discriminant(N)`) | REAL | error arm split in `safe_run_expr` | opaque `Discriminant(28)` |
 
-**Remaining (19, triaged for later waves):** map key coercion (int index of string key; int/float key identity);
-mutating builtins on a struct-field place; duplicate struct-field literal accepted; method/closure arity not
-enforced (a design call — currently pads with 0); struct display in declaration vs insertion order; multi-arg
-generics (`Map<int,string>`) in annotations; or-pattern-with-wildcard exhaustiveness; `?` on a non-Option/Result;
-unknown-var not flagged in an `if` condition; plus a tail of low-severity edge cases. Fixture-harness debt:
-`run_language_fixtures.sh` is state-sensitive (stale `out/` false-fails) and `missing_semicolon.anb` is stale
-(semicolons are optional now).
+### Wave 2 (2026-07-10) — 5 more fixed
+
+| Fix | Status | Test | Was |
+|-----|--------|------|-----|
+| Multi-arg generics (`Map<int,string>`, `Box<Box<T>>`) parse in annotations | REAL | `wave2_generics_patterns_and_try` | parse error at inner comma / `>>` |
+| Duplicate struct-field literal rejected (`P { x:1, x:2 }`) | REAL | `duplicate_struct_field_is_rejected` | silently accepted, both stored |
+| Or-pattern with wildcard (`Red \| _`) is exhaustive | REAL | `wave2_generics_patterns_and_try` | wrongly flagged non-exhaustive |
+| `?` on a non-Option/Result/enum fails closed | REAL | `question_operator_respects_enum_type` (guard) | silently passed value through |
+
+Suite after Wave 2: **206 compiler tests, 0 failed.** 18 defects fixed across both waves.
+
+**Remaining (14) — mostly design calls for operator input, plus a low-severity tail:**
+- **Map key identity** (int-indexing a string key collides; int vs float key differ) — a design question
+  (string-keyed vs typed keys); maps are documented string-keyed, so deferred pending a decision.
+- **Method/closure/function arity** — currently pads missing args with `0` (a deliberate convention the
+  higher-order path relies on). Whether a *direct* call with the wrong arity should error is a design call.
+- Mutating builtins (`push`) on a struct-field place — currently a clean fail-closed limitation (workaround: a
+  local var); struct display in declaration vs insertion order (cosmetic); unknown-var in an `if` condition
+  (coverage-completeness, false-positive risk); plus low-severity edge cases (#23–32).
+- **Fixture-harness debt:** `run_language_fixtures.sh` is state-sensitive (stale `out/` false-fails);
+  `missing_semicolon.anb` is stale (semicolons are optional now).

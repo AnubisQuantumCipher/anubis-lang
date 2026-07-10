@@ -238,7 +238,12 @@ impl Pattern {
     /// Whether this pattern matches every possible value (making a match exhaustive
     /// on its own, when unguarded).
     pub fn is_irrefutable(&self) -> bool {
-        matches!(self, Pattern::Wildcard | Pattern::Binding(_))
+        match self {
+            Pattern::Wildcard | Pattern::Binding(_) => true,
+            // An or-pattern is irrefutable if any alternative is — `Red | _` matches anything.
+            Pattern::Or(pats) => pats.iter().any(|p| p.is_irrefutable()),
+            _ => false,
+        }
     }
 
     /// Collect every `(enum_name, variant)` pair this pattern covers, recursing
@@ -3239,17 +3244,38 @@ impl Parser {
 
     fn collect_type_until(&mut self, stops: &[Token]) -> String {
         let mut ty = String::new();
-        while !self.at_eof() && !stops.iter().any(|stop| self.check_token(stop)) {
+        // Track angle-bracket depth so a stop token inside generic arguments does not end the type
+        // early: `Map<int, string>` keeps its inner comma instead of stopping at it.
+        let mut depth: i32 = 0;
+        while !self.at_eof() && !(depth == 0 && stops.iter().any(|stop| self.check_token(stop))) {
             let Some(tok) = self.bump() else {
                 break;
             };
             match tok.token {
                 Token::Ident(s) | Token::Keyword(s) | Token::Number(s) => ty.push_str(&s),
-                Token::Lt => ty.push('<'),
-                Token::Gt => ty.push('>'),
+                Token::Lt => {
+                    depth += 1;
+                    ty.push('<');
+                }
+                Token::Gt => {
+                    depth -= 1;
+                    ty.push('>');
+                }
+                // `>>` closing a nested generic (`Box<Box<T>>`) lexes as a single shift token.
+                Token::Shr => {
+                    depth -= 2;
+                    ty.push_str(">>");
+                }
                 Token::Star => ty.push('*'),
                 Token::Amp => ty.push('&'),
-                Token::Comma | Token::Colon | Token::Dot => {}
+                // A comma inside generic arguments is part of the type; at depth 0 it is dropped
+                // (unchanged from before — stop sets that include Comma break above).
+                Token::Comma => {
+                    if depth > 0 {
+                        ty.push_str(", ");
+                    }
+                }
+                Token::Colon | Token::Dot => {}
                 _ => {}
             }
         }

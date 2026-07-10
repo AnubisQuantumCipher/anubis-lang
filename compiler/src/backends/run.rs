@@ -2940,7 +2940,8 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     AnubisValue::Enum {{ ty, tag, .. }} \
                         if (ty == \"Result\" && tag == \"Err\") || (ty == \"Option\" && tag == \"None\") => \
                         return __anb_q, \
-                    _ => __anb_q \
+                    AnubisValue::Enum {{ .. }} => __anb_q, \
+                    _ => panic!(\"ANUBIS_TRY_ON_NON_OPTION_RESULT: `?` requires an Option, Result, or enum value\") \
                 }} }}"
             ))
         }
@@ -4695,6 +4696,43 @@ mod run_tests {
             .any(|d| d.message.contains("empty interpolation")));
         // The empty string literal itself lowers fine.
         assert!(run("fn main(){ print(\"\"); print(\"ok\"); }").contains("ok"));
+    }
+
+    #[test]
+    fn wave2_generics_patterns_and_try() {
+        // Multi-argument generics parse as type annotations (erased at runtime).
+        assert_eq!(
+            run("fn f(p: Map<int, string>) { 0 } fn main(){ print(f(0)); }"),
+            "0"
+        );
+        assert_eq!(
+            run("struct H { data: Map<int, string> } fn main(){ let h = H { data: 5 }; print(h.data); }"),
+            "5"
+        );
+        // An or-pattern containing a wildcard is exhaustive and matches anything.
+        assert_eq!(
+            run("enum Color { Red, Green, Blue } fn f(c){ match c { Color::Red | _ => \"any\" } } fn main(){ print(f(Color::Green)); }"),
+            "any"
+        );
+        // `?` on a real Option still unwraps / short-circuits.
+        assert_eq!(
+            run("fn sd(a,b){ if b==0 { None } else { Some(a/b) } } fn g(a,b){ let x=sd(a,b)?; Some(x+1) } fn main(){ print(g(10,2)); print(g(1,0)); }"),
+            "Some(6)\nNone"
+        );
+    }
+
+    #[test]
+    fn duplicate_struct_field_is_rejected() {
+        let bad = crate::frontend::parse_source(
+            "struct P { x: int } fn main(){ let p = P { x: 1, x: 2 }; print(0); }",
+        )
+        .unwrap();
+        assert!(crate::middle::typecheck(bad, crate::frontend::Mode::Safe).is_err());
+        let good = crate::frontend::parse_source(
+            "struct P { x: int, y: int } fn main(){ let p = P { x: 1, y: 2 }; print(0); }",
+        )
+        .unwrap();
+        assert!(crate::middle::typecheck(good, crate::frontend::Mode::Safe).is_ok());
     }
 
     #[test]

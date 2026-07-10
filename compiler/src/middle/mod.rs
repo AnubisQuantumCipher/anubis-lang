@@ -1637,6 +1637,22 @@ fn check_expr_semantics(
         }
         Expr::Declassify { inner, .. } => check_expr_semantics(inner, scope, ctx),
         Expr::Cast { expr, .. } => check_expr_semantics(expr, scope, ctx),
+        Expr::StructLiteral { name, fields, .. } => {
+            let mut seen = BTreeSet::new();
+            for (fname, fexpr) in fields {
+                if !seen.insert(fname.clone()) {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_DUPLICATE_FIELD".into()),
+                        message: format!(
+                            "duplicate field `{}` in `{}` struct literal",
+                            fname, name
+                        ),
+                        span: None,
+                    });
+                }
+                check_expr_semantics(fexpr, scope, ctx);
+            }
+        }
         _ => {}
     }
 }
