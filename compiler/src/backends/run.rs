@@ -3142,11 +3142,19 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 Ok(format!("{{ {captures}{closure} }}"))
             }
         }
-        Expr::Index { base, index } => Ok(format!(
-            "({}).index_get({})",
-            safe_run_expr(base, ctx)?,
-            safe_run_expr(index, ctx)?
-        )),
+        Expr::Index { base, index } => {
+            let idx = safe_run_expr(index, ctx)?;
+            // Fast path: indexing a local binding borrows it and clones only the element. The
+            // generic path routes the base through var_as_value, which clones the WHOLE collection
+            // (`(a.clone()).index_get(i)`) — turning `a[i]` inside a loop into O(n^2). index_get
+            // takes `&self`, so `a.index_get(i)` reads in place with the same value semantics.
+            if let Expr::Var(name) = base.as_ref() {
+                if ctx.locals.contains(name) {
+                    return Ok(format!("{}.index_get({})", sanitize_ident(name)?, idx));
+                }
+            }
+            Ok(format!("({}).index_get({})", safe_run_expr(base, ctx)?, idx))
+        }
         // `expr as T` — numeric conversions truncate/wrap; pointer casts pass through unchanged.
         Expr::Cast { expr, ty } => {
             let inner = safe_run_expr(expr, ctx)?;
@@ -3762,6 +3770,24 @@ mod run_tests {
             print(get(xs, 10, -1)); print(get(m, \"zzz\", -2)); \
             print(has_key(m, \"a\")); print(xs[-1]); }";
         assert_eq!(run(src), "-1\n-2\ntrue\n30");
+    }
+
+    #[test]
+    fn indexed_reads_fast_path_is_correct() {
+        // The borrow-not-clone fast path for `local[i]` must preserve value semantics, including
+        // in-place algorithms and an index expression that reads the same local.
+        let insort = "fn main() { let mut a = [5, 3, 1, 4, 2]; let n = 5; let mut k = 1; \
+            while k < n { let key = a[k]; let mut j = k - 1; \
+            while j >= 0 && a[j] > key { a[j + 1] = a[j]; j = j - 1; } a[j + 1] = key; k = k + 1; } \
+            print(a); }";
+        assert_eq!(run(insort), "[1, 2, 3, 4, 5]");
+        // self-referential index: a[0] == 2, so a[a[0]] == a[2] == 9
+        assert_eq!(run("fn main() { let a = [2, 7, 9, 4]; print(a[a[0]]); }"), "9");
+        // reading an element is a copy, not an alias: mutating the source afterward is independent
+        assert_eq!(
+            run("fn main() { let mut a = [1, 2, 3]; let x = a[1]; a[1] = 99; print(x + a[1]); }"),
+            "101"
+        );
     }
 
     #[test]
