@@ -1750,13 +1750,10 @@ fn check_one_return(
     span: Span,
     ctx: &mut SemanticContext,
 ) {
-    // Only a literal has a reliable static type; anything else (variable, call, if/match, a trailing
-    // statement that yields the default 0) is dynamic and must be left unchecked.
-    let is_literal = matches!(
-        expr,
-        Expr::Literal(_) | Expr::StrLiteral(_) | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. }
-    );
-    if !is_literal {
+    // Only a CONSTANT has a reliable, stable static type; anything dynamic (variable, call, if/match
+    // over variables, a trailing statement that yields the default 0) is left unchecked. This also
+    // catches `return 5 as u32` from a `-> string` fn — a cast constant the checker trusts elsewhere.
+    if !is_constant_expr(expr) {
         return;
     }
     if let Some(actual) = infer_expr_type_scoped(expr, scope) {

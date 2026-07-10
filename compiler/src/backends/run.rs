@@ -5265,6 +5265,11 @@ mod run_tests {
         assert!(tc("fn g() -> bool { return 42; } fn main(){ print(g()); }")
             .unwrap_err()
             .contains("ANUBIS_RETURN_TYPE_MISMATCH"));
+        // A cast constant is checked too: `return 5 as u32` from a `-> string` fn is rejected.
+        assert!(tc("fn h() -> string { return 5 as u32; } fn main(){ let r = h(); print(0); }")
+            .unwrap_err()
+            .contains("ANUBIS_RETURN_TYPE_MISMATCH"));
+        assert!(tc("fn ok() -> u32 { return 5 as u32; } fn main(){ print(ok()); }").is_ok());
         // Dynamic and correctly-typed returns pass (no false positives): typed literals, a numeric
         // literal into a float, a variable, a call, an if-expression, a list, and the
         // trailing-statement-yields-0 case.
