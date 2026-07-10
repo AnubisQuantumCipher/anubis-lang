@@ -363,3 +363,29 @@ alias strips the newline) via a new `run_with_stdin` harness that spawns the bin
 Verified firsthand: `printf "10\n20\n12\n" | anubis run` -> `sum: 42`; a no-stdin program still runs
 without hanging. **217 compiler tests, 0 failed.** Re-run:
 `cargo test -p anubis-compiler --release read_line_reads_stdin`.
+
+## Dogfood sweep — 15 domains, 6 confirmed bugs fixed (2026-07-10)
+
+Ran a 15-domain "build real programs and run them firsthand" workflow (JSON parser, Dijkstra/
+topo-sort/union-find, arbitrary-precision bignum, regex engine, Markdown→HTML, shunting-yard/RPN,
+in-memory SQL, matrix algebra, calendar, sorting zoo, stdin text adventure, non-crypto hashes,
+bytecode VM, cellular automata, heap+Huffman). **44 programs built, 43 ran correctly first-try;
+7 domains completely clean** (regex, markdown, rpn-calc, sql, matrix, adventure, hashes). Every
+finding below was reproduced firsthand before fixing, and each fix is gated + regression-tested.
+
+| Bug (severity) | Root cause | Fix commit | Test |
+|----------------|-----------|-----------|------|
+| `get(list/str, i, default)` always returned the default (HIGH) | `anubis_get` only matched Map | `f3630f2` | `get_returns_element_for_lists_strings_and_maps` |
+| `_` wildcard binding → `let mut _` rustc error (HIGH) | emitter always prefixed `mut` | `b0fefc2` | `wildcard_binding_lowers_without_mut` |
+| `check` disproved `assert(true)` + fabricated string counterexamples (HIGH) | bool/string BV-encoded; z3 error treated as disproof | `d4d0cd9` | `solver_never_disproves_unmodelable_assertions` |
+| deep recursion (~8500) aborted with raw Rust stack overflow (MEDIUM) | main ran on 8 MiB OS stack | `c88bddd` | `deep_recursion_runs_on_large_stack` |
+| `match` as non-final stmt in closure/arm body failed to parse (MEDIUM) | block parser took `match` as the tail | `12aaa96` | `match_statement_in_closure_and_arm_bodies` |
+| `parse_int`/`parse_float` fail-open (return 0 on malformed) (MEDIUM) | lenient by design; no checked variant | `7860917` (added `parse_int_opt`/`parse_float_opt`) | `parse_opt_returns_matchable_option` |
+
+**Non-bugs surfaced + documented (not code changes):** list/map/struct arguments pass **by value**
+(mutating a parameter doesn't reach the caller; return-and-reassign is the idiom) — flagged by 6+
+agents as under-documented, now a dedicated LANGUAGE.md section with a verified example. Lenient
+`parse_int`/`int` behavior documented alongside the new fail-closed `*_opt` variants.
+
+Net: **224 compiler tests (was 212 at sweep start), 0 failed**; language fixtures 26/26; PCA 13/13;
+turing 13/13; all 8 `examples/feel/*` run. Sweep transcript: workflow `wf_d8a05288-c83`.

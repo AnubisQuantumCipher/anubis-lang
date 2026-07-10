@@ -196,6 +196,24 @@ An explicit `return` anywhere (including inside a `match` arm) returns from the 
 Duplicate function definitions, duplicate parameters, arity mismatches on calls to known
 functions, and calls to unknown functions are compile-time errors.
 
+**Arguments pass by value.** Every value — including lists, maps, and structs — is passed to a
+function as a **copy**. Mutating a parameter inside the function (index-assign, `push`, `pop`,
+field-set) changes only the callee's copy; it does **not** reach the caller. Return the modified
+value and rebind it in the caller instead:
+
+```
+fn bump(xs) { push(xs, 99); xs }        // NOT `fn bump(xs) { push(xs, 99); }` — that copy is lost
+fn main() {
+    let mut xs = [1, 2, 3];
+    bump(xs);              // xs is still [1, 2, 3] — the push happened on a copy
+    xs = bump(xs);         // xs is now [1, 2, 3, 99] — return-and-reassign is the idiom
+}
+```
+
+In-place mutation *within a single scope* (e.g. `xs[i] = v` or `push(xs, v)` on a local `xs`) works
+normally; only the function-call boundary copies. This is the same by-value model as closure capture
+(below).
+
 **Generics.** Functions, structs, enums, traits, and `impl` blocks may carry generic parameters
 (`fn max_of<T>(a: T, b: T) -> T`, `struct Box<T> { value: T }`, `impl<T> Box<T> { … }`), with
 optional bounds and `where` clauses. Because values are dynamically typed, generics are purely
