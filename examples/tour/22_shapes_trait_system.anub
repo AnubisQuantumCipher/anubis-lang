@@ -1,0 +1,61 @@
+// EXPECT: circle: area 12|rect: area 15|circle: area 75|rect: area 16|total area: 118|sorted areas: [12, 15, 16, 75]|biggest: circle: area 75|biggest of none: nothing|big count: 1, small count: 3
+// A shape system tying together traits, methods, generics, Option/match, closures,
+// the standard library, and string interpolation.
+
+trait Shape {
+    fn area(self);
+    fn kind(self);
+    fn report(self) { "${self.kind()}: area ${self.area()}" }   // default, built from the interface
+}
+
+struct Circle { r: int }
+impl Shape for Circle {
+    fn area(self) { 3 * self.r * self.r }
+    fn kind(self) { "circle" }
+}
+
+struct Rect { w: int, h: int }
+impl Shape for Rect {
+    fn area(self) { self.w * self.h }
+    fn kind(self) { "rect" }
+}
+
+// generic helper: the largest shape by area, or None for an empty list
+fn largest<T>(shapes) {
+    if len(shapes) == 0 { return None }
+    Some(max_by(shapes, |s| s.area()))
+}
+
+fn describe(opt) {
+    match opt {
+        Some(s) => s.report(),
+        None    => "nothing",
+    }
+}
+
+fn main() {
+    let shapes = [
+        Circle { r: 2 },
+        Rect { w: 3, h: 5 },
+        Circle { r: 5 },
+        Rect { w: 4, h: 4 },
+    ];
+
+    // polymorphism: iterate a heterogeneous list, dispatch per element
+    for s in shapes {
+        print(s.report());
+    }
+
+    // stdlib pipelines
+    let areas = map(shapes, |s| s.area());
+    print("total area: ${sum(areas)}");
+    print("sorted areas: ${sort(areas)}");
+
+    // Option + trait dispatch through interpolation
+    print("biggest: ${describe(largest(shapes))}");
+    print("biggest of none: ${describe(largest([]))}");
+
+    // partition by a predicate that calls a method
+    let parts = partition(shapes, |s| s.area() > 20);
+    print("big count: ${len(parts[0])}, small count: ${len(parts[1])}");
+}
