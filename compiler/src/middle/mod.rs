@@ -138,6 +138,10 @@ struct SemanticContext {
     /// which records a width for EVERY let — including string/bool/list bindings — and so cannot be
     /// used to decide whether an assertion is soundly modelable in QF_BV.
     solver_int_vars: BTreeSet<String>,
+    /// Variables given an EXPLICIT `: T` annotation. Only these have their reassignments
+    /// type-checked (the user opted into the type); an inferred binding is dynamic and reassignable
+    /// to any type, so enforcing type-stability on it would be a false positive.
+    annotated_vars: BTreeSet<String>,
     known_bindings: BTreeSet<String>,
     /// Enum name → variant names (for match exhaustiveness).
     enum_variants: BTreeMap<String, Vec<String>>,
@@ -780,6 +784,9 @@ fn analyze_stmts(
                 // mark known after unknown check so later stmts see it
                 ctx.known_bindings.insert(name.clone());
 
+                if ty.is_some() {
+                    ctx.annotated_vars.insert(name.clone());
+                }
                 // A+ type mismatch: annotation vs inferred init type.
                 if let Some(t) = ty.as_deref() {
                     if let Some(got) = infer_expr_type_scoped(init, scope) {
@@ -1010,23 +1017,31 @@ fn analyze_stmts(
                         }
                     }
                 }
-                // A+: if target is a typed variable, value must be compatible.
+                // A+: reassignment type-checking. Only an EXPLICITLY-annotated variable is held to
+                // its declared type (a `let mut acc = 0` with an INFERRED type is dynamic and may be
+                // reassigned to any type — enforcing stability there was a false positive). For an
+                // inferred variable, update its tracked type to the new value's type (or clear it
+                // when dynamic) so later uses see the current type rather than a stale one.
                 if let Expr::Var(name) = target {
-                    if let Some(binding) = scope.get(name) {
-                        if let Some(expected) = binding.info.ty.as_deref() {
-                            if let Some(got) = infer_expr_type_scoped(value, scope) {
-                                if !types_compatible(expected, &got) {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
-                                        code: Some("ANUBIS_TYPE_MISMATCH".into()),
-                                        message: format!(
-                                            "type mismatch on assign to `{}`: expected `{}`, got `{}`",
-                                            name, expected, got
-                                        ),
-                                        span: None,
-                                    });
-                                }
+                    let got = infer_expr_type_scoped(value, scope);
+                    if ctx.annotated_vars.contains(name) {
+                        if let (Some(expected), Some(got)) = (
+                            scope.get(name).and_then(|b| b.info.ty.clone()),
+                            got.as_ref(),
+                        ) {
+                            if !types_compatible(&expected, got) {
+                                ctx.diagnostics.push(SemanticDiagnostic {
+                                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                    message: format!(
+                                        "type mismatch on assign to `{}`: expected `{}`, got `{}`",
+                                        name, expected, got
+                                    ),
+                                    span: None,
+                                });
                             }
                         }
+                    } else if let Some(b) = scope.get_mut(name) {
+                        b.info.ty = got; // flow-sensitive: track the reassigned type (None if dynamic)
                     }
                 }
             }
@@ -1790,6 +1805,20 @@ fn infer_expr_type_scoped(
                 "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
             ) {
                 Some("bool".into())
+            } else if op == "+" {
+                // `+` is overloaded (anubis_add): string concat if EITHER operand is a string, list
+                // concat if either is a list, otherwise numeric. Inferring the result from the lhs
+                // alone wrongly typed `1 + "a"` as a number (accepting it into a u32 slot) and
+                // `404 + ": x"` as a number (rejecting it from a string slot).
+                let lt = infer_expr_type_scoped(lhs, scope).map(|t| normalize_ty(&t));
+                let rt = infer_expr_type_scoped(rhs, scope).map(|t| normalize_ty(&t));
+                if lt.as_deref() == Some("string") || rt.as_deref() == Some("string") {
+                    Some("string".into())
+                } else if lt.as_deref() == Some("list") || rt.as_deref() == Some("list") {
+                    Some("list".into())
+                } else {
+                    lt.or(rt)
+                }
             } else {
                 infer_expr_type_scoped(lhs, scope).or_else(|| infer_expr_type_scoped(rhs, scope))
             }
@@ -1856,7 +1885,9 @@ fn static_non_indexable(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> 
 fn normalize_ty(ty: &str) -> String {
     let t = ty.trim().to_ascii_lowercase();
     match t.as_str() {
-        "int" | "i32" | "i64" | "usize" | "isize" | "number" => "u32".into(),
+        "int" | "i8" | "i16" | "i32" | "i64" | "i128" | "u128" | "usize" | "isize" | "number" => {
+            "u32".into()
+        }
         "u8" | "u16" | "u32" | "u64" => t,
         "str" | "string" => "string".into(),
         "bool" | "boolean" => "bool".into(),

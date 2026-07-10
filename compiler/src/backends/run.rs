@@ -5164,6 +5164,34 @@ mod run_tests {
     }
 
     #[test]
+    fn b1_type_coercions_and_reassignment() {
+        let tc = |s: &str| {
+            crate::middle::typecheck(
+                crate::frontend::parse_source(s).unwrap(),
+                crate::frontend::Mode::Safe,
+            )
+        };
+        let rej = |s: &str| tc(s).unwrap_err().contains("ANUBIS_TYPE_MISMATCH");
+        // i8/i16 are numeric and interoperate with other integer widths.
+        assert!(tc("fn f(b: i8){ print(b); } fn main(){ f(5); }").is_ok(), "i8 param");
+        assert!(tc("fn main(){ let x: u32 = 4000 as i16; print(x); }").is_ok(), "as i16");
+        // `+` is overloaded: `num + str` is a string.
+        assert!(tc("fn main(){ let m: string = 404 + \": x\"; print(m); }").is_ok(), "num+str is string");
+        assert!(rej("fn main(){ let n: u32 = 1 + \"a\"; print(n); }"), "string into u32 slot");
+        // Reassignment: an INFERRED binding is dynamic (reassignable to any type); an EXPLICITLY
+        // annotated one is held to its declared type.
+        assert!(tc("fn main(){ let mut acc = 0; acc = \"hi\"; print(acc); }").is_ok(), "inferred reassign");
+        assert!(rej("fn main(){ let x: u32 = 5; x = \"a\"; print(x); }"), "annotated reassign");
+        // A stale inferred type must not linger past a reassignment to a dynamic value.
+        assert!(
+            tc("fn src(){ return 5; } fn need(n: u32){ print(n + 1); } \
+                fn main(){ let mut x = \"p\"; x = src(); need(x); }")
+                .is_ok(),
+            "reassigned-to-dynamic clears the stale type"
+        );
+    }
+
+    #[test]
     fn b1_static_type_checks_arithmetic_and_indexing() {
         let tc = |s: &str| {
             crate::middle::typecheck(
