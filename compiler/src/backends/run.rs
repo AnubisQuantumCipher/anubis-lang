@@ -3824,6 +3824,31 @@ mod run_tests {
     }
 
     #[test]
+    fn generic_syntax_is_accepted_and_erased() {
+        // Generic parameters, bounds, `where`, and generic types on struct/enum/impl/trait all
+        // parse and run (types are erased at runtime).
+        let src = "fn pick<T>(a: T, b: T, first: bool) -> T where T: Ord { if first { a } else { b } } \
+                   struct Box<T> { val: T } impl<T> Box<T> { fn get(self) { self.val } } \
+                   enum Opt<T> { Has(T), Empty } \
+                   fn unwrap<T>(o: Opt<T>, d: T) -> T { return match o { Opt::Has(v) => v, Opt::Empty => d }; } \
+                   fn main() { print(pick(3, 7, true)); print(pick(\"a\", \"b\", false)); \
+                     print((Box { val: 42 }).get()); \
+                     print(unwrap(Opt::Has(5), 0)); print(unwrap(Opt::Empty, -1)); }";
+        assert_eq!(run(src), "3\nb\n42\n5\n-1");
+    }
+
+    #[test]
+    fn generic_trait_with_nested_params() {
+        let src = "trait Seq<T> { fn head(self); fn empty(self) { false } } \
+                   struct Stack<T> { items: list } \
+                   impl<T> Seq<T> for Stack<T> { fn head(self) { self.items[0] } } \
+                   fn wrap<T>(x: T) -> Box<Box<T>> { x } struct Box<T> { v: T } \
+                   fn main() { print((Stack { items: [10, 20] }).head()); \
+                     print((Stack { items: [1] }).empty()); print(wrap(99)); }";
+        assert_eq!(run(src), "10\nfalse\n99");
+    }
+
+    #[test]
     fn traits_default_methods_and_overrides() {
         let src = "trait Describable { fn name(self); fn describe(self) { \"a \" + self.name() } \
                      fn shout(self) { upper(self.describe()) } } \

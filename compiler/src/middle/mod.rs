@@ -1458,12 +1458,27 @@ fn is_numeric_ty(ty: &str) -> bool {
 /// A+ compatibility: numeric widths interoperate; bool/string/enums do not cross.
 /// `tainted<T>` is a *qualifier*: clean `T` may flow into a tainted binding (labeling),
 /// and tainted flows are still policed by the separate taint analysis.
+/// Whether a type annotation is a generic type parameter (a short all-uppercase name like `T`)
+/// or a generic instantiation (contains `<`, e.g. `Opt<T>`). Such types are erased at runtime.
+fn is_generic_type(t: &str) -> bool {
+    let t = t.trim();
+    if t.contains('<') {
+        return true;
+    }
+    !t.is_empty() && t.len() <= 2 && t.chars().all(|c| c.is_ascii_uppercase())
+}
+
 fn types_compatible(expected: &str, actual: &str) -> bool {
     let e_raw = expected.trim();
     let a_raw = actual.trim();
     // An absent annotation is dynamically typed: parameters written `fn f(x)` (no `: T`) accept
     // any argument, and an argument of unknown static type is accepted by any parameter.
     if e_raw.is_empty() || a_raw.is_empty() {
+        return true;
+    }
+    // Generic type parameters (`T`, `U`) and generic instantiations (`Opt<T>`, `Box<int>`) are
+    // erased at runtime, so they cannot be soundly checked — treat them as compatible with anything.
+    if is_generic_type(e_raw) || is_generic_type(a_raw) {
         return true;
     }
     let e = normalize_ty(e_raw);

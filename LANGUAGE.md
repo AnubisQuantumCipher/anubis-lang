@@ -187,6 +187,12 @@ An explicit `return` anywhere (including inside a `match` arm) returns from the 
 Duplicate function definitions, duplicate parameters, arity mismatches on calls to known
 functions, and calls to unknown functions are compile-time errors.
 
+**Generics.** Functions, structs, enums, traits, and `impl` blocks may carry generic parameters
+(`fn max_of<T>(a: T, b: T) -> T`, `struct Box<T> { value: T }`, `impl<T> Box<T> { … }`), with
+optional bounds and `where` clauses. Because values are dynamically typed, generics are purely
+syntactic — the type parameters are erased — but they let you write familiar, self-documenting
+parametric code that runs on any type.
+
 ## Closures and higher-order functions
 
 Lambdas are first-class values that capture their environment by value:

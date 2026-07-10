@@ -1380,6 +1380,7 @@ impl Parser {
     fn parse_struct(&mut self) -> Option<Item> {
         let start = self.expect_keyword("struct")?.span;
         let (name, _) = self.expect_ident("expected struct name")?;
+        self.skip_generic_params();
         let _ = self.expect_token(Token::LBrace, "expected `{` after struct name");
         let mut fields = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
@@ -1653,17 +1654,21 @@ impl Parser {
 
     fn parse_impl(&mut self) -> Option<Item> {
         let start = self.expect_keyword("impl")?.span;
+        self.skip_generic_params(); // `impl<T> ...`
         let (first, _) = self.expect_ident("expected type name after `impl`")?;
+        self.skip_generic_params(); // `impl Type<T>` or `impl Trait<T> for ...`
         // `impl Type { ... }`  or  `impl Trait for Type { ... }`.
         let (trait_name, type_name) = if self.check_keyword("for") {
             self.bump();
             let (ty, _) = self
                 .expect_ident("expected type name after `for`")
                 .unwrap_or_else(|| ("_".into(), start));
+            self.skip_generic_params(); // `for Type<T>`
             (Some(first), ty)
         } else {
             (None, first)
         };
+        self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after impl type");
         let mut methods = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
@@ -1693,6 +1698,7 @@ impl Parser {
     fn parse_trait(&mut self) -> Option<Item> {
         let start = self.expect_keyword("trait")?.span;
         let (name, _) = self.expect_ident("expected trait name")?;
+        self.skip_generic_params();
         let _ = self.expect_token(Token::LBrace, "expected `{` after trait name");
         let mut methods = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
@@ -1721,6 +1727,7 @@ impl Parser {
     fn parse_enum(&mut self) -> Option<Item> {
         let start = self.expect_keyword("enum")?.span;
         let (name, _) = self.expect_ident("expected enum name")?;
+        self.skip_generic_params();
         let _ = self.expect_token(Token::LBrace, "expected `{` after enum name");
         let mut variants = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
@@ -2001,9 +2008,42 @@ impl Parser {
         })
     }
 
+    /// Consume a generic parameter list `<T, U: Bound, ...>` if present, ignoring it — the runtime
+    /// is dynamically typed, so generics are purely syntactic. Balances nested `<...>` and `>>`.
+    fn skip_generic_params(&mut self) {
+        if !self.check_token(&Token::Lt) {
+            return;
+        }
+        self.bump();
+        let mut depth = 1i32;
+        while depth > 0 && !self.at_eof() {
+            if self.check_token(&Token::Lt) {
+                depth += 1;
+            } else if self.check_token(&Token::Gt) {
+                depth -= 1;
+            } else if self.check_token(&Token::Shr) {
+                depth -= 2; // `>>` closes two levels
+            }
+            self.bump();
+        }
+    }
+
+    /// Consume a `where T: Bound, ...` clause (up to the body `{` or `;`), ignoring it.
+    fn skip_where_clause(&mut self) {
+        if matches!(&self.current().token, Token::Ident(w) if w == "where") {
+            while !self.at_eof()
+                && !self.check_token(&Token::LBrace)
+                && !self.check_token(&Token::Semi)
+            {
+                self.bump();
+            }
+        }
+    }
+
     fn parse_fn(&mut self, pre_attrs: Vec<Attribute>) -> Option<Item> {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
+        self.skip_generic_params(); // `fn foo<T>(...)`
         let params = self.parse_params();
         // Optional return type: `-> Type` (lexed as Minus Gt then the type). Captured in the AST
         // for tooling/typecheck even though the runtime is dynamically typed.
@@ -2018,6 +2058,7 @@ impl Parser {
                 ret = Some(ty);
             }
         }
+        self.skip_where_clause(); // `fn foo<T>() where T: Ord { ... }`
         let body_start = self.current_span();
         let body = if self.check_token(&Token::LBrace) {
             self.parse_block()

@@ -1,0 +1,48 @@
+// EXPECT: 7|banana|[1, 2, 3]|Box(42)|Some -> 5|None -> -1|10
+// Generics: parametric syntax (types are erased at runtime, so `T` accepts anything).
+
+// generic function with a bound and a where-clause
+fn max_of<T>(a: T, b: T) -> T where T: Ord {
+    if a > b { a } else { b }
+}
+
+// generic function mapping over a list
+fn twice_each<T>(xs: list) -> list {
+    map(xs, |x| x)
+}
+
+// generic struct with methods
+struct Box<T> { value: T }
+impl<T> Box<T> {
+    fn get(self) { self.value }
+    fn show(self) { "Box(${self.value})" }
+}
+
+// generic enum + a generic function over it
+enum Option2<T> { Some(T), None }
+fn or_default<T>(o: Option2<T>, d: T) -> T {
+    match o {
+        Option2::Some(v) => v,
+        Option2::None    => d,
+    }
+}
+
+// a generic trait implemented by a generic type
+trait Collection<T> {
+    fn size(self);
+    fn describe(self) { "collection of ${self.size()}" }
+}
+struct Vec2<T> { items: list }
+impl<T> Collection<T> for Vec2<T> {
+    fn size(self) { len(self.items) }
+}
+
+fn main() {
+    print(max_of(3, 7));                       // 7
+    print(max_of("apple", "banana"));          // banana (works on any ordered type)
+    print(twice_each([1, 2, 3]));              // [1, 2, 3]
+    print((Box { value: 42 }).show());         // Box(42)
+    print("Some -> ${or_default(Option2::Some(5), 0)}");   // Some -> 5
+    print("None -> ${or_default(Option2::None, -1)}");     // None -> -1
+    print((Vec2 { items: [1, 2, 3, 4, 5] }).size() * 2);   // 10
+}
