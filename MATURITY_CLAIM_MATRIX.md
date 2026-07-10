@@ -478,3 +478,36 @@ re-verifies cryptographically, but the `guest.elf` ← `source.anubis` compilati
 recompiling to re-derive the ImageID needs the risc0 toolchain, which cold verify deliberately avoids.
 `tier` is still `"checked"` (T2 tier grading is future work). Tests: +2 evidence (231 compiler), +2
 CLI crypto (49 binary). Gates: prove 11/11, PCA 13/13, turing 13/13, fixtures 26/26. No regressions.
+
+## Refinement-type foundation — B1 (non-erased static checking) + solver soundness (2026-07-10)
+
+B1 generalizes the type checker to reject statically-known type incompatibilities, conservative by
+design (zero false positives; dynamic expressions untouched). Dogfooded HARDEST: a 302-program
+corpus/dogfood sweep + a 7-angle adversarial workflow (190 programs) that deliberately hunted false
+positives and false negatives. Every finding was firsthand-reproduced before fixing. Gated waves:
+
+- `f27fe2f`/`a50a6d9` **B1 core** — arithmetic/bitwise/unary/index checks; made literal-only after 2
+  reassignment false positives; then `caec2e8`-era loop-var typing fix.
+- `343bbc2` **solver soundness (i64)** — the check/solver modeled integers as 32-bit UNSIGNED but the
+  runtime is i64 signed (verified: `u8 200+100=300`, `(-8)>>1=-4`), so it DISPROVED true assertions
+  (`65536*65536 != 0`, `3e9+2e9 > 3e9`, `0-1 < 0`). Now 64-bit signed with signed comparisons; typed
+  symbolic inputs carry a `[0,2^w-1]` range; `/ % << >>` are non-modelable (div-by-zero / shift-mask
+  mismatch → skipped, sound). Genuinely-false assertions still disproved. This unblocks B2–B4.
+- `c9030a2` **type-coercion FPs** — i8/i16 now numeric; `+` inference returns string/list when either
+  operand is (fixing `let s: string = 404+"x"` FP and `let n: u32 = 1+"a"` FN); reassigning an
+  INFERRED binding is dynamic (only explicit annotations are held to their type; inferred types update
+  flow-sensitively on reassignment).
+- `c912464` **nested-constant + closure/block FNs** — widened the operand/index gate from bare-literal
+  to constant-expression (`(2+3)[0]`, `("a"+"b")-1` now caught); `check_expr_semantics` now descends
+  into `Lambda`/`Block` bodies (`|q| 5[0]`, `map([..],|x| 9[0])` now caught).
+- `d066a8c` **cast-return** — `fn f() -> string { return 5 as u32 }` now rejected.
+
+**Firsthand-verified**: every reject/accept above was observed via `anubis check`/`run`; the solver
+disproofs were confirmed against z3 and the fixes re-verified. **0/302 false positives** after each
+wave. **235 compiler tests; 49 binary; fixtures 26/26; PCA 13/13; prove 11/11; turing 13/13.**
+
+**Honestly incomplete (deferred false negatives, checker stays SOUND — misses, never mis-rejects):**
+enum/Option/Result-payload arithmetic (`match Some("hi") { Some(v) => v*2 }`), struct-field arithmetic
+(`b.v - 1`), cast-to-inert-target laundering (`42 as string`), generic-instantiation over-erasure
+(`Vec<u32>` param accepts a string), and `?` in a non-Result function. These need FieldAccess / enum
+/ struct-field / generic type inference — structural typing that belongs to B4, not B1.
