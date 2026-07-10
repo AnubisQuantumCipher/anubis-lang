@@ -1110,6 +1110,29 @@ fn main() {
     }
 
     #[test]
+    fn b2_contracts_verify_postconditions() {
+        // B2: a function's `ensures` postcondition must be PROVED from its body + `requires`
+        // precondition (discharged by the solver); a violated one is disproved.
+        let discharged = |src: &str| {
+            let ast = parse_source(src).expect("parse");
+            let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+            SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL")
+        };
+        // Provable postconditions.
+        assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }"), "x>0 => x+1>x");
+        assert!(discharged("fn dbl(x: u32) -> u32 ensures(result >= x) { return x + x; }"), "u32: x+x >= x");
+        assert!(discharged("fn f(x: u32) -> u32 requires(x >= 0) ensures(result > 0) { return x + 1; }"), "x>=0 => x+1>0");
+        // Violated postconditions are disproved.
+        assert!(!discharged("fn dec(x: u32) -> u32 ensures(result > x) { return x - 1; }"), "x-1 > x is false");
+        assert!(!discharged("fn same(x: u32) -> u32 ensures(result > x) { return x; }"), "x > x is false");
+        // A plain function's parameter assertion keeps its prior param-opaque semantics (no contract
+        // means params are not modeled), so it is not newly disproved.
+        assert!(discharged("fn g(x: u32) { assert(x > 5); }"), "no-contract param assert stays skipped");
+    }
+
+    #[test]
     fn solver_does_not_disprove_loop_carried_assertions() {
         // A binding mutated after its `let` (here, accumulated in a loop) cannot be modeled from
         // its initial value; the checker must not disprove a TRUE post-loop assertion against the

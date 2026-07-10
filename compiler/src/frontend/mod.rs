@@ -124,6 +124,11 @@ pub enum Item {
         intent: Option<String>,
         /// Declared return type (`-> T`), captured verbatim; `None` if omitted.
         ret: Option<String>,
+        /// B2 contracts: `requires(P)` preconditions and `ensures(Q)` postconditions declared after
+        /// the signature. Each is a boolean expression; `ensures` may reference `result` (the return
+        /// value). Empty when the function declares no contracts.
+        requires: Vec<Expr>,
+        ensures: Vec<Expr>,
         attributes: Vec<Attribute>,
         span: Span,
     },
@@ -2155,12 +2160,45 @@ impl Parser {
             if self.check_token(&Token::Gt) {
                 let _ = self.bump();
             }
+            // collect_type_until also stops at a `requires`/`ensures` contract clause (by value), so
+            // the clauses are not greedily absorbed into the return-type string.
             let ty = self.collect_type_until(&[Token::LBrace, Token::Semi]);
             if !ty.is_empty() {
                 ret = Some(ty);
             }
         }
         self.skip_where_clause(); // `fn foo<T>() where T: Ord { ... }`
+        // B2 contracts: `requires(P)` / `ensures(Q)` clauses sit between the signature and the body.
+        // They are contextual (parsed as identifiers) and unambiguous here — only a clause or the
+        // `{`/`;` body can follow the signature.
+        let mut requires = vec![];
+        let mut ensures = vec![];
+        loop {
+            let clause = match &self.current().token {
+                Token::Ident(k) if k == "requires" => Some(true),
+                Token::Ident(k) if k == "ensures" => Some(false),
+                _ => None,
+            };
+            match clause {
+                Some(is_requires) => {
+                    self.bump();
+                    if self.check_token(&Token::LParen) {
+                        self.bump();
+                        let cond = self.with_struct_allowed(|p| p.parse_expr(0));
+                        let _ = self
+                            .expect_token(Token::RParen, "expected `)` after contract condition");
+                        if is_requires {
+                            requires.push(cond);
+                        } else {
+                            ensures.push(cond);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
         let body_start = self.current_span();
         let body = if self.check_token(&Token::LBrace) {
             self.parse_block()
@@ -2195,6 +2233,8 @@ impl Parser {
             mode,
             intent: None,
             ret,
+            requires,
+            ensures,
             attributes: pre_attrs,
             span,
         })
@@ -3308,7 +3348,13 @@ impl Parser {
         // Track angle-bracket depth so a stop token inside generic arguments does not end the type
         // early: `Map<int, string>` keeps its inner comma instead of stopping at it.
         let mut depth: i32 = 0;
-        while !self.at_eof() && !(depth == 0 && stops.iter().any(|stop| self.check_token(stop))) {
+        while !self.at_eof()
+            && !(depth == 0
+                && (stops.iter().any(|stop| self.check_token(stop))
+                    // Also stop at a B2 `requires`/`ensures` contract clause (matched by value —
+                    // no type is named these), so it is not absorbed into the type.
+                    || matches!(&self.current().token, Token::Ident(k) if k == "requires" || k == "ensures")))
+        {
             let Some(tok) = self.bump() else {
                 break;
             };

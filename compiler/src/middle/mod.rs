@@ -514,6 +514,8 @@ fn collect_items(
                 span,
                 attributes,
                 ret,
+                requires,
+                ensures,
                 ..
             } => {
                 let effective_mode = if *mode == Mode::Safe {
@@ -546,6 +548,8 @@ fn collect_items(
                     params,
                     body,
                     ret.as_deref(),
+                    requires,
+                    ensures,
                     effective_mode,
                     *span,
                     false,
@@ -566,7 +570,7 @@ fn collect_items(
             Item::Impl { methods, .. } => {
                 for m in methods {
                     if let Item::Fn {
-                        name, params, body, mode, span, ret, ..
+                        name, params, body, mode, span, ret, requires, ensures, ..
                     } = m
                     {
                         let effective_mode = if *mode == Mode::Safe {
@@ -575,8 +579,8 @@ fn collect_items(
                             *mode
                         };
                         analyze_function(
-                            name, module, params, body, ret.as_deref(), effective_mode, *span,
-                            true, ctx,
+                            name, module, params, body, ret.as_deref(), requires, ensures,
+                            effective_mode, *span, true, ctx,
                         );
                     }
                 }
@@ -594,6 +598,8 @@ fn analyze_function(
     params: &[(String, String)],
     body: &[Stmt],
     ret: Option<&str>,
+    requires: &[Expr],
+    ensures: &[Expr],
     mode: Mode,
     span: Span,
     is_method: bool,
@@ -694,6 +700,32 @@ fn analyze_function(
         })
         .collect::<Vec<_>>();
 
+    // B2 contracts: make integer parameters solver-modelable, assume each `requires` precondition,
+    // then (after the body) assert each `ensures` postcondition at the tail return. The body plus
+    // the precondition must PROVE the postcondition — discharged by the (now-sound i64) solver.
+    // Only functions that DECLARE a contract model their parameters symbolically, so a plain
+    // function's assertions keep their prior (param-opaque) semantics — no regression.
+    let has_contract = !requires.is_empty() || !ensures.is_empty();
+    if has_contract {
+        for (pname, pty) in params {
+            if is_numeric_ty(pty) || normalize_ty(pty) == "u32" {
+                ctx.solver_int_vars.insert(pname.clone());
+                ctx.symbolic_widths.insert(pname.clone(), bitwidth_of(pty));
+                if let Some(rw) = unsigned_range_width(pty) {
+                    let max = (1u128 << rw) - 1;
+                    let range =
+                        format!("(and (bvsle (_ bv0 64) {pname}) (bvsle {pname} (_ bv{max} 64)))");
+                    assumptions.push(range);
+                }
+            }
+        }
+        for req in requires {
+            if is_bool_modelable(req, &ctx.solver_int_vars) {
+                assumptions.push(expr_to_smt(req, &ctx.symbolic_widths));
+            }
+        }
+    }
+
     analyze_stmts(
         body,
         mode,
@@ -703,6 +735,32 @@ fn analyze_function(
         &mut assumptions,
         ctx,
     );
+
+    // Discharge each `ensures` at the tail return: substitute `result` with the returned expression
+    // and assert it, given the precondition + the body's accumulated path assumptions. Only the tail
+    // return is verified (a straight-line, sound MVP); modeling is best-effort — a postcondition the
+    // solver cannot express (over strings/lists/etc.) is left un-obligated rather than mis-disproved.
+    if !ensures.is_empty() {
+        if let Some(ret_expr) = fn_tail_return_expr(body) {
+            for ens in ensures {
+                let concrete = substitute_result(ens, ret_expr);
+                if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+                    let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+                    let mut vars = BTreeSet::new();
+                    collect_vars_from_smt(&smt, &mut vars);
+                    for a in &assumptions {
+                        collect_vars_from_smt(a, &mut vars);
+                    }
+                    ctx.solver_obligations.push(SolverObligation {
+                        name: format!("ensures:{}", smt),
+                        assumptions: assumptions.clone(),
+                        assertion: smt,
+                        vars: vars.into_iter().collect(),
+                    });
+                }
+            }
+        }
+    }
 
     ctx.symbols.extend(fn_symbols.clone());
     ctx.mir.push(MirBlock {
@@ -1608,23 +1666,6 @@ fn expr_to_smt_with_width(
     }
 }
 
-fn expr_bitwidth(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<u32> {
-    match e {
-        Expr::Var(v) => widths.get(v).copied(),
-        Expr::Cast { ty, .. } | Expr::Tainted { ty, .. } | Expr::Symbolic { ty } => {
-            Some(bitwidth_of(ty))
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            expr_bitwidth(lhs, widths).or_else(|| expr_bitwidth(rhs, widths))
-        }
-        Expr::Unary { expr, .. } => expr_bitwidth(expr, widths),
-        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
-            expr_bitwidth(inner, widths)
-        }
-        _ => None,
-    }
-}
-
 fn collect_vars_from_smt(smt: &str, vars: &mut BTreeSet<String>) {
     for token in smt.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
         if token.is_empty()
@@ -1715,6 +1756,51 @@ fn type_has_raw_pointer(ty: Option<&str>) -> bool {
 
 fn is_tainted_type(ty: Option<&str>) -> bool {
     ty.is_some_and(|ty| ty.to_ascii_lowercase().contains("tainted"))
+}
+
+/// The unsigned bit width of a u8/u16/u32 type (for bounding a solver-modeled value), else None.
+fn unsigned_range_width(ty: &str) -> Option<u32> {
+    if ty.contains("u8") {
+        Some(8)
+    } else if ty.contains("u16") {
+        Some(16)
+    } else if ty.contains("u32") {
+        Some(32)
+    } else {
+        None
+    }
+}
+
+/// The expression a function returns at its tail: the last statement when it is `return X` or a bare
+/// value expression. None when the body ends in a statement (which yields the default `0`).
+fn fn_tail_return_expr(body: &[Stmt]) -> Option<&Expr> {
+    match body.last()? {
+        Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => args.first(),
+        Stmt::ExprStmt(e) => Some(e),
+        _ => None,
+    }
+}
+
+/// Replace every `result` variable in a contract expression with the returned expression, so an
+/// `ensures(result > x)` over `return x + 1` becomes `(x + 1) > x`.
+fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
+    match e {
+        Expr::Var(v) if v == "result" => repl.clone(),
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: Box::new(substitute_result(lhs, repl)),
+            rhs: Box::new(substitute_result(rhs, repl)),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: op.clone(),
+            expr: Box::new(substitute_result(expr, repl)),
+        },
+        Expr::Cast { expr, ty } => Expr::Cast {
+            expr: Box::new(substitute_result(expr, repl)),
+            ty: ty.clone(),
+        },
+        other => other.clone(),
+    }
 }
 
 /// Check a function's declared `-> rty` against the value it returns, but only where that value is
