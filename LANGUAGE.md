@@ -171,7 +171,9 @@ while let Some(item) = next() { process(item); }
 ## Functions and recursion
 
 Parameter types are optional (the language is dynamically typed); a `-> Type` return annotation
-is accepted and recorded but does not constrain the runtime.
+is accepted and recorded. A return value that is a *literal* of an unambiguously incompatible type
+is rejected at check time (`fn f() -> u32 { "s" }` → `ANUBIS_RETURN_TYPE_MISMATCH`); dynamic returns
+(a variable, call, or `if`/`match` value) are not statically constrained.
 
 ```
 fn add(a, b) { return a + b; }

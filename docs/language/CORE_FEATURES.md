@@ -63,8 +63,10 @@ This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **P
 ## PARTIAL
 - Single-file `module { … }` grouping works (flat call namespace); **multi-file** import resolution does not
 - Column-perfect diagnostics everywhere (line:col + caret exist; not every path is column-perfect)
-- **Return-type checking** on all paths — a body whose value type mismatches the declared return type is
-  not yet rejected (`fn f() -> u32 { "s" }` type-checks). Known gap.
+- **Return-type checking** — a *literal* return of an unambiguously wrong type is now rejected
+  (`fn f() -> u32 { "s" }` → `ANUBIS_RETURN_TYPE_MISMATCH`). Dynamic returns (variables, calls,
+  if/match) are still unchecked (the value type is only known at runtime) — full flow-typed return
+  checking is the T1 arc, not done.
 
 ## PLANNED (not claimed)
 - Array/list slicing **sugar** `xs[1..3]` (use explicit list builtins today)
