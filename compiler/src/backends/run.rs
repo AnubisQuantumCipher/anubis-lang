@@ -15,6 +15,9 @@ use anyhow::{anyhow, Result};
 struct EmitCtx<'a> {
     allow_research: bool,
     fns: &'a std::collections::BTreeSet<String>,
+    /// free-function name -> parameter count. Used to synthesize a closure value when a
+    /// function is referenced by bare name in value position (`map(xs, my_fn)`).
+    fn_arities: &'a std::collections::BTreeMap<String, usize>,
     /// method name -> the `(type, param_count)` of each type defining a method of that name
     /// (for dispatching `obj.m(..)`). `param_count` includes `self`.
     methods: &'a std::collections::BTreeMap<String, Vec<(String, usize)>>,
@@ -262,6 +265,7 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     let ctx = &EmitCtx {
         allow_research: base.allow_research,
         fns: base.fns,
+        fn_arities: base.fn_arities,
         methods: base.methods,
         locals: &locals,
     };
@@ -421,12 +425,20 @@ fn lower_program_with_entry(
         .filter(|d| d.impl_type.is_none())
         .map(|d| d.name.to_string())
         .collect();
+    // Parameter counts for those free functions, so a bare-name reference in value position
+    // (`map(xs, my_fn)`) can be lowered into a closure with the right arity.
+    let fn_arities: std::collections::BTreeMap<String, usize> = fns
+        .iter()
+        .filter(|d| d.impl_type.is_none())
+        .map(|d| (d.name.to_string(), d.params.len()))
+        .collect();
     let mut methods = std::collections::BTreeMap::new();
     collect_methods(items, &mut methods);
     let empty_locals = std::collections::BTreeSet::new();
     let ctx = EmitCtx {
         allow_research,
         fns: &fn_names,
+        fn_arities: &fn_arities,
         methods: &methods,
         locals: &empty_locals,
     };
@@ -2429,6 +2441,57 @@ fn fixed_pad(callee: &str, args: &[String], at_start: bool) -> Result<String> {
     }
 }
 
+/// Lower a bare identifier used in *value* position (not as a call target). A local binding is a
+/// plain cloned value; a free function or a stdlib builtin referenced by name becomes a first-class
+/// closure value, so it can be handed to a higher-order function (`map(xs, my_fn)`,
+/// `compose(f, identity)`); any other bare name is undefined and rejected with a clean diagnostic
+/// (rather than leaking a raw rustc "cannot find value" error).
+fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
+    // A local (param / let / loop / match binding) shadows any function or builtin of the same
+    // name and is simply cloned.
+    if ctx.locals.contains(name) {
+        return Ok(format!("{}.clone()", sanitize_ident(name)?));
+    }
+    // A free function referenced by bare name → a closure that calls it with its declared arity.
+    if let Some(&arity) = ctx.fn_arities.get(name) {
+        let args: Vec<String> = (0..arity)
+            .map(|i| format!("__args[{i}usize].clone()"))
+            .collect();
+        return Ok(format!(
+            "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ anb_{}({}) }}))",
+            sanitize_ident(name)?,
+            args.join(", ")
+        ));
+    }
+    // A stdlib builtin referenced by bare name → a closure wrapping the builtin at its minimal arity.
+    if let Some(arity) = builtin_ref_arity(name) {
+        let args: Vec<String> = (0..arity)
+            .map(|i| format!("__args[{i}usize].clone()"))
+            .collect();
+        if let Some(Ok(call)) = emit_builtin_call(name, &args) {
+            return Ok(format!(
+                "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ {call} }}))"
+            ));
+        }
+    }
+    Err(unsupported_run(format!(
+        "unknown name `{}` used as a value",
+        name
+    )))
+}
+
+/// The minimal arity (in `1..=6`) at which a stdlib builtin — one lowered by `emit_builtin_call` —
+/// accepts a call. `Some(k)` means the builtin can be referenced as a first-class closure of arity
+/// `k`; `None` means it is not expressible through `emit_builtin_call` (e.g. `len`, `push`, `pop`,
+/// `print`, which are lowered specially in call position) and so cannot be used as a bare value.
+/// The floor of 1 keeps variadic builtins like `min`/`max` from collapsing to a nullary closure.
+fn builtin_ref_arity(name: &str) -> Option<usize> {
+    (1..=6).find(|&k| {
+        let probe: Vec<String> = (0..k).map(|_| "AnubisValue::Int(0)".to_string()).collect();
+        matches!(emit_builtin_call(name, &probe), Some(Ok(_)))
+    })
+}
+
 fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
     match expr {
         Expr::Literal(value) => Ok(literal_to_anubis_value(value)),
@@ -2436,7 +2499,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             "AnubisValue::Str({}.to_string())",
             rust_string_lit(s)?
         )),
-        Expr::Var(name) => Ok(format!("{}.clone()", sanitize_ident(name)?)),
+        Expr::Var(name) => var_as_value(name, ctx),
         Expr::Unary { op, expr } => {
             let inner = safe_run_expr(expr, ctx)?;
             match op.as_str() {
@@ -2998,11 +3061,26 @@ fn lower_match_expr(
     ctx: &EmitCtx,
 ) -> Result<String> {
     let scr = safe_run_expr(scrutinee, ctx)?;
-    // Bind the scrutinee once, then walk arms in order inside a `loop` that always
-    // breaks with the first matching arm's body (or Int(0) if none match). Using a
-    // bare `loop` (rather than a named label) means nested `match` expressions never
-    // collide on a label, and guard failures fall through to the next arm cleanly.
-    let mut out = format!("{{ let __anb_m = {scr}; loop {{ ");
+    // Bind the scrutinee once, then walk the arms in order using a linear chain of plain `if`s
+    // gated by a `__done` flag. The first matching arm assigns its body to `__r` and sets the flag;
+    // later arms are skipped. Guard failures leave the flag unset and fall through to the next arm.
+    //
+    // This desugar deliberately introduces NO Rust `loop`, labeled block, or closure between an
+    // arm body and the enclosing code. That transparency is essential: a `break`/`continue` written
+    // inside an arm body must bind to the USER's enclosing `for`/`while` loop. The arm body is
+    // emitted as the right-hand side of `__r = <body>;`, so if the body diverges (`break`,
+    // `continue`, `return`), it diverges out of the match to the user's loop or function — exactly
+    // as if the control-flow statement had been written directly in the loop body. (A `loop` or
+    // labeled block would instead capture the `break`, and Rust rejects an unlabeled `break` that
+    // tries to escape a labeled block: E0695.) Names are suffixed with a unique id so nested
+    // matches never collide.
+    let id = next_temp_id();
+    let m = format!("__anb_m{id}");
+    let r = format!("__anb_r{id}");
+    let done = format!("__anb_done{id}");
+    let mut out = format!(
+        "{{ let {m} = {scr}; let mut {r} = AnubisValue::Int(0); let mut {done} = false; "
+    );
     for arm in arms {
         // A top-level or-pattern arm `A | B => body` desugars to one sub-arm per alternative,
         // so alternatives may bind (each is matched and bound with its own sub-pattern).
@@ -3011,23 +3089,26 @@ fn lower_match_expr(
             p => vec![p],
         };
         for pat in alts {
-            let (cond, binds) = pattern_test_and_binds(pat, "__anb_m")?;
-            out.push_str(&format!("if {cond} {{ "));
+            let (cond, binds) = pattern_test_and_binds(pat, &m)?;
+            out.push_str(&format!("if !{done} {{ if {cond} {{ "));
             out.push_str(&binds);
             let body = safe_run_expr(&arm.body, ctx)?;
             match &arm.guard {
                 Some(guard) => {
                     let gs = safe_run_expr(guard, ctx)?;
-                    out.push_str(&format!("if ({gs}).as_bool() {{ break ({body}); }} "));
+                    out.push_str(&format!(
+                        "if ({gs}).as_bool() {{ {r} = ({body}); {done} = true; }} "
+                    ));
                 }
                 None => {
-                    out.push_str(&format!("break ({body}); "));
+                    out.push_str(&format!("{r} = ({body}); {done} = true; "));
                 }
             }
-            out.push_str("} ");
+            out.push_str("} } ");
         }
     }
-    out.push_str("break AnubisValue::Int(0); } }");
+    // The block's tail expression is the selected arm's value (or the `Int(0)` default).
+    out.push_str(&format!("{r} }}"));
     Ok(out)
 }
 
@@ -3874,6 +3955,74 @@ mod run_tests {
                    let f = compose(|x| x + 1, |x| x * 2); print(f(5)); \
                    print(times(3, |i| i * i)); print(identity(42)); }";
         assert_eq!(run(src), "[[a, 1], [b, 2]]\n2\n-1\n10\n9\n11\n[0, 1, 4]\n42");
+    }
+
+    #[test]
+    fn break_inside_match_arm_binds_to_enclosing_loop() {
+        let src = "fn main() { let mut total = 0; \
+                   for x in [1, 2, 3, 4, 5] { match x { 4 => { break } _ => {} } total = total + x; } \
+                   print(total); }";
+        assert_eq!(run(src), "6");
+    }
+
+    #[test]
+    fn continue_inside_match_arm_binds_to_enclosing_loop() {
+        // The match must not desugar to a Rust `loop`, or `continue` would spin forever.
+        let src = "fn main() { let mut out = []; \
+                   for x in [1, 2, 3, 4, 5, 6] { match x { n if n % 2 == 0 => { continue } _ => {} } push(out, x); } \
+                   print(out); }";
+        assert_eq!(run(src), "[1, 3, 5]");
+    }
+
+    #[test]
+    fn break_inside_match_arm_within_while() {
+        let src = "fn main() { let mut i = 0; let mut sum = 0; \
+                   while i < 100 { i = i + 1; match i { n if n > 5 => { break } _ => {} } sum = sum + i; } \
+                   print(sum); }";
+        assert_eq!(run(src), "15");
+    }
+
+    #[test]
+    fn nested_matches_do_not_collide() {
+        let src = "fn classify(x, y) { match x { \
+                     0 => match y { 0 => \"origin\", _ => \"y-axis\" }, \
+                     _ => match y { 0 => \"x-axis\", _ => \"quadrant\" } } } \
+                   fn main() { print(classify(0,0)); print(classify(0,5)); print(classify(3,0)); print(classify(3,4)); }";
+        assert_eq!(run(src), "origin\ny-axis\nx-axis\nquadrant");
+    }
+
+    #[test]
+    fn named_function_is_first_class_value() {
+        let src = "fn double(x) { x * 2 } fn is_odd(x) { x % 2 == 1 } fn add(a, b) { a + b } \
+                   fn main() { print(map([1, 2, 3, 4], double)); print(filter([1, 2, 3, 4, 5], is_odd)); \
+                     print(sort_by([3, 1, 2], double)); print(reduce([1, 2, 3, 4], add, 0)); }";
+        assert_eq!(run(src), "[2, 4, 6, 8]\n[1, 3, 5]\n[1, 2, 3]\n10");
+    }
+
+    #[test]
+    fn builtin_is_first_class_value() {
+        let src = "fn main() { let g = compose(|x| x + 1, identity); print(g(41)); }";
+        assert_eq!(run(src), "42");
+    }
+
+    #[test]
+    fn named_functions_in_a_list_are_callable() {
+        let src = "fn sq(x) { x * x } \
+                   fn main() { let fns = [sq, |x| x + 100]; print(fns[0](5)); print(fns[1](5)); }";
+        assert_eq!(run(src), "25\n105");
+    }
+
+    #[test]
+    fn unknown_name_as_value_is_a_clean_error() {
+        // Referencing an undefined name in value position yields an Anubis diagnostic, not a
+        // leaked rustc "cannot find value" error.
+        let src = "fn main() { print(nonexistent_thing); }";
+        let ast = crate::frontend::parse_source(src).expect("parse");
+        let err = lower_program_to_rust(&ast.items, false)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("unknown name"), "got: {err}");
     }
 
     #[test]

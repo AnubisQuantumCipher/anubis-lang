@@ -222,6 +222,18 @@ print(reduce([1, 2, 3, 4], |a, b| a + b, 0));     // 10
 print(sort_by(people, |p| p.age));
 ```
 
+Named functions — both user-defined functions and stdlib builtins — are themselves first-class
+values. Referencing one by bare name (without calling it) yields a closure you can pass to a
+higher-order function, store in a list, or compose:
+
+```
+fn square(x) { x * x }
+print(map([1, 2, 3], square));                    // [4, 9] -> [1, 4, 9]
+print(compose(square, identity)(6));              // 36
+let ops = [square, |x| x + 1];
+print(ops[0](5));                                 // 25
+```
+
 A user-defined function always takes precedence over a builtin of the same name, so builtin
 names are effectively reservable.
 
