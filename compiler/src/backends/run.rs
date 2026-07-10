@@ -983,8 +983,10 @@ fn anubis_type_of(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.type_name(
 fn anubis_abs(v: AnubisValue) -> AnubisValue {
     if v.is_float() { AnubisValue::Float(v.as_f64().abs()) } else { AnubisValue::Int(v.as_i64().wrapping_abs()) }
 }
-fn anubis_min2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if a.as_f64() <= b.as_f64() { a } else { b } }
-fn anubis_max2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if a.as_f64() >= b.as_f64() { a } else { b } }
+// Ordered via `anubis_value_cmp` — the same comparator `sort`/`min_by` use — so Int/Int compares
+// exactly as i64 (an f64 round-trip loses distinctions above 2^53) and strings order lexically.
+fn anubis_min2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if anubis_value_cmp(&a, &b) != std::cmp::Ordering::Greater { a } else { b } }
+fn anubis_max2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if anubis_value_cmp(&a, &b) != std::cmp::Ordering::Less { a } else { b } }
 fn anubis_seq(items: Vec<AnubisValue>) -> Vec<AnubisValue> {
     if items.len() == 1 { if let AnubisValue::List(l) = &items[0] { return l.clone(); } }
     items
@@ -2068,7 +2070,7 @@ pub fn is_builtin_name(name: &str) -> bool {
         || matches!(
             name,
             "len" | "pop" | "push" | "insert" | "remove" | "print" | "println" | "eprint"
-                | "eprintln" | "return"
+                | "eprintln" | "return" | "break" | "continue"
         )
         || is_proof_input_builtin(name)
         || is_poc_kit_builtin(name)
@@ -2463,33 +2465,55 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
             args.join(", ")
         ));
     }
-    // A stdlib builtin referenced by bare name → a closure wrapping the builtin at its minimal arity.
-    if let Some(arity) = builtin_ref_arity(name) {
-        let args: Vec<String> = (0..arity)
-            .map(|i| format!("__args[{i}usize].clone()"))
-            .collect();
-        if let Some(Ok(call)) = emit_builtin_call(name, &args) {
+    // Variadic builtins (`min`/`max` accept any number of arguments, or a single list) forward
+    // the entire argument vector, so `reduce(xs, max, seed)` sees both (acc, x) and
+    // `apply(min, xs)` sees every element.
+    if matches!(name, "min" | "max") {
+        return Ok(format!(
+            "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ anubis_{name}(__args) }}))"
+        ));
+    }
+    // Output builtins as values (`each(xs, print)`): print all arguments, yield Int(0).
+    if matches!(name, "print" | "println" | "eprint" | "eprintln") {
+        let mac = if name.starts_with('e') { "eprintln" } else { "println" };
+        return Ok(format!(
+            "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ {mac}!(\"{{}}\", __args.iter().map(|a| a.display_string()).collect::<Vec<_>>().join(\" \")); AnubisValue::Int(0) }}))"
+        ));
+    }
+    if name == "len" {
+        return Ok(
+            "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue { __args[0usize].len_val() }))"
+                .to_string(),
+        );
+    }
+    // Any other stdlib builtin → a closure dispatching on argument count across every arity the
+    // builtin accepts (probed through `emit_builtin_call`, e.g. `range` takes 2 or 3).
+    {
+        let mut arms = String::new();
+        for k in 1..=6usize {
+            let args: Vec<String> = (0..k).map(|i| format!("__args[{i}usize].clone()")).collect();
+            if let Some(Ok(call)) = emit_builtin_call(name, &args) {
+                arms.push_str(&format!("{k}usize => {{ {call} }}, "));
+            }
+        }
+        if !arms.is_empty() {
             return Ok(format!(
-                "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ {call} }}))"
+                "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ match __args.len() {{ {arms} n => panic!(\"ANUBIS_ARITY: builtin `{name}` cannot take {{}} argument(s)\", n) }} }}))"
             ));
         }
+    }
+    if is_builtin_name(name) {
+        // e.g. `push`/`pop`/`insert`/`remove`, which mutate a named binding in place and have no
+        // meaningful value-capture form.
+        return Err(unsupported_run(format!(
+            "builtin `{}` cannot be used as a first-class value",
+            name
+        )));
     }
     Err(unsupported_run(format!(
         "unknown name `{}` used as a value",
         name
     )))
-}
-
-/// The minimal arity (in `1..=6`) at which a stdlib builtin — one lowered by `emit_builtin_call` —
-/// accepts a call. `Some(k)` means the builtin can be referenced as a first-class closure of arity
-/// `k`; `None` means it is not expressible through `emit_builtin_call` (e.g. `len`, `push`, `pop`,
-/// `print`, which are lowered specially in call position) and so cannot be used as a bare value.
-/// The floor of 1 keeps variadic builtins like `min`/`max` from collapsing to a nullary closure.
-fn builtin_ref_arity(name: &str) -> Option<usize> {
-    (1..=6).find(|&k| {
-        let probe: Vec<String> = (0..k).map(|_| "AnubisValue::Int(0)".to_string()).collect();
-        matches!(emit_builtin_call(name, &probe), Some(Ok(_)))
-    })
 }
 
 fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
@@ -2593,6 +2617,16 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     None => "AnubisValue::Int(0)".to_string(),
                 };
                 return Ok(format!("return {}", val));
+            }
+            // `break`/`continue` in expression position (a braceless match arm body inside a
+            // loop: `n if n == 11 => break`). Rust `break`/`continue` are `!`-typed expressions,
+            // so they coerce to AnubisValue at the use site and bind to the user's enclosing
+            // loop (the match desugar deliberately introduces no loop of its own).
+            if callee == "break" {
+                return Ok("break".to_string());
+            }
+            if callee == "continue" {
+                return Ok("continue".to_string());
             }
             if callee == "len" {
                 let a = args
@@ -3107,7 +3141,14 @@ fn lower_match_expr(
             out.push_str("} } ");
         }
     }
-    // The block's tail expression is the selected arm's value (or the `Int(0)` default).
+    // Fail closed: a match where no arm matched has no defensible value. Enum scrutinees are
+    // already rejected at compile time by exhaustiveness checking; non-enum scrutinees (list/
+    // int/string shapes) can't be statically enumerated, so they trap at runtime instead of
+    // silently fabricating a value.
+    out.push_str(&format!(
+        "if !{done} {{ panic!(\"ANUBIS_MATCH_UNMATCHED: no match arm matched value `{{}}` (add a `_` arm)\", ({m}).display_string()); }} "
+    ));
+    // The block's tail expression is the selected arm's value.
     out.push_str(&format!("{r} }}"));
     Ok(out)
 }
@@ -3955,6 +3996,75 @@ mod run_tests {
                    let f = compose(|x| x + 1, |x| x * 2); print(f(5)); \
                    print(times(3, |i| i * i)); print(identity(42)); }";
         assert_eq!(run(src), "[[a, 1], [b, 2]]\n2\n-1\n10\n9\n11\n[0, 1, 4]\n42");
+    }
+
+    #[test]
+    fn min_max_exact_above_f64_precision() {
+        // 2^53 and 2^53+1 are distinct i64s but collapse in f64; min/max must stay exact.
+        let src = "fn main() { let a = 9007199254740993; let b = 9007199254740992; \
+                   print(min(a, b)); print(max(b, a)); print(sort([a, b])); }";
+        assert_eq!(
+            run(src),
+            "9007199254740992\n9007199254740993\n[9007199254740992, 9007199254740993]"
+        );
+    }
+
+    #[test]
+    fn variadic_builtin_as_first_class_value() {
+        // min/max as values must forward every argument: reduce passes (acc, x), apply spreads.
+        let src = "fn main() { print(reduce([5, 1, 9, 3], max, 0)); print(apply(min, [5, 1, 9, 3])); \
+                   print(map([[3, 1], [9, 2], [4, 8]], max)); }";
+        assert_eq!(run(src), "9\n1\n[3, 9, 8]");
+    }
+
+    #[test]
+    fn multi_arity_builtin_as_first_class_value() {
+        // range accepts 2 or 3 args; a first-class reference dispatches on the actual count.
+        let src = "fn main() { let r = range; print(apply(r, [1, 5])); print(apply(r, [0, 10, 3])); }";
+        assert_eq!(run(src), "[1, 2, 3, 4]\n[0, 3, 6, 9]");
+    }
+
+    #[test]
+    fn unmatched_match_fails_closed() {
+        // A match with no matching arm and no `_` must trap, not fabricate a value.
+        let src = "fn eval(cmd) { match cmd { [\"add\", a, b] => a + b } } \
+                   fn main() { print(eval([\"add\", 3, 4])); print(eval([\"sub\", 1, 2])); }";
+        let out = compile_and_run_source(src, false, &[]).expect("compile+run");
+        assert!(!out.status.success(), "unmatched match must exit nonzero");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("ANUBIS_MATCH_UNMATCHED"),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "7");
+    }
+
+    #[test]
+    fn interpolation_nested_string_escapes_verbatim() {
+        // Bare-delimited nested strings inside ${...}: escaped quotes and backslashes are
+        // content, resolved exactly once (by the fragment re-lex, not the outer lexer too).
+        let src = r#"fn main() { print("say ${"he said \"hi\""}"); let d = "C:"; print("path=${d + "\\" + "dir"}"); }"#;
+        assert_eq!(run(src), "say he said \"hi\"\npath=C:\\dir");
+    }
+
+    #[test]
+    fn braceless_control_flow_match_arm_bodies() {
+        // `=> return v`, `=> break`, `=> continue` without braces parse and bind to the
+        // enclosing function/loop.
+        let src = "fn pick(i) { let v = match i { 3 => return 999, n => n * n }; v + 1 } \
+                   fn main() { print(pick(2)); print(pick(3)); \
+                     let out = []; let mut i = 0; \
+                     while i < 12 { i = i + 1; \
+                       let v = match i { n if n % 4 == 0 => continue, n if n == 11 => break, n => n * n }; \
+                       push(out, v); } \
+                     print(out); }";
+        assert_eq!(run(src), "5\n999\n[1, 4, 9, 25, 36, 49, 81, 100]");
+    }
+
+    #[test]
+    fn print_and_len_as_first_class_values() {
+        let src = "fn main() { each([1, 2], print); print(map([[1, 2, 3], [4]], len)); }";
+        assert_eq!(run(src), "1\n2\n[3, 1]");
     }
 
     #[test]

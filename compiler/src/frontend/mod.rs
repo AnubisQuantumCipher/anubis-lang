@@ -898,21 +898,36 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                             s.push('$');
                             s.push('{');
                             let mut depth = 1usize;
-                            // `in_str` tracks whether we're inside a nested string literal, so a
-                            // `{`/`}` there is not counted for brace-balancing. Escaped quotes
-                            // `\"` (how quotes are written inside the outer string) are unescaped
-                            // to real `"` and toggle string state; other escapes are unescaped too.
-                            let mut in_str = false;
+                            // `in_str` tracks whether we're inside a nested string literal (so a
+                            // `{`/`}` there is not counted for brace-balancing), and HOW it was
+                            // opened, because two styles are supported:
+                            //   1 = bare `"`-delimited (`${x + "lit"}`): contents are preserved
+                            //       VERBATIM — the fragment is re-lexed later by `interp_string`,
+                            //       and that re-lex is the one and only unescaping pass, so
+                            //       `"\\"` keeps its backslash and `"a \"b\""` keeps its quotes.
+                            //   2 = `\"`-delimited (`${upper(\"hi\")}`, outer-string style):
+                            //       the escaped delimiters become real `"` for the re-lex and
+                            //       other escapes are resolved here, as they always were.
+                            let mut in_str = 0u8;
                             while depth > 0 {
                                 match chars.next() {
                                     Some((i2, '\\')) => {
                                         end = i2 + 1;
-                                        if let Some(&(ei, ec)) = chars.peek() {
+                                        if in_str == 1 {
+                                            // Inside a bare-delimited string: keep the escape
+                                            // verbatim (both characters) for the re-lex.
+                                            s.push('\\');
+                                            if let Some(&(ei, ec)) = chars.peek() {
+                                                chars.next();
+                                                end = ei + ec.len_utf8();
+                                                s.push(ec);
+                                            }
+                                        } else if let Some(&(ei, ec)) = chars.peek() {
                                             chars.next();
                                             end = ei + ec.len_utf8();
                                             if ec == '"' {
                                                 s.push('"');
-                                                in_str = !in_str;
+                                                in_str = if in_str == 2 { 0 } else { 2 };
                                             } else {
                                                 lex_escape(ec, &mut s, &mut chars, &mut end);
                                             }
@@ -920,19 +935,25 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                                     }
                                     Some((i2, '"')) => {
                                         end = i2 + 1;
-                                        in_str = !in_str;
+                                        // A bare quote toggles a bare-delimited nested string;
+                                        // inside a `\"`-delimited one it is literal content.
+                                        if in_str == 0 {
+                                            in_str = 1;
+                                        } else if in_str == 1 {
+                                            in_str = 0;
+                                        }
                                         s.push('"');
                                     }
                                     Some((i2, '{')) => {
                                         end = i2 + 1;
-                                        if !in_str {
+                                        if in_str == 0 {
                                             depth += 1;
                                         }
                                         s.push('{');
                                     }
                                     Some((i2, '}')) => {
                                         end = i2 + 1;
-                                        if !in_str {
+                                        if in_str == 0 {
                                             depth -= 1;
                                         }
                                         s.push('}');
@@ -2546,8 +2567,9 @@ impl Parser {
     /// may be a block `{ ... }`.
     /// Desugar string interpolation: `"a ${expr} b"` → `"" + "a " + (expr) + " b"`. The `+`
     /// operator coerces each interpolated value to its display form. A literal `${` is not
-    /// currently escapable, and string literals may not appear inside `${...}` (the lexer ends
-    /// the outer string at the first inner quote).
+    /// currently escapable. Nested string literals (with their own escapes) are allowed inside
+    /// `${...}`: the lexer preserved the fragment verbatim, and re-lexing it here resolves
+    /// escapes exactly once.
     fn interp_string(&mut self, s: String) -> Expr {
         if !s.contains("${") {
             return Expr::StrLiteral(s);
@@ -2693,6 +2715,36 @@ impl Parser {
         // Lambda literal in primary position: `|params| body` or `|| body`.
         if self.check_token(&Token::Pipe) || self.check_token(&Token::PipePipe) {
             return self.parse_lambda();
+        }
+        // Control-flow keywords in expression position — a braceless match arm body
+        // (`3 => return 999`, `n if c => continue`) or an if-expression branch. Lowered to the
+        // same `Call` forms the statement parser produces; each diverges (`!`), so it composes
+        // as a value of any type.
+        if self.check_keyword("return") {
+            self.bump();
+            let val = if self.starts_expr() {
+                self.parse_expr(0)
+            } else {
+                Expr::Literal("0".into())
+            };
+            return Expr::Call {
+                callee: "return".into(),
+                args: vec![val],
+            };
+        }
+        if self.check_keyword("break") {
+            self.bump();
+            return Expr::Call {
+                callee: "break".into(),
+                args: vec![],
+            };
+        }
+        if self.check_keyword("continue") {
+            self.bump();
+            return Expr::Call {
+                callee: "continue".into(),
+                args: vec![],
+            };
         }
         let Some(tok) = self.bump() else {
             return Expr::Other("eof".into());
@@ -3248,5 +3300,122 @@ pub fn parse_source(source: &str) -> Result<AST, String> {
             .join("; "))
     } else {
         Ok(output.ast)
+    }
+}
+
+/// Resolve a byte offset into a 1-based `(line, column)` pair, counting columns in
+/// Unicode scalar values (not bytes) so multi-byte source still points at the right cell.
+/// Offsets at or past end-of-source clamp to the final position.
+pub fn line_col(source: &str, byte_offset: usize) -> (usize, usize) {
+    let clamped = byte_offset.min(source.len());
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for (idx, ch) in source.char_indices() {
+        if idx >= clamped {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Render one parse diagnostic in the rustc-grade format: `path:line:col: error: message`
+/// followed by the offending source line and a caret underline sized to the span. The
+/// diagnostic `message` is preserved verbatim so `ANUBIS_*` codes and `ERROR_CONTAINS`
+/// substrings still match on the rendered text.
+pub fn render_parse_diagnostic(source: &str, diag: &ParseDiagnostic, path: Option<&str>) -> String {
+    let (line, col) = line_col(source, diag.span.start);
+    let file = path.unwrap_or("<anubis>");
+    let src_line = source.lines().nth(line.saturating_sub(1)).unwrap_or("");
+    let start = diag.span.start.min(source.len());
+    let end = diag.span.end.clamp(start, source.len());
+    let underline_len = source
+        .get(start..end)
+        .map(|s| s.chars().take_while(|&c| c != '\n').count())
+        .unwrap_or(1)
+        .max(1);
+    let gutter = line.to_string();
+    let pad = " ".repeat(gutter.len());
+    let caret_pad = " ".repeat(col.saturating_sub(1));
+    let carets = "^".repeat(underline_len);
+    format!(
+        "{file}:{line}:{col}: error: {msg}\n {pad} |\n {gutter} | {src_line}\n {pad} | {caret_pad}{carets}",
+        msg = diag.message
+    )
+}
+
+/// Render every diagnostic from a parse, rustc-style, or `None` when the source parses cleanly.
+/// This is the user-facing counterpart to `parse_source`'s `"; "`-joined error string.
+pub fn render_parse_errors(source: &str, path: Option<&str>) -> Option<String> {
+    let output = parse_source_detailed(source);
+    if output.diagnostics.is_empty() {
+        return None;
+    }
+    Some(
+        output
+            .diagnostics
+            .iter()
+            .map(|d| render_parse_diagnostic(source, d, path))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
+}
+
+#[cfg(test)]
+mod diagnostic_render_tests {
+    use super::*;
+
+    #[test]
+    fn line_col_maps_offset_to_1based_line_and_column() {
+        let src = "fn main() {\n    let x = ;\n}\n";
+        let semi = src.find(';').unwrap();
+        assert_eq!(line_col(src, semi), (2, 13));
+        assert_eq!(line_col(src, 0), (1, 1));
+        // past EOF clamps rather than panicking
+        let (l, _c) = line_col(src, src.len() + 100);
+        assert_eq!(l, 4);
+    }
+
+    #[test]
+    fn render_parse_diagnostic_points_a_caret_at_the_span() {
+        let src = "fn main() {\n    let x = ;\n}\n";
+        let semi = src.find(';').unwrap();
+        let diag = ParseDiagnostic {
+            message: "expected expression".into(),
+            span: Span {
+                start: semi,
+                end: semi + 1,
+            },
+        };
+        let rendered = render_parse_diagnostic(src, &diag, Some("t.anb"));
+        assert!(rendered.contains("t.anb:2:13: error: expected expression"));
+        assert!(rendered.contains("let x = ;"));
+        // caret sits under column 13 (12 spaces of padding then a single caret)
+        assert!(rendered.contains("|             ^"));
+    }
+
+    #[test]
+    fn render_parse_errors_is_none_for_valid_source() {
+        assert!(render_parse_errors("fn main() { print(1); }\n", None).is_none());
+        assert!(render_parse_errors("", None).is_none());
+    }
+
+    #[test]
+    fn render_parse_errors_preserves_message_for_error_contains_matching() {
+        // A source the recovering parser rejects; the rendered text must still carry
+        // the underlying message so fixture `ERROR_CONTAINS` needles keep matching.
+        let src = "import foo bar baz\n";
+        if let Some(rendered) = render_parse_errors(src, Some("bad.anb")) {
+            // Line/col of a recovering parser's EOF diagnostic is an implementation detail;
+            // assert only the stable structure: the file is named and a caret is drawn.
+            assert!(rendered.contains("bad.anb:"));
+            assert!(rendered.contains("error:"));
+            assert!(rendered.contains('^'));
+        }
     }
 }

@@ -61,7 +61,9 @@ let who = "Ada";
 print("Hello, ${who}! 2+3 = ${2 + 3}, grade ${if s >= 90 { "A" } else { "B" }}");
 ```
 
-A `$` not followed by `{` is a literal dollar sign (`"$5"` prints `$5`).
+A `$` not followed by `{` is a literal dollar sign (`"$5"` prints `$5`). Nested strings inside
+`${...}` carry their own escapes, resolved once: `"say ${"he said \"hi\""}"` prints
+`say he said "hi"`, and `"${p + "\\" + f}"` joins with a single backslash.
 
 ## Variables and mutation
 
@@ -376,8 +378,15 @@ element — may hold another pattern. So `Some(Point { x, y })`, `Ok([a, b])`, a
 
 Exhaustiveness: a `match` on a known enum type must cover every variant or include an
 irrefutable arm (`_` or a bare binding). Guarded arms do not count toward coverage, since a
-guard may fail. Nested matches compose freely — a match may appear in another match's arm, in a
-loop body, as a function argument, or inside a closure.
+guard may fail. Non-enum scrutinees (ints, strings, lists) can't be statically enumerated, so
+they **fail closed at runtime** instead: if no arm matches and there is no `_`, the program
+traps with `ANUBIS_MATCH_UNMATCHED` rather than silently producing a value. Nested matches
+compose freely — a match may appear in another match's arm, in a loop body, as a function
+argument, or inside a closure.
+
+Control flow in arm bodies binds to the *enclosing* construct: `return` exits the whole
+function, and `break`/`continue` act on the loop containing the match. Braces are optional —
+`4 => break`, `n if n % 2 == 0 => continue`, and `3 => return 999` are all valid arm bodies.
 
 ## Option, Result, and error handling
 
