@@ -3765,6 +3765,22 @@ mod run_tests {
     }
 
     #[test]
+    fn research_words_usable_as_identifiers() {
+        // Soft research keywords must work as ordinary variables and user-defined function names on
+        // the run path (they only form constructs in their specific syntactic form).
+        assert_eq!(
+            run("fn unified(a, b) { a + b } fn main() { let unified = unified(3, 4); print(unified); }"),
+            "7"
+        );
+        assert_eq!(
+            run("fn main() { let cpu = 2; let gpu = 3; let prove = 5; let spec = 7; \
+                 let symbolic = 9; let declassify = 11; \
+                 print(cpu + gpu + prove + spec + symbolic + declassify); }"),
+            "37"
+        );
+    }
+
+    #[test]
     fn is_empty_covers_collections() {
         let src = "fn main() { \
             print(is_empty([])); print(is_empty([1])); \

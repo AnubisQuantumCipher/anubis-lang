@@ -577,6 +577,27 @@ fn transform_trait_items(
 
 /// The built-in enum a bare `Some`/`None`/`Ok`/`Err` constructor or pattern belongs to.
 /// `Option` for `Some`/`None`, `Result` for `Ok`/`Err`. These need no `enum` declaration.
+/// Research/PoC-surface words that are keywords only in their construct form and should otherwise
+/// be usable as ordinary identifiers (variables, user-defined functions). Excludes hard keywords
+/// like `assume`/`assert`/`research`/`exploit`/`hybrid` that have no plain-identifier meaning.
+fn is_soft_research_word(k: &str) -> bool {
+    matches!(
+        k,
+        "symbolic"
+            | "unified"
+            | "taint_source"
+            | "declassify"
+            | "tainted"
+            | "cpu"
+            | "gpu"
+            | "prove"
+            | "spec"
+            | "forall"
+            | "Buffer"
+            | "intent"
+    )
+}
+
 pub fn builtin_variant_enum(name: &str) -> Option<&'static str> {
     match name {
         "Some" | "None" => Some("Option"),
@@ -2734,6 +2755,25 @@ impl Parser {
         }
     }
 
+    /// Whether a soft research keyword (already bumped) is followed by the token that begins its
+    /// construct — otherwise it is being used as a plain identifier. `self.current()` is the token
+    /// immediately after the keyword.
+    fn soft_kw_starts_construct(&self, k: &str) -> bool {
+        match k {
+            // `symbolic()`, `symbolic<u32>()`, or the turbofish `symbolic::<u32>()`.
+            "symbolic" => matches!(
+                self.current().token,
+                Token::LParen | Token::Lt | Token::ColonColon
+            ),
+            "unified" => matches!(&self.current().token,
+                Token::Keyword(w) | Token::Ident(w) if w == "Buffer"),
+            "taint_source" | "declassify" => matches!(self.current().token, Token::LParen),
+            // cpu/gpu/prove/spec/forall/tainted/Buffer/intent never form a bare-expression
+            // construct — in expression position they are always identifiers.
+            _ => false,
+        }
+    }
+
     fn parse_primary(&mut self) -> Expr {
         // Prefix unary operators: `-expr` (negation) and `!expr` (logical not).
         if self.check_token(&Token::Minus) {
@@ -2794,9 +2834,20 @@ impl Parser {
                 args: vec![],
             };
         }
-        let Some(tok) = self.bump() else {
+        let Some(mut tok) = self.bump() else {
             return Expr::Other("eof".into());
         };
+        // Soft research keywords (`symbolic`/`unified`/`taint_source`/`declassify`/`tainted`/
+        // `cpu`/`gpu`/`prove`/`spec`/`forall`/`Buffer`/`intent`) form their constructs only in a
+        // specific syntactic form (e.g. `symbolic(...)`, `unified Buffer<T>`). Used as an ordinary
+        // identifier — a variable or a user-defined function like `fn unified()` — they must NOT be
+        // hijacked into a research construct that the run path then rejects. Re-tag as an identifier
+        // unless the construct's trigger token follows.
+        if let Token::Keyword(k) = &tok.token {
+            if is_soft_research_word(k) && !self.soft_kw_starts_construct(k) {
+                tok.token = Token::Ident(k.clone());
+            }
+        }
         let primary = match tok.token {
             Token::Number(n) => Expr::Literal(n),
             Token::StringLit(s) => self.interp_string(s),
