@@ -1,0 +1,36 @@
+// EXPECT: [SUM, PRODUCT, MAX]|[1, 2, 3, 4, 5]|[[1, 2], [3, 4], [5]]|primes: [2, 3, 5, 7, 11, 13]|avg word len 4|3
+// A data-processing tour of the standard library.
+
+fn is_prime(n) {
+    if n < 2 { return false }
+    let mut i = 2;
+    while i * i <= n {
+        if n % i == 0 { return false }
+        i = i + 1;
+    }
+    true
+}
+
+fn main() {
+    // strings: split into words, uppercase-capitalize each
+    let title = "sum product max";
+    print(map(words(title), |w| upper(w)));                  // [SUM, PRODUCT, MAX]
+
+    // lists: dedup + sort a noisy list
+    print(sort(unique([3, 1, 2, 3, 5, 1, 4, 2])));           // [1, 2, 3, 4, 5]
+
+    // chunk a range into pairs
+    print(chunk(range(1, 6), 2));                            // [[1, 2], [3, 4], [5]]
+
+    // filter primes up to 15 with a pipeline
+    let primes = filter(range(2, 15), |n| is_prime(n));
+    print("primes: ${primes}");                              // primes: [2, 3, 5, 7, 11, 13]
+
+    // functional: average word length via map + sum
+    let ws = words("the quick brown foxx");
+    let lens = map(ws, |w| len(w));
+    print("avg word len ${sum(lens) / len(ws)}");            // avg word len 4
+
+    // math: cube root of the product (cbrt(27) = 3.0, rounded to 3)
+    print(round(cbrt(product([1, 3, 9]))));
+}

@@ -1135,6 +1135,213 @@ fn anubis_iter(v: AnubisValue) -> Vec<AnubisValue> {
     }
 }
 
+// ---- math ----
+fn anubis_sin(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().sin()) }
+fn anubis_cos(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().cos()) }
+fn anubis_tan(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().tan()) }
+fn anubis_asin(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().asin()) }
+fn anubis_acos(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().acos()) }
+fn anubis_atan(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().atan()) }
+fn anubis_atan2(y: AnubisValue, x: AnubisValue) -> AnubisValue { AnubisValue::Float(y.as_f64().atan2(x.as_f64())) }
+fn anubis_exp(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().exp()) }
+fn anubis_ln(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().ln()) }
+fn anubis_log10(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().log10()) }
+fn anubis_log2(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().log2()) }
+fn anubis_logb(x: AnubisValue, base: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().log(base.as_f64())) }
+fn anubis_cbrt(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().cbrt()) }
+fn anubis_hypot(x: AnubisValue, y: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().hypot(y.as_f64())) }
+fn anubis_trunc(x: AnubisValue) -> AnubisValue { AnubisValue::Int(x.as_f64().trunc() as i64) }
+fn anubis_sign(x: AnubisValue) -> AnubisValue { let v = x.as_f64(); AnubisValue::Int(if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }) }
+fn anubis_clamp(x: AnubisValue, lo: AnubisValue, hi: AnubisValue) -> AnubisValue {
+    if x.is_float() || lo.is_float() || hi.is_float() {
+        AnubisValue::Float(x.as_f64().max(lo.as_f64()).min(hi.as_f64()))
+    } else {
+        AnubisValue::Int(x.as_i64().max(lo.as_i64()).min(hi.as_i64()))
+    }
+}
+fn anubis_pi() -> AnubisValue { AnubisValue::Float(std::f64::consts::PI) }
+fn anubis_e() -> AnubisValue { AnubisValue::Float(std::f64::consts::E) }
+fn anubis_factorial(n: AnubisValue) -> AnubisValue {
+    let n = n.as_i64().max(0);
+    let mut acc: i64 = 1;
+    let mut i = 2;
+    while i <= n { acc = acc.wrapping_mul(i); i += 1; }
+    AnubisValue::Int(acc)
+}
+
+// ---- strings ----
+fn anubis_chars(s: AnubisValue) -> AnubisValue {
+    AnubisValue::List(s.display_string().chars().map(|c| AnubisValue::Str(c.to_string())).collect())
+}
+fn anubis_words(s: AnubisValue) -> AnubisValue {
+    AnubisValue::List(s.display_string().split_whitespace().map(|w| AnubisValue::Str(w.to_string())).collect())
+}
+fn anubis_lines(s: AnubisValue) -> AnubisValue {
+    AnubisValue::List(s.display_string().lines().map(|l| AnubisValue::Str(l.to_string())).collect())
+}
+fn anubis_capitalize(s: AnubisValue) -> AnubisValue {
+    let s = s.display_string();
+    let mut ch = s.chars();
+    match ch.next() {
+        Some(f) => AnubisValue::Str(f.to_uppercase().collect::<String>() + &ch.as_str().to_lowercase()),
+        None => AnubisValue::Str(String::new()),
+    }
+}
+fn anubis_pad(s: AnubisValue, width: AnubisValue, pad: AnubisValue, at_start: bool) -> AnubisValue {
+    let s = s.display_string();
+    let w = width.as_i64().max(0) as usize;
+    let p = { let ps = pad.display_string(); if ps.is_empty() { " ".to_string() } else { ps } };
+    let have = s.chars().count();
+    if have >= w { return AnubisValue::Str(s); }
+    let mut fill = String::new();
+    while fill.chars().count() < w - have { fill.push_str(&p); }
+    let fill: String = fill.chars().take(w - have).collect();
+    AnubisValue::Str(if at_start { format!("{}{}", fill, s) } else { format!("{}{}", s, fill) })
+}
+
+// ---- lists ----
+fn anubis_zip(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    let bv = anubis_iter(b);
+    AnubisValue::List(anubis_iter(a).into_iter().zip(bv).map(|(x, y)| AnubisValue::List(vec![x, y])).collect())
+}
+fn anubis_enumerate(a: AnubisValue) -> AnubisValue {
+    AnubisValue::List(anubis_iter(a).into_iter().enumerate().map(|(i, x)| AnubisValue::List(vec![AnubisValue::Int(i as i64), x])).collect())
+}
+fn anubis_flatten(a: AnubisValue) -> AnubisValue {
+    let mut out = Vec::new();
+    for x in anubis_iter(a) { for y in anubis_iter(x) { out.push(y); } }
+    AnubisValue::List(out)
+}
+fn anubis_flat_map(a: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let mut out = Vec::new();
+    for x in anubis_iter(a) { for y in anubis_iter(f.call_closure(vec![x])) { out.push(y); } }
+    AnubisValue::List(out)
+}
+fn anubis_unique(a: AnubisValue) -> AnubisValue {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for x in anubis_iter(a) {
+        let k = x.display_string();
+        if !seen.contains(&k) { seen.push(k); out.push(x); }
+    }
+    AnubisValue::List(out)
+}
+fn anubis_take(a: AnubisValue, n: AnubisValue) -> AnubisValue {
+    let n = n.as_i64().max(0) as usize;
+    AnubisValue::List(anubis_iter(a).into_iter().take(n).collect())
+}
+fn anubis_drop(a: AnubisValue, n: AnubisValue) -> AnubisValue {
+    let n = n.as_i64().max(0) as usize;
+    AnubisValue::List(anubis_iter(a).into_iter().skip(n).collect())
+}
+fn anubis_take_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let mut out = Vec::new();
+    for x in anubis_iter(a) {
+        if f.call_closure(vec![x.clone()]).as_bool() { out.push(x); } else { break; }
+    }
+    AnubisValue::List(out)
+}
+fn anubis_drop_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let items = anubis_iter(a);
+    let mut i = 0;
+    while i < items.len() && f.call_closure(vec![items[i].clone()]).as_bool() { i += 1; }
+    AnubisValue::List(items[i..].to_vec())
+}
+fn anubis_chunk(a: AnubisValue, n: AnubisValue) -> AnubisValue {
+    let n = n.as_i64().max(1) as usize;
+    AnubisValue::List(anubis_iter(a).chunks(n).map(|c| AnubisValue::List(c.to_vec())).collect())
+}
+fn anubis_window(a: AnubisValue, n: AnubisValue) -> AnubisValue {
+    let n = n.as_i64().max(1) as usize;
+    let items = anubis_iter(a);
+    if items.len() < n { return AnubisValue::List(vec![]); }
+    AnubisValue::List(items.windows(n).map(|w| AnubisValue::List(w.to_vec())).collect())
+}
+fn anubis_position(a: AnubisValue, f: AnubisValue) -> AnubisValue {
+    for (i, x) in anubis_iter(a).into_iter().enumerate() {
+        if f.call_closure(vec![x]).as_bool() { return AnubisValue::Int(i as i64); }
+    }
+    AnubisValue::Int(-1)
+}
+fn anubis_product(a: AnubisValue) -> AnubisValue {
+    let items = anubis_iter(a);
+    if items.iter().any(|v| v.is_float()) {
+        AnubisValue::Float(items.iter().map(|v| v.as_f64()).product())
+    } else {
+        AnubisValue::Int(items.iter().map(|v| v.as_i64()).product())
+    }
+}
+fn anubis_first(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().next().unwrap_or(AnubisValue::Int(0)) }
+fn anubis_last(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().last().unwrap_or(AnubisValue::Int(0)) }
+fn anubis_concat(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    let mut out = anubis_iter(a);
+    out.extend(anubis_iter(b));
+    AnubisValue::List(out)
+}
+fn anubis_min_by(a: AnubisValue, f: AnubisValue) -> AnubisValue {
+    anubis_iter(a).into_iter()
+        .min_by(|x, y| anubis_value_cmp(&f.call_closure(vec![x.clone()]), &f.call_closure(vec![y.clone()])))
+        .unwrap_or(AnubisValue::Int(0))
+}
+fn anubis_max_by(a: AnubisValue, f: AnubisValue) -> AnubisValue {
+    anubis_iter(a).into_iter()
+        .max_by(|x, y| anubis_value_cmp(&f.call_closure(vec![x.clone()]), &f.call_closure(vec![y.clone()])))
+        .unwrap_or(AnubisValue::Int(0))
+}
+fn anubis_partition(a: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let mut yes = Vec::new();
+    let mut no = Vec::new();
+    for x in anubis_iter(a) {
+        if f.call_closure(vec![x.clone()]).as_bool() { yes.push(x); } else { no.push(x); }
+    }
+    AnubisValue::List(vec![AnubisValue::List(yes), AnubisValue::List(no)])
+}
+
+// ---- maps ----
+fn anubis_entries(m: AnubisValue) -> AnubisValue {
+    match m {
+        AnubisValue::Map(m) => AnubisValue::List(m.into_iter().map(|(k, v)| AnubisValue::List(vec![AnubisValue::Str(k), v])).collect()),
+        _ => AnubisValue::List(vec![]),
+    }
+}
+fn anubis_get(m: AnubisValue, k: AnubisValue, default: AnubisValue) -> AnubisValue {
+    match &m {
+        AnubisValue::Map(mm) => {
+            let key = k.display_string();
+            mm.iter().find(|(kk, _)| kk == &key).map(|(_, v)| v.clone()).unwrap_or(default)
+        }
+        _ => default,
+    }
+}
+fn anubis_merge(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    let mut out = match a { AnubisValue::Map(m) => m, _ => vec![] };
+    if let AnubisValue::Map(bm) = b {
+        for (k, v) in bm {
+            if let Some(slot) = out.iter_mut().find(|(kk, _)| kk == &k) { slot.1 = v; } else { out.push((k, v)); }
+        }
+    }
+    AnubisValue::Map(out)
+}
+fn anubis_map_values(m: AnubisValue, f: AnubisValue) -> AnubisValue {
+    match m {
+        AnubisValue::Map(mm) => AnubisValue::Map(mm.into_iter().map(|(k, v)| (k, f.call_closure(vec![v]))).collect()),
+        other => other,
+    }
+}
+
+// ---- functional ----
+fn anubis_identity(x: AnubisValue) -> AnubisValue { x }
+fn anubis_compose(f: AnubisValue, g: AnubisValue) -> AnubisValue {
+    AnubisValue::Closure(std::rc::Rc::new(move |args: Vec<AnubisValue>| {
+        let gx = g.call_closure(args);
+        f.call_closure(vec![gx])
+    }))
+}
+fn anubis_times(n: AnubisValue, f: AnubisValue) -> AnubisValue {
+    let n = n.as_i64().max(0);
+    AnubisValue::List((0..n).map(|i| f.call_closure(vec![AnubisValue::Int(i)])).collect())
+}
+
 "#;
 
 
@@ -1986,9 +2193,84 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "panic" => fixed("anubis_panic", callee, args, 1),
         "input" | "read_line" => fixed("anubis_input", callee, args, 0),
         "args" => fixed("anubis_args", callee, args, 0),
+        // extended math
+        "sin" => fixed("anubis_sin", callee, args, 1),
+        "cos" => fixed("anubis_cos", callee, args, 1),
+        "tan" => fixed("anubis_tan", callee, args, 1),
+        "asin" => fixed("anubis_asin", callee, args, 1),
+        "acos" => fixed("anubis_acos", callee, args, 1),
+        "atan" => fixed("anubis_atan", callee, args, 1),
+        "atan2" => fixed("anubis_atan2", callee, args, 2),
+        "exp" => fixed("anubis_exp", callee, args, 1),
+        "ln" => fixed("anubis_ln", callee, args, 1),
+        "log10" => fixed("anubis_log10", callee, args, 1),
+        "log2" => fixed("anubis_log2", callee, args, 1),
+        "log" => fixed("anubis_logb", callee, args, 2),
+        "cbrt" => fixed("anubis_cbrt", callee, args, 1),
+        "hypot" => fixed("anubis_hypot", callee, args, 2),
+        "trunc" => fixed("anubis_trunc", callee, args, 1),
+        "sign" => fixed("anubis_sign", callee, args, 1),
+        "clamp" => fixed("anubis_clamp", callee, args, 3),
+        "pi" => fixed("anubis_pi", callee, args, 0),
+        "e" => fixed("anubis_e", callee, args, 0),
+        "factorial" => fixed("anubis_factorial", callee, args, 1),
+        // extended strings
+        "chars" => fixed("anubis_chars", callee, args, 1),
+        "words" => fixed("anubis_words", callee, args, 1),
+        "lines" => fixed("anubis_lines", callee, args, 1),
+        "capitalize" => fixed("anubis_capitalize", callee, args, 1),
+        "pad_start" => fixed_pad(callee, args, true),
+        "pad_end" => fixed_pad(callee, args, false),
+        // extended lists
+        "zip" => fixed("anubis_zip", callee, args, 2),
+        "enumerate" => fixed("anubis_enumerate", callee, args, 1),
+        "flatten" => fixed("anubis_flatten", callee, args, 1),
+        "flat_map" => fixed("anubis_flat_map", callee, args, 2),
+        "unique" => fixed("anubis_unique", callee, args, 1),
+        "take" => fixed("anubis_take", callee, args, 2),
+        "drop" => fixed("anubis_drop", callee, args, 2),
+        "take_while" => fixed("anubis_take_while", callee, args, 2),
+        "drop_while" => fixed("anubis_drop_while", callee, args, 2),
+        "chunk" => fixed("anubis_chunk", callee, args, 2),
+        "window" => fixed("anubis_window", callee, args, 2),
+        "position" => fixed("anubis_position", callee, args, 2),
+        "product" => fixed("anubis_product", callee, args, 1),
+        "first" => fixed("anubis_first", callee, args, 1),
+        "last" => fixed("anubis_last", callee, args, 1),
+        "concat" => fixed("anubis_concat", callee, args, 2),
+        "min_by" => fixed("anubis_min_by", callee, args, 2),
+        "max_by" => fixed("anubis_max_by", callee, args, 2),
+        "partition" => fixed("anubis_partition", callee, args, 2),
+        // extended maps
+        "entries" => fixed("anubis_entries", callee, args, 1),
+        "get" => fixed("anubis_get", callee, args, 3),
+        "merge" => fixed("anubis_merge", callee, args, 2),
+        "map_values" => fixed("anubis_map_values", callee, args, 2),
+        // functional
+        "identity" => fixed("anubis_identity", callee, args, 1),
+        "compose" => fixed("anubis_compose", callee, args, 2),
+        "times" => fixed("anubis_times", callee, args, 2),
         _ => return None,
     };
     Some(r)
+}
+
+/// `pad_start`/`pad_end` accept `(s, width)` (space fill) or `(s, width, pad)`.
+fn fixed_pad(callee: &str, args: &[String], at_start: bool) -> Result<String> {
+    match args.len() {
+        2 => Ok(format!(
+            "anubis_pad({}, {}, AnubisValue::Str(\" \".to_string()), {})",
+            args[0], args[1], at_start
+        )),
+        3 => Ok(format!(
+            "anubis_pad({}, {}, {}, {})",
+            args[0], args[1], args[2], at_start
+        )),
+        n => Err(unsupported_run(format!(
+            "`{}` expects 2 or 3 arguments, got {}",
+            callee, n
+        ))),
+    }
 }
 
 fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
@@ -3283,6 +3565,47 @@ mod run_tests {
         // Regression: `let s = param` must not report the parameter as unknown.
         let src = "fn f(xs) { let s = xs; s[0] + 1 } fn main() { print(f([41, 9])); }";
         assert_eq!(run(src), "42");
+    }
+
+    #[test]
+    fn stdlib_math_extras() {
+        let src = "fn main() { print(clamp(15, 0, 10)); print(sign(-7)); print(factorial(5)); \
+                   print(round(log(8.0, 2.0))); print(floor(exp(1.0))); print(trunc(3.9)); }";
+        assert_eq!(run(src), "10\n-1\n120\n3\n2\n3");
+    }
+
+    #[test]
+    fn stdlib_string_extras() {
+        let src = "fn main() { print(chars(\"abc\")); print(words(\"a b  c\")); \
+                   print(capitalize(\"hELLO\")); print(pad_start(\"7\", 3, \"0\")); print(pad_end(\"7\", 3, \".\")); }";
+        assert_eq!(run(src), "[a, b, c]\n[a, b, c]\nHello\n007\n7..");
+    }
+
+    #[test]
+    fn stdlib_list_extras() {
+        let src = "fn main() { \
+                   print(zip([1,2],[\"a\",\"b\"])); print(enumerate([\"x\",\"y\"])); \
+                   print(flatten([[1,2],[3]])); print(unique([1,1,2,3,3])); \
+                   print(take([1,2,3,4],2)); print(drop([1,2,3,4],2)); \
+                   print(take_while([1,2,9,1],|x| x<5)); print(chunk([1,2,3,4,5],2)); \
+                   print(window([1,2,3],2)); print(position([5,6,7],|x| x==6)); \
+                   print(product([1,2,3,4])); print(first([9,8])); print(last([9,8])); \
+                   print(concat([1],[2,3])); print(min_by([[1,5],[2,1]],|p| p[1])); \
+                   print(partition([1,2,3,4],|x| x%2==0)); print(flat_map([1,2],|x| [x,x])); }";
+        assert_eq!(
+            run(src),
+            "[[1, a], [2, b]]\n[[0, x], [1, y]]\n[1, 2, 3]\n[1, 2, 3]\n[1, 2]\n[3, 4]\n[1, 2]\n[[1, 2], [3, 4], [5]]\n[[1, 2], [2, 3]]\n1\n24\n9\n8\n[1, 2, 3]\n[2, 1]\n[[2, 4], [1, 3]]\n[1, 1, 2, 2]"
+        );
+    }
+
+    #[test]
+    fn stdlib_map_and_functional_extras() {
+        let src = "fn main() { let m = { \"a\": 1, \"b\": 2 }; \
+                   print(entries(m)); print(get(m, \"b\", 0)); print(get(m, \"z\", -1)); \
+                   print(map_values(m, |v| v * 10)[\"a\"]); print(merge(m, { \"b\": 9, \"c\": 3 })[\"b\"]); \
+                   let f = compose(|x| x + 1, |x| x * 2); print(f(5)); \
+                   print(times(3, |i| i * i)); print(identity(42)); }";
+        assert_eq!(run(src), "[[a, 1], [b, 2]]\n2\n-1\n10\n9\n11\n[0, 1, 4]\n42");
     }
 
     #[test]

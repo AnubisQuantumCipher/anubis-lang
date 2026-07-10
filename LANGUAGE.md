@@ -365,17 +365,26 @@ Pair these with `if let` / `while let` (see Control flow) for ergonomic optional
 **Conversions / reflection:** `str`, `int`, `float`, `bool`, `type`, `parse_int`, `parse_float`,
 `len`.
 
-**Math:** `abs`, `min`, `max` (variadic or over a list), `pow`, `sqrt`, `floor`, `ceil`,
-`round`, `gcd`.
+**Math:** `abs`, `min`, `max` (variadic or over a list), `pow`, `sqrt`, `cbrt`, `floor`, `ceil`,
+`round`, `trunc`, `gcd`, `sign`, `clamp(x, lo, hi)`, `factorial`, `hypot`, `exp`, `ln`, `log10`,
+`log2`, `log(x, base)`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pi()`, `e()`.
 
-**Strings:** `upper`, `lower`, `trim`, `split`, `join`, `contains`, `starts_with`, `ends_with`,
-`replace`, `index_of`, `substr`, `char_at`, `ord`, `chr`, `repeat`, `reverse`.
+**Strings:** `upper`, `lower`, `trim`, `capitalize`, `split`, `join`, `chars`, `words`, `lines`,
+`contains`, `starts_with`, `ends_with`, `replace`, `index_of`, `substr`, `char_at`, `ord`, `chr`,
+`repeat`, `reverse`, `pad_start(s, w[, fill])`, `pad_end(s, w[, fill])`.
 
 **Lists:** `push`, `pop`, `insert`, `remove`, `slice`, `reverse`, `sort`, `sort_by`, `sum`,
-`range` (2- or 3-arg), `contains`, `index_of`, `map`, `filter`, `reduce`, `each`, `find`, `any`,
-`all`, `count`. Indexing accepts negatives (`xs[-1]` is the last element).
+`product`, `range` (2- or 3-arg), `contains`, `index_of`, `position`, `first`, `last`, `take`,
+`drop`, `take_while`, `drop_while`, `concat`, `zip`, `enumerate`, `flatten`, `flat_map`, `unique`,
+`chunk`, `window`, `partition`, `min_by`, `max_by`, `map`, `filter`, `reduce`, `each`, `find`,
+`any`, `all`, `count`. Indexing accepts negatives (`xs[-1]` is the last element). Most list
+functions also accept a string (over its characters) or a map (over its keys).
 
-**Maps:** `keys`, `values`, `has_key`, `remove`, `len`. `for k in m` iterates keys.
+**Maps:** `keys`, `values`, `entries`, `has_key`, `get(m, k, default)`, `merge(a, b)`,
+`map_values(m, f)`, `remove`, `len`. `for k in m` iterates keys.
+
+**Functional:** `compose(f, g)` (→ `x ↦ f(g(x))`), `identity`, `apply(f, args_list)`, `call`,
+`times(n, f)` (→ `[f(0), …, f(n-1)]`).
 
 **I/O and control:** `print`, `println`, `eprint`, `eprintln` (space-separated args; zero args =
 blank line), `input` / `read_line` (a line from stdin), `args` (command-line arguments),
