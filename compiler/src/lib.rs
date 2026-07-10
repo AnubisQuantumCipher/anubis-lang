@@ -6,11 +6,13 @@ pub mod backends;
 pub mod evidence;
 pub mod frontend;
 pub mod middle;
+pub mod project;
 
 pub use backends::native::lower_to_native;
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
 pub use frontend::{lex, parse, parse_source, Mode, AST};
 pub use middle::{typecheck, SymbolicEngine, TaintPass};
+pub use project::{AnubisManifest, ProjectLayout};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildMode {
@@ -1151,6 +1153,22 @@ fn main() {
             discharged("fn g2(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > 0) { if x > 5 { return x; } return x + 1; }"),
             "both return paths satisfy result>0"
         );
+        // A `return` hidden in a `match`-arm expression (adversarial-sweep round 10) must be checked
+        // against the `ensures` too — the return-scan is now expression-aware, symmetric to the
+        // write-scan. `g()` returns 0 via the match arm, violating `ensures(result > 999999)`.
+        assert!(
+            !discharged("fn g() -> u32 ensures(result > 999999) { match 1 { 1 => { return 0; } _ => { } } return 1000000; }"),
+            "a return hidden in a match arm must be checked against the ensures (false proof)"
+        );
+        assert!(
+            !discharged("fn g() -> u32 ensures(result >= 1000) { let mut i = 0; while i < 3 invariant(i >= 0) { i = i + 1; } match i { 3 => { return 8; } _ => {} } return 1000; }"),
+            "a match-arm return after a verified loop must still be checked against the ensures"
+        );
+        // Control: a match where EVERY return path satisfies the ensures still proves.
+        assert!(
+            discharged("fn g(c: u32) -> u32 requires(c >= 0) requires(c < 10) ensures(result >= 5) { match c { 0 => { return 10; } _ => {} } return 7; }"),
+            "a match whose every return path satisfies the ensures proves"
+        );
         // Fail-closed integer contract: an `ensures` over an integer predicate whose returned value
         // cannot be modeled (a call whose contract we did not carry) must be REJECTED, not silently
         // skipped — this is the `evil` false proof (a skipped precondition erasing the postcondition).
@@ -1229,10 +1247,13 @@ fn main() {
         assert!(!discharged("fn inc(model: u32) -> u32 ensures(result > model) { return model + 1; }"), "B: keyword-named param must not fail open");
         // B (other direction) — a VALID contract with a keyword-named param must still PROVE.
         assert!(discharged("fn inc(model: u32) -> u32 requires(model > 0) requires(model < 100) ensures(result > model) { return model + 1; }"), "B: valid keyword-named contract still proves");
-        // C — an integer `ensures` over a non-modeled variable (untyped param / reassigned param)
-        // silently vanished. It must fail closed.
+        // C — an integer `ensures` over a non-modeled variable (untyped param) silently vanished. It
+        // must fail closed.
         assert!(!discharged("fn inc(x) requires(x > 0) ensures(result < x) { return x + 1; }"), "C: untyped-param integer ensures must not vanish");
-        assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > x) { x = 0; return x + 1; }"), "C: reassigned-param ensures must not vanish");
+        // A reassigned parameter's `ensures` refers to the value AT RETURN (Anubis has no `old()`): it
+        // is still CHECKED against the reassigned value, not silently skipped. Here `x = 0; return x;`
+        // makes `result > x` become `0 > 0`, which is false and must be REJECTED.
+        assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > x) { x = 0; return x; }"), "C: reassigned-param ensures is checked at the return value (0 > 0 is false)");
         // D — a float param modeled as an i64 bit-vector: `dbl(0.5)` runs to 1.0.
         assert!(!discharged("fn dbl(x: f64) -> f64 requires(x > 0) requires(x < 10) ensures(result != 1) { return x + x; }"), "D: float param must not be modeled as i64");
         // E — an integer literal beyond i64::MAX reduced mod 2^64 by the solver but f64 at runtime.
@@ -1249,6 +1270,41 @@ fn main() {
         // Note the LOWER bound too: without `requires(x >= 0)` this is violable (the `u32` annotation
         // is inert, so `x` may be negative and `2x >= x` fails) — the checker correctly rejects that.
         assert!(discharged("fn ok(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result >= x) { return x + x; }"), "valid doubling contract still proves");
+    }
+
+    #[test]
+    fn loop_body_assert_not_discharged_against_stale_state() {
+        // An `assert` inside a loop body must NOT be proved OR disproved from the PRE-LOOP value of a
+        // variable the loop mutates each iteration — that value is stale the moment the loop runs. The
+        // loop-written variables are havoc'd before the body, so such an assert is deferred to the
+        // runtime (which enforces `assert`). An assert over a read-only variable stays statically
+        // checked.
+        let checks_pass = |src: &str| match typecheck(
+            parse_source(src).expect("parse"),
+            frontend::Mode::Safe,
+        ) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // Was a false DISPROOF from the stale `x == 0` (`0 > 100` is false); now skipped (deferred).
+        // The complementary false PROOF (`assert(x < 2)` "proved" from `x == 0`) is closed by the same
+        // havoc — the obligation is no longer emitted at all.
+        assert!(
+            checks_pass("fn main() { let mut x = 0; let mut i = 0; while i < 3 { assert(x > 100); x = x + 1; i = i + 1; } }"),
+            "an in-body assert over a loop-written variable must not be discharged from its stale pre-loop value"
+        );
+        // A read-only variable inside the loop is NOT havoc'd, so a genuinely-false assert over it is
+        // still disproved, and a true one still proves.
+        assert!(
+            !checks_pass("fn main() { let c = 5; let mut i = 0; while i < 3 { assert(c == 9); i = i + 1; } }"),
+            "an in-body assert over an unmodified variable is still statically checked (c==9 is false)"
+        );
+        assert!(
+            checks_pass("fn main() { let c = 5; let mut i = 0; while i < 3 { assert(c == 5); i = i + 1; } }"),
+            "a true in-body assert over an unmodified variable proves"
+        );
     }
 
     #[test]
@@ -1344,10 +1400,12 @@ fn main() {
             !discharged("fn f() -> u32 ensures(result >= 100) { let mut i = 0; while i < 100 invariant(i <= 100) { if i == 3 { return i; } i = i + 1; } return i; }"),
             "a nested return in the loop body defeats straight-line analysis -> rejected"
         );
-        // Control: an `if` with NO escape and no tracked-variable write is still analyzable.
+        // B3 v1 scope: an invariant loop body must be a FLAT straight-line sequence. A branch in the
+        // body (even a harmless `if { print }`) is conservatively rejected — the robust guard against
+        // writes hidden in branches/expressions. (A future layer can admit branch transitions.)
         assert!(
-            discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { if i > 2 { print(i); } i = i + 1; } return i; }"),
-            "a non-escaping conditional in the body does not block verification"
+            !discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { if i > 2 { print(i); } i = i + 1; } return i; }"),
+            "a branch in an invariant loop body is conservatively rejected (flat-body rule)"
         );
         // AUXILIARY-variable false proof (adversarial-sweep round 3): a variable NOT in the invariant
         // (`z`) that a loop-carried variable reads (`x = x + z`) but that is written in a branch /
@@ -1369,6 +1427,90 @@ fn main() {
         assert!(
             discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut s = \"\"; let mut i = 0; while i < n invariant(i >= 0) { s = s + \"x\"; i = i + 1; } return i; }"),
             "an irrelevant (string) auxiliary must not block an integer invariant"
+        );
+        // STALE-REASSIGNMENT false proof (adversarial-sweep round 4): a variable reassigned BEFORE (or
+        // between) the loop kept a stale solver fact (`x == 1`) that the invariant machinery re-armed,
+        // laundering a false invariant. The Assign handler must drop the stale fact, not just
+        // modelability. `x` is 2 at runtime, so `invariant(x == 1)` is false.
+        assert!(
+            !discharged("fn main() { let mut x = 1; x = 2; let mut i = 0; while i < 1 invariant(x == 1) { i = i + 1; } assert(x == 1); }"),
+            "a variable reassigned before the loop must not keep a stale fact for the invariant base case"
+        );
+        assert!(
+            !discharged("fn main() { let mut n = 100; n = 3; let mut i = 0; while i < n invariant(i >= 0) { i = i + 1; } assert(i >= 100); }"),
+            "a stale reassigned CONDITION variable must not launder a false post-loop bound"
+        );
+        assert!(
+            !discharged("fn main() { let mut x = 0; let mut i = 0; while i < 3 invariant(x >= 0) { x = x + 1; i = i + 1; } x = 0 - 50; let mut j = 0; while j < 1 invariant(x >= 0) { j = j + 1; } assert(x >= 0); }"),
+            "a reassignment between two loops must invalidate the first loop's post-fact"
+        );
+        // A loop-body `let` that SHADOWS a modeled variable is conservatively REJECTED (round-6
+        // soundness fix): a shadow would let the transition read the outer symbolic's stale fact while
+        // the runtime uses the shadow's value, certifying a false invariant. Rejecting is fail-closed.
+        assert!(
+            !discharged("fn main() { let y = 0; let mut z = 0; let mut i = 0; while i < 3 invariant(z == 0) { let y = 5; z = y; i = i + 1; } assert(z == 0); }"),
+            "a loop-body `let` shadowing a modeled variable must be rejected (false proof)"
+        );
+        assert!(
+            !discharged("fn main() { let y = 0; let mut z = 0; let mut i = 0; while i < 3 invariant(z == 0) { let (y, w) = (8, 1); z = y; i = i + 1; } }"),
+            "a destructuring `let` shadowing a modeled variable must be rejected"
+        );
+        // Control: a FRESH (non-shadowing) loop-local `let` is still fine.
+        assert!(
+            discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { let q = 100; i = i + 1; } return i; }"),
+            "a fresh non-shadowing loop-local `let` does not block verification"
+        );
+        // EMBEDDED-ASSIGNMENT false proof (adversarial-sweep round 5): an assignment hidden inside an
+        // `if`/`match`/block EXPRESSION (`let z = if true { x = x + 1; 0 } else { 0 };`) mutates `x`
+        // at runtime but is invisible to a statement-only scan. The flat-body rule rejects any loop
+        // body statement whose expressions embed such a block. `x` reaches 5 at runtime.
+        assert!(
+            !discharged("fn main() { let mut i = 0; let mut x = 0; while i < 5 invariant(x == 0) { let z = if true { x = x + 1; 0 } else { 0 }; i = i + 1; } assert(x == 0); }"),
+            "an assignment hidden in an if-expression must not be missed (false proof)"
+        );
+        // Counter-reset idiom (false disproof, round 5): `i = 0;` before a counted loop must keep its
+        // invariant provable — the reassignment must RE-ESTABLISH the new constant fact, not just drop
+        // the old one. `i` is 0 on entry, so `invariant(i >= 0)` holds.
+        assert!(
+            discharged("fn main() { let mut i = 5; i = 0; while i < 4 invariant(i >= 0) { i = i + 1; } print(i); }"),
+            "a constant reassignment (`i = 0;`) before a loop must re-establish the fact for the base case"
+        );
+        // HIDDEN-WRITE false proof (adversarial-sweep round 8): a write hidden inside an `if`/`match`
+        // block EXPRESSION used as a `let` initializer (`let d = if true { x = x + 1; 0 } else { 0 };`)
+        // was invisible to the loop's write scan, so `x`'s stale pre-loop fact survived and a post-loop
+        // `ensures(result == 0)` was falsely certified (runtime returns 3). The write scan is now
+        // expression-aware, so the hidden mutation is seen and the false certification is rejected.
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 0) { let mut x = 0; let mut i = 0; while i < 3 { let d = if true { x = x + 1; 0 } else { 0 }; i = i + 1; } return x; }"),
+            "a write hidden in an expression must be seen by the loop write scan (false proof)"
+        );
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 0) { let mut x = 0; let mut i = 0; while i < 3 { let d = match i { 0 => { x = x + 1; 0 } _ => 0 }; i = i + 1; } return x; }"),
+            "a write hidden in a match-arm expression must be seen (false proof)"
+        );
+        // CONDITIONAL-PATH LEAK false proofs (adversarial-sweep round 9): a fact asserted on a path
+        // that may NOT run — a zero-trip loop body or an untaken `if` branch — must NOT leak as an
+        // unconditional fact. `f(0)` runs the loop/branch zero times and returns 0, so the certified
+        // `ensures(result == 5)` is false and must be REJECTED.
+        assert!(
+            !discharged("fn f(n: i64) -> i64 requires(n >= 0) requires(n < 100) ensures(result == 5) { let mut x = 0; let mut i = 0; while i < n { x = 5; i = i + 1; } return x; }"),
+            "a zero-trip loop body's fact must not leak as an unconditional post-loop fact"
+        );
+        assert!(
+            !discharged("fn f(c: i64) -> i64 ensures(result == 5) { let mut x = 0; if c == 1 { x = 5; } return x; }"),
+            "an untaken `if` branch's fact must not leak past the `if`"
+        );
+        assert!(
+            !discharged("fn f() -> i64 ensures(result == 200) { let mut x = 0; let mut i = 0; while i < 3 { x = 100; i = i + 1; } let mut j = 0; while j < 0 { x = 200; j = j + 1; } return x; }"),
+            "a zero-trip SECOND loop must not override the value with an unreached assignment"
+        );
+        // Control: a `for` loop over a non-empty range that provably runs still lets a post-loop
+        // invariant-backed property through (via a while-with-invariant restatement is the norm; a
+        // bare post-loop ensures over a loop-carried var without an invariant is correctly rejected).
+        // The counter-reset idiom at TOP LEVEL (not conditional) still re-establishes its fact:
+        assert!(
+            discharged("fn main() { let mut i = 5; i = 0; while i < 4 invariant(i >= 0) { i = i + 1; } print(i); }"),
+            "a top-level (non-conditional) reassignment still re-establishes its fact"
         );
 
         // Valid inductive invariants accept (controls, no over-rejection):

@@ -3200,6 +3200,15 @@ fn resolve_metal_reference(cli_ref: Option<&Path>) -> MetalReferenceConfig {
 
 fn read_anubis_toml_metal_reference() -> Option<PathBuf> {
     let text = std::fs::read_to_string("Anubis.toml").ok()?;
+    // Preferred: the documented `[backend.risc0_metal].reference_path`, read via the typed manifest
+    // parser. (The previous hand-rolled line matcher only recognized undocumented flat keys, so the
+    // documented format never actually resolved — this fixes that.)
+    if let Ok(manifest) = anubis_compiler::AnubisManifest::parse(&text) {
+        if let Some(path) = manifest.metal_reference_path() {
+            return Some(path);
+        }
+    }
+    // Back-compat: the historical flat keys, in case a hand-written manifest still uses them.
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("risc0_metal_reference")

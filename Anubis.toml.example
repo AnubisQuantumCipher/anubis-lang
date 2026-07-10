@@ -1,10 +1,24 @@
 # Anubis.toml.example
 # Copy to Anubis.toml (or place next to your .anb sources) and edit.
+# Parsed by the typed manifest reader (compiler/src/project). Every section is optional.
 # Resolution order for risc0 metal-hybrid reference:
 #   1. --metal-reference (CLI)
 #   2. ANUBIS_RISC0_METAL_REFERENCE (env)
 #   3. This file: [backend.risc0_metal] reference_path
 #   4. Built-in local default (only for the canonical development host)
+
+# Project identity. Parsed today; consumed when the package manager lands (roadmap Phase 6).
+# [package]
+# name = "my-app"
+# version = "0.1.0"
+# description = "what it does"
+# authors = ["you"]
+
+# Dependencies. Parsed today (version string / { path = ... } / { git = ..., rev = ... });
+# resolution + a lockfile + proof-carrying composition land in roadmap Phase 6.
+# [dependencies]
+# math  = "1.2"
+# utils = { path = "../utils" }
 
 [backend.risc0]
 enabled = true
