@@ -350,3 +350,16 @@ enums + builtin `Ok` still type-check). **216 compiler tests, 0 failed**; langua
 PCA gate 13/13; all 8 `examples/feel/*` run (enum-heavy `03_engagement_ledger` uses
 `Verdict`/`Status`/`Review`). LANGUAGE.md enums section updated. Re-run:
 `cargo test -p anubis-compiler --release enum_construct_is_validated`.
+
+## `input()` / `read_line()` now functional (2026-07-10)
+
+Documented stdin builtins returned empty. The runtime `anubis_input()` was correct, but the CLI `run`
+path executed the compiled binary with `Command::output()`, which **closes the child's stdin** — so
+every stdin read hit EOF. Fixed by forwarding the parent's stdin (`.stdin(Stdio::inherit())`) on the
+run-spawn in `tools/anubis/src/main.rs`; stdout/stderr stay captured for the run evidence bundle.
+
+**Evidence:** regression test `read_line_reads_stdin` (pipes `"40\n2\n"` -> prints `42`; `input()`
+alias strips the newline) via a new `run_with_stdin` harness that spawns the binary with piped stdin.
+Verified firsthand: `printf "10\n20\n12\n" | anubis run` -> `sum: 42`; a no-stdin program still runs
+without hanging. **217 compiler tests, 0 failed.** Re-run:
+`cargo test -p anubis-compiler --release read_line_reads_stdin`.

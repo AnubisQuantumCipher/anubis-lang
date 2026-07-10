@@ -3563,6 +3563,69 @@ mod run_tests {
         );
     }
 
+    /// Compile+run a program feeding `stdin_bytes` to its standard input, returning trimmed stdout.
+    /// Mirrors the CLI `run` path, which inherits stdin so `input()`/`read_line()` work.
+    fn run_with_stdin(src: &str, stdin_bytes: &[u8]) -> String {
+        use std::io::Write;
+        let ast = crate::frontend::parse_source(src).expect("parse");
+        let rust_source = lower_program_to_rust(&ast.items, false).expect("lower");
+        let dir = std::env::temp_dir().join(format!("anubis-stdin-{}", anubis_unique_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rs = dir.join("anubis_run.rs");
+        let exe = dir.join("anubis_run");
+        std::fs::write(&rs, rust_source).unwrap();
+        let build = std::process::Command::new("rustc")
+            .arg(&rs)
+            .arg("--edition")
+            .arg("2021")
+            .arg("-o")
+            .arg(&exe)
+            .output()
+            .expect("rustc");
+        assert!(
+            build.status.success(),
+            "rustc failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let mut child = std::process::Command::new(&exe)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin_bytes)
+            .unwrap();
+        let out = child.wait_with_output().expect("wait");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            out.status.success(),
+            "program exited nonzero.\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn read_line_reads_stdin() {
+        // `read_line()` must consume real stdin (the CLI inherits it). Two lines -> 40 + 2 = 42.
+        assert_eq!(
+            run_with_stdin(
+                "fn main() { let a = int(read_line()); let b = int(read_line()); print(a + b); }",
+                b"40\n2\n",
+            ),
+            "42"
+        );
+        // `input` is an alias and strips the trailing newline.
+        assert_eq!(
+            run_with_stdin("fn main() { print(\"hi \" + input()); }", b"there\n"),
+            "hi there"
+        );
+    }
+
     #[test]
     fn arithmetic_precedence() {
         assert_eq!(run("fn main() { print(2 + 3 * 4 - 1); }"), "13");

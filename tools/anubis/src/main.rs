@@ -2969,8 +2969,12 @@ fn run_anubis_source(
         tmp_exe
     };
 
+    // Inherit the parent's stdin so `input()` / `read_line()` work (piped or interactive).
+    // `output()` would otherwise close the child's stdin, making every stdin read return EOF.
+    // stdout/stderr stay captured (for the run evidence bundle) — only stdin is forwarded.
     let output = std::process::Command::new(&work_exe)
         .args(args)
+        .stdin(std::process::Stdio::inherit())
         .output()
         .map_err(|e| anyhow!("run spawn failed: {}", e))?;
 
