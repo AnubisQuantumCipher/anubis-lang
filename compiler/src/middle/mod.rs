@@ -384,7 +384,38 @@ fn check_calls_expr(
             }
         }
         Expr::FieldAccess { base, .. } => check_calls_expr(base, fns, bound, ctx),
-        Expr::EnumConstruct { fields, .. } => {
+        Expr::EnumConstruct {
+            enum_name,
+            variant,
+            fields,
+            ..
+        } => {
+            // Fail-closed: `Foo::Bar` must name a declared enum and a real variant. An unknown
+            // enum name is either a typo or a Rust-style qualified call (`math::double(...)`) —
+            // the call namespace is flat, so neither is valid. Without this check both silently
+            // lower to a stringy enum value at runtime instead of trapping.
+            match ctx.enum_variants.get(enum_name).cloned() {
+                None => ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_UNKNOWN_ENUM".into()),
+                    message: format!(
+                        "`{enum_name}::{variant}` refers to unknown type `{enum_name}` \
+                         (declare `enum {enum_name}`, or call `{variant}(...)` directly — \
+                         the call namespace is flat, there are no `::`-qualified calls)"
+                    ),
+                    span: None,
+                }),
+                Some(variants) if !variants.contains(variant) => {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_UNKNOWN_VARIANT".into()),
+                        message: format!(
+                            "enum `{enum_name}` has no variant `{variant}` (known: {})",
+                            variants.join(", ")
+                        ),
+                        span: None,
+                    })
+                }
+                _ => {}
+            }
             for f in fields {
                 check_calls_expr(f, fns, bound, ctx);
             }

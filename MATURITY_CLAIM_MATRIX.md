@@ -328,3 +328,25 @@ language fixtures 26/26; PCA gate 13/13; language-core repro PASS; all 8 `exampl
 programs run (the two hand-written lexers guard every `char_at` with `i < n`, so trapping is safe).
 LANGUAGE.md updated (indexing + maps sections). Re-run:
 `cargo test -p anubis-compiler --release -- fail_closed index_out_of_bounds missing_map_key`.
+
+## Enum-construction validation (2026-07-10) — closes two audit footguns at once
+
+The audit flagged two fail-open holes that share one root cause: `Foo::Bar` parses to
+`Expr::EnumConstruct { enum_name, variant, .. }`, and an EnumConstruct with an unregistered
+enum/variant was never checked — it silently lowered to a stringy enum value. Two symptoms:
+- **Undefined variant**: `Color::Purple` (with `enum Color { Red, Green, Blue }`) passed `check`.
+- **Qualified-call footgun**: a Rust-style `math::double(21)` passed `check` and printed the literal
+  string `"math::double(21)"` instead of calling — while an unknown *bare* call was already caught
+  (`ANUBIS_UNKNOWN_FUNCTION`).
+
+Fix (`check_calls_expr` in `compiler/src/middle/mod.rs`): validate every `EnumConstruct` against the
+`enum_variants` registry (populated in pass-1 `register_program_surface`, recursing into modules).
+Unknown enum type → `ANUBIS_UNKNOWN_ENUM` (message points at the flat call namespace); real enum but
+absent variant → `ANUBIS_UNKNOWN_VARIANT` (lists the known variants). Both `check` and `run` fail
+closed. Builtin `Option`/`Result` are pre-registered, so `Some`/`None`/`Ok`/`Err` still pass.
+
+**Evidence:** `enum_construct_is_validated` (asserts both errors fire and that unit/tuple/recursive
+enums + builtin `Ok` still type-check). **216 compiler tests, 0 failed**; language fixtures 26/26;
+PCA gate 13/13; all 8 `examples/feel/*` run (enum-heavy `03_engagement_ledger` uses
+`Verdict`/`Status`/`Review`). LANGUAGE.md enums section updated. Re-run:
+`cargo test -p anubis-compiler --release enum_construct_is_validated`.

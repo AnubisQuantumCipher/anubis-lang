@@ -4852,6 +4852,32 @@ mod run_tests {
     }
 
     #[test]
+    fn enum_construct_is_validated() {
+        let tc = |s: &str| {
+            crate::middle::typecheck(
+                crate::frontend::parse_source(s).unwrap(),
+                crate::frontend::Mode::Safe,
+            )
+        };
+        // Unknown enum type (also the Rust-style `math::double(21)` qualified-call footgun):
+        // the call namespace is flat, so `X::y` where X is not a declared enum fails closed.
+        let e = tc("fn double(x) { x * 2 } fn main(){ print(double::double(21)); }").unwrap_err();
+        assert!(e.contains("ANUBIS_UNKNOWN_ENUM"), "got: {e}");
+        // Undefined variant of a real enum.
+        let e = tc("enum Color { Red, Green, Blue } fn main(){ print(Color::Purple); }").unwrap_err();
+        assert!(e.contains("ANUBIS_UNKNOWN_VARIANT"), "got: {e}");
+        // Real enums (unit, tuple, recursive) and builtin Option/Result still type-check.
+        assert!(tc("enum Color { Red, Green } fn main(){ print(Color::Red); }").is_ok());
+        assert!(tc(
+            "enum Tree { Leaf(u32), Node(Tree, Tree) } \
+             fn s(t){ match t { Tree::Leaf(v) => v, Tree::Node(l, r) => s(l) + s(r) } } \
+             fn main(){ print(s(Tree::Node(Tree::Leaf(1), Tree::Leaf(2)))); }"
+        )
+        .is_ok());
+        assert!(tc("fn main(){ let r = Ok(1); print(match r { Ok(v) => v, Err(e) => 0 }); }").is_ok());
+    }
+
+    #[test]
     fn stdlib_maps() {
         assert_eq!(
             run("fn main() { let m = { \"a\": 1, \"b\": 2 }; print(len(keys(m))); }"),

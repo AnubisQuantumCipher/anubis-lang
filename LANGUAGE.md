@@ -315,6 +315,11 @@ Enums support unit, tuple, and struct-shaped variants. `match` is an expression 
 value) and can also stand as a statement. Arms are tried top-to-bottom; the first arm whose
 pattern matches — and whose guard, if any, passes — wins.
 
+Enum construction is **fail-closed**: a `Foo::Bar` whose type `Foo` is not a declared enum is
+rejected (`ANUBIS_UNKNOWN_ENUM`) — this also catches a Rust-style qualified call `pkg::fn(...)`,
+since the call namespace is flat — and a `Foo::Bar` naming a real enum but an absent variant is
+rejected (`ANUBIS_UNKNOWN_VARIANT`). Neither silently becomes a stringy value at runtime.
+
 ```
 enum Http {
     Ok { code: u32 },
