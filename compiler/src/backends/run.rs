@@ -3715,6 +3715,30 @@ mod run_tests {
     }
 
     #[test]
+    fn match_statement_in_closure_and_arm_bodies() {
+        // A `match` used as a non-final statement inside a closure body or a match-arm body must
+        // parse (it is a block-like statement, no `;` needed) — regression: it was mis-parsed as
+        // the block tail, breaking the following statement.
+        assert_eq!(
+            run("fn main() { let g = |x| { match x { 1 => print(\"one\"), _ => print(\"other\"), } \
+                 print(\"after\"); }; g(1); }"),
+            "one\nafter"
+        );
+        assert_eq!(
+            run("fn main() { let x = 1; match x { \
+                 1 => { match x { 1 => print(\"inner\"), _ => print(\"io\"), } print(\"armtail\"); } \
+                 _ => print(\"other\"), } }"),
+            "inner\narmtail"
+        );
+        // `match` as a block VALUE (tail) is still returned, not swallowed as a statement.
+        assert_eq!(
+            run("fn main() { let f = |n| { match n { 0 => \"zero\", _ => \"nonzero\" } }; \
+                 print(f(0)); print(f(5)); }"),
+            "zero\nnonzero"
+        );
+    }
+
+    #[test]
     fn deep_recursion_runs_on_large_stack() {
         // The program runs on a 1 GiB worker stack, so recursion far past the 8 MiB main-thread
         // ceiling (~8500 frames) succeeds. 100k deep would overflow the OS main stack.

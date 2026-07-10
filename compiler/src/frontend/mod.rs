@@ -1915,8 +1915,18 @@ impl Parser {
             } else if self.check_token(&Token::Semi) {
                 self.bump();
                 stmts.push(Stmt::ExprStmt(e));
+            } else if matches!(
+                e,
+                Expr::Match { .. } | Expr::If { .. } | Expr::IfLet { .. } | Expr::Block { .. }
+            ) && !self.check_token(&Token::RBrace)
+            {
+                // A block-like expression (`match`/`if`/`{ … }`) in statement position needs no
+                // `;` to be a statement — only the FINAL expression is the block's tail value.
+                // Without this, `match x { … }` followed by another statement inside a closure or
+                // match-arm body was mis-parsed as the tail, and the next statement broke parsing.
+                stmts.push(Stmt::ExprStmt(e));
             } else {
-                // No trailing separator → this expression is the block's value.
+                // No trailing separator and at block end → this expression is the block's value.
                 tail = Some(Box::new(e));
                 break;
             }
