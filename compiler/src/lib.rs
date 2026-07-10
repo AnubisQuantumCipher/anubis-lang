@@ -1050,6 +1050,36 @@ fn main() {
     }
 
     #[test]
+    fn solver_never_disproves_unmodelable_assertions() {
+        // Soundness: the checker must not fabricate a bit-vector counterexample for an assertion it
+        // cannot faithfully model. A bool literal, a bool variable, and a string comparison must
+        // all be left un-disproved (they are still enforced at runtime), NOT reported as FAIL.
+        for src in [
+            "fn main() { assert(true); }",
+            "fn main() { let ok = true; assert(ok); }",
+            "fn main() { let a = \"xy\"; let b = \"x\" + \"y\"; assert(a == b); }",
+        ] {
+            let ast = parse_source(src).expect("parse");
+            let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+            let checks = SymbolicEngine::check_obligations(&ir);
+            assert!(
+                checks.iter().all(|c| c.status != "FAIL"),
+                "must not disprove an unmodelable assertion in `{src}`: {:?}",
+                checks
+            );
+        }
+        // And a genuinely-false MODELABLE assertion must still be disproved (no soundness loss).
+        let ast = parse_source("fn main() { let x: u32 = 3; assert(x > 20); }").expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks.iter().any(|c| c.status == "FAIL"),
+            "must still disprove a false arithmetic assertion: {:?}",
+            checks
+        );
+    }
+
+    #[test]
     fn solver_model_replay_failed_for_inconsistent_model() {
         // Hostile test: bad model that violates assumption should cause replay fail
         use crate::middle;

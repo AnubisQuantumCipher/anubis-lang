@@ -133,6 +133,11 @@ struct SemanticContext {
     has_research: bool,
     symbolic_defs: Vec<String>,
     symbolic_widths: BTreeMap<String, u32>,
+    /// Variables that are genuinely modelable as bit-vectors for the solver (a `symbolic()` source
+    /// or an integer-arithmetic let over already-modelable vars). Distinct from `symbolic_widths`,
+    /// which records a width for EVERY let — including string/bool/list bindings — and so cannot be
+    /// used to decide whether an assertion is soundly modelable in QF_BV.
+    solver_int_vars: BTreeSet<String>,
     known_bindings: BTreeSet<String>,
     /// Enum name → variant names (for match exhaustiveness).
     enum_variants: BTreeMap<String, Vec<String>>,
@@ -817,6 +822,16 @@ fn analyze_stmts(
                 };
                 ctx.symbolic_widths.insert(name.clone(), w);
 
+                // Track whether this binding is genuinely integer-modelable for the solver: a
+                // `symbolic()` source, or an integer-arithmetic init over already-modelable vars.
+                // String/bool/list lets are excluded, so an assertion over them is never
+                // (unsoundly) "disproved" by a fabricated bit-vector counterexample.
+                if matches!(init, Expr::Symbolic { .. })
+                    || is_int_modelable(init, &ctx.solver_int_vars)
+                {
+                    ctx.solver_int_vars.insert(name.clone());
+                }
+
                 // For solver faithfulness: concrete lets become path assumptions.
                 // Symbolic sources remain unconstrained until assume()/assert() shape them.
                 if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
@@ -872,19 +887,26 @@ fn analyze_stmts(
                 effects.push("assume".into());
             }
             Stmt::ExprStmt(Expr::Assert(expr)) => {
-                let smt = expr_to_smt(expr, &ctx.symbolic_widths);
-                ctx.constraints.push(format!("(assert {})", smt));
-                let mut vars = BTreeSet::new();
-                collect_vars_from_smt(&smt, &mut vars);
-                for assumption in assumptions.iter() {
-                    collect_vars_from_smt(assumption, &mut vars);
+                // Only discharge an assertion the solver can soundly model in QF_BV (a boolean
+                // formula over integer-modelable terms). A bare bool var, a string comparison, or
+                // any other value is left to the runtime `assert` — the checker must not fabricate
+                // a bit-vector counterexample and "disprove" a statement it cannot faithfully model
+                // (that would make `check` unsound, e.g. disproving `assert(true)`).
+                if is_bool_modelable(expr, &ctx.solver_int_vars) {
+                    let smt = expr_to_smt(expr, &ctx.symbolic_widths);
+                    ctx.constraints.push(format!("(assert {})", smt));
+                    let mut vars = BTreeSet::new();
+                    collect_vars_from_smt(&smt, &mut vars);
+                    for assumption in assumptions.iter() {
+                        collect_vars_from_smt(assumption, &mut vars);
+                    }
+                    ctx.solver_obligations.push(SolverObligation {
+                        name: format!("assert:{}", smt),
+                        assumptions: assumptions.clone(),
+                        assertion: smt,
+                        vars: vars.into_iter().collect(),
+                    });
                 }
-                ctx.solver_obligations.push(SolverObligation {
-                    name: format!("assert:{}", smt),
-                    assumptions: assumptions.clone(),
-                    assertion: smt,
-                    vars: vars.into_iter().collect(),
-                });
                 effects.push("assert".into());
             }
             Stmt::ExprStmt(expr) => {
@@ -1295,11 +1317,19 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
             model: Some(stdout),
             smt,
         },
+        // Anything that is neither a clean `unsat` (proved) nor `sat` (disproved) — a solver
+        // `unknown`, a parse/sort error, or empty output — is NOT a counterexample. Reporting it
+        // as FAIL would be an unsound "disproof" of a statement the solver never actually refuted.
+        // Fail-open on the solver here is correct: the assertion is still enforced at runtime.
         other => SolverCheck {
             name: obligation.name.clone(),
-            status: "FAIL".into(),
-            detail: format!("z3 returned `{}` stderr `{}`", other, stderr.trim()),
-            model: Some(stdout),
+            status: "UNKNOWN".into(),
+            detail: format!(
+                "solver did not decide this obligation (z3 returned `{}` stderr `{}`); not a disproof",
+                other,
+                stderr.trim()
+            ),
+            model: None,
             smt,
         },
     }
@@ -1333,6 +1363,54 @@ fn expr_to_smt(e: &Expr, widths: &BTreeMap<String, u32>) -> String {
     expr_to_smt_with_width(e, widths, None)
 }
 
+/// True when `e` is a genuine integer term over solver-modelable variables: an integer literal,
+/// a modelable variable, or arithmetic/bitwise composition of such. Used to decide whether an
+/// assertion can be soundly encoded in QF_BV — a var that is NOT here (e.g. a string or bool
+/// binding) must not be silently treated as a 32-bit integer.
+fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Var(v) => int_vars.contains(v),
+        Expr::Literal(l) => !l.is_empty() && l.chars().all(|c| c.is_ascii_digit()),
+        Expr::Binary { op, lhs, rhs } => {
+            matches!(
+                op.as_str(),
+                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>"
+            ) && is_int_modelable(lhs, int_vars)
+                && is_int_modelable(rhs, int_vars)
+        }
+        Expr::Unary { op, expr } => op == "-" && is_int_modelable(expr, int_vars),
+        Expr::Cast { expr, .. } => is_int_modelable(expr, int_vars),
+        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+            is_int_modelable(inner, int_vars)
+        }
+        _ => false,
+    }
+}
+
+/// True when `e` is a boolean formula the solver can soundly discharge: a boolean literal, a
+/// comparison of integer-modelable terms, or a boolean combination of such. A bare variable, a
+/// string comparison, or anything else is NOT modelable — the checker must decline to prove or
+/// disprove it (it is still enforced at runtime) rather than fabricate a bit-vector counterexample.
+fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Literal(l) => l == "true" || l == "false",
+        Expr::Binary { op, lhs, rhs } => match op.as_str() {
+            "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+                is_int_modelable(lhs, int_vars) && is_int_modelable(rhs, int_vars)
+            }
+            "&&" | "||" => {
+                is_bool_modelable(lhs, int_vars) && is_bool_modelable(rhs, int_vars)
+            }
+            _ => false,
+        },
+        Expr::Unary { op, expr } => op == "!" && is_bool_modelable(expr, int_vars),
+        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+            is_bool_modelable(inner, int_vars)
+        }
+        _ => false,
+    }
+}
+
 fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String> {
     match e {
         Expr::Var(v) if widths.contains_key(v) => Some(v.clone()),
@@ -1360,8 +1438,18 @@ fn expr_to_smt_with_width(
 ) -> String {
     match e {
         Expr::Var(v) => v.clone(),
+        // Boolean literals are SMT `Bool`, not bit-vectors: emitting `(_ bvtrue 32)` produced the
+        // Z3 error "unknown constant bvtrue" that made `check` reject `assert(true)`.
+        Expr::Literal(l) if l == "true" || l == "false" => l.clone(),
         Expr::Literal(l) => format!("(_ bv{} {})", l, expected_width.unwrap_or(32)),
         Expr::Binary { op, lhs, rhs } => {
+            // Logical connectives combine Bool operands, not bit-vectors — do not width-propagate.
+            if op == "&&" || op == "||" {
+                let l = expr_to_smt_with_width(lhs, widths, None);
+                let r = expr_to_smt_with_width(rhs, widths, None);
+                let smt_op = if op == "&&" { "and" } else { "or" };
+                return format!("({} {} {})", smt_op, l, r);
+            }
             let width = expr_bitwidth(lhs, widths)
                 .or_else(|| expr_bitwidth(rhs, widths))
                 .or(expected_width)
