@@ -1220,61 +1220,32 @@ fn anubis_args() -> AnubisValue {
 // ---- Higher-order functions over closures ----
 
 fn anubis_map(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    match list {
-        AnubisValue::List(items) => AnubisValue::List(items.into_iter().map(|x| f.call_closure(vec![x])).collect()),
-        other => other,
-    }
+    AnubisValue::List(anubis_iter(list).into_iter().map(|x| f.call_closure(vec![x])).collect())
 }
 fn anubis_filter(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    match list {
-        AnubisValue::List(items) => AnubisValue::List(
-            items.into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).collect()
-        ),
-        other => other,
-    }
+    AnubisValue::List(anubis_iter(list).into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).collect())
 }
 fn anubis_reduce(list: AnubisValue, f: AnubisValue, init: AnubisValue) -> AnubisValue {
-    match list {
-        AnubisValue::List(items) => {
-            let mut acc = init;
-            for x in items { acc = f.call_closure(vec![acc, x]); }
-            acc
-        }
-        _ => init,
-    }
+    let mut acc = init;
+    for x in anubis_iter(list) { acc = f.call_closure(vec![acc, x]); }
+    acc
 }
 fn anubis_each(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    if let AnubisValue::List(items) = list {
-        for x in items { let _ = f.call_closure(vec![x]); }
-    }
+    for x in anubis_iter(list) { let _ = f.call_closure(vec![x]); }
     AnubisValue::Int(0)
 }
 fn anubis_find(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    if let AnubisValue::List(items) = list {
-        for x in items { if f.call_closure(vec![x.clone()]).as_bool() { return x; } }
-    }
+    for x in anubis_iter(list) { if f.call_closure(vec![x.clone()]).as_bool() { return x; } }
     AnubisValue::Int(0)
 }
 fn anubis_any(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    let r = match list {
-        AnubisValue::List(items) => items.into_iter().any(|x| f.call_closure(vec![x]).as_bool()),
-        _ => false,
-    };
-    AnubisValue::Bool(r)
+    AnubisValue::Bool(anubis_iter(list).into_iter().any(|x| f.call_closure(vec![x]).as_bool()))
 }
 fn anubis_all(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    let r = match list {
-        AnubisValue::List(items) => items.into_iter().all(|x| f.call_closure(vec![x]).as_bool()),
-        _ => true,
-    };
-    AnubisValue::Bool(r)
+    AnubisValue::Bool(anubis_iter(list).into_iter().all(|x| f.call_closure(vec![x]).as_bool()))
 }
 fn anubis_count_by(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    let c = match list {
-        AnubisValue::List(items) => items.into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).count(),
-        _ => 0,
-    };
-    AnubisValue::Int(c as i64)
+    AnubisValue::Int(anubis_iter(list).into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).count() as i64)
 }
 fn anubis_sort_by(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     match list {
@@ -2871,12 +2842,26 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         // Block expression: run the statements, then yield the tail value (or Int(0)).
         Expr::Block { stmts, tail } => {
             let mut body = String::new();
-            for s in stmts {
-                emit_safe_run_stmt(s, 0, &mut body, ctx)?;
-            }
             let tail_src = match tail {
-                Some(t) => safe_run_expr(t, ctx)?,
-                None => "AnubisValue::Int(0)".to_string(),
+                Some(t) => {
+                    for s in stmts {
+                        emit_safe_run_stmt(s, 0, &mut body, ctx)?;
+                    }
+                    safe_run_expr(t, ctx)?
+                }
+                // No explicit tail: a trailing bare expression or `if/else` statement is still the
+                // block's value (so `{ if c { return x } y }` yields y, and `{ if c { a } else { b } }`
+                // yields a/b), matching function-body implicit-return semantics.
+                None => {
+                    let (head, tail_expr) = split_tail_expr(stmts);
+                    for s in &head {
+                        emit_safe_run_stmt(s, 0, &mut body, ctx)?;
+                    }
+                    match tail_expr {
+                        Some(e) => safe_run_expr(&e, ctx)?,
+                        None => "AnubisValue::Int(0)".to_string(),
+                    }
+                }
             };
             Ok(format!("{{ {} {} }}", body, tail_src))
         }
@@ -3911,6 +3896,53 @@ mod run_tests {
                    fn main() { print((Dog {}).describe()); print((Dog {}).shout()); \
                      print((Cat {}).describe()); print((Cat {}).shout()); }";
         assert_eq!(run(src), "a dog\nA DOG\nthe mighty cat\nTHE MIGHTY CAT");
+    }
+
+    #[test]
+    fn method_name_does_not_shadow_builtin_freecall() {
+        // A method named like a builtin must not break a free call to that builtin.
+        let src = "struct Bag { items: list } impl Bag { fn count(self) { len(self.items) + 100 } } \
+                   fn main() { let b = Bag { items: [1, 2, 3] }; print(b.count()); \
+                     print(count([1, 2, 3], |x| x > 1)); }";
+        assert_eq!(run(src), "103\n2");
+    }
+
+    #[test]
+    fn inherent_method_beats_trait_default() {
+        // An inherent method and two traits sharing a default must not emit duplicate functions.
+        let src = "trait T { fn go(self) { \"trait\" } fn req(self) { 0 } } \
+                   struct X { } impl X { fn go(self) { \"inherent\" } } impl T for X { } \
+                   trait A { fn kind(self) { \"a\" } } trait B { fn kind(self) { \"b\" } } \
+                   struct Y { } impl A for Y { } impl B for Y { } \
+                   fn main() { print((X {}).go()); print((X {}).req()); print((Y {}).kind()); }";
+        assert_eq!(run(src), "inherent\n0\na");
+    }
+
+    #[test]
+    fn bare_if_statement_in_match_arm_block() {
+        // A no-else `if` guard inside a match-arm block body parses as a statement.
+        let src = "fn f(n) { return match n { _ => { if n < 0 { return 111 } 222 } }; } \
+                   fn main() { print(f(-1)); print(f(5)); }";
+        assert_eq!(run(src), "111\n222");
+    }
+
+    #[test]
+    fn typecheck_rejects_non_exhaustive_user_enum() {
+        let ast = crate::frontend::parse_source(
+            "enum E { A, B, C } fn f(x) { match x { E::A => 1, E::B => 2 } } fn main() { }",
+        )
+        .unwrap();
+        let err = crate::typecheck(ast, crate::frontend::Mode::Safe).unwrap_err();
+        assert!(err.contains("ANUBIS_MATCH_NON_EXHAUSTIVE"), "{}", err);
+    }
+
+    #[test]
+    fn hofs_accept_strings_and_maps() {
+        // The closure-taking list HOFs also iterate a string's chars or a map's keys.
+        let src = "fn main() { print(map(\"abc\", |c| upper(c))); print(filter(\"hello\", |c| c != \"l\")); \
+                   print(any(\"abc\", |c| c == \"b\")); print(count(\"banana\", |c| c == \"a\")); \
+                   print(sort(map({ \"a\": 1, \"b\": 2 }, |k| upper(k)))); }";
+        assert_eq!(run(src), "[A, B, C]\n[h, e, o]\ntrue\n3\n[A, B]");
     }
 
     #[test]

@@ -471,7 +471,35 @@ pub enum Expr {
 pub fn resolve_traits(items: Vec<Item>) -> Vec<Item> {
     let mut defaults: std::collections::BTreeMap<String, Vec<Item>> = Default::default();
     collect_trait_defaults(&items, &mut defaults);
-    transform_trait_items(items, &defaults)
+    // Method names each type already defines EXPLICITLY across every impl block (inherent or trait).
+    let mut explicit: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    collect_explicit_methods(&items, &mut explicit);
+    // Names already injected per type, so two trait impls sharing a default don't both add it.
+    let mut injected: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    transform_trait_items(items, &defaults, &explicit, &mut injected)
+}
+
+/// Method names each type defines explicitly across all its `impl` blocks (inherent and trait).
+fn collect_explicit_methods(
+    items: &[Item],
+    out: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) {
+    for item in items {
+        match item {
+            Item::Impl { type_name, methods, .. } => {
+                let set = out.entry(type_name.clone()).or_default();
+                for m in methods {
+                    if let Item::Fn { name, .. } = m {
+                        set.insert(name.clone());
+                    }
+                }
+            }
+            Item::Module { items, .. } => collect_explicit_methods(items, out),
+            _ => {}
+        }
+    }
 }
 
 fn collect_trait_defaults(
@@ -497,7 +525,10 @@ fn collect_trait_defaults(
 fn transform_trait_items(
     items: Vec<Item>,
     defaults: &std::collections::BTreeMap<String, Vec<Item>>,
+    explicit: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    injected: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 ) -> Vec<Item> {
+    let empty = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for item in items {
         match item {
@@ -509,16 +540,13 @@ fn transform_trait_items(
                 span,
             } => {
                 if let Some(ds) = defaults.get(&t) {
-                    let have: std::collections::BTreeSet<String> = methods
-                        .iter()
-                        .filter_map(|m| match m {
-                            Item::Fn { name, .. } => Some(name.clone()),
-                            _ => None,
-                        })
-                        .collect();
+                    let have = explicit.get(&type_name).unwrap_or(&empty);
+                    let done = injected.entry(type_name.clone()).or_default();
                     for d in ds {
                         if let Item::Fn { name, .. } = d {
-                            if !have.contains(name) {
+                            // Inject a default only if the type does not define it explicitly in
+                            // ANY impl block, and it hasn't already been injected for this type.
+                            if !have.contains(name) && done.insert(name.clone()) {
                                 methods.push(d.clone());
                             }
                         }
@@ -533,7 +561,7 @@ fn transform_trait_items(
             }
             Item::Module { name, items, span } => out.push(Item::Module {
                 name,
-                items: transform_trait_items(items, defaults),
+                items: transform_trait_items(items, defaults, explicit, injected),
                 span,
             }),
             other => out.push(other),
@@ -1798,8 +1826,11 @@ impl Parser {
         let mut stmts: Vec<Stmt> = Vec::new();
         let mut tail: Option<Box<Expr>> = None;
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
-            // Statement-introducing keywords are always statements.
+            // Statement-introducing keywords are always statements. `if` is included so a bare
+            // no-else `if` (a guard) parses as a statement; a trailing `if/else` is recovered as
+            // the block's value by `Expr::Block` lowering (via split_tail_expr).
             if self.check_keyword("let")
+                || self.check_keyword("if")
                 || self.check_keyword("while")
                 || self.check_keyword("loop")
                 || self.check_keyword("for")

@@ -457,7 +457,7 @@ fn collect_items(
                         });
                     }
                 }
-                analyze_function(name, module, params, body, effective_mode, *span, ctx);
+                analyze_function(name, module, params, body, effective_mode, *span, false, ctx);
             }
             Item::Struct { .. } => {
                 // Minimal support for this slice: structs are parsed and preserved in AST;
@@ -468,9 +468,24 @@ fn collect_items(
                 ctx.enum_variants.insert(name.clone(), names);
             }
             // Methods are analyzed like free functions (their `self`/params are in scope for the
-            // body); they are not registered as callable-by-name, since they dispatch on receiver.
+            // body) but flagged `is_method`, so they are not registered as callable-by-name —
+            // they dispatch on the receiver and must not shadow a same-named builtin.
             Item::Impl { methods, .. } => {
-                collect_items(methods, module, requested_mode, ctx);
+                for m in methods {
+                    if let Item::Fn {
+                        name, params, body, mode, span, ..
+                    } = m
+                    {
+                        let effective_mode = if *mode == Mode::Safe {
+                            requested_mode
+                        } else {
+                            *mode
+                        };
+                        analyze_function(
+                            name, module, params, body, effective_mode, *span, true, ctx,
+                        );
+                    }
+                }
             }
             // Traits are desugared away before this pass (resolve_traits); none should remain.
             Item::Trait { .. } => {}
@@ -478,6 +493,7 @@ fn collect_items(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn analyze_function(
     name: &str,
     module: Option<&str>,
@@ -485,17 +501,22 @@ fn analyze_function(
     body: &[Stmt],
     mode: Mode,
     span: Span,
+    is_method: bool,
     ctx: &mut SemanticContext,
 ) {
     if mode != Mode::Safe {
         ctx.has_research = true;
     }
 
-    // A+ call-site typing: record this function's parameter types for later calls.
-    ctx.fn_params.insert(
-        name.to_string(),
-        params.iter().map(|(_, ty)| ty.clone()).collect(),
-    );
+    // A+ call-site typing: record this function's parameter types for later calls. Methods are
+    // NOT recorded — they are only reachable via `recv.m(...)`, never a bare call, so recording
+    // them would shadow a same-named stdlib builtin at free call sites.
+    if !is_method {
+        ctx.fn_params.insert(
+            name.to_string(),
+            params.iter().map(|(_, ty)| ty.clone()).collect(),
+        );
+    }
 
     // Duplicate parameter names are a hard error.
     let mut seen_params = BTreeSet::new();
@@ -1637,9 +1658,8 @@ fn check_match_exhaustiveness(
         _ => infer_expr_type_scoped(scrutinee, scope)
             .filter(|t| ctx.enum_variants.contains_key(t)),
     };
-    // If the scrutinee's type is unknown, fall back to arm-based inference for the built-in
-    // Option/Result only (user enums keep the stricter scrutinee-type check to avoid new
-    // false positives on partially-typed code).
+    // If the scrutinee's type is unknown, fall back to arm-based inference: if the arms cover
+    // variants of a declared enum (or built-in Option/Result), that is the enum being matched.
     let enum_name = enum_name.or_else(|| {
         arms.iter().find_map(|arm| {
             let mut pairs = Vec::new();
@@ -1647,7 +1667,7 @@ fn check_match_exhaustiveness(
             pairs
                 .into_iter()
                 .map(|(en, _)| en)
-                .find(|en| en == "Option" || en == "Result")
+                .find(|en| ctx.enum_variants.contains_key(en))
         })
     });
     let Some(enum_name) = enum_name else {
