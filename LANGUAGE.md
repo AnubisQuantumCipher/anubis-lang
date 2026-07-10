@@ -251,6 +251,34 @@ print(p.translate(1, 1).label());    // (4, 5)   — methods chain
 Methods work on enums too, and a method may call another via `self.other()`. Calling a method on
 a value whose type doesn't define it yields the default `0` rather than an error.
 
+## Traits
+
+A `trait` is a named interface. Methods with a body are **defaults** that implementors inherit;
+methods written as a bare signature (`fn area(self);`) are **required**. `impl Trait for Type`
+provides the required methods and may override any default.
+
+```
+trait Animal {
+    fn name(self);              // required
+    fn sound(self);             // required
+    fn legs(self) { 4 }         // default
+    fn speak(self) { "${self.name()} says ${self.sound()}" }   // default built from the interface
+}
+
+struct Dog { name: string }
+impl Animal for Dog {
+    fn name(self)  { self.name }
+    fn sound(self) { "Woof" }
+    // legs() and speak() are inherited from the trait
+}
+
+print(Dog { name: "Rex" }.speak());   // Rex says Woof
+```
+
+A trait may be implemented by structs and enums alike, so `map(zoo, |a| a.speak())` works over a
+heterogeneous list — dispatch is on each element's runtime type. Traits desugar to plain method
+sets, so they add no runtime cost.
+
 ## Enums and pattern matching
 
 Enums support unit, tuple, and struct-shaped variants. `match` is an expression (it yields a

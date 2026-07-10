@@ -1,0 +1,57 @@
+// EXPECT: Rex says Woof|Whiskers says Meow|Rex is a loud animal|Whiskers is a quiet animal|[Woof, Meow, ...]|total legs: 8
+// Traits: shared interfaces with default methods, implemented by structs and enums.
+
+trait Animal {
+    fn name(self);              // required
+    fn sound(self);             // required
+    fn legs(self) { 4 }         // default — most animals have four
+    fn speak(self) {            // default, built from the required methods
+        "${self.name()} says ${self.sound()}"
+    }
+    fn loudness(self) {         // default; can be overridden
+        "quiet"
+    }
+    fn temperament(self) {
+        "${self.name()} is a ${self.loudness()} animal"
+    }
+}
+
+struct Dog { name: string }
+impl Animal for Dog {
+    fn name(self) { self.name }
+    fn sound(self) { "Woof" }
+    fn loudness(self) { "loud" }   // dogs override the default
+}
+
+struct Cat { name: string }
+impl Animal for Cat {
+    fn name(self) { self.name }
+    fn sound(self) { "Meow" }
+    // legs, speak, loudness, temperament all inherited
+}
+
+// A trait implemented by an enum, too.
+enum Bug { Spider, Ant }
+impl Animal for Bug {
+    fn name(self) { match self { Bug::Spider => "spider", Bug::Ant => "ant" } }
+    fn sound(self) { "..." }
+    fn legs(self) { match self { Bug::Spider => 8, Bug::Ant => 6 } }
+}
+
+fn main() {
+    let rex = Dog { name: "Rex" };
+    let whiskers = Cat { name: "Whiskers" };
+
+    print(rex.speak());              // Rex says Woof     (default using overrides)
+    print(whiskers.speak());         // Whiskers says Meow
+
+    print(rex.temperament());        // Rex is a loud animal     (override wins)
+    print(whiskers.temperament());   // Whiskers is a quiet animal (default)
+
+    // polymorphism: one loop over different concrete types
+    let zoo = [rex, whiskers, Bug::Spider];
+    print(map(zoo, |a| a.sound()));  // [Woof, Meow, ...]
+
+    // the enum uses its overridden legs() default
+    print("total legs: ${Bug::Spider.legs()}");   // total legs: 8
+}

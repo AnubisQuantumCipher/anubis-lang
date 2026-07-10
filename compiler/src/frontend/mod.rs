@@ -138,10 +138,19 @@ pub enum Item {
         variants: Vec<EnumVariant>,
         span: Span,
     },
-    /// `impl Point { fn dist(self) { ... } ... }` — methods for a struct/enum type. Each method
-    /// is an `Item::Fn` taking `self` as its first parameter.
+    /// `impl Point { ... }` or `impl Shape for Circle { ... }` — methods for a struct/enum type.
+    /// Each method is an `Item::Fn` taking `self` first. `trait_name` is `Some` for the
+    /// `impl Trait for Type` form, which inherits the trait's un-overridden default methods.
     Impl {
         type_name: String,
+        trait_name: Option<String>,
+        methods: Vec<Item>,
+        span: Span,
+    },
+    /// `trait Shape { fn area(self); fn name(self) { "shape" } }` — an interface. Methods with a
+    /// body are defaults inherited by implementors; methods without one are required.
+    Trait {
+        name: String,
         methods: Vec<Item>,
         span: Span,
     },
@@ -453,6 +462,83 @@ pub enum Expr {
         span: Span,
     },
     Other(String),
+}
+
+/// Desugar traits: replace each `impl Trait for Type` with a plain `impl Type` that inherits the
+/// trait's un-overridden default methods, and drop `trait` declarations. Downstream passes then
+/// only ever see plain `impl` blocks — traits add no new lowering machinery.
+pub fn resolve_traits(items: Vec<Item>) -> Vec<Item> {
+    let mut defaults: std::collections::BTreeMap<String, Vec<Item>> = Default::default();
+    collect_trait_defaults(&items, &mut defaults);
+    transform_trait_items(items, &defaults)
+}
+
+fn collect_trait_defaults(
+    items: &[Item],
+    out: &mut std::collections::BTreeMap<String, Vec<Item>>,
+) {
+    for item in items {
+        match item {
+            Item::Trait { name, methods, .. } => {
+                let ds: Vec<Item> = methods
+                    .iter()
+                    .filter(|m| matches!(m, Item::Fn { body, .. } if !body.is_empty()))
+                    .cloned()
+                    .collect();
+                out.insert(name.clone(), ds);
+            }
+            Item::Module { items, .. } => collect_trait_defaults(items, out),
+            _ => {}
+        }
+    }
+}
+
+fn transform_trait_items(
+    items: Vec<Item>,
+    defaults: &std::collections::BTreeMap<String, Vec<Item>>,
+) -> Vec<Item> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            Item::Trait { .. } => {} // declaration only — drop after resolution
+            Item::Impl {
+                type_name,
+                trait_name: Some(t),
+                mut methods,
+                span,
+            } => {
+                if let Some(ds) = defaults.get(&t) {
+                    let have: std::collections::BTreeSet<String> = methods
+                        .iter()
+                        .filter_map(|m| match m {
+                            Item::Fn { name, .. } => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    for d in ds {
+                        if let Item::Fn { name, .. } = d {
+                            if !have.contains(name) {
+                                methods.push(d.clone());
+                            }
+                        }
+                    }
+                }
+                out.push(Item::Impl {
+                    type_name,
+                    trait_name: None,
+                    methods,
+                    span,
+                });
+            }
+            Item::Module { name, items, span } => out.push(Item::Module {
+                name,
+                items: transform_trait_items(items, defaults),
+                span,
+            }),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// The built-in enum a bare `Some`/`None`/`Ok`/`Err` constructor or pattern belongs to.
@@ -995,7 +1081,7 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
                     | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
-                    | "enum" | "match" | "impl"
+                    | "enum" | "match" | "impl" | "trait"
                     | "return" | "as" | "while" | "loop" | "break" | "continue" | "mut" | "for"
                     | "in" => Token::Keyword(id),
                     _ => Token::Ident(id),
@@ -1144,6 +1230,10 @@ impl Parser {
                 if let Some(item) = self.parse_impl() {
                     items.push(item);
                 }
+            } else if self.check_keyword("trait") {
+                if let Some(item) = self.parse_trait() {
+                    items.push(item);
+                }
             } else {
                 let span = self.current_span();
                 self.diagnostic("expected item", span);
@@ -1151,7 +1241,9 @@ impl Parser {
             }
         }
         ParseOutput {
-            ast: AST { items },
+            ast: AST {
+                items: resolve_traits(items),
+            },
             diagnostics: self.diagnostics,
         }
     }
@@ -1561,7 +1653,17 @@ impl Parser {
 
     fn parse_impl(&mut self) -> Option<Item> {
         let start = self.expect_keyword("impl")?.span;
-        let (type_name, _) = self.expect_ident("expected type name after `impl`")?;
+        let (first, _) = self.expect_ident("expected type name after `impl`")?;
+        // `impl Type { ... }`  or  `impl Trait for Type { ... }`.
+        let (trait_name, type_name) = if self.check_keyword("for") {
+            self.bump();
+            let (ty, _) = self
+                .expect_ident("expected type name after `for`")
+                .unwrap_or_else(|| ("_".into(), start));
+            (Some(first), ty)
+        } else {
+            (None, first)
+        };
         let _ = self.expect_token(Token::LBrace, "expected `{` after impl type");
         let mut methods = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
@@ -1579,6 +1681,35 @@ impl Parser {
         let end = self.previous_end();
         Some(Item::Impl {
             type_name,
+            trait_name,
+            methods,
+            span: Span {
+                start: start.start,
+                end,
+            },
+        })
+    }
+
+    fn parse_trait(&mut self) -> Option<Item> {
+        let start = self.expect_keyword("trait")?.span;
+        let (name, _) = self.expect_ident("expected trait name")?;
+        let _ = self.expect_token(Token::LBrace, "expected `{` after trait name");
+        let mut methods = vec![];
+        while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            let attrs = self.parse_attributes();
+            if self.check_keyword("fn") {
+                if let Some(m) = self.parse_fn(attrs) {
+                    methods.push(m);
+                }
+            } else {
+                self.diagnostic("expected `fn` in trait", self.current_span());
+                self.bump();
+            }
+        }
+        let _ = self.expect_token(Token::RBrace, "expected `}` after trait");
+        let end = self.previous_end();
+        Some(Item::Trait {
+            name,
             methods,
             span: Span {
                 start: start.start,
@@ -1845,6 +1976,10 @@ impl Parser {
                 if let Some(item) = self.parse_impl() {
                     items.push(item);
                 }
+            } else if self.check_keyword("trait") {
+                if let Some(item) = self.parse_trait() {
+                    items.push(item);
+                }
             } else {
                 self.diagnostic("expected item in module", self.current_span());
                 self.bump();
@@ -1886,6 +2021,11 @@ impl Parser {
         let body_start = self.current_span();
         let body = if self.check_token(&Token::LBrace) {
             self.parse_block()
+        } else if self.check_token(&Token::Semi) {
+            // A `;`-terminated signature (`fn area(self);`) — a required trait method, or a
+            // forward declaration. Empty body: calling it (unless overridden) yields 0.
+            self.bump();
+            vec![]
         } else {
             self.diagnostic("expected `{` before function body", body_start);
             vec![]

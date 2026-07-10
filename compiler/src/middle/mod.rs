@@ -472,6 +472,8 @@ fn collect_items(
             Item::Impl { methods, .. } => {
                 collect_items(methods, module, requested_mode, ctx);
             }
+            // Traits are desugared away before this pass (resolve_traits); none should remain.
+            Item::Trait { .. } => {}
         }
     }
 }
@@ -1337,6 +1339,7 @@ fn first_fn_body(items: &[Item]) -> Option<Vec<Stmt>> {
             Item::Struct { .. } => {}
             Item::Enum { .. } => {}
             Item::Impl { .. } => {}
+            Item::Trait { .. } => {}
         }
     }
     None

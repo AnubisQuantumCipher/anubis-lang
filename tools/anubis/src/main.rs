@@ -3459,6 +3459,7 @@ fn first_mode(items: &[Item]) -> Option<Mode> {
                     return Some(mode);
                 }
             }
+            Item::Trait { .. } => {}
         }
     }
     None

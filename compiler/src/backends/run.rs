@@ -3609,6 +3609,29 @@ mod run_tests {
     }
 
     #[test]
+    fn traits_default_methods_and_overrides() {
+        let src = "trait Describable { fn name(self); fn describe(self) { \"a \" + self.name() } \
+                     fn shout(self) { upper(self.describe()) } } \
+                   struct Dog { } impl Describable for Dog { fn name(self) { \"dog\" } } \
+                   struct Cat { } impl Describable for Cat { fn name(self) { \"cat\" } \
+                     fn describe(self) { \"the mighty \" + self.name() } } \
+                   fn main() { print((Dog {}).describe()); print((Dog {}).shout()); \
+                     print((Cat {}).describe()); print((Cat {}).shout()); }";
+        assert_eq!(run(src), "a dog\nA DOG\nthe mighty cat\nTHE MIGHTY CAT");
+    }
+
+    #[test]
+    fn traits_polymorphism_and_enums() {
+        // A trait implemented by structs and enums; heterogeneous list dispatches per element.
+        let src = "trait Shape { fn area(self); fn twice(self) { self.area() * 2 } } \
+                   struct Sq { s: int } impl Shape for Sq { fn area(self) { self.s * self.s } } \
+                   enum Circle { R(int) } impl Shape for Circle { fn area(self) { return match self { Circle::R(r) => 3*r*r }; } } \
+                   fn main() { print((Sq { s: 4 }).twice()); print(Circle::R(10).area()); \
+                     print(map([Sq { s: 2 }, Sq { s: 3 }], |x| x.area())); }";
+        assert_eq!(run(src), "32\n300\n[4, 9]");
+    }
+
+    #[test]
     fn methods_dispatch_on_receiver_type() {
         let src = "struct Point { x: int, y: int } \
                    impl Point { fn dist2(self) { self.x * self.x + self.y * self.y } \
