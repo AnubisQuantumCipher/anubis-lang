@@ -1252,6 +1252,137 @@ fn main() {
     }
 
     #[test]
+    fn b3_loop_invariants_verify_inductively() {
+        // B3: a `while` invariant is verified by the Hoare rule (holds on entry AND is preserved by
+        // each iteration), then may be assumed after the loop — readmitting a loop-carried variable
+        // the solver otherwise drops. `discharged` is false when the program is rejected (a
+        // fail-closed diagnostic OR a solver FAIL on the base/step obligation).
+        let discharged = |src: &str| match typecheck(
+            parse_source(src).expect("parse"),
+            frontend::Mode::Safe,
+        ) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+
+        // THE DEMONSTRATION: an `ensures` over a loop-carried variable is UNPROVABLE without an
+        // invariant (the variable is dropped when reassigned) but PROVABLE with one.
+        assert!(
+            !discharged("fn count(n: u32) -> u32 requires(n < 1000000) ensures(result >= 0) { let mut i = 0; while i < n { i = i + 1; } return i; }"),
+            "without an invariant, ensures over the loop var must fail closed"
+        );
+        assert!(
+            discharged("fn count(n: u32) -> u32 requires(n < 1000000) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { i = i + 1; } return i; }"),
+            "with an invariant, the loop var is readmitted and the ensures proves"
+        );
+
+        // Base case must hold on entry: `i >= 5` is false when `i` starts at 0.
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 5) { let mut i = 0; while i < n invariant(i >= 5) { i = i + 1; } return i; }"),
+            "invariant that fails on entry is rejected (base case)"
+        );
+        // Preservation must hold: `x >= 5` is not preserved as `x` decrements toward 0.
+        assert!(
+            !discharged("fn f() -> u32 ensures(result >= 5) { let mut x = 10; while x > 0 invariant(x >= 5) { x = x - 1; } return x; }"),
+            "invariant not preserved by the body is rejected (inductive step)"
+        );
+        // A true-but-non-inductive invariant is rejected (soundness: we require inductiveness).
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut i = 0; while i < n invariant(i == n) { i = i + 1; } return i; }"),
+            "non-inductive invariant is rejected"
+        );
+        // The stale pre-loop value must NOT survive: after a loop that increments `i`, an ensures
+        // that `result == 0` must be rejected (the loop changed i).
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n > 0) requires(n < 100) ensures(result == 0) { let mut i = 0; while i < n invariant(i >= 0) { i = i + 1; } return i; }"),
+            "stale pre-loop assumption (i==0) must be dropped after the loop"
+        );
+        // A false ensures cannot slip through a valid invariant: `result > n` is false (i ends == n).
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result > n) { let mut i = 0; while i < n invariant(i >= 0) { i = i + 1; } return i; }"),
+            "a valid invariant must not certify a false postcondition"
+        );
+        // A branch that writes a loop-carried variable defeats straight-line transition -> rejected.
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { if i > 2 { i = i + 2; } i = i + 1; } return i; }"),
+            "a branch writing the loop variable is not analyzable -> rejected"
+        );
+        // `for`/`loop` invariants are honestly rejected (not yet verified) rather than silently used.
+        assert!(
+            !discharged("fn f(n: u32) -> u32 ensures(result >= 0) { let mut t = 0; for i in 0..n invariant(t >= 0) { t = t + 1; } return t; }"),
+            "for-loop invariant is rejected (not yet supported) not silently ignored"
+        );
+
+        // Vacuity via the loop (adversarial-sweep false proof): a contradictory pre-loop state
+        // (`assume`/`requires`) must NOT launder through the base case to certify a bogus invariant
+        // and a false postcondition. `f()` returns 3 at runtime, so `ensures(result == 42)` is false.
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 42) { let mut i = 0; assume(i > 5); while i < 3 invariant(i == 42) { i = i + 1; } return i; }"),
+            "a contradictory `assume` must not vacuously pass the loop base case (false proof)"
+        );
+        assert!(
+            !discharged("fn f(i: u32) -> u32 requires(i > 5) requires(i < 3) ensures(result == 42) { while i < 3 invariant(i == 42) { i = i + 1; } return i; }"),
+            "contradictory `requires` on the loop variable must not vacuously certify a postcondition"
+        );
+        // The post-loop admit keeps facts about UNMODIFIED variables (frame): `n < 1000` (n is only
+        // read, never written) must survive so `result < 2000` proves. (Was a false disproof when the
+        // drop keyed on all tracked vars instead of only the modified ones.)
+        assert!(
+            discharged("fn f(n: u32) -> u32 requires(n < 1000) requires(n > 0) ensures(result < 2000) { let mut i = 0; while i < n invariant(i >= 0) invariant(i <= n) { i = i + 1; } return i; }"),
+            "a bound on a loop-invariant (unmodified) variable must survive after the loop"
+        );
+        // A break/continue/return NESTED in an `if` (adversarial-sweep false proof): the loop can exit
+        // while its condition is still true, so the post-loop `¬cond` assumption is unsound and could
+        // certify a false ensures. `f()` returns 3 at runtime, so `ensures(result >= 100)` is false.
+        assert!(
+            !discharged("fn f() -> u32 ensures(result >= 100) { let mut i = 0; while i < 100 invariant(i <= 100) { if i == 3 { break; } i = i + 1; } return i; }"),
+            "a nested break must not leave a false post-loop `not cond` assumption (false proof)"
+        );
+        assert!(
+            !discharged("fn f() -> u32 ensures(result >= 100) { let mut i = 0; while i < 100 invariant(i <= 100) { if i == 3 { return i; } i = i + 1; } return i; }"),
+            "a nested return in the loop body defeats straight-line analysis -> rejected"
+        );
+        // Control: an `if` with NO escape and no tracked-variable write is still analyzable.
+        assert!(
+            discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { if i > 2 { print(i); } i = i + 1; } return i; }"),
+            "a non-escaping conditional in the body does not block verification"
+        );
+        // AUXILIARY-variable false proof (adversarial-sweep round 3): a variable NOT in the invariant
+        // (`z`) that a loop-carried variable reads (`x = x + z`) but that is written in a branch /
+        // nested loop / via a non-modelable RHS was frozen at its stale pre-loop value, "proving" a
+        // false invariant. `x` reaches 300 at runtime, so `invariant(x == 0)` is false.
+        assert!(
+            !discharged("fn f() { let z = 0; let x = 0; let i = 0; while i < 3 invariant(x == 0) { x = x + z; if i >= 0 { z = z + 100; } i = i + 1; } assert(x == 0); }"),
+            "an auxiliary variable written in a branch must not be frozen in the transition (false proof)"
+        );
+        assert!(
+            !discharged("fn f() { let z = 0; let x = 0; let i = 0; while i < 3 invariant(x == 0) { x = x + z; z = (z + 2) / 1; i = i + 1; } assert(x == 0); }"),
+            "an auxiliary variable with a non-modelable update must drop its stale fact (false proof)"
+        );
+        assert!(
+            !discharged("fn f() { let z = 0; let x = 0; let i = 0; while i < 3 invariant(x == 0) { x = x + z; let mut k = 0; while k < 1 { z = z + 50; k = k + 1; } i = i + 1; } assert(x == 0); }"),
+            "an auxiliary variable written in a nested loop must drop its stale fact (false proof)"
+        );
+        // Control: a string auxiliary the integer invariant does not read must NOT be over-rejected.
+        assert!(
+            discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut s = \"\"; let mut i = 0; while i < n invariant(i >= 0) { s = s + \"x\"; i = i + 1; } return i; }"),
+            "an irrelevant (string) auxiliary must not block an integer invariant"
+        );
+
+        // Valid inductive invariants accept (controls, no over-rejection):
+        assert!(
+            discharged("fn f() -> u32 ensures(result >= 0) { let mut x = 10; while x > 0 invariant(x >= 0) { x = x - 1; } return x; }"),
+            "a bounded-decrement invariant proves"
+        );
+        assert!(
+            discharged("fn f(n: u32) -> u32 requires(n >= 0) requires(n < 100) ensures(result >= 0) { let mut s = 0; let mut i = 0; while i < n invariant(s >= 0) invariant(s <= i) invariant(i >= 0) invariant(i <= n) { s = s + 1; i = i + 1; } return s; }"),
+            "a multi-clause interdependent invariant proves (frame keeps n's bound in scope)"
+        );
+    }
+
+    #[test]
     fn solver_does_not_disprove_loop_carried_assertions() {
         // A binding mutated after its `let` (here, accumulated in a loop) cannot be modeled from
         // its initial value; the checker must not disprove a TRUE post-loop assertion against the
@@ -1519,6 +1650,8 @@ fn bad() {
 
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let candidates = [
+            // Committed fixture (survives a worktree clean); the out/ paths are live-run fallbacks.
+            base.join("tests/fixtures/gate11_parity_journal.bin"),
             base.join("out/a_plus_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
             base.join("out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
         ];
@@ -1553,6 +1686,8 @@ fn bad() {
         // Tamper simulation using real journal.bin bytes + pure fn (no fallback, no inline if).
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let candidates = [
+            // Committed fixture (survives a worktree clean); the out/ paths are live-run fallbacks.
+            base.join("tests/fixtures/gate11_parity_journal.bin"),
             base.join("out/a_plus_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
             base.join("out/a15_gate11_parity/metal_parity_hello_cpu/backend/risc0/journal.bin"),
         ];

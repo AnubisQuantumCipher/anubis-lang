@@ -313,7 +313,7 @@ fn check_calls_stmts(
                     check_calls_stmts(e, fns, &mut b, ctx);
                 }
             }
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, .. } => {
                 check_calls_expr(cond, fns, bound, ctx);
                 let mut b = bound.clone();
                 check_calls_stmts(body, fns, &mut b, ctx);
@@ -326,11 +326,11 @@ fn check_calls_stmts(
                 }
                 check_calls_stmts(body, fns, &mut b, ctx);
             }
-            Stmt::Loop { body } => {
+            Stmt::Loop { body, .. } => {
                 let mut b = bound.clone();
                 check_calls_stmts(body, fns, &mut b, ctx);
             }
-            Stmt::For { var, source, body } => {
+            Stmt::For { var, source, body, .. } => {
                 match source {
                     ForSource::Range { start, end } => {
                         check_calls_expr(start, fns, bound, ctx);
@@ -1176,12 +1176,46 @@ fn analyze_stmts(
                     );
                 }
             }
-            Stmt::While { cond, body } => {
+            Stmt::While {
+                cond,
+                body,
+                invariant,
+            } => {
                 if expr_taint_source(cond, scope).is_some() {
                     effects.push("tainted-branch".into());
                 }
                 effects.push("loop".into());
+                // B3: verify loop invariants (base case + preservation) BEFORE the body drops the
+                // loop-carried variables, so the base case sees their pre-loop state.
+                let admit = if invariant.is_empty() {
+                    None
+                } else {
+                    verify_while_invariants(ctx, cond, invariant, body, assumptions)
+                };
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                if let Some((post, written, readmit)) = admit {
+                    // Post-loop, drop the STALE pre-loop concrete assumption of EVERY variable the
+                    // loop writes (e.g. `i == 0`, or an auxiliary `z == 0`) — otherwise a post-loop
+                    // assertion could be "proved" against a value the loop has since changed. An outer
+                    // fact about a variable the loop never writes (e.g. `n < 1000`) is still true and
+                    // is KEPT. Then re-model only the TRACKED variables (constrained by the proved
+                    // invariants) so a later `ensures`/`assert` can use them.
+                    let written_mangled: BTreeSet<String> =
+                        written.iter().map(|v| smt_var(v)).collect();
+                    assumptions.retain(|a| {
+                        let mut vs = BTreeSet::new();
+                        collect_vars_from_smt(a, &mut vs);
+                        vs.is_disjoint(&written_mangled)
+                    });
+                    for v in &readmit {
+                        ctx.solver_int_vars.insert(v.clone());
+                        ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+                    }
+                    for a in post {
+                        ctx.constraints.push(format!("(assert {})", a));
+                        assumptions.push(a);
+                    }
+                }
             }
             Stmt::WhileLet { pattern, body, .. } => {
                 effects.push("loop".into());
@@ -1206,12 +1240,37 @@ fn analyze_stmts(
                 }
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
             }
-            Stmt::Loop { body } => {
+            Stmt::Loop { body, invariant } => {
                 effects.push("loop".into());
+                if !invariant.is_empty() {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+                        message: "an unbounded `loop` has no exit condition to assume, so an \
+                             invariant cannot be discharged inductively — use a `while` loop with an \
+                             explicit condition and invariant instead"
+                            .into(),
+                        span: None,
+                    });
+                }
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
             }
-            Stmt::For { var, body, source } => {
+            Stmt::For {
+                var,
+                body,
+                source,
+                invariant,
+            } => {
                 effects.push("loop".into());
+                if !invariant.is_empty() {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+                        message: "loop invariants are currently verified on `while` loops only; \
+                             rewrite this `for` as a `while` with an explicit counter to attach an \
+                             invariant (a green check must not silently ignore an invariant)"
+                            .into(),
+                        span: None,
+                    });
+                }
                 let taint_src = match source {
                     crate::frontend::ForSource::Range { start, .. } => {
                         expr_taint_source(start, scope)
@@ -1468,8 +1527,15 @@ impl SymbolicEngine {
                 // with `assume(x > 1000)`) would otherwise certify any postcondition while the code
                 // runs and violates it. If a passing contract obligation has contradictory
                 // assumptions, fail closed.
-                let is_contract =
-                    obl.name.starts_with("ensures:") || obl.name.starts_with("requires@");
+                // The loop-invariant BASE case uses the pre-loop assumptions; a contradictory
+                // pre-loop state (a false `assume`/`requires` about a loop-carried variable) would
+                // otherwise let the base pass vacuously, the bogus invariant be assumed after the
+                // loop, and a false postcondition be certified. (The preservation STEP is NOT
+                // vacuity-checked: a loop whose invariant implies ¬cond legitimately never iterates.)
+                let is_contract = obl.name.starts_with("ensures:")
+                    || obl.name.starts_with("requires@")
+                    || obl.name.starts_with("loop-invariant-base:")
+                    || obl.name.starts_with("assert:");
                 if check.status == "PASS" && is_contract && !obl.assumptions.is_empty() {
                     if let Some(false) = assumptions_satisfiable(obl) {
                         check.status = "FAIL".into();
@@ -1984,6 +2050,324 @@ fn push_ensures_obligations(
     }
 }
 
+/// Collect the variable names referenced by an expression (for deciding which loop-carried
+/// variables an invariant / condition constrains).
+fn collect_expr_vars(e: &Expr, out: &mut BTreeSet<String>) {
+    match e {
+        Expr::Var(v) => {
+            out.insert(v.clone());
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_vars(lhs, out);
+            collect_expr_vars(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => collect_expr_vars(expr, out),
+        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+            collect_expr_vars(inner, out)
+        }
+        _ => {}
+    }
+}
+
+/// Collect the ROOT of every place the loop body assigns, at ANY depth and in ANY form (a plain
+/// `x = ...`, a compound `x += ...`, an `a[i] = ...` / `p.f = ...` place, or a write nested in an
+/// `if`/nested loop). These are exactly the variables whose value can change across iterations, so a
+/// pre-loop fact about any of them is stale inside the loop and after it — even an AUXILIARY variable
+/// that no invariant mentions but a loop-carried variable reads (`x = x + z`). Without this, such a
+/// frozen auxiliary let the checker "prove" a false invariant.
+fn collect_assigned_roots(body: &[Stmt], out: &mut BTreeSet<String>) {
+    for s in body {
+        match s {
+            Stmt::Assign { target, .. } => {
+                if let Some(r) = assign_target_root(target) {
+                    out.insert(r.to_string());
+                }
+            }
+            Stmt::If { then, else_, .. } => {
+                collect_assigned_roots(then, out);
+                if let Some(e) = else_ {
+                    collect_assigned_roots(e, out);
+                }
+            }
+            Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => collect_assigned_roots(body, out),
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    collect_assigned_roots(b, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// True when statement `s` (recursively) assigns to any variable in `vars`. Used to decide whether a
+/// loop body's branch / nested loop touches a loop-carried variable in a way straight-line transition
+/// extraction cannot model.
+fn stmt_assigns_any(s: &Stmt, vars: &BTreeSet<String>) -> bool {
+    match s {
+        Stmt::Assign { target, .. } => {
+            assign_target_root(target).is_some_and(|r| vars.contains(r))
+        }
+        Stmt::If { then, else_, .. } => {
+            then.iter().any(|s| stmt_assigns_any(s, vars))
+                || else_
+                    .as_ref()
+                    .is_some_and(|e| e.iter().any(|s| stmt_assigns_any(s, vars)))
+        }
+        Stmt::While { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::WhileLet { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => body.iter().any(|s| stmt_assigns_any(s, vars)),
+        Stmt::HybridBlock { gpu, cpu, prove } => [gpu, cpu, prove]
+            .into_iter()
+            .flatten()
+            .any(|b| b.iter().any(|s| stmt_assigns_any(s, vars))),
+        _ => false,
+    }
+}
+
+/// True when statement `s` can break/continue/return OUT of the enclosing loop being analyzed. A
+/// `break`/`continue` nested in an `if` still targets THIS loop (so it counts), but one inside a
+/// NESTED loop targets the inner loop (so it does not) — only a `return` inside a nested loop escapes
+/// further. Any such escape makes the per-iteration transition (and the post-loop `¬cond` assumption)
+/// unsound, because the loop can exit while its condition is still true.
+fn stmt_escapes_loop(s: &Stmt) -> bool {
+    match s {
+        Stmt::Break | Stmt::Continue => true,
+        Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => true,
+        Stmt::If { then, else_, .. } => {
+            then.iter().any(stmt_escapes_loop)
+                || else_
+                    .as_ref()
+                    .is_some_and(|e| e.iter().any(stmt_escapes_loop))
+        }
+        Stmt::While { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::WhileLet { body, .. } => body.iter().any(stmt_contains_return),
+        _ => false,
+    }
+}
+
+/// True when statement `s` contains a `return` at any depth (a return escapes the whole function, so
+/// even one inside a nested loop invalidates the outer loop's straight-line transition).
+fn stmt_contains_return(s: &Stmt) -> bool {
+    match s {
+        Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => true,
+        Stmt::If { then, else_, .. } => {
+            then.iter().any(stmt_contains_return)
+                || else_
+                    .as_ref()
+                    .is_some_and(|e| e.iter().any(stmt_contains_return))
+        }
+        Stmt::While { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::WhileLet { body, .. } => body.iter().any(stmt_contains_return),
+        _ => false,
+    }
+}
+
+/// Extract the straight-line transition a loop body applies to integer variables: a map from each
+/// reassigned variable to its post-iteration value as an expression of the pre-iteration values.
+/// Returns None when the body updates a variable in a way the checker cannot model soundly — a
+/// branch/nested-loop write to a tracked variable, a non-modelable right-hand side, or any
+/// break/continue/return — so the invariant cannot be verified inductively and the loop is rejected.
+fn extract_loop_transition(
+    body: &[Stmt],
+    tracked: &BTreeSet<String>,
+    model_vars: &BTreeSet<String>,
+) -> Option<BTreeMap<String, Expr>> {
+    // A break/continue/return anywhere in the body (including nested inside an `if`) can exit the
+    // loop while its condition is still true, so the post-loop `¬cond` assumption would be unsound —
+    // reject. (A top-level occurrence is also caught in the match below; this covers nested ones.)
+    if body.iter().any(stmt_escapes_loop) {
+        return None;
+    }
+    let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+    for st in body {
+        match st {
+            Stmt::Assign {
+                target: Expr::Var(v),
+                value,
+            } => {
+                let concrete = substitute_vars(value, &sub);
+                // The update's right-hand side must be modelable (so the transition is sound in
+                // QF_BV). A non-modelable update to a tracked variable defeats verification.
+                if tracked.contains(v) && !is_int_modelable(&concrete, model_vars) {
+                    return None;
+                }
+                if is_int_modelable(&concrete, model_vars) {
+                    sub.insert(v.clone(), concrete);
+                } else {
+                    // An untracked variable assigned a non-modelable value: harmless to the
+                    // invariant, but drop any stale mapping for it.
+                    sub.remove(v);
+                }
+            }
+            // A `let` of a loop-local binding does not change the outer loop-carried variables.
+            Stmt::Let { .. } | Stmt::LetPattern { .. } => {}
+            // Any escape or non-straight-line control flow makes the per-iteration transition
+            // impossible to model soundly.
+            Stmt::Break | Stmt::Continue => return None,
+            Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => return None,
+            // A print/assert/assume or other expression statement cannot mutate an integer binding
+            // (Anubis is by-value), so it is transition-neutral.
+            Stmt::ExprStmt(_) => {}
+            // A branch or nested loop is fine ONLY if it does not write a tracked variable.
+            other => {
+                if stmt_assigns_any(other, tracked) {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(sub)
+}
+
+/// Verify a `while` loop's invariants by the Hoare rule and, on success, return the assumptions to
+/// admit AFTER the loop (each invariant, plus the negated condition) together with the loop-carried
+/// variables to re-model. Emits base-case and preservation obligations for the solver to discharge;
+/// rejects (fail-closed) when the invariant or loop cannot be modeled inductively.
+fn verify_while_invariants(
+    ctx: &mut SemanticContext,
+    cond: &Expr,
+    invariants: &[Expr],
+    body: &[Stmt],
+    outer_assumptions: &[String],
+) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
+    let reject = |ctx: &mut SemanticContext, why: &str| {
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+            message: format!(
+                "cannot verify this loop invariant inductively: {why}. Invariants are supported on \
+                 `while` loops whose body is straight-line integer assignments (no branch/nested-loop \
+                 write to a loop-carried variable, no break/continue/return); state the invariant \
+                 over integer variables the solver can model"
+            ),
+            span: None,
+        });
+    };
+
+    // The loop-carried variables the invariant / condition constrain.
+    let mut tracked = BTreeSet::new();
+    collect_expr_vars(cond, &mut tracked);
+    for inv in invariants {
+        collect_expr_vars(inv, &mut tracked);
+    }
+    // Model those variables as fresh 64-bit symbolics for the inductive step.
+    let mut model_vars = ctx.solver_int_vars.clone();
+    for v in &tracked {
+        model_vars.insert(v.clone());
+        ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+    }
+
+    // The condition and every invariant must be modelable, else induction is impossible.
+    if !is_bool_modelable(cond, &model_vars) {
+        reject(ctx, "the loop condition is not an integer formula the solver can model");
+        return None;
+    }
+    for inv in invariants {
+        if !is_bool_modelable(inv, &model_vars) {
+            reject(ctx, "an invariant is not an integer formula the solver can model");
+            return None;
+        }
+    }
+
+    let push_ob = |ctx: &mut SemanticContext, name: String, asm: Vec<String>, assertion: String| {
+        let mut vars = BTreeSet::new();
+        collect_vars_from_smt(&assertion, &mut vars);
+        for a in &asm {
+            collect_vars_from_smt(a, &mut vars);
+        }
+        ctx.solver_obligations.push(SolverObligation {
+            name,
+            assumptions: asm,
+            assertion,
+            vars: vars.into_iter().collect(),
+        });
+    };
+
+    // BASE CASE: on entry, the pre-loop state implies each invariant.
+    for inv in invariants {
+        let smt = expr_to_smt(inv, &ctx.symbolic_widths);
+        push_ob(
+            ctx,
+            format!("loop-invariant-base:{smt}"),
+            outer_assumptions.to_vec(),
+            smt,
+        );
+    }
+
+    // TRANSITION: the straight-line effect of one iteration on the tracked variables.
+    let transition = match extract_loop_transition(body, &tracked, &model_vars) {
+        Some(t) => t,
+        None => {
+            reject(ctx, "the loop body is not straight-line integer assignments");
+            return None;
+        }
+    };
+
+    // PRESERVATION: assuming the invariants, the loop condition, and the loop's FRAME, each invariant
+    // still holds after one iteration. The WRITTEN variables (every variable the body assigns at any
+    // depth — including an auxiliary the transition does not capture, e.g. one written in a branch or
+    // via a non-modelable RHS) are fresh symbolic: their concrete pre-loop values are stale and must
+    // be dropped. Only an outer fact about a variable the loop NEVER writes (e.g. `requires(n < 100)`
+    // while the loop touches `i`/`total`) holds every iteration and stays in scope — without it a
+    // bound like `total <= n` could not be shown overflow-free.
+    let mut written: BTreeSet<String> = BTreeSet::new();
+    collect_assigned_roots(body, &mut written);
+    let written_mangled: BTreeSet<String> = written.iter().map(|v| smt_var(v)).collect();
+    let frame: Vec<String> = outer_assumptions
+        .iter()
+        .filter(|a| {
+            let mut vs = BTreeSet::new();
+            collect_vars_from_smt(a, &mut vs);
+            vs.is_disjoint(&written_mangled)
+        })
+        .cloned()
+        .collect();
+    let cond_smt = expr_to_smt(cond, &ctx.symbolic_widths);
+    let inv_smts: Vec<String> = invariants
+        .iter()
+        .map(|i| expr_to_smt(i, &ctx.symbolic_widths))
+        .collect();
+    let mut step_assumptions = inv_smts.clone();
+    step_assumptions.push(cond_smt.clone());
+    step_assumptions.extend(frame);
+    for inv in invariants {
+        let stepped = substitute_vars(inv, &transition);
+        if !is_bool_modelable(&stepped, &model_vars) {
+            reject(ctx, "an invariant is not modelable after the loop body's update");
+            return None;
+        }
+        let smt = expr_to_smt(&stepped, &ctx.symbolic_widths);
+        push_ob(
+            ctx,
+            format!("loop-invariant-step:{smt}"),
+            step_assumptions.clone(),
+            smt,
+        );
+    }
+
+    // SUCCESS: after the loop the invariants hold and the loop has exited (¬cond). Return (1) EVERY
+    // written variable — a stale pre-loop fact about any of them (even an auxiliary) must be dropped
+    // after the loop, while a fact about an unwritten variable (e.g. `n < 1000`) stays true — and
+    // (2) the tracked variables to re-model so the post-loop invariant assumptions are usable.
+    let mut post = inv_smts;
+    post.push(format!("(not {cond_smt})"));
+    let written_vars: Vec<String> = written.into_iter().collect();
+    let readmit: Vec<String> = tracked.into_iter().collect();
+    Some((post, written_vars, readmit))
+}
+
 /// Collect every explicit `return X` expression in a statement (recursing into nested blocks), so a
 /// contract's `ensures` can be checked at every return point, not only the tail.
 fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
@@ -2004,7 +2388,7 @@ fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
             }
         }
         Stmt::While { body, .. }
-        | Stmt::Loop { body }
+        | Stmt::Loop { body, .. }
         | Stmt::For { body, .. }
         | Stmt::WhileLet { body, .. }
         | Stmt::ResearchBlock { body, .. }
@@ -2549,7 +2933,7 @@ fn check_stmt_exprs(s: &Stmt, scope: &BTreeMap<String, ScopeBinding>, ctx: &mut 
                 check_block_exprs(e, None, scope, ctx);
             }
         }
-        Stmt::While { cond, body } => {
+        Stmt::While { cond, body, .. } => {
             check_expr_semantics(cond, scope, ctx);
             check_block_exprs(body, None, scope, ctx);
         }
@@ -2557,7 +2941,7 @@ fn check_stmt_exprs(s: &Stmt, scope: &BTreeMap<String, ScopeBinding>, ctx: &mut 
             check_expr_semantics(expr, scope, ctx);
             check_block_exprs(body, None, scope, ctx);
         }
-        Stmt::Loop { body } => check_block_exprs(body, None, scope, ctx),
+        Stmt::Loop { body, .. } => check_block_exprs(body, None, scope, ctx),
         Stmt::For { source, body, .. } => {
             match source {
                 ForSource::Range { start, end } => {

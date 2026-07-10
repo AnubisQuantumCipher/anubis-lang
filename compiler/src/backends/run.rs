@@ -67,12 +67,12 @@ fn collect_bound_in_stmts(stmts: &[Stmt], out: &mut std::collections::BTreeSet<S
                     collect_bound_in_stmts(e, out);
                 }
             }
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, .. } => {
                 collect_bound_in_expr(cond, out);
                 collect_bound_in_stmts(body, out);
             }
-            Stmt::Loop { body } => collect_bound_in_stmts(body, out),
-            Stmt::For { var, source, body } => {
+            Stmt::Loop { body, .. } => collect_bound_in_stmts(body, out),
+            Stmt::For { var, source, body, .. } => {
                 out.insert(var.clone());
                 match source {
                     ForSource::Range { start, end } => {
@@ -2026,7 +2026,7 @@ fn emit_safe_run_stmt(
             out.push_str(&format!("{pad}    }} else {{ break; }}\n{pad}}}\n"));
             Ok(())
         }
-        Stmt::While { cond, body } => {
+        Stmt::While { cond, body, .. } => {
             out.push_str(&format!(
                 "{pad}while {}.as_bool() {{\n",
                 safe_run_expr(cond, ctx)?
@@ -2037,7 +2037,7 @@ fn emit_safe_run_stmt(
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
         }
-        Stmt::Loop { body } => {
+        Stmt::Loop { body, .. } => {
             out.push_str(&format!("{pad}loop {{\n"));
             for stmt in body {
                 emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
@@ -2045,7 +2045,7 @@ fn emit_safe_run_stmt(
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
         }
-        Stmt::For { var, source, body } => {
+        Stmt::For { var, source, body, .. } => {
             use crate::frontend::ForSource;
             let v = sanitize_ident(var)?;
             // Both forms lower to a native Rust `for`, so `break`/`continue` behave correctly
@@ -2355,7 +2355,7 @@ fn collect_free_stmts(
                     collect_free_stmts(e, &mut b, vars, callees);
                 }
             }
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, .. } => {
                 collect_free_expr(cond, bound, vars, callees);
                 let mut b = bound.clone();
                 collect_free_stmts(body, &mut b, vars, callees);
@@ -2368,11 +2368,11 @@ fn collect_free_stmts(
                 }
                 collect_free_stmts(body, &mut b, vars, callees);
             }
-            Stmt::Loop { body } => {
+            Stmt::Loop { body, .. } => {
                 let mut b = bound.clone();
                 collect_free_stmts(body, &mut b, vars, callees);
             }
-            Stmt::For { var, source, body } => {
+            Stmt::For { var, source, body, .. } => {
                 match source {
                     ForSource::Range { start, end } => {
                         collect_free_expr(start, bound, vars, callees);

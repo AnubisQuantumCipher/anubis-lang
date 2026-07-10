@@ -318,15 +318,20 @@ pub enum Stmt {
     While {
         cond: Expr,
         body: Vec<Stmt>,
+        /// B3 loop invariants: predicates the checker verifies hold on entry AND are preserved by
+        /// every iteration, then may assume after the loop.
+        invariant: Vec<Expr>,
     },
     Loop {
         body: Vec<Stmt>,
+        invariant: Vec<Expr>,
     },
     /// `for v in a..b { }` or `for v in collection { }`
     For {
         var: String,
         source: ForSource,
         body: Vec<Stmt>,
+        invariant: Vec<Expr>,
     },
     Break,
     Continue,
@@ -2147,6 +2152,26 @@ impl Parser {
         }
     }
 
+    /// Parse zero or more `invariant(P)` clauses (B3 loop invariants) between a loop header and its
+    /// `{` body. Contextual keyword, mirroring the `requires`/`ensures` contract clauses. Each
+    /// predicate is parenthesized, so there is no ambiguity with the body brace.
+    fn parse_loop_invariants(&mut self) -> Vec<Expr> {
+        let mut invariants = vec![];
+        while matches!(&self.current().token, Token::Ident(k) if k == "invariant") {
+            self.bump();
+            if self.check_token(&Token::LParen) {
+                self.bump();
+                let cond = self.with_struct_allowed(|p| p.parse_expr(0));
+                let _ = self.expect_token(Token::RParen, "expected `)` after loop invariant");
+                invariants.push(cond);
+            } else {
+                self.diagnostic("expected `(` after `invariant`", self.current_span());
+                break;
+            }
+        }
+        invariants
+    }
+
     fn parse_fn(&mut self, pre_attrs: Vec<Attribute>) -> Option<Item> {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
@@ -2314,23 +2339,29 @@ impl Parser {
                 });
             }
             let cond = self.parse_header_expr();
+            let invariant = self.parse_loop_invariants();
             let body = if self.check_token(&Token::LBrace) {
                 self.parse_block()
             } else {
                 self.diagnostic("expected `{` after while cond", self.current_span());
                 vec![]
             };
-            return Some(Stmt::While { cond, body });
+            return Some(Stmt::While {
+                cond,
+                body,
+                invariant,
+            });
         }
         if self.check_keyword("loop") {
             self.bump();
+            let invariant = self.parse_loop_invariants();
             let body = if self.check_token(&Token::LBrace) {
                 self.parse_block()
             } else {
                 self.diagnostic("expected `{` after loop", self.current_span());
                 vec![]
             };
-            return Some(Stmt::Loop { body });
+            return Some(Stmt::Loop { body, invariant });
         }
         if self.check_keyword("for") {
             self.bump();
@@ -2348,6 +2379,7 @@ impl Parser {
             } else {
                 ForSource::Collection { expr: first }
             };
+            let invariant = self.parse_loop_invariants();
             let body = if self.check_token(&Token::LBrace) {
                 self.parse_block()
             } else {
@@ -2358,6 +2390,7 @@ impl Parser {
                 var,
                 source,
                 body,
+                invariant,
             });
         }
         if self.check_keyword("break") {
