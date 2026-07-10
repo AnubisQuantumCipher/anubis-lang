@@ -621,9 +621,15 @@ fn analyze_stmts(
                     });
                 }
 
-                // Gate 2/3: minimal unknown variable detection (covers let y = x; and simple x + 1 cases)
+                // Unknown-variable detection (covers `let y = x;` and simple `x + 1` cases). A bare
+                // name is only unknown if it is neither a local binding, a user-defined function,
+                // nor a stdlib builtin — named functions and builtins are first-class values and may
+                // be bound by name (`let f = double;`), mirroring the unknown-*call* check below.
                 fn note_unknown(v: &str, ctx: &mut SemanticContext) {
-                    if !ctx.known_bindings.contains(v) {
+                    if !ctx.known_bindings.contains(v)
+                        && !ctx.all_fns.contains(v)
+                        && !crate::backends::run::is_builtin_name(v)
+                    {
                         ctx.diagnostics.push(SemanticDiagnostic {
                             code: Some("ANUBIS_UNKNOWN_VARIABLE".into()),
                             message: format!("unknown variable `{}`", v),

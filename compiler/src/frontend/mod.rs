@@ -1030,8 +1030,12 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                                 break;
                             }
                         }
-                        let decimal = i64::from_str_radix(&digits, radix)
+                        // Parse as u64 so full-width literals like 0xFFFFFFFFFFFFFFFF are kept
+                        // (they reinterpret to their i64 bit pattern downstream) instead of
+                        // overflowing i64 and collapsing to 0.
+                        let decimal = u64::from_str_radix(&digits, radix)
                             .map(|v| v.to_string())
+                            .or_else(|_| i64::from_str_radix(&digits, radix).map(|v| v.to_string()))
                             .unwrap_or_else(|_| "0".to_string());
                         tokens.push(SpannedToken {
                             token: Token::Number(decimal),
@@ -1221,6 +1225,9 @@ struct Parser {
     /// Set while parsing `if`/`while`/`for` header expressions to resolve the classic
     /// `for i in 0..n {` ambiguity (Rust does the same). Reset inside `()`/`[]`/call args.
     no_struct: bool,
+    /// Monotonic counter for compiler-generated temporaries (e.g. compound-assignment index
+    /// hoisting). Names use the `__anubis_ca_N` prefix, which user source cannot collide with.
+    temp_counter: usize,
 }
 
 impl Parser {
@@ -1230,6 +1237,7 @@ impl Parser {
             pos: 0,
             diagnostics: vec![],
             no_struct: false,
+            temp_counter: 0,
         }
     }
 
@@ -1887,11 +1895,15 @@ impl Parser {
                 self.bump();
                 let rhs = self.with_struct_allowed(|p| p.parse_expr(0));
                 self.consume_optional_semi();
+                // Hoist side-effecting index subexpressions so the place is evaluated once.
+                let mut hoist = Vec::new();
+                let place = self.hoist_place_indices(e, &mut hoist);
+                stmts.append(&mut hoist);
                 stmts.push(Stmt::Assign {
-                    target: e.clone(),
+                    target: place.clone(),
                     value: Expr::Binary {
                         op,
-                        lhs: Box::new(e),
+                        lhs: Box::new(place),
                         rhs: Box::new(rhs),
                     },
                 });
@@ -2332,21 +2344,33 @@ impl Parser {
                     value,
                 });
             }
-            // Compound assignment `place op= expr` desugars to `place = place op expr`.
+            // Compound assignment `place op= expr` desugars to `place = place op expr`, with any
+            // side-effecting index subexpression hoisted so the place is evaluated exactly once.
             if let Token::OpAssign(op) = &self.current().token {
                 let op = op.clone();
                 self.bump();
                 let rhs = self.parse_expr(0);
                 self.consume_optional_semi();
-                let value = Expr::Binary {
-                    op,
-                    lhs: Box::new(expr.clone()),
-                    rhs: Box::new(rhs),
+                let mut hoist = Vec::new();
+                let place = self.hoist_place_indices(expr, &mut hoist);
+                let assign = Stmt::Assign {
+                    target: place.clone(),
+                    value: Expr::Binary {
+                        op,
+                        lhs: Box::new(place),
+                        rhs: Box::new(rhs),
+                    },
                 };
-                return Some(Stmt::Assign {
-                    target: expr,
-                    value,
-                });
+                if hoist.is_empty() {
+                    return Some(assign);
+                }
+                // This context returns a single statement, so wrap the temporaries + the
+                // assignment in a block (which shares the enclosing scope, so the mutation lands).
+                hoist.push(assign);
+                return Some(Stmt::ExprStmt(Expr::Block {
+                    stmts: hoist,
+                    tail: None,
+                }));
             }
             self.consume_optional_semi();
             return Some(Stmt::ExprStmt(expr));
@@ -2534,12 +2558,7 @@ impl Parser {
         loop {
             if self.check_keyword("as") {
                 self.bump();
-                let ty = self.collect_type_until(&[
-                    Token::Semi,
-                    Token::Comma,
-                    Token::RParen,
-                    Token::RBrace,
-                ]);
+                let ty = self.parse_cast_type();
                 lhs = Expr::Cast {
                     expr: Box::new(lhs),
                     ty,
@@ -2625,7 +2644,17 @@ impl Parser {
                     }
                     i += 1;
                 }
-                parts.push(self.parse_embedded_expr(&expr_src));
+                if expr_src.trim().is_empty() {
+                    // `${}` with no expression is almost always a typo; report it clearly instead
+                    // of producing an unlowerable placeholder, and treat it as empty text.
+                    self.diagnostics.push(ParseDiagnostic {
+                        message: "empty interpolation `${}` has no expression".into(),
+                        span: Span::default(),
+                    });
+                    parts.push(Expr::StrLiteral(String::new()));
+                } else {
+                    parts.push(self.parse_embedded_expr(&expr_src));
+                }
             } else {
                 lit.push(chars[i]);
                 i += 1;
@@ -2633,6 +2662,10 @@ impl Parser {
         }
         if !lit.is_empty() {
             parts.push(Expr::StrLiteral(lit));
+        }
+        // An interpolation with no parts at all (e.g. the empty string `""`) is the empty string.
+        if parts.is_empty() {
+            return Expr::StrLiteral(String::new());
         }
         let mut acc = parts.remove(0);
         for p in parts {
@@ -2845,6 +2878,19 @@ impl Parser {
             Token::Keyword(k) if k == "true" || k == "false" => Expr::Literal(k),
             Token::Keyword(k) if k == "match" => self.parse_match_expr(tok.span),
             Token::Keyword(k) if k == "if" => self.parse_if_expr(tok.span),
+            Token::Keyword(k) if k == "assert" || k == "assume" => {
+                // Also usable in expression position (`let ok = assert(cond)`), not just as a
+                // statement; `assert` panics fail-closed on false, `assume` is a solver hint.
+                let is_assert = k == "assert";
+                let _ = self.expect_token(Token::LParen, "expected `(` after assert/assume");
+                let inner = self.parse_expr(0);
+                let _ = self.expect_token(Token::RParen, "expected `)` after expression");
+                if is_assert {
+                    Expr::Assert(Box::new(inner))
+                } else {
+                    Expr::Assume(Box::new(inner))
+                }
+            }
             Token::Keyword(k) if k == "symbolic" => {
                 let ty = self
                     .parse_optional_generic_ty()
@@ -3104,6 +3150,90 @@ impl Parser {
                     || k == "if"
             }
             _ => false,
+        }
+    }
+
+    /// Parse the target type of an `as` cast: an optional pointer/reference prefix followed by a
+    /// single type name (`u8`, `i64`, `f64`, `usize`, `*mut u8`, ...). Unlike `collect_type_until`,
+    /// it stops as soon as the type is complete, so `x as u8 + 1` parses `u8` and leaves `+ 1` for
+    /// the binary-operator loop. (Previously the operator and its right operand were swallowed into
+    /// the "type" string, which was then unrecognized, so the cast silently voided and dropped the
+    /// rest of the expression.)
+    fn parse_cast_type(&mut self) -> String {
+        let mut ty = String::new();
+        // Pointer / reference prefixes: `*`, `*mut`, `*const`, `&`, `&mut` (repeatable).
+        loop {
+            if self.check_token(&Token::Star) {
+                self.bump();
+                ty.push('*');
+                if self.check_keyword("mut") {
+                    self.bump();
+                    ty.push_str("mut ");
+                } else if self.check_keyword("const") {
+                    self.bump();
+                    ty.push_str("const ");
+                }
+            } else if self.check_token(&Token::Amp) {
+                self.bump();
+                ty.push('&');
+                if self.check_keyword("mut") {
+                    self.bump();
+                    ty.push_str("mut ");
+                }
+            } else {
+                break;
+            }
+        }
+        // Base type name: a single identifier or keyword.
+        if matches!(self.current().token, Token::Ident(_) | Token::Keyword(_)) {
+            if let Some(tok) = self.bump() {
+                match tok.token {
+                    Token::Ident(s) | Token::Keyword(s) => ty.push_str(&s),
+                    _ => {}
+                }
+            }
+        }
+        ty
+    }
+
+    /// Rewrite an assignable place so that every side-effecting index subexpression is evaluated
+    /// exactly once: each non-trivial `[index]` is hoisted into a fresh `let __anubis_ca_N = index`
+    /// (pushed into `lets`) and replaced by that temporary. Used by the compound-assignment desugar
+    /// so `xs[pop(sel)] += 5` pops once, not once for the read and once for the write.
+    fn hoist_place_indices(&mut self, place: Expr, lets: &mut Vec<Stmt>) -> Expr {
+        match place {
+            Expr::Index { base, index } => {
+                let base = self.hoist_place_indices(*base, lets);
+                // A bare variable or literal index is safe to re-evaluate; anything else may have
+                // side effects (a call, `pop`, arithmetic on a call, …) and must be hoisted.
+                let index = match *index {
+                    idx @ (Expr::Var(_) | Expr::Literal(_)) => idx,
+                    idx => {
+                        let tmp = format!("__anubis_ca_{}", self.temp_counter);
+                        self.temp_counter += 1;
+                        lets.push(Stmt::Let {
+                            name: tmp.clone(),
+                            ty: None,
+                            init: idx,
+                            span: Span::default(),
+                        });
+                        Expr::Var(tmp)
+                    }
+                };
+                Expr::Index {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                }
+            }
+            Expr::FieldAccess { base, field, span } => {
+                let base = self.hoist_place_indices(*base, lets);
+                Expr::FieldAccess {
+                    base: Box::new(base),
+                    field,
+                    span,
+                }
+            }
+            other => other,
         }
     }
 

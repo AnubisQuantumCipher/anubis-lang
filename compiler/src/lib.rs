@@ -623,65 +623,61 @@ mod tests {
     }
 
     #[test]
-    fn lowers_research_poc_to_source_driven_rust() {
-        // Use the committed examples content (bound 191) via include_str so test is robust across cwd; verification --bounty uses the same file on disk.
+    fn mainless_research_snippet_lowers_to_honest_analysis_marker() {
+        // research_poc.anubis is an analysis-only snippet (`fn trigger`, no `fn main`). The keystone
+        // routes build/prove through the same faithful lowering as `anubis run`, which cannot run a
+        // program with no entry point. Instead of the retired template that FAKED a
+        // `poc_memory_op_executed` line, we now emit an HONEST analysis-only marker; the substantive
+        // taint/symbolic results live in the evidence bundle.
         let src = include_str!("../../examples/research_poc.anubis");
         let ast = parse_source(src).expect("parse");
-        let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
-        let out_dir =
-            std::env::temp_dir().join(format!("anubis-lower-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&out_dir);
+        let ir = typecheck(ast.clone(), frontend::Mode::Research).expect("typecheck");
+        let out_dir = unique_test_dir("mainless-research-marker");
         std::fs::create_dir_all(&out_dir).unwrap();
-        let exe_path = lower_to_native(ir, &out_dir, "poc_lower", false).expect("lower");
-        let rs_path = out_dir.join("poc_lower.rs");
-        let emitted = std::fs::read_to_string(rs_path).expect("read emitted");
-        // Must contain source variable name "x" and the AST bound 191 (not fallback 256)
+
+        let exe_path =
+            lower_to_native(ir, &ast.items, &out_dir, "poc_lower", false).expect("lower");
+        let emitted = std::fs::read_to_string(out_dir.join("poc_lower.rs")).expect("read emitted");
+
         assert!(
-            emitted.contains("let x: u32") || emitted.contains(" x:"),
-            "must use source name x from AST Let: {}",
+            emitted.contains("analysis-only artifact"),
+            "must emit the honest analysis-only marker: {}",
             emitted
         );
         assert!(
-            emitted.contains("x < 191") || emitted.contains("< 191"),
-            "must reflect the AST bound 191 from the examples file (not fallback): {}",
+            !emitted.contains("poc_memory_op_executed"),
+            "must not fabricate a PoC memory op for a non-runnable snippet: {}",
             emitted
-        );
-        assert!(
-            !emitted.contains("let x: u32 = 300"),
-            "must not be old hardcoded template 300"
         );
         assert!(
             std::path::Path::new(&exe_path).exists(),
-            "binary must exist after lower"
+            "marker binary must exist after lower"
         );
-        // Behavior with the examples bound
-        let run1 = std::process::Command::new(&exe_path)
-            .env("ANUBIS_TEST_X", "10")
-            .arg("10")
+
+        let run = std::process::Command::new(&exe_path)
             .output()
-            .expect("run 10");
-        let out1 = String::from_utf8_lossy(&run1.stdout);
+            .expect("run marker");
+        let out = String::from_utf8_lossy(&run.stdout);
         assert!(
-            out1.contains("poc_memory_op_executed"),
-            "run with 10 must print POC line: {}",
-            out1
+            out.contains("analysis-only artifact") && out.contains("not directly executable"),
+            "marker must truthfully report analysis-only status at runtime: {}",
+            out
         );
-        let run2 = std::process::Command::new(&exe_path)
-            .env("ANUBIS_TEST_X", "200")
-            .arg("200")
-            .output()
-            .expect("run 200");
-        let out2 = String::from_utf8_lossy(&run2.stdout);
         assert!(
-            out2.contains("poc_memory_op_executed"),
-            "run with 200 must print POC line: {}",
-            out2
+            !out.contains("poc_memory_op_executed"),
+            "runtime must not fake a PoC op: {}",
+            out
         );
         let _ = std::fs::remove_dir_all(&out_dir);
     }
 
     #[test]
-    fn research_lowering_requires_ast_assume_bound() {
+    fn research_snippet_without_assume_lowers_via_faithful_path_gate_retired() {
+        // Retires honesty-debt item 0.3: the old "research lowering requires assume(...) bound" was
+        // a brittle template gate. With the faithful lowering, a main-less research snippet lowers
+        // to an honest analysis-only marker — it SUCCEEDS rather than fabricating a gate error.
+        // Real safe-mode enforcement (raw pointers, tainted sinks) still lives in `typecheck`,
+        // upstream of lowering, so nothing is weakened.
         let src = r#"
 fn trigger() {
     research {
@@ -691,16 +687,21 @@ fn trigger() {
 }
 "#;
         let ast = parse_source(src).expect("parse");
-        let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
-        let out_dir = unique_test_dir("missing-assume-bound");
+        let ir = typecheck(ast.clone(), frontend::Mode::Research).expect("typecheck");
+        let out_dir = unique_test_dir("assume-gate-retired");
         std::fs::create_dir_all(&out_dir).unwrap();
 
-        let err = lower_to_native(ir, &out_dir, "missing_bound", false)
-            .expect_err("research lowering must reject missing assume bound");
+        let exe_path = lower_to_native(ir, &ast.items, &out_dir, "no_assume", false)
+            .expect("faithful lowering emits an honest marker, not a brittle gate error");
+        let emitted = std::fs::read_to_string(out_dir.join("no_assume.rs")).expect("read emitted");
         assert!(
-            err.contains("assume") && err.contains("bound"),
-            "error: {}",
-            err
+            emitted.contains("analysis-only artifact"),
+            "must emit honest marker for the main-less snippet: {}",
+            emitted
+        );
+        assert!(
+            std::path::Path::new(&exe_path).exists(),
+            "marker binary must exist"
         );
         let _ = std::fs::remove_dir_all(&out_dir);
     }
@@ -741,7 +742,10 @@ fn trigger() {
     }
 
     #[test]
-    fn research_lowering_preserves_non_x_tainted_variable_name() {
+    fn research_snippet_taint_reflected_in_honest_marker() {
+        // A main-less research snippet with a tainted `y` now lowers to an honest analysis-only
+        // marker whose runtime summary reports the taint analysis, instead of the retired template
+        // that faked a "wrote at idx N" memory op.
         let src = r#"
 fn trigger() {
     research {
@@ -752,42 +756,66 @@ fn trigger() {
 }
 "#;
         let ast = parse_source(src).expect("parse");
-        let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
-        let out_dir = unique_test_dir("non-x-taint");
+        let ir = typecheck(ast.clone(), frontend::Mode::Research).expect("typecheck");
+        let out_dir = unique_test_dir("taint-marker");
         std::fs::create_dir_all(&out_dir).unwrap();
 
-        let exe_path = lower_to_native(ir, &out_dir, "non_x_lower", false).expect("lower");
+        let exe_path =
+            lower_to_native(ir, &ast.items, &out_dir, "taint_marker", false).expect("lower");
         let emitted =
-            std::fs::read_to_string(out_dir.join("non_x_lower.rs")).expect("read emitted");
-
+            std::fs::read_to_string(out_dir.join("taint_marker.rs")).expect("read emitted");
         assert!(
-            emitted.contains("let y: u32"),
-            "lowering must declare the source tainted variable y: {}",
+            emitted.contains("analysis-only artifact"),
+            "must emit honest marker: {}",
             emitted
         );
         assert!(
-            emitted.contains("if y < 77"),
-            "lowering must use y, not a hardcoded x, in the bound check: {}",
-            emitted
-        );
-        assert!(
-            !emitted.contains("let x: u32"),
-            "lowering must not introduce hardcoded x for y source: {}",
+            !emitted.contains("wrote at idx"),
+            "must not fabricate a memory-write op: {}",
             emitted
         );
 
         let run = std::process::Command::new(&exe_path)
-            .env("ANUBIS_TEST_Y", "42")
-            .arg("42")
             .output()
-            .expect("run 42");
+            .expect("run marker");
         let stdout = String::from_utf8_lossy(&run.stdout);
         assert!(
-            stdout.contains("wrote at idx 42"),
-            "runtime must derive write index from y value: {}",
+            stdout.contains("taint:"),
+            "marker must report the taint analysis summary at runtime: {}",
             stdout
         );
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
 
+    #[test]
+    fn build_of_program_with_main_emits_faithful_runnable_artifact() {
+        // Keystone fidelity: a safe program with `fn main` now lowers through the SAME faithful path
+        // as `anubis run`, so the native artifact executes the REAL program — not the retired
+        // "safe_execution" stub. This is the core of the backend-unification keystone.
+        let src = "fn main() { print(\"hello-from-build\"); print(6 * 7); }";
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), frontend::Mode::Safe).expect("typecheck");
+        let out_dir = unique_test_dir("faithful-build");
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let exe_path =
+            lower_to_native(ir, &ast.items, &out_dir, "real_prog", false).expect("lower");
+        let emitted = std::fs::read_to_string(out_dir.join("real_prog.rs")).expect("read emitted");
+        assert!(
+            !emitted.contains("safe_execution"),
+            "faithful lowering must not emit the retired safe_execution stub: {}",
+            emitted
+        );
+
+        let run = std::process::Command::new(&exe_path)
+            .output()
+            .expect("run real program");
+        let out = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            out.contains("hello-from-build") && out.contains("42"),
+            "native artifact must run the real program (print + 6*7=42): {}",
+            out
+        );
         let _ = std::fs::remove_dir_all(&out_dir);
     }
 
@@ -796,14 +824,14 @@ fn trigger() {
         let src =
             r#"fn h() { hybrid { gpu(metal){} cpu{} prove(risc0){ spec { forall x . true } } } }"#;
         let ast = parse_source(src).expect("parse hybrid");
-        let ir = typecheck(ast, frontend::Mode::Safe).expect("tc");
+        let ir = typecheck(ast.clone(), frontend::Mode::Safe).expect("tc");
         // parser populates hybrid stmt even if coarse
         // we only require no panic and mode handling
         assert!(ir.mode == BuildMode::Safe);
         // strengthen: lower and check real keywords in .rs (no stubs)
         let out = unique_test_dir("hybrid-lower");
         std::fs::create_dir_all(&out).unwrap();
-        let _ = lower_to_native(ir, &out, "hybrid_test", false);
+        let _ = lower_to_native(ir, &ast.items, &out, "hybrid_test", false);
         let rs = std::fs::read_to_string(out.join("hybrid_test.rs")).unwrap_or_default();
         assert!(
             rs.contains("StorageModeShared") || rs.contains("metal"),
@@ -1513,13 +1541,14 @@ fn main() {
         // It must fail on shim-only paths and pass only when a real binary with dispatch is produced.
         let src = include_str!("../../examples/hybrid_stub.anubis");
         let ast = parse_source(src).expect("parse hybrid_stub");
-        let ir = typecheck(ast, frontend::Mode::Safe).expect("tc hybrid");
+        let ir = typecheck(ast.clone(), frontend::Mode::Safe).expect("tc hybrid");
         let out = unique_test_dir("hybrid-gate");
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
 
         // lower fast: emits full project (with real RISC0+metal source) + produces fast real metal dispatch dst
-        let dst = lower_to_native(ir, &out, "hybrid_gate", false).expect("lower hybrid");
+        let dst =
+            lower_to_native(ir, &ast.items, &out, "hybrid_gate", false).expect("lower hybrid");
 
         let proj = out.join("hybrid_gate-real-hybrid");
         assert!(

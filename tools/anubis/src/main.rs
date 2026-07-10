@@ -534,15 +534,16 @@ fn main() -> Result<()> {
             // Use parsed AST for mode (from first Fn item if present)
             let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
 
-            let typed = typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
+            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
             let tainted = TaintPass::apply(typed.clone());
             let _constraints = SymbolicEngine::generate_constraints(&src);
 
             std::fs::create_dir_all(&out)?;
 
             let artifact = if do_evidence || true {
-                // Always emit native for now; full_hybrid enables in-lower cargo for hybrid
-                let art = lower_to_native(tainted, &out, "anubis_out", full_hybrid)
+                // Emit the native artifact via the faithful whole-program lowering (same path as
+                // `anubis run`); full_hybrid enables the in-lower cargo build for hybrid programs.
+                let art = lower_to_native(tainted, &ast.items, &out, "anubis_out", full_hybrid)
                     .map_err(|e| anyhow!("{}", e))?;
                 println!("native artifact: {}", art);
                 Some(art)
@@ -1270,7 +1271,7 @@ fn main() -> Result<()> {
             let force_metal = lane_normalized == "metal-hybrid" || lane_normalized == "metal";
             let metal_ref = resolve_metal_reference(metal_reference.as_deref());
 
-            let artifact = lower_to_native(tainted, &out, "risc0_receipt", full_hybrid)
+            let artifact = lower_to_native(tainted, &ast.items, &out, "risc0_receipt", full_hybrid)
                 .map_err(|e| anyhow!("{}", e))?;
             println!("lowered artifact: {}", artifact);
 
@@ -2823,6 +2824,10 @@ fn run_anubis_source(
     let work_exe = work.join("anubis_run");
     std::fs::write(&work_rs, &rust_source)?;
     let status = std::process::Command::new("rustc")
+        // Pin edition 2021 so `anubis run`, `anubis build`, and `anubis prove` compile the
+        // byte-identical lowering the same way (see native::compile_rust_to_exe).
+        .arg("--edition")
+        .arg("2021")
         .arg(&work_rs)
         .arg("-o")
         .arg(&work_exe)

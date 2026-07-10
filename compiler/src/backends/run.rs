@@ -585,16 +585,24 @@ impl AnubisValue {
                 format!("[{}]", parts.join(", "))
             }
             AnubisValue::Enum { ty, tag, fields, field_names } => {
+                // The built-in Option/Result prelude variants are written and matched bare
+                // (`Some(x)`, `None`, `Ok(x)`, `Err(e)`), so they render bare too; user enums
+                // render as `Type::Variant`, the form you construct them with.
+                let prefix = if ty.as_str() == "Option" || ty.as_str() == "Result" {
+                    String::new()
+                } else {
+                    format!("{}::", ty)
+                };
                 if fields.is_empty() {
-                    format!("{}::{}", ty, tag)
+                    format!("{}{}", prefix, tag)
                 } else if !field_names.is_empty() {
                     let parts: Vec<String> = field_names.iter().zip(fields.iter())
                         .map(|(n, v)| format!("{}: {}", n, v.display_string()))
                         .collect();
-                    format!("{}::{} {{ {} }}", ty, tag, parts.join(", "))
+                    format!("{}{} {{ {} }}", prefix, tag, parts.join(", "))
                 } else {
                     let parts: Vec<String> = fields.iter().map(|x| x.display_string()).collect();
-                    format!("{}::{}({})", ty, tag, parts.join(", "))
+                    format!("{}{}({})", prefix, tag, parts.join(", "))
                 }
             }
             AnubisValue::Struct { ty, fields } => {
@@ -604,8 +612,9 @@ impl AnubisValue {
                 format!("{} {{ {} }}", ty, parts.join(", "))
             }
             AnubisValue::Map(m) => {
+                // Quote keys so the printed form matches the map literal you'd write: {"a": 1}.
                 let parts: Vec<String> = m.iter()
-                    .map(|(k, v)| format!("{}: {}", k, v.display_string()))
+                    .map(|(k, v)| format!("{:?}: {}", k, v.display_string()))
                     .collect();
                 format!("{{{}}}", parts.join(", "))
             }
@@ -881,12 +890,14 @@ fn anubis_value_eq(a: &AnubisValue, b: &AnubisValue) -> bool {
             AnubisValue::Struct { ty, fields },
             AnubisValue::Struct { ty: ty2, fields: f2 },
         ) => {
+            // Structs have named fields, so equality is by name — order-independent — matching
+            // field access, struct patterns, and let-destructuring (all name-based). Field names
+            // are unique per struct, so a name-match with equal values on every field is exact.
             ty == ty2
                 && fields.len() == f2.len()
-                && fields
-                    .iter()
-                    .zip(f2.iter())
-                    .all(|((n, v), (n2, v2))| n == n2 && anubis_value_eq(v, v2))
+                && fields.iter().all(|(n, v)| {
+                    f2.iter().any(|(n2, v2)| n == n2 && anubis_value_eq(v, v2))
+                })
         }
         // Closures are never equal; mismatched kinds (string vs int, bool vs int, …) are not equal.
         _ => false,
@@ -1126,13 +1137,20 @@ fn anubis_parse_int(v: AnubisValue) -> AnubisValue {
 }
 /// Cast to an integer type of the given bit width: truncate floats toward zero, then wrap into the
 /// unsigned range of `bits` (so `300 as u8` == 44, `-1 as u8` == 255). `bits >= 64` = no wrap.
-fn anubis_cast_int(v: AnubisValue, bits: u32) -> AnubisValue {
+fn anubis_cast_int(v: AnubisValue, bits: u32, signed: bool) -> AnubisValue {
     let n = v.as_i64();
     if bits == 0 || bits >= 64 {
         return AnubisValue::Int(n);
     }
     let mask: i64 = (1i64 << bits) - 1;
-    AnubisValue::Int(n & mask)
+    let masked = n & mask;
+    // A signed target reinterprets the top bit as the sign (two's complement), so `255 as i8` is
+    // -1; an unsigned target keeps the plain masked value, so `300 as u8` is 44.
+    if signed && (masked & (1i64 << (bits - 1))) != 0 {
+        AnubisValue::Int(masked - (1i64 << bits))
+    } else {
+        AnubisValue::Int(masked)
+    }
 }
 fn anubis_parse_float(v: AnubisValue) -> AnubisValue {
     AnubisValue::Float(v.display_string().trim().parse::<f64>().unwrap_or(0.0))
@@ -2455,9 +2473,11 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
         return Ok(format!("{}.clone()", sanitize_ident(name)?));
     }
     // A free function referenced by bare name → a closure that calls it with its declared arity.
+    // Missing arguments default to Int(0) (as method dispatch does) so passing an N-ary function
+    // where fewer arguments are supplied — e.g. `map([1,2,3], add)` — pads rather than panicking.
     if let Some(&arity) = ctx.fn_arities.get(name) {
         let args: Vec<String> = (0..arity)
-            .map(|i| format!("__args[{i}usize].clone()"))
+            .map(|i| format!("__args.get({i}usize).cloned().unwrap_or(AnubisValue::Int(0))"))
             .collect();
         return Ok(format!(
             "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ anb_{}({}) }}))",
@@ -3032,10 +3052,12 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     "u64" | "i64" | "u128" | "i128" | "usize" | "isize" | "int" | "integer" => 64,
                     _ => 0,
                 };
+                // Signed targets (i8/i16/i32) sign-extend the narrowed value; unsigned keep it.
+                let signed = t.starts_with('i');
                 if bits == 0 {
                     Ok(inner) // unrecognized target type: leave the value unchanged
                 } else {
-                    Ok(format!("anubis_cast_int({}, {})", inner, bits))
+                    Ok(format!("anubis_cast_int({}, {}, {})", inner, bits, signed))
                 }
             }
         }
@@ -3081,10 +3103,15 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         | Expr::Declassify { .. }
         | Expr::TaintSource { .. }
         | Expr::UnifiedBuffer { .. }
-        | Expr::RawPtr { .. }
-        | Expr::Other(_) => Err(unsupported_run(format!(
-            "unsupported expression for run: {:?}",
-            std::mem::discriminant(expr)
+        | Expr::RawPtr { .. } => Err(unsupported_run(
+            "research-only construct (tainted / symbolic / declassify / unified-buffer / raw \
+             pointer) is not available in `anubis run`; use the check or prove path"
+                .to_string(),
+        )),
+        // A placeholder the parser emits when it could not build a real expression — surface the
+        // captured detail so the message is actionable instead of an opaque discriminant.
+        Expr::Other(detail) => Err(unsupported_run(format!(
+            "could not lower expression (`{detail}`) — this syntax is not supported in `anubis run`"
         ))),
     }
 }
@@ -3353,6 +3380,10 @@ fn literal_to_anubis_value(value: &str) -> String {
         format!("AnubisValue::Bool({value})")
     } else if value.parse::<i64>().is_ok() {
         format!("AnubisValue::Int({value})")
+    } else if let Ok(u) = value.parse::<u64>() {
+        // Magnitudes in (i64::MAX, u64::MAX] — e.g. 2^63, the magnitude of i64::MIN, or a full-width
+        // hex literal — reinterpret their bit pattern as i64 rather than losing precision to f64.
+        format!("AnubisValue::Int({u}u64 as i64)")
     } else if let Ok(f) = value.parse::<f64>() {
         format!("AnubisValue::Float({}f64)", f)
     } else {
@@ -4532,6 +4563,138 @@ mod run_tests {
             run("fn main() { let a = [1, 2, 3]; let r = remove(a, 1); print(r); print(a); }"),
             "2\n[1, 3]"
         );
+    }
+
+    #[test]
+    fn display_forms_option_result_map_and_user_enum() {
+        // Built-in Option/Result variants render bare (as they are constructed and matched).
+        assert_eq!(
+            run("fn main() { print(Some(8)); print(None); print(Ok(1)); print(Err(2)); }"),
+            "Some(8)\nNone\nOk(1)\nErr(2)"
+        );
+        // Maps render with quoted keys, matching the literal syntax you'd write.
+        assert_eq!(
+            run("fn main() { print({ \"a\": 1, \"b\": 2 }); }"),
+            "{\"a\": 1, \"b\": 2}"
+        );
+        // User-defined enums still render as `Type::Variant`.
+        assert_eq!(
+            run("enum S { A, B(u32) } fn main() { print(S::A); print(S::B(3)); }"),
+            "S::A\nS::B(3)"
+        );
+        // Nested: an Option holding a map with a list value.
+        assert_eq!(
+            run("fn main() { print(Some({ \"k\": [1, 2] })); }"),
+            "Some({\"k\": [1, 2]})"
+        );
+    }
+
+    #[test]
+    fn cast_binds_tighter_than_binary_ops() {
+        // `as` used to swallow the following operator+operand into the "type" and void the cast.
+        assert_eq!(run("fn main(){ print(300 as u8 + 1); }"), "45");
+        assert_eq!(run("fn main(){ print(10 as i64 * 5); }"), "50");
+        assert_eq!(
+            run("fn main(){ print(2 as f64 / 3.0); }"),
+            "0.6666666666666666"
+        );
+        assert_eq!(run("fn main(){ print(10 as i64 == 10); }"), "true");
+        assert_eq!(
+            run("fn main(){ if 7 as u8 == 7 { print(\"y\"); } else { print(\"n\"); } }"),
+            "y"
+        );
+        assert_eq!(run("fn main(){ print(300 as u8 as i64 + 1); }"), "45");
+    }
+
+    #[test]
+    fn struct_equality_is_field_order_independent() {
+        assert_eq!(
+            run("struct P { x: int, y: int } fn main(){ print(P { x: 3, y: 4 } == P { y: 4, x: 3 }); }"),
+            "true"
+        );
+        assert_eq!(
+            run("struct P { x: int, y: int } fn main(){ print(P { x: 3, y: 4 } == P { x: 3, y: 5 }); }"),
+            "false"
+        );
+    }
+
+    #[test]
+    fn named_functions_bind_by_name_in_let() {
+        assert_eq!(
+            run("fn double(x){ x + x } fn main(){ let f = double; print(f(21)); }"),
+            "42"
+        );
+        assert_eq!(run("fn main(){ let g = abs; print(g(-7)); }"), "7");
+    }
+
+    #[test]
+    fn compound_assign_evaluates_index_once() {
+        // pop(sel) must fire once: the write index is 2 (sel -> [0]); xs[2] becomes 35.
+        assert_eq!(
+            run("fn main(){ let sel=[0,2]; let xs=[10,20,30]; xs[pop(sel)] += 5; print(xs); print(sel); }"),
+            "[10, 20, 35]\n[0]"
+        );
+        // A simple variable index is not hoisted and still works.
+        assert_eq!(
+            run("fn main(){ let i=1; let xs=[10,20,30]; xs[i] += 5; print(xs); }"),
+            "[10, 25, 30]"
+        );
+        // Nested indexed place.
+        assert_eq!(
+            run("fn main(){ let g=[[1,2],[3,4]]; g[0][1] += 100; print(g); }"),
+            "[[1, 102], [3, 4]]"
+        );
+    }
+
+    #[test]
+    fn integer_casts_and_wide_literals() {
+        // Signed narrowing sign-extends; unsigned keeps the masked value.
+        assert_eq!(run("fn main(){ print(255 as i8); }"), "-1");
+        assert_eq!(run("fn main(){ print(128 as i8); }"), "-128");
+        assert_eq!(run("fn main(){ print(300 as u8); }"), "44");
+        assert_eq!(run("fn main(){ print(-1 as u8); }"), "255");
+        // Full-width radix literal reinterprets its bit pattern instead of collapsing to 0.
+        assert_eq!(run("fn main(){ print(0xFFFFFFFFFFFFFFFF); }"), "-1");
+        assert_eq!(
+            run("fn main(){ print(0x7FFFFFFFFFFFFFFF); }"),
+            "9223372036854775807"
+        );
+        // i64::MIN as a decimal literal is exact, not coerced to f64.
+        assert_eq!(
+            run("fn main(){ print(-9223372036854775808); }"),
+            "-9223372036854775808"
+        );
+    }
+
+    #[test]
+    fn named_function_arity_pads_not_panics() {
+        // `map` passes one argument to a 2-ary function; the missing arg pads to 0 rather than
+        // panicking with an out-of-bounds index.
+        assert_eq!(
+            run("fn add(a,b){ a+b } fn main(){ print(map([1,2,3], add)); }"),
+            "[1, 2, 3]"
+        );
+    }
+
+    #[test]
+    fn assert_and_assume_work_in_expression_position() {
+        assert_eq!(
+            run("fn main(){ let ok = assert(1 > 0); print(ok); }"),
+            "true"
+        );
+        assert_eq!(run("fn main(){ let h = assume(2 > 1); print(h); }"), "true");
+    }
+
+    #[test]
+    fn empty_interpolation_and_empty_string_are_handled() {
+        // `${}` with no expression is a clean diagnostic, not a crash.
+        let out = crate::frontend::parse_source_detailed("fn main(){ print(\"x=${}\"); }");
+        assert!(out
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("empty interpolation")));
+        // The empty string literal itself lowers fine.
+        assert!(run("fn main(){ print(\"\"); print(\"ok\"); }").contains("ok"));
     }
 
     #[test]

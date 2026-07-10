@@ -181,3 +181,51 @@ Public outputs beyond a single u32: `return [a, b, …]` commits each field via
 | `for x in collection` list iteration | REAL | `examples/for_in_list.anb` → 60 | `bash scripts/run_for_in_gate.sh` | also turing fixture sum 15 |
 | `for i in a..b` range (regression) | REAL | for_range_sum → 5050 | same gate | half-open |
 | Prove for-in sum of private inputs | REAL | proof_for_in_sum journal 60 | same gate | a+b+c with proof_assert |
+
+## Backend Unification Keystone (2026-07-10)
+
+Retires the biggest structural debt: `build`/`prove` used a template/pattern-matched native emitter
+(`backends/native/mod.rs::lower_to_native`) that faked execution (research template printing
+`poc_memory_op_executed`; a `safe_execution` stub that never ran the program), while `run` used the
+faithful whole-program transpiler. Now **every command shares `backends::run::lower_program_to_rust`** —
+evidence, proof, and execution lower the *same* program.
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| `build`/`prove` native artifact uses the faithful lowering (runs the real program, not a stub) | REAL | `build_of_program_with_main_emits_faithful_runnable_artifact` (lib.rs); CLI: `keystone-real-exec`/`42`, 0 `safe_execution` in emitted `.rs` | `cargo test -p anubis-compiler build_of_program_with_main` ; `anubis build FILE.anb --out d && d/anubis_out` | non-hybrid programs with `fn main` route through `lower_program_to_rust` |
+| `run` vs `build` output parity (same program → same result) | REAL | run + build-artifact byte-identical on closures/map/reduce/for-in program | `anubis run p.anb` vs `anubis build p.anb && ./anubis_out` → `diff` identical | both pin `rustc --edition 2021` (main.rs:2829, native/mod.rs:40) |
+| Non-runnable program (no `fn main`) → honest analysis-only marker (no fabrication) | REAL | `mainless_research_snippet_lowers_to_honest_analysis_marker`; CLI marker reports real taint `x: tainted<u32>`, `constraints: 4`, reason `no fn main()`, 0 `poc_memory_op_executed` | `anubis build examples/research_poc.anubis --out d && d/anubis_out` | reports mode/taint/constraints/reason; substance in evidence bundle |
+| Brittle "research lowering requires assume(...)" gate RETIRED (honesty debt 0.3) | REAL | `research_snippet_without_assume_lowers_via_faithful_path_gate_retired` | `cargo test -p anubis-compiler research_snippet_without_assume` | now emits honest marker instead of a template gate error |
+| Safe-mode enforcement preserved (no runnable artifact for violations) | REAL | raw ptr → `ANUBIS_RAW_POINTER_IN_SAFE`; tainted sink → `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`; both exit=1, no artifact | `anubis build <safe-with-rawptr>.anb` / `<safe-tainted-sink>.anb` | enforcement is in `typecheck`, upstream of lowering |
+| Evidence bundles still validate after unification | REAL | safe + research bundles both `bundle valid: true` | `anubis build FILE --evidence --out d && anubis verify d/evidence-*` | tamper-evident hash chain intact |
+| Hybrid programs unchanged (RISC0+Metal emitter) | REAL | `hybrid_host_compiles_and_dispatches`, `parses_hybrid_and_spec_blocks` green | `cargo test -p anubis-compiler hybrid` | `hybrid { }` still routes to `lower_hybrid`; known limit: only detected in the first fn (pre-existing) |
+| Independent adversarial review (4 lenses, findings verified) | REAL | 1 low finding (edition mismatch) found+fixed; 2 dismissed as non-regressions | workflow `keystone-adversarial-review` | enforcement lens also proven firsthand via CLI |
+
+## Language Correctness Sweep — Wave 1 (2026-07-10)
+
+A 13-cluster adversarial cross-feature sweep (each finding verified firsthand) surfaced 32 confirmed
+defects. Wave 1 fixed 13 (all high-severity + the number/crash classes), each with a pinned
+regression test. Suite: **204 compiler tests, 0 failed** (`cargo test -p anubis-compiler`).
+
+| Fix | Status | Test / evidence | Was |
+|-----|--------|-----------------|-----|
+| `as` cast binds tighter than binary ops (`300 as u8 + 1` = 45) | REAL | `cast_binds_tighter_than_binary_ops` | cast silently voided, `+1` dropped → 300 |
+| Struct `==` is field-order-independent | REAL | `struct_equality_is_field_order_independent` | positional zip → `{x,y}` ≠ `{y,x}` |
+| Named functions bind by bare name in `let` | REAL | `named_functions_bind_by_name_in_let` | `let f = double` → ANUBIS_UNKNOWN_VARIABLE |
+| Compound assign evaluates a side-effecting index once | REAL | `compound_assign_evaluates_index_once` | `xs[pop(sel)] += 5` popped twice |
+| Signed narrowing cast sign-extends (`255 as i8` = -1) | REAL | `integer_casts_and_wide_literals` | masked unsigned → 255 |
+| Full-width radix literals (`0xFFFFFFFFFFFFFFFF` = -1) | REAL | `integer_casts_and_wide_literals` | i64 parse failed → 0 |
+| `i64::MIN` decimal literal is exact | REAL | `integer_casts_and_wide_literals` | coerced to f64 |
+| Named function passed to `map` pads (no panic) | REAL | `named_function_arity_pads_not_panics` | index-out-of-bounds panic |
+| `assert`/`assume` work in expression position | REAL | `assert_and_assume_work_in_expression_position` | `Expr::Other` → unsupported-expr error |
+| Empty `${}` interpolation is a clean diagnostic; empty `""` lowers | REAL | `empty_interpolation_and_empty_string_are_handled` | crash / `parts.remove(0)` panic |
+| Built-in `Some/None/Ok/Err` render bare; maps show quoted keys | REAL | `display_forms_option_result_map_and_user_enum` | `Option::Some(x)`, `{a: 1}` |
+| Actionable "unsupported expression" errors (no `Discriminant(N)`) | REAL | error arm split in `safe_run_expr` | opaque `Discriminant(28)` |
+
+**Remaining (19, triaged for later waves):** map key coercion (int index of string key; int/float key identity);
+mutating builtins on a struct-field place; duplicate struct-field literal accepted; method/closure arity not
+enforced (a design call — currently pads with 0); struct display in declaration vs insertion order; multi-arg
+generics (`Map<int,string>`) in annotations; or-pattern-with-wildcard exhaustiveness; `?` on a non-Option/Result;
+unknown-var not flagged in an `if` condition; plus a tail of low-severity edge cases. Fixture-harness debt:
+`run_language_fixtures.sh` is state-sensitive (stale `out/` false-fails) and `missing_semicolon.anb` is stale
+(semicolons are optional now).
