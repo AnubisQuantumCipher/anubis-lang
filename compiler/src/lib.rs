@@ -3140,6 +3140,56 @@ fn main() {
     }
 
     #[test]
+    fn uses_clause_parses_and_undeclared_effect_is_rejected() {
+        // Phase-3 C1+C2: `uses(fs.read, net.send)` parses on Item::Fn; inferred capability effects
+        // must be ⊆ the declared set → `ANUBIS_UNDECLARED_EFFECT` when a used effect is missing.
+        let parsed = parse_source(
+            r#"fn load(path: string) uses(fs.read) {
+    let data = read_file(path);
+    return data;
+}
+fn main() {}"#,
+        )
+        .expect("parse uses clause");
+        let frontend::Item::Fn { effects, name, .. } = &parsed.items[0] else {
+            panic!("expected fn");
+        };
+        assert_eq!(name, "load");
+        assert_eq!(effects.as_slice(), ["fs.read"]);
+
+        // Declared correctly — accepted (read_file is fs.read).
+        tc_ok(
+            r#"fn load(path: string) uses(fs.read) {
+    let data = read_file(path);
+    return data;
+}
+fn main() { let _ = load("a"); }"#,
+        )
+        .expect("declared fs.read must accept read_file");
+
+        // Missing declaration of an inferred effect — rejected.
+        let err = tc_ok(
+            r#"fn load(path: string) uses(net.send) {
+    let data = read_file(path);
+    return data;
+}
+fn main() {}"#,
+        )
+        .expect_err("read_file without fs.read in uses must reject");
+        assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got: {err}");
+
+        // No uses clause → no declared-vs-inferred check (absent clause is not a failure).
+        tc_ok(
+            r#"fn load(path: string) {
+    let data = read_file(path);
+    return data;
+}
+fn main() {}"#,
+        )
+        .expect("absent uses clause must not reject on effects alone");
+    }
+
+    #[test]
     fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {
         // Phase-3 A2: a function that RETURNS a formal parameter is summarized as
         // `returns_taint_of_params`; call sites combine that with argument taint so

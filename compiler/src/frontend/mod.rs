@@ -133,6 +133,10 @@ pub enum Item {
         /// value). Empty when the function declares no contracts.
         requires: Vec<Expr>,
         ensures: Vec<Expr>,
+        /// Phase-3 C1: declared `uses(fs.read, net.send, …)` capability effects. Empty when the
+        /// clause is omitted (or empty). Defaulted so existing `Item::Fn { .. }` destructures and
+        /// constructions that omit it stay valid once filled with `vec![]`.
+        effects: Vec<String>,
         attributes: Vec<Attribute>,
         span: Span,
     },
@@ -2383,19 +2387,22 @@ impl Parser {
             }
         }
         self.skip_where_clause(); // `fn foo<T>() where T: Ord { ... }`
-                                  // B2 contracts: `requires(P)` / `ensures(Q)` clauses sit between the signature and the body.
-                                  // They are contextual (parsed as identifiers) and unambiguous here — only a clause or the
-                                  // `{`/`;` body can follow the signature.
+                                  // B2 contracts: `requires(P)` / `ensures(Q)` and Phase-3 C1 `uses(…)`
+                                  // effect clauses sit between the signature and the body. Contextual
+                                  // keywords; only a clause or the `{`/`;` body can follow.
         let mut requires = vec![];
         let mut ensures = vec![];
+        let mut effects = vec![];
         loop {
             let clause = match &self.current().token {
-                Token::Ident(k) if k == "requires" => Some(true),
-                Token::Ident(k) if k == "ensures" => Some(false),
+                Token::Ident(k) if k == "requires" => Some("requires"),
+                Token::Ident(k) if k == "ensures" => Some("ensures"),
+                Token::Ident(k) if k == "uses" => Some("uses"),
                 _ => None,
             };
             match clause {
-                Some(is_requires) => {
+                Some("requires") | Some("ensures") => {
+                    let is_requires = clause == Some("requires");
                     self.bump();
                     if self.check_token(&Token::LParen) {
                         self.bump();
@@ -2411,7 +2418,51 @@ impl Parser {
                         break;
                     }
                 }
-                None => break,
+                Some("uses") => {
+                    self.bump();
+                    if self.check_token(&Token::LParen) {
+                        self.bump();
+                        // `uses(fs.read, net.send, time.now)` — comma-separated dotted idents.
+                        if !self.check_token(&Token::RParen) {
+                            loop {
+                                let mut parts = Vec::new();
+                                if let Token::Ident(id) = &self.current().token {
+                                    parts.push(id.clone());
+                                    self.bump();
+                                } else {
+                                    self.diagnostic(
+                                        "expected effect name in `uses(...)`",
+                                        self.current_span(),
+                                    );
+                                    break;
+                                }
+                                while self.check_token(&Token::Dot) {
+                                    self.bump();
+                                    if let Token::Ident(id) = &self.current().token {
+                                        parts.push(id.clone());
+                                        self.bump();
+                                    } else {
+                                        self.diagnostic(
+                                            "expected identifier after `.` in effect name",
+                                            self.current_span(),
+                                        );
+                                        break;
+                                    }
+                                }
+                                effects.push(parts.join("."));
+                                if self.check_token(&Token::Comma) {
+                                    self.bump();
+                                    continue;
+                                }
+                                break;
+                            }
+                        }
+                        let _ = self.expect_token(Token::RParen, "expected `)` after uses effects");
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
             }
         }
         let body_start = self.current_span();
@@ -2451,6 +2502,7 @@ impl Parser {
             ret,
             requires,
             ensures,
+            effects,
             attributes: pre_attrs,
             span,
         })

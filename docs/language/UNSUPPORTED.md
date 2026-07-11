@@ -186,13 +186,23 @@ is honest in **both** directions (never over-claim, never under-claim):
   `get(coll, key, default)` / `has_key` are the optional-access path.
 - **`input()` / `read_line()`** — REAL (stdin forwarded to the run binary, 2026-07-10).
 
+## NOW REAL (effect clause `uses(...)` — Phase-3 C1+C2, 2026-07-11)
+
+- Parse `fn f(...) uses(fs.read, net.send, time.now, rand.gen) { ... }` on `Item::Fn.effects`.
+- Declared-vs-inferred: when `uses` is present, every capability effect inferred from the body
+  (`file_read`/`file_write`/`network`/`shell`/…) must be ⊆ the declared set →
+  `ANUBIS_UNDECLARED_EFFECT`. Absent `uses` skips the check (C5 verified mode will require it).
+- Effect inference now sees calls in let-initializers and nested call arguments (not only bare
+  expression statements).
+
 ## Explicitly PLANNED (not real yet — verified still-unshipped 2026-07-10)
 
 - Array/list slicing **sugar** `xs[1..3]` (clean parse error today; use explicit list builtins)
 - An Anubis-level standard library (`stdlib/` is empty; the ~150 builtins are baked into the Rust
   emitter). Multi-file `import` now resolves (see NOW REAL below) but there is no `import std.*`
   prelude yet — that is Phase 5.
-- Async / await / tasks / language-level networking
+- Async / await / tasks / language-level networking (effect *checking* for `net.*` is real; executable
+  governed I/O codegen is Phase-3 C3)
 - Package manager, crates, publishing
 - LSP / IDE support
 - Automatic remote exploit / ROP / C2 (out of scope by design — not a gap to “close” for A+)

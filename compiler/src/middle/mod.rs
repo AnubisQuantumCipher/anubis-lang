@@ -577,6 +577,7 @@ fn collect_items(
                 ret,
                 requires,
                 ensures,
+                effects: declared_effects,
                 ..
             } => {
                 let effective_mode = if *mode == Mode::Safe {
@@ -611,6 +612,7 @@ fn collect_items(
                     ret.as_deref(),
                     requires,
                     ensures,
+                    declared_effects,
                     effective_mode,
                     *span,
                     false,
@@ -639,6 +641,7 @@ fn collect_items(
                         ret,
                         requires,
                         ensures,
+                        effects: declared_effects,
                         ..
                     } = m
                     {
@@ -655,6 +658,7 @@ fn collect_items(
                             ret.as_deref(),
                             requires,
                             ensures,
+                            declared_effects,
                             effective_mode,
                             *span,
                             true,
@@ -678,6 +682,7 @@ fn analyze_function(
     ret: Option<&str>,
     requires: &[Expr],
     ensures: &[Expr],
+    declared_effects: &[String],
     mode: Mode,
     span: Span,
     is_method: bool,
@@ -862,6 +867,33 @@ fn analyze_function(
         ctx,
     );
 
+    // Phase-3 C2: declared-vs-inferred effect check. When a function has a `uses(...)` clause,
+    // every capability effect inferred from the body must be ⊆ the declared set. Missing
+    // declaration of a used capability → `ANUBIS_UNDECLARED_EFFECT`. Absent `uses` skips the
+    // check (C5 verified mode will require declarations). Internal analysis tags (taint-*,
+    // assume, assert, loop, declassify, …) are not capability effects and are not gated here.
+    if !declared_effects.is_empty() {
+        let declared: BTreeSet<String> = declared_effects
+            .iter()
+            .map(|e| normalize_effect_name(e))
+            .collect();
+        let mut seen_undeclared = BTreeSet::new();
+        for inf in &effects {
+            if let Some(cap) = capability_effect(inf) {
+                if !declared.contains(&cap) && seen_undeclared.insert(cap.clone()) {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
+                        message: format!(
+                            "function `{name}` uses effect `{cap}` but does not declare it in `uses(...)` (declared: {})",
+                            declared_effects.join(", ")
+                        ),
+                        span: Some((span.start, span.end)),
+                    });
+                }
+            }
+        }
+    }
+
     // Discharge each `ensures` at EVERY return, so no return path can violate the postcondition:
     //   - the TAIL return is verified under the full body assumptions (they all dominate it);
     //   - each EARLY/nested return is verified under the precondition alone (a sound subset — this
@@ -1013,6 +1045,9 @@ fn analyze_stmts(
                     expr_taint_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
                 let declass_source =
                     declassify_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+                // Effect inference must see calls in let-initializers (`let d = read_file(p)`),
+                // not only bare expression statements — otherwise uses(...) checks miss real I/O.
+                analyze_expr_effect(init, mode, scope, effects, ctx);
                 // mark known after unknown check so later stmts see it
                 ctx.known_bindings.insert(name.clone());
 
@@ -1286,6 +1321,7 @@ fn analyze_stmts(
                 check_expr_semantics(expr, scope, ctx);
             }
             Stmt::Assign { target, value } => {
+                analyze_expr_effect(value, mode, scope, effects, ctx);
                 if let Some(source) =
                     expr_taint_source(value, scope, &ctx.tainting_fns, &ctx.param_return_taint)
                 {
@@ -1699,6 +1735,10 @@ fn analyze_expr_effect(
                         }
                     }
                 }
+            }
+            // Nested calls in arguments also produce effects (`return read_file(p)`, `sink(read_file(p))`).
+            for arg in args {
+                analyze_expr_effect(arg, mode, scope, effects, ctx);
             }
         }
         Expr::Declassify {
@@ -5002,6 +5042,35 @@ fn is_sink(callee: &str) -> bool {
         callee,
         "sink" | "send" | "network_send" | "write" | "memcpy" | "exec" | "sql"
     )
+}
+
+/// Normalize a declared `uses(...)` effect name (or an inferred effect tag) to a canonical
+/// capability id used for declared ⊆ inferred checking.
+fn normalize_effect_name(raw: &str) -> String {
+    let s = raw.trim().to_ascii_lowercase();
+    match s.as_str() {
+        "fs.read" | "file_read" | "read_file" | "open" => "fs.read".into(),
+        "fs.write" | "file_write" | "write_file" => "fs.write".into(),
+        "net.send" | "net.connect" | "network" | "send" | "connect" | "network_send" => {
+            "net.send".into()
+        }
+        "shell" | "exec" | "system" => "shell".into(),
+        "time.now" | "time" => "time.now".into(),
+        "rand.gen" | "rand" | "random" => "rand.gen".into(),
+        other => other.to_string(),
+    }
+}
+
+/// If `inferred` is a capability effect that must be declared in `uses(...)`, return its canonical
+/// name; otherwise `None` (analysis-only tags like taint/assume/loop are not gated).
+fn capability_effect(inferred: &str) -> Option<String> {
+    let base = inferred.split(':').next().unwrap_or(inferred);
+    match base {
+        "file_read" | "file_write" | "network" | "shell" => Some(normalize_effect_name(base)),
+        "time" | "rand" => Some(normalize_effect_name(base)),
+        // Direct sink tags are taint machinery, not I/O capabilities.
+        _ => None,
+    }
 }
 
 fn mode_name(mode: Mode) -> &'static str {
