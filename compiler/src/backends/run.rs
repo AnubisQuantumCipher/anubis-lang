@@ -3749,6 +3749,120 @@ fn anubis_unique_suffix() -> String {
     format!("{}-{}-{}", std::process::id(), nanos, n)
 }
 
+/// Result of running a child process under a wall-clock budget.
+pub struct CappedRun {
+    /// Captured exit status plus stdout/stderr up to (and including) the kill.
+    pub output: std::process::Output,
+    /// True when the watchdog fired: the child overran its budget and was killed.
+    pub timed_out: bool,
+}
+
+/// Parse a raw `ANUBIS_RUN_TIMEOUT_SECS` value into a wall-clock budget.
+///
+/// Absent or unparseable → the 3600s work-class default. `0` → `None`
+/// (unbounded opt-out). Kept pure so the policy is unit-testable without
+/// mutating process-global environment state.
+fn parse_run_timeout_secs(raw: Option<&str>) -> Option<std::time::Duration> {
+    const DEFAULT_SECS: u64 = 3600;
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SECS);
+    if secs == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(secs))
+    }
+}
+
+/// Wall-clock budget for an executed Anubis program.
+///
+/// Defaults to 3600s (the operator work-class-timeout invariant) so a runaway
+/// program fails closed within an hour instead of leaking a CPU-pinning orphan
+/// forever. Override with `ANUBIS_RUN_TIMEOUT_SECS`: any positive integer, or
+/// `0` to disable the cap (e.g. a long-lived interactive session).
+pub fn resolved_run_timeout() -> Option<std::time::Duration> {
+    parse_run_timeout_secs(std::env::var("ANUBIS_RUN_TIMEOUT_SECS").ok().as_deref())
+}
+
+/// Run a prepared child `Command` to completion under an optional wall-clock
+/// budget, capturing stdout and stderr.
+///
+/// `timeout == None` waits forever (the historical behavior, for callers that
+/// deliberately opt out). With a budget, a watchdog polls for exit and, once
+/// the deadline passes, SIGKILLs and reaps the child — so `anubis run` can
+/// never leave a runaway native binary that outlives its parent and spins a
+/// core indefinitely. The caller's stdin choice is preserved; only stdout and
+/// stderr are forced to pipes so they can be drained without a pipe-buffer
+/// deadlock.
+///
+/// Limitation: only the direct child is signalled. An Anubis program that
+/// itself spawns a long-lived grandchild is out of scope here (the research
+/// `target_run` builtin already caps its own probes); the leaks this closes
+/// are leaf compute binaries.
+pub fn run_child_capped(
+    mut cmd: std::process::Command,
+    timeout: Option<std::time::Duration>,
+) -> std::io::Result<CappedRun> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    let Some(budget) = timeout else {
+        // Unbounded opt-out: keep the simple blocking capture.
+        return Ok(CappedRun {
+            output: cmd.output()?,
+            timed_out: false,
+        });
+    };
+
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+
+    // Drain both pipes on dedicated threads so a chatty child cannot wedge by
+    // filling a pipe buffer while the main thread polls for exit.
+    let mut out_pipe = child.stdout.take().expect("stdout was set to piped");
+    let mut err_pipe = child.stderr.take().expect("stderr was set to piped");
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = err_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let deadline = Instant::now() + budget;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let status = child.wait()?; // reap the zombie
+                    timed_out = true;
+                    break status;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
+
+    // Both write ends are now closed (child exited or was killed), so the
+    // reader threads observe EOF and return promptly.
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    Ok(CappedRun {
+        output: std::process::Output {
+            status,
+            stdout,
+            stderr,
+        },
+        timed_out,
+    })
+}
+
 /// Transpile an Anubis source to Rust, compile it with `rustc`, and execute the binary.
 /// Returns the raw process `Output`. Fails closed if lowering or `rustc` fails.
 pub fn compile_and_run_source(
@@ -3789,17 +3903,98 @@ pub fn compile_and_run_items(
             stderr
         ));
     }
-    let out = std::process::Command::new(&exe)
-        .args(args)
-        .output()
+    let mut cmd = std::process::Command::new(&exe);
+    // No interactive input on this path: mirror the old `.output()` semantics
+    // where a child that reads stdin sees an immediate EOF rather than blocking.
+    cmd.args(args).stdin(std::process::Stdio::null());
+    let capped = run_child_capped(cmd, resolved_run_timeout())
         .map_err(|e| anyhow!("run spawn failed: {}", e))?;
     let _ = std::fs::remove_dir_all(&dir);
-    Ok(out)
+    if capped.timed_out {
+        return Err(anyhow!(
+            "ANUBIS_RUN_TIMEOUT: program exceeded its wall-clock budget and was killed \
+             (raise or disable via ANUBIS_RUN_TIMEOUT_SECS)"
+        ));
+    }
+    Ok(capped.output)
 }
 
 #[cfg(test)]
 mod run_tests {
     use super::*;
+
+    #[test]
+    fn run_timeout_policy_defaults_and_opt_out() {
+        use std::time::Duration;
+        // Absent / unparseable → 3600s work-class default.
+        assert_eq!(
+            parse_run_timeout_secs(None),
+            Some(Duration::from_secs(3600))
+        );
+        assert_eq!(
+            parse_run_timeout_secs(Some("not-a-number")),
+            Some(Duration::from_secs(3600))
+        );
+        // Explicit positive value is honored (whitespace tolerated).
+        assert_eq!(
+            parse_run_timeout_secs(Some(" 5 ")),
+            Some(Duration::from_secs(5))
+        );
+        // Zero is the documented opt-out: unbounded.
+        assert_eq!(parse_run_timeout_secs(Some("0")), None);
+    }
+
+    #[test]
+    fn run_child_capped_returns_output_when_program_is_fast() {
+        use std::time::Duration;
+        let mut cmd = std::process::Command::new("echo");
+        cmd.arg("hello-from-child");
+        let capped = run_child_capped(cmd, Some(Duration::from_secs(30))).expect("spawn");
+        assert!(
+            !capped.timed_out,
+            "a fast child must not be flagged timed_out"
+        );
+        assert!(capped.output.status.success());
+        assert!(String::from_utf8_lossy(&capped.output.stdout).contains("hello-from-child"));
+    }
+
+    #[test]
+    fn run_child_capped_kills_runaway_native_binary() {
+        use std::time::{Duration, Instant};
+        // Compile a genuine spinning native binary — exactly the shape `anubis run`
+        // emits for `while true {}` — and prove the watchdog SIGKILLs it well inside
+        // the budget instead of blocking forever (the orphaned-process leak this fixes).
+        let dir =
+            std::env::temp_dir().join(format!("anubis-timeout-test-{}", anubis_unique_suffix()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let rs = dir.join("spin.rs");
+        let exe = dir.join("spin");
+        std::fs::write(&rs, "fn main() { loop { std::hint::spin_loop(); } }").expect("write");
+        let build = std::process::Command::new("rustc")
+            .arg(&rs)
+            .arg("-o")
+            .arg(&exe)
+            .output()
+            .expect("rustc");
+        assert!(
+            build.status.success(),
+            "rustc failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let cmd = std::process::Command::new(&exe);
+        let start = Instant::now();
+        let capped = run_child_capped(cmd, Some(Duration::from_millis(400))).expect("spawn");
+        let elapsed = start.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            capped.timed_out,
+            "spinning binary should hit the wall-clock cap"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "watchdog must not hang; killed after {elapsed:?}"
+        );
+    }
 
     /// Compile+run an Anubis program and return trimmed stdout, asserting success.
     fn run(src: &str) -> String {

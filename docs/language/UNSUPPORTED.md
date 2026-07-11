@@ -15,6 +15,22 @@
 - **Bounty-grade local PoC kit** — packing, `target_run`, process mutation fuzz, gold crash PoC.
   Evidence: `bash scripts/run_poc_kit_gate.sh`. See `docs/language/POC_KIT.md`.
 
+## NOW REAL (runtime execution budget — fail-closed on runaway programs — 2026-07-11)
+
+Because the executable language is Turing-complete, an `anubis run` program can loop
+forever. It now runs under a **wall-clock budget** so a non-terminating (or hung)
+program fails closed instead of blocking `anubis run` indefinitely and orphaning a
+CPU-pinning child process.
+
+- Default budget: **3600s** (the operator work-class-timeout invariant). On overrun the
+  child is SIGKILLed and reaped; `anubis run` exits non-zero with `ANUBIS_RUN_TIMEOUT`.
+- Override: `ANUBIS_RUN_TIMEOUT_SECS=<positive-int>` to change it, or `=0` to disable the
+  cap (e.g. a deliberately long-lived interactive session).
+- Scope note: only the direct run child is bounded. An `--allow-research` `target_run`
+  probe already caps itself (2s) independently.
+- Evidence: `cargo test -p anubis-compiler run_child_capped` (a real compiled spinning
+  binary is killed inside the budget) + `run_timeout_policy` (default/opt-out parsing).
+
 ## NOW REAL (enums — 2026-07-09)
 
 - `enum Name { Unit, Tuple(T, …) }` declarations — REAL

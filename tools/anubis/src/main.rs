@@ -7,7 +7,9 @@ mod proof_input;
 
 use anubis_compiler::{
     backends::native::lower_to_native,
-    backends::run::{lower_program_to_guest, lower_program_to_rust},
+    backends::run::{
+        lower_program_to_guest, lower_program_to_rust, resolved_run_timeout, run_child_capped,
+    },
     evidence::{
         build_evidence_bundle, generate_keypair, pca_signature_status, sign_pca, verify_pca,
         EvidenceManifest,
@@ -3650,11 +3652,23 @@ fn run_anubis_source(
     // Inherit the parent's stdin so `input()` / `read_line()` work (piped or interactive).
     // `output()` would otherwise close the child's stdin, making every stdin read return EOF.
     // stdout/stderr stay captured (for the run evidence bundle) — only stdin is forwarded.
-    let output = std::process::Command::new(&work_exe)
-        .args(args)
-        .stdin(std::process::Stdio::inherit())
-        .output()
-        .map_err(|e| anyhow!("run spawn failed: {}", e))?;
+    //
+    // Run under a wall-clock budget (default 3600s, the work-class-timeout invariant; override
+    // with ANUBIS_RUN_TIMEOUT_SECS, 0 to disable). A runaway or infinite-loop program is SIGKILLed
+    // and reaped instead of hanging `anubis run` forever and orphaning a CPU-pinning child.
+    let timeout = resolved_run_timeout();
+    let mut cmd = std::process::Command::new(&work_exe);
+    cmd.args(args).stdin(std::process::Stdio::inherit());
+    let capped = run_child_capped(cmd, timeout).map_err(|e| anyhow!("run spawn failed: {}", e))?;
+    if capped.timed_out {
+        let _ = std::fs::remove_dir_all(&work);
+        let secs = timeout.map(|d| d.as_secs()).unwrap_or(0);
+        return Err(anyhow!(
+            "ANUBIS_RUN_TIMEOUT: program exceeded its {secs}s wall-clock budget and was killed. \
+             Raise ANUBIS_RUN_TIMEOUT_SECS for a longer run, or set it to 0 to disable the cap."
+        ));
+    }
+    let output = capped.output;
 
     // Copy artifacts into `out/` for inspection (each write is a complete file, so even a
     // concurrent copy resolves to one full version rather than a corrupt interleave).
