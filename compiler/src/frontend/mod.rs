@@ -2979,7 +2979,9 @@ impl Parser {
                         .unwrap_or_else(|| ("_".into(), tok.span));
                     let (fields, field_names) = if self.check_token(&Token::LParen) {
                         (self.parse_call_args(), vec![])
-                    } else if !self.no_struct && self.check_token(&Token::LBrace) {
+                    } else if (!self.no_struct || self.looks_like_struct_fields())
+                        && self.check_token(&Token::LBrace)
+                    {
                         self.bump();
                         let mut names = vec![];
                         let mut vals = vec![];
@@ -3536,6 +3538,23 @@ impl Parser {
         self.tokens
             .get(self.pos)
             .unwrap_or_else(|| self.tokens.last().expect("parser has eof token"))
+    }
+
+    /// Lookahead: does the current `{` open struct/variant fields (`{ ident : ...`) rather than a
+    /// following match body (`{ pattern => ...`)? This lets a struct-variant construction be a match
+    /// scrutinee — `match Rec::Full { x: 1 } { ... }` — even in no-struct context, while a
+    /// unit-variant scrutinee (`match Status::Active { ... }`) still leaves the brace for the body
+    /// (a match arm never begins `ident :`).
+    fn looks_like_struct_fields(&self) -> bool {
+        matches!(self.current().token, Token::LBrace)
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.token),
+                Some(Token::Ident(_))
+            )
+            && matches!(
+                self.tokens.get(self.pos + 2).map(|t| &t.token),
+                Some(Token::Colon)
+            )
     }
 
     fn current_span(&self) -> Span {
