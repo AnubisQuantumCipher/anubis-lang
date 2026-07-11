@@ -125,4 +125,4 @@ A+ requires **no mandatory gate failures**.
 
 ---
 
-Run `bash scripts/audit_a_plus.sh` to execute the full sealed gate suite and produce `implementer/a_plus_audit_run/<STAMP>/`.
+Run `bash scripts/audit_a_plus.sh` to execute the full sealed gate suite. It runs the repo safety check and delegates to the canonical runner `scripts/audit_unified.sh`, which executes every gate (G1–G15) and writes an honest PASS/FAIL/SKIP verdict plus `gate_report.json` to `out/unified_gate/<STAMP>/`, exiting non-zero if any gate fails.

@@ -44,7 +44,7 @@ These are not fraud — they are a prototype's shortcuts left labeled more stron
    - `run_language_fixtures.sh:65` — verdict **defaults to PASS**; an EXPECT=PASS fixture passes on `rc==0` alone, proving no analysis actually ran.
    - `run_security_fixtures.sh:61` — inverted needle logic: a should-be-**rejected** input that is wrongly **accepted** (rc=0, error string absent) still scores as "correctly handled."
    - `repro_language_core.sh:24` — hashes the same source twice; if both `cargo` runs fail (`|| true`), `missing==missing` ⇒ PASS. Reproducibility theater.
-4. **`audit_a_plus.sh` is a stub** ("TODO: add remaining gates", lines 16-17) that emits no `overall_verdict` despite its name.
+4. ~~**`audit_a_plus.sh` is a stub** ("TODO: add remaining gates", lines 16-17) that emits no `overall_verdict` despite its name.~~ **RESOLVED 2026-07-11:** `audit_a_plus.sh` now delegates to `scripts/audit_unified.sh` (the canonical G1–G15 runner with a JSON `verdict`, fail-closed). Guarded by `audit_a_plus_front_door_runs_the_real_gate_suite_not_a_stub` + `unified_gate_suite_is_fail_closed` tests.
 5. **Gate-5 (declassify) regression in `build_release_candidate.sh` is an empty placeholder** (lines 107-108); the release can reach PASS without ever testing declassification.
 6. **`gate11_a15_reproduce.sh` never enforces a verdict** — runs the sealer under `|| true` and always exits 0.
 7. **Taint is computed but discarded in `check`** — `let _tainted = ... TaintPass::apply(...)` (`main.rs:446`); the `check` verdict comes only from parse+typecheck. Whether a taint-only violation fails `check` depends on a path this slice doesn't wire.

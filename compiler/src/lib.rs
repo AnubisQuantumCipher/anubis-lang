@@ -2599,6 +2599,54 @@ fn bad() {
     }
 
     #[test]
+    fn audit_a_plus_front_door_runs_the_real_gate_suite_not_a_stub() {
+        // Regression guard for the "stub front door" category error: the acceptance
+        // criteria advertise `audit_a_plus.sh` as running the full sealed gate suite, so
+        // it must delegate to the canonical runner and carry none of the old skeleton's
+        // stub markers. A green claim over a stub is exactly what this project forbids.
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/audit_a_plus.sh"),
+        )
+        .expect("scripts/audit_a_plus.sh must exist");
+        assert!(
+            script.contains("audit_unified.sh"),
+            "audit_a_plus.sh must delegate to the canonical audit_unified.sh runner"
+        );
+        for stub_marker in [
+            "TODO: add remaining gates",
+            "skeleton complete",
+            "Full gates added in later phases",
+        ] {
+            assert!(
+                !script.contains(stub_marker),
+                "audit_a_plus.sh must not regress to the stub skeleton (found: {stub_marker:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn unified_gate_suite_is_fail_closed() {
+        // The one command a stranger runs must exit non-zero on any gate FAIL — a green
+        // exit over a red gate is the category error the whole project exists to prevent.
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/audit_unified.sh"),
+        )
+        .expect("scripts/audit_unified.sh must exist");
+        assert!(
+            script.contains("fail -gt 0"),
+            "unified suite verdict must key off the failing-gate count"
+        );
+        assert!(
+            script.contains(r#"VERDICT="FAIL""#),
+            "unified suite must be able to reach a FAIL verdict"
+        );
+        assert!(
+            script.contains("exit 1"),
+            "unified suite must exit non-zero on a FAIL verdict"
+        );
+    }
+
+    #[test]
     fn gate11_metal_parity_unknown_forces_not_yes() {
         let observed = "unknown";
         let require_metal = true;
