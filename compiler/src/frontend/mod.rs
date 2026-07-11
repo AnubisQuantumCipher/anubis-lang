@@ -244,8 +244,7 @@ impl Pattern {
                 named_bindings,
                 ..
             } => {
-                let mut v: Vec<String> =
-                    bindings.iter().flat_map(|p| p.bound_names()).collect();
+                let mut v: Vec<String> = bindings.iter().flat_map(|p| p.bound_names()).collect();
                 v.extend(named_bindings.iter().flat_map(|(_, p)| p.bound_names()));
                 v
             }
@@ -515,7 +514,9 @@ fn collect_explicit_methods(
 ) {
     for item in items {
         match item {
-            Item::Impl { type_name, methods, .. } => {
+            Item::Impl {
+                type_name, methods, ..
+            } => {
                 let set = out.entry(type_name.clone()).or_default();
                 for m in methods {
                     if let Item::Fn { name, .. } = m {
@@ -529,10 +530,7 @@ fn collect_explicit_methods(
     }
 }
 
-fn collect_trait_defaults(
-    items: &[Item],
-    out: &mut std::collections::BTreeMap<String, Vec<Item>>,
-) {
+fn collect_trait_defaults(items: &[Item], out: &mut std::collections::BTreeMap<String, Vec<Item>>) {
     for item in items {
         match item {
             Item::Trait { name, methods, .. } => {
@@ -648,7 +646,7 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                 }
                 if let Some(&(_, '*')) = chars.peek() {
                     chars.next(); // consume '*'
-                    // Block comment, nesting-aware: `/* ... /* ... */ ... */`.
+                                  // Block comment, nesting-aware: `/* ... /* ... */ ... */`.
                     let mut depth = 1usize;
                     while depth > 0 {
                         match chars.next() {
@@ -668,17 +666,41 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                 }
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("/".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("/".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Slash, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Slash,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '%' => {
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("%".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("%".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Percent, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Percent,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '!' => {
@@ -704,12 +726,30 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             '|' => {
                 if let Some(&(idx, '|')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::PipePipe, span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::PipePipe,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("|".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("|".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Pipe, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Pipe,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '{' => tokens.push(SpannedToken {
@@ -818,20 +858,50 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             '*' => {
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("*".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("*".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Star, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Star,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '&' => {
                 if let Some(&(idx, '&')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::AmpAmp, span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::AmpAmp,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("&".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("&".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Amp, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Amp,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '<' => {
@@ -839,15 +909,39 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     let (lidx, _) = chars.next().unwrap();
                     if let Some(&(idx, '=')) = chars.peek() {
                         chars.next();
-                        tokens.push(SpannedToken { token: Token::OpAssign("<<".into()), span: Span { start, end: idx + 1 } });
+                        tokens.push(SpannedToken {
+                            token: Token::OpAssign("<<".into()),
+                            span: Span {
+                                start,
+                                end: idx + 1,
+                            },
+                        });
                     } else {
-                        tokens.push(SpannedToken { token: Token::Shl, span: Span { start, end: lidx + 1 } });
+                        tokens.push(SpannedToken {
+                            token: Token::Shl,
+                            span: Span {
+                                start,
+                                end: lidx + 1,
+                            },
+                        });
                     }
                 } else if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::Le, span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Le,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Lt, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Lt,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '>' => {
@@ -855,15 +949,39 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     let (ridx, _) = chars.next().unwrap();
                     if let Some(&(idx, '=')) = chars.peek() {
                         chars.next();
-                        tokens.push(SpannedToken { token: Token::OpAssign(">>".into()), span: Span { start, end: idx + 1 } });
+                        tokens.push(SpannedToken {
+                            token: Token::OpAssign(">>".into()),
+                            span: Span {
+                                start,
+                                end: idx + 1,
+                            },
+                        });
                     } else {
-                        tokens.push(SpannedToken { token: Token::Shr, span: Span { start, end: ridx + 1 } });
+                        tokens.push(SpannedToken {
+                            token: Token::Shr,
+                            span: Span {
+                                start,
+                                end: ridx + 1,
+                            },
+                        });
                     }
                 } else if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::Ge, span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Ge,
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Gt, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Gt,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '=' => {
@@ -898,28 +1016,70 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             '+' => {
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("+".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("+".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Plus, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Plus,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '-' => {
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("-".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("-".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Minus, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Minus,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
             '^' => {
                 if let Some(&(idx, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(SpannedToken { token: Token::OpAssign("^".into()), span: Span { start, end: idx + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::OpAssign("^".into()),
+                        span: Span {
+                            start,
+                            end: idx + 1,
+                        },
+                    });
                 } else {
-                    tokens.push(SpannedToken { token: Token::Caret, span: Span { start, end: start + 1 } });
+                    tokens.push(SpannedToken {
+                        token: Token::Caret,
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
                 }
             }
-            '~' => tokens.push(SpannedToken { token: Token::Tilde, span: Span { start, end: start + 1 } }),
+            '~' => tokens.push(SpannedToken {
+                token: Token::Tilde,
+                span: Span {
+                    start,
+                    end: start + 1,
+                },
+            }),
             '"' => {
                 let mut s = String::new();
                 let mut end = start + 1;
@@ -1183,9 +1343,8 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     | "cpu" | "prove" | "spec" | "forall" | "tainted" | "symbolic" | "assume"
                     | "taint_source" | "assert" | "declassify" | "unified" | "Buffer"
                     | "intent" | "true" | "false" | "import" | "module" | "mod" | "struct"
-                    | "enum" | "match" | "impl" | "trait"
-                    | "return" | "as" | "while" | "loop" | "break" | "continue" | "mut" | "for"
-                    | "in" => Token::Keyword(id),
+                    | "enum" | "match" | "impl" | "trait" | "return" | "as" | "while" | "loop"
+                    | "break" | "continue" | "mut" | "for" | "in" => Token::Keyword(id),
                     _ => Token::Ident(id),
                 };
                 tokens.push(SpannedToken {
@@ -1727,7 +1886,8 @@ impl Parser {
                 self.bump();
                 let mut fields = vec![];
                 while !self.at_eof() && !self.check_token(&Token::RBrace) {
-                    if let Some((fname, _)) = self.expect_ident("expected field in struct pattern") {
+                    if let Some((fname, _)) = self.expect_ident("expected field in struct pattern")
+                    {
                         let sub = if self.check_token(&Token::Colon) {
                             self.bump();
                             self.parse_pattern_atom()
@@ -1763,7 +1923,7 @@ impl Parser {
         self.skip_generic_params(); // `impl<T> ...`
         let (first, _) = self.expect_ident("expected type name after `impl`")?;
         self.skip_generic_params(); // `impl Type<T>` or `impl Trait<T> for ...`
-        // `impl Type { ... }`  or  `impl Trait for Type { ... }`.
+                                    // `impl Type { ... }`  or  `impl Trait for Type { ... }`.
         let (trait_name, type_name) = if self.check_keyword("for") {
             self.bump();
             let (ty, _) = self
@@ -1865,8 +2025,11 @@ impl Parser {
                     while !self.at_eof() && !self.check_token(&Token::RBrace) {
                         if let Some((fname, _)) = self.expect_ident("expected field name") {
                             let _ = self.expect_token(Token::Colon, "expected `:` after field");
-                            let fty = self
-                                .collect_type_until(&[Token::Comma, Token::RBrace, Token::Semi]);
+                            let fty = self.collect_type_until(&[
+                                Token::Comma,
+                                Token::RBrace,
+                                Token::Semi,
+                            ]);
                             fields.push((fname, fty));
                         } else {
                             self.bump();
@@ -1880,10 +2043,7 @@ impl Parser {
                 } else {
                     EnumVariantKind::Unit
                 };
-                variants.push(EnumVariant {
-                    name: vname,
-                    kind,
-                });
+                variants.push(EnumVariant { name: vname, kind });
             } else {
                 self.bump();
             }
@@ -2223,9 +2383,9 @@ impl Parser {
             }
         }
         self.skip_where_clause(); // `fn foo<T>() where T: Ord { ... }`
-        // B2 contracts: `requires(P)` / `ensures(Q)` clauses sit between the signature and the body.
-        // They are contextual (parsed as identifiers) and unambiguous here — only a clause or the
-        // `{`/`;` body can follow the signature.
+                                  // B2 contracts: `requires(P)` / `ensures(Q)` clauses sit between the signature and the body.
+                                  // They are contextual (parsed as identifiers) and unambiguous here — only a clause or the
+                                  // `{`/`;` body can follow the signature.
         let mut requires = vec![];
         let mut ensures = vec![];
         loop {
@@ -2403,10 +2563,7 @@ impl Parser {
             let source = if self.check_token(&Token::DotDot) {
                 self.bump();
                 let end = self.parse_header_expr();
-                ForSource::Range {
-                    start: first,
-                    end,
-                }
+                ForSource::Range { start: first, end }
             } else {
                 ForSource::Collection { expr: first }
             };

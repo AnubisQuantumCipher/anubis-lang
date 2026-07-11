@@ -220,10 +220,7 @@ fn fmt_stmt(stmt: &Stmt, indent: usize) -> String {
     let p = pad(indent);
     match stmt {
         Stmt::Let { name, ty, init, .. } => {
-            let ann = ty
-                .as_ref()
-                .map(|t| format!(": {t}"))
-                .unwrap_or_default();
+            let ann = ty.as_ref().map(|t| format!(": {t}")).unwrap_or_default();
             format!("{p}let {name}{ann} = {};\n", fmt_expr(init))
         }
         Stmt::LetPattern { pattern, init, .. } => {
@@ -233,16 +230,27 @@ fn fmt_stmt(stmt: &Stmt, indent: usize) -> String {
             format!("{p}{} = {};\n", fmt_expr(target), fmt_expr(value))
         }
         Stmt::If { cond, then, else_ } => {
-            let mut s = format!("{p}if {} {{\n{}", fmt_expr(cond), fmt_block(then, indent + 1));
+            let mut s = format!(
+                "{p}if {} {{\n{}",
+                fmt_expr(cond),
+                fmt_block(then, indent + 1)
+            );
             match else_ {
                 Some(e) => {
-                    s.push_str(&format!("{p}}} else {{\n{}{p}}}\n", fmt_block(e, indent + 1)));
+                    s.push_str(&format!(
+                        "{p}}} else {{\n{}{p}}}\n",
+                        fmt_block(e, indent + 1)
+                    ));
                 }
                 None => s.push_str(&format!("{p}}}\n")),
             }
             s
         }
-        Stmt::While { cond, body, invariant } => {
+        Stmt::While {
+            cond,
+            body,
+            invariant,
+        } => {
             let inv = invariant
                 .iter()
                 .map(|i| format!(" invariant({})", fmt_expr(i)))
@@ -260,7 +268,12 @@ fn fmt_stmt(stmt: &Stmt, indent: usize) -> String {
                 .collect::<String>();
             format!("{p}loop{inv} {{\n{}{p}}}\n", fmt_block(body, indent + 1))
         }
-        Stmt::For { var, source, body, invariant } => {
+        Stmt::For {
+            var,
+            source,
+            body,
+            invariant,
+        } => {
             let src = match source {
                 ForSource::Range { start, end } => {
                     format!("{}..{}", fmt_expr(start), fmt_expr(end))
@@ -276,7 +289,11 @@ fn fmt_stmt(stmt: &Stmt, indent: usize) -> String {
                 fmt_block(body, indent + 1)
             )
         }
-        Stmt::WhileLet { pattern, expr, body } => format!(
+        Stmt::WhileLet {
+            pattern,
+            expr,
+            body,
+        } => format!(
             "{p}while let {} = {} {{\n{}{p}}}\n",
             fmt_pattern(pattern),
             fmt_expr(expr),
@@ -378,7 +395,13 @@ fn fmt_atom(e: &Expr) -> String {
                 .join(", ");
             format!("{name} {{ {inner} }}")
         }
-        Expr::EnumConstruct { enum_name, variant, fields, field_names, .. } => {
+        Expr::EnumConstruct {
+            enum_name,
+            variant,
+            fields,
+            field_names,
+            ..
+        } => {
             if field_names.is_empty() {
                 if fields.is_empty() {
                     format!("{enum_name}::{variant}")
@@ -395,8 +418,12 @@ fn fmt_atom(e: &Expr) -> String {
                 format!("{enum_name}::{variant} {{ {inner} }}")
             }
         }
-        Expr::Match { scrutinee, arms, .. } => fmt_match(scrutinee, arms),
-        Expr::If { cond, then, else_, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => fmt_match(scrutinee, arms),
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             // An `else` branch that is itself an `if` is an else-if chain — print `else if ...`
             // without wrapping braces, which would otherwise turn `else_: If` into `else_: Block(If)`.
             let else_part = if matches!(else_.as_ref(), Expr::If { .. }) {
@@ -406,7 +433,13 @@ fn fmt_atom(e: &Expr) -> String {
             };
             format!("if {} {} {}", fmt_expr(cond), fmt_branch(then), else_part)
         }
-        Expr::IfLet { pattern, scrutinee, then, else_, .. } => format!(
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => format!(
             "if let {} = {} {} else {}",
             fmt_pattern(pattern),
             fmt_expr(scrutinee),
@@ -448,7 +481,11 @@ fn fmt_atom(e: &Expr) -> String {
         Expr::Tainted { ty, inner } => format!("tainted<{ty}>({})", fmt_expr(inner)),
         Expr::Symbolic { ty } => format!("symbolic({ty})"),
         Expr::TaintSource { label } => format!("taint_source({label})"),
-        Expr::Declassify { inner, policy, reason } => {
+        Expr::Declassify {
+            inner,
+            policy,
+            reason,
+        } => {
             let mut s = format!("declassify({}", fmt_expr(inner));
             if let Some(p) = policy {
                 s.push_str(&format!(", policy: \"{}\"", escape_str(p)));
@@ -518,7 +555,11 @@ fn fmt_match(scrutinee: &Expr, arms: &[MatchArm]) -> String {
                 .as_ref()
                 .map(|g| format!(" if {}", fmt_expr(g)))
                 .unwrap_or_default();
-            format!("{}{guard} => {}", fmt_pattern(&a.pattern), fmt_expr(&a.body))
+            format!(
+                "{}{guard} => {}",
+                fmt_pattern(&a.pattern),
+                fmt_expr(&a.body)
+            )
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -533,7 +574,10 @@ fn fmt_pattern(p: &Pattern) -> String {
         Pattern::StrLiteral(s) => format!("\"{}\"", escape_str(s)),
         Pattern::Or(pats) => pats.iter().map(fmt_pattern).collect::<Vec<_>>().join(" | "),
         Pattern::List(pats) => {
-            format!("[{}]", pats.iter().map(fmt_pattern).collect::<Vec<_>>().join(", "))
+            format!(
+                "[{}]",
+                pats.iter().map(fmt_pattern).collect::<Vec<_>>().join(", ")
+            )
         }
         Pattern::Struct { name, fields } => {
             let inner = fields
@@ -543,7 +587,12 @@ fn fmt_pattern(p: &Pattern) -> String {
                 .join(", ");
             format!("{name} {{ {inner} }}")
         }
-        Pattern::EnumVariant { enum_name, variant, bindings, named_bindings } => {
+        Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+            named_bindings,
+        } => {
             let en = if enum_name.is_empty() {
                 String::new()
             } else {
@@ -559,7 +608,11 @@ fn fmt_pattern(p: &Pattern) -> String {
             } else if bindings.is_empty() {
                 format!("{en}{variant}")
             } else {
-                let inner = bindings.iter().map(fmt_pattern).collect::<Vec<_>>().join(", ");
+                let inner = bindings
+                    .iter()
+                    .map(fmt_pattern)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{en}{variant}({inner})")
             }
         }
@@ -610,9 +663,6 @@ mod tests {
         files
     }
 
-
-
-
     #[test]
     fn fmt_is_safe_and_idempotent_over_the_corpus() {
         let mut formatted = 0usize;
@@ -650,7 +700,10 @@ mod tests {
         // COVERAGE: a strong majority formats. Floor set well below the current 31 so it never flakes.
         let total = formatted + skipped + refused.len();
         assert!(total > 20, "corpus not found? total={total}");
-        assert!(formatted >= 28, "fmt coverage regressed: {formatted}/{total} formatted");
+        assert!(
+            formatted >= 28,
+            "fmt coverage regressed: {formatted}/{total} formatted"
+        );
     }
 
     #[test]
@@ -679,7 +732,10 @@ fn main() {
         assert_eq!(out, format_source(&out).unwrap(), "not idempotent");
         // The precedence-sensitive expression round-trips with correct structure (already checked by
         // the self-verification inside format_source; this pins a couple of surface expectations).
-        assert!(out.contains("else if a > b"), "else-if chain preserved:\n{out}");
+        assert!(
+            out.contains("else if a > b"),
+            "else-if chain preserved:\n{out}"
+        );
         assert!(out.contains("|z| z * z + 1"), "closure preserved:\n{out}");
     }
 }

@@ -19,7 +19,14 @@ pub fn lateral_ssh(
     }
     // Deny obvious destructive patterns without ROE expansion
     let lowered = remote_cmd.to_ascii_lowercase();
-    for bad in ["rm -rf /", "mkfs", ":(){", "dd if=/dev/zero", "shutdown", "reboot"] {
+    for bad in [
+        "rm -rf /",
+        "mkfs",
+        ":(){",
+        "dd if=/dev/zero",
+        "shutdown",
+        "reboot",
+    ] {
         if lowered.contains(bad) {
             return Err(anyhow!(
                 "ANUBIS_LATERAL_CMD_BLOCKED: refused pattern `{bad}`"

@@ -238,7 +238,8 @@ mod tests {
 
     #[test]
     fn parses_if_expression_with_else_if() {
-        let src = "fn main() { let n = 3; let r = if n > 2 { n + 4 } else if n == 0 { 1 } else { 0 }; }";
+        let src =
+            "fn main() { let n = 3; let r = if n > 2 { n + 4 } else if n == 0 { 1 } else { 0 }; }";
         let parsed = frontend::parse_source_detailed(src);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -340,7 +341,11 @@ mod tests {
         }
         "#;
         let parsed = frontend::parse_source_detailed(src);
-        assert!(parsed.diagnostics.is_empty(), "diags: {:?}", parsed.diagnostics);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "diags: {:?}",
+            parsed.diagnostics
+        );
         let err = typecheck(parsed.ast, frontend::Mode::Safe).expect_err("must type-error");
         assert!(
             err.contains("ANUBIS_TYPE_MISMATCH"),
@@ -361,7 +366,11 @@ mod tests {
         }
         "#;
         let parsed = frontend::parse_source_detailed(src);
-        assert!(parsed.diagnostics.is_empty(), "diags: {:?}", parsed.diagnostics);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "diags: {:?}",
+            parsed.diagnostics
+        );
         let err = typecheck(parsed.ast, frontend::Mode::Safe).expect_err("must non-exhaustive");
         assert!(
             err.contains("ANUBIS_MATCH_NON_EXHAUSTIVE"),
@@ -509,9 +518,7 @@ mod tests {
             .diagnostics
             .iter()
             .find(|d| d.message.contains("expected statement"))
-            .unwrap_or_else(|| {
-                panic!("expected a spanned diagnostic: {:?}", parsed.diagnostics)
-            });
+            .unwrap_or_else(|| panic!("expected a spanned diagnostic: {:?}", parsed.diagnostics));
         assert!(
             src[diag.span.start..].starts_with(','),
             "diagnostic span should point at the stray `,`: start={} src={:?}",
@@ -832,6 +839,15 @@ fn trigger() {
         // parser populates hybrid stmt even if coarse
         // we only require no panic and mode handling
         assert!(ir.mode == BuildMode::Safe);
+        let metal_ref = std::env::var("ANUBIS_RISC0_METAL_REFERENCE").unwrap_or_default();
+        if metal_ref.is_empty()
+            || !std::path::Path::new(&metal_ref)
+                .join("vendor/risc0-circuit-rv32im/src/prove/hal/metal.rs")
+                .exists()
+        {
+            eprintln!("SKIP parses_hybrid_and_spec_blocks: ANUBIS_RISC0_METAL_REFERENCE not set or vendored crate missing");
+            return;
+        }
         // strengthen: lower and check real keywords in .rs (no stubs)
         let out = unique_test_dir("hybrid-lower");
         std::fs::create_dir_all(&out).unwrap();
@@ -1048,7 +1064,9 @@ fn main() {
             checks
                 .iter()
                 .any(|check| check.smt.contains("(assert (= anb_x (_ bv7 64)))")
-                    && check.smt.contains("(assert (= anb_y (bvmul anb_x (_ bv6 64))))")),
+                    && check
+                        .smt
+                        .contains("(assert (= anb_y (bvmul anb_x (_ bv6 64))))")),
             "SMT must include concrete let assumptions for x and y (64-bit i64 model): {:?}",
             checks
         );
@@ -1095,9 +1113,18 @@ fn main() {
             let checks = SymbolicEngine::check_obligations(&ir);
             checks.iter().all(|c| c.status != "FAIL")
         };
-        assert!(proved("fn main(){ let a=65536; let b=65536; assert(a*b != 0); }"), "2^32 must not wrap to 0");
-        assert!(proved("fn main(){ let x=0; assert(x - 1 < x); }"), "0-1 = -1 < 0 (signed)");
-        assert!(proved("fn main(){ let a=3000000000; let b=2000000000; assert(a + b > a); }"), "3e9+2e9 must not wrap");
+        assert!(
+            proved("fn main(){ let a=65536; let b=65536; assert(a*b != 0); }"),
+            "2^32 must not wrap to 0"
+        );
+        assert!(
+            proved("fn main(){ let x=0; assert(x - 1 < x); }"),
+            "0-1 = -1 < 0 (signed)"
+        );
+        assert!(
+            proved("fn main(){ let a=3000000000; let b=2000000000; assert(a + b > a); }"),
+            "3e9+2e9 must not wrap"
+        );
         // A `u32` annotation is INERT at runtime (a value holds any i64; no width clamp), so the
         // solver must NOT fabricate a `[0, 2^32-1]` range for it. A symbolic u32 whose only claimed
         // bound comes from the (nonexistent) range is therefore left unmodeled, never proved from a
@@ -1107,7 +1134,9 @@ fn main() {
         let ast = parse_source("fn main(){ let x=3; assert(x > 20); }").expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
         assert!(
-            SymbolicEngine::check_obligations(&ir).iter().any(|c| c.status == "FAIL"),
+            SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .any(|c| c.status == "FAIL"),
             "x=3, assert(x>20) must still be disproved"
         );
     }
@@ -1118,15 +1147,13 @@ fn main() {
         // precondition (discharged by the solver); a violated one is disproved. A contract the
         // checker cannot discharge is REJECTED at typecheck (a semantic diagnostic) — that counts as
         // NOT discharged, exactly like a solver FAIL.
-        let discharged = |src: &str| match typecheck(
-            parse_source(src).expect("parse"),
-            frontend::Mode::Safe,
-        ) {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL"),
-            Err(_) => false,
-        };
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
         // Provable postconditions. NOTE the upper `requires` bound: a `u32` annotation is inert at
         // runtime (values are i64), so a contract that needs no-overflow must STATE the bound. With
         // `x < 1_000_000`, `x + 1` and `x + x` cannot wrap, so the postcondition is discharged.
@@ -1136,14 +1163,31 @@ fn main() {
         // Range-removal soundness (the false proof the sweep found): WITHOUT an upper bound, `x + 1`
         // can wrap at i64::MAX, so `result > x` is genuinely violable and must NOT be proved. The old
         // (unsound) `[0, 2^32-1]` param range let this pass; it must now be DISPROVED.
-        assert!(!discharged("fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }"), "unbounded x+1>x can overflow: must be disproved");
-        assert!(!discharged("fn dbl(x: u32) -> u32 ensures(result >= x) { return x + x; }"), "unbounded x+x can overflow: must be disproved");
+        assert!(
+            !discharged(
+                "fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }"
+            ),
+            "unbounded x+1>x can overflow: must be disproved"
+        );
+        assert!(
+            !discharged("fn dbl(x: u32) -> u32 ensures(result >= x) { return x + x; }"),
+            "unbounded x+x can overflow: must be disproved"
+        );
         // Violated postconditions are disproved.
-        assert!(!discharged("fn dec(x: u32) -> u32 ensures(result > x) { return x - 1; }"), "x-1 > x is false");
-        assert!(!discharged("fn same(x: u32) -> u32 ensures(result > x) { return x; }"), "x > x is false");
+        assert!(
+            !discharged("fn dec(x: u32) -> u32 ensures(result > x) { return x - 1; }"),
+            "x-1 > x is false"
+        );
+        assert!(
+            !discharged("fn same(x: u32) -> u32 ensures(result > x) { return x; }"),
+            "x > x is false"
+        );
         // A plain function's parameter assertion keeps its prior param-opaque semantics (no contract
         // means params are not modeled), so it is not newly disproved.
-        assert!(discharged("fn g(x: u32) { assert(x > 5); }"), "no-contract param assert stays skipped");
+        assert!(
+            discharged("fn g(x: u32) { assert(x > 5); }"),
+            "no-contract param assert stays skipped"
+        );
         // EVERY return path is verified, not just the tail: an early return that violates the
         // postcondition is disproved (no false proof), while a multi-return function whose every
         // path satisfies the postcondition passes.
@@ -1227,22 +1271,34 @@ fn main() {
     #[test]
     fn b2_contract_composition() {
         // Composition: a caller ASSUMES a callee's postcondition and must satisfy its precondition.
-        let discharged = |src: &str| match typecheck(
-            parse_source(src).expect("parse"),
-            frontend::Mode::Safe,
-        ) {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL"),
-            Err(_) => false,
-        };
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
         let pos = "fn pos(x: u32) -> u32 requires(x > 0) ensures(result > 0) { return x; }";
         // The caller learns `a > 0` from pos's postcondition.
-        assert!(discharged(&format!("{pos} fn u(){{ let a = pos(5); assert(a > 0); }}")), "learns ensures");
-        assert!(!discharged(&format!("{pos} fn u(){{ let a = pos(5); assert(a > 100); }}")), "ensures too weak for a>100");
+        assert!(
+            discharged(&format!("{pos} fn u(){{ let a = pos(5); assert(a > 0); }}")),
+            "learns ensures"
+        );
+        assert!(
+            !discharged(&format!(
+                "{pos} fn u(){{ let a = pos(5); assert(a > 100); }}"
+            )),
+            "ensures too weak for a>100"
+        );
         // The caller must satisfy pos's precondition.
-        assert!(discharged(&format!("{pos} fn u(){{ let a = pos(5); }}")), "5 > 0 satisfies requires");
-        assert!(!discharged(&format!("{pos} fn u(){{ let a = pos(0); }}")), "0 > 0 violates requires");
+        assert!(
+            discharged(&format!("{pos} fn u(){{ let a = pos(5); }}")),
+            "5 > 0 satisfies requires"
+        );
+        assert!(
+            !discharged(&format!("{pos} fn u(){{ let a = pos(0); }}")),
+            "0 > 0 violates requires"
+        );
         // Chaining: g proves its own `ensures` via f's `ensures`. Both carry the upper bound that
         // makes `x + 1` non-overflowing, and g's bound satisfies f's precondition at the call site.
         assert!(
@@ -1272,26 +1328,33 @@ fn main() {
         // is VIOLATED at runtime but was previously ACCEPTED by `check`. `discharged` returns false
         // when the program is rejected — either at typecheck (a fail-closed `ANUBIS_CONTRACT_UNPROVABLE`
         // diagnostic) or by a solver FAIL (a disproof / vacuity failure). Every case must be rejected.
-        let discharged = |src: &str| match typecheck(
-            parse_source(src).expect("parse"),
-            frontend::Mode::Safe,
-        ) {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL"),
-            Err(_) => false,
-        };
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
 
         // A — a truncating cast (`x as u8`) modeled as the identity: `ident8(256)` runs to 0.
-        assert!(!discharged("fn ident8(x: u32) -> u32 ensures(result == x) { return x as u8; }"), "A: truncating cast must not be modeled as identity");
+        assert!(
+            !discharged("fn ident8(x: u32) -> u32 ensures(result == x) { return x as u8; }"),
+            "A: truncating cast must not be modeled as identity"
+        );
         // B — a parameter named like an SMT keyword (`model`) dropped from the SMT, z3 errored, the
         // error was treated as fail-open. It must now be a real disproof (overflow at i64::MAX).
-        assert!(!discharged("fn inc(model: u32) -> u32 ensures(result > model) { return model + 1; }"), "B: keyword-named param must not fail open");
+        assert!(
+            !discharged("fn inc(model: u32) -> u32 ensures(result > model) { return model + 1; }"),
+            "B: keyword-named param must not fail open"
+        );
         // B (other direction) — a VALID contract with a keyword-named param must still PROVE.
         assert!(discharged("fn inc(model: u32) -> u32 requires(model > 0) requires(model < 100) ensures(result > model) { return model + 1; }"), "B: valid keyword-named contract still proves");
         // C — an integer `ensures` over a non-modeled variable (untyped param) silently vanished. It
         // must fail closed.
-        assert!(!discharged("fn inc(x) requires(x > 0) ensures(result < x) { return x + 1; }"), "C: untyped-param integer ensures must not vanish");
+        assert!(
+            !discharged("fn inc(x) requires(x > 0) ensures(result < x) { return x + 1; }"),
+            "C: untyped-param integer ensures must not vanish"
+        );
         // A reassigned parameter's `ensures` refers to the value AT RETURN (Anubis has no `old()`): it
         // is still CHECKED against the reassigned value, not silently skipped. Here `x = 0; return x;`
         // makes `result > x` become `0 > 0`, which is false and must be REJECTED.
@@ -1301,9 +1364,15 @@ fn main() {
         // D2 — a float LITERAL bound to a variable (`let x = 0.5`) was typed `u32` and modeled as an
         // integer, "proving" `result * 2 != 1` (true over all integers) though `0.5 * 2 == 1` at
         // runtime. Float literals now type as f64 and stay out of the solver's integer domain.
-        assert!(!discharged("fn f() -> u32 ensures(result * 2 != 1) { let x = 0.5; return x; }"), "D2: a float-literal binding must not be modeled as an integer");
+        assert!(
+            !discharged("fn f() -> u32 ensures(result * 2 != 1) { let x = 0.5; return x; }"),
+            "D2: a float-literal binding must not be modeled as an integer"
+        );
         // D3 — the same integer shape (an actual int binding) still proves: 5 * 2 == 10 != 1.
-        assert!(discharged("fn f() -> u32 ensures(result * 2 != 1) { let x = 5; return x; }"), "D3: an integer-literal binding still proves");
+        assert!(
+            discharged("fn f() -> u32 ensures(result * 2 != 1) { let x = 5; return x; }"),
+            "D3: an integer-literal binding still proves"
+        );
         // E — an integer literal beyond i64::MAX reduced mod 2^64 by the solver but f64 at runtime.
         assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result <= x) { return x + 18446744073709551616; }"), "E: oversized literal must not reduce mod 2^64");
         // F — self-contradictory assumptions (`requires(x<100)` + `assume(x>1000)`) proving any
@@ -1311,7 +1380,10 @@ fn main() {
         assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > 999999) { assume(x > 1000); return x + 1; }"), "F: vacuous proof under contradictory assumptions");
         // G — a non-integer (string) `ensures` is compile-time only and NOT runtime-enforced, so a
         // violated one must be rejected, never silently skipped.
-        assert!(!discharged("fn nm() -> string ensures(result == \"wrong\") { return \"ok\"; }"), "G: unprovable string ensures must fail closed");
+        assert!(
+            !discharged("fn nm() -> string ensures(result == \"wrong\") { return \"ok\"; }"),
+            "G: unprovable string ensures must fail closed"
+        );
 
         // Controls: genuinely valid integer contracts still PROVE (no over-rejection).
         assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; }"), "valid bounded contract still proves");
@@ -1322,8 +1394,7 @@ fn main() {
 
     #[test]
     fn try_operator_requires_option_or_result_return() {
-        let checks =
-            |src: &str| typecheck(parse_source(src).expect("parse"), Mode::Safe).is_ok();
+        let checks = |src: &str| typecheck(parse_source(src).expect("parse"), Mode::Safe).is_ok();
         // `?` in a function that declares a concrete non-Option/Result return is fail-closed.
         assert!(
             !checks("fn g() -> Result<u32, string> { return Ok(1); } fn bad() -> u32 { let x = g()?; return x; }"),
@@ -1348,43 +1419,84 @@ fn main() {
 
     #[test]
     fn solver_models_shifts_soundly() {
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL"),
             Err(_) => false,
         };
         // Bitwise NOT (`~v` = `!v` on i64 = -v-1) models as bvnot.
-        assert!(discharged("fn f() -> u32 ensures(result == 0 - 1) { return ~0; }"), "~0 == -1");
-        assert!(!discharged("fn f() -> u32 ensures(result == 0) { return ~0; }"), "~0 == 0 is false (it is -1)");
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 0 - 1) { return ~0; }"),
+            "~0 == -1"
+        );
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 0) { return ~0; }"),
+            "~0 == 0 is false (it is -1)"
+        );
         // Left shift proves; the shift amount is masked mod 64 exactly like the runtime.
-        assert!(discharged("fn f() -> u32 ensures(result == 16) { return 1 << 4; }"), "1 << 4 == 16");
-        assert!(discharged("fn f() -> u32 ensures(result == 2) { return 1 << 65; }"), "1 << 65 masks to 1 << 1 == 2");
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 16) { return 1 << 4; }"),
+            "1 << 4 == 16"
+        );
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 2) { return 1 << 65; }"),
+            "1 << 65 masks to 1 << 1 == 2"
+        );
         // `>>` is ARITHMETIC (sign-extending) — bvashr, matching i64::wrapping_shr, NOT bvlshr.
-        assert!(discharged("fn f() -> u32 ensures(result == 0 - 4) { return (0 - 8) >> 1; }"), "-8 >> 1 == -4 (arithmetic)");
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 0 - 4) { return (0 - 8) >> 1; }"),
+            "-8 >> 1 == -4 (arithmetic)"
+        );
         // False shift contracts are DISPROVED, never vacuously accepted.
-        assert!(!discharged("fn f() -> u32 ensures(result == 4) { return (0 - 8) >> 1; }"), "-8 >> 1 == 4 is false (it is -4)");
-        assert!(!discharged("fn f() -> u32 ensures(result == 8) { return 1 << 2; }"), "1 << 2 == 8 is false (it is 4)");
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 4) { return (0 - 8) >> 1; }"),
+            "-8 >> 1 == 4 is false (it is -4)"
+        );
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 8) { return 1 << 2; }"),
+            "1 << 2 == 8 is false (it is 4)"
+        );
     }
 
     #[test]
     fn solver_models_division_soundly() {
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL"),
             Err(_) => false,
         };
         // Truncated division by a non-zero literal proves (bvsdiv, toward zero).
-        assert!(discharged("fn f(x: u32) -> u32 requires(x == 10) ensures(result == 3) { return x / 3; }"), "10 / 3 == 3");
+        assert!(
+            discharged(
+                "fn f(x: u32) -> u32 requires(x == 10) ensures(result == 3) { return x / 3; }"
+            ),
+            "10 / 3 == 3"
+        );
         // Remainder takes the sign of the DIVIDEND (bvsrem, matching wrapping_rem — not bvsmod).
-        assert!(discharged("fn f() -> u32 ensures(result == 0 - 1) { return (0 - 7) % 3; }"), "-7 % 3 == -1");
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 0 - 1) { return (0 - 7) % 3; }"),
+            "-7 % 3 == -1"
+        );
         // A literal-zero divisor is NOT modelable (runtime traps) -> the contract fails closed.
-        assert!(!discharged("fn f(x: u32) -> u32 requires(x == 5) ensures(result == 5) { return x / 0; }"), "x / 0 must not be modeled (it traps)");
+        assert!(
+            !discharged(
+                "fn f(x: u32) -> u32 requires(x == 5) ensures(result == 5) { return x / 0; }"
+            ),
+            "x / 0 must not be modeled (it traps)"
+        );
         // A variable divisor needs a proof it is non-zero (deferred) -> unmodelable, fail-closed.
         assert!(!discharged("fn f(x: u32, y: u32) -> u32 requires(x == 6) requires(y == 2) ensures(result == 3) { return x / y; }"), "variable divisor is not yet modelable");
         // A false division contract is disproved.
-        assert!(!discharged("fn f(x: u32) -> u32 requires(x == 10) ensures(result == 4) { return x / 3; }"), "10 / 3 == 4 is false (it is 3)");
+        assert!(
+            !discharged(
+                "fn f(x: u32) -> u32 requires(x == 10) ensures(result == 4) { return x / 3; }"
+            ),
+            "10 / 3 == 4 is false (it is 3)"
+        );
     }
 
     #[test]
@@ -1393,15 +1505,13 @@ fn main() {
         // Otherwise a name modeled as an i64 in one place leaks its modelability to a same-named
         // binding holding a string/list/bool, and an integer predicate over it is "proved" (a
         // bit-vector tautology like `v + 0 == v`) though the runtime string/list semantics differ.
-        let checks_pass = |src: &str| match typecheck(
-            parse_source(src).expect("parse"),
-            frontend::Mode::Safe,
-        ) {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL"),
-            Err(_) => false,
-        };
+        let checks_pass =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
         // A shadowing `let` must drop the shadowed integer's model: a genuinely-false integer assert
         // over the new (string) binding must NOT be disproved from the stale `v == 0` — it is skipped
         // (deferred to runtime). If the model leaked, `assert(v == 99)` would be DISPROVED (FAIL).
@@ -1442,15 +1552,13 @@ fn main() {
         // loop-written variables are havoc'd before the body, so such an assert is deferred to the
         // runtime (which enforces `assert`). An assert over a read-only variable stays statically
         // checked.
-        let checks_pass = |src: &str| match typecheck(
-            parse_source(src).expect("parse"),
-            frontend::Mode::Safe,
-        ) {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL"),
-            Err(_) => false,
-        };
+        let checks_pass =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
         // Was a false DISPROOF from the stale `x == 0` (`0 > 100` is false); now skipped (deferred).
         // The complementary false PROOF (`assert(x < 2)` "proved" from `x == 0`) is closed by the same
         // havoc — the obligation is no longer emitted at all.
@@ -1476,15 +1584,13 @@ fn main() {
         // each iteration), then may be assumed after the loop — readmitting a loop-carried variable
         // the solver otherwise drops. `discharged` is false when the program is rejected (a
         // fail-closed diagnostic OR a solver FAIL on the base/step obligation).
-        let discharged = |src: &str| match typecheck(
-            parse_source(src).expect("parse"),
-            frontend::Mode::Safe,
-        ) {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL"),
-            Err(_) => false,
-        };
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
 
         // THE DEMONSTRATION: an `ensures` over a loop-carried variable is UNPROVABLE without an
         // invariant (the variable is dropped when reassigned) but PROVABLE with one.
@@ -2031,7 +2137,7 @@ fn bad() {
         std::fs::write(risc0_dir.join("receipt.bin"), b"real receipt bytes").unwrap();
         std::fs::write(
             risc0_dir.join("risc0_metadata.json"),
-            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"/Users/sicarii/Desktop/metal-hybrid-prover","vendored_patch_path":"/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#,
+            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"/tmp/test-metal-prover","vendored_patch_path":"/tmp/test-metal-prover/vendor/risc0-circuit-rv32im","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -2091,7 +2197,7 @@ fn bad() {
         std::fs::write(risc0_dir.join("receipt.bin"), b"partial receipt marker").unwrap();
         std::fs::write(
             risc0_dir.join("risc0_metadata.json"),
-            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"failed","fresh_receipt_generated":false,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"/Users/sicarii/Desktop/metal-hybrid-prover","vendored_patch_path":"/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#,
+            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"failed","fresh_receipt_generated":false,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"/tmp/test-metal-prover","vendored_patch_path":"/tmp/test-metal-prover/vendor/risc0-circuit-rv32im","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -2196,6 +2302,15 @@ fn main() {
 
     #[test]
     fn hybrid_host_compiles_and_dispatches() {
+        let metal_ref = std::env::var("ANUBIS_RISC0_METAL_REFERENCE").unwrap_or_default();
+        if metal_ref.is_empty()
+            || !std::path::Path::new(&metal_ref)
+                .join("vendor/risc0-circuit-rv32im/src/prove/hal/metal.rs")
+                .exists()
+        {
+            eprintln!("SKIP hybrid_host_compiles_and_dispatches: ANUBIS_RISC0_METAL_REFERENCE not set or vendored crate missing");
+            return;
+        }
         // This is the compile-gate test per strategy: drives the SHIPPED lower + real cargo build of emitted project.
         // It must fail on shim-only paths and pass only when a real binary with dispatch is produced.
         let src = include_str!("../../examples/hybrid_stub.anubis");
@@ -2268,6 +2383,15 @@ fn main() {
 
     #[test]
     fn hybrid_full_project_emits_methods_vendor_patch_and_receipt_contract() {
+        let metal_ref = std::env::var("ANUBIS_RISC0_METAL_REFERENCE").unwrap_or_default();
+        if metal_ref.is_empty()
+            || !std::path::Path::new(&metal_ref)
+                .join("vendor/risc0-circuit-rv32im/src/prove/hal/metal.rs")
+                .exists()
+        {
+            eprintln!("SKIP hybrid_full_project_emits_methods_vendor_patch_and_receipt_contract: ANUBIS_RISC0_METAL_REFERENCE not set or vendored crate missing");
+            return;
+        }
         let out = unique_test_dir("hybrid-full-contract");
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
@@ -2279,8 +2403,8 @@ fn main() {
         let root_cargo = std::fs::read_to_string(proj.join("Cargo.toml")).expect("root cargo");
         assert!(
             root_cargo.contains("[patch.crates-io]")
-                && root_cargo.contains("/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im"),
-            "full hybrid workspace must patch crates.io to the canonical Desktop metal-hybrid-prover crate:\n{}",
+                && root_cargo.contains("vendor/risc0-circuit-rv32im"),
+            "full hybrid workspace must patch crates.io to the vendored risc0-circuit-rv32im crate:\n{}",
             root_cargo
         );
         assert!(

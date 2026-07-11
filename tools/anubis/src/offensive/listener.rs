@@ -3,10 +3,10 @@
 use super::console;
 use super::crypto;
 use super::engagement::{Engagement, Role};
-use super::scope;
 use super::protocol::{
     Beacon, BeaconResponse, EncryptedEnvelope, Task, TaskResult, PROTOCOL_V1, PROTOCOL_V2,
 };
+use super::scope;
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::json;
@@ -62,9 +62,7 @@ pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) ->
         eng.c2_bind, eng.dns_bind, eng.uds_path, PROTOCOL_V2, eng.encrypt_beacons
     );
     println!("  console: http://{}/", eng.c2_bind);
-    println!(
-        "  POST /beacon /result /task | GET /health /agents /results /rbac /admin/status /"
-    );
+    println!("  POST /beacon /result /task | GET /health /agents /results /rbac /admin/status /");
 
     let eng = eng.clone();
     let engage_dir = engage_dir.to_path_buf();
@@ -162,7 +160,11 @@ fn handle_http(
         ("POST", "/beacon") => {
             let beacon = decode_beacon(eng, &body)?;
             if beacon.engagement_id != eng.engagement_id {
-                write_json(stream, 403, &json!({"error":"ANUBIS_C2_ENGAGEMENT_MISMATCH"}))?;
+                write_json(
+                    stream,
+                    403,
+                    &json!({"error":"ANUBIS_C2_ENGAGEMENT_MISMATCH"}),
+                )?;
                 return Ok(());
             }
             let resp = process_beacon(eng, engage_dir, state, &beacon)?;
@@ -172,7 +174,11 @@ fn handle_http(
         ("POST", "/result") => {
             let result = decode_result(eng, &body)?;
             if result.engagement_id != eng.engagement_id {
-                write_json(stream, 403, &json!({"error":"ANUBIS_C2_ENGAGEMENT_MISMATCH"}))?;
+                write_json(
+                    stream,
+                    403,
+                    &json!({"error":"ANUBIS_C2_ENGAGEMENT_MISMATCH"}),
+                )?;
                 return Ok(());
             }
             store_result(engage_dir, state, result)?;
@@ -316,11 +322,7 @@ fn process_beacon(
     })
 }
 
-fn store_result(
-    engage_dir: &Path,
-    state: &Arc<Mutex<State>>,
-    result: TaskResult,
-) -> Result<()> {
+fn store_result(engage_dir: &Path, state: &Arc<Mutex<State>>, result: TaskResult) -> Result<()> {
     {
         let mut st = state.lock().unwrap();
         st.results.push(result.clone());
@@ -383,7 +385,10 @@ fn dns_loop(eng: &Engagement, engage_dir: &Path, state: Arc<Mutex<State>>) -> Re
         // Very small lab DNS: if payload contains agent marker, enqueue presence
         let s = String::from_utf8_lossy(&buf[..n]);
         if s.contains("aop") || n > 12 {
-            let agent_id = format!("dns-{}", &hex::encode(Sha256::digest(&buf[..n.min(32)]))[..8]);
+            let agent_id = format!(
+                "dns-{}",
+                &hex::encode(Sha256::digest(&buf[..n.min(32)]))[..8]
+            );
             let mut st = state.lock().unwrap();
             st.agents.insert(
                 agent_id.clone(),
@@ -515,7 +520,10 @@ fn header_value(req: &str, name: &str) -> Option<String> {
             }
         }
         // case-insensitive scan
-        if line.to_ascii_lowercase().starts_with(&name.to_ascii_lowercase()) {
+        if line
+            .to_ascii_lowercase()
+            .starts_with(&name.to_ascii_lowercase())
+        {
             if let Some((_, v)) = line.split_once(':') {
                 return Some(v.trim().to_string());
             }

@@ -107,10 +107,7 @@ pub fn validate_local_target(path: &Path) -> Result<()> {
         ));
     }
     if !path.exists() {
-        return Err(anyhow!(
-            "ANUBIS_POC_TARGET_MISSING: {}",
-            path.display()
-        ));
+        return Err(anyhow!("ANUBIS_POC_TARGET_MISSING: {}", path.display()));
     }
     Ok(())
 }
@@ -123,7 +120,11 @@ pub struct XorShift64 {
 impl XorShift64 {
     pub fn new(seed: u64) -> Self {
         Self {
-            state: if seed == 0 { 0xA5A5_5A5A_C3C3_3C3C } else { seed },
+            state: if seed == 0 {
+                0xA5A5_5A5A_C3C3_3C3C
+            } else {
+                seed
+            },
         }
     }
     pub fn next_u64(&mut self) -> u64 {
@@ -272,7 +273,12 @@ pub fn fuzz_local_target(
                     "stderr_len": result.stderr.len(),
                 });
                 fs::write(
-                    crashes_dir.join(format!("crash-{}-sig{}-run{}.json", short, result.signal.unwrap_or(-1), i)),
+                    crashes_dir.join(format!(
+                        "crash-{}-sig{}-run{}.json",
+                        short,
+                        result.signal.unwrap_or(-1),
+                        i
+                    )),
                     serde_json::to_string_pretty(&meta)?,
                 )?;
             }
@@ -316,7 +322,10 @@ pub fn fuzz_local_target(
         "note": report.note,
         "timestamp_unix": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
     });
-    fs::write(out.join("fuzz_report.json"), serde_json::to_string_pretty(&report_json)?)?;
+    fs::write(
+        out.join("fuzz_report.json"),
+        serde_json::to_string_pretty(&report_json)?,
+    )?;
     Ok(report)
 }
 

@@ -447,7 +447,11 @@ enum Commands {
 
     /// Write an example exploit module JSON.
     ExploitNew {
-        #[arg(short, long, default_value = "out/engagements/lab/modules/lab_overflow.json")]
+        #[arg(
+            short,
+            long,
+            default_value = "out/engagements/lab/modules/lab_overflow.json"
+        )]
         out: PathBuf,
         #[arg(long, default_value = "poc_kit/bin/vuln_local")]
         target: String,
@@ -563,7 +567,6 @@ enum Commands {
     },
 
     // ── T8: Apple VZ sandbox integration ──
-
     /// Show VZ guest status (Apple Virtualization.framework).
     VzStatus {
         #[arg(long)]
@@ -1058,11 +1061,7 @@ fn main() -> Result<()> {
                     "engine: mutation-process-v1".into(),
                 ];
                 let observed = if report.crashes > 0 {
-                    vec![
-                        "fuzz_exec",
-                        "process_spawn_local",
-                        "crash",
-                    ]
+                    vec!["fuzz_exec", "process_spawn_local", "crash"]
                 } else {
                     vec!["fuzz_exec", "process_spawn_local"]
                 };
@@ -1226,8 +1225,7 @@ fn main() -> Result<()> {
             operator,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            offensive::console::role_can_queue(&eng, &operator)
-                .map_err(|e| anyhow!("{e}"))?;
+            offensive::console::role_can_queue(&eng, &operator).map_err(|e| anyhow!("{e}"))?;
             let arg_list: Vec<String> = if args.trim().is_empty() {
                 vec![]
             } else {
@@ -1357,12 +1355,8 @@ fn main() -> Result<()> {
             label,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let path = offensive::persistence::generate_launch_agent(
-                &eng,
-                &engage,
-                &agent,
-                &label,
-            )?;
+            let path =
+                offensive::persistence::generate_launch_agent(&eng, &engage, &agent, &label)?;
             println!("{}", path.display());
             Ok(())
         }
@@ -1464,23 +1458,28 @@ fn main() -> Result<()> {
         }
 
         // ── T8: Apple VZ sandbox commands ──
-
         Commands::VzStatus { json } => {
             let guests = offensive::vz::vz_status()?;
             let active = offensive::vz::find_offensive_guest(None).ok();
             if json {
                 let mut val = serde_json::to_value(&guests)?;
                 if let Some(a) = &active {
-                    val.as_array_mut().map(|arr| {
+                    if let Some(arr) = val.as_array_mut() {
                         arr.push(serde_json::json!({"_active_guest": a.name}));
-                    });
+                    }
                 }
                 println!("{}", serde_json::to_string_pretty(&val)?);
             } else {
-                println!("{:<24} {:<10} {:<6} {:<8} {}", "NAME", "STATUS", "CPUS", "MEM_MB", "NETWORK");
+                println!(
+                    "{:<24} {:<10} {:<6} {:<8} NETWORK",
+                    "NAME", "STATUS", "CPUS", "MEM_MB"
+                );
                 println!("{}", "-".repeat(64));
                 for g in &guests {
-                    let marker = active.as_ref().map_or("", |a| if a.name == g.name { " *" } else { "" });
+                    let marker =
+                        active
+                            .as_ref()
+                            .map_or("", |a| if a.name == g.name { " *" } else { "" });
                     println!(
                         "{:<24} {:<10} {:<6} {:<8} {:?}{}",
                         g.name,
@@ -1512,12 +1511,47 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&val)?);
             } else {
                 println!("Anubis VZ Sandbox Doctor");
-                println!("  vmctl:     {} ({})", report["vmctl_path"], if report["vz_available"].as_bool() == Some(true) { "ok" } else { "missing" });
-                println!("  guests:    {}/{} running", report["running_guests"], report["total_guests"]);
-                println!("  offensive: {}", if report["offensive_guest_ready"].as_bool() == Some(true) { "READY" } else { "NOT READY" });
-                println!("  exports:   {}", if report["exports_exist"].as_bool() == Some(true) { "staged" } else { "missing" });
-                println!("  toolchain: {}", if report["toolchain_staged"].as_bool() == Some(true) { "staged" } else { "missing" });
-                println!("  defaults:  guest={} net={:?} timeout={}s", defaults.guest_name, defaults.network, defaults.timeout_secs);
+                println!(
+                    "  vmctl:     {} ({})",
+                    report["vmctl_path"],
+                    if report["vz_available"].as_bool() == Some(true) {
+                        "ok"
+                    } else {
+                        "missing"
+                    }
+                );
+                println!(
+                    "  guests:    {}/{} running",
+                    report["running_guests"], report["total_guests"]
+                );
+                println!(
+                    "  offensive: {}",
+                    if report["offensive_guest_ready"].as_bool() == Some(true) {
+                        "READY"
+                    } else {
+                        "NOT READY"
+                    }
+                );
+                println!(
+                    "  exports:   {}",
+                    if report["exports_exist"].as_bool() == Some(true) {
+                        "staged"
+                    } else {
+                        "missing"
+                    }
+                );
+                println!(
+                    "  toolchain: {}",
+                    if report["toolchain_staged"].as_bool() == Some(true) {
+                        "staged"
+                    } else {
+                        "missing"
+                    }
+                );
+                println!(
+                    "  defaults:  guest={} net={:?} timeout={}s",
+                    defaults.guest_name, defaults.network, defaults.timeout_secs
+                );
                 if let Some(caps) = report["capabilities"].as_object() {
                     for (k, v) in caps {
                         println!("  cap.{}: {}", k, v);
@@ -1533,12 +1567,7 @@ fn main() -> Result<()> {
             timeout,
             json,
         } => {
-            let result = offensive::vz::vz_exec(
-                &guest,
-                &cmd,
-                cwd.as_deref(),
-                timeout,
-            )?;
+            let result = offensive::vz::vz_exec(&guest, &cmd, cwd.as_deref(), timeout)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -1633,13 +1662,7 @@ fn main() -> Result<()> {
                 ("id", "operator"),
                 ("uname", "operator"),
             ];
-            let result = offensive::vz::vz_c2_cycle(
-                &eng,
-                &guest,
-                &agent_name,
-                &tasks,
-                timeout,
-            )?;
+            let result = offensive::vz::vz_c2_cycle(&eng, &guest, &agent_name, &tasks, timeout)?;
             let _ = offensive::seal_action(
                 &engage,
                 &eng.engagement_id,
@@ -1752,10 +1775,8 @@ fn main() -> Result<()> {
             let tainted = TaintPass::apply(typed.clone());
             std::fs::create_dir_all(&out)?;
 
-            let proof_inputs = proof_input::resolve_proof_inputs(
-                input_json.as_deref(),
-                input_file.as_deref(),
-            )?;
+            let proof_inputs =
+                proof_input::resolve_proof_inputs(input_json.as_deref(), input_file.as_deref())?;
             // Persist canonical inputs for the prove child and evidence.
             let proof_input_path = out.join("proof_input_canonical.json");
             std::fs::write(&proof_input_path, &proof_inputs.canonical_json)?;
@@ -1959,8 +1980,14 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 std::fs::write(risc0_side.join("image_id.txt"), &real_id)?;
 
                 // Copy canonical inputs into risc0 sidecar for the child prover.
-                let _ = std::fs::copy(&proof_input_path, risc0_side.join("proof_input_canonical.json"));
-                let _ = std::fs::copy(out.join("proof_input.anbp"), risc0_side.join("proof_input.anbp"));
+                let _ = std::fs::copy(
+                    &proof_input_path,
+                    risc0_side.join("proof_input_canonical.json"),
+                );
+                let _ = std::fs::copy(
+                    out.join("proof_input.anbp"),
+                    risc0_side.join("proof_input.anbp"),
+                );
                 let proof_outcome = run_risc0_proof_attempt(
                     &risc0_side,
                     guest_elf_path.as_deref(),
@@ -2146,7 +2173,13 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             receipt,
             verify_log,
             proof_input,
-        } => run_risc0_prove_child(&elf, &image_id, &receipt, &verify_log, proof_input.as_deref()),
+        } => run_risc0_prove_child(
+            &elf,
+            &image_id,
+            &receipt,
+            &verify_log,
+            proof_input.as_deref(),
+        ),
         Commands::VerifyReceipt { receipt, image_id } => {
             println!(
                 "anubis verify-receipt --receipt {} --image-id {}",
@@ -2231,7 +2264,8 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 // Never treat a single fixture path as both lanes (honesty: distinct executions).
                 let cpu_base = if cpu.join(format!("{}_cpu", name)).exists() {
                     cpu.join(format!("{}_cpu", name))
-                } else if cpu.join(name).exists() && metal.join(format!("{}_metal", name)).exists() {
+                } else if cpu.join(name).exists() && metal.join(format!("{}_metal", name)).exists()
+                {
                     cpu.join(name)
                 } else {
                     cpu.join(format!("{}_cpu", name))
@@ -2639,7 +2673,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
     }
 }
 
-const DEFAULT_METAL_REFERENCE: &str = "/Users/sicarii/Desktop/metal-hybrid-prover";
+const DEFAULT_METAL_REFERENCE: &str = "";
 
 #[derive(Debug, Clone)]
 struct MetalReferenceConfig {
@@ -2664,8 +2698,7 @@ fn build_capabilities_report(cli_ref: Option<&Path>, apple_native_only: bool) ->
     let is_apple_silicon = is_macos && std::env::consts::ARCH == "aarch64";
     let xcrun_metal_available = command_succeeds("xcrun", &["--find", "metal"]);
     let swiftc_available = command_succeeds("swiftc", &["--version"]);
-    let r0_metal_doctor_available = Path::new("/Users/sicarii/Desktop/r0-metal-doctor").exists()
-        || command_succeeds("r0-metal-doctor", &["--help"]);
+    let r0_metal_doctor_available = command_succeeds("r0-metal-doctor", &["--help"]);
     let risc0_ready = linked_risc0
         && reference_exists
         && vendor_exists
@@ -2686,12 +2719,7 @@ fn build_capabilities_report(cli_ref: Option<&Path>, apple_native_only: bool) ->
             "swiftc_available": swiftc_available,
         },
         "ziros_imports": {
-            "source_truth": [
-                "/Users/sicarii/Desktop/ZirOS/docs/CANONICAL_TRUTH.md",
-                "/Users/sicarii/Desktop/ZirOS/support-matrix.json",
-                "/Users/sicarii/Desktop/ZirOS/docs/VERIFIED_METAL_BOUNDARY.md",
-                "/Users/sicarii/Desktop/ZirOS/docs/NEURAL_ENGINE_OPERATIONS.md"
-            ],
+            "source_truth": "not-bundled (see ZirOS repo if available)",
             "adopted_now": [
                 "machine-readable capability truth",
                 "strict lanes fail closed",
@@ -3218,11 +3246,7 @@ fn build_runtime_plan_report(
             }
         },
         "ziros_imports": {
-            "source_truth": [
-                "/Users/sicarii/Desktop/ZirOS/zkf-runtime/src/scheduler.rs",
-                "/Users/sicarii/Desktop/ZirOS/zkf-runtime/src/api.rs",
-                "/Users/sicarii/Desktop/ZirOS/zkf-ir-spec/verification-ledger.json"
-            ],
+            "source_truth": "not-bundled (see ZirOS repo if available)",
             "adopted_now": [
                 "typed operation DAG vocabulary",
                 "device placement metadata",
@@ -3607,13 +3631,15 @@ fn run_anubis_source(
         // Publish to the cache atomically (copy to a staging name on the same filesystem, then
         // rename), capped so the cache cannot grow without bound.
         if !cache_disabled && std::fs::create_dir_all(&cache_dir).is_ok() {
-            let entries = std::fs::read_dir(&cache_dir).map(|d| d.count()).unwrap_or(0);
+            let entries = std::fs::read_dir(&cache_dir)
+                .map(|d| d.count())
+                .unwrap_or(0);
             if entries < 512 {
                 let staging = cache_dir.join(format!("{cache_key}.{unique}.staging"));
-                if std::fs::copy(&tmp_exe, &staging).is_ok() {
-                    if std::fs::rename(&staging, &cached_exe).is_err() {
-                        let _ = std::fs::remove_file(&staging);
-                    }
+                if std::fs::copy(&tmp_exe, &staging).is_ok()
+                    && std::fs::rename(&staging, &cached_exe).is_err()
+                {
+                    let _ = std::fs::remove_file(&staging);
                 }
             }
         }
@@ -3649,7 +3675,6 @@ fn run_anubis_source(
         status_success: output.status.success(),
     })
 }
-
 
 fn write_run_evidence(out: &Path, outcome: &RunOutcome) -> Result<()> {
     std::fs::create_dir_all(out)?;
@@ -3709,7 +3734,6 @@ fn render_run_markdown(outcome: &RunOutcome) -> String {
         outcome.artifact.display()
     )
 }
-
 
 fn sha256_json(value: &serde_json::Value) -> Result<String> {
     let bytes = serde_json::to_vec(value)?;
@@ -3829,7 +3853,7 @@ fn resolve_metal_reference(cli_ref: Option<&Path>) -> MetalReferenceConfig {
     } else {
         (
             PathBuf::from(DEFAULT_METAL_REFERENCE),
-            "default".to_string(),
+            "unconfigured".to_string(),
         )
     };
     let vendor = root.join("vendor/risc0-circuit-rv32im");
@@ -4021,9 +4045,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 ///   2. runs the real `risc0_zkvm::Receipt::verify` against that ImageID — a tampered receipt or a
 ///      wrong ImageID fails here;
 ///   3. confirms the receipt's committed journal matches the digest the claim records.
-/// The bundle's ImageID / receipt digest must also equal what the claim names (belt-and-suspenders
-/// with the structural re-derivation in `verify_pca`). Returns `Ok(())` when the bundle carries no
-/// receipt (`zk_present=false`) — there is nothing to re-verify.
+///      The bundle's ImageID / receipt digest must also equal what the claim names (belt-and-suspenders
+///      with the structural re-derivation in `verify_pca`). Returns `Ok(())` when the bundle carries no
+///      receipt (`zk_present=false`) — there is nothing to re-verify.
 fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
     let pca_path = bundle.join("pca.json");
     if !pca_path.exists() {
@@ -4053,7 +4077,9 @@ fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
         .map_err(|e| anyhow!("read image_id.txt: {}", e))?;
 
     if id_text.trim() != claimed_id.trim() {
-        return Err(anyhow!("bundle ImageID does not match the claim's zk_image_id"));
+        return Err(anyhow!(
+            "bundle ImageID does not match the claim's zk_image_id"
+        ));
     }
     if sha256_hex(&receipt_data) != claimed_receipt_sha {
         return Err(anyhow!(
@@ -4184,7 +4210,7 @@ fn run_risc0_proof_attempt(
         // Spawn with a clean environment to avoid parent process state
         // (tracing, previous Metal inits, fds, etc.) interfering with
         // the prover child's GPU / large mapping setup.
-        // The working reference is at /Users/sicarii/Desktop/metal-hybrid-prover.
+        // The Metal reference is resolved via --metal-reference / ANUBIS_RISC0_METAL_REFERENCE / Anubis.toml.
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("risc0-prove-child")
             .arg("--elf")
@@ -4257,7 +4283,7 @@ fn run_risc0_prove_child(
     proof_input: Option<&Path>,
 ) -> Result<()> {
     // Real Gate 10+ path: prove with the linked RISC0 server, using the workspace
-    // [patch.crates-io] binding to /Users/sicarii/Desktop/metal-hybrid-prover.
+    // [patch.crates-io] binding to vendor/risc0-circuit-rv32im.
     let elf_bytes = std::fs::read(elf).map_err(|e| anyhow!("read guest ELF: {}", e))?;
     let id_text = std::fs::read_to_string(image_id).map_err(|e| anyhow!("read image ID: {}", e))?;
     let id_words = parse_image_id_words(&id_text).map_err(|e| anyhow!("image ID: {}", e))?;
@@ -4367,7 +4393,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let r = dir.join("backend").join("risc0");
         std::fs::create_dir_all(&r).unwrap();
-        for f in ["receipt.bin", "image_id.txt", "guest.elf", "risc0_metadata.json"] {
+        for f in [
+            "receipt.bin",
+            "image_id.txt",
+            "guest.elf",
+            "risc0_metadata.json",
+        ] {
             std::fs::copy(fix.join("backend/risc0").join(f), r.join(f)).unwrap();
         }
         std::fs::copy(fix.join("pca.json"), dir.join("pca.json")).unwrap();
@@ -4452,7 +4483,7 @@ mod tests {
             "anubis",
             "doctor",
             "--metal-reference",
-            "/Users/sicarii/Desktop/metal-hybrid-prover",
+            "/tmp/test-metal-prover",
             "--require-risc0",
             "--require-metal",
             "--evidence",
@@ -4471,7 +4502,7 @@ mod tests {
             } => {
                 assert_eq!(
                     metal_reference.unwrap(),
-                    PathBuf::from("/Users/sicarii/Desktop/metal-hybrid-prover")
+                    PathBuf::from("/tmp/test-metal-prover")
                 );
                 assert!(require_risc0);
                 assert!(require_metal);
@@ -4492,7 +4523,7 @@ mod tests {
             "--lane",
             "metal-hybrid",
             "--metal-reference",
-            "/Users/sicarii/Desktop/metal-hybrid-prover",
+            "/tmp/test-metal-prover",
         ])
         .expect("prove should accept --metal-reference");
         match cli.command {
@@ -4504,7 +4535,7 @@ mod tests {
                 assert_eq!(lane, "metal-hybrid");
                 assert_eq!(
                     metal_reference.unwrap(),
-                    PathBuf::from("/Users/sicarii/Desktop/metal-hybrid-prover")
+                    PathBuf::from("/tmp/test-metal-prover")
                 );
             }
             other => panic!("unexpected command: {:?}", other),
@@ -4519,7 +4550,7 @@ mod tests {
             "--apple-native",
             "--json",
             "--metal-reference",
-            "/Users/sicarii/Desktop/metal-hybrid-prover",
+            "/tmp/test-metal-prover",
             "--evidence",
             "--out",
             "out/capabilities-test",
@@ -4538,7 +4569,7 @@ mod tests {
                 assert!(evidence);
                 assert_eq!(
                     metal_reference.unwrap(),
-                    PathBuf::from("/Users/sicarii/Desktop/metal-hybrid-prover")
+                    PathBuf::from("/tmp/test-metal-prover")
                 );
                 assert_eq!(out, PathBuf::from("out/capabilities-test"));
             }
@@ -4558,7 +4589,7 @@ mod tests {
             "metal-hybrid",
             "--apple-native",
             "--metal-reference",
-            "/Users/sicarii/Desktop/metal-hybrid-prover",
+            "/tmp/test-metal-prover",
             "--json",
             "--evidence",
             "--out",
@@ -4582,7 +4613,7 @@ mod tests {
                 assert!(apple_native);
                 assert_eq!(
                     metal_reference.unwrap(),
-                    PathBuf::from("/Users/sicarii/Desktop/metal-hybrid-prover")
+                    PathBuf::from("/tmp/test-metal-prover")
                 );
                 assert!(json);
                 assert!(evidence);
@@ -4602,7 +4633,7 @@ mod tests {
             "--out",
             "out/runtime-probe-test",
             "--metal-reference",
-            "/Users/sicarii/Desktop/metal-hybrid-prover",
+            "/tmp/test-metal-prover",
             "--require-risc0",
             "--require-metal",
         ])
@@ -4621,7 +4652,7 @@ mod tests {
                 assert_eq!(out, PathBuf::from("out/runtime-probe-test"));
                 assert_eq!(
                     metal_reference.unwrap(),
-                    PathBuf::from("/Users/sicarii/Desktop/metal-hybrid-prover")
+                    PathBuf::from("/tmp/test-metal-prover")
                 );
                 assert!(require_risc0);
                 assert!(require_metal);
@@ -4707,7 +4738,7 @@ mod tests {
             "risc0",
             "metal-hybrid",
             true,
-            Some(Path::new("/Users/sicarii/Desktop/metal-hybrid-prover")),
+            Some(Path::new("/tmp/test-metal-prover")),
         )
         .expect("runtime plan should be produced for valid source");
 
@@ -4764,7 +4795,8 @@ fn main() {
         )
         .unwrap();
         let main = root.join("main.anb");
-        let main_src = "import math;\nfn main() { print(\"${math::add(2, 3)} ${math::square(5)}\"); }";
+        let main_src =
+            "import math;\nfn main() { print(\"${math::add(2, 3)} ${math::square(5)}\"); }";
         std::fs::write(&main, main_src).unwrap();
 
         let out = tempfile::tempdir().expect("out");
@@ -4775,7 +4807,9 @@ fn main() {
     }
 
     fn modules_fixture(rel: &str) -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/modules").join(rel)
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/modules")
+            .join(rel)
     }
 
     #[test]
@@ -4797,7 +4831,10 @@ fn main() {
         let out = tempfile::tempdir().unwrap();
         let err = run_anubis_source(&entry, &src, out.path(), false, &[])
             .expect_err("cyclic imports must fail closed");
-        assert!(err.to_string().contains("ANUBIS_IMPORT_CYCLE"), "got: {err}");
+        assert!(
+            err.to_string().contains("ANUBIS_IMPORT_CYCLE"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -4816,7 +4853,11 @@ fn main() {
         let tsrc = "trait T { fn m(self); }\nstruct S {}\nimpl T for S { fn m(self) { 0 } }\n";
         std::fs::write(&t, tsrc).unwrap();
         run_anubis_fmt(&t, false, true).unwrap();
-        assert_eq!(std::fs::read_to_string(&t).unwrap(), tsrc, "trait file must be untouched");
+        assert_eq!(
+            std::fs::read_to_string(&t).unwrap(),
+            tsrc,
+            "trait file must be untouched"
+        );
     }
 
     #[test]
@@ -4850,7 +4891,10 @@ fn main() {
         let out = tempfile::tempdir().expect("out");
         let err = run_anubis_source(&main, main_src, out.path(), false, &[])
             .expect_err("calling a private fn across modules must fail closed");
-        assert!(err.to_string().contains("ANUBIS_PRIVATE_ITEM"), "got: {err}");
+        assert!(
+            err.to_string().contains("ANUBIS_PRIVATE_ITEM"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -4920,10 +4964,7 @@ fn main() {
 
     #[test]
     fn apple_native_capabilities_preserve_ziros_truth_boundaries() {
-        let report = build_capabilities_report(
-            Some(Path::new("/Users/sicarii/Desktop/metal-hybrid-prover")),
-            true,
-        );
+        let report = build_capabilities_report(Some(Path::new("/tmp/test-metal-prover")), true);
         assert_eq!(report["schema_version"], "1.0");
         assert_eq!(report["report"], "apple-native");
         assert_eq!(
@@ -4948,14 +4989,12 @@ fn main() {
     }
 
     #[test]
-    fn default_metal_reference_is_the_user_requested_path() {
-        let cfg = resolve_metal_reference(Some(Path::new(
-            "/Users/sicarii/Desktop/metal-hybrid-prover",
-        )));
-        assert_eq!(cfg.root, PathBuf::from(DEFAULT_METAL_REFERENCE));
+    fn cli_metal_reference_overrides_default() {
+        let cfg = resolve_metal_reference(Some(Path::new("/tmp/test-metal-prover")));
+        assert_eq!(cfg.root, PathBuf::from("/tmp/test-metal-prover"));
         assert_eq!(
             cfg.vendor,
-            PathBuf::from("/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im")
+            PathBuf::from("/tmp/test-metal-prover/vendor/risc0-circuit-rv32im")
         );
         assert_eq!(cfg.config_source, "cli:--metal-reference");
     }

@@ -72,7 +72,9 @@ fn collect_bound_in_stmts(stmts: &[Stmt], out: &mut std::collections::BTreeSet<S
                 collect_bound_in_stmts(body, out);
             }
             Stmt::Loop { body, .. } => collect_bound_in_stmts(body, out),
-            Stmt::For { var, source, body, .. } => {
+            Stmt::For {
+                var, source, body, ..
+            } => {
                 out.insert(var.clone());
                 match source {
                     ForSource::Range { start, end } => {
@@ -83,7 +85,11 @@ fn collect_bound_in_stmts(stmts: &[Stmt], out: &mut std::collections::BTreeSet<S
                 }
                 collect_bound_in_stmts(body, out);
             }
-            Stmt::WhileLet { pattern, expr, body } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
                 for n in pattern.bound_names() {
                     out.insert(n);
                 }
@@ -103,7 +109,13 @@ fn collect_bound_in_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>)
             }
             collect_bound_in_expr(body, out);
         }
-        Expr::IfLet { pattern, scrutinee, then, else_, .. } => {
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
             for n in pattern.bound_names() {
                 out.insert(n);
             }
@@ -111,7 +123,9 @@ fn collect_bound_in_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>)
             collect_bound_in_expr(then, out);
             collect_bound_in_expr(else_, out);
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_bound_in_expr(scrutinee, out);
             for a in arms {
                 for n in a.pattern.bound_names() {
@@ -129,7 +143,9 @@ fn collect_bound_in_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>)
                 collect_bound_in_expr(t, out);
             }
         }
-        Expr::If { cond, then, else_, .. } => {
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             collect_bound_in_expr(cond, out);
             collect_bound_in_expr(then, out);
             collect_bound_in_expr(else_, out);
@@ -194,7 +210,11 @@ struct FnDef<'a> {
 /// The emitted Rust function name for an Anubis function or method.
 fn fn_rust_name(name: &str, impl_type: Option<&str>) -> Result<String> {
     match impl_type {
-        Some(ty) => Ok(format!("anb_{}__method__{}", sanitize_ident(ty)?, sanitize_ident(name)?)),
+        Some(ty) => Ok(format!(
+            "anb_{}__method__{}",
+            sanitize_ident(ty)?,
+            sanitize_ident(name)?
+        )),
         None => Ok(format!("anb_{}", sanitize_ident(name)?)),
     }
 }
@@ -211,7 +231,9 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                 body: body.as_slice(),
                 impl_type: None,
             }),
-            Item::Impl { type_name, methods, .. } => {
+            Item::Impl {
+                type_name, methods, ..
+            } => {
                 for m in methods {
                     if let Item::Fn {
                         name, params, body, ..
@@ -239,7 +261,9 @@ fn collect_methods(
 ) {
     for item in items {
         match item {
-            Item::Impl { type_name, methods, .. } => {
+            Item::Impl {
+                type_name, methods, ..
+            } => {
                 for m in methods {
                     if let Item::Fn { name, params, .. } = m {
                         let types = out.entry(name.clone()).or_default();
@@ -430,7 +454,10 @@ fn lower_program_with_entry(
 ) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
-    if !fns.iter().any(|d| d.name == "main" && d.impl_type.is_none()) {
+    if !fns
+        .iter()
+        .any(|d| d.name == "main" && d.impl_type.is_none())
+    {
         return Err(unsupported_run("program has no `fn main()` to run"));
     }
     // Free-function names only (methods are dispatched by receiver type, never called bare).
@@ -520,8 +547,14 @@ impl std::fmt::Debug for AnubisValue {
 }
 
 impl AnubisValue {
-    /// Apply a closure value to positional arguments. Non-closures return Int(0).
     fn call_closure(&self, args: Vec<AnubisValue>) -> AnubisValue {
+        match self {
+            AnubisValue::Closure(f) => f(args),
+            _ => panic!("ANUBIS_TYPE_ERROR: expected closure, got {}", self.type_name()),
+        }
+    }
+
+    fn try_call_closure(&self, args: Vec<AnubisValue>) -> AnubisValue {
         match self {
             AnubisValue::Closure(f) => f(args),
             _ => AnubisValue::Int(0),
@@ -1632,7 +1665,6 @@ fn anubis_times(n: AnubisValue, f: AnubisValue) -> AnubisValue {
 
 "#;
 
-
 const NATIVE_PROOF_STUBS_RS: &str = r#"
 fn anubis_proof_input_u32_val(name: &str) -> AnubisValue {
     // Lightweight env map: ANUBIS_PROOF_INPUTS="k=v,k2=v2"
@@ -1892,12 +1924,7 @@ fn anubis_target_run(path_v: AnubisValue, payload_v: AnubisValue) -> AnubisValue
 }
 "#;
 
-fn emit_safe_run_stmt(
-    stmt: &Stmt,
-    indent: usize,
-    out: &mut String,
-    ctx: &EmitCtx,
-) -> Result<()> {
+fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String, ctx: &EmitCtx) -> Result<()> {
     let pad = "    ".repeat(indent);
     match stmt {
         Stmt::Let { name, init, .. } => {
@@ -1997,7 +2024,10 @@ fn emit_safe_run_stmt(
             Ok(())
         }
         Stmt::If { cond, then, else_ } => {
-            out.push_str(&format!("{pad}if {}.as_bool() {{\n", safe_run_expr(cond, ctx)?));
+            out.push_str(&format!(
+                "{pad}if {}.as_bool() {{\n",
+                safe_run_expr(cond, ctx)?
+            ));
             for stmt in then {
                 emit_safe_run_stmt(stmt, indent + 1, out, ctx)?;
             }
@@ -2013,7 +2043,11 @@ fn emit_safe_run_stmt(
             }
             Ok(())
         }
-        Stmt::WhileLet { pattern, expr, body } => {
+        Stmt::WhileLet {
+            pattern,
+            expr,
+            body,
+        } => {
             let tmp = format!("__anb_wl{}", next_temp_id());
             out.push_str(&format!("{pad}loop {{\n"));
             let scr = safe_run_expr(expr, ctx)?;
@@ -2045,7 +2079,9 @@ fn emit_safe_run_stmt(
             out.push_str(&format!("{pad}}}\n"));
             Ok(())
         }
-        Stmt::For { var, source, body, .. } => {
+        Stmt::For {
+            var, source, body, ..
+        } => {
             use crate::frontend::ForSource;
             let v = sanitize_ident(var)?;
             // Both forms lower to a native Rust `for`, so `break`/`continue` behave correctly
@@ -2192,8 +2228,18 @@ pub fn is_builtin_name(name: &str) -> bool {
     emit_builtin_call(name, &[]).is_some()
         || matches!(
             name,
-            "len" | "pop" | "push" | "insert" | "remove" | "print" | "println" | "eprint"
-                | "eprintln" | "return" | "break" | "continue"
+            "len"
+                | "pop"
+                | "push"
+                | "insert"
+                | "remove"
+                | "print"
+                | "println"
+                | "eprint"
+                | "eprintln"
+                | "return"
+                | "break"
+                | "continue"
         )
         || is_proof_input_builtin(name)
         || is_poc_kit_builtin(name)
@@ -2268,7 +2314,9 @@ fn collect_free_expr(
                 collect_free_expr(f, bound, vars, callees);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             collect_free_expr(scrutinee, bound, vars, callees);
             for arm in arms {
                 let mut b2 = bound.clone();
@@ -2289,7 +2337,11 @@ fn collect_free_expr(
             collect_free_expr(else_, bound, vars, callees);
         }
         Expr::IfLet {
-            pattern, scrutinee, then, else_, ..
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
         } => {
             collect_free_expr(scrutinee, bound, vars, callees);
             let mut b2 = bound.clone();
@@ -2360,7 +2412,11 @@ fn collect_free_stmts(
                 let mut b = bound.clone();
                 collect_free_stmts(body, &mut b, vars, callees);
             }
-            Stmt::WhileLet { pattern, expr, body } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
                 collect_free_expr(expr, bound, vars, callees);
                 let mut b = bound.clone();
                 for n in pattern.bound_names() {
@@ -2372,7 +2428,9 @@ fn collect_free_stmts(
                 let mut b = bound.clone();
                 collect_free_stmts(body, &mut b, vars, callees);
             }
-            Stmt::For { var, source, body, .. } => {
+            Stmt::For {
+                var, source, body, ..
+            } => {
                 match source {
                     ForSource::Range { start, end } => {
                         collect_free_expr(start, bound, vars, callees);
@@ -2458,9 +2516,10 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "sort" => fixed("anubis_sort", callee, args, 1),
         "sum" => fixed("anubis_sum", callee, args, 1),
         "range" if args.len() == 2 => Ok(format!("anubis_range({}, {})", args[0], args[1])),
-        "range" if args.len() == 3 => {
-            Ok(format!("anubis_range_step({}, {}, {})", args[0], args[1], args[2]))
-        }
+        "range" if args.len() == 3 => Ok(format!(
+            "anubis_range_step({}, {}, {})",
+            args[0], args[1], args[2]
+        )),
         "range" => Err(unsupported_run("`range` expects 2 or 3 arguments")),
         // maps
         "keys" => fixed("anubis_keys", callee, args, 1),
@@ -2603,7 +2662,11 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
     }
     // Output builtins as values (`each(xs, print)`): print all arguments, yield Int(0).
     if matches!(name, "print" | "println" | "eprint" | "eprintln") {
-        let mac = if name.starts_with('e') { "eprintln" } else { "println" };
+        let mac = if name.starts_with('e') {
+            "eprintln"
+        } else {
+            "println"
+        };
         return Ok(format!(
             "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue {{ {mac}!(\"{{}}\", __args.iter().map(|a| a.display_string()).collect::<Vec<_>>().join(\" \")); AnubisValue::Int(0) }}))"
         ));
@@ -2619,7 +2682,9 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
     {
         let mut arms = String::new();
         for k in 1..=6usize {
-            let args: Vec<String> = (0..k).map(|i| format!("__args[{i}usize].clone()")).collect();
+            let args: Vec<String> = (0..k)
+                .map(|i| format!("__args[{i}usize].clone()"))
+                .collect();
             if let Some(Ok(call)) = emit_builtin_call(name, &args) {
                 arms.push_str(&format!("{k}usize => {{ {call} }}, "));
             }
@@ -2701,7 +2766,11 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     .iter()
                     .map(|a| safe_run_expr(a, ctx))
                     .collect::<Result<Vec<_>>>()?;
-                return Ok(format!("anb_{}({})", sanitize_ident(callee)?, lowered.join(", ")));
+                return Ok(format!(
+                    "anb_{}({})",
+                    sanitize_ident(callee)?,
+                    lowered.join(", ")
+                ));
             }
             // A local binding (parameter or let-bound variable) shadows any builtin of the same
             // name — `fn f(map, x) { map(x) }` calls the parameter, not the stdlib `map`.
@@ -2760,10 +2829,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 let a = args
                     .first()
                     .ok_or_else(|| unsupported_run("len requires one argument"))?;
-                return Ok(format!(
-                    "({}).len_val()",
-                    safe_run_expr(a, ctx)?
-                ));
+                return Ok(format!("({}).len_val()", safe_run_expr(a, ctx)?));
             }
             // Mutating collection builtins operate on a bound variable by `&mut`.
             if matches!(callee.as_str(), "pop" | "push" | "insert" | "remove") {
@@ -2780,12 +2846,14 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     .collect::<Result<Vec<_>>>()?;
                 return match (callee.as_str(), rest.len()) {
                     ("pop", 0) => Ok(format!("anubis_pop(&mut {})", var)),
-                    ("push", 1) => {
-                        Ok(format!("{{ {}.push_val({}); AnubisValue::Int(0) }}", var, rest[0]))
-                    }
-                    ("insert", 2) => {
-                        Ok(format!("anubis_insert(&mut {}, {}, {})", var, rest[0], rest[1]))
-                    }
+                    ("push", 1) => Ok(format!(
+                        "{{ {}.push_val({}); AnubisValue::Int(0) }}",
+                        var, rest[0]
+                    )),
+                    ("insert", 2) => Ok(format!(
+                        "anubis_insert(&mut {}, {}, {})",
+                        var, rest[0], rest[1]
+                    )),
                     ("remove", 1) => Ok(format!("anubis_remove(&mut {}, {})", var, rest[0])),
                     _ => Err(unsupported_run(format!("`{}` arity mismatch", callee))),
                 };
@@ -2800,9 +2868,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 }
                 if callee == "proof_commit_u32" || callee == "proof_commit_bool" {
                     if args.len() != 2 {
-                        return Err(unsupported_run(
-                            "proof_commit_* requires (\"name\", value)",
-                        ));
+                        return Err(unsupported_run("proof_commit_* requires (\"name\", value)"));
                     }
                     let key = match &args[0] {
                         Expr::StrLiteral(s) | Expr::Literal(s) => s.trim_matches('"').to_string(),
@@ -2819,11 +2885,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     } else {
                         "anubis_proof_commit_u32"
                     };
-                    return Ok(format!(
-                        "{fn_name}({}, {})",
-                        rust_string_lit(&key)?,
-                        val
-                    ));
+                    return Ok(format!("{fn_name}({}, {})", rust_string_lit(&key)?, val));
                 }
                 let key = match args.first() {
                     Some(Expr::StrLiteral(s)) | Some(Expr::Literal(s)) => {
@@ -2847,7 +2909,9 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                         "anubis_proof_input_bool_val({})",
                         rust_string_lit(&key)?
                     )),
-                    _ => Err(unsupported_run(format!("unknown proof input builtin `{callee}`"))),
+                    _ => Err(unsupported_run(format!(
+                        "unknown proof input builtin `{callee}`"
+                    ))),
                 };
             }
             if is_poc_kit_builtin(callee) {
@@ -2880,7 +2944,8 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 };
             }
             if is_non_run_builtin(callee) {
-                if ctx.allow_research && matches!(callee.as_str(), "taint_source" | "declassify" | "sink")
+                if ctx.allow_research
+                    && matches!(callee.as_str(), "taint_source" | "declassify" | "sink")
                 {
                     // Modeling no-ops in research execution path.
                     if callee == "taint_source" {
@@ -2934,7 +2999,10 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                         let mut call_args = vec!["__anb_recv".to_string()];
                         for k in 0..want {
                             call_args.push(
-                                lowered.get(k).cloned().unwrap_or_else(|| "AnubisValue::Int(0)".to_string()),
+                                lowered
+                                    .get(k)
+                                    .cloned()
+                                    .unwrap_or_else(|| "AnubisValue::Int(0)".to_string()),
                             );
                         }
                         arms.push_str(&format!(
@@ -2949,7 +3017,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     // `obj.f()` on a closure-valued field working even when some other type defines
                     // a method named `f`.
                     let closure_fallback = format!(
-                        "__anb_recv.field_get({}).call_closure(vec![{}])",
+                        "__anb_recv.field_get({}).try_call_closure(vec![{}])",
                         rust_string_lit(field)?,
                         lowered.join(", ")
                     );
@@ -2993,7 +3061,12 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             }
             let names: Vec<String> = field_names
                 .iter()
-                .map(|n| format!("{}.to_string()", rust_string_lit(n).unwrap_or_else(|_| "\"\"".into())))
+                .map(|n| {
+                    format!(
+                        "{}.to_string()",
+                        rust_string_lit(n).unwrap_or_else(|_| "\"\"".into())
+                    )
+                })
                 .collect();
             Ok(format!(
                 "AnubisValue::Enum {{ ty: {}.to_string(), tag: {}.to_string(), fields: vec![{}], field_names: vec![{}] }}",
@@ -3012,9 +3085,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             let c = safe_run_expr(cond, ctx)?;
             let t = safe_run_expr(then, ctx)?;
             let e = safe_run_expr(else_, ctx)?;
-            Ok(format!(
-                "if ({c}).as_bool() {{ {t} }} else {{ {e} }}"
-            ))
+            Ok(format!("if ({c}).as_bool() {{ {t} }} else {{ {e} }}"))
         }
         // `if let PATTERN = scrutinee { then } else { else_ }` as a value: bind the scrutinee once,
         // yield the matching branch (pattern bindings scoped to `then`).
@@ -3060,10 +3131,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 let vs = safe_run_expr(v, ctx)?;
                 pairs.push(format!("(({ks}).display_string(), {vs})"));
             }
-            Ok(format!(
-                "anubis_map_lit(vec![{}])",
-                pairs.join(", ")
-            ))
+            Ok(format!("anubis_map_lit(vec![{}])", pairs.join(", ")))
         }
         // Block expression: run the statements, then yield the tail value (or Int(0)).
         Expr::Block { stmts, tail } => {
@@ -3153,7 +3221,11 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     return Ok(format!("{}.index_get({})", sanitize_ident(name)?, idx));
                 }
             }
-            Ok(format!("({}).index_get({})", safe_run_expr(base, ctx)?, idx))
+            Ok(format!(
+                "({}).index_get({})",
+                safe_run_expr(base, ctx)?,
+                idx
+            ))
         }
         // `expr as T` — numeric conversions truncate/wrap; pointer casts pass through unchanged.
         Expr::Cast { expr, ty } => {
@@ -3206,7 +3278,11 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     return Ok(format!("{}.field_get({})", sanitize_ident(name)?, fname));
                 }
             }
-            Ok(format!("({}).field_get({})", safe_run_expr(base, ctx)?, fname))
+            Ok(format!(
+                "({}).field_get({})",
+                safe_run_expr(base, ctx)?,
+                fname
+            ))
         }
         Expr::TaintSource { label } if ctx.allow_research => Ok(format!(
             "AnubisValue::Str({}.to_string())",
@@ -3214,10 +3290,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         )),
         Expr::Declassify { inner, .. } if ctx.allow_research => safe_run_expr(inner, ctx),
         // Runtime assertion: `assert(cond)` panics (fail-closed) when the condition is false.
-        Expr::Assert(inner) => Ok(format!(
-            "anubis_assert({})",
-            safe_run_expr(inner, ctx)?
-        )),
+        Expr::Assert(inner) => Ok(format!("anubis_assert({})", safe_run_expr(inner, ctx)?)),
         // `assume(cond)` is a solver hint; at runtime it evaluates the expression and yields true.
         Expr::Assume(inner) => Ok(format!(
             "{{ let _ = {}; AnubisValue::Bool(true) }}",
@@ -3264,9 +3337,8 @@ fn lower_match_expr(
     let m = format!("__anb_m{id}");
     let r = format!("__anb_r{id}");
     let done = format!("__anb_done{id}");
-    let mut out = format!(
-        "{{ let {m} = {scr}; let mut {r} = AnubisValue::Int(0); let mut {done} = false; "
-    );
+    let mut out =
+        format!("{{ let {m} = {scr}; let mut {r} = AnubisValue::Int(0); let mut {done} = false; ");
     for arm in arms {
         // A top-level or-pattern arm `A | B => body` desugars to one sub-arm per alternative,
         // so alternatives may bind (each is matched and bound with its own sub-pattern).
@@ -3308,16 +3380,16 @@ fn lower_match_expr(
 /// Lower a single pattern to `(test_expr, binding_statements)` against a scrutinee
 /// variable already in scope. `test_expr` is a `bool` Rust expression; the binding
 /// statements are emitted inside the arm body's block after the test passes.
-fn pattern_test_and_binds(
-    pat: &crate::frontend::Pattern,
-    scr: &str,
-) -> Result<(String, String)> {
+fn pattern_test_and_binds(pat: &crate::frontend::Pattern, scr: &str) -> Result<(String, String)> {
     use crate::frontend::Pattern;
     match pat {
         Pattern::Wildcard => Ok(("true".to_string(), String::new())),
         Pattern::Binding(name) => {
             let bn = sanitize_ident(name)?;
-            Ok(("true".to_string(), format!("let mut {bn} = {scr}.clone(); ")))
+            Ok((
+                "true".to_string(),
+                format!("let mut {bn} = {scr}.clone(); "),
+            ))
         }
         Pattern::Struct { name, fields } => {
             // Access a named field: its value if present on a struct, else the default 0.
@@ -3587,7 +3659,6 @@ fn rust_string_lit(value: &str) -> Result<String> {
     Ok(format!("{:?}", value))
 }
 
-
 // ---------------------------------------------------------------------------
 // Test / embedder harness: transpile → rustc → execute.
 // Kept in the compiler crate so the whole language is testable without risc0.
@@ -3640,7 +3711,10 @@ pub fn compile_and_run_items(
     if !build.status.success() {
         let stderr = String::from_utf8_lossy(&build.stderr).to_string();
         let _ = std::fs::remove_dir_all(&dir);
-        return Err(anyhow!("ANUBIS_UNSUPPORTED_NATIVE_LOWERING: rustc failed:\n{}", stderr));
+        return Err(anyhow!(
+            "ANUBIS_UNSUPPORTED_NATIVE_LOWERING: rustc failed:\n{}",
+            stderr
+        ));
     }
     let out = std::process::Command::new(&exe)
         .args(args)
@@ -3712,12 +3786,7 @@ mod run_tests {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("spawn");
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(stdin_bytes)
-            .unwrap();
+        child.stdin.take().unwrap().write_all(stdin_bytes).unwrap();
         let out = child.wait_with_output().expect("wait");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
@@ -3798,7 +3867,10 @@ mod run_tests {
             print(a); }";
         assert_eq!(run(insort), "[1, 2, 3, 4, 5]");
         // self-referential index: a[0] == 2, so a[a[0]] == a[2] == 9
-        assert_eq!(run("fn main() { let a = [2, 7, 9, 4]; print(a[a[0]]); }"), "9");
+        assert_eq!(
+            run("fn main() { let a = [2, 7, 9, 4]; print(a[a[0]]); }"),
+            "9"
+        );
         // reading an element is a copy, not an alias: mutating the source afterward is independent
         assert_eq!(
             run("fn main() { let mut a = [1, 2, 3]; let x = a[1]; a[1] = 99; print(x + a[1]); }"),
@@ -3815,9 +3887,11 @@ mod run_tests {
             "7"
         );
         assert_eq!(
-            run("fn main() { let cpu = 2; let gpu = 3; let prove = 5; let spec = 7; \
+            run(
+                "fn main() { let cpu = 2; let gpu = 3; let prove = 5; let spec = 7; \
                  let symbolic = 9; let declassify = 11; \
-                 print(cpu + gpu + prove + spec + symbolic + declassify); }"),
+                 print(cpu + gpu + prove + spec + symbolic + declassify); }"
+            ),
             "37"
         );
     }
@@ -3838,7 +3912,8 @@ mod run_tests {
         let src = "fn go(s) { match parse_int_opt(s) { Some(n) => n, None => -1 } } \
                    fn main() { print(go(\"42\")); print(go(\"0\")); print(go(\"abc\")); print(go(\"12x\")); }";
         assert_eq!(run(src), "42\n0\n-1\n-1");
-        let fsrc = "fn main() { print(match parse_float_opt(\"3.5\") { Some(f) => f, None => 0.0 }); \
+        let fsrc =
+            "fn main() { print(match parse_float_opt(\"3.5\") { Some(f) => f, None => 0.0 }); \
                     print(match parse_float_opt(\"x\") { Some(f) => f, None => -1.0 }); }";
         assert_eq!(run(fsrc), "3.5\n-1.0");
     }
@@ -3861,8 +3936,10 @@ mod run_tests {
         );
         // `match` as a block VALUE (tail) is still returned, not swallowed as a statement.
         assert_eq!(
-            run("fn main() { let f = |n| { match n { 0 => \"zero\", _ => \"nonzero\" } }; \
-                 print(f(0)); print(f(5)); }"),
+            run(
+                "fn main() { let f = |n| { match n { 0 => \"zero\", _ => \"nonzero\" } }; \
+                 print(f(0)); print(f(5)); }"
+            ),
             "zero\nnonzero"
         );
     }
@@ -3872,8 +3949,10 @@ mod run_tests {
         // The program runs on a 1 GiB worker stack, so recursion far past the 8 MiB main-thread
         // ceiling (~8500 frames) succeeds. 100k deep would overflow the OS main stack.
         assert_eq!(
-            run("fn walk(n, acc) { if n == 0 { acc } else { walk(n - 1, acc + 1) } } \
-                 fn main() { print(walk(100000, 0)); }"),
+            run(
+                "fn walk(n, acc) { if n == 0 { acc } else { walk(n - 1, acc + 1) } } \
+                 fn main() { print(walk(100000, 0)); }"
+            ),
             "100000"
         );
     }
@@ -3903,10 +3982,7 @@ mod run_tests {
             "3"
         );
         // wildcard closure param
-        assert_eq!(
-            run("fn main() { let f = |_| 7; print(f(999)); }"),
-            "7"
-        );
+        assert_eq!(run("fn main() { let f = |_| 7; print(f(999)); }"), "7");
         // wildcard fn param
         assert_eq!(
             run("fn g(_, y) { y * 2 } fn main() { print(g(100, 21)); }"),
@@ -3937,7 +4013,8 @@ mod run_tests {
 
     #[test]
     fn while_loop_mutation() {
-        let src = "fn main() { let i = 0; let s = 0; while i < 5 { s = s + i; i = i + 1; } print(s); }";
+        let src =
+            "fn main() { let i = 0; let s = 0; while i < 5 { s = s + i; i = i + 1; } print(s); }";
         assert_eq!(run(src), "10");
     }
 
@@ -4065,14 +4142,25 @@ mod run_tests {
     #[test]
     fn match_literals_are_type_exact() {
         // A literal pattern matches only a value of the same kind — no cross-type coercion.
-        assert_eq!(run("fn main() { print(match 5 { \"5\" => \"str\", 5 => \"int\", _ => \"no\" }) }"), "int");
-        assert_eq!(run("fn main() { print(match \"5\" { 5 => \"int\", \"5\" => \"str\", _ => \"no\" }) }"), "str");
-        assert_eq!(run("fn main() { print(match 1 { true => \"T\", 1 => \"one\", _ => \"no\" }) }"), "one");
+        assert_eq!(
+            run("fn main() { print(match 5 { \"5\" => \"str\", 5 => \"int\", _ => \"no\" }) }"),
+            "int"
+        );
+        assert_eq!(
+            run("fn main() { print(match \"5\" { 5 => \"int\", \"5\" => \"str\", _ => \"no\" }) }"),
+            "str"
+        );
+        assert_eq!(
+            run("fn main() { print(match 1 { true => \"T\", 1 => \"one\", _ => \"no\" }) }"),
+            "one"
+        );
         // …but same-kind literals still match, and int/float stay numerically comparable.
         assert_eq!(
-            run("fn main() { print(match true { true => \"y\", _ => \"n\" }); \
+            run(
+                "fn main() { print(match true { true => \"y\", _ => \"n\" }); \
                  print(match 5 { 5 => \"i\", _ => \"n\" }); \
-                 print(match \"hi\" { \"hi\" => \"s\", _ => \"n\" }) }"),
+                 print(match \"hi\" { \"hi\" => \"s\", _ => \"n\" }) }"
+            ),
             "y\ni\ns"
         );
     }
@@ -4253,7 +4341,8 @@ mod run_tests {
     #[test]
     fn list_membership_is_structural() {
         // contains/index_of honor `==` (type-exact), not display form.
-        let src = "fn main() { print(contains([1, 2, 3], \"2\")); print(index_of([1, 2, 3], \"2\")); \
+        let src =
+            "fn main() { print(contains([1, 2, 3], \"2\")); print(index_of([1, 2, 3], \"2\")); \
                    print(contains([1, 2, 3], 2)); print(index_of([1, 2, 3], 3)); \
                    print(contains([\"a\", \"b\"], \"b\")); }";
         assert_eq!(run(src), "false\n-1\ntrue\n2\ntrue");
@@ -4306,10 +4395,9 @@ mod run_tests {
 
     #[test]
     fn typecheck_rejects_non_exhaustive_option_match() {
-        let ast = crate::frontend::parse_source(
-            "fn f(o) { match o { Some(v) => v } } fn main() { }",
-        )
-        .unwrap();
+        let ast =
+            crate::frontend::parse_source("fn f(o) { match o { Some(v) => v } } fn main() { }")
+                .unwrap();
         let err = crate::typecheck(ast, crate::frontend::Mode::Safe).unwrap_err();
         assert!(err.contains("ANUBIS_MATCH_NON_EXHAUSTIVE"), "{}", err);
     }
@@ -4325,7 +4413,8 @@ mod run_tests {
     #[test]
     fn string_interpolation_nested_and_calls() {
         // Nested strings, calls, field access, and list display inside ${...}.
-        let src = "fn dbl(n) { n * 2 } struct P { x: int, y: int } fn mk(a, b) { P { x: a, y: b } } \
+        let src =
+            "fn dbl(n) { n * 2 } struct P { x: int, y: int } fn mk(a, b) { P { x: a, y: b } } \
                    fn main() { let p = mk(3, 4); let xs = [1, 2]; \
                      print(\"pt (${p.x}, ${p.y}) d=${dbl(p.x)}\"); \
                      print(\"xs=${xs} pick=${if p.x > 2 { \"big\" } else { \"small\" }}\"); }";
@@ -4432,7 +4521,7 @@ mod run_tests {
                    fn main() { print(use_it(|v| v * 3, 10)); \
                      let first = |xs| xs[0] * 10; print(first([4, 5])); \
                      print(first([9, 8])); }"; // last: builtin `first` (no local in main? there is: shadowed)
-        // In main, `first` is a local closure, so both `first(...)` calls use it.
+                                               // In main, `first` is a local closure, so both `first(...)` calls use it.
         assert_eq!(run(src), "30\n40\n90");
     }
 
@@ -4443,7 +4532,10 @@ mod run_tests {
                    print(map_values(m, |v| v * 10)[\"a\"]); print(merge(m, { \"b\": 9, \"c\": 3 })[\"b\"]); \
                    let f = compose(|x| x + 1, |x| x * 2); print(f(5)); \
                    print(times(3, |i| i * i)); print(identity(42)); }";
-        assert_eq!(run(src), "[[a, 1], [b, 2]]\n2\n-1\n10\n9\n11\n[0, 1, 4]\n42");
+        assert_eq!(
+            run(src),
+            "[[a, 1], [b, 2]]\n2\n-1\n10\n9\n11\n[0, 1, 4]\n42"
+        );
     }
 
     #[test]
@@ -4460,7 +4552,8 @@ mod run_tests {
     #[test]
     fn variadic_builtin_as_first_class_value() {
         // min/max as values must forward every argument: reduce passes (acc, x), apply spreads.
-        let src = "fn main() { print(reduce([5, 1, 9, 3], max, 0)); print(apply(min, [5, 1, 9, 3])); \
+        let src =
+            "fn main() { print(reduce([5, 1, 9, 3], max, 0)); print(apply(min, [5, 1, 9, 3])); \
                    print(map([[3, 1], [9, 2], [4, 8]], max)); }";
         assert_eq!(run(src), "9\n1\n[3, 9, 8]");
     }
@@ -4468,7 +4561,8 @@ mod run_tests {
     #[test]
     fn multi_arity_builtin_as_first_class_value() {
         // range accepts 2 or 3 args; a first-class reference dispatches on the actual count.
-        let src = "fn main() { let r = range; print(apply(r, [1, 5])); print(apply(r, [0, 10, 3])); }";
+        let src =
+            "fn main() { let r = range; print(apply(r, [1, 5])); print(apply(r, [0, 10, 3])); }";
         assert_eq!(run(src), "[1, 2, 3, 4]\n[0, 3, 6, 9]");
     }
 
@@ -4664,7 +4758,8 @@ mod run_tests {
     #[test]
     fn method_name_does_not_shadow_builtin_freecall() {
         // A method named like a builtin must not break a free call to that builtin.
-        let src = "struct Bag { items: list } impl Bag { fn count(self) { len(self.items) + 100 } } \
+        let src =
+            "struct Bag { items: list } impl Bag { fn count(self) { len(self.items) + 100 } } \
                    fn main() { let b = Bag { items: [1, 2, 3] }; print(b.count()); \
                      print(count([1, 2, 3], |x| x > 1)); }";
         assert_eq!(run(src), "103\n2");
@@ -4914,7 +5009,8 @@ mod run_tests {
     #[test]
     fn block_expression_with_statements() {
         // if-expression branch with local statements before its trailing value.
-        let src = "fn main() { let r = if 3 > 2 { let a = 10; let b = 5; a + b } else { 0 }; print(r); }";
+        let src =
+            "fn main() { let r = if 3 > 2 { let a = 10; let b = 5; a + b } else { 0 }; print(r); }";
         assert_eq!(run(src), "15");
     }
 
@@ -4930,7 +5026,10 @@ mod run_tests {
         assert_eq!(run("fn main() { print(upper(\"abc\")); }"), "ABC");
         assert_eq!(run("fn main() { print(lower(\"ABC\")); }"), "abc");
         assert_eq!(run("fn main() { print(trim(\"  hi  \")); }"), "hi");
-        assert_eq!(run("fn main() { print(len(split(\"a,b,c\", \",\"))); }"), "3");
+        assert_eq!(
+            run("fn main() { print(len(split(\"a,b,c\", \",\"))); }"),
+            "3"
+        );
         assert_eq!(
             run("fn main() { print(join([\"a\", \"b\", \"c\"], \"-\")); }"),
             "a-b-c"
@@ -4939,7 +5038,10 @@ mod run_tests {
             run("fn main() { print(replace(\"aXbXc\", \"X\", \"_\")); }"),
             "a_b_c"
         );
-        assert_eq!(run("fn main() { print(contains(\"hello\", \"ell\")); }"), "true");
+        assert_eq!(
+            run("fn main() { print(contains(\"hello\", \"ell\")); }"),
+            "true"
+        );
         assert_eq!(run("fn main() { print(index_of(\"hello\", \"l\")); }"), "2");
         assert_eq!(run("fn main() { print(substr(\"hello\", 1, 3)); }"), "ell");
         assert_eq!(run("fn main() { print(repeat(\"ab\", 3)); }"), "ababab");
@@ -4966,8 +5068,14 @@ mod run_tests {
         assert_eq!(run("fn main() { print(reverse([1, 2, 3])); }"), "[3, 2, 1]");
         assert_eq!(run("fn main() { print(sort([3, 1, 2])); }"), "[1, 2, 3]");
         assert_eq!(run("fn main() { print(range(0, 5)); }"), "[0, 1, 2, 3, 4]");
-        assert_eq!(run("fn main() { print(range(0, 10, 2)); }"), "[0, 2, 4, 6, 8]");
-        assert_eq!(run("fn main() { print(slice([1, 2, 3, 4, 5], 1, 4)); }"), "[2, 3, 4]");
+        assert_eq!(
+            run("fn main() { print(range(0, 10, 2)); }"),
+            "[0, 2, 4, 6, 8]"
+        );
+        assert_eq!(
+            run("fn main() { print(slice([1, 2, 3, 4, 5], 1, 4)); }"),
+            "[2, 3, 4]"
+        );
         assert_eq!(
             run("fn main() { let a = [1, 2, 3]; let x = pop(a); print(x + len(a)); }"),
             "5"
@@ -5197,17 +5305,44 @@ mod run_tests {
         };
         let rej = |s: &str| tc(s).unwrap_err().contains("ANUBIS_TYPE_MISMATCH");
         // Constant (variable-free) errors nested one level deep are caught.
-        assert!(rej("fn main(){ let y = (2 + 3)[0]; print(y); }"), "index a constant number");
-        assert!(rej("fn main(){ print((\"a\" + \"b\") - 1); }"), "constant string in `-`");
-        assert!(rej("fn main(){ let _x = (1 == 1)[0]; print(0); }"), "index a constant bool");
+        assert!(
+            rej("fn main(){ let y = (2 + 3)[0]; print(y); }"),
+            "index a constant number"
+        );
+        assert!(
+            rej("fn main(){ print((\"a\" + \"b\") - 1); }"),
+            "constant string in `-`"
+        );
+        assert!(
+            rej("fn main(){ let _x = (1 == 1)[0]; print(0); }"),
+            "index a constant bool"
+        );
         // Constant errors inside closure and block bodies are caught (the body is now walked).
-        assert!(rej("fn main(){ let f = |q| 5[0]; print(f(0)); }"), "index in closure body");
-        assert!(rej("fn main(){ print(map([1, 2, 3], |x| 9[0])); }"), "index in map closure");
-        assert!(rej("fn main(){ let f = |q| { let z = 7[2]; z + 1 }; print(f(0)); }"), "index in block closure");
+        assert!(
+            rej("fn main(){ let f = |q| 5[0]; print(f(0)); }"),
+            "index in closure body"
+        );
+        assert!(
+            rej("fn main(){ print(map([1, 2, 3], |x| 9[0])); }"),
+            "index in map closure"
+        );
+        assert!(
+            rej("fn main(){ let f = |q| { let z = 7[2]; z + 1 }; print(f(0)); }"),
+            "index in block closure"
+        );
         // Dynamic operands inside closures/blocks are still untouched (zero false positives).
-        assert!(tc("fn main(){ let xs = [1, 2, 3]; let f = |i| xs[i]; print(f(0)); }").is_ok(), "closure over var index");
-        assert!(tc("fn main(){ let n = 5; let f = |x| x + n; print(f(1)); }").is_ok(), "closure captured arithmetic");
-        assert!(tc("fn main(){ print(map([1, 2, 3], |x| x * 2)); }").is_ok(), "valid map closure");
+        assert!(
+            tc("fn main(){ let xs = [1, 2, 3]; let f = |i| xs[i]; print(f(0)); }").is_ok(),
+            "closure over var index"
+        );
+        assert!(
+            tc("fn main(){ let n = 5; let f = |x| x + n; print(f(1)); }").is_ok(),
+            "closure captured arithmetic"
+        );
+        assert!(
+            tc("fn main(){ print(map([1, 2, 3], |x| x * 2)); }").is_ok(),
+            "valid map closure"
+        );
     }
 
     #[test]
@@ -5220,20 +5355,38 @@ mod run_tests {
         };
         let rej = |s: &str| tc(s).unwrap_err().contains("ANUBIS_TYPE_MISMATCH");
         // i8/i16 are numeric and interoperate with other integer widths.
-        assert!(tc("fn f(b: i8){ print(b); } fn main(){ f(5); }").is_ok(), "i8 param");
-        assert!(tc("fn main(){ let x: u32 = 4000 as i16; print(x); }").is_ok(), "as i16");
+        assert!(
+            tc("fn f(b: i8){ print(b); } fn main(){ f(5); }").is_ok(),
+            "i8 param"
+        );
+        assert!(
+            tc("fn main(){ let x: u32 = 4000 as i16; print(x); }").is_ok(),
+            "as i16"
+        );
         // `+` is overloaded: `num + str` is a string.
-        assert!(tc("fn main(){ let m: string = 404 + \": x\"; print(m); }").is_ok(), "num+str is string");
-        assert!(rej("fn main(){ let n: u32 = 1 + \"a\"; print(n); }"), "string into u32 slot");
+        assert!(
+            tc("fn main(){ let m: string = 404 + \": x\"; print(m); }").is_ok(),
+            "num+str is string"
+        );
+        assert!(
+            rej("fn main(){ let n: u32 = 1 + \"a\"; print(n); }"),
+            "string into u32 slot"
+        );
         // Reassignment: an INFERRED binding is dynamic (reassignable to any type); an EXPLICITLY
         // annotated one is held to its declared type.
-        assert!(tc("fn main(){ let mut acc = 0; acc = \"hi\"; print(acc); }").is_ok(), "inferred reassign");
-        assert!(rej("fn main(){ let x: u32 = 5; x = \"a\"; print(x); }"), "annotated reassign");
+        assert!(
+            tc("fn main(){ let mut acc = 0; acc = \"hi\"; print(acc); }").is_ok(),
+            "inferred reassign"
+        );
+        assert!(
+            rej("fn main(){ let x: u32 = 5; x = \"a\"; print(x); }"),
+            "annotated reassign"
+        );
         // A stale inferred type must not linger past a reassignment to a dynamic value.
         assert!(
             tc("fn src(){ return 5; } fn need(n: u32){ print(n + 1); } \
                 fn main(){ let mut x = \"p\"; x = src(); need(x); }")
-                .is_ok(),
+            .is_ok(),
             "reassigned-to-dynamic clears the stale type"
         );
     }
@@ -5248,30 +5401,72 @@ mod run_tests {
         };
         let rejected = |s: &str| tc(s).unwrap_err().contains("ANUBIS_TYPE_MISMATCH");
         // Statically-known LITERAL type errors are rejected (a literal's type is immutable).
-        assert!(rejected("fn main(){ print(\"a\" - 1); }"), "string literal in `-`");
-        assert!(rejected("fn main(){ print([1, 2] * 3); }"), "list literal in `*`");
-        assert!(rejected("fn main(){ print({\"a\": 1} & 1); }"), "map literal in bitwise");
-        assert!(rejected("fn main(){ print(-\"x\"); }"), "unary minus on string literal");
-        assert!(rejected("fn main(){ print(5[0]); }"), "index a number literal");
-        assert!(rejected("fn main(){ print(true[0]); }"), "index a bool literal");
+        assert!(
+            rejected("fn main(){ print(\"a\" - 1); }"),
+            "string literal in `-`"
+        );
+        assert!(
+            rejected("fn main(){ print([1, 2] * 3); }"),
+            "list literal in `*`"
+        );
+        assert!(
+            rejected("fn main(){ print({\"a\": 1} & 1); }"),
+            "map literal in bitwise"
+        );
+        assert!(
+            rejected("fn main(){ print(-\"x\"); }"),
+            "unary minus on string literal"
+        );
+        assert!(
+            rejected("fn main(){ print(5[0]); }"),
+            "index a number literal"
+        );
+        assert!(
+            rejected("fn main(){ print(true[0]); }"),
+            "index a bool literal"
+        );
         // Dynamic code (variables, calls, indices) is left untouched — zero false positives. A
         // variable's type is NOT stable (it may be reassigned a dynamic value), so B1 never trusts
         // it: this is the reassignment idiom (`v` starts numeric, becomes a list, is indexed) that a
         // variable-based check false-flagged.
-        assert!(tc("fn f(x){ x - 1 } fn main(){ print(f(5)); }").is_ok(), "dynamic param");
-        assert!(tc("fn main(){ let s = \"hi\"; print(len(s) % 2); }").is_ok(), "variable untouched");
+        assert!(
+            tc("fn f(x){ x - 1 } fn main(){ print(f(5)); }").is_ok(),
+            "dynamic param"
+        );
+        assert!(
+            tc("fn main(){ let s = \"hi\"; print(len(s) % 2); }").is_ok(),
+            "variable untouched"
+        );
         assert!(
             tc("fn main(){ let scopes = [[1, 2], [3, 4]]; let mut v = 0; v = scopes[0]; print(v[1]); }")
                 .is_ok(),
             "reassignment idiom (numeric var later holds a list) is not flagged"
         );
-        assert!(tc("fn main(){ let xs = [1, 2, 3]; print(xs[0] - 1); }").is_ok(), "indexed element");
-        assert!(tc("fn main(){ let xs = [1, 2]; print(len(xs) - 1); }").is_ok(), "call result");
-        assert!(tc("fn main(){ print(\"a\" + 1); }").is_ok(), "`+` is overloaded concat");
-        assert!(tc("fn main(){ let hit = 3 > 2; print(hit - 0); }").is_ok(), "bool 0/1 arithmetic");
-        assert!(tc("fn main(){ let x = 5; print(x * 2 - 1); }").is_ok(), "numeric");
+        assert!(
+            tc("fn main(){ let xs = [1, 2, 3]; print(xs[0] - 1); }").is_ok(),
+            "indexed element"
+        );
+        assert!(
+            tc("fn main(){ let xs = [1, 2]; print(len(xs) - 1); }").is_ok(),
+            "call result"
+        );
+        assert!(
+            tc("fn main(){ print(\"a\" + 1); }").is_ok(),
+            "`+` is overloaded concat"
+        );
+        assert!(
+            tc("fn main(){ let hit = 3 > 2; print(hit - 0); }").is_ok(),
+            "bool 0/1 arithmetic"
+        );
+        assert!(
+            tc("fn main(){ let x = 5; print(x * 2 - 1); }").is_ok(),
+            "numeric"
+        );
         assert!(tc("fn main(){ print(3.5 * 2.0); }").is_ok(), "float");
-        assert!(tc("fn main(){ print([10, 20, 30][1]); }").is_ok(), "index a list literal");
+        assert!(
+            tc("fn main(){ print([10, 20, 30][1]); }").is_ok(),
+            "index a list literal"
+        );
     }
 
     #[test]
@@ -5290,9 +5485,11 @@ mod run_tests {
             .unwrap_err()
             .contains("ANUBIS_RETURN_TYPE_MISMATCH"));
         // A cast constant is checked too: `return 5 as u32` from a `-> string` fn is rejected.
-        assert!(tc("fn h() -> string { return 5 as u32; } fn main(){ let r = h(); print(0); }")
-            .unwrap_err()
-            .contains("ANUBIS_RETURN_TYPE_MISMATCH"));
+        assert!(
+            tc("fn h() -> string { return 5 as u32; } fn main(){ let r = h(); print(0); }")
+                .unwrap_err()
+                .contains("ANUBIS_RETURN_TYPE_MISMATCH")
+        );
         assert!(tc("fn ok() -> u32 { return 5 as u32; } fn main(){ print(ok()); }").is_ok());
         // Dynamic and correctly-typed returns pass (no false positives): typed literals, a numeric
         // literal into a float, a variable, a call, an if-expression, a list, and the
@@ -5319,17 +5516,18 @@ mod run_tests {
         let e = tc("fn double(x) { x * 2 } fn main(){ print(double::double(21)); }").unwrap_err();
         assert!(e.contains("ANUBIS_UNKNOWN_ENUM"), "got: {e}");
         // Undefined variant of a real enum.
-        let e = tc("enum Color { Red, Green, Blue } fn main(){ print(Color::Purple); }").unwrap_err();
+        let e =
+            tc("enum Color { Red, Green, Blue } fn main(){ print(Color::Purple); }").unwrap_err();
         assert!(e.contains("ANUBIS_UNKNOWN_VARIANT"), "got: {e}");
         // Real enums (unit, tuple, recursive) and builtin Option/Result still type-check.
         assert!(tc("enum Color { Red, Green } fn main(){ print(Color::Red); }").is_ok());
-        assert!(tc(
-            "enum Tree { Leaf(u32), Node(Tree, Tree) } \
+        assert!(tc("enum Tree { Leaf(u32), Node(Tree, Tree) } \
              fn s(t){ match t { Tree::Leaf(v) => v, Tree::Node(l, r) => s(l) + s(r) } } \
-             fn main(){ print(s(Tree::Node(Tree::Leaf(1), Tree::Leaf(2)))); }"
-        )
+             fn main(){ print(s(Tree::Node(Tree::Leaf(1), Tree::Leaf(2)))); }")
         .is_ok());
-        assert!(tc("fn main(){ let r = Ok(1); print(match r { Ok(v) => v, Err(e) => 0 }); }").is_ok());
+        assert!(
+            tc("fn main(){ let r = Ok(1); print(match r { Ok(v) => v, Err(e) => 0 }); }").is_ok()
+        );
     }
 
     #[test]
@@ -5453,8 +5651,12 @@ mod run_tests {
 
     #[test]
     fn sort_preserves_large_integers() {
-        let src = "fn main() { print(sort([9007199254740993, 9007199254740992, 9007199254740994])); }";
-        assert_eq!(run(src), "[9007199254740992, 9007199254740993, 9007199254740994]");
+        let src =
+            "fn main() { print(sort([9007199254740993, 9007199254740992, 9007199254740994])); }";
+        assert_eq!(
+            run(src),
+            "[9007199254740992, 9007199254740993, 9007199254740994]"
+        );
     }
 
     #[test]
@@ -5467,7 +5669,8 @@ mod run_tests {
 
     #[test]
     fn map_literal_dedups_keys() {
-        let src = "fn main() { let m = { \"a\": 1, \"a\": 2 }; print(m[\"a\"]); print(len(keys(m))); }";
+        let src =
+            "fn main() { let m = { \"a\": 1, \"a\": 2 }; print(m[\"a\"]); print(len(keys(m))); }";
         assert_eq!(run(src), "2\n1");
     }
 
@@ -5502,8 +5705,14 @@ mod run_tests {
             run("fn main() { print(sort_by([3, 1, 2], |x| 0 - x)); }"),
             "[3, 2, 1]"
         );
-        assert_eq!(run("fn main() { print(any([1, 2, 3], |x| x > 2)); }"), "true");
-        assert_eq!(run("fn main() { print(all([1, 2, 3], |x| x > 0)); }"), "true");
+        assert_eq!(
+            run("fn main() { print(any([1, 2, 3], |x| x > 2)); }"),
+            "true"
+        );
+        assert_eq!(
+            run("fn main() { print(all([1, 2, 3], |x| x > 0)); }"),
+            "true"
+        );
     }
 
     #[test]
@@ -5563,7 +5772,9 @@ mod run_tests {
                 path,
                 String::from_utf8_lossy(&out.stderr)
             );
-            let got = String::from_utf8_lossy(&out.stdout).trim().replace('\n', "|");
+            let got = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .replace('\n', "|");
             assert_eq!(got, expect, "output mismatch for {:?}", path);
             count += 1;
         }
@@ -5598,7 +5809,9 @@ mod run_tests {
                 path,
                 String::from_utf8_lossy(&out.stderr)
             );
-            let got = String::from_utf8_lossy(&out.stdout).trim().replace('\n', "|");
+            let got = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .replace('\n', "|");
             assert_eq!(got, expect, "output mismatch for {:?}", path);
             count += 1;
         }
@@ -5609,12 +5822,9 @@ mod run_tests {
     fn research_path_compiles_poc_kit_runtime() {
         // Exercises the allow_research lowering so the PoC-kit runtime (which contains its own
         // exhaustive matches over AnubisValue) is compiled — guards against a missing variant arm.
-        let out = compile_and_run_source(
-            "fn main() { let p = p32(65); print(len(p)); }",
-            true,
-            &[],
-        )
-        .expect("compile+run research");
+        let out =
+            compile_and_run_source("fn main() { let p = p32(65); print(len(p)); }", true, &[])
+                .expect("compile+run research");
         assert!(
             out.status.success(),
             "research-path program failed: {}",

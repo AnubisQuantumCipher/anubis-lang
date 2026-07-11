@@ -206,9 +206,7 @@ mod tests {
 
     #[test]
     fn external_host_denied() {
-        assert!(
-            host_in_scope("8.8.8.8", &["127.0.0.1".into()], &["127.0.0.0/8".into()]).is_err()
-        );
+        assert!(host_in_scope("8.8.8.8", &["127.0.0.1".into()], &["127.0.0.0/8".into()]).is_err());
     }
 
     #[test]
@@ -219,7 +217,9 @@ mod tests {
             &["/tmp/lab".into()],
             &["localhost".into()],
         );
-        assert!(t.iter().any(|x| x.kind == TargetKind::Host && x.notes == "allowed_lateral_hosts"));
+        assert!(t
+            .iter()
+            .any(|x| x.kind == TargetKind::Host && x.notes == "allowed_lateral_hosts"));
         let host = AllowedTarget {
             kind: TargetKind::Host,
             value: "127.0.0.1".into(),

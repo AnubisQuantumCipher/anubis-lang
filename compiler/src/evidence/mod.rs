@@ -35,7 +35,7 @@ pub struct EvidenceManifest {
     pub manifest_sha256: String,
     pub checks: Vec<Check>,
     pub verdict: String,
-    // Gate 15 security superpowers
+    // Optional security-mode context recorded with the evidence.
     #[serde(default)]
     pub security: Option<serde_json::Value>,
 }
@@ -78,6 +78,10 @@ fn sha256_bytes(data: &[u8]) -> String {
 
 fn sha256_file(path: &Path) -> Option<String> {
     std::fs::read(path).ok().map(|data| sha256_bytes(&data))
+}
+
+fn tool_identity() -> String {
+    format!("anubis {}", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn build_evidence_bundle(
@@ -319,7 +323,7 @@ pub fn build_evidence_bundle(
 
     let manifest = EvidenceManifest {
         timestamp: ts,
-        tool: "anubis 0.2.0".into(),
+        tool: tool_identity(),
         mode: mode.into(),
         source_hash,
         build_log_hash,
@@ -334,7 +338,7 @@ pub fn build_evidence_bundle(
         verdict,
         security: security.or_else(|| Some(serde_json::json!({
             "mode": mode,
-            "note": "Gate 15 security superpowers - attributes and effects recorded in logs/checks"
+            "note": "language attributes and effects recorded in checks and logs"
         }))),
     };
 
@@ -345,7 +349,10 @@ pub fn build_evidence_bundle(
     // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
     // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Written before
     // the manifest hashing so it is covered by MANIFEST.sha256.
-    write_json(&dir.join("pca.json"), &derive_claim_block_bound(&dir, source, mode))?;
+    write_json(
+        &dir.join("pca.json"),
+        &derive_claim_block_bound(&dir, source, mode),
+    )?;
     write_manifest_hashes(&dir)?;
 
     Ok(EvidenceBundle { dir, manifest })
@@ -482,7 +489,7 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         zk_receipt_sha256: None,
         zk_journal_sha256: None,
         verdict: verdict.into(),
-        tool: "anubis 0.2.0".into(),
+        tool: tool_identity(),
     }
 }
 
@@ -524,7 +531,10 @@ pub fn derive_zk_binding(dir: &Path) -> Option<ZkBinding> {
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&meta_path).ok()?).ok()?;
     let is_real = meta.get("verify_status").and_then(|v| v.as_str()) == Some("passed")
-        && meta.get("fresh_receipt_generated").and_then(|v| v.as_bool()) == Some(true)
+        && meta
+            .get("fresh_receipt_generated")
+            .and_then(|v| v.as_bool())
+            == Some(true)
         && meta.get("dev_mode").and_then(|v| v.as_bool()) == Some(false)
         && meta.get("mock_prover").and_then(|v| v.as_bool()) == Some(false)
         && meta
@@ -954,12 +964,14 @@ fn risc0_metadata_check(bundle_dir: &Path) -> Option<Check> {
         .get("prover_patch_crates_io_active")
         .and_then(|v| v.as_bool())
         .unwrap_or(patch_active);
-    let reference_ok = metal_hybrid.get("reference_path").and_then(|v| v.as_str())
-        == Some("/Users/sicarii/Desktop/metal-hybrid-prover");
+    let expected_base = std::env::var("ANUBIS_RISC0_METAL_REFERENCE")
+        .unwrap_or_else(|_| "/tmp/test-metal-prover".to_string());
+    let reference_ok =
+        metal_hybrid.get("reference_path").and_then(|v| v.as_str()) == Some(expected_base.as_str());
     let vendor_ok = metal_hybrid
         .get("vendored_patch_path")
         .and_then(|v| v.as_str())
-        == Some("/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im");
+        == Some(format!("{}/vendor/risc0-circuit-rv32im", expected_base).as_str());
     let passed = verify_status == "passed"
         && fresh
         && !dev_mode
@@ -1174,7 +1186,10 @@ mod pca_tests {
         plant_receipt(&d1, id, b"a-real-looking-receipt-blob", true);
         let zk = derive_zk_binding(&d1).expect("genuine receipt binds");
         assert_eq!(zk.image_id, id);
-        assert_eq!(zk.receipt_sha256, sha256_bytes(b"a-real-looking-receipt-blob"));
+        assert_eq!(
+            zk.receipt_sha256,
+            sha256_bytes(b"a-real-looking-receipt-blob")
+        );
         // dev_mode receipt → not a binding.
         let d2 = base.join("dev");
         std::fs::create_dir_all(&d2).unwrap();
@@ -1193,7 +1208,8 @@ mod pca_tests {
         let base = unique_dir("zkverify");
         let good = "fn main() { print(1); }";
         let bundle = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
-        let id = "168166999 2647531960 2381486741 2168976393 291594100 2287811983 3816763757 3860919363";
+        let id =
+            "168166999 2647531960 2381486741 2168976393 291594100 2287811983 3816763757 3860919363";
         // Plant a genuine receipt, re-derive the (now zk-bound) claim, re-hash the manifest.
         plant_receipt(&bundle.dir, id, b"receipt-blob-v1", true);
         write_json(
@@ -1210,7 +1226,11 @@ mod pca_tests {
         assert!(verify_pca(&bundle.dir).unwrap());
         // Swap the receipt for different bytes and re-hash the manifest (hash layer satisfied) but
         // leave the recorded claim naming the old receipt digest → re-derivation fails closed.
-        std::fs::write(bundle.dir.join("backend/risc0/receipt.bin"), b"receipt-blob-TAMPERED").unwrap();
+        std::fs::write(
+            bundle.dir.join("backend/risc0/receipt.bin"),
+            b"receipt-blob-TAMPERED",
+        )
+        .unwrap();
         write_manifest_hashes(&bundle.dir).unwrap();
         assert!(validate_bundle(&bundle.dir).unwrap());
         assert!(!verify_pca(&bundle.dir).unwrap());

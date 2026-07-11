@@ -95,12 +95,7 @@ pub fn agent_generate(opts: AgentGenerateOpts<'_>) -> Result<PathBuf> {
     Ok(bin_path)
 }
 
-fn build_agent_project(
-    engage_dir: &Path,
-    name: &str,
-    src: &str,
-    bin_path: &Path,
-) -> Result<()> {
+fn build_agent_project(engage_dir: &Path, name: &str, src: &str, bin_path: &Path) -> Result<()> {
     let proj = engage_dir.join("agents").join(format!("{name}_proj"));
     let _ = fs::remove_dir_all(&proj);
     fs::create_dir_all(proj.join("src"))?;
@@ -161,7 +156,14 @@ fn build_agent_rustc_fallback(src: &str, bin_path: &Path) -> Result<()> {
         .replace("use aes_gcm", "// use aes_gcm")
         .replace("encrypt_mode", "false");
     let tmp = bin_path.with_extension("rs");
-    fs::write(&tmp, if src.contains("aes_gcm") { src } else { &simple })?;
+    fs::write(
+        &tmp,
+        if src.contains("aes_gcm") {
+            src
+        } else {
+            &simple
+        },
+    )?;
     // Prefer original; if agent uses aes-gcm, cargo path is required
     let status = Command::new("rustc")
         .arg(&tmp)

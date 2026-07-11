@@ -2,7 +2,7 @@
 
 **Repo root (for this map):** `/Users/sicarii/anubis-lang/`
 
-**Date of cartography:** 2026-07-05 (read-only inspection via list_dir, grep, read_file on source + fixtures)
+**Date of cartography:** 2026-07-05 (initial), reconciled 2026-07-11.
 
 **Scope:** Non-generated source only. Excludes `target/`, vendored `vendor/risc0-circuit-rv32im/` (except noted templates/vendoring), generated `out/*/target/`, run outputs in `implementer/`, and empty placeholder dirs.
 
@@ -30,11 +30,13 @@ Top-level layout (non-generated source tree):
 │   ├── Cargo.toml
 │   ├── CHANGES.md (records canonical edits to compiler/src)
 │   └── src/
-│       ├── lib.rs (reexports + crate test suite; 243 unit tests across the compiler crate)
-│       ├── frontend/mod.rs (lexer + parser; ~1063 LOC)
-│       ├── middle/mod.rs (typecheck, TypedIR, TaintPass, SymbolicEngine; ~800+ LOC)
+│       ├── lib.rs (reexports + crate test suite; 265 unit tests across the compiler crate)
+│       ├── frontend/mod.rs (lexer + parser; 3924 LOC)
+│       ├── middle/mod.rs (typecheck, TypedIR, TaintPass, SymbolicEngine, contracts; 3736 LOC)
+│       ├── middle/ty.rs (static type checking; B1-B3 refinement types)
 │       ├── backends/
 │       │   ├── mod.rs
+│       │   ├── run.rs (whole-program interpreter/transpiler; 5835 LOC — the execution backend)
 │       │   └── native/
 │       │       ├── mod.rs (lower_to_native + research gate + hybrid dispatch)
 │       │       └── hybrid/
@@ -42,15 +44,32 @@ Top-level layout (non-generated source tree):
 │       │           ├── emit.rs (template emission)
 │       │           ├── build.rs (cargo orchestration + methods export; 1 test)
 │       │           └── templates/ (9 files: *.toml + *.rs for fast/full hybrid)
-│       └── evidence/mod.rs (bundle build + validate; ~550 LOC)
+│       ├── evidence/mod.rs (bundle build + validate + PCA + ZK binding; 1262 LOC)
+│       ├── fmt/mod.rs (Anubis source formatter)
+│       └── resolve/mod.rs (name resolution)
 ├── tools/
 │   └── anubis/
 │       ├── Cargo.toml
-│       └── src/main.rs (CLI entry; build/doctor/verify/report)
-├── examples/
+│       └── src/
+│           ├── main.rs (CLI entry; 5154 LOC; build/doctor/verify/prove/run/report/keygen/sign)
+│           ├── poc_kit.rs (bounty-grade PoC harness)
+│           ├── proof_input.rs (RISC0 proof inputs)
+│           └── offensive/ (engagement-scoped C2/red-team platform)
+│               ├── mod.rs, agent.rs, engagement.rs, exploit.rs
+│               ├── lateral.rs, listener.rs, packer.rs, persistence.rs
+│               ├── receipts.rs, rop.rs, scope.rs, vz.rs (VZ isolation)
+│               └── console.rs (RBAC operator console)
+├── examples/ (102 files: 58 .anb, 3 .anubis, 41 .anub across 9 subdirs)
 │   ├── hybrid_stub.anubis
-│   ├── research_poc.anubis (primary test fixture, bound=191)
-│   └── safe_hello.anubis
+│   ├── research_poc.anubis
+│   ├── safe_hello.anubis
+│   ├── proof/ (proof_factorial_input, proof_fib, proof_enum_status, etc.)
+│   ├── security/ (poc_local_overflow, poc_packing_smoke, vz_modular_exploit, etc.)
+│   ├── feel/ (8 dogfood programs: lexer, engagement ledger, etc.)
+│   ├── tour/ (22 language-tour programs: arithmetic through generics/traits)
+│   ├── programs/ (11 standalone programs: BFS, BST, VM, fractions, etc.)
+│   ├── industry/ (2 industry-domain programs)
+│   └── physics/ (2 physics-domain programs)
 ├── docs/
 │   ├── spec.md
 │   ├── hybrid-reference-patterns.md
@@ -58,8 +77,12 @@ Top-level layout (non-generated source tree):
 │   └── adr/
 │       ├── 0001-bootstrap-rust-host.md
 │       └── 0002-evidence-format.md
-├── scripts/
-│   └── audit_a_plus.sh
+├── scripts/ (25 gate/fixture/audit scripts)
+│   ├── audit_unified.sh (master gate runner — 15 gates, one command)
+│   ├── run_language_fixtures.sh, run_turing_core_fixtures.sh
+│   ├── run_pca_gate.sh, run_prove_gate.sh, run_poc_kit_gate.sh
+│   ├── run_offensive_platform_gate.sh, run_enum_match_gate.sh
+│   ├── run_for_in_gate.sh, run_lang_trio_gate.sh, etc.
 ├── tools/grok-safety-check.sh
 ├── .github/workflows/ci.yml (fmt/clippy/test + reproducibility on research_poc + verify)
 ├── src/ (empty placeholder)
@@ -292,7 +315,7 @@ Many `out/*/ *.anubis` are either committed audit cases or copied during `anubis
 
 ## 8. Current Test Surface (covers old audit weaknesses)
 
-Primary tests: **25+ `#[test]` in `/Users/sicarii/anubis-lang/compiler/src/lib.rs`** (plus 1 in hybrid/build.rs).
+Primary tests: **62 `#[test]` in `compiler/src/lib.rs`**, **173 `#[test]` in `backends/run.rs`** (plus 1 in hybrid/build.rs). Total: **265 compiler + 56 tools = 321 tests.**
 
 Key test names (with coverage):
 - `parses_safe_program`, `parser_records_spans_params_and_precedence`, `parser_reports_spanned_diagnostics_and_recovers`, `parses_research_with_tainted_and_symbolic`, `parser_accepts_imports_and_modules_with_recovery`.
@@ -338,7 +361,7 @@ Key test names (with coverage):
 - Evidence taint/solver: `evidence/mod.rs:132-137`, `239`.
 - CLI flow: `tools/anubis/src/main.rs:89-102`.
 - Fixtures: `examples/research_poc.anubis` (bound 191), `out/audit/*`, `out/sec*.anubis`.
-- Tests: 25+ listed above in `compiler/src/lib.rs`.
+- Tests: 62 in lib.rs + 173 in backends/run.rs + 1 in hybrid/build.rs = 265 compiler; 56 tools.
 - Hybrid: `backends/native/hybrid/{emit,build}.rs` + templates/.
 
 This map is derived exclusively from direct file reads, greps, and directory listings (no edits, no external assumptions beyond visible code/docs).

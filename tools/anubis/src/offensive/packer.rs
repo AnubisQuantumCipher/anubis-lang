@@ -45,10 +45,7 @@ static void unpack(unsigned char *buf, size_t n) {{
             .join(", ")
     );
     fs::write(out_dir.join("unpack_stub.c"), stub)?;
-    let name = input
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("blob");
+    let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("blob");
     // Lab string scramble of the basename — used by agent string tables / unpack notes.
     let name_scramble = scramble_string(name);
     Ok(serde_json::json!({

@@ -58,7 +58,10 @@ pub fn gadget_search(gadget_file: &Path, contains: &str) -> Result<serde_json::V
     let text = fs::read_to_string(gadget_file)?;
     let mut hits = Vec::new();
     for (i, line) in text.lines().enumerate() {
-        if contains.is_empty() || line.to_ascii_lowercase().contains(&contains.to_ascii_lowercase())
+        if contains.is_empty()
+            || line
+                .to_ascii_lowercase()
+                .contains(&contains.to_ascii_lowercase())
         {
             hits.push(serde_json::json!({"line": i + 1, "gadget": line}));
             if hits.len() >= 50 {

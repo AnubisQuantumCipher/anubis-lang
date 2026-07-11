@@ -103,9 +103,7 @@ impl Ty {
             "bool" | "boolean" => Ty::Bool,
             "str" | "string" => Ty::Str,
             "list" | "array" | "vec" => Ty::List(Box::new(Ty::Any)),
-            "map" | "dict" | "dictionary" => {
-                Ty::Map(Box::new(Ty::Any), Box::new(Ty::Any))
-            }
+            "map" | "dict" | "dictionary" => Ty::Map(Box::new(Ty::Any), Box::new(Ty::Any)),
             _ => Ty::Named(raw.to_string()),
         }
     }
@@ -236,7 +234,8 @@ pub(crate) fn compatible(expected: &str, actual: &str) -> bool {
         return true;
     }
     // Pointer forms: any *mut/*const pair is compatible at this slice.
-    if (e_raw.contains('*') || e.contains("rawptr")) && (a_raw.contains('*') || a.contains("rawptr"))
+    if (e_raw.contains('*') || e.contains("rawptr"))
+        && (a_raw.contains('*') || a.contains("rawptr"))
     {
         return true;
     }
@@ -411,12 +410,56 @@ mod tests {
 
     /// The type-string vocabulary the checker actually encounters, plus adversarial edge cases.
     const VOCAB: &[&str] = &[
-        "", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "i128", "u128", "usize", "isize",
-        "int", "integer", "number", "f32", "f64", "float", "bool", "boolean", "str", "string",
-        "list", "array", "vec", "map", "dict", "dictionary", "any", "unknown", "T", "U", "AB",
-        "Opt<T>", "Box<int>", "tainted<u32>", "tainted<string>", "tainted<u8>", "tainted<i64>",
-        "*mut unknown", "*const unknown", "Color", "Status", "rawptr", "Foo", "x", "  u32  ",
-        "STRING", "Tainted<U32>",
+        "",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "u128",
+        "usize",
+        "isize",
+        "int",
+        "integer",
+        "number",
+        "f32",
+        "f64",
+        "float",
+        "bool",
+        "boolean",
+        "str",
+        "string",
+        "list",
+        "array",
+        "vec",
+        "map",
+        "dict",
+        "dictionary",
+        "any",
+        "unknown",
+        "T",
+        "U",
+        "AB",
+        "Opt<T>",
+        "Box<int>",
+        "tainted<u32>",
+        "tainted<string>",
+        "tainted<u8>",
+        "tainted<i64>",
+        "*mut unknown",
+        "*const unknown",
+        "Color",
+        "Status",
+        "rawptr",
+        "Foo",
+        "x",
+        "  u32  ",
+        "STRING",
+        "Tainted<U32>",
     ];
 
     #[test]
@@ -432,7 +475,11 @@ mod tests {
                 "cast_preserves_i64({s:?})"
             );
             assert_eq!(is_generic(s), ref_is_generic(s), "is_generic({s:?})");
-            assert_eq!(tainted_inner(s), ref_tainted_inner(s), "tainted_inner({s:?})");
+            assert_eq!(
+                tainted_inner(s),
+                ref_tainted_inner(s),
+                "tainted_inner({s:?})"
+            );
             assert_eq!(bitwidth(s), ref_bitwidth(s), "bitwidth({s:?})");
         }
         // The pairwise `compatible` relation over the full matrix (VOCAB × VOCAB).

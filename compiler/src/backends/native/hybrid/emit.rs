@@ -78,8 +78,10 @@ fn emit_full_hybrid_project(proj_dir: &Path, cpu_val: &str) -> Result<(), String
     )
     .map_err(|e| e.to_string())?;
 
-    let vendored_src =
-        Path::new("/Users/sicarii/Desktop/metal-hybrid-prover/vendor/risc0-circuit-rv32im");
+    let base = std::env::var("ANUBIS_RISC0_METAL_REFERENCE")
+        .unwrap_or_else(|_| "/tmp/test-metal-prover".to_string());
+    let vendored_src_buf = std::path::PathBuf::from(&base).join("vendor/risc0-circuit-rv32im");
+    let vendored_src = vendored_src_buf.as_path();
     let vendored_dst = proj_dir.join("vendor/risc0-circuit-rv32im");
     if !vendored_src.join("src/prove/hal/metal.rs").exists() {
         return Err(format!(

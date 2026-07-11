@@ -14,8 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const RECEIPT_SCHEMA: &str = "1";
-pub const GENESIS_PREV: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+pub const GENESIS_PREV: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionReceipt {
@@ -161,9 +160,8 @@ pub fn verify_chain(engage_dir: &Path) -> Result<serde_json::Value> {
         if line.trim().is_empty() {
             continue;
         }
-        let r: ActionReceipt = serde_json::from_str(&line).map_err(|e| {
-            anyhow!("ANUBIS_RECEIPT_PARSE: line {}: {e}", line_no + 1)
-        })?;
+        let r: ActionReceipt = serde_json::from_str(&line)
+            .map_err(|e| anyhow!("ANUBIS_RECEIPT_PARSE: line {}: {e}", line_no + 1))?;
         count += 1;
         if r.seq != count {
             return Err(anyhow!(
@@ -179,10 +177,7 @@ pub fn verify_chain(engage_dir: &Path) -> Result<serde_json::Value> {
         }
         let ph = payload_hash(&r.payload);
         if ph != r.payload_sha256 {
-            return Err(anyhow!(
-                "ANUBIS_RECEIPT_PAYLOAD_TAMPER: seq {}",
-                r.seq
-            ));
+            return Err(anyhow!("ANUBIS_RECEIPT_PAYLOAD_TAMPER: seq {}", r.seq));
         }
         let expect = compute_receipt_hash(
             r.seq,
@@ -194,10 +189,7 @@ pub fn verify_chain(engage_dir: &Path) -> Result<serde_json::Value> {
             &r.prev_hash,
         );
         if expect != r.receipt_hash {
-            return Err(anyhow!(
-                "ANUBIS_RECEIPT_HASH_MISMATCH: seq {}",
-                r.seq
-            ));
+            return Err(anyhow!("ANUBIS_RECEIPT_HASH_MISMATCH: seq {}", r.seq));
         }
         prev = r.receipt_hash.clone();
         last_hash = r.receipt_hash;

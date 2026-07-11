@@ -13,8 +13,8 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Taint-to-sink / declassify enforcement | PARTIAL | traces for working pattern only; bare/safe hit lowering gate | build safe_tainted_sink / declassify_bare | "research lowering requires assume..." exact |
 | Research lowering requires assume bound from AST | REAL (current gate) | backends/native/mod.rs:94 + lib.rs research_lowering_requires... | cargo test research_lowering_requires... | Brittle gate |
 | Unborn git at start of a+ work | REAL | git rev-parse --verify HEAD (pre-init) | (recorded in plan) | Baseline commit 4a2c462 on a-plus-maturity/20260705-1649 |
-| 26+ tests pass, clean fmt/clippy | REAL | this run + prior audit | cargo test ; cargo fmt --check ; cargo clippy -D warnings | Baseline state |
-| Full 15 A+ gates | PLANNED | this matrix + A_PLUS_ACCEPTANCE_CRITERIA.md | scripts/audit_a_plus.sh | Work in progress |
+| 321 tests pass (265 compiler + 56 tools), clean fmt/clippy | REAL | this run + prior audit | cargo test --all ; cargo fmt -- --check ; cargo clippy --all-targets -- -D warnings | Reconciled 2026-07-11 |
+| Full 15 unified gates | REAL | `scripts/audit_unified.sh` → 14/15 PASS, 0 FAIL, 1 SKIP | `bash scripts/audit_unified.sh` | Reconciled 2026-07-11; replaces scripts/audit_a_plus.sh |
 | Gate 7 solver faithful semantics (BV, defs, no free vars) | REAL | middle/mod.rs check_obligations + smt build + tests | cargo test solver ; cat smt | Per var widths, derived (= ), BV ops |
 | Gate 7 counterexample replay + hostile failure detection | REAL | replay fn + unit test in lib.rs | cargo test replay_failed | Detects inconsistent model |
 | Gate 7 u8 BitVec 8 + explicit semantics | REAL | width tracking + u8 fixture + smt | cargo run check ...overflow_u8 ; cat smt | BitVec 8 declare, 8 bit lits, wrapping |
@@ -48,8 +48,8 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|
-| Runtime probe capability evidence | REAL | `runtime-probe.json`, `RUNTIME_PROBE.md`, `MANIFEST.sha256` | `anubis runtime-probe --json --evidence --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --out out/a16_runtime_probe` | Captures host/toolchain/RISC0/Metal reference identity and tree hashes; explicitly not proof execution |
-| Runtime plan embeds probe truth | REAL PLAN-ONLY | `runtime-plan.json` with `runtime_probe`, `probe_hash`, `probe_status` | `anubis runtime-plan examples/risc0_receipt.anb --backend risc0 --lane metal-hybrid --apple-native --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --json --evidence --out out/a16_runtime_plan_probe` | `status=plan-only`, `executed=false`; probe is capability evidence only |
+| Runtime probe capability evidence | REAL | `runtime-probe.json`, `RUNTIME_PROBE.md`, `MANIFEST.sha256` | `anubis runtime-probe --json --evidence --metal-reference $ANUBIS_RISC0_METAL_REFERENCE --out out/a16_runtime_probe` | Captures host/toolchain/RISC0/Metal reference identity and tree hashes; explicitly not proof execution |
+| Runtime plan embeds probe truth | REAL PLAN-ONLY | `runtime-plan.json` with `runtime_probe`, `probe_hash`, `probe_status` | `anubis runtime-plan examples/risc0_receipt.anb --backend risc0 --lane metal-hybrid --apple-native --metal-reference $ANUBIS_RISC0_METAL_REFERENCE --json --evidence --out out/a16_runtime_plan_probe` | `status=plan-only`, `executed=false`; probe is capability evidence only |
 | Ordinary safe `anubis run` | PARTIAL | `examples/hello_normal.anb`, `run-summary.json`, `stdout.txt`, `RUN.md` | `anubis run examples/hello_normal.anb --evidence --out out/a16_run_hello` | Supports first safe subset: let/literals/vars/arithmetic/comparisons/string concat/print/if/return; unsupported constructs fail closed |
 | Runtime execution / planned-vs-observed enforcement | DEFERRED | future `runtime-exec.json` | future `anubis runtime-exec ...` | Next hard tranche; no current claim that runtime-plan executed a receipt path |
 
@@ -96,7 +96,7 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | ROP pattern/gadgets/browser | REAL | pattern-offset found | pattern-*/gadget-*/browser-harness | lab browser localhost only |
 | XOR packer | REAL | packs/*.xor.pack | `pack-xor` | lab packer |
 | Exploit modules + PoC kit | REAL | exploit success | exploit-run | crash oracle |
-| Offensive gate | REAL | 16/16 | `bash scripts/run_offensive_platform_gate.sh` | T1–T7 |
+| Offensive gate | REAL | 20/20 | `bash scripts/run_offensive_platform_gate.sh` | T1–T7 (reconciled 2026-07-11) |
 | Full rustls mTLS handshake / live inject execute | PLANNED/PARTIAL | OFFENSIVE_PLATFORM.md | — | inject remains PLAN_ONLY by design |
 | SMB/WinRM lateral **execution** | NOT CLAIMED | `lateral-smb` CLI | `anubis lateral-smb --host …` | **PLAN_ONLY**: structured plan, `executed=false`, no SMB sockets |
 | RBAC queue + admin status | REAL | listener `/task` + `/admin/status` + `task-queue --operator` | gate `t7_rbac_queue` | `role_can_queue` / `role_can_admin` wired |
@@ -626,8 +626,8 @@ rigor exposed. The twelve closed defects:
 **Firsthand-verified**: the demonstration (`ensures`/`assert` over a loop-carried variable, unprovable
 without an invariant, provable with one) works; base-case/preservation failures reject; every one of
 the twelve false proofs above now REJECTS; valid inductive invariants and bounded/composed contracts
-still ACCEPT. **~248 compiler tests; 49 binary; fixtures 26/26; PCA 13/13; prove 11/11; turing 13/13;
-41/41 `.anub` example corpus with 0 false positives.**
+still ACCEPT. **265 compiler tests; 56 tools tests; fixtures 26/26; PCA 13/13; prove 11/11; turing 13/13;
+41/41 `.anub` example corpus with 0 false positives. (Reconciled 2026-07-11.)**
 
 **Honest scope (what B3 does NOT do — all fail-closed, not silent):** invariants only on `while`
 (for/loop rejected); the body must be a flat straight-line integer sequence (branches, nested loops,
@@ -638,3 +638,18 @@ call's `requires` in pure expression position (`g(bad)+1`) is not yet enforced �
 assumed there either, so nothing is laundered (a completeness gap, not a false proof). The checker is
 SOUND for its supported subset: a green `anubis check` over an invariant loop or a contract means it was
 actually proved; anything it cannot model soundly is rejected, never silently accepted.
+
+## A+ Maturity Gaps Closed (2026-07-11)
+
+Reconciliation pass driven by the 2026-07-11 forensic dissertation. Every gap identified as REAL was
+closed or explicitly marked DEFERRED with precise scope.
+
+| Claim | Status | Evidence | Command | Notes |
+|-------|--------|----------|---------|-------|
+| Unified gate suite (one command, all gates, stranger can run) | REAL | `scripts/audit_unified.sh` — 15 gates (G1-G15), JSON report | `bash scripts/audit_unified.sh` → 14/15 PASS, 0 FAIL, 1 SKIP | G15 skips when no `examples/feel/` dir |
+| Zero hard-coded author paths in Rust/TOML source | REAL | `grep -rn "sicarii/Desktop" --include="*.rs" --include="*.toml"` → 0 hits | `grep -rn "sicarii/Desktop" --include="*.rs" --include="*.toml" \| grep -v .claude/worktrees/` | All paths use `ANUBIS_RISC0_METAL_REFERENCE` env var |
+| Cargo fmt + clippy + 321 tests green | REAL | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test --all` | `bash scripts/audit_unified.sh` (G1-G3) | 265 compiler + 56 tools = 321 total |
+| Metal/ZK tests portable (skip when env not set) | REAL | 3 hybrid tests guarded by `ANUBIS_RISC0_METAL_REFERENCE` check | `cargo test --all` on a fresh clone without metal reference → 265 pass, 0 fail | Tests skip cleanly, not fail |
+| Template Cargo.toml uses relative vendor path | REAL | `templates/Cargo.full.toml` → `vendor/risc0-circuit-rv32im` (was absolute) | `cat compiler/src/backends/native/hybrid/templates/Cargo.full.toml` | Emitted projects are portable |
+| Env var unified to `ANUBIS_RISC0_METAL_REFERENCE` | REAL | `grep -rn "ANUBIS_METAL_HYBRID_PATH" --include="*.rs"` → 0 hits | same | evidence/mod.rs + emit.rs both use the canonical var |
+| Documentation reconciled with HEAD | REAL | ARCHITECTURE_MAP.md, MATURITY_CLAIM_MATRIX.md, README.md updated | `diff` against prior | Test counts, script counts, example counts, hard-coded paths |

@@ -14,7 +14,7 @@
 - Real native Apple Silicon executables emitted
 - `anubis capabilities --apple-native --json` exposes the Apple-native capability matrix, including RISC0/Metal, UMPG runtime-plan status, and advisory-only Neural Engine boundaries
 - `anubis runtime-probe --json` emits host/toolchain/RISC0/Metal capability evidence without claiming proof execution
-- `anubis runtime-plan --backend risc0 --lane metal-hybrid --apple-native` emits a source-derived UMPG-style operation DAG pointing proof/computation planning at `/Users/sicarii/Desktop/metal-hybrid-prover`
+- `anubis runtime-plan --backend risc0 --lane metal-hybrid --apple-native` emits a source-derived UMPG-style operation DAG for proof/computation planning (Metal reference resolved via `--metal-reference` / `ANUBIS_RISC0_METAL_REFERENCE` / `Anubis.toml`)
 - `anubis run examples/hello_normal.anb` executes ordinary safe Anubis code through the current native safe subset
 - **Bounty-grade PoC kit** (authorized local lab): packing (`p64`/`cyclic`), `target_run` process harness, mutation fuzz against local binaries, crash evidence — see `docs/language/POC_KIT.md`
 - **Offensive Platform (AOP)**: engagement-scoped C2, agents, RBAC, hash-chained **action receipts** — see `docs/language/OFFENSIVE_PLATFORM.md`
@@ -27,7 +27,7 @@
 
 See `docs/spec.md`, `docs/APPLE_NATIVE.md`, `docs/language/POC_KIT.md`, `docs/adr/`, `examples/`, and run `cargo test -p anubis-compiler`.
 
-## Quick Start (on this machine)
+## Quick Start
 ```bash
 cd anubis-lang
 cargo build
@@ -37,8 +37,6 @@ cargo run -- verify <the-evidence-dir>
 cargo run -- report <the-evidence-dir>
 cargo run -- doctor --json
 cargo run -- capabilities --apple-native --json
-cargo run -- runtime-probe --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --json
-cargo run -- runtime-plan examples/risc0_receipt.anb --backend risc0 --lane metal-hybrid --apple-native --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover --json
 cargo run -- run examples/hello_normal.anb
 
 # Bounty-grade local PoC kit
@@ -55,9 +53,9 @@ bash scripts/run_poc_kit_gate.sh --out out/poc_kit
 bash scripts/run_offensive_platform_gate.sh --out out/offensive_gate
 
 # Parameterized RISC0 proof: prove f(input)=output (journal depends on input; ImageID on program)
+# Parameterized RISC0 proof (requires ANUBIS_RISC0_METAL_REFERENCE or --metal-reference)
 ./target/release/anubis prove examples/proof/proof_factorial_input.anb \
   --backend risc0 --lane cpu \
-  --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover \
   --input-json '{"n":5}' --evidence --out out/proof_factorial_5
 # journal = 120; use '{"n":6}' → journal 720 (same ImageID)
 bash scripts/run_parameterized_proof_gate.sh --out out/parameterized_proof

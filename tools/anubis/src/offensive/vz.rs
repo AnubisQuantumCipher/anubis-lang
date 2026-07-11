@@ -98,12 +98,9 @@ fn vmctl_bin() -> PathBuf {
 }
 
 fn which_vmctl() -> Result<PathBuf> {
-    let candidates = [
-        PathBuf::from("/Users/sicarii/.local/bin/vmctl"),
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join(".local/bin/vmctl"),
-    ];
+    let candidates = [dirs::home_dir()
+        .unwrap_or_default()
+        .join(".local/bin/vmctl")];
     for c in &candidates {
         if c.exists() {
             return Ok(c.clone());
@@ -150,8 +147,8 @@ pub fn vz_status() -> Result<Vec<VzGuest>> {
         return Err(anyhow!("ANUBIS_VZ_STATUS: {err}"));
     }
     let raw = String::from_utf8_lossy(&output.stdout);
-    let vms: Vec<serde_json::Value> = serde_json::from_str(&raw)
-        .map_err(|e| anyhow!("ANUBIS_VZ_STATUS_PARSE: {e}"))?;
+    let vms: Vec<serde_json::Value> =
+        serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_VZ_STATUS_PARSE: {e}"))?;
     let mut guests = Vec::new();
     for v in vms {
         let net_active = v
@@ -238,14 +235,7 @@ pub fn vz_exec(
 ) -> Result<VzExecResult> {
     let start = SystemTime::now();
     let working_dir = cwd.unwrap_or(EXPORTS_PREFIX);
-    let mut args = vec![
-        "exec",
-        "--name",
-        guest,
-        "--cwd",
-        working_dir,
-        "--timeout",
-    ];
+    let mut args = vec!["exec", "--name", guest, "--cwd", working_dir, "--timeout"];
     let timeout_s = timeout_secs.to_string();
     args.push(&timeout_s);
     args.push("--");
@@ -456,9 +446,7 @@ wait 2>/dev/null
 
 /// Run the Anubis unit test suite inside the VZ guest.
 pub fn vz_test_suite(guest: &str, filter: Option<&str>) -> Result<VzExecResult> {
-    let filter_arg = filter
-        .map(|f| format!("-- {f}"))
-        .unwrap_or_default();
+    let filter_arg = filter.map(|f| format!("-- {f}")).unwrap_or_default();
     let cmd = format!(
         "export CARGO_TARGET_DIR=/tmp/target/anubis-offensive && \
          cd {prefix}/src && \
@@ -475,8 +463,7 @@ pub fn vz_stress_battery(
     _engage_dir: &Path,
 ) -> Result<VzExecResult> {
     eng.validate_live()?;
-    let script_path = find_exports_host_path(guest)?
-        .join("run_stress_expanded.sh");
+    let script_path = find_exports_host_path(guest)?.join("run_stress_expanded.sh");
     if !script_path.exists() {
         return Err(anyhow!(
             "ANUBIS_VZ_NO_STRESS_SCRIPT: {} not found",
@@ -505,9 +492,7 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         Vec::new()
     };
     let running: Vec<_> = guests.iter().filter(|g| g.running).collect();
-    let offensive_ready = running
-        .iter()
-        .any(|g| g.name == "hermes-security-lab");
+    let offensive_ready = running.iter().any(|g| g.name == "hermes-security-lab");
     let mut guest_list = Vec::new();
     for g in &guests {
         guest_list.push(serde_json::json!({
@@ -521,14 +506,8 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         }));
     }
     let exports_path = workspace_root()
-        .map(|r| {
-            PathBuf::from(r)
-                .join("vm/exports/hermes-security-lab/anubis-offensive")
-        });
-    let exports_exist = exports_path
-        .as_ref()
-        .map(|p| p.exists())
-        .unwrap_or(false);
+        .map(|r| PathBuf::from(r).join("vm/exports/hermes-security-lab/anubis-offensive"));
+    let exports_exist = exports_path.as_ref().map(|p| p.exists()).unwrap_or(false);
     let toolchain_staged = exports_path
         .as_ref()
         .map(|p| p.join("toolchain").exists())

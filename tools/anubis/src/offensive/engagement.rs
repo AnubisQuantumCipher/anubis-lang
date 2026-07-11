@@ -96,7 +96,10 @@ fn default_true() -> bool {
 
 impl Engagement {
     pub fn default_lab(name: &str, authorization: &str) -> Self {
-        let id = format!("eng-{}", &hex::encode(Sha256::digest(name.as_bytes()))[..12]);
+        let id = format!(
+            "eng-{}",
+            &hex::encode(Sha256::digest(name.as_bytes()))[..12]
+        );
         Self {
             schema_version: "2.0".into(),
             engagement_id: id,
@@ -224,10 +227,7 @@ impl Engagement {
     pub fn assert_target_binary(&self, path: &Path) -> Result<()> {
         self.assert_path(path)?;
         if !path.exists() {
-            return Err(anyhow!(
-                "ANUBIS_ENGAGE_TARGET_MISSING: {}",
-                path.display()
-            ));
+            return Err(anyhow!("ANUBIS_ENGAGE_TARGET_MISSING: {}", path.display()));
         }
         Ok(())
     }
@@ -319,8 +319,8 @@ pub fn load_engagement(path: &Path) -> Result<Engagement> {
     };
     let raw = fs::read_to_string(&p)
         .map_err(|e| anyhow!("ANUBIS_ENGAGE_LOAD: {}: {}", p.display(), e))?;
-    let mut eng: Engagement = serde_json::from_str(&raw)
-        .map_err(|e| anyhow!("ANUBIS_ENGAGE_PARSE: {}", e))?;
+    let mut eng: Engagement =
+        serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_ENGAGE_PARSE: {}", e))?;
     // migrate v1 engagements missing fields
     if eng.psk_hex.is_empty() {
         eng.psk_hex = crypto::generate_psk_hex();

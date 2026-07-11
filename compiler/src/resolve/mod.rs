@@ -105,7 +105,13 @@ pub fn load_graph(entry: &Path, src_root: &Path) -> Result<ModuleGraph, String> 
     })?;
     let mut color: BTreeMap<PathBuf, Color> = BTreeMap::new();
     let mut order: Vec<LoadedModule> = Vec::new();
-    load_dfs(&entry_canon, String::new(), src_root, &mut color, &mut order)?;
+    load_dfs(
+        &entry_canon,
+        String::new(),
+        src_root,
+        &mut color,
+        &mut order,
+    )?;
     Ok(ModuleGraph {
         entry: entry_canon,
         modules: order,
@@ -218,7 +224,9 @@ fn collect_enum_names(items: &[Item], out: &mut BTreeSet<String>) {
 fn collect_pub_fn_names(items: &[Item], out: &mut BTreeSet<String>) {
     for it in items {
         match it {
-            Item::Fn { name, visibility, .. } if *visibility == Visibility::Public => {
+            Item::Fn {
+                name, visibility, ..
+            } if *visibility == Visibility::Public => {
                 out.insert(name.clone());
             }
             Item::Module { items, .. } => collect_pub_fn_names(items, out),
@@ -359,7 +367,11 @@ fn rewrite_stmt(s: &mut Stmt, ctx: &mut RewriteCtx) {
                 }
             }
         }
-        Stmt::While { cond, body, invariant } => {
+        Stmt::While {
+            cond,
+            body,
+            invariant,
+        } => {
             rewrite_expr(cond, ctx);
             for st in body {
                 rewrite_stmt(st, ctx);
@@ -376,7 +388,12 @@ fn rewrite_stmt(s: &mut Stmt, ctx: &mut RewriteCtx) {
                 rewrite_expr(inv, ctx);
             }
         }
-        Stmt::For { source, body, invariant, .. } => {
+        Stmt::For {
+            source,
+            body,
+            invariant,
+            ..
+        } => {
             match source {
                 crate::frontend::ForSource::Range { start, end } => {
                     rewrite_expr(start, ctx);
@@ -452,7 +469,9 @@ fn rewrite_expr(e: &mut Expr, ctx: &mut RewriteCtx) {
                 rewrite_expr(f, ctx);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             rewrite_expr(scrutinee, ctx);
             for a in arms {
                 if let Some(g) = &mut a.guard {
@@ -462,7 +481,9 @@ fn rewrite_expr(e: &mut Expr, ctx: &mut RewriteCtx) {
                 // Patterns are NOT rewritten: an enum pattern (`Status::Ok(n)`) is never a call.
             }
         }
-        Expr::If { cond, then, else_, .. } => {
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             rewrite_expr(cond, ctx);
             rewrite_expr(then, ctx);
             rewrite_expr(else_, ctx);
@@ -482,7 +503,12 @@ fn rewrite_expr(e: &mut Expr, ctx: &mut RewriteCtx) {
             }
         }
         Expr::Lambda { body, .. } => rewrite_expr(body, ctx),
-        Expr::IfLet { scrutinee, then, else_, .. } => {
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
             rewrite_expr(scrutinee, ctx);
             rewrite_expr(then, ctx);
             rewrite_expr(else_, ctx);
@@ -590,7 +616,11 @@ mod tests {
     fn load_graph_orders_dependencies_before_importers() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let entry = write(root, "main.anb", "import math;\nfn main() { print(math::add(2, 3)); }");
+        let entry = write(
+            root,
+            "main.anb",
+            "import math;\nfn main() { print(math::add(2, 3)); }",
+        );
         write(root, "math.anb", "pub fn add(a, b) { return a + b; }");
 
         let graph = load_graph(&entry, root).unwrap();
@@ -622,8 +652,16 @@ mod tests {
             "main.anb",
             "import a;\nimport b;\nfn main() { print(1); }",
         );
-        write(root, "a.anb", "import shared;\nfn fa() { return shared::v(); }");
-        write(root, "b.anb", "import shared;\nfn fb() { return shared::v(); }");
+        write(
+            root,
+            "a.anb",
+            "import shared;\nfn fa() { return shared::v(); }",
+        );
+        write(
+            root,
+            "b.anb",
+            "import shared;\nfn fb() { return shared::v(); }",
+        );
         write(root, "shared.anb", "fn v() { return 7; }");
 
         let graph = load_graph(&entry, root).unwrap();
@@ -660,7 +698,12 @@ mod tests {
                     ex(lhs, out);
                     ex(rhs, out);
                 }
-                Expr::EnumConstruct { enum_name, variant, fields, .. } => {
+                Expr::EnumConstruct {
+                    enum_name,
+                    variant,
+                    fields,
+                    ..
+                } => {
                     out.push(format!("ENUM:{enum_name}::{variant}"));
                     for f in fields {
                         ex(f, out);
@@ -689,20 +732,33 @@ mod tests {
     fn combine_namespaces_module_fns_and_rewrites_qualified_calls() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let entry = write(root, "main.anb", "import math;\nfn main() { print(math::add(2, 3)); }");
+        let entry = write(
+            root,
+            "main.anb",
+            "import math;\nfn main() { print(math::add(2, 3)); }",
+        );
         write(root, "math.anb", "pub fn add(a, b) { return a + b; }");
 
         let graph = load_graph(&entry, root).unwrap();
         let items = combine_graph(&graph).unwrap();
 
         let names = fn_names(&items);
-        assert!(names.contains("math__add"), "module fn namespaced: {names:?}");
-        assert!(!names.contains("add"), "bare `add` should be gone: {names:?}");
+        assert!(
+            names.contains("math__add"),
+            "module fn namespaced: {names:?}"
+        );
+        assert!(
+            !names.contains("add"),
+            "bare `add` should be gone: {names:?}"
+        );
         assert!(names.contains("main"), "root fn stays bare: {names:?}");
 
         // The qualified call `math::add(...)` (parsed as an EnumConstruct) became a real call.
         let cs = callees(&items);
-        assert!(cs.contains(&"math__add".to_string()), "call rewritten: {cs:?}");
+        assert!(
+            cs.contains(&"math__add".to_string()),
+            "call rewritten: {cs:?}"
+        );
         assert!(
             !cs.iter().any(|c| c.starts_with("ENUM:math")),
             "no residual EnumConstruct for the module head: {cs:?}"
@@ -715,7 +771,11 @@ mod tests {
     fn combine_rewrites_intra_module_bare_calls() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let entry = write(root, "main.anb", "import util;\nfn main() { print(util::pub_api()); }");
+        let entry = write(
+            root,
+            "main.anb",
+            "import util;\nfn main() { print(util::pub_api()); }",
+        );
         // util's public fn calls a sibling helper by bare name -> both must be namespaced together.
         write(
             root,
@@ -726,10 +786,16 @@ mod tests {
         let graph = load_graph(&entry, root).unwrap();
         let items = combine_graph(&graph).unwrap();
         let names = fn_names(&items);
-        assert!(names.contains("util__pub_api") && names.contains("util__helper"), "{names:?}");
+        assert!(
+            names.contains("util__pub_api") && names.contains("util__helper"),
+            "{names:?}"
+        );
         // pub_api's bare call to `helper` was namespaced to `util__helper`.
         let cs = callees(&items);
-        assert!(cs.contains(&"util__helper".to_string()), "intra-module call: {cs:?}");
+        assert!(
+            cs.contains(&"util__helper".to_string()),
+            "intra-module call: {cs:?}"
+        );
     }
 
     #[test]
@@ -747,7 +813,10 @@ mod tests {
         assert_eq!(fn_names(&items), fn_names(&parsed.items), "no renames");
         // The enum construct S::Ok is preserved (not mistaken for a module call).
         let cs = callees(&items);
-        assert!(cs.iter().any(|c| c == "ENUM:S::Ok"), "enum construct kept: {cs:?}");
+        assert!(
+            cs.iter().any(|c| c == "ENUM:S::Ok"),
+            "enum construct kept: {cs:?}"
+        );
     }
 
     #[test]
@@ -771,7 +840,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         // main calls math::secret, but `secret` is not `pub` in math -> fail-closed.
-        let entry = write(root, "main.anb", "import math;\nfn main() { print(math::secret()); }");
+        let entry = write(
+            root,
+            "main.anb",
+            "import math;\nfn main() { print(math::secret()); }",
+        );
         write(
             root,
             "math.anb",
@@ -791,11 +864,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         // A module file inside src_root that symlinks to a file outside it.
-        symlink(
-            outside.path().join("secret.anb"),
-            root.join("escape.anb"),
-        )
-        .unwrap();
+        symlink(outside.path().join("secret.anb"), root.join("escape.anb")).unwrap();
         let err = resolve_module_file(root, "escape").unwrap_err();
         assert!(err.starts_with("ANUBIS_IMPORT_ESCAPE"), "got: {err}");
     }

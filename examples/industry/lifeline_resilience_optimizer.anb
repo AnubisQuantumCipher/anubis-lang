@@ -1,0 +1,925 @@
+// =============================================================================
+// LIFELINE — CRITICAL-INFRASTRUCTURE CASCADE & RECOVERY OPTIMIZER
+// =============================================================================
+//
+// Purpose
+// -------
+// LIFELINE is an offline, deterministic decision-support kernel for planning
+// recovery after a compound disaster. It models coupled power, water, health,
+// communications, fuel, shelter, wastewater, cooling, and cold-chain assets.
+// It then:
+//
+//   1. validates the embedded model before any indexed access;
+//   2. simulates monotone cascading failures to a bounded fixed point;
+//   3. scores human impact with criticality and vulnerability weights;
+//   4. exactly enumerates all 2^10 recovery portfolios;
+//   5. enforces budget, crew, fuel, prerequisite, and equity constraints;
+//   6. minimizes a lexicographic robust objective across four hazards;
+//   7. ranks single points of failure and pairwise cascade synergy;
+//   8. re-enumerates in reverse with the same evaluator as a traversal check;
+//   9. rejects a deliberately over-budget tampered plan; and
+//  10. emits a deterministic, non-cryptographic model certificate.
+//
+// Honest boundary
+// ---------------
+// This is a computational reference kernel with embedded demonstration data.
+// It does not ingest live telemetry, control infrastructure, estimate deaths,
+// solve an unbounded global planning problem, or replace emergency managers.
+// Its exactness claim is only over the ten candidate actions and constraints
+// declared below. The rolling seal is an audit checksum, not cryptography.
+// The Anubis evidence bundle supplies the external tamper-evident envelope.
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// 1. SMALL CONTRACT KERNEL — obligations suitable for Anubis's bounded solver
+// -----------------------------------------------------------------------------
+
+fn risk_join(a: u64, b: u64) -> u64
+    requires(a >= 0) requires(a < 500000)
+    requires(b >= 0) requires(b < 500000)
+    ensures(result >= a) ensures(result >= b) {
+    return a + b;
+}
+
+fn fuel_tick(fuel: u64) -> u64
+    requires(fuel > 0) requires(fuel < 1000000)
+    ensures(result >= 0) ensures(result < fuel) {
+    return fuel - 1;
+}
+
+fn remaining_budget(budget: u64, used: u64) -> u64
+    requires(budget >= 0) requires(budget < 1000000)
+    requires(used >= 0) requires(used <= budget)
+    ensures(result >= 0) ensures(result <= budget) {
+    return budget - used;
+}
+
+fn service_gap(demand: u64, available: u64) -> u64
+    requires(demand >= 0) requires(demand < 1000000)
+    requires(available >= 0) requires(available <= demand)
+    ensures(result >= 0) ensures(result <= demand) {
+    return demand - available;
+}
+
+
+// -----------------------------------------------------------------------------
+// 2. MODEL TYPES
+// -----------------------------------------------------------------------------
+
+enum Sector {
+    Power,
+    Water,
+    Healthcare,
+    Telecom,
+    Fuel,
+    Shelter,
+    Wastewater,
+    Cooling,
+    ColdChain,
+}
+
+enum PlanVerdict {
+    Certified { checksum: int },
+    BudgetLimited { feasible_candidates: int },
+    AuditRejected { code: int },
+    InvalidModel { code: int },
+}
+
+struct Asset {
+    id: int,
+    name: string,
+    sector: Sector,
+    zone: string,
+    population: int,
+    demand_pct: int,
+    criticality: int,
+    vulnerability: int,
+    hard_floor_pct: int,
+}
+
+struct Dependency {
+    upstream: int,
+    downstream: int,
+    trigger_pct: int,
+    base_impact_pct: int,
+    slope_pct: int,
+    label: string,
+}
+
+struct Scenario {
+    id: int,
+    name: string,
+    probability_bps: int,
+    surge_pct: int,
+    initial_pct: list,
+}
+
+struct Action {
+    id: int,
+    asset: int,
+    name: string,
+    cost_units: int,
+    crew_hours: int,
+    fuel_units: int,
+    restore_pct: int,
+    floor_pct: int,
+    prerequisites: list,
+}
+
+struct Simulation {
+    availability: list,
+    causes: list,
+    loss: int,
+    equity_loss: int,
+    hard_violations: int,
+    people_equivalent_served: int,
+    cascade_rounds: int,
+    converged: int,
+    checksum: int,
+}
+
+struct PlanScore {
+    mask: int,
+    cost: int,
+    crew: int,
+    fuel: int,
+    equity_actions: int,
+    action_count: int,
+    prerequisites_ok: int,
+    feasible: int,
+    hard_violations: int,
+    worst_loss: int,
+    expected_loss: int,
+    equity_loss: int,
+    objective: int,
+    checksum: int,
+}
+
+struct Optimization {
+    best: PlanScore,
+    candidate_count: int,
+    feasible_count: int,
+}
+
+struct AuditResult {
+    recompute_match: int,
+    deterministic: int,
+    globally_optimal: int,
+    improves_baseline: int,
+    model_negative_rejected: int,
+    powers_negative_rejected: int,
+    overflow_negative_rejected: int,
+    tamper_negative_rejected: int,
+    checksum: int,
+    ok: int,
+}
+
+
+// -----------------------------------------------------------------------------
+// 3. INTEGER AND COLLECTION UTILITIES
+// -----------------------------------------------------------------------------
+
+fn min_i(a, b) {
+    if a < b { return a; }
+    return b;
+}
+
+fn max_i(a, b) {
+    if a > b { return a; }
+    return b;
+}
+
+fn clamp_pct(x) {
+    if x < 0 { return 0; }
+    if x > 100 { return 100; }
+    return x;
+}
+
+fn zeros(n) {
+    let mut xs = [];
+    let mut i = 0;
+    while i < n {
+        push(xs, 0);
+        i = i + 1;
+    }
+    return xs;
+}
+
+fn filled(n, value) {
+    let mut xs = [];
+    let mut i = 0;
+    while i < n {
+        push(xs, value);
+        i = i + 1;
+    }
+    return xs;
+}
+
+fn selected(mask, power) {
+    if (mask & power) != 0 { return 1; }
+    return 0;
+}
+
+fn rolling_seal(values) {
+    let mut h = 104729;
+    let mut i = 0;
+    while i < len(values) {
+        let v = values[i] + 1000003;
+        h = ((h * 131) + v) % 2147483647;
+        i = i + 1;
+    }
+    if h < 0 { return 0 - h; }
+    return h;
+}
+
+fn sector_name(sector) {
+    match sector {
+        Sector::Power => "power",
+        Sector::Water => "water",
+        Sector::Healthcare => "healthcare",
+        Sector::Telecom => "telecom",
+        Sector::Fuel => "fuel",
+        Sector::Shelter => "shelter",
+        Sector::Wastewater => "wastewater",
+        Sector::Cooling => "cooling",
+        Sector::ColdChain => "cold_chain",
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// 4. EMBEDDED CIVIL-RESILIENCE MODEL
+// -----------------------------------------------------------------------------
+
+fn build_assets() {
+    return [
+        Asset { id: 0, name: "North Grid Substation", sector: Sector::Power, zone: "North", population: 420000, demand_pct: 90, criticality: 10, vulnerability: 7, hard_floor_pct: 55 },
+        Asset { id: 1, name: "River Water Works", sector: Sector::Water, zone: "East", population: 360000, demand_pct: 88, criticality: 10, vulnerability: 9, hard_floor_pct: 60 },
+        Asset { id: 2, name: "Regional Trauma Hospital", sector: Sector::Healthcare, zone: "Central", population: 510000, demand_pct: 95, criticality: 10, vulnerability: 8, hard_floor_pct: 70 },
+        Asset { id: 3, name: "Emergency Communications Hub", sector: Sector::Telecom, zone: "Central", population: 610000, demand_pct: 82, criticality: 9, vulnerability: 6, hard_floor_pct: 55 },
+        Asset { id: 4, name: "Strategic Fuel Depot", sector: Sector::Fuel, zone: "West", population: 470000, demand_pct: 78, criticality: 9, vulnerability: 7, hard_floor_pct: 50 },
+        Asset { id: 5, name: "East High-Capacity Shelter", sector: Sector::Shelter, zone: "East", population: 145000, demand_pct: 92, criticality: 8, vulnerability: 10, hard_floor_pct: 65 },
+        Asset { id: 6, name: "Community Dialysis Clinic", sector: Sector::Healthcare, zone: "South", population: 82000, demand_pct: 96, criticality: 10, vulnerability: 10, hard_floor_pct: 75 },
+        Asset { id: 7, name: "South Wastewater Plant", sector: Sector::Wastewater, zone: "South", population: 275000, demand_pct: 85, criticality: 8, vulnerability: 9, hard_floor_pct: 50 },
+        Asset { id: 8, name: "Urban Cooling Network", sector: Sector::Cooling, zone: "Central", population: 230000, demand_pct: 85, criticality: 8, vulnerability: 9, hard_floor_pct: 50 },
+        Asset { id: 9, name: "Medicine Cold-Chain Hub", sector: Sector::ColdChain, zone: "North", population: 390000, demand_pct: 90, criticality: 9, vulnerability: 8, hard_floor_pct: 60 },
+    ];
+}
+
+fn build_dependencies() {
+    return [
+        Dependency { upstream: 4, downstream: 0, trigger_pct: 55, base_impact_pct: 20, slope_pct: 55, label: "fuel keeps grid restoration mobile" },
+        Dependency { upstream: 0, downstream: 1, trigger_pct: 65, base_impact_pct: 25, slope_pct: 60, label: "power drives water pumps" },
+        Dependency { upstream: 0, downstream: 2, trigger_pct: 60, base_impact_pct: 20, slope_pct: 50, label: "power supports hospital systems" },
+        Dependency { upstream: 0, downstream: 3, trigger_pct: 55, base_impact_pct: 25, slope_pct: 55, label: "power supports communications" },
+        Dependency { upstream: 0, downstream: 4, trigger_pct: 50, base_impact_pct: 15, slope_pct: 40, label: "power runs fuel transfer pumps" },
+        Dependency { upstream: 0, downstream: 7, trigger_pct: 60, base_impact_pct: 25, slope_pct: 55, label: "power runs wastewater lift stations" },
+        Dependency { upstream: 0, downstream: 8, trigger_pct: 70, base_impact_pct: 30, slope_pct: 60, label: "power drives public cooling" },
+        Dependency { upstream: 0, downstream: 9, trigger_pct: 65, base_impact_pct: 30, slope_pct: 60, label: "power preserves medicine refrigeration" },
+        Dependency { upstream: 1, downstream: 2, trigger_pct: 60, base_impact_pct: 20, slope_pct: 50, label: "hospital requires potable water" },
+        Dependency { upstream: 1, downstream: 5, trigger_pct: 55, base_impact_pct: 20, slope_pct: 50, label: "shelter requires potable water" },
+        Dependency { upstream: 1, downstream: 6, trigger_pct: 70, base_impact_pct: 35, slope_pct: 60, label: "dialysis requires treated water" },
+        Dependency { upstream: 3, downstream: 2, trigger_pct: 45, base_impact_pct: 10, slope_pct: 35, label: "hospital needs dispatch communications" },
+        Dependency { upstream: 3, downstream: 5, trigger_pct: 45, base_impact_pct: 15, slope_pct: 40, label: "shelter needs dispatch communications" },
+        Dependency { upstream: 3, downstream: 4, trigger_pct: 45, base_impact_pct: 10, slope_pct: 35, label: "fuel routing needs communications" },
+        Dependency { upstream: 4, downstream: 5, trigger_pct: 45, base_impact_pct: 15, slope_pct: 40, label: "shelter transport needs fuel" },
+        Dependency { upstream: 4, downstream: 9, trigger_pct: 50, base_impact_pct: 15, slope_pct: 40, label: "cold-chain delivery needs fuel" },
+        Dependency { upstream: 7, downstream: 1, trigger_pct: 40, base_impact_pct: 15, slope_pct: 40, label: "wastewater failure contaminates intake" },
+        Dependency { upstream: 9, downstream: 2, trigger_pct: 50, base_impact_pct: 15, slope_pct: 40, label: "hospital depends on medicine cold chain" },
+        Dependency { upstream: 9, downstream: 6, trigger_pct: 55, base_impact_pct: 20, slope_pct: 45, label: "clinic depends on medicine cold chain" },
+    ];
+}
+
+fn build_scenarios() {
+    return [
+        Scenario { id: 0, name: "compound_hurricane", probability_bps: 3500, surge_pct: 18, initial_pct: [38, 52, 62, 58, 55, 60, 66, 45, 54, 58] },
+        Scenario { id: 1, name: "extreme_heat_grid_stress", probability_bps: 2500, surge_pct: 24, initial_pct: [48, 88, 82, 78, 86, 70, 80, 84, 32, 74] },
+        Scenario { id: 2, name: "river_flood", probability_bps: 2000, surge_pct: 16, initial_pct: [72, 28, 76, 66, 42, 57, 68, 22, 61, 64] },
+        Scenario { id: 3, name: "coordinated_grid_telecom_outage", probability_bps: 2000, surge_pct: 12, initial_pct: [52, 88, 78, 24, 82, 72, 76, 80, 68, 72] },
+    ];
+}
+
+fn build_actions() {
+    return [
+        Action { id: 0, asset: 0, name: "mobile grid island", cost_units: 24, crew_hours: 30, fuel_units: 18, restore_pct: 44, floor_pct: 68, prerequisites: [] },
+        Action { id: 1, asset: 1, name: "portable water-treatment train", cost_units: 16, crew_hours: 24, fuel_units: 8, restore_pct: 48, floor_pct: 64, prerequisites: [] },
+        Action { id: 2, asset: 2, name: "hospital microgrid and oxygen reserve", cost_units: 22, crew_hours: 26, fuel_units: 14, restore_pct: 42, floor_pct: 76, prerequisites: [] },
+        Action { id: 3, asset: 3, name: "emergency radio mesh", cost_units: 10, crew_hours: 14, fuel_units: 3, restore_pct: 55, floor_pct: 62, prerequisites: [] },
+        Action { id: 4, asset: 4, name: "prioritized fuel resupply convoy", cost_units: 14, crew_hours: 20, fuel_units: 0, restore_pct: 45, floor_pct: 58, prerequisites: [3] },
+        Action { id: 5, asset: 5, name: "shelter solar-battery package", cost_units: 8, crew_hours: 12, fuel_units: 0, restore_pct: 38, floor_pct: 70, prerequisites: [] },
+        Action { id: 6, asset: 6, name: "dialysis generator and water cache", cost_units: 9, crew_hours: 12, fuel_units: 5, restore_pct: 46, floor_pct: 78, prerequisites: [1] },
+        Action { id: 7, asset: 7, name: "wastewater bypass and lift pumps", cost_units: 12, crew_hours: 18, fuel_units: 7, restore_pct: 44, floor_pct: 58, prerequisites: [] },
+        Action { id: 8, asset: 8, name: "cooling buses and resilience hubs", cost_units: 11, crew_hours: 16, fuel_units: 6, restore_pct: 52, floor_pct: 60, prerequisites: [3] },
+        Action { id: 9, asset: 9, name: "mobile medicine cold-chain pods", cost_units: 7, crew_hours: 10, fuel_units: 4, restore_pct: 42, floor_pct: 66, prerequisites: [] },
+    ];
+}
+
+fn build_powers() {
+    return [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+}
+
+
+// -----------------------------------------------------------------------------
+// 5. FAIL-CLOSED MODEL VALIDATION
+// -----------------------------------------------------------------------------
+
+fn validate_assets(assets) {
+    if len(assets) == 0 || len(assets) > 100 { return 0; }
+    let mut i = 0;
+    while i < len(assets) {
+        let a = assets[i];
+        if a.id != i { return 0; }
+        // Population is a modeled service-coverage unit, capped so every downstream
+        // multiplication and aggregate stays inside signed i64 for <=100 assets.
+        if a.population < 0 || a.population > 1000000 { return 0; }
+        if a.demand_pct < 0 || a.demand_pct > 100 { return 0; }
+        if a.criticality < 1 || a.criticality > 10 { return 0; }
+        if a.vulnerability < 1 || a.vulnerability > 10 { return 0; }
+        if a.hard_floor_pct < 0 || a.hard_floor_pct > 100 { return 0; }
+        i = i + 1;
+    }
+    return if len(assets) > 0 { 1 } else { 0 };
+}
+
+fn validate_dependencies(dependencies, asset_count) {
+    if len(dependencies) > 1000 { return 0; }
+    let mut i = 0;
+    while i < len(dependencies) {
+        let d = dependencies[i];
+        if d.upstream < 0 || d.upstream >= asset_count { return 0; }
+        if d.downstream < 0 || d.downstream >= asset_count { return 0; }
+        if d.upstream == d.downstream { return 0; }
+        if d.trigger_pct < 1 || d.trigger_pct > 100 { return 0; }
+        if d.base_impact_pct < 0 || d.base_impact_pct > 100 { return 0; }
+        if d.slope_pct < 0 || d.slope_pct > 100 { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn validate_scenarios(scenarios, asset_count) {
+    if len(scenarios) == 0 || len(scenarios) > 32 { return 0; }
+    let mut probability = 0;
+    let mut i = 0;
+    while i < len(scenarios) {
+        let s = scenarios[i];
+        if s.id != i { return 0; }
+        if s.probability_bps < 0 || s.probability_bps > 10000 { return 0; }
+        if s.surge_pct < 0 || s.surge_pct > 100 { return 0; }
+        if len(s.initial_pct) != asset_count { return 0; }
+        let mut j = 0;
+        while j < len(s.initial_pct) {
+            if s.initial_pct[j] < 0 || s.initial_pct[j] > 100 { return 0; }
+            j = j + 1;
+        }
+        probability = probability + s.probability_bps;
+        i = i + 1;
+    }
+    return if probability == 10000 { 1 } else { 0 };
+}
+
+fn validate_actions(actions, asset_count, max_actions) {
+    if len(actions) > max_actions { return 0; }
+    let mut i = 0;
+    while i < len(actions) {
+        let a = actions[i];
+        if a.id != i { return 0; }
+        if a.asset < 0 || a.asset >= asset_count { return 0; }
+        if a.cost_units < 0 || a.cost_units > 100000 { return 0; }
+        if a.crew_hours < 0 || a.crew_hours > 100000 { return 0; }
+        if a.fuel_units < 0 || a.fuel_units > 100000 { return 0; }
+        if a.restore_pct < 0 || a.restore_pct > 100 { return 0; }
+        if a.floor_pct < 0 || a.floor_pct > 100 { return 0; }
+        let mut j = 0;
+        while j < len(a.prerequisites) {
+            let p = a.prerequisites[j];
+            if p < 0 || p >= len(actions) || p == i { return 0; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn validate_powers(powers, action_count) {
+    if action_count < 0 || action_count > 10 { return 0; }
+    if len(powers) != action_count + 1 { return 0; }
+    if len(powers) == 0 || powers[0] != 1 { return 0; }
+    let mut i = 1;
+    while i < len(powers) {
+        if powers[i] != powers[i - 1] * 2 { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn validate_model(assets, dependencies, scenarios, actions, powers) {
+    if validate_assets(assets) == 0 { return 0; }
+    if validate_dependencies(dependencies, len(assets)) == 0 { return 0; }
+    if validate_scenarios(scenarios, len(assets)) == 0 { return 0; }
+    if validate_actions(actions, len(assets), 10) == 0 { return 0; }
+    if validate_powers(powers, len(actions)) == 0 { return 0; }
+    return 1;
+}
+
+
+// -----------------------------------------------------------------------------
+// 6. PORTFOLIO RESOURCES AND POLICY CONSTRAINTS
+// -----------------------------------------------------------------------------
+
+fn plan_resources(actions, assets, mask, powers) {
+    let mut cost = 0;
+    let mut crew = 0;
+    let mut fuel = 0;
+    let mut equity_actions = 0;
+    let mut action_count = 0;
+    let mut prerequisites_ok = 1;
+    let mut i = 0;
+    while i < len(actions) {
+        if selected(mask, powers[i]) == 1 {
+            let a = actions[i];
+            cost = cost + a.cost_units;
+            crew = crew + a.crew_hours;
+            fuel = fuel + a.fuel_units;
+            action_count = action_count + 1;
+            if assets[a.asset].vulnerability >= 9 { equity_actions = equity_actions + 1; }
+            let mut j = 0;
+            while j < len(a.prerequisites) {
+                if selected(mask, powers[a.prerequisites[j]]) == 0 { prerequisites_ok = 0; }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return [cost, crew, fuel, equity_actions, action_count, prerequisites_ok];
+}
+
+fn plan_feasible(resources, budget, crew_limit, fuel_limit, min_equity_actions) {
+    if resources[0] > budget { return 0; }
+    if resources[1] > crew_limit { return 0; }
+    if resources[2] > fuel_limit { return 0; }
+    if resources[3] < min_equity_actions { return 0; }
+    if resources[5] == 0 { return 0; }
+    return 1;
+}
+
+
+// -----------------------------------------------------------------------------
+// 7. CASCADE SIMULATOR
+// -----------------------------------------------------------------------------
+
+fn apply_actions(initial, actions, mask, powers) {
+    let mut state = initial;
+    let mut floors = zeros(len(initial));
+    let mut i = 0;
+    while i < len(actions) {
+        if selected(mask, powers[i]) == 1 {
+            let a = actions[i];
+            state[a.asset] = clamp_pct(state[a.asset] + a.restore_pct);
+            floors[a.asset] = max_i(floors[a.asset], a.floor_pct);
+            state[a.asset] = max_i(state[a.asset], floors[a.asset]);
+        }
+        i = i + 1;
+    }
+    return [state, floors];
+}
+
+fn dependency_cap(upstream_pct, dependency) {
+    if upstream_pct >= dependency.trigger_pct { return 100; }
+    let shortfall = dependency.trigger_pct - upstream_pct;
+    let variable_impact = (shortfall * dependency.slope_pct) / dependency.trigger_pct;
+    return clamp_pct(100 - dependency.base_impact_pct - variable_impact);
+}
+
+fn score_state(assets, scenario, availability) {
+    let mut loss = 0;
+    let mut equity_loss = 0;
+    let mut hard_violations = 0;
+    let mut served = 0;
+    let mut i = 0;
+    while i < len(assets) {
+        let a = assets[i];
+        let demand = clamp_pct(a.demand_pct + scenario.surge_pct);
+        let available = min_i(demand, availability[i]);
+        let gap = max_i(0, demand - available);
+        let human_weight = 100 + (a.vulnerability * 12);
+        let harm = (a.population * gap * a.criticality * human_weight) / 100000;
+        let equity = (a.population * gap * a.vulnerability) / 10000;
+        loss = loss + harm;
+        equity_loss = equity_loss + equity;
+        served = served + ((a.population * available) / 100);
+        if availability[i] < a.hard_floor_pct { hard_violations = hard_violations + 1; }
+        i = i + 1;
+    }
+    return [loss, equity_loss, hard_violations, served];
+}
+
+fn simulate_scenario(assets, dependencies, actions, scenario, mask, powers, forced_a, forced_b) {
+    let prepared = apply_actions(scenario.initial_pct, actions, mask, powers);
+    let mut state = prepared[0];
+    let mut floors = prepared[1];
+    let mut causes = filled(len(assets), -1);
+
+    if forced_a >= 0 && forced_a < len(assets) {
+        state[forced_a] = 0;
+        floors[forced_a] = 0;
+        causes[forced_a] = forced_a;
+    }
+    if forced_b >= 0 && forced_b < len(assets) {
+        state[forced_b] = 0;
+        floors[forced_b] = 0;
+        causes[forced_b] = forced_b;
+    }
+
+    let mut changed = 1;
+    let mut rounds = 0;
+    let round_limit = (len(assets) * 2) + 4;
+    while changed == 1 && rounds < round_limit {
+        changed = 0;
+        let mut i = 0;
+        while i < len(dependencies) {
+            let d = dependencies[i];
+            let cap = dependency_cap(state[d.upstream], d);
+            let bounded_cap = max_i(cap, floors[d.downstream]);
+            if bounded_cap < state[d.downstream] {
+                state[d.downstream] = bounded_cap;
+                causes[d.downstream] = d.upstream;
+                changed = 1;
+            }
+            i = i + 1;
+        }
+        rounds = rounds + 1;
+    }
+    let converged = if changed == 0 { 1 } else { 0 };
+    let metrics = score_state(assets, scenario, state);
+    let mut seal_values = [scenario.id, mask, metrics[0], metrics[1], metrics[2], metrics[3], rounds, converged];
+    let mut j = 0;
+    while j < len(state) {
+        push(seal_values, state[j]);
+        push(seal_values, causes[j]);
+        j = j + 1;
+    }
+    return Simulation {
+        availability: state,
+        causes: causes,
+        loss: metrics[0],
+        equity_loss: metrics[1],
+        hard_violations: metrics[2],
+        people_equivalent_served: metrics[3],
+        cascade_rounds: rounds,
+        converged: converged,
+        checksum: rolling_seal(seal_values),
+    };
+}
+
+
+// -----------------------------------------------------------------------------
+// 8. ROBUST PLAN EVALUATION AND EXACT SEARCH
+// -----------------------------------------------------------------------------
+
+fn evaluate_plan(assets, dependencies, scenarios, actions, mask, powers, budget, crew_limit, fuel_limit, min_equity_actions) {
+    let resources = plan_resources(actions, assets, mask, powers);
+    let feasible = plan_feasible(resources, budget, crew_limit, fuel_limit, min_equity_actions);
+    let mut worst = 0;
+    let mut expected = 0;
+    let mut equity = 0;
+    let mut hard = 0;
+    let mut seals = [mask, resources[0], resources[1], resources[2], resources[3], resources[4], resources[5], feasible];
+    let mut i = 0;
+    while i < len(scenarios) {
+        let s = scenarios[i];
+        let sim = simulate_scenario(assets, dependencies, actions, s, mask, powers, -1, -1);
+        worst = max_i(worst, sim.loss);
+        expected = expected + ((sim.loss * s.probability_bps) / 10000);
+        equity = equity + ((sim.equity_loss * s.probability_bps) / 10000);
+        hard = hard + sim.hard_violations;
+        if sim.converged == 0 { hard = hard + 1000; }
+        push(seals, sim.checksum);
+        i = i + 1;
+    }
+    let objective = (worst * 4) + (expected * 2) + equity + (hard * 5000000);
+    push(seals, worst);
+    push(seals, expected);
+    push(seals, equity);
+    push(seals, hard);
+    push(seals, objective);
+    return PlanScore {
+        mask: mask,
+        cost: resources[0],
+        crew: resources[1],
+        fuel: resources[2],
+        equity_actions: resources[3],
+        action_count: resources[4],
+        prerequisites_ok: resources[5],
+        feasible: feasible,
+        hard_violations: hard,
+        worst_loss: worst,
+        expected_loss: expected,
+        equity_loss: equity,
+        objective: objective,
+        checksum: rolling_seal(seals),
+    };
+}
+
+fn better_plan(candidate, incumbent) {
+    if candidate.feasible == 0 { return 0; }
+    if incumbent.mask < 0 { return 1; }
+    if candidate.hard_violations < incumbent.hard_violations { return 1; }
+    if candidate.hard_violations > incumbent.hard_violations { return 0; }
+    if candidate.objective < incumbent.objective { return 1; }
+    if candidate.objective > incumbent.objective { return 0; }
+    if candidate.cost < incumbent.cost { return 1; }
+    if candidate.cost > incumbent.cost { return 0; }
+    if candidate.action_count < incumbent.action_count { return 1; }
+    if candidate.action_count > incumbent.action_count { return 0; }
+    return if candidate.mask < incumbent.mask { 1 } else { 0 };
+}
+
+fn empty_plan_score() {
+    return PlanScore {
+        mask: -1, cost: 0, crew: 0, fuel: 0, equity_actions: 0, action_count: 0,
+        prerequisites_ok: 0, feasible: 0, hard_violations: 999999,
+        worst_loss: 0, expected_loss: 0, equity_loss: 0,
+        objective: 900000000000000000, checksum: 0,
+    };
+}
+
+fn optimize_exact(assets, dependencies, scenarios, actions, powers, budget, crew_limit, fuel_limit, min_equity_actions) {
+    let limit = powers[len(actions)];
+    let mut mask = 0;
+    let mut best = empty_plan_score();
+    let mut feasible_count = 0;
+    while mask < limit {
+        let score = evaluate_plan(assets, dependencies, scenarios, actions, mask, powers, budget, crew_limit, fuel_limit, min_equity_actions);
+        if score.feasible == 1 {
+            feasible_count = feasible_count + 1;
+            if better_plan(score, best) == 1 { best = score; }
+        }
+        mask = mask + 1;
+    }
+    return Optimization { best: best, candidate_count: limit, feasible_count: feasible_count };
+}
+
+fn verify_global_optimum_reverse(assets, dependencies, scenarios, actions, powers, chosen, budget, crew_limit, fuel_limit, min_equity_actions) {
+    let mut mask = powers[len(actions)] - 1;
+    while mask >= 0 {
+        let score = evaluate_plan(assets, dependencies, scenarios, actions, mask, powers, budget, crew_limit, fuel_limit, min_equity_actions);
+        if score.mask != chosen.mask && better_plan(score, chosen) == 1 { return 0; }
+        mask = mask - 1;
+    }
+    return 1;
+}
+
+
+// -----------------------------------------------------------------------------
+// 9. COUNTERFACTUAL CRITICALITY AND NONLINEAR PAIR SYNERGY
+// -----------------------------------------------------------------------------
+
+fn counterfactual_scores(assets, dependencies, actions, scenario, mask, powers) {
+    let base = simulate_scenario(assets, dependencies, actions, scenario, mask, powers, -1, -1);
+    let mut scores = [];
+    let mut i = 0;
+    while i < len(assets) {
+        let forced = simulate_scenario(assets, dependencies, actions, scenario, mask, powers, i, -1);
+        push(scores, max_i(0, forced.loss - base.loss));
+        i = i + 1;
+    }
+    return scores;
+}
+
+fn print_top_critical_assets(assets, dependencies, actions, scenario, mask, powers) {
+    let scores = counterfactual_scores(assets, dependencies, actions, scenario, mask, powers);
+    let mut used = zeros(len(assets));
+    let mut rank = 1;
+    while rank <= 3 {
+        let mut best_id = -1;
+        let mut best_score = -1;
+        let mut i = 0;
+        while i < len(assets) {
+            if used[i] == 0 && scores[i] > best_score {
+                best_id = i;
+                best_score = scores[i];
+            }
+            i = i + 1;
+        }
+        if best_id >= 0 {
+            used[best_id] = 1;
+            print("CRITICAL rank=" + str(rank) + " asset_id=" + str(best_id) + " asset=\"" + assets[best_id].name + "\" marginal_loss=" + str(best_score));
+        }
+        rank = rank + 1;
+    }
+}
+
+fn print_top_pair_synergy(assets, dependencies, actions, scenario, mask, powers) {
+    let base = simulate_scenario(assets, dependencies, actions, scenario, mask, powers, -1, -1);
+    let singles = counterfactual_scores(assets, dependencies, actions, scenario, mask, powers);
+    let mut best_a = -1;
+    let mut best_b = -1;
+    let mut best_synergy = -900000000000000000;
+    let mut a = 0;
+    while a < len(assets) {
+        let mut b = a + 1;
+        while b < len(assets) {
+            let pair = simulate_scenario(assets, dependencies, actions, scenario, mask, powers, a, b);
+            let synergy = pair.loss - base.loss - singles[a] - singles[b];
+            if synergy > best_synergy {
+                best_synergy = synergy;
+                best_a = a;
+                best_b = b;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    print("CRITICAL_PAIR asset_a=\"" + assets[best_a].name + "\" asset_b=\"" + assets[best_b].name + "\" nonlinear_synergy=" + str(best_synergy));
+}
+
+
+// -----------------------------------------------------------------------------
+// 10. RECOMPUTATION, REVERSE TRAVERSAL, AND NEGATIVE CONTROLS
+// -----------------------------------------------------------------------------
+
+fn scores_equal(a, b) {
+    if a.mask != b.mask || a.cost != b.cost || a.crew != b.crew || a.fuel != b.fuel { return 0; }
+    if a.feasible != b.feasible || a.hard_violations != b.hard_violations { return 0; }
+    if a.worst_loss != b.worst_loss || a.expected_loss != b.expected_loss { return 0; }
+    if a.equity_loss != b.equity_loss || a.objective != b.objective { return 0; }
+    if a.checksum != b.checksum { return 0; }
+    return 1;
+}
+
+fn audit_plan(assets, dependencies, scenarios, actions, powers, baseline, chosen, budget, crew_limit, fuel_limit, min_equity_actions) {
+    let first = evaluate_plan(assets, dependencies, scenarios, actions, chosen.mask, powers, budget, crew_limit, fuel_limit, min_equity_actions);
+    let second = evaluate_plan(assets, dependencies, scenarios, actions, chosen.mask, powers, budget, crew_limit, fuel_limit, min_equity_actions);
+    let recompute_match = scores_equal(first, chosen);
+    let deterministic = scores_equal(first, second);
+    let globally_optimal = verify_global_optimum_reverse(assets, dependencies, scenarios, actions, powers, chosen, budget, crew_limit, fuel_limit, min_equity_actions);
+    let improves = if chosen.objective < baseline.objective && chosen.worst_loss < baseline.worst_loss { 1 } else { 0 };
+
+    // Negative control 1: a dependency referencing an absent asset must fail validation.
+    let bad_dependencies = [Dependency { upstream: 0, downstream: len(assets) + 7, trigger_pct: 50, base_impact_pct: 20, slope_pct: 40, label: "deliberately invalid" }];
+    let model_negative_rejected = if validate_dependencies(bad_dependencies, len(assets)) == 0 { 1 } else { 0 };
+
+    // Negative control 2: a powers table too short for the declared action count is rejected.
+    let short_powers = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512];
+    let powers_negative_rejected = if validate_powers(short_powers, len(actions)) == 0 { 1 } else { 0 };
+
+    // Negative control 3: a population large enough to overflow score arithmetic is rejected.
+    let mut bad_assets = assets;
+    bad_assets[0].population = 9000000000000000000;
+    let overflow_negative_rejected = if validate_assets(bad_assets) == 0 { 1 } else { 0 };
+
+    // Negative control 4: selecting all actions violates budget/crew/fuel constraints.
+    let tampered_mask = powers[len(actions)] - 1;
+    let tampered_resources = plan_resources(actions, assets, tampered_mask, powers);
+    let tamper_negative_rejected = if plan_feasible(tampered_resources, budget, crew_limit, fuel_limit, min_equity_actions) == 0 { 1 } else { 0 };
+
+    let ok = if recompute_match == 1 && deterministic == 1 && globally_optimal == 1 && improves == 1 && model_negative_rejected == 1 && powers_negative_rejected == 1 && overflow_negative_rejected == 1 && tamper_negative_rejected == 1 { 1 } else { 0 };
+    let checksum = rolling_seal([chosen.mask, chosen.objective, chosen.checksum, recompute_match, deterministic, globally_optimal, improves, model_negative_rejected, powers_negative_rejected, overflow_negative_rejected, tamper_negative_rejected, ok]);
+    return AuditResult {
+        recompute_match: recompute_match,
+        deterministic: deterministic,
+        globally_optimal: globally_optimal,
+        improves_baseline: improves,
+        model_negative_rejected: model_negative_rejected,
+        powers_negative_rejected: powers_negative_rejected,
+        overflow_negative_rejected: overflow_negative_rejected,
+        tamper_negative_rejected: tamper_negative_rejected,
+        checksum: checksum,
+        ok: ok,
+    };
+}
+
+
+// -----------------------------------------------------------------------------
+// 11. OPERATOR REPORTING
+// -----------------------------------------------------------------------------
+
+fn print_model(assets, dependencies, scenarios, actions, budget, crew_limit, fuel_limit) {
+    print("MODEL name=LIFELINE assets=" + str(len(assets)) + " dependencies=" + str(len(dependencies)) + " scenarios=" + str(len(scenarios)) + " actions=" + str(len(actions)));
+    print("LIMITS budget_units=" + str(budget) + " crew_hours=" + str(crew_limit) + " fuel_units=" + str(fuel_limit) + " equity_action_min=2");
+    let mut i = 0;
+    while i < len(assets) {
+        let a = assets[i];
+        print("ASSET id=" + str(a.id) + " sector=" + sector_name(a.sector) + " zone=" + a.zone + " population=" + str(a.population) + " name=\"" + a.name + "\"");
+        i = i + 1;
+    }
+}
+
+fn print_plan_actions(actions, assets, mask, powers) {
+    let mut rank = 1;
+    let mut i = 0;
+    while i < len(actions) {
+        if selected(mask, powers[i]) == 1 {
+            let a = actions[i];
+            print("ACTION rank=" + str(rank) + " id=" + str(a.id) + " asset_id=" + str(a.asset) + " asset=\"" + assets[a.asset].name + "\" name=\"" + a.name + "\" cost=" + str(a.cost_units) + " restore_pct=" + str(a.restore_pct) + " floor_pct=" + str(a.floor_pct));
+            rank = rank + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn print_scenario_results(assets, dependencies, scenarios, actions, plan, powers) {
+    let mut i = 0;
+    while i < len(scenarios) {
+        let s = scenarios[i];
+        let sim = simulate_scenario(assets, dependencies, actions, s, plan.mask, powers, -1, -1);
+        print("SCENARIO id=" + str(s.id) + " name=" + s.name + " loss=" + str(sim.loss) + " equity_loss=" + str(sim.equity_loss) + " hard_violations=" + str(sim.hard_violations) + " served=" + str(sim.people_equivalent_served) + " rounds=" + str(sim.cascade_rounds) + " converged=" + str(sim.converged) + " checksum=" + str(sim.checksum));
+        let mut j = 0;
+        while j < len(assets) {
+            print("SERVICE scenario=" + s.name + " asset_id=" + str(j) + " available_pct=" + str(sim.availability[j]) + " cause_id=" + str(sim.causes[j]));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn verdict_from(model_ok, optimization, audit) {
+    if model_ok == 0 { return PlanVerdict::InvalidModel { code: 100 }; }
+    if optimization.feasible_count == 0 { return PlanVerdict::BudgetLimited { feasible_candidates: 0 }; }
+    if audit.ok == 0 { return PlanVerdict::AuditRejected { code: 200 }; }
+    return PlanVerdict::Certified { checksum: audit.checksum };
+}
+
+fn verdict_code(verdict) {
+    match verdict {
+        PlanVerdict::Certified { checksum: _ } => 0,
+        PlanVerdict::BudgetLimited { feasible_candidates: _ } => 1,
+        PlanVerdict::AuditRejected { code: _ } => 2,
+        PlanVerdict::InvalidModel { code: _ } => 3,
+    }
+}
+
+fn verdict_label(verdict) {
+    match verdict {
+        PlanVerdict::Certified { checksum: _ } => "PLAN_CERTIFIED",
+        PlanVerdict::BudgetLimited { feasible_candidates: _ } => "BUDGET_LIMITED",
+        PlanVerdict::AuditRejected { code: _ } => "AUDIT_REJECTED",
+        PlanVerdict::InvalidModel { code: _ } => "INVALID_MODEL",
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// 12. MAIN — validate, simulate, optimize, recheck, and certify
+// -----------------------------------------------------------------------------
+
+@safe
+fn main() {
+    let assets = build_assets();
+    let dependencies = build_dependencies();
+    let scenarios = build_scenarios();
+    let actions = build_actions();
+    let powers = build_powers();
+
+    // Demonstration resource envelope. Units are scenario-planning units, not money.
+    let budget = 66;
+    let crew_limit = 104;
+    let fuel_limit = 48;
+    let min_equity_actions = 2;
+
+    print("LIFELINE version=1 mode=offline_deterministic exact_search_bound=10");
+    print("SCOPE decision_support=1 live_control=0 live_telemetry=0 global_optimum_claim=0 cryptographic_inner_seal=0");
+    print_model(assets, dependencies, scenarios, actions, budget, crew_limit, fuel_limit);
+
+    let model_ok = validate_model(assets, dependencies, scenarios, actions, powers);
+    print("VALIDATION model_ok=" + str(model_ok) + " probability_bps=10000 dense_ids=1 bounds_checked=1");
+
+    if model_ok == 0 {
+        print("VERDICT=INVALID_MODEL");
+        print("SUMMARY ok=0 model_ok=0");
+        print(3);
+        return 3;
+    }
+
+    // The baseline is evaluated even though it intentionally fails the equity-action
+    // policy; its hazard score is the no-intervention comparison point.
+    let baseline = evaluate_plan(assets, dependencies, scenarios, actions, 0, powers, budget, crew_limit, fuel_limit, 0);
+    print("BASELINE mask=0 worst_loss=" + str(baseline.worst_loss) + " expected_loss=" + str(baseline.expected_loss) + " equity_loss=" + str(baseline.equity_loss) + " hard_violations=" + str(baseline.hard_violations) + " objective=" + str(baseline.objective));
+
+    let optimization = optimize_exact(assets, dependencies, scenarios, actions, powers, budget, crew_limit, fuel_limit, min_equity_actions);
+    let chosen = optimization.best;
+    print("SEARCH method=exact_bounded_enumeration candidates=" + str(optimization.candidate_count) + " feasible=" + str(optimization.feasible_count));
+    print("PLAN mask=" + str(chosen.mask) + " cost=" + str(chosen.cost) + " budget=" + str(budget) + " crew=" + str(chosen.crew) + " crew_limit=" + str(crew_limit) + " fuel=" + str(chosen.fuel) + " fuel_limit=" + str(fuel_limit) + " equity_actions=" + str(chosen.equity_actions) + " action_count=" + str(chosen.action_count));
+    print("ROBUST worst_loss_before=" + str(baseline.worst_loss) + " worst_loss_after=" + str(chosen.worst_loss) + " expected_loss_before=" + str(baseline.expected_loss) + " expected_loss_after=" + str(chosen.expected_loss));
+    print("EQUITY weighted_loss_before=" + str(baseline.equity_loss) + " weighted_loss_after=" + str(chosen.equity_loss) + " minimum_targeted_actions=" + str(min_equity_actions));
+    print("OBJECTIVE before=" + str(baseline.objective) + " after=" + str(chosen.objective) + " hard_violations_before=" + str(baseline.hard_violations) + " hard_violations_after=" + str(chosen.hard_violations));
+    print_plan_actions(actions, assets, chosen.mask, powers);
+
+    print_top_critical_assets(assets, dependencies, actions, scenarios[0], chosen.mask, powers);
+    print_top_pair_synergy(assets, dependencies, actions, scenarios[0], chosen.mask, powers);
+    print_scenario_results(assets, dependencies, scenarios, actions, chosen, powers);
+
+    let audit = audit_plan(assets, dependencies, scenarios, actions, powers, baseline, chosen, budget, crew_limit, fuel_limit, min_equity_actions);
+    print("AUDIT recompute_match=" + str(audit.recompute_match) + " deterministic=" + str(audit.deterministic) + " reverse_shared_evaluator=" + str(audit.globally_optimal) + " improves_baseline=" + str(audit.improves_baseline));
+    print("NEGATIVE invalid_model_rejected=" + str(audit.model_negative_rejected) + " powers_table_rejected=" + str(audit.powers_negative_rejected) + " overflow_model_rejected=" + str(audit.overflow_negative_rejected) + " over_budget_tamper_rejected=" + str(audit.tamper_negative_rejected));
+    print("SEAL kind=non_cryptographic_model_checksum checksum=" + str(audit.checksum) + " plan_checksum=" + str(chosen.checksum));
+
+    let verdict = verdict_from(model_ok, optimization, audit);
+    let code = verdict_code(verdict);
+    print("VERDICT=" + verdict_label(verdict));
+    print("SUMMARY ok=" + str(audit.ok) + " model_ok=" + str(model_ok) + " candidates=" + str(optimization.candidate_count) + " feasible=" + str(optimization.feasible_count) + " plan_mask=" + str(chosen.mask) + " objective=" + str(chosen.objective) + " audit_checksum=" + str(audit.checksum) + " verdict_code=" + str(code));
+    print(code);
+    return code;
+}

@@ -18,12 +18,7 @@ pub fn generate_launch_agent(
         || agent_bin
             .canonicalize()
             .ok()
-            .and_then(|a| {
-                engage_dir
-                    .canonicalize()
-                    .ok()
-                    .map(|e| a.starts_with(e))
-            })
+            .and_then(|a| engage_dir.canonicalize().ok().map(|e| a.starts_with(e)))
             .unwrap_or(false);
     if !under_engage {
         eng.assert_path(agent_bin)?;
@@ -117,7 +112,11 @@ pub fn generate_launch_agent(
 }
 
 /// Research-gated process inject placeholder — emits plan + refuses silent execution.
-pub fn inject_plan(eng: &Engagement, target_pid: u32, shellcode_path: &Path) -> Result<serde_json::Value> {
+pub fn inject_plan(
+    eng: &Engagement,
+    target_pid: u32,
+    shellcode_path: &Path,
+) -> Result<serde_json::Value> {
     eng.validate_live()?;
     eng.assert_path(shellcode_path)?;
     // We intentionally do NOT perform live process injection in this tranche.

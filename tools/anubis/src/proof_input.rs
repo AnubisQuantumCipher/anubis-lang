@@ -37,9 +37,8 @@ impl ProofInputs {
     }
 
     pub fn from_json_str(raw: &str, mode: &str, source: &str) -> Result<Self> {
-        let v: Value = serde_json::from_str(raw).map_err(|e| {
-            anyhow!("ANUBIS_PROOF_INPUT_INVALID_JSON: {}", e)
-        })?;
+        let v: Value = serde_json::from_str(raw)
+            .map_err(|e| anyhow!("ANUBIS_PROOF_INPUT_INVALID_JSON: {}", e))?;
         let obj = v.as_object().ok_or_else(|| {
             anyhow!("ANUBIS_PROOF_INPUT_INVALID_JSON: top-level value must be a JSON object")
         })?;
@@ -72,9 +71,8 @@ impl ProofInputs {
             values.insert(k.clone(), n);
         }
         // Canonical JSON: sorted keys, compact
-        let canonical_json = serde_json::to_string(&values).map_err(|e| {
-            anyhow!("ANUBIS_PROOF_INPUT_INVALID_JSON: canonicalize: {}", e)
-        })?;
+        let canonical_json = serde_json::to_string(&values)
+            .map_err(|e| anyhow!("ANUBIS_PROOF_INPUT_INVALID_JSON: canonicalize: {}", e))?;
         let sha256 = hex::encode(Sha256::digest(canonical_json.as_bytes()));
         Ok(Self {
             values,
@@ -93,9 +91,8 @@ impl ProofInputs {
                 path.display()
             ));
         }
-        let raw = std::fs::read_to_string(path).map_err(|e| {
-            anyhow!("ANUBIS_PROOF_INPUT_FILE_MISSING: {}: {}", path.display(), e)
-        })?;
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| anyhow!("ANUBIS_PROOF_INPUT_FILE_MISSING: {}: {}", path.display(), e))?;
         Self::from_json_str(&raw, "file", &path.display().to_string())
     }
 

@@ -1,5 +1,9 @@
 # Industry programs (Anubis)
 
+## LIFELINE Critical-Infrastructure Recovery Optimizer
+
+[`lifeline_resilience_optimizer.anb`](lifeline_resilience_optimizer.anb) is an offline disaster-recovery decision-support kernel. It simulates interdependent civil-infrastructure cascades, exactly enumerates 1,024 bounded recovery portfolios, enforces resource and equity constraints, independently re-audits the optimum, and emits a deterministic certificate. See [`LIFELINE_RESILIENCE_OPTIMIZER.md`](LIFELINE_RESILIENCE_OPTIMIZER.md) for the verified run and honesty boundary.
+
 ## Sovereign General Ledger + Risk Engine (`sovereign_gl_risk_engine.anb`)
 
 **Domain:** fintech / banking / payments core control plane  

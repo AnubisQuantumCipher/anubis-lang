@@ -152,6 +152,7 @@ struct SemanticContext {
     /// Function name → (parameter names, `requires` clauses, `ensures` clauses). Registered in
     /// pass 1 so a caller can, at a call site, ASSERT the callee's precondition and ASSUME its
     /// postcondition — the composition that makes contracts chain.
+    #[allow(clippy::type_complexity)]
     fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
     /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
     all_fns: BTreeSet<String>,
@@ -320,7 +321,11 @@ fn check_calls_stmts(
                 let mut b = bound.clone();
                 check_calls_stmts(body, fns, &mut b, ctx);
             }
-            Stmt::WhileLet { pattern, expr, body } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
                 check_calls_expr(expr, fns, bound, ctx);
                 let mut b = bound.clone();
                 for n in pattern.bound_names() {
@@ -332,7 +337,9 @@ fn check_calls_stmts(
                 let mut b = bound.clone();
                 check_calls_stmts(body, fns, &mut b, ctx);
             }
-            Stmt::For { var, source, body, .. } => {
+            Stmt::For {
+                var, source, body, ..
+            } => {
                 match source {
                     ForSource::Range { start, end } => {
                         check_calls_expr(start, fns, bound, ctx);
@@ -473,7 +480,11 @@ fn check_calls_expr(
             check_calls_expr(else_, fns, bound, ctx);
         }
         Expr::IfLet {
-            pattern, scrutinee, then, else_, ..
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
         } => {
             check_calls_expr(scrutinee, fns, bound, ctx);
             let mut b = bound.clone();
@@ -591,7 +602,15 @@ fn collect_items(
             Item::Impl { methods, .. } => {
                 for m in methods {
                     if let Item::Fn {
-                        name, params, body, mode, span, ret, requires, ensures, ..
+                        name,
+                        params,
+                        body,
+                        mode,
+                        span,
+                        ret,
+                        requires,
+                        ensures,
+                        ..
                     } = m
                     {
                         let effective_mode = if *mode == Mode::Safe {
@@ -600,8 +619,17 @@ fn collect_items(
                             *mode
                         };
                         analyze_function(
-                            name, module, params, body, ret.as_deref(), requires, ensures,
-                            effective_mode, *span, true, ctx,
+                            name,
+                            module,
+                            params,
+                            body,
+                            ret.as_deref(),
+                            requires,
+                            ensures,
+                            effective_mode,
+                            *span,
+                            true,
+                            ctx,
                         );
                     }
                 }
@@ -937,10 +965,7 @@ fn analyze_stmts(
                         if !types_compatible(t, &got) {
                             ctx.diagnostics.push(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_MISMATCH".into()),
-                                message: format!(
-                                    "type mismatch: expected `{}`, got `{}`",
-                                    t, got
-                                ),
+                                message: format!("type mismatch: expected `{}`, got `{}`", t, got),
                                 span: Some((span.start, span.end)),
                             });
                         }
@@ -1892,9 +1917,7 @@ fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
                 is_int_modelable(lhs, int_vars) && is_int_modelable(rhs, int_vars)
             }
-            "&&" | "||" => {
-                is_bool_modelable(lhs, int_vars) && is_bool_modelable(rhs, int_vars)
-            }
+            "&&" | "||" => is_bool_modelable(lhs, int_vars) && is_bool_modelable(rhs, int_vars),
             _ => false,
         },
         Expr::Unary { op, expr } => op == "!" && is_bool_modelable(expr, int_vars),
@@ -1916,6 +1939,10 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
             expr_to_smt_value(rhs, widths)?;
             Some(expr_to_smt(e, widths))
         }
+        Expr::Unary { op, expr } if op == "-" || op == "!" => {
+            expr_to_smt_value(expr, widths)?;
+            Some(expr_to_smt(e, widths))
+        }
         Expr::Cast { expr, ty } => {
             // A TRUNCATING cast (`x as u8`) has NO sound integer value fact — modeling it as the
             // identity recorded a false `y == x` that a loop invariant could later force-model and
@@ -1933,6 +1960,7 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
     }
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn expr_to_smt_with_width(
     e: &Expr,
     widths: &BTreeMap<String, u32>,
@@ -2134,12 +2162,7 @@ fn tail_values(body: &[Stmt], collect_tail_return: bool, out: &mut Vec<Expr>) {
 /// The tail values of an expression in value position (an `if`/`match`/block used as a tail value).
 fn expr_tail_values(e: &Expr, out: &mut Vec<Expr>) {
     match e {
-        Expr::If {
-            then, else_, ..
-        }
-        | Expr::IfLet {
-            then, else_, ..
-        } => {
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
             expr_tail_values(then, out);
             expr_tail_values(else_, out);
         }
@@ -2323,9 +2346,9 @@ fn expr_is_simple(e: &Expr) -> bool {
         Expr::Index { base, index } => expr_is_simple(base) && expr_is_simple(index),
         Expr::FieldAccess { base, .. } => expr_is_simple(base),
         Expr::StructLiteral { fields, .. } => fields.iter().all(|(_, e)| expr_is_simple(e)),
-        Expr::MapLiteral { entries, .. } => {
-            entries.iter().all(|(k, v)| expr_is_simple(k) && expr_is_simple(v))
-        }
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .all(|(k, v)| expr_is_simple(k) && expr_is_simple(v)),
         // Leaves: Var / Literal / StrLiteral / Symbolic / TaintSource / UnifiedBuffer / RawPtr / Other.
         _ => true,
     }
@@ -2487,9 +2510,7 @@ fn expr_assigned_roots(e: &Expr, out: &mut BTreeSet<String>) {
             expr_assigned_roots(rhs, out);
         }
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr_assigned_roots(expr, out),
-        Expr::Try(expr) | Expr::Assume(expr) | Expr::Assert(expr) => {
-            expr_assigned_roots(expr, out)
-        }
+        Expr::Try(expr) | Expr::Assume(expr) | Expr::Assert(expr) => expr_assigned_roots(expr, out),
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
             expr_assigned_roots(inner, out)
         }
@@ -2512,7 +2533,6 @@ fn expr_assigned_roots(e: &Expr, out: &mut BTreeSet<String>) {
         _ => {}
     }
 }
-
 
 /// After a scope that MAY NOT fully execute — a loop body that can run zero times, or an `if` branch
 /// that may not be taken — the variables it writes are UNCERTAIN. Restore the pre-scope assumptions
@@ -2720,12 +2740,18 @@ fn verify_while_invariants(
 
     // The condition and every invariant must be modelable, else induction is impossible.
     if !is_bool_modelable(cond, &model_vars) {
-        reject(ctx, "the loop condition is not an integer formula the solver can model");
+        reject(
+            ctx,
+            "the loop condition is not an integer formula the solver can model",
+        );
         return None;
     }
     for inv in invariants {
         if !is_bool_modelable(inv, &model_vars) {
-            reject(ctx, "an invariant is not an integer formula the solver can model");
+            reject(
+                ctx,
+                "an invariant is not an integer formula the solver can model",
+            );
             return None;
         }
     }
@@ -2759,7 +2785,10 @@ fn verify_while_invariants(
     let transition = match extract_loop_transition(body, &tracked, &model_vars) {
         Some(t) => t,
         None => {
-            reject(ctx, "the loop body is not straight-line integer assignments");
+            reject(
+                ctx,
+                "the loop body is not straight-line integer assignments",
+            );
             return None;
         }
     };
@@ -2794,7 +2823,10 @@ fn verify_while_invariants(
     for inv in invariants {
         let stepped = substitute_vars(inv, &transition);
         if !is_bool_modelable(&stepped, &model_vars) {
-            reject(ctx, "an invariant is not modelable after the loop body's update");
+            reject(
+                ctx,
+                "an invariant is not modelable after the loop body's update",
+            );
             return None;
         }
         let smt = expr_to_smt(&stepped, &ctx.symbolic_widths);
@@ -2986,7 +3018,9 @@ fn stmt_contains_try(s: &Stmt) -> bool {
         Stmt::If { cond, then, else_ } => {
             expr_contains_try(cond)
                 || then.iter().any(stmt_contains_try)
-                || else_.as_ref().is_some_and(|e| e.iter().any(stmt_contains_try))
+                || else_
+                    .as_ref()
+                    .is_some_and(|e| e.iter().any(stmt_contains_try))
         }
         Stmt::While { cond, body, .. } => {
             expr_contains_try(cond) || body.iter().any(stmt_contains_try)
@@ -3033,18 +3067,23 @@ fn expr_contains_try(e: &Expr) -> bool {
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_contains_try(inner),
         Expr::Assume(x) | Expr::Assert(x) => expr_contains_try(x),
         Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| expr_contains_try(v)),
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             expr_contains_try(scrutinee)
                 || arms.iter().any(|a| {
                     a.guard.as_ref().is_some_and(expr_contains_try) || expr_contains_try(&a.body)
                 })
         }
-        Expr::If { cond, then, else_, .. } => {
-            expr_contains_try(cond) || expr_contains_try(then) || expr_contains_try(else_)
-        }
-        Expr::IfLet { scrutinee, then, else_, .. } => {
-            expr_contains_try(scrutinee) || expr_contains_try(then) || expr_contains_try(else_)
-        }
+        Expr::If {
+            cond, then, else_, ..
+        } => expr_contains_try(cond) || expr_contains_try(then) || expr_contains_try(else_),
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => expr_contains_try(scrutinee) || expr_contains_try(then) || expr_contains_try(else_),
         Expr::MapLiteral { entries, .. } => entries
             .iter()
             .any(|(k, v)| expr_contains_try(k) || expr_contains_try(v)),
@@ -3109,21 +3148,16 @@ fn check_one_return(
     }
 }
 
-fn infer_expr_type_scoped(
-    expr: &Expr,
-    scope: &BTreeMap<String, ScopeBinding>,
-) -> Option<String> {
+fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
     match expr {
         Expr::Symbolic { ty } => Some(ty.clone()),
         Expr::Tainted { ty, .. } => Some(format!("tainted<{}>", ty)),
         Expr::UnifiedBuffer { ty } => Some(format!("unified Buffer<{}>", ty)),
-        Expr::RawPtr { mutable } => Some(
-            if *mutable {
-                "*mut unknown".into()
-            } else {
-                "*const unknown".into()
-            },
-        ),
+        Expr::RawPtr { mutable } => Some(if *mutable {
+            "*mut unknown".into()
+        } else {
+            "*const unknown".into()
+        }),
         Expr::Declassify { inner, .. } => infer_expr_type_scoped(inner, scope),
         Expr::TaintSource { .. } => Some("tainted<string>".into()),
         Expr::Literal(s) if s == "true" || s == "false" => Some("bool".into()),
@@ -3132,7 +3166,9 @@ fn infer_expr_type_scoped(
         // is a FLOAT: typing it as an integer would let the solver model it as an i64 bit-vector
         // (unsound — it "proved" `2*x != 1` for x = 0.5). Mirrors the runtime discrimination in
         // `literal_to_anubis_value`, so a float is kept out of the solver's integer domain.
-        Expr::Literal(s) if s.parse::<i64>().is_ok() || s.parse::<u64>().is_ok() => Some("u32".into()),
+        Expr::Literal(s) if s.parse::<i64>().is_ok() || s.parse::<u64>().is_ok() => {
+            Some("u32".into())
+        }
         Expr::Literal(s) if s.parse::<f64>().is_ok() => Some("f64".into()),
         Expr::Literal(s) if s.starts_with('"') || s.starts_with('\'') => Some("string".into()),
         Expr::StrLiteral(_) => Some("string".into()),
@@ -3549,8 +3585,7 @@ fn check_match_exhaustiveness(
             .and_then(|b| b.info.ty.clone())
             .filter(|t| ctx.enum_variants.contains_key(t)),
         Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
-        _ => infer_expr_type_scoped(scrutinee, scope)
-            .filter(|t| ctx.enum_variants.contains_key(t)),
+        _ => infer_expr_type_scoped(scrutinee, scope).filter(|t| ctx.enum_variants.contains_key(t)),
     };
     // If the scrutinee's type is unknown, fall back to arm-based inference: if the arms cover
     // variants of a declared enum (or built-in Option/Result), that is the enum being matched.
