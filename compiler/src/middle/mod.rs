@@ -2009,6 +2009,14 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
             is_int_modelable(inner, int_vars)
         }
+        // Pure integer builtins that select/negate operands: `abs(x)` (wrapping_abs -> bvneg, wraps at
+        // MIN identically), and `min`/`max` of two i64 args (signed `bvsle` select, matching
+        // anubis_value_cmp). Only these exact callee/arity shapes; any other call stays unmodelable.
+        Expr::Call { callee, args } => match (callee.as_str(), args.len()) {
+            ("abs", 1) => is_int_modelable(&args[0], int_vars),
+            ("min", 2) | ("max", 2) => args.iter().all(|a| is_int_modelable(a, int_vars)),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -2136,6 +2144,22 @@ fn expr_to_smt_with_width(
         Expr::Assume(inner) | Expr::Assert(inner) => {
             expr_to_smt_with_width(inner, widths, expected_width)
         }
+        // `abs`/`min`/`max` builtins as ite (vetted by is_int_modelable, so the shapes always match).
+        // `abs`: `bvneg` wraps at MIN exactly like `wrapping_abs`. `min`/`max`: signed `bvsle` select,
+        // matching `anubis_value_cmp`'s i64 ordering (min picks the smaller, max the larger).
+        Expr::Call { callee, args } if callee == "abs" && args.len() == 1 => {
+            let x = expr_to_smt_with_width(&args[0], widths, Some(64));
+            format!("(ite (bvslt {x} (_ bv0 64)) (bvneg {x}) {x})")
+        }
+        Expr::Call { callee, args } if (callee == "min" || callee == "max") && args.len() == 2 => {
+            let a = expr_to_smt_with_width(&args[0], widths, Some(64));
+            let b = expr_to_smt_with_width(&args[1], widths, Some(64));
+            if callee == "min" {
+                format!("(ite (bvsle {a} {b}) {a} {b})")
+            } else {
+                format!("(ite (bvsle {a} {b}) {b} {a})")
+            }
+        }
         Expr::TaintSource { label } => format!("taint_source_{}", label.replace("\"", "")),
         Expr::Symbolic { .. } => "symbolic".into(),
         _ => "true".into(),
@@ -2151,6 +2175,7 @@ fn collect_vars_from_smt(smt: &str, vars: &mut BTreeSet<String>) {
                 "and"
                     | "or"
                     | "not"
+                    | "ite"
                     | "true"
                     | "false"
                     | "Int"
