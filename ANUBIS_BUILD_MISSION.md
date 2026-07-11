@@ -19,7 +19,7 @@ This section is the honest baseline. It was produced by reading **every line** o
 - **A real Z3 symbolic lane.** `symbolic`/`assume`/`assert` become SMT-LIB2 with per-variable bitvector widths and wrapping semantics; Z3 is invoked; FAIL produces a counterexample model that is replayable (`middle/mod.rs`, tests in `lib.rs`).
 - **A working evidence-bundle system with real tamper detection.** Every `check`/`build`/`prove` can emit a bundle (manifest, source+hash, HIR/MIR, taint traces, solver output, SARIF, logs, `MANIFEST.sha256`). `verify_bundle.sh` recomputes every hash and fails on mismatch (`scripts/verify_bundle.sh:27-45`). A failed bundle is valid evidence of failure.
 - **Hard raw-pointer rejection in safe mode**, proved by a unit test (`lib.rs`).
-- **A genuine RISC0 receipt path.** Real `ImageID` derived from a real guest ELF via `risc0-build`, a real `Receipt::verify(image_id)` call, strict per-sidecar tamper detection, bound to the vendored patched `risc0-circuit-rv32im` at `/Users/sicarii/Desktop/metal-hybrid-prover`. The cryptography is real. (See the decoupling caveat in 0.3.)
+- **A genuine RISC0 receipt path.** Real `ImageID` derived from a real guest ELF via `risc0-build`, a real `Receipt::verify(image_id)` call, strict per-sidecar tamper detection, bound to the **in-repo vendored** patched `risc0-circuit-rv32im` (`Cargo.toml [patch.crates-io] path = "vendor/risc0-circuit-rv32im"`). The cryptography is real, and cold-verify is self-contained: `bash scripts/run_prove_gate.sh` reproduces it (11/11) from the repo alone on Apple Silicon — no external prover path required. (See the decoupling caveat in 0.3.)
 - **A real `doctor`/`runtime-probe`** that computes readiness from filesystem + linkage probes and fails closed under `--require-risc0`/`--require-metal`.
 
 ### 0.2 The decisive gap — Anubis is NOT Turing complete
@@ -167,7 +167,7 @@ declared+observed effects, evidence path, limitations.
 ## Truth labels mandatory in all docs: REAL | PARTIAL | PLANNED | EXPERIMENTAL | UNSUPPORTED | BROKEN.
 
 ## Repo facts
-- Reference backend (RISC0/Metal): /Users/sicarii/Desktop/metal-hybrid-prover (vendored patch in Cargo.toml).
+- Reference backend (RISC0/Metal): in-repo vendored `risc0-circuit-rv32im` (`Cargo.toml` `[patch.crates-io] path = "vendor/risc0-circuit-rv32im"`). The metal reference is configurable (`--metal-reference` / `ANUBIS_RISC0_METAL_REFERENCE` / `Anubis.toml`), defaulting to the in-repo vendor; no operator-specific path is baked into src or the committed receipt fixture.
 - Build: cargo build --release ; CLI: ./target/release/anubis
 - run is transpile-to-Rust + rustc (tools/anubis/src/main.rs: run_anubis_source), not a tree-walker.
   Extending execution touches emit_safe_run_stmt / safe_run_expr (main.rs:2271-2375) AND the middle-end.
