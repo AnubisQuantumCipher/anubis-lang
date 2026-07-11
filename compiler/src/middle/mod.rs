@@ -665,6 +665,28 @@ fn analyze_function(
         check_return_types(body, rty, &pscope, span, ctx);
     }
 
+    // The `?` operator unwraps `Some`/`Ok` and early-returns `None`/`Err`, so it only makes sense in
+    // a function that returns `Option`/`Result`. If a function declares a CONCRETE non-Option/Result
+    // return type and uses `?`, it can only fail closed at runtime (`ANUBIS_TRY_ON_NON_OPTION_RESULT`)
+    // — reject it statically. A function with no declared return type is dynamic, and a generic or
+    // opaque (`any`/`unknown`) return is left alone, so no working dynamic program is newly rejected.
+    if let Some(rty) = ret {
+        let r = rty.trim();
+        let norm = normalize_ty(r);
+        let result_like = r.starts_with("Option") || r.starts_with("Result");
+        let opaque = norm == "any" || norm == "unknown";
+        if !r.is_empty() && !result_like && !opaque && !ty::is_generic(r) && body_contains_try(body)
+        {
+            ctx.diagnostics.push(SemanticDiagnostic {
+                code: Some("ANUBIS_TRY_OUTSIDE_RESULT".into()),
+                message: format!(
+                    "`{name}` uses the `?` operator but declares `-> {r}`; `?` requires the function to return `Option` or `Result`"
+                ),
+                span: Some((span.start, span.end)),
+            });
+        }
+    }
+
     // A+ call-site typing: record this function's parameter types for later calls. Methods are
     // NOT recorded — they are only reachable via `recv.m(...)`, never a bare call, so recording
     // them would shadow a same-named stdlib builtin at free call sites.
@@ -2926,6 +2948,89 @@ fn expr_returns(e: &Expr, out: &mut Vec<Expr>) {
             }
         }
         _ => {}
+    }
+}
+
+/// Whether a function body uses the `?` operator, NOT descending into nested lambdas (a `?` inside a
+/// closure early-returns from the closure, not this function).
+fn body_contains_try(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_contains_try)
+}
+
+fn stmt_contains_try(s: &Stmt) -> bool {
+    match s {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => expr_contains_try(init),
+        Stmt::Assign { target, value } => expr_contains_try(target) || expr_contains_try(value),
+        Stmt::If { cond, then, else_ } => {
+            expr_contains_try(cond)
+                || then.iter().any(stmt_contains_try)
+                || else_.as_ref().is_some_and(|e| e.iter().any(stmt_contains_try))
+        }
+        Stmt::While { cond, body, .. } => {
+            expr_contains_try(cond) || body.iter().any(stmt_contains_try)
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            expr_contains_try(expr) || body.iter().any(stmt_contains_try)
+        }
+        Stmt::For { source, body, .. } => {
+            let in_source = match source {
+                crate::frontend::ForSource::Range { start, end } => {
+                    expr_contains_try(start) || expr_contains_try(end)
+                }
+                crate::frontend::ForSource::Collection { expr } => expr_contains_try(expr),
+            };
+            in_source || body.iter().any(stmt_contains_try)
+        }
+        Stmt::Loop { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => body.iter().any(stmt_contains_try),
+        Stmt::HybridBlock { gpu, cpu, prove } => [gpu, cpu, prove]
+            .into_iter()
+            .flatten()
+            .any(|b| b.iter().any(stmt_contains_try)),
+        Stmt::ExprStmt(e) => expr_contains_try(e),
+        Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => false,
+    }
+}
+
+fn expr_contains_try(e: &Expr) -> bool {
+    match e {
+        Expr::Try(_) => true,
+        Expr::Lambda { .. } => false, // a `?` in a nested closure belongs to the closure
+        Expr::Binary { lhs, rhs, .. } => expr_contains_try(lhs) || expr_contains_try(rhs),
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr_contains_try(expr),
+        Expr::Call { args, .. } | Expr::ArrayLiteral { elements: args } => {
+            args.iter().any(expr_contains_try)
+        }
+        Expr::CallExpr { callee, args } => {
+            expr_contains_try(callee) || args.iter().any(expr_contains_try)
+        }
+        Expr::EnumConstruct { fields, .. } => fields.iter().any(expr_contains_try),
+        Expr::Index { base, index } => expr_contains_try(base) || expr_contains_try(index),
+        Expr::FieldAccess { base, .. } => expr_contains_try(base),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_contains_try(inner),
+        Expr::Assume(x) | Expr::Assert(x) => expr_contains_try(x),
+        Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| expr_contains_try(v)),
+        Expr::Match { scrutinee, arms, .. } => {
+            expr_contains_try(scrutinee)
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(expr_contains_try) || expr_contains_try(&a.body)
+                })
+        }
+        Expr::If { cond, then, else_, .. } => {
+            expr_contains_try(cond) || expr_contains_try(then) || expr_contains_try(else_)
+        }
+        Expr::IfLet { scrutinee, then, else_, .. } => {
+            expr_contains_try(scrutinee) || expr_contains_try(then) || expr_contains_try(else_)
+        }
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .any(|(k, v)| expr_contains_try(k) || expr_contains_try(v)),
+        Expr::Block { stmts, tail } => {
+            stmts.iter().any(stmt_contains_try)
+                || tail.as_ref().is_some_and(|t| expr_contains_try(t))
+        }
+        _ => false,
     }
 }
 

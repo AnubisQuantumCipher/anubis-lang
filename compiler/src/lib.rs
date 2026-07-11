@@ -1321,6 +1321,32 @@ fn main() {
     }
 
     #[test]
+    fn try_operator_requires_option_or_result_return() {
+        let checks =
+            |src: &str| typecheck(parse_source(src).expect("parse"), Mode::Safe).is_ok();
+        // `?` in a function that declares a concrete non-Option/Result return is fail-closed.
+        assert!(
+            !checks("fn g() -> Result<u32, string> { return Ok(1); } fn bad() -> u32 { let x = g()?; return x; }"),
+            "`?` in a `-> u32` function must be rejected (ANUBIS_TRY_OUTSIDE_RESULT)"
+        );
+        // `?` in a Result-returning function is allowed.
+        assert!(
+            checks("fn g() -> Result<u32, string> { return Ok(1); } fn ok() -> Result<u32, string> { let x = g()?; return Ok(x); }"),
+            "`?` in a `-> Result` function is allowed"
+        );
+        // `?` in a function with no declared return type is dynamic — left to the runtime, not rejected.
+        assert!(
+            checks("fn g() -> Result<u32, string> { return Ok(1); } fn dyn_fn() { let x = g()?; print(x); }"),
+            "`?` in an unannotated function must not be rejected"
+        );
+        // A `?` inside a nested closure belongs to the closure, not the `-> u32` enclosing function.
+        assert!(
+            checks("fn g() -> Result<u32, string> { return Ok(1); } fn h() -> u32 { let f = |z| g()?; return 0; }"),
+            "`?` inside a nested lambda must not implicate the enclosing function's return type"
+        );
+    }
+
+    #[test]
     fn solver_modelability_is_function_local_and_shadow_safe() {
         // Solver integer-modelability must be FUNCTION-LOCAL and invalidated on a shadowing `let`.
         // Otherwise a name modeled as an i64 in one place leaks its modelability to a same-named
