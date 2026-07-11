@@ -4,6 +4,7 @@
 
 pub mod backends;
 pub mod evidence;
+pub mod fmt;
 pub mod frontend;
 pub mod middle;
 pub mod project;

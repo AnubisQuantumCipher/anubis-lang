@@ -122,6 +122,23 @@ enum Commands {
         json: bool,
     },
 
+    /// Format Anubis source (canonical, self-verifying). By default prints the formatted source;
+    /// `--write` rewrites files in place; `--check` exits nonzero if any file is not already
+    /// formatted. Files that declare a `trait`, or that the formatter cannot prove it preserves,
+    /// are skipped and reported — never mangled.
+    Fmt {
+        /// A `.anb` file, or a directory to format recursively.
+        path: PathBuf,
+
+        /// Report unformatted files and exit nonzero instead of writing/printing.
+        #[arg(long)]
+        check: bool,
+
+        /// Rewrite files in place with the formatted output.
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Probe runtime/toolchain capabilities without claiming proof execution.
     RuntimeProbe {
         /// Emit machine-readable JSON.
@@ -575,6 +592,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::Fmt { path, check, write } => run_anubis_fmt(&path, check, write),
         Commands::Build {
             input,
             evidence,
@@ -2923,6 +2941,66 @@ struct RunOutcome {
     status_success: bool,
 }
 
+/// Every `.anb`/`.anub`/`.anubis` source file under `path` (or `path` itself if it is a file).
+fn discover_source_files(path: &Path) -> Vec<PathBuf> {
+    let mut files = vec![];
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+            let p = entry.path();
+            let is_anb = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| matches!(e, "anb" | "anub" | "anubis"))
+                .unwrap_or(false);
+            if p.is_file() && is_anb {
+                files.push(p.to_path_buf());
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// `anubis fmt`: canonical, self-verifying formatting. Default prints; `--write` rewrites in place;
+/// `--check` exits nonzero on any unformatted file. Unformattable files (trait declarations, or
+/// output the formatter cannot prove preserves the AST) are reported and skipped — never mangled.
+fn run_anubis_fmt(path: &Path, check: bool, write: bool) -> Result<()> {
+    let files = discover_source_files(path);
+    let mut unformatted: Vec<PathBuf> = vec![];
+    let mut skipped: Vec<(PathBuf, String)> = vec![];
+    for f in &files {
+        let src = std::fs::read_to_string(f)?;
+        match anubis_compiler::fmt::format_source(&src) {
+            Ok(out) if out == src => {} // already canonical
+            Ok(out) => {
+                if write {
+                    std::fs::write(f, &out)?;
+                    println!("formatted {}", f.display());
+                } else if check {
+                    unformatted.push(f.clone());
+                } else {
+                    print!("{out}");
+                }
+            }
+            Err(e) => skipped.push((f.clone(), e)),
+        }
+    }
+    for (f, e) in &skipped {
+        eprintln!("skipped {}: {}", f.display(), e);
+    }
+    if check {
+        for f in &unformatted {
+            println!("not formatted: {}", f.display());
+        }
+        if !unformatted.is_empty() {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
 /// Result of running an `anubis test` suite.
 struct TestReport {
     total: usize,
@@ -4303,6 +4381,25 @@ fn main() {
         let err = run_anubis_source(&entry, &src, out.path(), false, &[])
             .expect_err("cyclic imports must fail closed");
         assert!(err.to_string().contains("ANUBIS_IMPORT_CYCLE"), "got: {err}");
+    }
+
+    #[test]
+    fn anubis_fmt_writes_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("p.anb");
+        std::fs::write(&f, "fn main(){let x=1+2*3;print(x);}").unwrap();
+        run_anubis_fmt(&f, false, true).unwrap();
+        let once = std::fs::read_to_string(&f).unwrap();
+        run_anubis_fmt(&f, false, true).unwrap();
+        let twice = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(once, twice, "fmt --write is not idempotent");
+        assert!(once.contains("1 + 2 * 3"), "precedence preserved:\n{once}");
+        // A trait file is skipped (reported), never rewritten.
+        let t = dir.path().join("t.anb");
+        let tsrc = "trait T { fn m(self); }\nstruct S {}\nimpl T for S { fn m(self) { 0 } }\n";
+        std::fs::write(&t, tsrc).unwrap();
+        run_anubis_fmt(&t, false, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&t).unwrap(), tsrc, "trait file must be untouched");
     }
 
     #[test]

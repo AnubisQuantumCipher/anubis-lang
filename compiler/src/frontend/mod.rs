@@ -1780,7 +1780,9 @@ impl Parser {
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             let attrs = self.parse_attributes();
             if self.check_keyword("fn") {
-                if let Some(m) = self.parse_fn(attrs, Visibility::Public) {
+                // Methods dispatch by receiver type, never as `Type::method`, so visibility is inert
+                // for them; keep them Private so `anubis fmt` doesn't emit `pub` (not accepted here).
+                if let Some(m) = self.parse_fn(attrs, Visibility::Private) {
                     methods.push(m);
                 }
             } else {
@@ -1811,7 +1813,9 @@ impl Parser {
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             let attrs = self.parse_attributes();
             if self.check_keyword("fn") {
-                if let Some(m) = self.parse_fn(attrs, Visibility::Public) {
+                // Methods dispatch by receiver type, never as `Type::method`, so visibility is inert
+                // for them; keep them Private so `anubis fmt` doesn't emit `pub` (not accepted here).
+                if let Some(m) = self.parse_fn(attrs, Visibility::Private) {
                     methods.push(m);
                 }
             } else {
