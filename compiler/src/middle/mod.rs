@@ -2337,6 +2337,30 @@ fn substitute_vars(e: &Expr, map: &BTreeMap<String, Expr>) -> Expr {
             expr: Box::new(substitute_vars(expr, map)),
             ty: ty.clone(),
         },
+        // SOUNDNESS-CRITICAL: substitute_vars MUST recurse into every form that `is_int_modelable`/
+        // `is_bool_modelable` admit. Composition substitutes the callee's params/`result` into its
+        // contract; if a MODELABLE subterm is cloned WITHOUT substituting, its callee-parameter names
+        // survive and re-bind to the caller's scope — a precondition bypass + a certified-false
+        // postcondition (e.g. `g(150)` against `requires(abs(x) < 100)` was checked as `abs(5) < 100`).
+        // The modelable set is exactly: Var/Literal/Binary/Unary/Cast (above) + the abs/min/max builtin
+        // Call + Declassify/Assume/Assert. Any NON-modelable form is safely cloned by the catch-all: a
+        // mapped var hidden inside it makes the whole contract non-modelable, so the gate rejects it
+        // fail-closed rather than mis-model it. If a new modelable form is added to the gate, ADD IT HERE.
+        Expr::Call { callee, args } => Expr::Call {
+            callee: callee.clone(),
+            args: args.iter().map(|a| substitute_vars(a, map)).collect(),
+        },
+        Expr::Declassify {
+            inner,
+            policy,
+            reason,
+        } => Expr::Declassify {
+            inner: Box::new(substitute_vars(inner, map)),
+            policy: policy.clone(),
+            reason: reason.clone(),
+        },
+        Expr::Assume(inner) => Expr::Assume(Box::new(substitute_vars(inner, map))),
+        Expr::Assert(inner) => Expr::Assert(Box::new(substitute_vars(inner, map))),
         other => other.clone(),
     }
 }
@@ -2447,6 +2471,16 @@ fn collect_expr_vars(e: &Expr, out: &mut BTreeSet<String>) {
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => collect_expr_vars(expr, out),
         Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
             collect_expr_vars(inner, out)
+        }
+        // Must descend into the abs/min/max builtin Call: this set drives the "ensures references a
+        // reassigned/shadowed parameter" fail-closed check, and MISSING a variable (under-approx) is
+        // unsound — it would let `ensures(result == abs(x)) { x = 0-5; ... }` be certified against the
+        // mutated `x` while a caller assumes the entry value. Over-approx (collecting too many) only
+        // makes that check more conservative. Same modelable-form coupling as `substitute_vars`.
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_expr_vars(a, out);
+            }
         }
         _ => {}
     }
@@ -2568,10 +2602,23 @@ fn collect_let_bound(body: &[Stmt], out: &mut BTreeSet<String>) {
                     collect_let_bound(e, out);
                 }
             }
+            // A `for` iteration variable and a `while let` pattern BIND names in the body — they
+            // shadow a parameter of the same name exactly like a `let`. SOUNDNESS: this set gates both
+            // the "ensures over a reassigned/shadowed parameter" rejection AND guarded-divisor nzdiv
+            // eligibility; missing a loop-var shadow let `for n in 0..3 { assert(100 / n <= 100) }`
+            // keep the param's `requires(n != 0)` nzdiv mark and model a divide-by-zero as safe.
+            Stmt::For { var, body, .. } => {
+                out.insert(var.clone());
+                collect_let_bound(body, out);
+            }
+            Stmt::WhileLet { pattern, body, .. } => {
+                for n in pattern.bound_names() {
+                    out.insert(n);
+                }
+                collect_let_bound(body, out);
+            }
             Stmt::While { body, .. }
             | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::WhileLet { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => collect_let_bound(body, out),
             Stmt::HybridBlock { gpu, cpu, prove } => {

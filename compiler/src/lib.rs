@@ -1662,6 +1662,87 @@ fn main() {
     }
 
     #[test]
+    fn solver_composition_substitutes_into_builtins() {
+        // REGRESSION — critical false-proof (soundness audit 2026-07-11). Contract composition
+        // substitutes the callee's params/`result` into its contract; `substitute_vars` MUST descend
+        // into the abs/min/max builtin Call. Before the fix it did not, so a callee param inside
+        // `abs(x)` survived un-substituted and re-bound to the CALLER's scope — a NAME CAPTURE.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // requires-side precondition BYPASS: `g(150)` against `requires(abs(x) < 100)` was checked as
+        // `abs(5) < 100` (caller's `let x = 5`), so `outer`'s ensures was "proved" while g(150) = 150.
+        assert!(
+            !discharged(
+                "fn g(x: u32) -> u32 requires(abs(x) < 100) ensures(result == abs(x)) { return abs(x); } \
+                 fn outer() -> u32 ensures(result == 5) { let x = 5; let r = g(150); return r; }"
+            ),
+            "g(150) violates requires(abs(x) < 100); outer's ensures(result == 5) must NOT be provable"
+        );
+        // ensures-side name capture: `ensures(result == abs(x))` bound `x` to the caller's `let x = 7`.
+        assert!(
+            !discharged(
+                "fn g(x: u32) -> u32 requires(x >= 0) requires(x < 100) ensures(result == abs(x)) { return x; } \
+                 fn outer() -> u32 ensures(result == 7) { let x = 7; let r = g(3); return r; }"
+            ),
+            "g(3) returns 3, not abs(caller's x=7); outer's ensures(result == 7) must NOT be provable"
+        );
+        // The fix does not over-reject: a VALID call whose argument satisfies the specialized
+        // precondition still composes and proves.
+        assert!(
+            discharged(
+                "fn g(x: u32) -> u32 requires(abs(x) < 100) ensures(result == abs(x)) { return abs(x); } \
+                 fn outer() -> u32 ensures(result == 50) { let r = g(50); return r; }"
+            ),
+            "g(50): abs(50) < 100 holds, so ensures(result == abs(50) == 50) composes"
+        );
+        // Companion (collect_expr_vars must also descend into abs/min/max): an `ensures` over a
+        // parameter REASSIGNED in the body is fail-closed even inside a builtin (entry value vs mutated).
+        assert!(
+            !discharged(
+                "fn g(x: u32) -> u32 ensures(result == abs(x)) { x = 0 - 5; return abs(x); }"
+            ),
+            "ensures(result == abs(x)) with x reassigned must be rejected (no old(); entry value)"
+        );
+    }
+
+    #[test]
+    fn solver_guarded_divisor_respects_loop_shadowing() {
+        // REGRESSION — critical false-proof (soundness audit 2026-07-11). A divisor guarded by
+        // `requires(n != 0)` earns an nzdiv mark only when the body never rebinds it. A `for`-loop
+        // ITERATION VARIABLE that shadows the parameter is a rebind, but `collect_let_bound` used to
+        // miss it — so inside `for n in 0..3 { .. }` the mark leaked and `100 / n` was modeled as
+        // divide-safe while the loop deterministically sets `n = 0` (a runtime ANUBIS_DIV_BY_ZERO).
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // Discriminator: an obviously-false division equality is DISPROVED (FAIL) only if `100/n` is
+        // actually modeled. Non-shadowed, the guard is valid, so it IS modeled and disproved.
+        assert!(
+            !discharged(
+                "fn f(n: i64) -> i64 requires(n != 0) ensures(result <= 100) { assert(100 / n == 999); return 0; }"
+            ),
+            "non-shadowed guarded divisor is modeled: `100/n == 999` is disproved"
+        );
+        // Shadowed by a for-loop variable, the mark must be dropped, so `100/n` is NOT modeled — the
+        // assert becomes unmodelable and is deferred to the runtime (which traps on n = 0), not proved.
+        assert!(
+            discharged(
+                "fn f(n: i64) -> i64 requires(n != 0) ensures(result <= 100) { for n in 0..3 { assert(100 / n == 999); } return 0; }"
+            ),
+            "for-loop-shadowed divisor must NOT be modeled (no false proof over a trapping divide)"
+        );
+    }
+
+    #[test]
     fn solver_modelability_is_function_local_and_shadow_safe() {
         // Solver integer-modelability must be FUNCTION-LOCAL and invalidated on a shadowing `let`.
         // Otherwise a name modeled as an i64 in one place leaks its modelability to a same-named
