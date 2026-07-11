@@ -1914,26 +1914,60 @@ fn nzdiv_mark(v: &str) -> String {
     format!("\u{1}nzdiv:{v}")
 }
 
-/// If `req` directly guarantees a bare variable is non-zero — `v != 0`, `0 != v`, `v > 0`, or `0 < v`
-/// — return that variable. Conservative: only these syntactic forms (transitive/combined guarantees
-/// stay unmodeled, i.e. fail-closed). Soundness rests on this same clause being an assumption in every
-/// obligation, so z3 evaluates `bvsdiv`/`bvsrem` only over models where the divisor is non-zero.
+/// If `req` directly guarantees a bare variable is non-zero, return that variable. Recognizes a
+/// comparison of a variable against an integer literal whose truth EXCLUDES 0 — `v != 0`, `v > k`
+/// (k≥0), `v >= k` (k≥1), `v < k` (k≤0), `v <= k` (k≤−1), and the mirror `k OP v`. Conservative: a
+/// form that does NOT exclude 0 (`v >= 0`, `v > -1`, `v != 5`, …) returns None, so an unproven divisor
+/// stays fail-closed. Soundness: only a modeled-integer variable is ever marked (see the call site),
+/// so this same clause is a modelable assumption in every obligation, and z3 therefore evaluates
+/// `bvsdiv`/`bvsrem` only over models where the divisor is non-zero.
 fn requires_nonzero_var(req: &Expr) -> Option<String> {
-    let is_zero = |e: &Expr| matches!(e, Expr::Literal(l) if l.parse::<i64>().map(|n| n == 0).unwrap_or(false));
-    let as_var = |e: &Expr| match e {
-        Expr::Var(v) => Some(v.clone()),
-        _ => None,
-    };
-    if let Expr::Binary { op, lhs, rhs } = req {
-        match op.as_str() {
-            "!=" if is_zero(rhs) => return as_var(lhs),
-            "!=" if is_zero(lhs) => return as_var(rhs),
-            ">" if is_zero(rhs) => return as_var(lhs),
-            "<" if is_zero(lhs) => return as_var(rhs),
-            _ => {}
+    fn as_var(e: &Expr) -> Option<String> {
+        match e {
+            Expr::Var(v) => Some(v.clone()),
+            _ => None,
         }
     }
-    None
+    fn as_int_lit(e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Literal(l) => l.parse::<i64>().ok(),
+            // A negative literal often parses as unary minus over a non-negative literal.
+            Expr::Unary { op, expr } if op == "-" => match expr.as_ref() {
+                Expr::Literal(l) => l.parse::<i64>().ok().map(i64::wrapping_neg),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    // `k OP v` is the same relation as `v FLIP(OP) k`.
+    fn flip(op: &str) -> &str {
+        match op {
+            ">" => "<",
+            ">=" => "<=",
+            "<" => ">",
+            "<=" => ">=",
+            other => other, // `==`/`!=` are symmetric
+        }
+    }
+    let Expr::Binary { op, lhs, rhs } = req else {
+        return None;
+    };
+    let (var, op, k) = if let (Some(v), Some(k)) = (as_var(lhs), as_int_lit(rhs)) {
+        (v, op.as_str(), k)
+    } else if let (Some(k), Some(v)) = (as_int_lit(lhs), as_var(rhs)) {
+        (v, flip(op.as_str()), k)
+    } else {
+        return None;
+    };
+    let excludes_zero = match op {
+        "!=" => k == 0,
+        ">" => k >= 0,  // v > k ≥ 0  ⟹  v ≥ 1
+        ">=" => k >= 1, // v ≥ k ≥ 1
+        "<" => k <= 0,  // v < k ≤ 0  ⟹  v ≤ -1
+        "<=" => k <= -1,
+        _ => false,
+    };
+    excludes_zero.then_some(var)
 }
 
 fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {

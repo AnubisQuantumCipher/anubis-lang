@@ -1521,6 +1521,20 @@ fn main() {
         // The guard must hold AT the division: reassigning the divisor makes the entry guard stale, so
         // it is NOT modeled (fail-closed) even though the reassigned value happens to be non-zero.
         assert!(!discharged("fn f(n: u32) -> u32 requires(n != 0) ensures(result == 3) { n = 2; return 6 / n; }"), "reassigned divisor: stale guard, not modeled");
+
+        // Guard-form boundaries. ACCEPT every clause that provably EXCLUDES 0 (both operand orders):
+        assert!(discharged("fn f(n: u32) -> u32 requires(n >= 1) ensures(result <= 6) { return 6 / n; }"), "n >= 1 excludes 0");
+        assert!(discharged("fn f(n: u32) -> u32 requires(n > 5) ensures(result <= 6) { return 6 / n; }"), "n > 5 excludes 0");
+        assert!(discharged("fn f(n: u32) -> u32 requires(n < 0) ensures(result <= 6) { return 6 / n; }"), "n < 0 excludes 0 (negative divisor)");
+        assert!(discharged("fn f(n: u32) -> u32 requires(n <= -1) ensures(result <= 6) { return 6 / n; }"), "n <= -1 excludes 0 (negative literal)");
+        assert!(discharged("fn f(n: u32) -> u32 requires(0 < n) ensures(result <= 6) { return 6 / n; }"), "0 < n mirror excludes 0");
+        // REJECT every clause that does NOT exclude 0 — the divisor could still be zero. These are the
+        // soundness-critical boundaries: a one-off in the threshold table would model a trapping divide.
+        assert!(!discharged("fn f(n: u32) -> u32 requires(n >= 0) ensures(result == 6) { return 6 / n; }"), "n >= 0 does NOT exclude 0");
+        assert!(!discharged("fn f(n: u32) -> u32 requires(n > -1) ensures(result == 6) { return 6 / n; }"), "n > -1 (i.e. n >= 0) does NOT exclude 0");
+        assert!(!discharged("fn f(n: u32) -> u32 requires(n < 1) ensures(result == 6) { return 6 / n; }"), "n < 1 (i.e. n <= 0) does NOT exclude 0");
+        assert!(!discharged("fn f(n: u32) -> u32 requires(n <= 0) ensures(result == 6) { return 6 / n; }"), "n <= 0 does NOT exclude 0");
+        assert!(!discharged("fn f(n: u32) -> u32 requires(n != 5) ensures(result == 6) { return 6 / n; }"), "n != 5 does NOT exclude 0");
     }
 
     #[test]
