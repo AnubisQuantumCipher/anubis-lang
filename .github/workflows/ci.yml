@@ -1,20 +1,37 @@
 name: anubis-ci
+
+# The single source of truth for "is this green?" is the SAME front door a
+# stranger runs on a fresh clone: scripts/audit_a_plus.sh -> scripts/audit_unified.sh
+# (15 fail-closed gates G1-G15, non-zero exit on any FAIL). CI runs THAT real
+# suite, not a hand-picked subset of cargo commands, so "green in CI" ==
+# "green on a fresh clone" rather than "green on a weaker check".
+#
+# The prove gate (G10) cold-VERIFIES the committed ZK receipt fixture using only
+# the built binary — it never runs the risc0 prover or Metal — so it executes on
+# a stock GitHub runner. That makes CI a public, off-the-author's-desk witness
+# that the crown-jewel cold-verify reproduces.
 on: [push, pull_request]
+
 jobs:
-  build:
+  sealed-gate-suite:
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo fmt -- --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
-      - run: cargo build --release
-  reproducibility:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo run -- --help
-      - run: cargo run -- build examples/research_poc.anubis --bounty -o ci-out
-      - run: cargo run -- verify "$(find ci-out -maxdepth 1 -type d -name 'evidence-*' | sort | tail -1)"
+        with:
+          components: rustfmt, clippy
+      # The gate scripts use ripgrep, which is not preinstalled on macOS runners;
+      # python3, jq, shasum, and clang already are.
+      - name: Install gate tooling (ripgrep)
+        run: brew install ripgrep
+      - name: Run the full sealed gate suite (the advertised front door)
+        run: bash scripts/audit_a_plus.sh --out out/ci_gate
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-report
+          path: |
+            out/ci_gate/gate_report.json
+            out/ci_gate/gate_log.txt

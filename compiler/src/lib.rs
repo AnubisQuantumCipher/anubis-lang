@@ -2647,6 +2647,35 @@ fn bad() {
     }
 
     #[test]
+    fn ci_workflow_enforces_the_real_gate_suite_not_a_weak_subset() {
+        // Regression guard for the "CI green over a red gate" seam: CI must enforce the
+        // SAME front door a stranger runs on a fresh clone (audit_a_plus.sh -> the 15-gate
+        // audit_unified.sh), not a hand-picked handful of cargo commands. Before this was
+        // fixed, CI ran `cargo test` (missing --all, so the tools crate's tests never ran)
+        // and never invoked gates G5-G15 at all — a push could be green in CI while the
+        // language/PCA/prove/offensive gates were red.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
+            .expect(".github/workflows/ci.yml must exist");
+        // (1) CI must invoke the real front door.
+        assert!(
+            ci.contains("scripts/audit_a_plus.sh") || ci.contains("scripts/audit_unified.sh"),
+            "CI must run the real sealed gate suite (audit_a_plus.sh / audit_unified.sh), not a weak subset"
+        );
+        // (2) The suite CI points at must actually be the full 15-gate runner — guard against
+        // CI running a runner that has been hollowed out to fewer gates.
+        let runner = std::fs::read_to_string(root.join("scripts/audit_unified.sh"))
+            .expect("scripts/audit_unified.sh must exist");
+        for g in 1..=15 {
+            let marker = format!("\"G{g}_");
+            assert!(
+                runner.contains(&marker),
+                "audit_unified.sh must run gate G{g} (missing marker {marker:?})"
+            );
+        }
+    }
+
+    #[test]
     fn gate11_metal_parity_unknown_forces_not_yes() {
         let observed = "unknown";
         let require_metal = true;
