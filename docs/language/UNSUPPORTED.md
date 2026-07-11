@@ -62,6 +62,15 @@ CPU-pinning child process.
 - Hex / binary / octal integer literals (`0x`/`0b`/`0o`) — REAL
 - `target_run` returns named **TargetRun** struct (`r.crashed`, …) with list-index compat — REAL
 
+## NOW REAL (multi-file modules — Phase-1, verified 2026-07-11)
+
+- `import a.b;` resolves `src/a/b.anb` (or `a/b/mod.anb`) and `b::fn(x)` calls into it — REAL
+  (`compiler/src/resolve/mod.rs`: module graph + file resolution). `pub` visibility enforced
+  (`ANUBIS_PRIVATE_ITEM`); fail-closed on cycles (`ANUBIS_IMPORT_CYCLE`), path escape, ambiguity;
+  the `A::B` enum-vs-module case disambiguates. Fixtures: `tests/fixtures/modules/{mathlib,
+  private_reject,cycle,enum_vs_mod}`. (Supersedes the earlier "import parses but does not resolve"
+  PLANNED note.) Still PLANNED: an Anubis-source stdlib reachable as `import std.*` (Phase 5).
+
 ## NOW REAL (float→integer narrowing rejection — Phase-2 slice 1, 2026-07-11)
 
 - A **float value may not narrow into an integer annotation** — `let x: u32 = 3.14`, `-> u32`
@@ -107,9 +116,9 @@ is honest in **both** directions (never over-claim, never under-claim):
 ## Explicitly PLANNED (not real yet — verified still-unshipped 2026-07-10)
 
 - Array/list slicing **sugar** `xs[1..3]` (clean parse error today; use explicit list builtins)
-- Module system with real **multi-file** name resolution + stdlib imports (single-file `module {}`
-  grouping works; the call namespace is flat; `import` parses but does not yet resolve across files)
-- An Anubis-level standard library (`stdlib/` is empty; the ~150 builtins are baked into the Rust emitter)
+- An Anubis-level standard library (`stdlib/` is empty; the ~150 builtins are baked into the Rust
+  emitter). Multi-file `import` now resolves (see NOW REAL below) but there is no `import std.*`
+  prelude yet — that is Phase 5.
 - Async / await / tasks / language-level networking
 - Package manager, crates, publishing
 - LSP / IDE support
@@ -128,7 +137,8 @@ is honest in **both** directions (never over-claim, never under-claim):
 
 - "General-purpose language complete" (Anubis targets a niche: a proof-carrying, evidence-native
   systems language — not a Python/Haskell/Swift replacement)
-- **Multi-file** modules, an Anubis-level stdlib, async, or language-level networking (all PLANNED above)
+- An Anubis-level stdlib (`import std.*`), async, or language-level networking (all PLANNED above).
+  Multi-file modules ARE real now (see NOW REAL) — do not claim them unsupported.
 - Mature package / build / release story; LSP / IDE tooling
 
 (Note: full enums — unit/tuple/struct variants — and built-in `Option`/`Result` + `?` **are** real now,
