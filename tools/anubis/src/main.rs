@@ -109,6 +109,19 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Run a directory (or file) of `.anb` test programs, checking each against its
+    /// `// EXPECT: PASS|FAIL` and optional `// ERROR_CONTAINS: <text>` directives. Only entry
+    /// files (those with a `fn main`) are run; library modules are skipped.
+    Test {
+        /// Directory to scan for `.anb` tests, or a single `.anb` file.
+        #[arg(default_value = "tests")]
+        path: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Probe runtime/toolchain capabilities without claiming proof execution.
     RuntimeProbe {
         /// Emit machine-readable JSON.
@@ -539,6 +552,29 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Test { path, json } => {
+            let report = run_anubis_test_suite(&path)?;
+            if json {
+                let failed: Vec<_> = report
+                    .failed
+                    .iter()
+                    .map(|(f, w)| serde_json::json!({"file": f.display().to_string(), "why": w}))
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"total": report.total, "passed": report.passed, "failed": failed})
+                );
+            } else {
+                println!("anubis test: {}/{} passed", report.passed, report.total);
+                for (f, why) in &report.failed {
+                    println!("  FAIL {} — {}", f.display(), why);
+                }
+            }
+            if !report.failed.is_empty() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Commands::Build {
             input,
             evidence,
@@ -2887,6 +2923,110 @@ struct RunOutcome {
     status_success: bool,
 }
 
+/// Result of running an `anubis test` suite.
+struct TestReport {
+    total: usize,
+    passed: usize,
+    /// (file, human reason) for each test that did not meet its expectation.
+    failed: Vec<(PathBuf, String)>,
+}
+
+/// Discover `.anb`/`.anub`/`.anubis` test entry files under `path` — those containing a `fn main`.
+/// Library modules (no `fn main`) are skipped so they are not run standalone. A single file is
+/// returned as-is.
+fn discover_test_files(path: &Path) -> Vec<PathBuf> {
+    let mut files = vec![];
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+            let p = entry.path();
+            let is_anb = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| matches!(e, "anb" | "anub" | "anubis"))
+                .unwrap_or(false);
+            if p.is_file() && is_anb {
+                if let Ok(src) = std::fs::read_to_string(p) {
+                    if src.contains("fn main") {
+                        files.push(p.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Parse the `// EXPECT: PASS|FAIL` and `// ERROR_CONTAINS: <text>` directives from a test source.
+/// Default expectation is PASS; an `ERROR_CONTAINS` directive implies FAIL.
+fn parse_test_directives(src: &str) -> (bool, Option<String>) {
+    let mut expect_pass = true;
+    let mut error_contains = None;
+    for line in src.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("// EXPECT:") {
+            expect_pass = rest.trim().eq_ignore_ascii_case("PASS");
+        } else if let Some(rest) = t.strip_prefix("// ERROR_CONTAINS:") {
+            error_contains = Some(rest.trim().to_string());
+            expect_pass = false;
+        }
+    }
+    (expect_pass, error_contains)
+}
+
+/// Run every discovered `.anb` test through the run path and check it against its directives.
+fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
+    let files = discover_test_files(path);
+    let out_dir = std::env::temp_dir().join("anubis-test-run");
+    let mut passed = 0;
+    let mut failed = vec![];
+    for f in &files {
+        let src = std::fs::read_to_string(f)?;
+        let (expect_pass, error_contains) = parse_test_directives(&src);
+        let result = run_anubis_source(f, &src, &out_dir, true, &[]);
+        let (actual_pass, err_text) = match &result {
+            Ok(o) if o.status_success => (true, String::new()),
+            Ok(o) => (false, o.stderr.clone()),
+            Err(e) => (false, e.to_string()),
+        };
+        let ok = if expect_pass {
+            actual_pass
+        } else {
+            !actual_pass
+                && error_contains
+                    .as_ref()
+                    .map(|ec| err_text.contains(ec))
+                    .unwrap_or(true)
+        };
+        if ok {
+            passed += 1;
+        } else {
+            let why = if expect_pass {
+                format!(
+                    "expected PASS, failed: {}",
+                    err_text.lines().next().unwrap_or("(ran, exited nonzero)")
+                )
+            } else {
+                format!(
+                    "expected FAIL{}, but it passed",
+                    error_contains
+                        .as_ref()
+                        .map(|e| format!(" containing `{e}`"))
+                        .unwrap_or_default()
+                )
+            };
+            failed.push((f.clone(), why));
+        }
+    }
+    Ok(TestReport {
+        total: files.len(),
+        passed,
+        failed,
+    })
+}
+
 fn run_anubis_source(
     input: &Path,
     source: &str,
@@ -4163,6 +4303,22 @@ fn main() {
         let err = run_anubis_source(&entry, &src, out.path(), false, &[])
             .expect_err("cyclic imports must fail closed");
         assert!(err.to_string().contains("ANUBIS_IMPORT_CYCLE"), "got: {err}");
+    }
+
+    #[test]
+    fn anubis_test_suite_runs_module_fixtures() {
+        // `anubis test tests/fixtures/modules` runs the 4 entry programs and checks each against its
+        // directives: mathlib/enum_vs_mod PASS (default), private_reject/cycle FAIL with a matching
+        // ERROR_CONTAINS. All expectations must be met.
+        let dir = modules_fixture("");
+        let report = run_anubis_test_suite(&dir).expect("suite runs");
+        assert!(report.total >= 4, "found {} test files", report.total);
+        assert!(
+            report.failed.is_empty(),
+            "unmet expectations: {:?}",
+            report.failed
+        );
+        assert_eq!(report.passed, report.total);
     }
 
     #[test]
