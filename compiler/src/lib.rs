@@ -3140,6 +3140,69 @@ fn main() {
     }
 
     #[test]
+    fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {
+        // Phase-3 A2: a function that RETURNS a formal parameter is summarized as
+        // `returns_taint_of_params`; call sites combine that with argument taint so
+        // `wrap(tainted)` taints even through let/return chains. Also: a user function that does
+        // NOT return its param no longer falsely taints the call (the historical any-arg rule was
+        // over-broad for known user functions).
+        for (case, src) in [
+            (
+                "identity wrap: let y = wrap(s); sink(y)",
+                r#"fn wrap(x: u32) -> u32 { return x; }
+fn main() { let s = taint_source("pw"); let y = wrap(s); sink(y); }"#,
+            ),
+            (
+                "chain: f → wrap → return param",
+                r#"fn wrap(x: u32) -> u32 { return x; }
+fn f(x: u32) -> u32 { let y = wrap(x); return y; }
+fn main() { let s = taint_source("pw"); let z = f(s); sink(z); }"#,
+            ),
+            (
+                "direct sink(wrap(t))",
+                r#"fn wrap(x: u32) -> u32 { return x; }
+fn main() { sink(wrap(taint_source("pw"))); }"#,
+            ),
+            (
+                "only param 0 returns — second arg taints",
+                r#"fn pick(a: u32, b: u32) -> u32 { return a; }
+fn main() { let s = taint_source("pw"); sink(pick(s, 1)); }"#,
+            ),
+        ] {
+            let err =
+                tc_ok(src).expect_err(&format!("{case}: param→return taint must reach the sink"));
+            assert!(
+                err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY")
+                    || err.contains("ANUBIS_INTERPROC_SINK"),
+                "{case} got: {err}"
+            );
+        }
+
+        // Precision: must NOT over-taint when the callee does not return the param.
+        for (case, src) in [
+            (
+                "ignore(secret) returns a constant — clean",
+                r#"fn ignore(x: u32) -> u32 { return 5; }
+fn main() { let s = taint_source("pw"); let y = ignore(s); sink(y); }"#,
+            ),
+            (
+                "pick returns a; tainted b does not taint result",
+                r#"fn pick(a: u32, b: u32) -> u32 { return a; }
+fn main() { let s = taint_source("pw"); sink(pick(1, s)); }"#,
+            ),
+            (
+                "declassify before return of param",
+                r#"fn wrap(x: u32) -> u32 { return declassify(x, "p", "r"); }
+fn main() { let s = taint_source("pw"); sink(wrap(s)); }"#,
+            ),
+        ] {
+            tc_ok(src).unwrap_or_else(|e| {
+                panic!("{case}: non-returning / declassified path must accept: {e}")
+            });
+        }
+    }
+
+    #[test]
     fn interprocedural_param_sink_is_flagged_at_the_call_site() {
         // Phase-3 A1: a function that sinks a formal parameter makes the CALL SITE a sink for that
         // argument — `fn log(x){ sink(x); } ... log(tainted)` must reject even though the actual

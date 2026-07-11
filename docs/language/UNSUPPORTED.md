@@ -141,12 +141,16 @@ through indexing/field access.
   `sink(get_secret())` is now flagged even with no tainted argument. The return-taint walk is
   scope-aware (respects lexical block shadowing) and declassify-aware (a function that declassifies
   before returning is clean). Also this slice: taint now propagates through an `as` cast (a new
-  `Expr::Cast` arm — `sink(s as u64)` no longer launders). Still NOT modeled interprocedurally:
-  **argument→return pass-through summaries** (calling `fn wrap(x){return x;}` with a tainted arg IS
-  caught by the existing per-argument check, but `wrap` is not summarized as "returns taint iff arg N
-  is tainted"), **parameter→sink summaries** (a callee that sinks its argument internally), and
-  **higher-order / indirect calls** (`let f = get_secret; sink(f())` — the summary keys on the callee
-  NAME; a function-valued variable is not resolved, same boundary as method calls via `CallExpr`).
+  `Expr::Cast` arm — `sink(s as u64)` no longer launders).
+  **parameter→sink summaries are REAL (Phase-3 A1):** monotone `compute_param_sinks` + call-site
+  `ANUBIS_INTERPROC_SINK` so `fn log(x){sink(x);}` makes `log(tainted)` a violation at the call site.
+  **argument→return pass-through summaries are REAL (Phase-3 A2):** monotone `compute_param_return_taint`
+  marks which formals flow to the return; `expr_taint_source`'s Call arm consults it so
+  `fn wrap(x){return x;}` makes `wrap(tainted)` (and chains like `f→wrap→return`) taint their result.
+  Known user functions that do NOT return a param no longer over-taint (`ignore(secret)` is clean).
+  Still NOT modeled interprocedurally: **higher-order / indirect calls** (`let f = get_secret; sink(f())`
+  — the summary keys on the callee NAME; a function-valued variable is not resolved, same boundary as
+  method calls via `CallExpr`).
 - **Block-scoped shadowing is now respected by both the return-taint summary AND the intra-procedural
   sink check (Phase-3 slice B, 2026-07-11).** `analyze_stmts` snapshots/restores the lexical binding
   scope around `if`/`else`/loop/`@research`/`@exploit`/hybrid bodies the same way `body_returns_taint`

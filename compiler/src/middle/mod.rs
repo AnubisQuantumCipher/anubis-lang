@@ -172,6 +172,11 @@ struct SemanticContext {
     /// that another function's summary marks as sinking) without declassify. Monotone fixpoint.
     /// Call sites consult it: `log(tainted)` is `ANUBIS_INTERPROC_SINK` when `fn log(x){sink(x);}`.
     param_sinks: BTreeMap<String, BTreeSet<usize>>,
+    /// Interprocedural param→return summary (Phase-3 A2): for each function, the set of formal
+    /// parameter indices that can flow to the return value without declassify. Monotone fixpoint.
+    /// Combined at call sites with argument taint: `wrap` with `returns_taint_of_params={0}` makes
+    /// `wrap(tainted)` a taint source (even through further let/return chains).
+    param_return_taint: BTreeMap<String, BTreeSet<usize>>,
     /// Method name → parameter count (including `self`). `None` marks a name defined with more than
     /// one arity across impls, so its direct-call arity is ambiguous and left unchecked.
     method_arities: BTreeMap<String, Option<usize>>,
@@ -190,6 +195,7 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
     // per-function analysis so every `Call` the analysis sees can consult them.
     compute_tainting_fns(&ast.items, &mut ctx);
     compute_param_sinks(&ast.items, &mut ctx);
+    compute_param_return_taint(&ast.items, &mut ctx);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -1003,8 +1009,10 @@ fn analyze_stmts(
                     _ => {}
                 }
 
-                let init_taint = expr_taint_source(init, scope, &ctx.tainting_fns);
-                let declass_source = declassify_source(init, scope, &ctx.tainting_fns);
+                let init_taint =
+                    expr_taint_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+                let declass_source =
+                    declassify_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
                 // mark known after unknown check so later stmts see it
                 ctx.known_bindings.insert(name.clone());
 
@@ -1278,7 +1286,9 @@ fn analyze_stmts(
                 check_expr_semantics(expr, scope, ctx);
             }
             Stmt::Assign { target, value } => {
-                if let Some(source) = expr_taint_source(value, scope, &ctx.tainting_fns) {
+                if let Some(source) =
+                    expr_taint_source(value, scope, &ctx.tainting_fns, &ctx.param_return_taint)
+                {
                     if let Expr::Var(name) = target {
                         ctx.taint_traces.push(TaintTrace {
                             source: source.clone(),
@@ -1362,7 +1372,9 @@ fn analyze_stmts(
                 }
             }
             Stmt::If { cond, then, else_ } => {
-                if expr_taint_source(cond, scope, &ctx.tainting_fns).is_some() {
+                if expr_taint_source(cond, scope, &ctx.tainting_fns, &ctx.param_return_taint)
+                    .is_some()
+                {
                     effects.push("tainted-branch".into());
                 }
                 // A branch may not execute, so a fact it asserts (e.g. `x = 5`) must not leak out as
@@ -1400,7 +1412,9 @@ fn analyze_stmts(
                 body,
                 invariant,
             } => {
-                if expr_taint_source(cond, scope, &ctx.tainting_fns).is_some() {
+                if expr_taint_source(cond, scope, &ctx.tainting_fns, &ctx.param_return_taint)
+                    .is_some()
+                {
                     effects.push("tainted-branch".into());
                 }
                 effects.push("loop".into());
@@ -1503,10 +1517,10 @@ fn analyze_stmts(
                 }
                 let taint_src = match source {
                     crate::frontend::ForSource::Range { start, .. } => {
-                        expr_taint_source(start, scope, &ctx.tainting_fns)
+                        expr_taint_source(start, scope, &ctx.tainting_fns, &ctx.param_return_taint)
                     }
                     crate::frontend::ForSource::Collection { expr } => {
-                        expr_taint_source(expr, scope, &ctx.tainting_fns)
+                        expr_taint_source(expr, scope, &ctx.tainting_fns, &ctx.param_return_taint)
                     }
                 };
                 // The loop variable is a fresh in-scope binding for the body's analysis. A range
@@ -1626,7 +1640,9 @@ fn analyze_expr_effect(
             if is_sink(callee) {
                 effects.push(format!("sink:{}", callee));
                 for arg in args {
-                    if let Some(source) = expr_taint_source(arg, scope, &ctx.tainting_fns) {
+                    if let Some(source) =
+                        expr_taint_source(arg, scope, &ctx.tainting_fns, &ctx.param_return_taint)
+                    {
                         let declassified = expr_is_declassified(arg, scope);
                         ctx.taint_traces.push(TaintTrace {
                             source: source.clone(),
@@ -1654,7 +1670,12 @@ fn analyze_expr_effect(
             if let Some(sink_params) = ctx.param_sinks.get(callee).cloned() {
                 for i in sink_params {
                     if let Some(arg) = args.get(i) {
-                        if let Some(source) = expr_taint_source(arg, scope, &ctx.tainting_fns) {
+                        if let Some(source) = expr_taint_source(
+                            arg,
+                            scope,
+                            &ctx.tainting_fns,
+                            &ctx.param_return_taint,
+                        ) {
                             let declassified = expr_is_declassified(arg, scope);
                             ctx.taint_traces.push(TaintTrace {
                                 source: source.clone(),
@@ -1685,7 +1706,9 @@ fn analyze_expr_effect(
             policy,
             reason,
         } => {
-            if let Some(source) = expr_taint_source(inner, scope, &ctx.tainting_fns) {
+            if let Some(source) =
+                expr_taint_source(inner, scope, &ctx.tainting_fns, &ctx.param_return_taint)
+            {
                 let mut steps = vec![format!("{} -> declassify", source)];
                 if let Some(p) = policy {
                     steps.push(format!("policy={}", p));
@@ -4199,6 +4222,7 @@ fn declassify_source(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
 ) -> Option<String> {
     match expr {
         Expr::Declassify {
@@ -4206,43 +4230,60 @@ fn declassify_source(
             policy,
             reason,
             ..
-        } if policy.is_some() && reason.is_some() => expr_taint_source(inner, scope, tainting_fns),
+        } if policy.is_some() && reason.is_some() => {
+            expr_taint_source(inner, scope, tainting_fns, param_return_taint)
+        }
         _ => None,
     }
 }
 
-/// The taint-source label of an expression, or `None` if clean. `tainting_fns` is the interprocedural
-/// return-taint summary (functions whose return value carries internal taint) — consulted at the
-/// `Call` arm so `sink(get_secret())` is caught even when no argument is tainted. Pass an EMPTY set to
-/// disable interprocedural reasoning (e.g. inside the summary fixpoint's own bootstrap).
+/// The taint-source label of an expression, or `None` if clean.
+///
+/// - `tainting_fns`: functions whose return carries INTERNAL taint (`sink(get_secret())`).
+/// - `param_return_taint`: functions → which formal params flow to the return value. A call is
+///   tainted from argument i only when i is in this set (Phase-3 A2). When the map has no entry for
+///   a callee (builtins / bootstrap before the summary runs), any tainted argument conservatively
+///   taints the call (fail-closed over-approx). When the map HAS an entry (even empty), only the
+///   summarized params apply — so `fn ignore(x){return 5;}` no longer falsely taints `ignore(secret)`.
 fn expr_taint_source(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
 ) -> Option<String> {
     match expr {
         Expr::Var(name) => scope
             .get(name)
             .and_then(|binding| binding.info.taint_source.clone())
             .filter(|_| scope.get(name).is_some_and(|binding| binding.info.tainted)),
-        Expr::Binary { lhs, rhs, .. } => expr_taint_source(lhs, scope, tainting_fns)
-            .or_else(|| expr_taint_source(rhs, scope, tainting_fns)),
-        Expr::Unary { expr, .. } => expr_taint_source(expr, scope, tainting_fns),
-        // A call is tainted if the callee's RETURN carries internal taint (interprocedural summary),
-        // OR if any argument is tainted (taint passing THROUGH the call — the historical behavior).
-        // The callee check closes the fail-open where `fn get() { return taint_source(); }` made
-        // `sink(get())` pass silently. `return` itself is `Call{callee:"return"}` and can never be a
-        // user function name, so it never matches the summary.
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_taint_source(lhs, scope, tainting_fns, param_return_taint)
+                .or_else(|| expr_taint_source(rhs, scope, tainting_fns, param_return_taint))
+        }
+        Expr::Unary { expr, .. } => {
+            expr_taint_source(expr, scope, tainting_fns, param_return_taint)
+        }
         Expr::Call { callee, args } => {
             if tainting_fns.contains(callee) {
                 Some(format!("return value of `{}`", callee))
+            } else if let Some(rets) = param_return_taint.get(callee) {
+                // Known user function: only params that the summary says reach the return.
+                rets.iter().find_map(|&i| {
+                    args.get(i)
+                        .and_then(|a| expr_taint_source(a, scope, tainting_fns, param_return_taint))
+                })
             } else {
+                // Builtin / not-yet-summarized: any tainted argument taints the call (conservative).
                 args.iter()
-                    .find_map(|arg| expr_taint_source(arg, scope, tainting_fns))
+                    .find_map(|arg| expr_taint_source(arg, scope, tainting_fns, param_return_taint))
             }
         }
-        Expr::Tainted { inner, .. } => expr_taint_source(inner, scope, tainting_fns),
-        Expr::Assume(inner) | Expr::Assert(inner) => expr_taint_source(inner, scope, tainting_fns),
+        Expr::Tainted { inner, .. } => {
+            expr_taint_source(inner, scope, tainting_fns, param_return_taint)
+        }
+        Expr::Assume(inner) | Expr::Assert(inner) => {
+            expr_taint_source(inner, scope, tainting_fns, param_return_taint)
+        }
         Expr::Declassify {
             inner,
             policy,
@@ -4252,7 +4293,7 @@ fn expr_taint_source(
             if policy.is_some() && reason.is_some() {
                 None // cleared
             } else {
-                expr_taint_source(inner, scope, tainting_fns) // still tainted
+                expr_taint_source(inner, scope, tainting_fns, param_return_taint)
             }
         }
         Expr::TaintSource { label } => Some(label.clone()),
@@ -4266,13 +4307,17 @@ fn expr_taint_source(
         // tainted — only a binding whose own `let`/param annotation (or tainted initializer) seeded it
         // tainted propagates here, matching how every other walker in this file treats field/struct
         // definitions as opaque to flow analysis.
-        Expr::Index { base, index } => expr_taint_source(base, scope, tainting_fns)
-            .or_else(|| expr_taint_source(index, scope, tainting_fns)),
-        Expr::FieldAccess { base, .. } => expr_taint_source(base, scope, tainting_fns),
+        Expr::Index { base, index } => {
+            expr_taint_source(base, scope, tainting_fns, param_return_taint)
+                .or_else(|| expr_taint_source(index, scope, tainting_fns, param_return_taint))
+        }
+        Expr::FieldAccess { base, .. } => {
+            expr_taint_source(base, scope, tainting_fns, param_return_taint)
+        }
         // A cast reinterprets a value without changing its provenance — `secret as u64` is still the
         // secret. Without this arm, `sink(s as u64)` (and `return s as u64` interprocedurally)
         // laundered taint through the cast (adversary-found fail-open, both intra- and inter-procedural).
-        Expr::Cast { expr, .. } => expr_taint_source(expr, scope, tainting_fns),
+        Expr::Cast { expr, .. } => expr_taint_source(expr, scope, tainting_fns, param_return_taint),
         _ => None,
     }
 }
@@ -4300,10 +4345,11 @@ fn seed_one_let(
     init: &Expr,
     scope: &mut BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
 ) {
     let explicit = is_tainted_type(ty);
-    let init_taint = expr_taint_source(init, scope, tainting_fns);
-    let declassified = declassify_source(init, scope, tainting_fns).is_some();
+    let init_taint = expr_taint_source(init, scope, tainting_fns, param_return_taint);
+    let declassified = declassify_source(init, scope, tainting_fns, param_return_taint).is_some();
     let tainted = explicit || (init_taint.is_some() && !declassified);
     let taint_source = if explicit {
         Some(name.to_string())
@@ -4342,6 +4388,7 @@ fn body_returns_taint(
     stmts: &[Stmt],
     scope: &mut BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     tail: bool,
 ) -> bool {
     let n = stmts.len();
@@ -4352,23 +4399,35 @@ fn body_returns_taint(
                 // A `return` can hide inside the initializer (a `match`/`if` arm).
                 let mut rets = Vec::new();
                 expr_returns(init, &mut rets);
-                if rets
-                    .iter()
-                    .any(|e| expr_taint_source(e, scope, tainting_fns).is_some())
-                {
+                if rets.iter().any(|e| {
+                    expr_taint_source(e, scope, tainting_fns, param_return_taint).is_some()
+                }) {
                     return true;
                 }
-                seed_one_let(name, ty.as_deref(), init, scope, tainting_fns);
+                seed_one_let(
+                    name,
+                    ty.as_deref(),
+                    init,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                );
             }
             Stmt::If { then, else_, .. } => {
                 // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
                 let saved = scope.clone();
-                if body_returns_taint(then, scope, tainting_fns, stmt_is_tail) {
+                if body_returns_taint(then, scope, tainting_fns, param_return_taint, stmt_is_tail) {
                     return true;
                 }
                 *scope = saved.clone();
                 if let Some(else_body) = else_ {
-                    if body_returns_taint(else_body, scope, tainting_fns, stmt_is_tail) {
+                    if body_returns_taint(
+                        else_body,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        stmt_is_tail,
+                    ) {
                         return true;
                     }
                 }
@@ -4383,7 +4442,7 @@ fn body_returns_taint(
                 // A loop/research body is never the function's implicit return value (tail = false);
                 // only an explicit `return` inside it counts. Its `let`s are block-scoped.
                 let saved = scope.clone();
-                if body_returns_taint(body, scope, tainting_fns, false) {
+                if body_returns_taint(body, scope, tainting_fns, param_return_taint, false) {
                     return true;
                 }
                 *scope = saved;
@@ -4391,7 +4450,7 @@ fn body_returns_taint(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = scope.clone();
-                    if body_returns_taint(b, scope, tainting_fns, false) {
+                    if body_returns_taint(b, scope, tainting_fns, param_return_taint, false) {
                         return true;
                     }
                     *scope = saved;
@@ -4402,10 +4461,9 @@ fn body_returns_taint(
                 // an expression (match/if arm) — checked against the CURRENT lexical scope.
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
-                if rets
-                    .iter()
-                    .any(|e| expr_taint_source(e, scope, tainting_fns).is_some())
-                {
+                if rets.iter().any(|e| {
+                    expr_taint_source(e, scope, tainting_fns, param_return_taint).is_some()
+                }) {
                     return true;
                 }
                 // Implicit tail return: a bare trailing expression in tail position. (An `if`/`match`
@@ -4413,7 +4471,9 @@ fn body_returns_taint(
                 // boundary, so only a direct bare expr matters here.)
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
-                        if !is_return_call(e) && expr_taint_source(e, scope, tainting_fns).is_some()
+                        if !is_return_call(e)
+                            && expr_taint_source(e, scope, tainting_fns, param_return_taint)
+                                .is_some()
                         {
                             return true;
                         }
@@ -4429,7 +4489,8 @@ fn body_returns_taint(
 /// tail position). Params-clean scope, so this isolates internal taint from arg-flow.
 fn fn_returns_taint(body: &[Stmt], tainting_fns: &BTreeSet<String>) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
-    body_returns_taint(body, &mut scope, tainting_fns, true)
+    let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    body_returns_taint(body, &mut scope, tainting_fns, &empty, true)
 }
 
 /// Collect `(name, body)` for every free function (recursing into modules), keyed by the same flat/
@@ -4711,6 +4772,209 @@ fn compute_param_sinks(items: &[Item], ctx: &mut SemanticContext) {
             let mut found = BTreeSet::new();
             body_param_sinks(body, &mut flow, &known, &mut found);
             let entry = ctx.param_sinks.entry(name.clone()).or_default();
+            for i in found {
+                if entry.insert(i) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+// ── Interprocedural param→return summary (`ctx.param_return_taint`) ──────────────────────────────
+// Monotone fixpoint: which formal parameters of each function can flow to its return value without
+// declassify. Call sites combine this with argument taint so `fn wrap(x){return x;}` makes
+// `wrap(tainted)` a taint source — and only those params (not every arg) taint the call, fixing the
+// `fn ignore(x){return 5;} ignore(secret)` false positive of the historical any-arg rule.
+
+/// Param-flow through an expression, consulting `known_param_return` so a call only carries params
+/// that the callee summary says reach its return (when the callee is known).
+fn expr_param_return_flow(
+    expr: &Expr,
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+    known_param_return: &BTreeMap<String, BTreeSet<usize>>,
+) -> BTreeSet<usize> {
+    match expr {
+        Expr::Var(name) => flow.get(name).cloned().unwrap_or_default(),
+        Expr::Binary { lhs, rhs, .. } => {
+            let mut s = expr_param_return_flow(lhs, flow, known_param_return);
+            s.extend(expr_param_return_flow(rhs, flow, known_param_return));
+            s
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Tainted { inner: expr, .. } => {
+            expr_param_return_flow(expr, flow, known_param_return)
+        }
+        Expr::Assume(inner) | Expr::Assert(inner) => {
+            expr_param_return_flow(inner, flow, known_param_return)
+        }
+        Expr::Declassify {
+            inner,
+            policy,
+            reason,
+            ..
+        } => {
+            if policy.is_some() && reason.is_some() {
+                BTreeSet::new()
+            } else {
+                expr_param_return_flow(inner, flow, known_param_return)
+            }
+        }
+        Expr::Call { callee, args } => {
+            if known_param_return.contains_key(callee) {
+                // Known user function (entry may be empty): only summarized return-params.
+                let mut s = BTreeSet::new();
+                if let Some(rets) = known_param_return.get(callee) {
+                    for &i in rets {
+                        if let Some(arg) = args.get(i) {
+                            s.extend(expr_param_return_flow(arg, flow, known_param_return));
+                        }
+                    }
+                }
+                s
+            } else {
+                // Unknown/builtin during bootstrap: conservative union of args.
+                args.iter().fold(BTreeSet::new(), |mut acc, a| {
+                    acc.extend(expr_param_return_flow(a, flow, known_param_return));
+                    acc
+                })
+            }
+        }
+        Expr::Index { base, index } => {
+            let mut s = expr_param_return_flow(base, flow, known_param_return);
+            s.extend(expr_param_return_flow(index, flow, known_param_return));
+            s
+        }
+        Expr::FieldAccess { base, .. } => expr_param_return_flow(base, flow, known_param_return),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Collect parameter indices that a function body can RETURN under `known_param_return`.
+fn body_param_returns(
+    stmts: &[Stmt],
+    flow: &mut BTreeMap<String, BTreeSet<usize>>,
+    known_param_return: &BTreeMap<String, BTreeSet<usize>>,
+    found: &mut BTreeSet<usize>,
+    tail: bool,
+) {
+    let n = stmts.len();
+    for (i, stmt) in stmts.iter().enumerate() {
+        let stmt_is_tail = tail && i + 1 == n;
+        match stmt {
+            Stmt::Let { name, init, .. } => {
+                // Hidden returns inside the initializer.
+                let mut rets = Vec::new();
+                expr_returns(init, &mut rets);
+                for r in rets {
+                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
+                }
+                let cleared = matches!(
+                    init,
+                    Expr::Declassify {
+                        policy: Some(_),
+                        reason: Some(_),
+                        ..
+                    }
+                );
+                if cleared {
+                    flow.insert(name.clone(), BTreeSet::new());
+                } else {
+                    flow.insert(
+                        name.clone(),
+                        expr_param_return_flow(init, flow, known_param_return),
+                    );
+                }
+            }
+            Stmt::If { then, else_, .. } => {
+                let saved = flow.clone();
+                body_param_returns(then, flow, known_param_return, found, stmt_is_tail);
+                *flow = saved.clone();
+                if let Some(else_body) = else_ {
+                    body_param_returns(else_body, flow, known_param_return, found, stmt_is_tail);
+                }
+                *flow = saved;
+            }
+            Stmt::While { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => {
+                let saved = flow.clone();
+                body_param_returns(body, flow, known_param_return, found, false);
+                *flow = saved;
+            }
+            Stmt::For {
+                body, var, source, ..
+            } => {
+                let saved = flow.clone();
+                let src_flow = match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        let mut s = expr_param_return_flow(start, flow, known_param_return);
+                        s.extend(expr_param_return_flow(end, flow, known_param_return));
+                        s
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        expr_param_return_flow(expr, flow, known_param_return)
+                    }
+                };
+                flow.insert(var.clone(), src_flow);
+                body_param_returns(body, flow, known_param_return, found, false);
+                *flow = saved;
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    let saved = flow.clone();
+                    body_param_returns(b, flow, known_param_return, found, false);
+                    *flow = saved;
+                }
+            }
+            Stmt::Assign { target, value } => {
+                if let Expr::Var(name) = target {
+                    let rhs = expr_param_return_flow(value, flow, known_param_return);
+                    flow.entry(name.clone()).or_default().extend(rhs);
+                }
+            }
+            _ => {
+                let mut rets = Vec::new();
+                collect_returns_in_stmt(stmt, &mut rets);
+                for r in rets {
+                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
+                }
+                if stmt_is_tail {
+                    if let Stmt::ExprStmt(e) = stmt {
+                        if !is_return_call(e) {
+                            found.extend(expr_param_return_flow(e, flow, known_param_return));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Populate `ctx.param_return_taint` by a monotone fixpoint. Every free function gets an entry
+/// (possibly empty) so the Call arm can distinguish "known, returns no params" from "unknown".
+fn compute_param_return_taint(items: &[Item], ctx: &mut SemanticContext) {
+    let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+    collect_fn_params_bodies(items, &mut fns);
+    // Ensure every function is present so analysis sees an entry (even empty).
+    for (name, _, _) in &fns {
+        ctx.param_return_taint.entry(name.clone()).or_default();
+    }
+    loop {
+        let mut changed = false;
+        let known = ctx.param_return_taint.clone();
+        for (name, params, body) in &fns {
+            let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+            for (i, p) in params.iter().enumerate() {
+                flow.insert(p.clone(), BTreeSet::from([i]));
+            }
+            let mut found = BTreeSet::new();
+            body_param_returns(body, &mut flow, &known, &mut found, true);
+            let entry = ctx.param_return_taint.entry(name.clone()).or_default();
             for i in found {
                 if entry.insert(i) {
                     changed = true;
