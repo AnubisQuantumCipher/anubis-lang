@@ -89,9 +89,16 @@ CPU-pinning child process.
   float type is statically inferable. A float arriving via a **function-return, an index/field
   access, or a block whose value is a trailing statement-form `if`/`match`** infers `None` and is
   NOT yet narrowed — it is accepted (the safe direction: a missed lint, never a false rejection,
-  and the solver still fails closed on such a value with `ANUBIS_CONTRACT_UNPROVABLE`). Closing
-  this needs return-type / index inference (a later Phase-2 step). Tests:
+  and the solver still fails closed on such a value with `ANUBIS_CONTRACT_UNPROVABLE`). Tests:
   `cargo test -p anubis-compiler float_does_not_narrow` / `narrowing_rule_does_not_reject`.
+- **Why the call-return case is genuinely hard (finding, 2026-07-11):** a slice-2 attempt to close
+  it by trusting a callee's *declared* `-> f64` return type was UNSOUND and reverted. A declared
+  return type is not the runtime value type: the return check accepts int→float **widening**, so
+  `fn g() -> f64 { return 5; }` actually returns `Int(5)` at runtime, and `let x: u32 = g()` runs
+  fine (x = 5) — narrowing it on the declared `f64` wrongly rejects a running program. Closing this
+  soundly needs per-function **return-value-class** summaries (does every `return` in the callee
+  yield a float?), i.e. real interprocedural analysis (Phase 3), not declared types. Do not re-try
+  the declared-type shortcut.
 
 ## NOW REAL (shipped after this slice — verified firsthand 2026-07-10)
 
