@@ -205,6 +205,9 @@ struct FnDef<'a> {
     params: &'a [(String, String)],
     body: &'a [Stmt],
     impl_type: Option<&'a str>,
+    /// Declared return type (`-> T`), or `None`. When it is an integer type, the runtime enforces the
+    /// value returned is actually an integer (see the entry guard's RC6/RC7 rationale).
+    ret_type: Option<&'a str>,
 }
 
 /// The emitted Rust function name for an Anubis function or method.
@@ -224,19 +227,28 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
     for item in items {
         match item {
             Item::Fn {
-                name, params, body, ..
+                name,
+                params,
+                body,
+                ret,
+                ..
             } => out.push(FnDef {
                 name: name.as_str(),
                 params: params.as_slice(),
                 body: body.as_slice(),
                 impl_type: None,
+                ret_type: ret.as_deref(),
             }),
             Item::Impl {
                 type_name, methods, ..
             } => {
                 for m in methods {
                     if let Item::Fn {
-                        name, params, body, ..
+                        name,
+                        params,
+                        body,
+                        ret,
+                        ..
                     } = m
                     {
                         out.push(FnDef {
@@ -244,6 +256,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                             params: params.as_slice(),
                             body: body.as_slice(),
                             impl_type: Some(type_name.as_str()),
+                            ret_type: ret.as_deref(),
                         });
                     }
                 }
@@ -322,13 +335,37 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
         Some(expr) => safe_run_expr(expr, ctx)?,
         None => "AnubisValue::Int(0)".to_string(),
     };
-    Ok(format!(
-        "fn {}({}) -> AnubisValue {{\n{}    {}\n}}\n",
-        fn_rust_name(def.name, def.impl_type)?,
-        sig.join(", "),
-        body_src,
-        tail_src,
-    ))
+    let rust_name = fn_rust_name(def.name, def.impl_type)?;
+    let inner_sig = sig.join(", ");
+    // RC6/RC7 soundness: if the function DECLARES an integer return type, the solver may model its
+    // result (and a call-site binding of it) as an i64 — but the return type is INERT at runtime, so a
+    // body could return a float (`return 2.5` from a `-> u32` fn) or Bool(true) (`return assume(x)`),
+    // poisoning a proof. Enforce the model on EVERY return path by emitting the body as an inner fn and
+    // guarding its result (covers the tail AND every explicit `return` uniformly). A non-integer return
+    // fails closed (ANUBIS_TYPE_VIOLATION). The outer params drop `mut` since they are only forwarded.
+    if def
+        .ret_type
+        .map(crate::middle::ty::is_integer)
+        .unwrap_or(false)
+    {
+        let mut outer_params = Vec::new();
+        let mut fwd = Vec::new();
+        for (p, _ty) in def.params {
+            let id = sanitize_ident(p)?;
+            outer_params.push(format!("{id}: AnubisValue"));
+            fwd.push(id);
+        }
+        Ok(format!(
+            "fn {rust_name}({outer}) -> AnubisValue {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    anubis_require_int_ret(__anb_body({fwd}), {namelit})\n}}\n",
+            outer = outer_params.join(", "),
+            fwd = fwd.join(", "),
+            namelit = rust_string_lit(def.name)?,
+        ))
+    } else {
+        Ok(format!(
+            "fn {rust_name}({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n}}\n"
+        ))
+    }
 }
 
 /// Split a function body into (head statements, optional trailing tail expression).
@@ -1372,6 +1409,14 @@ fn anubis_require_int(v: &AnubisValue, name: &str) {
     if !matches!(v, AnubisValue::Int(_)) {
         panic!("ANUBIS_TYPE_VIOLATION: integer parameter `{}` received a non-integer value at runtime; the checker models it as an i64, so a float/string/other argument is fail-closed rather than silently mis-proved", name);
     }
+}
+// Same guard on a function's RETURN value (the model is only sound if an integer-typed function
+// actually yields an integer). Returns the value through so it can wrap any return path.
+fn anubis_require_int_ret(v: AnubisValue, name: &str) -> AnubisValue {
+    if !matches!(v, AnubisValue::Int(_)) {
+        panic!("ANUBIS_TYPE_VIOLATION: function `{}` declares an integer return type but returned a non-integer at runtime; the checker models its result as an i64, so this is fail-closed rather than silently mis-proved", name);
+    }
+    v
 }
 fn anubis_panic(msg: AnubisValue) -> AnubisValue { panic!("ANUBIS_PANIC: {}", msg.display_string()); }
 
@@ -3815,6 +3860,38 @@ mod run_tests {
         assert_eq!(
             run("fn parity(x: u32) -> u32 ensures(result == 0 || result == 1) { return x % 2; } fn main() { print(parity(7)); print(parity(8)); }"),
             "1\n0"
+        );
+    }
+
+    #[test]
+    fn runtime_enforces_integer_return_type() {
+        // REGRESSION — fix-adversary re-audit 2026-07-11 (RC6). An integer-typed function's result is
+        // modeled as an i64 (directly and via composition), but return types are INERT at runtime — a
+        // body returning a non-integer would poison that model. Every return path is guarded.
+        // Direct: a `-> u32` function that returns a float fails closed (check passes; return type inert).
+        run_expect_trap(
+            "fn g() -> u32 { return 2.5; } fn main() { print(g()); }",
+            "ANUBIS_TYPE_VIOLATION",
+        );
+        // Via composition: `let name = g(5)` where g returns f64, then returned from a `-> u32` fn.
+        run_expect_trap(
+            "fn g(a: u32) -> f64 { return 2.5; } fn f() -> u32 { let name = g(5); return name; } \
+             fn main() { print(f()); }",
+            "ANUBIS_TYPE_VIOLATION",
+        );
+        // `return assume(x)` yields Bool(true), not an integer — fail closed at the return boundary too.
+        run_expect_trap(
+            "fn f(x: u32) -> u32 { return assume(x); } fn main() { print(f(5)); }",
+            "ANUBIS_TYPE_VIOLATION",
+        );
+        // Valid integer returns still work; a non-integer RETURN TYPE is unguarded (floats are legal).
+        assert_eq!(
+            run("fn sq(x: u32) -> u32 { return x * x; } fn main() { print(sq(6)); }"),
+            "36"
+        );
+        assert_eq!(
+            run("fn half() -> f64 { return 2.5; } fn main() { print(half()); }"),
+            "2.5"
         );
     }
 

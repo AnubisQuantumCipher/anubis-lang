@@ -2006,9 +2006,10 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // at runtime, so modeling them as the identity is unsound (it "proved" `(x as u8) == x` while
         // `ident8(256)` runs to 0). Only 64-bit-target casts are value-preserving.
         Expr::Cast { expr, ty } => cast_preserves_i64(ty) && is_int_modelable(expr, int_vars),
-        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
-            is_int_modelable(inner, int_vars)
-        }
+        // `declassify(x)` forwards x's value, so it is int-modelable iff x is. But `assume(E)`/`assert(E)`
+        // in VALUE position evaluate to Bool(true) at runtime (NOT E), so they are never integer-valued —
+        // modeling them as E let `return assume(x)` certify `result == x`. They fall through to `false`.
+        Expr::Declassify { inner, .. } => is_int_modelable(inner, int_vars),
         // Pure integer builtins that select/negate operands: `abs(x)` (wrapping_abs -> bvneg, wraps at
         // MIN identically), and `min`/`max` of two i64 args (signed `bvsle` select, matching
         // anubis_value_cmp). Only these exact callee/arity shapes; any other call stays unmodelable.
@@ -2036,9 +2037,10 @@ fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
             _ => false,
         },
         Expr::Unary { op, expr } => op == "!" && is_bool_modelable(expr, int_vars),
-        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
-            is_bool_modelable(inner, int_vars)
-        }
+        Expr::Declassify { inner, .. } => is_bool_modelable(inner, int_vars),
+        // `assume(E)`/`assert(E)` evaluate to Bool(true) at runtime regardless of E, so as a VALUE they
+        // are the boolean literal `true` — modelable, but as `true`, never as E (see the encoder).
+        Expr::Assume(_) | Expr::Assert(_) => true,
         _ => false,
     }
 }
@@ -2054,8 +2056,21 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
             expr_to_smt_value(rhs, widths)?;
             Some(expr_to_smt(e, widths))
         }
-        Expr::Unary { op, expr } if op == "-" || op == "!" => {
+        Expr::Unary { op, expr } if op == "-" || op == "!" || op == "~" => {
             expr_to_smt_value(expr, widths)?;
+            Some(expr_to_smt(e, widths))
+        }
+        // A modeled builtin value: `let y = abs(x)` (or min/max) MUST emit its defining fact `y == abs(x)`
+        // via the shared encoder — otherwise `is_int_modelable` admits `y` into the modelable set as a
+        // FREE variable and a later contract over `y` is checked against an unconstrained symbol (a false
+        // ALARM). Mirror the exact callee/arity set is_int_modelable admits, so the two never diverge.
+        Expr::Call { callee, args }
+            if (callee == "abs" && args.len() == 1)
+                || ((callee == "min" || callee == "max") && args.len() == 2) =>
+        {
+            for a in args {
+                expr_to_smt_value(a, widths)?;
+            }
             Some(expr_to_smt(e, widths))
         }
         Expr::Cast { expr, ty } => {
@@ -2068,9 +2083,9 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
             }
             expr_to_smt_value(expr, widths)
         }
-        Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
-            expr_to_smt_value(inner, widths)
-        }
+        Expr::Declassify { inner, .. } => expr_to_smt_value(inner, widths),
+        // `assume(E)`/`assert(E)` as a value are Bool(true) at runtime, not E (see is_int_modelable).
+        Expr::Assume(_) | Expr::Assert(_) => Some("true".to_string()),
         _ => None,
     }
 }
@@ -2141,9 +2156,8 @@ fn expr_to_smt_with_width(
         }
         Expr::Cast { expr, ty } => expr_to_smt_with_width(expr, widths, Some(bitwidth_of(ty))),
         Expr::Declassify { inner, .. } => expr_to_smt_with_width(inner, widths, expected_width),
-        Expr::Assume(inner) | Expr::Assert(inner) => {
-            expr_to_smt_with_width(inner, widths, expected_width)
-        }
+        // `assume(E)`/`assert(E)` in value position evaluate to Bool(true) at runtime, not E.
+        Expr::Assume(_) | Expr::Assert(_) => "true".to_string(),
         // `abs`/`min`/`max` builtins as ite (vetted by is_int_modelable, so the shapes always match).
         // `abs`: `bvneg` wraps at MIN exactly like `wrapping_abs`. `min`/`max`: signed `bvsle` select,
         // matching `anubis_value_cmp`'s i64 ordering (min picks the smaller, max the larger).

@@ -1743,6 +1743,47 @@ fn main() {
     }
 
     #[test]
+    fn solver_assume_value_and_builtin_let_binding_soundness() {
+        // REGRESSION — fix-adversary re-audit 2026-07-11.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // RC5 (completeness / false ALARM): a `let` bound to a modeled builtin (abs/min/max) or `~`
+        // must emit its defining constraint via `expr_to_smt_value`, else the binding is a FREE var and
+        // a valid contract over it is wrongly disproved with an impossible counterexample.
+        assert!(
+            discharged(
+                "fn f(x: u32) -> u32 ensures(result == abs(x)) { let y = abs(x); return y; }"
+            ),
+            "let y = abs(x) must link y to abs(x) (no false alarm)"
+        );
+        assert!(
+            discharged("fn f(x: u32) -> u32 ensures(result == ~x) { let y = ~x; return y; }"),
+            "let y = ~x must link y"
+        );
+        assert!(
+            discharged(
+                "fn f(a: u32, b: u32) -> u32 ensures(result == min(a, b)) { let y = min(a, b); return y; }"
+            ),
+            "let y = min(a,b) must link y"
+        );
+        // RC7 (false PROOF): `assume(E)`/`assert(E)` in VALUE position evaluate to Bool(true) at
+        // runtime, NOT E. So `return assume(x)` must NOT certify `result == x` (it did).
+        assert!(
+            !discharged("fn f(x: u32) -> u32 ensures(result == x) { return assume(x); }"),
+            "return assume(x) must not prove result == x (assume's value is true, not x)"
+        );
+        assert!(
+            !discharged("fn f(x: u32) -> u32 ensures(result == x) { return assert(x); }"),
+            "return assert(x) must not prove result == x"
+        );
+    }
+
+    #[test]
     fn differential_solver_encoder_matches_runtime_oracle() {
         // The standing regression net (Phase-4 B3): generate random CONCRETE modelable integer
         // expressions and assert the SMT encoder computes exactly what the i64 runtime does. This is
