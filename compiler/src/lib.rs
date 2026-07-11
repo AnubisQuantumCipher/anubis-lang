@@ -3140,6 +3140,45 @@ fn main() {
     }
 
     #[test]
+    fn governed_io_read_write_file_executes() {
+        // Phase-3 C3: read_file/write_file are real run builtins (not hard-rejected). Goldens with
+        // no I/O remain byte-identical because these only fire when the names are used.
+        let dir = std::env::temp_dir().join(format!("anubis-io-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hello.txt");
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+
+        let src = format!(
+            r#"fn main() {{
+    write_file("{path_s}", "hello-anubis");
+    let s = read_file("{path_s}");
+    print(s);
+}}"#
+        );
+        // allow_research=true so write_file is not blocked by the research-gated surface if any;
+        // lowering itself does not re-run mode checks (those are typecheck's job).
+        let out = backends::run::compile_and_run_source(&src, true, &[]).expect("compile+run io");
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello-anubis");
+
+        let t = backends::run::compile_and_run_source(
+            r#"fn main() { let t = time(); print(t > 0); }"#,
+            false,
+            &[],
+        )
+        .expect("time");
+        assert!(t.status.success());
+        assert_eq!(String::from_utf8_lossy(&t.stdout).trim(), "true");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn uses_clause_parses_and_undeclared_effect_is_rejected() {
         // Phase-3 C1+C2: `uses(fs.read, net.send)` parses on Item::Fn; inferred capability effects
         // must be ⊆ the declared set → `ANUBIS_UNDECLARED_EFFECT` when a used effect is missing.

@@ -1650,7 +1650,7 @@ fn analyze_expr_effect(
             if callee == "read_file" || callee == "open" {
                 effects.push("file_read".to_string());
                 if mode == Mode::Safe {
-                    // allow for audit but record; strict forbid only for certain
+                    // file_read is allowed in safe when declared via uses(fs.read) (C2); record only.
                 }
             }
             if callee == "write_file" || callee == "write" {
@@ -1672,6 +1672,12 @@ fn analyze_expr_effect(
                         span: None,
                     });
                 }
+            }
+            if matches!(callee.as_str(), "time" | "time_now" | "now") {
+                effects.push("time".to_string());
+            }
+            if matches!(callee.as_str(), "rand" | "rand_gen" | "random") {
+                effects.push("rand".to_string());
             }
             if is_sink(callee) {
                 effects.push(format!("sink:{}", callee));

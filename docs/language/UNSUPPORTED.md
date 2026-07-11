@@ -201,8 +201,9 @@ is honest in **both** directions (never over-claim, never under-claim):
 - An Anubis-level standard library (`stdlib/` is empty; the ~150 builtins are baked into the Rust
   emitter). Multi-file `import` now resolves (see NOW REAL below) but there is no `import std.*`
   prelude yet — that is Phase 5.
-- Async / await / tasks / language-level networking (effect *checking* for `net.*` is real; executable
-  governed I/O codegen is Phase-3 C3)
+- Async / await / tasks (language-level). **Governed I/O builtins** `read_file`/`write_file`/`open`/
+  `send`/`connect`/`time`/`rand` are REAL executables (Phase-3 C3) via `std::fs`/`std::net`/
+  `std::time`; they are still gated by mode + `uses(...)` in the checker
 - Package manager, crates, publishing
 - LSP / IDE support
 - Automatic remote exploit / ROP / C2 (out of scope by design — not a gap to “close” for A+)

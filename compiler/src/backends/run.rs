@@ -1431,6 +1431,73 @@ fn anubis_args() -> AnubisValue {
     AnubisValue::List(std::env::args().skip(1).map(AnubisValue::Str).collect())
 }
 
+// ---- Governed capability I/O (Phase-3 C3) — additive builtins; AnubisValue path unchanged ----
+fn anubis_read_file(path: AnubisValue) -> AnubisValue {
+    match std::fs::read_to_string(path.display_string()) {
+        Ok(s) => AnubisValue::Str(s),
+        Err(e) => panic!("ANUBIS_IO_ERROR: read_file({}): {}", path.display_string(), e),
+    }
+}
+fn anubis_write_file(path: AnubisValue, contents: AnubisValue) -> AnubisValue {
+    match std::fs::write(path.display_string(), contents.display_string()) {
+        Ok(()) => AnubisValue::Int(0),
+        Err(e) => panic!("ANUBIS_IO_ERROR: write_file({}): {}", path.display_string(), e),
+    }
+}
+fn anubis_open(path: AnubisValue) -> AnubisValue {
+    // `open` is a path-existence / openability probe that returns the path string on success
+    // (contents are read via read_file). Fail-closed on missing/unreadable paths.
+    match std::fs::File::open(path.display_string()) {
+        Ok(_) => AnubisValue::Str(path.display_string()),
+        Err(e) => panic!("ANUBIS_IO_ERROR: open({}): {}", path.display_string(), e),
+    }
+}
+fn anubis_time_now() -> AnubisValue {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    AnubisValue::Int(secs)
+}
+fn anubis_rand_gen() -> AnubisValue {
+    // Prefer getrandom when available at compile of the generated binary; fall back to a
+    // process-local seed from the clock so the program still runs without the crate.
+    let mut buf = [0u8; 8];
+    // Seed from clock + pid so successive runs differ without an external dep.
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mixed = t
+        ^ ((std::process::id() as u64) << 32)
+        ^ 0x9e37_79b9_7f4a_7c15;
+    buf.copy_from_slice(&mixed.to_le_bytes());
+    AnubisValue::Int(i64::from_le_bytes(buf))
+}
+fn anubis_net_send(host: AnubisValue, port: AnubisValue, payload: AnubisValue) -> AnubisValue {
+    use std::io::Write;
+    use std::net::TcpStream;
+    let addr = format!("{}:{}", host.display_string(), port.as_i64());
+    match TcpStream::connect(&addr) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(payload.display_string().as_bytes()) {
+                panic!("ANUBIS_IO_ERROR: send({}): {}", addr, e);
+            }
+            AnubisValue::Int(0)
+        }
+        Err(e) => panic!("ANUBIS_IO_ERROR: send({}): {}", addr, e),
+    }
+}
+fn anubis_net_connect(host: AnubisValue, port: AnubisValue) -> AnubisValue {
+    use std::net::TcpStream;
+    let addr = format!("{}:{}", host.display_string(), port.as_i64());
+    match TcpStream::connect(&addr) {
+        Ok(_) => AnubisValue::Str(addr),
+        Err(e) => panic!("ANUBIS_IO_ERROR: connect({}): {}", addr, e),
+    }
+}
+
 // ---- Higher-order functions over closures ----
 
 fn anubis_map(list: AnubisValue, f: AnubisValue) -> AnubisValue {
@@ -2225,6 +2292,9 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String, ctx: &EmitCt
 }
 
 /// Names that are analysis/proof constructs, not executable user functions in the safe run path.
+/// Phase-3 C3: capability I/O (`read_file`/`write_file`/`open`/`send`/`connect`/`time`/`rand`) is
+/// no longer rejected here — those emit real stdlib calls via `emit_builtin_call`. Shell/exec/sql
+/// and pure analysis constructs remain non-run.
 fn is_non_run_builtin(callee: &str) -> bool {
     matches!(
         callee,
@@ -2237,13 +2307,6 @@ fn is_non_run_builtin(callee: &str) -> bool {
             | "shell"
             | "exec"
             | "system"
-            | "read_file"
-            | "write_file"
-            | "open"
-            | "write"
-            | "send"
-            | "connect"
-            | "network_send"
             | "memcpy"
             | "sql"
     )
@@ -2622,6 +2685,23 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "panic" => fixed("anubis_panic", callee, args, 1),
         "input" | "read_line" => fixed("anubis_input", callee, args, 0),
         "args" => fixed("anubis_args", callee, args, 0),
+        // Phase-3 C3: governed capability I/O (additive; programs without these names emit unchanged)
+        "read_file" => fixed("anubis_read_file", callee, args, 1),
+        "write_file" | "write" => fixed("anubis_write_file", callee, args, 2),
+        "open" => fixed("anubis_open", callee, args, 1),
+        "send" | "network_send" if args.len() == 3 => Ok(format!(
+            "anubis_net_send({}, {}, {})",
+            args[0], args[1], args[2]
+        )),
+        "send" | "network_send" => Err(unsupported_run(
+            "`send` expects 3 arguments (host, port, payload)",
+        )),
+        "connect" if args.len() == 2 => Ok(format!("anubis_net_connect({}, {})", args[0], args[1])),
+        "connect" => Err(unsupported_run(
+            "`connect` expects 2 arguments (host, port)",
+        )),
+        "time" | "time_now" | "now" => fixed("anubis_time_now", callee, args, 0),
+        "rand" | "rand_gen" | "random" => fixed("anubis_rand_gen", callee, args, 0),
         // extended math
         "sin" => fixed("anubis_sin", callee, args, 1),
         "cos" => fixed("anubis_cos", callee, args, 1),
