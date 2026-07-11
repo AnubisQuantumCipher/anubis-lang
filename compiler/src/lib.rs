@@ -1347,6 +1347,24 @@ fn main() {
     }
 
     #[test]
+    fn solver_models_shifts_soundly() {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // Left shift proves; the shift amount is masked mod 64 exactly like the runtime.
+        assert!(discharged("fn f() -> u32 ensures(result == 16) { return 1 << 4; }"), "1 << 4 == 16");
+        assert!(discharged("fn f() -> u32 ensures(result == 2) { return 1 << 65; }"), "1 << 65 masks to 1 << 1 == 2");
+        // `>>` is ARITHMETIC (sign-extending) — bvashr, matching i64::wrapping_shr, NOT bvlshr.
+        assert!(discharged("fn f() -> u32 ensures(result == 0 - 4) { return (0 - 8) >> 1; }"), "-8 >> 1 == -4 (arithmetic)");
+        // False shift contracts are DISPROVED, never vacuously accepted.
+        assert!(!discharged("fn f() -> u32 ensures(result == 4) { return (0 - 8) >> 1; }"), "-8 >> 1 == 4 is false (it is -4)");
+        assert!(!discharged("fn f() -> u32 ensures(result == 8) { return 1 << 2; }"), "1 << 2 == 8 is false (it is 4)");
+    }
+
+    #[test]
     fn solver_modelability_is_function_local_and_shadow_safe() {
         // Solver integer-modelability must be FUNCTION-LOCAL and invalidated on a shadowing `let`.
         // Otherwise a name modeled as an i64 in one place leaks its modelability to a same-named

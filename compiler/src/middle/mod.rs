@@ -1849,11 +1849,11 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // reduce it mod 2^64 — the solver "proved" `x + 2^64 <= x` because it saw `x + 0`.
         Expr::Literal(l) => !l.is_empty() && l.parse::<i64>().is_ok(),
         Expr::Binary { op, lhs, rhs } => {
-            // Only ops that model i64 EXACTLY as 64-bit bit-vectors: add/sub/mul (wrap like i64) and
-            // bitwise and/or/xor. `/` and `%` (division-by-zero traps at runtime) and `<<`/`>>`
-            // (runtime masks the shift mod 64, SMT does not) are left unmodelable, so an assertion
-            // over them is skipped rather than unsoundly disproved.
-            matches!(op.as_str(), "+" | "-" | "*" | "&" | "|" | "^")
+            // Ops that model i64 EXACTLY as 64-bit bit-vectors: add/sub/mul (wrap like i64), bitwise
+            // and/or/xor, and the shifts `<<`/`>>` (encoded with the runtime's mod-64 shift-amount
+            // mask and an ARITHMETIC right shift — see the encoder). `/` and `%` are still excluded:
+            // division-by-zero traps at runtime, so they need a provable non-zero divisor first.
+            matches!(op.as_str(), "+" | "-" | "*" | "&" | "|" | "^" | "<<" | ">>")
                 && is_int_modelable(lhs, int_vars)
                 && is_int_modelable(rhs, int_vars)
         }
@@ -1960,9 +1960,14 @@ fn expr_to_smt_with_width(
                 "<=" => format!("(bvsle {} {})", l, r),
                 ">" => format!("(bvsgt {} {})", l, r),
                 ">=" => format!("(bvsge {} {})", l, r),
-                // `/ % << >>` are intentionally NOT encoded here: they are excluded from
-                // is_int_modelable (division-by-zero and shift-by-≥64 do not match the i64 runtime),
-                // so a modeled assertion never reaches this arm with them.
+                // Shifts mask the shift amount mod 64 (matching the runtime's `rem_euclid(64)`, which
+                // equals the low 6 bits via unsigned `bvurem`), and `>>` is ARITHMETIC — the runtime
+                // uses `i64::wrapping_shr`, which sign-extends. `bvlshr` (logical) would be UNSOUND
+                // (it would "prove" `(-8 >> 1) == 4` while the program computes -4).
+                "<<" => format!("(bvshl {} (bvurem {} (_ bv64 64)))", l, r),
+                ">>" => format!("(bvashr {} (bvurem {} (_ bv64 64)))", l, r),
+                // `/ %` are still NOT encoded here: excluded from is_int_modelable (division-by-zero
+                // traps at runtime), so a modeled assertion never reaches this arm with them.
                 _ => format!("({} {} {})", op, l, r),
             }
         }
