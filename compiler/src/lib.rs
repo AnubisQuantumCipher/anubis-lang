@@ -1500,7 +1500,8 @@ fn main() {
 
     #[test]
     fn solver_models_guarded_variable_divisor_soundly() {
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL"),
@@ -1510,36 +1511,105 @@ fn main() {
         // soundly: the guard is an assumption in the obligation, so z3 evaluates bvsdiv/bvsrem only over
         // non-zero divisors (never the runtime's division-by-zero trap). Concrete dividends keep the
         // query fast and deterministic.
-        assert!(discharged("fn f(n: u32) -> u32 requires(n != 0) ensures(result <= 6) { return 6 / n; }"), "6/n <= 6 proves under requires(n != 0)");
-        assert!(discharged("fn f(m: u32) -> u32 requires(m > 0) ensures(result <= 100) { return 100 / m; }"), "100/m <= 100 proves under requires(m > 0)");
+        assert!(
+            discharged(
+                "fn f(n: u32) -> u32 requires(n != 0) ensures(result <= 6) { return 6 / n; }"
+            ),
+            "6/n <= 6 proves under requires(n != 0)"
+        );
+        assert!(
+            discharged(
+                "fn f(m: u32) -> u32 requires(m > 0) ensures(result <= 100) { return 100 / m; }"
+            ),
+            "100/m <= 100 proves under requires(m > 0)"
+        );
         // The modeling is REAL, not vacuous: a FALSE postcondition over a guarded divisor is disproved.
-        assert!(!discharged("fn f(n: u32) -> u32 requires(n != 0) ensures(result == 6) { return 6 / n; }"), "6/n == 6 is false (n=2 -> 3)");
+        assert!(
+            !discharged(
+                "fn f(n: u32) -> u32 requires(n != 0) ensures(result == 6) { return 6 / n; }"
+            ),
+            "6/n == 6 is false (n=2 -> 3)"
+        );
         // NO non-zero guard -> the divisor could be zero (trap) -> unmodelable, fail-closed. Note
         // `requires(y == 2)` is not one of the recognized guard forms, so it too is refused.
-        assert!(!discharged("fn f(x: u32, n: u32) -> u32 ensures(result == 6) { return 6 / n; }"), "unguarded variable divisor is not modelable");
+        assert!(
+            !discharged("fn f(x: u32, n: u32) -> u32 ensures(result == 6) { return 6 / n; }"),
+            "unguarded variable divisor is not modelable"
+        );
         assert!(!discharged("fn f(x: u32, y: u32) -> u32 requires(x == 6) requires(y == 2) ensures(result == 3) { return x / y; }"), "requires(y == 2) is not a recognized non-zero guard");
         // The guard must hold AT the division: reassigning the divisor makes the entry guard stale, so
         // it is NOT modeled (fail-closed) even though the reassigned value happens to be non-zero.
         assert!(!discharged("fn f(n: u32) -> u32 requires(n != 0) ensures(result == 3) { n = 2; return 6 / n; }"), "reassigned divisor: stale guard, not modeled");
 
         // Guard-form boundaries. ACCEPT every clause that provably EXCLUDES 0 (both operand orders):
-        assert!(discharged("fn f(n: u32) -> u32 requires(n >= 1) ensures(result <= 6) { return 6 / n; }"), "n >= 1 excludes 0");
-        assert!(discharged("fn f(n: u32) -> u32 requires(n > 5) ensures(result <= 6) { return 6 / n; }"), "n > 5 excludes 0");
-        assert!(discharged("fn f(n: u32) -> u32 requires(n < 0) ensures(result <= 6) { return 6 / n; }"), "n < 0 excludes 0 (negative divisor)");
-        assert!(discharged("fn f(n: u32) -> u32 requires(n <= -1) ensures(result <= 6) { return 6 / n; }"), "n <= -1 excludes 0 (negative literal)");
-        assert!(discharged("fn f(n: u32) -> u32 requires(0 < n) ensures(result <= 6) { return 6 / n; }"), "0 < n mirror excludes 0");
+        assert!(
+            discharged(
+                "fn f(n: u32) -> u32 requires(n >= 1) ensures(result <= 6) { return 6 / n; }"
+            ),
+            "n >= 1 excludes 0"
+        );
+        assert!(
+            discharged(
+                "fn f(n: u32) -> u32 requires(n > 5) ensures(result <= 6) { return 6 / n; }"
+            ),
+            "n > 5 excludes 0"
+        );
+        assert!(
+            discharged(
+                "fn f(n: u32) -> u32 requires(n < 0) ensures(result <= 6) { return 6 / n; }"
+            ),
+            "n < 0 excludes 0 (negative divisor)"
+        );
+        assert!(
+            discharged(
+                "fn f(n: u32) -> u32 requires(n <= -1) ensures(result <= 6) { return 6 / n; }"
+            ),
+            "n <= -1 excludes 0 (negative literal)"
+        );
+        assert!(
+            discharged(
+                "fn f(n: u32) -> u32 requires(0 < n) ensures(result <= 6) { return 6 / n; }"
+            ),
+            "0 < n mirror excludes 0"
+        );
         // REJECT every clause that does NOT exclude 0 — the divisor could still be zero. These are the
         // soundness-critical boundaries: a one-off in the threshold table would model a trapping divide.
-        assert!(!discharged("fn f(n: u32) -> u32 requires(n >= 0) ensures(result == 6) { return 6 / n; }"), "n >= 0 does NOT exclude 0");
-        assert!(!discharged("fn f(n: u32) -> u32 requires(n > -1) ensures(result == 6) { return 6 / n; }"), "n > -1 (i.e. n >= 0) does NOT exclude 0");
-        assert!(!discharged("fn f(n: u32) -> u32 requires(n < 1) ensures(result == 6) { return 6 / n; }"), "n < 1 (i.e. n <= 0) does NOT exclude 0");
-        assert!(!discharged("fn f(n: u32) -> u32 requires(n <= 0) ensures(result == 6) { return 6 / n; }"), "n <= 0 does NOT exclude 0");
-        assert!(!discharged("fn f(n: u32) -> u32 requires(n != 5) ensures(result == 6) { return 6 / n; }"), "n != 5 does NOT exclude 0");
+        assert!(
+            !discharged(
+                "fn f(n: u32) -> u32 requires(n >= 0) ensures(result == 6) { return 6 / n; }"
+            ),
+            "n >= 0 does NOT exclude 0"
+        );
+        assert!(
+            !discharged(
+                "fn f(n: u32) -> u32 requires(n > -1) ensures(result == 6) { return 6 / n; }"
+            ),
+            "n > -1 (i.e. n >= 0) does NOT exclude 0"
+        );
+        assert!(
+            !discharged(
+                "fn f(n: u32) -> u32 requires(n < 1) ensures(result == 6) { return 6 / n; }"
+            ),
+            "n < 1 (i.e. n <= 0) does NOT exclude 0"
+        );
+        assert!(
+            !discharged(
+                "fn f(n: u32) -> u32 requires(n <= 0) ensures(result == 6) { return 6 / n; }"
+            ),
+            "n <= 0 does NOT exclude 0"
+        );
+        assert!(
+            !discharged(
+                "fn f(n: u32) -> u32 requires(n != 5) ensures(result == 6) { return 6 / n; }"
+            ),
+            "n != 5 does NOT exclude 0"
+        );
     }
 
     #[test]
     fn solver_models_abs_min_max_soundly() {
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL"),
@@ -1547,19 +1617,48 @@ fn main() {
         };
         // abs models as ite(x<0, -x, x) with bvneg — which WRAPS at i64::MIN exactly like the runtime's
         // wrapping_abs, so abs(MIN) == MIN (negative). Concrete/bounded cases prove...
-        assert!(discharged("fn f() -> u32 ensures(result == 5) { return abs(0 - 5); }"), "abs(-5) == 5");
-        assert!(discharged("fn f(x: u32) -> u32 requires(x >= 0) ensures(result == x) { return abs(x); }"), "abs(x) == x for x >= 0");
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 5) { return abs(0 - 5); }"),
+            "abs(-5) == 5"
+        );
+        assert!(
+            discharged(
+                "fn f(x: u32) -> u32 requires(x >= 0) ensures(result == x) { return abs(x); }"
+            ),
+            "abs(x) == x for x >= 0"
+        );
         // ...but abs(x) >= 0 is FALSE unbounded (x = MIN wraps to MIN < 0): the model catches it, so a
         // naive |x|>=0 model that ignored the wrap would be caught here.
-        assert!(!discharged("fn f(x: u32) -> u32 ensures(result >= 0) { return abs(x); }"), "abs(x) >= 0 is false at x = MIN (wrapping_abs)");
+        assert!(
+            !discharged("fn f(x: u32) -> u32 ensures(result >= 0) { return abs(x); }"),
+            "abs(x) >= 0 is false at x = MIN (wrapping_abs)"
+        );
         // min/max are signed bvsle selects (matching anubis_value_cmp's i64 ordering).
-        assert!(discharged("fn f() -> u32 ensures(result == 3) { return min(3, 5); }"), "min(3,5) == 3");
-        assert!(discharged("fn f() -> u32 ensures(result == 7) { return max(7, 2); }"), "max(7,2) == 7");
-        assert!(discharged("fn f(a: u32, b: u32) -> u32 ensures(result <= a) { return min(a, b); }"), "min(a,b) <= a");
-        assert!(discharged("fn f(a: u32, b: u32) -> u32 ensures(result >= b) { return max(a, b); }"), "max(a,b) >= b");
-        assert!(!discharged("fn f(a: u32, b: u32) -> u32 ensures(result == a) { return min(a, b); }"), "min(a,b) == a is not always true");
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 3) { return min(3, 5); }"),
+            "min(3,5) == 3"
+        );
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 7) { return max(7, 2); }"),
+            "max(7,2) == 7"
+        );
+        assert!(
+            discharged("fn f(a: u32, b: u32) -> u32 ensures(result <= a) { return min(a, b); }"),
+            "min(a,b) <= a"
+        );
+        assert!(
+            discharged("fn f(a: u32, b: u32) -> u32 ensures(result >= b) { return max(a, b); }"),
+            "max(a,b) >= b"
+        );
+        assert!(
+            !discharged("fn f(a: u32, b: u32) -> u32 ensures(result == a) { return min(a, b); }"),
+            "min(a,b) == a is not always true"
+        );
         // A 3-arg min (variadic list form) is a different runtime path -> not modeled -> fail-closed.
-        assert!(!discharged("fn f() -> u32 ensures(result == 1) { return min(1, 2, 3); }"), "3-arg min is not modeled");
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 1) { return min(1, 2, 3); }"),
+            "3-arg min is not modeled"
+        );
     }
 
     #[test]

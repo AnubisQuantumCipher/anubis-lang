@@ -336,10 +336,12 @@ pub fn build_evidence_bundle(
         manifest_sha256,
         checks,
         verdict,
-        security: security.or_else(|| Some(serde_json::json!({
-            "mode": mode,
-            "note": "language attributes and effects recorded in checks and logs"
-        }))),
+        security: security.or_else(|| {
+            Some(serde_json::json!({
+                "mode": mode,
+                "note": "language attributes and effects recorded in checks and logs"
+            }))
+        }),
     };
 
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
