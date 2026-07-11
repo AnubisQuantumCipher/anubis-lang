@@ -925,6 +925,21 @@ fn analyze_function(
     });
 }
 
+/// Restore the lexical binding scope after analyzing a block (`if`/`else`/loop body/etc.).
+///
+/// A block-scoped `let` (including a name that shadows an outer binding) must not leak past the
+/// block: `let x = 5; if c { let x = taint(); } sink(x);` must see the OUTER clean `x`, not the
+/// inner tainted one. Mirrors the snapshot/restore that `body_returns_taint` already does for the
+/// interprocedural summary. This ONLY rewrites the `scope` map (BindingInfo / closure_arity); it
+/// does NOT touch solver `assumptions` or `solver_int_vars` — those have their own snapshot path
+/// via `drop_written_after_scope` / `havoc_loop_written` and must stay undisturbed here.
+fn restore_block_scope(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    saved: &BTreeMap<String, ScopeBinding>,
+) {
+    *scope = saved.clone();
+}
+
 fn analyze_stmts(
     stmts: &[Stmt],
     mode: Mode,
@@ -1180,6 +1195,8 @@ fn analyze_stmts(
             Stmt::ResearchBlock { body, .. } => {
                 ctx.has_research = true;
                 effects.push("research-boundary".into());
+                // Lexical block: a `let` inside `@research { ... }` must not escape.
+                let snap_scope = scope.clone();
                 analyze_stmts(
                     body,
                     Mode::Research,
@@ -1189,10 +1206,12 @@ fn analyze_stmts(
                     assumptions,
                     ctx,
                 );
+                restore_block_scope(scope, &snap_scope);
             }
             Stmt::ExploitBlock { body, .. } => {
                 ctx.has_research = true;
                 effects.push("exploit-boundary".into());
+                let snap_scope = scope.clone();
                 analyze_stmts(
                     body,
                     Mode::Exploit,
@@ -1202,11 +1221,14 @@ fn analyze_stmts(
                     assumptions,
                     ctx,
                 );
+                restore_block_scope(scope, &snap_scope);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 effects.push("hybrid".into());
                 for block in [gpu, cpu, prove].into_iter().flatten() {
+                    let snap_scope = scope.clone();
                     analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx);
+                    restore_block_scope(scope, &snap_scope);
                 }
             }
             Stmt::ExprStmt(Expr::Assume(expr)) => {
@@ -1341,10 +1363,18 @@ fn analyze_stmts(
                 // unconditional. Analyze each branch under the pre-`if` assumptions (the branches are
                 // ALTERNATIVES — reset between them so `then`'s facts don't leak into `else`), then
                 // discard the branch facts and drop every variable either branch conditionally writes.
+                //
+                // Taint scope is snapshotted/restored the same way `body_returns_taint` does: a
+                // block-scoped `let` (incl. shadowing) must not escape the branch. Without this,
+                // `let x=5; if c { let x=taint(); } sink(x);` was a false-positive reject — the
+                // outer clean `x` was overwritten by the inner tainted binding. Solver assumptions
+                // stay on their own snapshot path below; this only restores BindingInfo scope.
                 let snapshot = assumptions.clone();
+                let snap_scope = scope.clone();
                 analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
                 if let Some(else_body) = else_ {
                     *assumptions = snapshot.clone();
+                    restore_block_scope(scope, &snap_scope);
                     analyze_stmts(
                         else_body,
                         mode,
@@ -1355,6 +1385,7 @@ fn analyze_stmts(
                         ctx,
                     );
                 }
+                restore_block_scope(scope, &snap_scope);
                 let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
             }
@@ -1378,9 +1409,12 @@ fn analyze_stmts(
                 // accumulates survives it: after analysis we restore this snapshot and drop every
                 // written variable. Havoc the written variables first so an in-body `assert` is not
                 // discharged against a stale pre-loop value the loop mutates each iteration.
+                // Same for taint scope: a loop-body `let` is block-scoped and must not escape.
                 let snapshot = assumptions.clone();
+                let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                restore_block_scope(scope, &snap_scope);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 if let Some((post, _written, readmit)) = admit {
                     // A VERIFIED invariant DOES hold after the loop: re-model the tracked variables
@@ -1398,6 +1432,8 @@ fn analyze_stmts(
             }
             Stmt::WhileLet { pattern, body, .. } => {
                 effects.push("loop".into());
+                // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
+                let snap_scope = scope.clone();
                 for n in pattern.bound_names() {
                     let info = BindingInfo {
                         name: n.clone(),
@@ -1420,6 +1456,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                restore_block_scope(scope, &snap_scope);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::Loop { body, invariant } => {
@@ -1435,8 +1472,10 @@ fn analyze_stmts(
                     });
                 }
                 let snapshot = assumptions.clone();
+                let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                restore_block_scope(scope, &snap_scope);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::For {
@@ -1468,6 +1507,8 @@ fn analyze_stmts(
                 // loop (`for i in a..b`) binds a number; a collection loop (`for x in xs`) binds an
                 // element whose type is dynamic (unknown) — typing it `u32` was a heuristic that
                 // mis-flagged `for x in xs { x[0] }` as "indexing a number".
+                // Snapshot BEFORE inserting the loop var so it (and any body `let`) do not escape.
+                let snap_scope = scope.clone();
                 let var_ty = match source {
                     crate::frontend::ForSource::Range { .. } => Some("u32".into()),
                     crate::frontend::ForSource::Collection { .. } => None,
@@ -1492,6 +1533,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                restore_block_scope(scope, &snap_scope);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::Break | Stmt::Continue => {}

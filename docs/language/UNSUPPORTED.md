@@ -147,13 +147,13 @@ through indexing/field access.
   is tainted"), **parameter→sink summaries** (a callee that sinks its argument internally), and
   **higher-order / indirect calls** (`let f = get_secret; sink(f())` — the summary keys on the callee
   NAME; a function-valued variable is not resolved, same boundary as method calls via `CallExpr`).
-- **Block-scoped shadowing is respected by the return-taint summary but NOT yet by the intra-procedural
-  sink check.** The interprocedural walk snapshots/restores scope around blocks, so
-  `fn f(c){ let x=5; if c { let x=taint(); } return x; }` is correctly clean. The *inline* equivalent
-  (`let x=5; if c { let x=taint(); } sink(x);`) is still a pre-existing FALSE POSITIVE in
-  `analyze_stmts`, which keys taint on a flat per-name scope without block push/pop. Fixing
-  `analyze_stmts`' block scoping is a separate slice; it is a fail-CLOSED over-rejection (safe
-  direction), not a leak.
+- **Block-scoped shadowing is now respected by both the return-taint summary AND the intra-procedural
+  sink check (Phase-3 slice B, 2026-07-11).** `analyze_stmts` snapshots/restores the lexical binding
+  scope around `if`/`else`/loop/`@research`/`@exploit`/hybrid bodies the same way `body_returns_taint`
+  already did — so `let x=5; if c { let x=taint(); } sink(x);` correctly accepts the outer clean `x`
+  (the previous fail-CLOSED false positive is closed). Solver assumptions/`solver_int_vars` stay on
+  their own snapshot path and are not disturbed by the taint-scope restore. A real sink of the *inner*
+  shadow, or of an outer binding that is itself tainted, is still rejected.
 - **Whole-binding granularity.** A struct field individually declared `tainted<T>` in the struct's
   own type definition does not by itself taint `.field` access on an otherwise-clean instance; only a
   binding seeded tainted at its own `let`/param propagates.

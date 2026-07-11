@@ -3140,6 +3140,92 @@ fn main() {
     }
 
     #[test]
+    fn block_scoped_shadowing_does_not_taint_outer_binding_at_sink() {
+        // Phase-3 slice B: close the pre-existing fail-CLOSED false positive where `analyze_stmts`
+        // keyed taint on a flat per-name scope (no block push/pop). The *interprocedural* walk
+        // already snapshotted/restored around blocks; the *intra-procedural* sink check did not —
+        // so `let x=5; if c { let x=taint(); } sink(x);` was wrongly rejected even though the outer
+        // clean `x` is what reaches the sink when the then-branch is a pure shadow. Now both paths
+        // use the same lexical snapshot/restore.
+        //
+        // Pass cases: outer clean binding after a block-scoped shadow.
+        for (case, src) in [
+            (
+                "if-then shadow does not taint outer",
+                r#"fn main() {
+    let x = 5;
+    if true { let x = taint_source("s"); print(x); }
+    sink(x);
+}"#,
+            ),
+            (
+                "if-else shadow does not taint outer",
+                r#"fn main() {
+    let x = 5;
+    if false { let x = taint_source("s"); print(x); } else { let x = taint_source("t"); print(x); }
+    sink(x);
+}"#,
+            ),
+            (
+                "while-body shadow does not taint outer",
+                r#"fn main() {
+    let x = 5;
+    let mut i = 0;
+    while i < 1 { let x = taint_source("s"); print(x); i = i + 1; }
+    sink(x);
+}"#,
+            ),
+            (
+                "for-body shadow does not taint outer",
+                r#"fn main() {
+    let x = 5;
+    for i in 0..1 { let x = taint_source("s"); print(x); }
+    sink(x);
+}"#,
+            ),
+        ] {
+            tc_ok(src).unwrap_or_else(|e| {
+                panic!("{case}: outer clean binding after block shadow must be accepted: {e}")
+            });
+        }
+
+        // Reject cases: a real leak must still be caught (the scope fix must not open a hole).
+        for (case, src) in [
+            (
+                "return of inner shadowed taint inside if still rejects",
+                r#"fn main() {
+    let x = 5;
+    if true {
+        let x = taint_source("s");
+        sink(x);
+    }
+}"#,
+            ),
+            (
+                "no shadow — outer itself is tainted",
+                r#"fn main() {
+    let x = taint_source("s");
+    if true { let y = 1; print(y); }
+    sink(x);
+}"#,
+            ),
+            (
+                "for-loop var that is tainted still rejects inside body",
+                r#"fn main() {
+    let xs: tainted<list> = [1, 2, 3];
+    for x in xs { sink(x); }
+}"#,
+            ),
+        ] {
+            let err = tc_ok(src).expect_err(&format!("{case}: a real leak must still reject"));
+            assert!(
+                err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+                "{case} got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn interprocedural_return_taint_is_flagged_at_the_call_site() {
         // Phase-3 slice 2: a function that RETURNS internally-produced taint now taints its call
         // expression (the `Expr::Call` arm consults the `tainting_fns` summary). Before this,
