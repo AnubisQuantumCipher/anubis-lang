@@ -1,5 +1,6 @@
-// A library module. Functions are callable from an importer as `math::<name>`; the intra-module
-// call in `square` (bare `mul`) is namespaced automatically when the graph is combined.
-fn add(a, b) { return a + b; }
-fn square(x) { return mul(x, x); }
+// A library module. `pub` functions are callable from an importer as `math::<name>`; `mul` is
+// private (no `pub`) and reached only by its sibling `square` — an intra-module call, which is
+// namespaced automatically when the graph is combined.
+pub fn add(a, b) { return a + b; }
+pub fn square(x) { return mul(x, x); }
 fn mul(a, b) { return a * b; }

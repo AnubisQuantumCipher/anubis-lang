@@ -1,0 +1,8 @@
+// Calling a private function across a module boundary is a fail-closed compile error
+// (ANUBIS_PRIVATE_ITEM). Running this must fail. `secrets::public_ok()` would be fine; calling
+// `secrets::internal()` is the rejected line.
+import secrets;
+
+fn main() {
+    print(secrets::internal());
+}

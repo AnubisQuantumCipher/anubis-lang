@@ -4124,7 +4124,8 @@ fn main() {
         let root = dir.path();
         std::fs::write(
             root.join("math.anb"),
-            "fn add(a, b) { return a + b; }\nfn square(x) { return mul(x, x); }\nfn mul(a, b) { return a * b; }",
+            // add/square are exported (pub); mul is private and reached only intra-module by square.
+            "pub fn add(a, b) { return a + b; }\npub fn square(x) { return mul(x, x); }\nfn mul(a, b) { return a * b; }",
         )
         .unwrap();
         let main = root.join("main.anb");
@@ -4136,6 +4137,24 @@ fn main() {
             .expect("multi-file program should run");
         assert!(outcome.status_success, "stderr: {}", outcome.stderr);
         assert_eq!(outcome.stdout.trim(), "5 25");
+    }
+
+    #[test]
+    fn run_cross_module_private_call_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("lib.anb"),
+            "pub fn ok() { return 1; }\nfn secret() { return 42; }",
+        )
+        .unwrap();
+        let main = root.join("main.anb");
+        let main_src = "import lib;\nfn main() { print(lib::secret()); }";
+        std::fs::write(&main, main_src).unwrap();
+        let out = tempfile::tempdir().expect("out");
+        let err = run_anubis_source(&main, main_src, out.path(), false, &[])
+            .expect_err("calling a private fn across modules must fail closed");
+        assert!(err.to_string().contains("ANUBIS_PRIVATE_ITEM"), "got: {err}");
     }
 
     #[test]

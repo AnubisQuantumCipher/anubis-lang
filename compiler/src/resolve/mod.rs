@@ -10,7 +10,7 @@
 //! Fail-closed by construction: an unresolved import, an import cycle, or a file that resolves
 //! outside the source root is a hard `ANUBIS_IMPORT_*` error, never a silent skip.
 
-use crate::frontend::{parse_source, Expr, Item, Span, Stmt, AST};
+use crate::frontend::{parse_source, Expr, Item, Span, Stmt, Visibility, AST};
 use crate::project::ProjectLayout;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -86,7 +86,7 @@ pub fn collect_imports(ast: &AST) -> Vec<(String, Span)> {
     ast.items
         .iter()
         .filter_map(|it| match it {
-            Item::Import { path, span } => Some((path.clone(), span.clone())),
+            Item::Import { path, span } => Some((path.clone(), *span)),
             _ => None,
         })
         .collect()
@@ -214,6 +214,19 @@ fn collect_enum_names(items: &[Item], out: &mut BTreeSet<String>) {
     }
 }
 
+/// The names of `pub` functions in a module — the set callable as `mod::name` from an importer.
+fn collect_pub_fn_names(items: &[Item], out: &mut BTreeSet<String>) {
+    for it in items {
+        match it {
+            Item::Fn { name, visibility, .. } if *visibility == Visibility::Public => {
+                out.insert(name.clone());
+            }
+            Item::Module { items, .. } => collect_pub_fn_names(items, out),
+            _ => {}
+        }
+    }
+}
+
 /// Per-module rewrite context.
 struct RewriteCtx {
     /// This module's namespace prefix (`""` for the root/entry module — root names stay bare).
@@ -222,6 +235,9 @@ struct RewriteCtx {
     local_fns: BTreeSet<String>,
     /// Import alias -> target module prefix, for rewriting `alias::f` calls.
     alias_to_prefix: BTreeMap<String, String>,
+    /// Import alias -> the target module's exported (`pub`) function names. A cross-module call to a
+    /// name absent here is `ANUBIS_PRIVATE_ITEM`.
+    alias_to_exports: BTreeMap<String, BTreeSet<String>>,
     /// Enum names visible in this module (+ builtins), for the module-vs-enum ambiguity check.
     local_enums: BTreeSet<String>,
     /// First fail-closed error encountered (e.g. an ambiguous path).
@@ -230,6 +246,15 @@ struct RewriteCtx {
 
 /// Combine a loaded module graph into a single flat item list, fail-closed on ambiguity.
 pub fn combine_graph(graph: &ModuleGraph) -> Result<Vec<Item>, String> {
+    // Pre-pass: the exported (`pub`) function names of every module, keyed by its dotted path (which
+    // equals the dotted `import` path an importer uses to reach it).
+    let mut module_exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for m in &graph.modules {
+        let mut pubs = BTreeSet::new();
+        collect_pub_fn_names(&m.ast.items, &mut pubs);
+        module_exports.insert(m.module_path.clone(), pubs);
+    }
+
     let mut out: Vec<Item> = Vec::new();
     for m in &graph.modules {
         let prefix = module_prefix(&m.module_path); // "" for the root module
@@ -239,13 +264,20 @@ pub fn combine_graph(graph: &ModuleGraph) -> Result<Vec<Item>, String> {
             ["Option", "Result"].iter().map(|s| s.to_string()).collect();
         collect_enum_names(&m.ast.items, &mut local_enums);
         let mut alias_to_prefix = BTreeMap::new();
+        let mut alias_to_exports = BTreeMap::new();
         for (dotted, _span) in &m.imports {
-            alias_to_prefix.insert(import_alias(dotted).to_string(), module_prefix(dotted));
+            let alias = import_alias(dotted).to_string();
+            alias_to_prefix.insert(alias.clone(), module_prefix(dotted));
+            alias_to_exports.insert(
+                alias,
+                module_exports.get(dotted).cloned().unwrap_or_default(),
+            );
         }
         let mut ctx = RewriteCtx {
             prefix,
             local_fns,
             alias_to_prefix,
+            alias_to_exports,
             local_enums,
             error: None,
         };
@@ -482,6 +514,17 @@ fn rewrite_expr(e: &mut Expr, ctx: &mut RewriteCtx) {
                     "ANUBIS_AMBIGUOUS_PATH: `{enum_name}` names both an imported module and an enum in scope; rename one to disambiguate"
                 ));
                 None
+            } else if !ctx
+                .alias_to_exports
+                .get(enum_name)
+                .map(|exports| exports.contains(variant))
+                .unwrap_or(false)
+            {
+                // The target module has no such `pub` function (it is private or absent).
+                ctx.error.get_or_insert(format!(
+                    "ANUBIS_PRIVATE_ITEM: `{variant}` is not a `pub` function exported by module `{enum_name}`"
+                ));
+                None
             } else {
                 Some(Expr::Call {
                     callee: format!("{}__{}", ctx.alias_to_prefix[enum_name], variant),
@@ -517,7 +560,7 @@ mod tests {
     fn resolves_dotted_paths_to_flat_and_nested_and_mod_files() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write(root, "math.anb", "fn add(a, b) { return a + b; }");
+        write(root, "math.anb", "pub fn add(a, b) { return a + b; }");
         write(root, "geo/vec.anb", "fn dot() { return 0; }");
         write(root, "net/mod.anb", "fn get() { return 1; }");
 
@@ -548,7 +591,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let entry = write(root, "main.anb", "import math;\nfn main() { print(math::add(2, 3)); }");
-        write(root, "math.anb", "fn add(a, b) { return a + b; }");
+        write(root, "math.anb", "pub fn add(a, b) { return a + b; }");
 
         let graph = load_graph(&entry, root).unwrap();
         assert_eq!(graph.modules.len(), 2);
@@ -647,7 +690,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let entry = write(root, "main.anb", "import math;\nfn main() { print(math::add(2, 3)); }");
-        write(root, "math.anb", "fn add(a, b) { return a + b; }");
+        write(root, "math.anb", "pub fn add(a, b) { return a + b; }");
 
         let graph = load_graph(&entry, root).unwrap();
         let items = combine_graph(&graph).unwrap();
@@ -677,7 +720,7 @@ mod tests {
         write(
             root,
             "util.anb",
-            "fn pub_api() { return helper() + 1; }\nfn helper() { return 41; }",
+            "pub fn pub_api() { return helper() + 1; }\nfn helper() { return 41; }",
         );
 
         let graph = load_graph(&entry, root).unwrap();
@@ -717,10 +760,26 @@ mod tests {
             "main.anb",
             "import math;\nenum math { A, B }\nfn main() { print(math::add(1, 2)); }",
         );
-        write(root, "math.anb", "fn add(a, b) { return a + b; }");
+        write(root, "math.anb", "pub fn add(a, b) { return a + b; }");
         let graph = load_graph(&entry, root).unwrap();
         let err = combine_graph(&graph).unwrap_err();
         assert!(err.starts_with("ANUBIS_AMBIGUOUS_PATH"), "got: {err}");
+    }
+
+    #[test]
+    fn combine_rejects_cross_module_call_to_private_fn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // main calls math::secret, but `secret` is not `pub` in math -> fail-closed.
+        let entry = write(root, "main.anb", "import math;\nfn main() { print(math::secret()); }");
+        write(
+            root,
+            "math.anb",
+            "pub fn add(a, b) { return a + b; }\nfn secret() { return 42; }",
+        );
+        let graph = load_graph(&entry, root).unwrap();
+        let err = combine_graph(&graph).unwrap_err();
+        assert!(err.starts_with("ANUBIS_PRIVATE_ITEM"), "got: {err}");
     }
 
     #[cfg(unix)]
