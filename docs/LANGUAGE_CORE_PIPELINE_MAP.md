@@ -107,7 +107,7 @@ Produced from AST during typecheck. Used for evidence manifests and sidecars.
   - `expr_taint_source`, `declassify_source`, `is_tainted_type`
   - `TaintPass::apply(typed) -> TypedIR`
   - `SymbolicEngine::generate_constraints(source) -> Vec<SolverObligation>`
-  - `check_obligations`, `replay_counterexample_for_ir`
+  - `check_obligations`, `replay_counterexample` (real model-substitution re-check)
 - Produces `SemanticDiagnostic { message, span: Option<(usize,usize)> }`
 - Enforces: taint in Safe mode requires declassify with policy+reason (Gate 4/5), bool conditions, numeric arithmetic, etc.
 - No full Result/Option error handling in surface language yet.

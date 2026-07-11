@@ -49,8 +49,8 @@
 
 ## 6. Model Parsing Path
 - On "sat": `model: Some(stdout)` (full z3 output including model).
-- No structured parsing of model into values; raw in evidence.
-- No replay in current code (to be added in Gate 7).
+- Raw model kept in evidence; `parse_z3_model` (middle/mod.rs) structures it into var→BitVec value for replay.
+- Replay IS implemented (see §8): `replay_counterexample(smt, model)` re-decides the ground formula.
 
 ## 7. Evidence Bundle Solver Output Path
 - `evidence/mod.rs`:
@@ -64,7 +64,7 @@
 ## 8. Known Limitations (from Prior Audit + Inspection)
 - Theory is QF_BV/64-bit only: no strings, floats, arrays/lists, quantifiers, or truncating casts; `<<`/`>>` and `/`/`%` are modeled (shifts always; `/`/`%` with a non-zero divisor — a literal, or a variable a `requires(v != 0)`/`requires(v > 0)` guard proves non-zero and the body never reassigns). Queries run under a z3 time budget so a hard symbolic division can never hang the checker — an undecided contract is failed closed. All unmodelable forms are refused fail-closed, not mismodeled.
 - Variables declared unconstrained in some paths (collect_vars may miss defs).
-- `replay_counterexample` is currently a stub (not a real model re-execution) — Phase 4 makes it a genuine cross-check with `ANUBIS_REPLAY_MISMATCH`.
+- `replay_counterexample` (fixed 2026-07-11, commit `d25211f`) is a REAL model-substitution re-check: it parses z3's witness, pins every variable to it on top of the same `assumptions ∧ ¬assertion` query, and re-runs z3 — a genuine counterexample stays `sat`, a forged/inconsistent one goes `unsat` → `replay_valid: false`. Previously a substring stub that shipped a fabricated `solver_replay.json` attestation.
 - Wrapping semantics ARE explicit now: `bvadd/bvsub/bvmul` match the i64 `wrapping_*` runtime exactly.
 - generate_constraints re-parses source (fragile).
 - Models not mapped back to source spans/vars reliably.
