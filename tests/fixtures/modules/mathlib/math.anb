@@ -1,0 +1,5 @@
+// A library module. Functions are callable from an importer as `math::<name>`; the intra-module
+// call in `square` (bare `mul`) is namespaced automatically when the graph is combined.
+fn add(a, b) { return a + b; }
+fn square(x) { return mul(x, x); }
+fn mul(a, b) { return a * b; }

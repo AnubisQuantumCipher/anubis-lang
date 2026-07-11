@@ -2894,7 +2894,14 @@ fn run_anubis_source(
     allow_research: bool,
     args: &[String],
 ) -> Result<RunOutcome> {
-    let ast = parse_or_diag(source, input)?;
+    let mut ast = parse_or_diag(source, input)?;
+    // Multi-file modules: if the entry is a real file that declares `import`s, resolve them against
+    // the enclosing project and combine the graph into one program. Inline sources and single-file
+    // programs (no imports) are untouched — the combine pass is a no-op for them.
+    if input.is_file() && ast.items.iter().any(|it| matches!(it, Item::Import { .. })) {
+        ast.items =
+            anubis_compiler::resolve::combine_from_entry(input).map_err(|e| anyhow!("{}", e))?;
+    }
     let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
@@ -4105,6 +4112,45 @@ fn main() {
         assert!(outcome.status_success);
         assert_eq!(outcome.stdout.trim(), "Hello, Sicarii");
         assert_eq!(outcome.stderr.trim(), "");
+    }
+
+    #[test]
+    fn run_multi_file_module_program() {
+        // A real 2-file project: main.anb imports math and calls a qualified fn; math.anb's
+        // `square` calls its sibling `mul` by bare name (intra-module). Exercises the whole
+        // Phase-1 path: import resolution -> combine (namespacing + qualified/intra-module call
+        // rewrite) -> lower -> rustc -> run.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("math.anb"),
+            "fn add(a, b) { return a + b; }\nfn square(x) { return mul(x, x); }\nfn mul(a, b) { return a * b; }",
+        )
+        .unwrap();
+        let main = root.join("main.anb");
+        let main_src = "import math;\nfn main() { print(\"${math::add(2, 3)} ${math::square(5)}\"); }";
+        std::fs::write(&main, main_src).unwrap();
+
+        let out = tempfile::tempdir().expect("out");
+        let outcome = run_anubis_source(&main, main_src, out.path(), false, &[])
+            .expect("multi-file program should run");
+        assert!(outcome.status_success, "stderr: {}", outcome.stderr);
+        assert_eq!(outcome.stdout.trim(), "5 25");
+    }
+
+    #[test]
+    fn run_unresolved_import_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("main.anb");
+        let main_src = "import nope;\nfn main() { print(nope::f()); }";
+        std::fs::write(&main, main_src).unwrap();
+        let out = tempfile::tempdir().expect("out");
+        let err = run_anubis_source(&main, main_src, out.path(), false, &[])
+            .expect_err("missing module must fail closed");
+        assert!(
+            err.to_string().contains("ANUBIS_IMPORT_UNRESOLVED"),
+            "got: {err}"
+        );
     }
 
     #[test]
