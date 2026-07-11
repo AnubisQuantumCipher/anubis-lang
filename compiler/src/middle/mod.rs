@@ -804,6 +804,20 @@ fn analyze_function(
                 assumptions.push(expr_to_smt(req, &ctx.symbolic_widths));
             }
         }
+        // Mark parameters that a `requires` guard proves non-zero AS DIVISORS, so `x / v` / `x % v`
+        // become modelable. Sound only if the guarantee holds at the division: require the parameter
+        // to be a modeled integer AND never reassigned or shadowed in the body (else the entry guard
+        // need not hold later). Because such a variable is stable, the mark never needs removal.
+        let mut rebound = BTreeSet::new();
+        collect_assigned_roots(body, &mut rebound);
+        collect_let_bound(body, &mut rebound);
+        for req in requires {
+            if let Some(v) = requires_nonzero_var(req) {
+                if ctx.solver_int_vars.contains(&v) && !rebound.contains(&v) {
+                    ctx.solver_int_vars.insert(nzdiv_mark(&v));
+                }
+            }
+        }
     }
     // The precondition (parameter ranges + `requires`) dominates EVERY return; the body assumptions
     // added below (lets, composition) only dominate the tail return.
@@ -1684,6 +1698,20 @@ impl SymbolicEngine {
                             .into();
                     }
                 }
+                // A contract obligation the solver could not DECIDE (z3 `unknown`, e.g. a per-query
+                // timeout on a hard symbolic division/remainder — see `Z3_ARGS`) is NOT proven. The
+                // proof-carrying gate fails closed on it rather than accept an unverified postcondition.
+                // It was not disproved (no counterexample), only undecided within budget — say so, and
+                // clear any model. This branch became reachable once queries got a time budget.
+                if check.status == "UNKNOWN" && is_contract {
+                    check.status = "FAIL".into();
+                    check.detail = "solver could not decide this contract within its time budget (z3 \
+                         returned `unknown`, typically a hard symbolic division/remainder); failing \
+                         closed — an undecided postcondition is not a proof. Restate it as a simpler \
+                         or better-bounded obligation"
+                        .into();
+                    check.model = None;
+                }
                 check
             })
             .collect()
@@ -1693,6 +1721,13 @@ impl SymbolicEngine {
 /// Whether a contract obligation's assumptions are jointly satisfiable. `Some(true)`/`Some(false)`
 /// from z3; `None` if the solver did not cleanly decide (in which case the caller keeps the original
 /// verdict rather than fabricating a vacuity failure).
+/// z3 CLI args for every obligation query. `-t` is a per-check SOFT timeout (ms) and `-T` a HARD
+/// wall-clock backstop (s): a query z3 cannot decide in budget returns `unknown` (or the process is
+/// killed and yields empty output) instead of hanging the checker indefinitely. Bit-blasting a
+/// symbolic `bvsdiv`/`bvsrem` over two free 64-bit operands can otherwise blow up unpredictably.
+/// Both timeout outcomes are handled FAIL-CLOSED downstream (UNKNOWN / None — never a proof).
+const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "-t:10000", "-T:20"];
+
 fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     let mut smt = String::from("(set-logic QF_BV)\n");
     for v in obl.vars.iter().collect::<BTreeSet<_>>() {
@@ -1705,7 +1740,7 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     }
     smt.push_str("(check-sat)\n");
     let out = Command::new("z3")
-        .args(["-in", "-smt2"])
+        .args(Z3_ARGS)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1730,7 +1765,7 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         let _ = std::fs::write(path, &smt);
     }
     let mut child = match Command::new("z3")
-        .args(["-in", "-smt2"])
+        .args(Z3_ARGS)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1871,6 +1906,36 @@ fn is_nonzero_int_literal(e: &Expr) -> bool {
     matches!(e, Expr::Literal(l) if l.parse::<i64>().map(|n| n != 0).unwrap_or(false))
 }
 
+/// Sentinel key inserted into `solver_int_vars` to mark a variable as a PROVEN non-zero divisor — a
+/// parameter guarded by `requires(v != 0)`/`requires(v > 0)` that the body never reassigns or shadows.
+/// The `\u{1}` prefix is not a valid Anubis identifier, so the key can never collide with a real
+/// variable and stays inert in the SMT (nothing references it); it only gates variable-divisor modeling.
+fn nzdiv_mark(v: &str) -> String {
+    format!("\u{1}nzdiv:{v}")
+}
+
+/// If `req` directly guarantees a bare variable is non-zero — `v != 0`, `0 != v`, `v > 0`, or `0 < v`
+/// — return that variable. Conservative: only these syntactic forms (transitive/combined guarantees
+/// stay unmodeled, i.e. fail-closed). Soundness rests on this same clause being an assumption in every
+/// obligation, so z3 evaluates `bvsdiv`/`bvsrem` only over models where the divisor is non-zero.
+fn requires_nonzero_var(req: &Expr) -> Option<String> {
+    let is_zero = |e: &Expr| matches!(e, Expr::Literal(l) if l.parse::<i64>().map(|n| n == 0).unwrap_or(false));
+    let as_var = |e: &Expr| match e {
+        Expr::Var(v) => Some(v.clone()),
+        _ => None,
+    };
+    if let Expr::Binary { op, lhs, rhs } = req {
+        match op.as_str() {
+            "!=" if is_zero(rhs) => return as_var(lhs),
+            "!=" if is_zero(lhs) => return as_var(rhs),
+            ">" if is_zero(rhs) => return as_var(lhs),
+            "<" if is_zero(lhs) => return as_var(rhs),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => int_vars.contains(v),
@@ -1889,7 +1954,15 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
                 "+" | "-" | "*" | "&" | "|" | "^" | "<<" | ">>" => {
                     is_int_modelable(lhs, int_vars) && is_int_modelable(rhs, int_vars)
                 }
-                "/" | "%" => is_int_modelable(lhs, int_vars) && is_nonzero_int_literal(rhs),
+                // `/`/`%` model soundly (bvsdiv/bvsrem match wrapping_div/wrapping_rem and never model
+                // the runtime's division-by-zero trap) only when the divisor is statically non-zero: a
+                // non-zero integer literal, or a variable proven non-zero by a `requires` guard (marked
+                // via `nzdiv_mark` in `int_vars`). A bare variable with no such guard stays fail-closed.
+                "/" | "%" => {
+                    is_int_modelable(lhs, int_vars)
+                        && (is_nonzero_int_literal(rhs)
+                            || matches!(rhs.as_ref(), Expr::Var(v) if int_vars.contains(&nzdiv_mark(v))))
+                }
                 _ => false,
             }
         }

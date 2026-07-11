@@ -884,7 +884,8 @@ fn main() -> Result<()> {
                         .collect();
                     if !disproven.is_empty() {
                         check_error = Some(format!(
-                            "ANUBIS_ASSERTION_UNPROVEN: the solver disproved {} assertion(s): {}",
+                            "ANUBIS_ASSERTION_UNPROVEN: the solver could not verify {} assertion(s) \
+                             (disproved with a counterexample, or undecided within budget): {}",
                             disproven.len(),
                             disproven.join("; ")
                         ));

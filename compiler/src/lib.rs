@@ -1482,14 +1482,13 @@ fn main() {
             "-7 % 3 == -1"
         );
         // A literal-zero divisor is NOT modelable (runtime traps) -> the contract fails closed.
+        // (An unguarded/guarded VARIABLE divisor is covered by solver_models_guarded_variable_divisor_soundly.)
         assert!(
             !discharged(
                 "fn f(x: u32) -> u32 requires(x == 5) ensures(result == 5) { return x / 0; }"
             ),
             "x / 0 must not be modeled (it traps)"
         );
-        // A variable divisor needs a proof it is non-zero (deferred) -> unmodelable, fail-closed.
-        assert!(!discharged("fn f(x: u32, y: u32) -> u32 requires(x == 6) requires(y == 2) ensures(result == 3) { return x / y; }"), "variable divisor is not yet modelable");
         // A false division contract is disproved.
         assert!(
             !discharged(
@@ -1497,6 +1496,31 @@ fn main() {
             ),
             "10 / 3 == 4 is false (it is 3)"
         );
+    }
+
+    #[test]
+    fn solver_models_guarded_variable_divisor_soundly() {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // A variable divisor PROVEN non-zero by a `requires(n != 0)` / `requires(m > 0)` guard models
+        // soundly: the guard is an assumption in the obligation, so z3 evaluates bvsdiv/bvsrem only over
+        // non-zero divisors (never the runtime's division-by-zero trap). Concrete dividends keep the
+        // query fast and deterministic.
+        assert!(discharged("fn f(n: u32) -> u32 requires(n != 0) ensures(result <= 6) { return 6 / n; }"), "6/n <= 6 proves under requires(n != 0)");
+        assert!(discharged("fn f(m: u32) -> u32 requires(m > 0) ensures(result <= 100) { return 100 / m; }"), "100/m <= 100 proves under requires(m > 0)");
+        // The modeling is REAL, not vacuous: a FALSE postcondition over a guarded divisor is disproved.
+        assert!(!discharged("fn f(n: u32) -> u32 requires(n != 0) ensures(result == 6) { return 6 / n; }"), "6/n == 6 is false (n=2 -> 3)");
+        // NO non-zero guard -> the divisor could be zero (trap) -> unmodelable, fail-closed. Note
+        // `requires(y == 2)` is not one of the recognized guard forms, so it too is refused.
+        assert!(!discharged("fn f(x: u32, n: u32) -> u32 ensures(result == 6) { return 6 / n; }"), "unguarded variable divisor is not modelable");
+        assert!(!discharged("fn f(x: u32, y: u32) -> u32 requires(x == 6) requires(y == 2) ensures(result == 3) { return x / y; }"), "requires(y == 2) is not a recognized non-zero guard");
+        // The guard must hold AT the division: reassigning the divisor makes the entry guard stale, so
+        // it is NOT modeled (fail-closed) even though the reassigned value happens to be non-zero.
+        assert!(!discharged("fn f(n: u32) -> u32 requires(n != 0) ensures(result == 3) { n = 2; return 6 / n; }"), "reassigned divisor: stale guard, not modeled");
     }
 
     #[test]

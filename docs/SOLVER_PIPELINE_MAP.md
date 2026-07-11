@@ -35,7 +35,7 @@
   - `SymbolicEngine::generate_constraints(source) -> Vec<String>` (re-parses, typechecks in Safe, returns ir.constraints)
   - `SymbolicEngine::check_obligations(ir) -> Vec<SolverCheck>`
   - `run_z3_obligation_with_smt(obligation, smt) -> SolverCheck`: builds `(set-logic QF_BV)`, `(declare-const ... (_ BitVec 64))`, `(assert ...)`, `(assert (not ...))`, check-sat, get-model.
-  - `expr_to_smt_with_width(e, widths) -> String`: i64-exact QF_BV — `bvadd/bvsub/bvmul/bvand/bvor/bvxor`, `bvneg/bvnot`, shifts `bvshl`/`bvashr` (with a mod-64 shift-amount mask; `>>` is arithmetic, matching `i64::wrapping_shr`), and `bvsdiv`/`bvsrem` for `/`/`%` with a NON-ZERO LITERAL divisor; signed comparisons `bvslt/bvsle/…`; literals `(_ bv<n> 64)`. Guarded by `is_int_modelable`/`is_bool_modelable`, which still refuse truncating casts, floats, and division by a variable/zero divisor — fail-closed.
+  - `expr_to_smt_with_width(e, widths) -> String`: i64-exact QF_BV — `bvadd/bvsub/bvmul/bvand/bvor/bvxor`, `bvneg/bvnot`, shifts `bvshl`/`bvashr` (with a mod-64 shift-amount mask; `>>` is arithmetic, matching `i64::wrapping_shr`), and `bvsdiv`/`bvsrem` for `/`/`%` with a NON-ZERO divisor — a non-zero literal, or a variable a `requires(v != 0)`/`requires(v > 0)` guard proves non-zero (and the body never reassigns/shadows, so the guard holds at the division); signed comparisons `bvslt/bvsle/…`; literals `(_ bv<n> 64)`. Guarded by `is_int_modelable`/`is_bool_modelable`, which still refuse truncating casts, floats, and division by an unguarded/zero divisor — fail-closed. Every obligation query runs under a z3 time budget (`Z3_ARGS`: soft `-t` + hard `-T`); a query z3 cannot decide returns `unknown`, which is treated as FAIL for contracts (undecided ≠ proved).
   - `collect_vars_from_smt`, `run_z3_obligation` (spawns z3 -in -smt2, parses sat/unsat).
 - Bitvector-based: 64-bit `(_ BitVec 64)`, signed-i64-exact (landed after this doc's original draft; see git `343bbc2`).
 - Called from:
@@ -62,7 +62,7 @@
 - Tamper detection via MANIFEST.sha256.
 
 ## 8. Known Limitations (from Prior Audit + Inspection)
-- Theory is QF_BV/64-bit only: no strings, floats, arrays/lists, quantifiers, or truncating casts; `<<`/`>>` and `/`/`%` are modeled (shifts always; `/`/`%` only with a non-zero literal divisor — a variable divisor needs a proof it is non-zero, not yet implemented). All unmodelable forms are refused fail-closed, not mismodeled.
+- Theory is QF_BV/64-bit only: no strings, floats, arrays/lists, quantifiers, or truncating casts; `<<`/`>>` and `/`/`%` are modeled (shifts always; `/`/`%` with a non-zero divisor — a literal, or a variable a `requires(v != 0)`/`requires(v > 0)` guard proves non-zero and the body never reassigns). Queries run under a z3 time budget so a hard symbolic division can never hang the checker — an undecided contract is failed closed. All unmodelable forms are refused fail-closed, not mismodeled.
 - Variables declared unconstrained in some paths (collect_vars may miss defs).
 - `replay_counterexample` is currently a stub (not a real model re-execution) — Phase 4 makes it a genuine cross-check with `ANUBIS_REPLAY_MISMATCH`.
 - Wrapping semantics ARE explicit now: `bvadd/bvsub/bvmul` match the i64 `wrapping_*` runtime exactly.
