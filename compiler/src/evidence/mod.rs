@@ -580,6 +580,22 @@ pub fn derive_claim_block_bound(dir: &Path, source: &str, mode: &str) -> ClaimBl
 /// RE-DERIVE the claim block from the bundle's own source and confirm it matches the recorded
 /// `pca.json` exactly. A bundle whose recorded verdict does not match what the source actually
 /// proves fails closed, even if every hash was recomputed to look internally consistent.
+/// Compare a freshly re-derived claim against the recorded one over every field that is a function
+/// of the source and the bundle's own artifacts, IGNORING the `tool` provenance string.
+///
+/// `tool` records which build produced the bundle (`anubis <version>`). It is recorded in `pca.json`
+/// and tamper-protected by `MANIFEST.sha256` (and the signature, when signed), but it is NOT
+/// re-derivable from the source — `verify` can only ever recompute the *verifying* tool's own
+/// version. Requiring the two to match would make a valid bundle fail cold-verification under any
+/// other tool version, breaking the "a stranger can cold-verify" guarantee (a false negative). Every
+/// field that IS re-derivable must still match exactly, so a tampered claim — wrong verdict, flipped
+/// typecheck, swapped ZK binding, altered obligation count — still fails closed here.
+fn claim_semantically_matches(fresh: &ClaimBlock, recorded: &ClaimBlock) -> bool {
+    let mut neutralized = fresh.clone();
+    neutralized.tool = recorded.tool.clone();
+    neutralized == *recorded
+}
+
 pub fn verify_pca(dir: &Path) -> Result<bool, String> {
     let hashes_ok = validate_bundle(dir)?;
     let pca_path = dir.join("pca.json");
@@ -606,7 +622,7 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
         Some((ok, _signer)) => ok,
         None => true,
     };
-    Ok(hashes_ok && source_bound && sig_ok && fresh == recorded)
+    Ok(hashes_ok && source_bound && sig_ok && claim_semantically_matches(&fresh, &recorded))
 }
 
 /// The `pca.sig` sidecar: an Ed25519 signature over the PCA, written OUTSIDE `MANIFEST.sha256` (it
@@ -1148,6 +1164,57 @@ mod pca_tests {
         assert!(!verify_pca(&bundle.dir).unwrap());
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_pca_tolerates_tool_version_drift_but_not_semantic_tamper() {
+        let base = unique_dir("toolversion");
+        let good = "fn main() { let x = 7; print(x); }";
+        let bundle = build_evidence_bundle(good, "safe", None, vec![], &base, None, None).unwrap();
+        assert!(
+            verify_pca(&bundle.dir).unwrap(),
+            "freshly built PCA must verify"
+        );
+
+        // Record a DIFFERENT tool/provenance version, then regenerate the manifest so the hash layer
+        // stays consistent. A bundle emitted by another tool version must still cold-verify — the
+        // claim is about the program, not which build produced it (the "stranger can cold-verify"
+        // guarantee). This is the exact regression that coupling the equality to `tool` introduced.
+        let mut drifted = derive_claim_block(good, "safe");
+        drifted.tool = "anubis 99.99.99".to_string();
+        write_json(&bundle.dir.join("pca.json"), &drifted).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        assert!(
+            verify_pca(&bundle.dir).unwrap(),
+            "a differing tool version must NOT fail cold-verification"
+        );
+
+        // But the fix must not open a hole: with the tool still drifted, a flipped SEMANTIC field
+        // (manifest regenerated so hashes stay consistent) must still fail closed.
+        let mut lie = derive_claim_block(good, "safe");
+        lie.tool = "anubis 99.99.99".to_string();
+        lie.solver_all_discharged = !lie.solver_all_discharged;
+        write_json(&bundle.dir.join("pca.json"), &lie).unwrap();
+        write_manifest_hashes(&bundle.dir).unwrap();
+        assert!(
+            !verify_pca(&bundle.dir).unwrap(),
+            "a semantic claim difference must still fail closed even when the tool version differs"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_pca_cold_verifies_the_committed_zk_receipt_fixture() {
+        // The committed real-receipt fixture was frozen by an earlier tool version ("anubis 0.2.0").
+        // Its claim re-derives and its manifest is intact, so it MUST cold-verify under the current
+        // tool — the regression guard for the version-coupling bug that made verify reject it.
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/zk_prove_bundle");
+        assert!(
+            verify_pca(&fixture).unwrap(),
+            "committed ZK receipt fixture must cold-verify (only the provenance tool version differs)"
+        );
     }
 
     /// Plant risc0 sidecars into a bundle so `derive_zk_binding` sees a (structurally) genuine
