@@ -22,3 +22,4 @@ ariadne.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 pretty_assertions.workspace = true
+tempfile.workspace = true

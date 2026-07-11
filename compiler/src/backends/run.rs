@@ -3613,7 +3613,17 @@ pub fn compile_and_run_source(
     args: &[String],
 ) -> Result<std::process::Output> {
     let ast = crate::frontend::parse_source(source).map_err(|e| anyhow!("parse: {}", e))?;
-    let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
+    compile_and_run_items(&ast.items, allow_research, args)
+}
+
+/// Compile+run an already-assembled item list (e.g. a multi-file program combined by `resolve`).
+/// The single-file `compile_and_run_source` is this over `parse_source(...).items`.
+pub fn compile_and_run_items(
+    items: &[Item],
+    allow_research: bool,
+    args: &[String],
+) -> Result<std::process::Output> {
+    let rust_source = lower_program_to_rust(items, allow_research)?;
     let dir = std::env::temp_dir().join(format!("anubis-run-{}", anubis_unique_suffix()));
     std::fs::create_dir_all(&dir)?;
     let rs = dir.join("anubis_run.rs");

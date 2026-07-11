@@ -109,6 +109,36 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Run a directory (or file) of `.anb` test programs, checking each against its
+    /// `// EXPECT: PASS|FAIL` and optional `// ERROR_CONTAINS: <text>` directives. Only entry
+    /// files (those with a `fn main`) are run; library modules are skipped.
+    Test {
+        /// Directory to scan for `.anb` tests, or a single `.anb` file.
+        #[arg(default_value = "tests")]
+        path: PathBuf,
+
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Format Anubis source (canonical, self-verifying). By default prints the formatted source;
+    /// `--write` rewrites files in place; `--check` exits nonzero if any file is not already
+    /// formatted. Files that declare a `trait`, or that the formatter cannot prove it preserves,
+    /// are skipped and reported — never mangled.
+    Fmt {
+        /// A `.anb` file, or a directory to format recursively.
+        path: PathBuf,
+
+        /// Report unformatted files and exit nonzero instead of writing/printing.
+        #[arg(long)]
+        check: bool,
+
+        /// Rewrite files in place with the formatted output.
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Probe runtime/toolchain capabilities without claiming proof execution.
     RuntimeProbe {
         /// Emit machine-readable JSON.
@@ -683,6 +713,30 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Test { path, json } => {
+            let report = run_anubis_test_suite(&path)?;
+            if json {
+                let failed: Vec<_> = report
+                    .failed
+                    .iter()
+                    .map(|(f, w)| serde_json::json!({"file": f.display().to_string(), "why": w}))
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"total": report.total, "passed": report.passed, "failed": failed})
+                );
+            } else {
+                println!("anubis test: {}/{} passed", report.passed, report.total);
+                for (f, why) in &report.failed {
+                    println!("  FAIL {} — {}", f.display(), why);
+                }
+            }
+            if !report.failed.is_empty() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::Fmt { path, check, write } => run_anubis_fmt(&path, check, write),
         Commands::Build {
             input,
             evidence,
@@ -3304,6 +3358,170 @@ struct RunOutcome {
     status_success: bool,
 }
 
+/// Every `.anb`/`.anub`/`.anubis` source file under `path` (or `path` itself if it is a file).
+fn discover_source_files(path: &Path) -> Vec<PathBuf> {
+    let mut files = vec![];
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+            let p = entry.path();
+            let is_anb = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| matches!(e, "anb" | "anub" | "anubis"))
+                .unwrap_or(false);
+            if p.is_file() && is_anb {
+                files.push(p.to_path_buf());
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// `anubis fmt`: canonical, self-verifying formatting. Default prints; `--write` rewrites in place;
+/// `--check` exits nonzero on any unformatted file. Unformattable files (trait declarations, or
+/// output the formatter cannot prove preserves the AST) are reported and skipped — never mangled.
+fn run_anubis_fmt(path: &Path, check: bool, write: bool) -> Result<()> {
+    let files = discover_source_files(path);
+    let mut unformatted: Vec<PathBuf> = vec![];
+    let mut skipped: Vec<(PathBuf, String)> = vec![];
+    for f in &files {
+        let src = std::fs::read_to_string(f)?;
+        match anubis_compiler::fmt::format_source(&src) {
+            Ok(out) if out == src => {} // already canonical
+            Ok(out) => {
+                if write {
+                    std::fs::write(f, &out)?;
+                    println!("formatted {}", f.display());
+                } else if check {
+                    unformatted.push(f.clone());
+                } else {
+                    print!("{out}");
+                }
+            }
+            Err(e) => skipped.push((f.clone(), e)),
+        }
+    }
+    for (f, e) in &skipped {
+        eprintln!("skipped {}: {}", f.display(), e);
+    }
+    if check {
+        for f in &unformatted {
+            println!("not formatted: {}", f.display());
+        }
+        if !unformatted.is_empty() {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+/// Result of running an `anubis test` suite.
+struct TestReport {
+    total: usize,
+    passed: usize,
+    /// (file, human reason) for each test that did not meet its expectation.
+    failed: Vec<(PathBuf, String)>,
+}
+
+/// Discover `.anb`/`.anub`/`.anubis` test entry files under `path` — those containing a `fn main`.
+/// Library modules (no `fn main`) are skipped so they are not run standalone. A single file is
+/// returned as-is.
+fn discover_test_files(path: &Path) -> Vec<PathBuf> {
+    let mut files = vec![];
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+            let p = entry.path();
+            let is_anb = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| matches!(e, "anb" | "anub" | "anubis"))
+                .unwrap_or(false);
+            if p.is_file() && is_anb {
+                if let Ok(src) = std::fs::read_to_string(p) {
+                    if src.contains("fn main") {
+                        files.push(p.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Parse the `// EXPECT: PASS|FAIL` and `// ERROR_CONTAINS: <text>` directives from a test source.
+/// Default expectation is PASS; an `ERROR_CONTAINS` directive implies FAIL.
+fn parse_test_directives(src: &str) -> (bool, Option<String>) {
+    let mut expect_pass = true;
+    let mut error_contains = None;
+    for line in src.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("// EXPECT:") {
+            expect_pass = rest.trim().eq_ignore_ascii_case("PASS");
+        } else if let Some(rest) = t.strip_prefix("// ERROR_CONTAINS:") {
+            error_contains = Some(rest.trim().to_string());
+            expect_pass = false;
+        }
+    }
+    (expect_pass, error_contains)
+}
+
+/// Run every discovered `.anb` test through the run path and check it against its directives.
+fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
+    let files = discover_test_files(path);
+    let out_dir = std::env::temp_dir().join("anubis-test-run");
+    let mut passed = 0;
+    let mut failed = vec![];
+    for f in &files {
+        let src = std::fs::read_to_string(f)?;
+        let (expect_pass, error_contains) = parse_test_directives(&src);
+        let result = run_anubis_source(f, &src, &out_dir, true, &[]);
+        let (actual_pass, err_text) = match &result {
+            Ok(o) if o.status_success => (true, String::new()),
+            Ok(o) => (false, o.stderr.clone()),
+            Err(e) => (false, e.to_string()),
+        };
+        let ok = if expect_pass {
+            actual_pass
+        } else {
+            !actual_pass
+                && error_contains
+                    .as_ref()
+                    .map(|ec| err_text.contains(ec))
+                    .unwrap_or(true)
+        };
+        if ok {
+            passed += 1;
+        } else {
+            let why = if expect_pass {
+                format!(
+                    "expected PASS, failed: {}",
+                    err_text.lines().next().unwrap_or("(ran, exited nonzero)")
+                )
+            } else {
+                format!(
+                    "expected FAIL{}, but it passed",
+                    error_contains
+                        .as_ref()
+                        .map(|e| format!(" containing `{e}`"))
+                        .unwrap_or_default()
+                )
+            };
+            failed.push((f.clone(), why));
+        }
+    }
+    Ok(TestReport {
+        total: files.len(),
+        passed,
+        failed,
+    })
+}
+
 fn run_anubis_source(
     input: &Path,
     source: &str,
@@ -3311,7 +3529,14 @@ fn run_anubis_source(
     allow_research: bool,
     args: &[String],
 ) -> Result<RunOutcome> {
-    let ast = parse_or_diag(source, input)?;
+    let mut ast = parse_or_diag(source, input)?;
+    // Multi-file modules: if the entry is a real file that declares `import`s, resolve them against
+    // the enclosing project and combine the graph into one program. Inline sources and single-file
+    // programs (no imports) are untouched — the combine pass is a no-op for them.
+    if input.is_file() && ast.items.iter().any(|it| matches!(it, Item::Import { .. })) {
+        ast.items =
+            anubis_compiler::resolve::combine_from_entry(input).map_err(|e| anyhow!("{}", e))?;
+    }
     let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
@@ -4522,6 +4747,125 @@ fn main() {
         assert!(outcome.status_success);
         assert_eq!(outcome.stdout.trim(), "Hello, Sicarii");
         assert_eq!(outcome.stderr.trim(), "");
+    }
+
+    #[test]
+    fn run_multi_file_module_program() {
+        // A real 2-file project: main.anb imports math and calls a qualified fn; math.anb's
+        // `square` calls its sibling `mul` by bare name (intra-module). Exercises the whole
+        // Phase-1 path: import resolution -> combine (namespacing + qualified/intra-module call
+        // rewrite) -> lower -> rustc -> run.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("math.anb"),
+            // add/square are exported (pub); mul is private and reached only intra-module by square.
+            "pub fn add(a, b) { return a + b; }\npub fn square(x) { return mul(x, x); }\nfn mul(a, b) { return a * b; }",
+        )
+        .unwrap();
+        let main = root.join("main.anb");
+        let main_src = "import math;\nfn main() { print(\"${math::add(2, 3)} ${math::square(5)}\"); }";
+        std::fs::write(&main, main_src).unwrap();
+
+        let out = tempfile::tempdir().expect("out");
+        let outcome = run_anubis_source(&main, main_src, out.path(), false, &[])
+            .expect("multi-file program should run");
+        assert!(outcome.status_success, "stderr: {}", outcome.stderr);
+        assert_eq!(outcome.stdout.trim(), "5 25");
+    }
+
+    fn modules_fixture(rel: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/modules").join(rel)
+    }
+
+    #[test]
+    fn committed_enum_vs_mod_fixture_runs() {
+        // An enum and an imported module coexist in one program (Shape::Rect stays an enum, and
+        // geometry::area resolves to the module — including inside a match arm).
+        let entry = modules_fixture("enum_vs_mod/main.anb");
+        let src = std::fs::read_to_string(&entry).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let outcome = run_anubis_source(&entry, &src, out.path(), false, &[])
+            .expect("enum_vs_mod fixture should run");
+        assert_eq!(outcome.stdout.trim(), "rect area = 12");
+    }
+
+    #[test]
+    fn committed_cycle_fixture_fails_closed() {
+        let entry = modules_fixture("cycle/a.anb");
+        let src = std::fs::read_to_string(&entry).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let err = run_anubis_source(&entry, &src, out.path(), false, &[])
+            .expect_err("cyclic imports must fail closed");
+        assert!(err.to_string().contains("ANUBIS_IMPORT_CYCLE"), "got: {err}");
+    }
+
+    #[test]
+    fn anubis_fmt_writes_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("p.anb");
+        std::fs::write(&f, "fn main(){let x=1+2*3;print(x);}").unwrap();
+        run_anubis_fmt(&f, false, true).unwrap();
+        let once = std::fs::read_to_string(&f).unwrap();
+        run_anubis_fmt(&f, false, true).unwrap();
+        let twice = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(once, twice, "fmt --write is not idempotent");
+        assert!(once.contains("1 + 2 * 3"), "precedence preserved:\n{once}");
+        // A trait file is skipped (reported), never rewritten.
+        let t = dir.path().join("t.anb");
+        let tsrc = "trait T { fn m(self); }\nstruct S {}\nimpl T for S { fn m(self) { 0 } }\n";
+        std::fs::write(&t, tsrc).unwrap();
+        run_anubis_fmt(&t, false, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&t).unwrap(), tsrc, "trait file must be untouched");
+    }
+
+    #[test]
+    fn anubis_test_suite_runs_module_fixtures() {
+        // `anubis test tests/fixtures/modules` runs the 4 entry programs and checks each against its
+        // directives: mathlib/enum_vs_mod PASS (default), private_reject/cycle FAIL with a matching
+        // ERROR_CONTAINS. All expectations must be met.
+        let dir = modules_fixture("");
+        let report = run_anubis_test_suite(&dir).expect("suite runs");
+        assert!(report.total >= 4, "found {} test files", report.total);
+        assert!(
+            report.failed.is_empty(),
+            "unmet expectations: {:?}",
+            report.failed
+        );
+        assert_eq!(report.passed, report.total);
+    }
+
+    #[test]
+    fn run_cross_module_private_call_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("lib.anb"),
+            "pub fn ok() { return 1; }\nfn secret() { return 42; }",
+        )
+        .unwrap();
+        let main = root.join("main.anb");
+        let main_src = "import lib;\nfn main() { print(lib::secret()); }";
+        std::fs::write(&main, main_src).unwrap();
+        let out = tempfile::tempdir().expect("out");
+        let err = run_anubis_source(&main, main_src, out.path(), false, &[])
+            .expect_err("calling a private fn across modules must fail closed");
+        assert!(err.to_string().contains("ANUBIS_PRIVATE_ITEM"), "got: {err}");
+    }
+
+    #[test]
+    fn run_unresolved_import_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let main = dir.path().join("main.anb");
+        let main_src = "import nope;\nfn main() { print(nope::f()); }";
+        std::fs::write(&main, main_src).unwrap();
+        let out = tempfile::tempdir().expect("out");
+        let err = run_anubis_source(&main, main_src, out.path(), false, &[])
+            .expect_err("missing module must fail closed");
+        assert!(
+            err.to_string().contains("ANUBIS_IMPORT_UNRESOLVED"),
+            "got: {err}"
+        );
     }
 
     #[test]

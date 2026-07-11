@@ -1,0 +1,8 @@
+// Multi-file Anubis program. `import math;` resolves math.anb in this directory; `math::add` and
+// `math::square` are qualified calls into it. Run with: anubis run tests/fixtures/modules/mathlib/main.anb
+import math;
+
+fn main() {
+    print("add(2,3) = ${math::add(2, 3)}");
+    print("square(5) = ${math::square(5)}");
+}

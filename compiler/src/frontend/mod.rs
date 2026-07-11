@@ -118,6 +118,10 @@ pub enum Item {
     },
     Fn {
         name: String,
+        /// `pub fn` marks a function exported from its module (callable as `mod::name` across a
+        /// module boundary). Defaults to `Private` — private functions are callable only within
+        /// their own module. Cross-module privacy is enforced by `resolve::combine_graph`.
+        visibility: Visibility,
         params: Vec<(String, String)>,
         body: Vec<Stmt>,
         mode: Mode,
@@ -159,6 +163,14 @@ pub enum Item {
         methods: Vec<Item>,
         span: Span,
     },
+}
+
+/// Item visibility. `Private` (the default, no `pub`) is callable only within its own module;
+/// `Public` (`pub`) is exported and callable across a module boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Private,
+    Public,
 }
 
 /// Shape of an enum variant.
@@ -1300,8 +1312,9 @@ impl Parser {
         let mut items = vec![];
         while !self.at_eof() {
             let attrs = self.parse_attributes();
+            let vis = self.parse_visibility();
             if self.check_keyword("fn") {
-                if let Some(item) = self.parse_fn(attrs) {
+                if let Some(item) = self.parse_fn(attrs, vis) {
                     items.push(item);
                 }
             } else if self.check_keyword("import") {
@@ -1767,7 +1780,9 @@ impl Parser {
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             let attrs = self.parse_attributes();
             if self.check_keyword("fn") {
-                if let Some(m) = self.parse_fn(attrs) {
+                // Methods dispatch by receiver type, never as `Type::method`, so visibility is inert
+                // for them; keep them Private so `anubis fmt` doesn't emit `pub` (not accepted here).
+                if let Some(m) = self.parse_fn(attrs, Visibility::Private) {
                     methods.push(m);
                 }
             } else {
@@ -1798,7 +1813,9 @@ impl Parser {
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             let attrs = self.parse_attributes();
             if self.check_keyword("fn") {
-                if let Some(m) = self.parse_fn(attrs) {
+                // Methods dispatch by receiver type, never as `Type::method`, so visibility is inert
+                // for them; keep them Private so `anubis fmt` doesn't emit `pub` (not accepted here).
+                if let Some(m) = self.parse_fn(attrs, Visibility::Private) {
                     methods.push(m);
                 }
             } else {
@@ -2072,7 +2089,7 @@ impl Parser {
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
             if self.check_keyword("fn") {
                 let attrs = self.parse_attributes();
-                if let Some(item) = self.parse_fn(attrs) {
+                if let Some(item) = self.parse_fn(attrs, Visibility::Private) {
                     items.push(item);
                 }
             } else if self.check_keyword("import") {
@@ -2172,7 +2189,20 @@ impl Parser {
         invariants
     }
 
-    fn parse_fn(&mut self, pre_attrs: Vec<Attribute>) -> Option<Item> {
+    /// Consume an optional leading `pub`, returning `Public` when present. `pub` is contextual
+    /// (lexed as an identifier), so it is a modifier only in item position — a value named `pub`
+    /// elsewhere is unaffected.
+    fn parse_visibility(&mut self) -> Visibility {
+        if let Token::Ident(k) = &self.current().token {
+            if k == "pub" {
+                self.bump();
+                return Visibility::Public;
+            }
+        }
+        Visibility::Private
+    }
+
+    fn parse_fn(&mut self, pre_attrs: Vec<Attribute>, visibility: Visibility) -> Option<Item> {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
         self.skip_generic_params(); // `fn foo<T>(...)`
@@ -2253,6 +2283,7 @@ impl Parser {
         }
         Some(Item::Fn {
             name,
+            visibility,
             params,
             body,
             mode,

@@ -1,0 +1,5 @@
+// Cyclic imports are a fail-closed error (ANUBIS_IMPORT_CYCLE). Running this must fail.
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPORT_CYCLE
+import b;
+fn main() { print(b::ping()); }
