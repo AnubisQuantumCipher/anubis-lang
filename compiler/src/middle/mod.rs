@@ -149,6 +149,10 @@ struct SemanticContext {
     enum_variants: BTreeMap<String, Vec<String>>,
     /// Function name → ordered parameter types (for call-site type checks).
     fn_params: BTreeMap<String, Vec<String>>,
+    /// Function name → declared return type (`-> T`, empty if omitted). A call-result binding may be
+    /// modeled as a solver integer ONLY when this is an integer type — otherwise a float-returning
+    /// callee (`frac -> f64`) would seed a float into the integer domain via composition.
+    fn_ret_types: BTreeMap<String, String>,
     /// Function name → (parameter names, `requires` clauses, `ensures` clauses). Registered in
     /// pass 1 so a caller can, at a call site, ASSERT the callee's precondition and ASSUME its
     /// postcondition — the composition that makes contracts chain.
@@ -233,6 +237,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 span,
                 requires,
                 ensures,
+                ret,
                 ..
             } => {
                 // Flat function namespace: a redefinition is an error.
@@ -247,6 +252,8 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     name.clone(),
                     params.iter().map(|(_, ty)| ty.clone()).collect(),
                 );
+                ctx.fn_ret_types
+                    .insert(name.clone(), ret.clone().unwrap_or_default());
                 if !requires.is_empty() || !ensures.is_empty() {
                     ctx.fn_contracts.insert(
                         name.clone(),
@@ -1124,7 +1131,18 @@ fn analyze_stmts(
                             // the ensures holds only under the precondition, so assuming it when a
                             // `requires` was SKIPPED (a dynamic/unmodelable argument) would be an
                             // unsound false proof (the caller could be violating the precondition).
-                            if !cens.is_empty() && all_requires_checkable {
+                            // Model this binding as a solver integer ONLY if the callee DECLARES an
+                            // integer return type. Return types are inert at runtime, so a `-> u32`
+                            // body is separately runtime-guarded (anubis_require_int_ret); but a
+                            // `-> f64` callee must NOT seed a float into the integer domain here (its
+                            // `ensures` may not even mention `result`, leaving the binding unconstrained
+                            // yet modeled as i64 — a certified-false cast/bitwise identity at runtime).
+                            let callee_returns_int = ctx
+                                .fn_ret_types
+                                .get(callee)
+                                .map(|t| is_integer_ty(t))
+                                .unwrap_or(false);
+                            if !cens.is_empty() && all_requires_checkable && callee_returns_int {
                                 // The callee guarantees an integer postcondition about its result,
                                 // so this binding is solver-modelable.
                                 ctx.solver_int_vars.insert(name.clone());
@@ -1182,9 +1200,16 @@ fn analyze_stmts(
                 }
             }
             Stmt::ExprStmt(Expr::Assume(expr)) => {
-                let smt = expr_to_smt(expr, &ctx.symbolic_widths);
-                assumptions.push(smt.clone());
-                ctx.constraints.push(format!("(assert {})", smt));
+                // Only ASSUME what the solver can model SOUNDLY (mirrors the assert handler below). An
+                // unmodelable assumption — e.g. `assume((x as u8) == 0)`, whose truncating cast has no
+                // sound i64 identity — would otherwise be lowered as if `x == 0` and let the solver
+                // certify a violated contract (`ensures(result == 0)` while f(256) returns 256). An
+                // unmodelable assume is still enforced at runtime (anubis_assume), just not trusted here.
+                if is_bool_modelable(expr, &ctx.solver_int_vars) {
+                    let smt = expr_to_smt(expr, &ctx.symbolic_widths);
+                    assumptions.push(smt.clone());
+                    ctx.constraints.push(format!("(assert {})", smt));
+                }
                 effects.push("assume".into());
             }
             Stmt::ExprStmt(Expr::Assert(expr)) => {
@@ -2599,40 +2624,63 @@ fn collect_assigned_roots(body: &[Stmt], out: &mut BTreeSet<String>) {
 
 /// Collect every name a body BINDS with `let`/`let (…)` at any depth (used to detect a `let` that
 /// shadows a parameter named in an `ensures`).
+/// Collect every name a body BINDS at any depth — `let`/`let (…)`, a `for`/`while let` binder, AND
+/// (crucially) every binder introduced in EXPRESSION position: a `match`-arm or `if let` pattern, a
+/// lambda parameter, or a `let` inside an expression-position block. SOUNDNESS: this set is the rebind
+/// set gating both the "ensures over a reassigned/shadowed parameter" fail-closed rejection AND
+/// guarded-divisor nzdiv eligibility. Missing an expression-position binder let `match 2 { n => 6/n }`
+/// shadow a guarded parameter `n` and certify a false contract (the arm rebinds n, so the runtime body
+/// is `6/2`, not `6/entry-n`). COMPLETE recursion — every prior incremental fix (for-loop var, while-let)
+/// missed a variant, so this walks the full statement AND expression tree; over-collection is safe.
 fn collect_let_bound(body: &[Stmt], out: &mut BTreeSet<String>) {
     for s in body {
         match s {
-            Stmt::Let { name, .. } => {
+            Stmt::Let { name, init, .. } => {
                 out.insert(name.clone());
+                expr_let_bound(init, out);
             }
-            Stmt::LetPattern { pattern, .. } => {
+            Stmt::LetPattern { pattern, init, .. } => {
                 for n in pattern.bound_names() {
                     out.insert(n);
                 }
+                expr_let_bound(init, out);
             }
-            Stmt::If { then, else_, .. } => {
+            Stmt::If { cond, then, else_ } => {
+                expr_let_bound(cond, out);
                 collect_let_bound(then, out);
                 if let Some(e) = else_ {
                     collect_let_bound(e, out);
                 }
             }
-            // A `for` iteration variable and a `while let` pattern BIND names in the body — they
-            // shadow a parameter of the same name exactly like a `let`. SOUNDNESS: this set gates both
-            // the "ensures over a reassigned/shadowed parameter" rejection AND guarded-divisor nzdiv
-            // eligibility; missing a loop-var shadow let `for n in 0..3 { assert(100 / n <= 100) }`
-            // keep the param's `requires(n != 0)` nzdiv mark and model a divide-by-zero as safe.
-            Stmt::For { var, body, .. } => {
+            Stmt::For {
+                var, source, body, ..
+            } => {
                 out.insert(var.clone());
-                collect_let_bound(body, out);
-            }
-            Stmt::WhileLet { pattern, body, .. } => {
-                for n in pattern.bound_names() {
-                    out.insert(n);
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        expr_let_bound(start, out);
+                        expr_let_bound(end, out);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => expr_let_bound(expr, out),
                 }
                 collect_let_bound(body, out);
             }
-            Stmt::While { body, .. }
-            | Stmt::Loop { body, .. }
+            Stmt::While { cond, body, .. } => {
+                expr_let_bound(cond, out);
+                collect_let_bound(body, out);
+            }
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
+                for n in pattern.bound_names() {
+                    out.insert(n);
+                }
+                expr_let_bound(expr, out);
+                collect_let_bound(body, out);
+            }
+            Stmt::Loop { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => collect_let_bound(body, out),
             Stmt::HybridBlock { gpu, cpu, prove } => {
@@ -2640,8 +2688,106 @@ fn collect_let_bound(body: &[Stmt], out: &mut BTreeSet<String>) {
                     collect_let_bound(b, out);
                 }
             }
+            Stmt::Assign { target, value } => {
+                expr_let_bound(target, out);
+                expr_let_bound(value, out);
+            }
+            Stmt::ExprStmt(e) => expr_let_bound(e, out),
+            // Break / Continue / SpecBlock bind no runtime names.
             _ => {}
         }
+    }
+}
+
+/// Collect names BOUND by patterns/lambdas inside an EXPRESSION (match arms, `if let`, lambda params,
+/// and `let`s in a block-expr). Mirrors `expr_assigned_roots`' full traversal so no subexpression is
+/// missed. See `collect_let_bound` for why under-collection is unsound and over-collection is safe.
+fn expr_let_bound(e: &Expr, out: &mut BTreeSet<String>) {
+    match e {
+        Expr::Block { stmts, tail } => {
+            collect_let_bound(stmts, out);
+            if let Some(t) = tail {
+                expr_let_bound(t, out);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            expr_let_bound(cond, out);
+            expr_let_bound(then, out);
+            expr_let_bound(else_, out);
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            for n in pattern.bound_names() {
+                out.insert(n);
+            }
+            expr_let_bound(scrutinee, out);
+            expr_let_bound(then, out);
+            expr_let_bound(else_, out);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_let_bound(scrutinee, out);
+            for a in arms {
+                for n in a.pattern.bound_names() {
+                    out.insert(n);
+                }
+                if let Some(g) = &a.guard {
+                    expr_let_bound(g, out);
+                }
+                expr_let_bound(&a.body, out);
+            }
+        }
+        Expr::Lambda { params, body } => {
+            for p in params {
+                out.insert(p.clone());
+            }
+            expr_let_bound(body, out);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_let_bound(lhs, out);
+            expr_let_bound(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr_let_bound(expr, out),
+        Expr::Try(expr) | Expr::Assume(expr) | Expr::Assert(expr) => expr_let_bound(expr, out),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_let_bound(inner, out),
+        Expr::Index { base, index } => {
+            expr_let_bound(base, out);
+            expr_let_bound(index, out);
+        }
+        Expr::FieldAccess { base, .. } => expr_let_bound(base, out),
+        Expr::Call { args, .. }
+        | Expr::ArrayLiteral { elements: args }
+        | Expr::EnumConstruct { fields: args, .. } => {
+            for x in args {
+                expr_let_bound(x, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            expr_let_bound(callee, out);
+            for x in args {
+                expr_let_bound(x, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, x) in fields {
+                expr_let_bound(x, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                expr_let_bound(k, out);
+                expr_let_bound(v, out);
+            }
+        }
+        _ => {}
     }
 }
 

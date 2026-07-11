@@ -1784,6 +1784,61 @@ fn main() {
     }
 
     #[test]
+    fn solver_expression_shadow_unsound_assume_and_float_composition() {
+        // REGRESSION — fix-adversary re-audit round 3 (2026-07-11). Three root causes, all "the checker
+        // and the dynamic runtime disagree", each fixed COMPLETELY (prior point-fixes missed variants).
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // A — a parameter shadowed by a binder in EXPRESSION position (match-arm / if-let) must enter
+        // the rebind set (collect_let_bound now walks expressions), else the guarded-divisor nzdiv mark
+        // survives / the shadowed-param `ensures` is laundered. `match 2 { n => 6/n }` rebinds n to 2.
+        assert!(
+            !discharged("fn f(n: i64) -> i64 requires(n != 0) ensures(result == 6 / n) { match 2 { n => 6 / n } }"),
+            "match-arm shadow of a guarded divisor must be fail-closed"
+        );
+        assert!(
+            !discharged("fn f(n: i64) -> i64 requires(n > 0) ensures(result >= 0) { match (0 - 3) { n => 6 / n } }"),
+            "match-arm shadow, safety postcondition"
+        );
+        assert!(
+            !discharged("fn f(x: i64) -> i64 requires(x >= 0) ensures(result == x) { if let x = 33 { return x; } else { return x; } }"),
+            "if-let shadow of a contract parameter"
+        );
+        // B — a truncating cast inside `assume` has no sound i64 identity, so the solver must NOT trust
+        // it (assume is now gated on modelability, like assert). `assume((x as u8) == 0)` holds at
+        // runtime for x = 256, so trusting it as `x == 0` certified `result == 0` while f(256) = 256.
+        assert!(
+            !discharged(
+                "fn f(x: u32) -> u32 ensures(result == 0) { assume((x as u8) == 0); return x; }"
+            ),
+            "truncating cast inside assume must not be trusted"
+        );
+        // C — a call-result binding is modeled as a solver integer ONLY if the callee DECLARES an
+        // integer return type; a float-returning callee must not seed a float into the integer domain.
+        assert!(
+            !discharged("fn frac(a: u32) -> f64 requires(a > 0) ensures(a > 0) { return 0.5; } fn g(a: u32) -> f64 requires(a > 0) ensures(result == 0) { let na = frac(a); return na; }"),
+            "f64-returning callee must not be modeled as int in composition"
+        );
+        // The fixes do not over-reject: a valid integer composition and a non-shadowing guarded divisor
+        // still prove.
+        assert!(
+            discharged("fn sq(x: u32) -> u32 ensures(result == x * x) { return x * x; } fn g() -> u32 { let s = sq(5); return s; }"),
+            "valid integer composition still proves"
+        );
+        assert!(
+            discharged(
+                "fn f(n: u32) -> u32 requires(n != 0) ensures(result <= 6) { return 6 / n; }"
+            ),
+            "valid guarded divisor still proves"
+        );
+    }
+
+    #[test]
     fn differential_solver_encoder_matches_runtime_oracle() {
         // The standing regression net (Phase-4 B3): generate random CONCRETE modelable integer
         // expressions and assert the SMT encoder computes exactly what the i64 runtime does. This is
