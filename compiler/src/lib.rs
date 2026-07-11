@@ -3140,6 +3140,102 @@ fn main() {
     }
 
     #[test]
+    fn interprocedural_return_taint_is_flagged_at_the_call_site() {
+        // Phase-3 slice 2: a function that RETURNS internally-produced taint now taints its call
+        // expression (the `Expr::Call` arm consults the `tainting_fns` summary). Before this,
+        // `sink(get_secret())` passed silently even though `get_secret` returns a taint source —
+        // `expr_taint_source`'s Call arm only inspected arguments. Every case below runs and is a real
+        // information leak that must be REJECTED.
+        for (case, src) in [
+            (
+                "return a taint_source local",
+                r#"fn get_secret() -> u32 { let s = taint_source("pw"); return s; }
+fn main() { let x = get_secret(); sink(x); }"#,
+            ),
+            (
+                "return taint_source directly",
+                r#"fn get_secret() -> u32 { return taint_source("pw"); }
+fn main() { sink(get_secret()); }"#,
+            ),
+            (
+                "return a tainted<T> local",
+                r#"fn get() -> u32 { let s: tainted<u32> = symbolic(); return s; }
+fn main() { sink(get()); }"#,
+            ),
+            (
+                "transitive: a returns b() which returns taint (fixpoint)",
+                r#"fn b() -> u32 { return taint_source("s"); }
+fn a() -> u32 { return b(); }
+fn main() { sink(a()); }"#,
+            ),
+        ] {
+            let err = tc_ok(src).expect_err(&format!(
+                "{case}: a returned-taint value reaching a sink must reject"
+            ));
+            assert!(
+                err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+                "{case} got: {err}"
+            );
+        }
+
+        // Must NOT over-taint: the summary is precise about what is RETURNED (not "touches taint
+        // anywhere"), respects declassify, and leaves genuinely-clean functions clean.
+        for (case, src) in [
+            (
+                "clean return",
+                r#"fn get() -> u32 { return 5; } fn main() { sink(get()); }"#,
+            ),
+            (
+                "declassify before return",
+                r#"fn get() -> u32 { let s = taint_source("s"); return declassify(s, "p", "r"); }
+fn main() { sink(get()); }"#,
+            ),
+            (
+                "internal taint that is NOT returned",
+                r#"fn f() -> u32 { let s = taint_source("s"); return 5; }
+fn main() { sink(f()); }"#,
+            ),
+            (
+                // Adversary round-2 false-positive fix: the return-taint walk respects lexical block
+                // scope. An inner block-scoped `let x` shadowing a clean outer `let x` must NOT make
+                // the function return-tainting when it returns the OUTER (clean) binding.
+                "block-scoped shadowing, returns outer clean",
+                r#"fn f(cond: bool) -> u32 { let x = 5; if cond { let x = taint_source("s"); print(x); } return x; }
+fn main() { sink(f(false)); }"#,
+            ),
+        ] {
+            tc_ok(src)
+                .unwrap_or_else(|e| panic!("{case}: clean function must not be flagged: {e}"));
+        }
+
+        // Adversary round-2 false-negative fix: taint laundered through an `as` cast (both the new
+        // interprocedural summary and the intra-procedural analysis gained an `Expr::Cast` arm), and a
+        // return of the INNER shadowed taint must still be caught (the scope fix did not open a hole).
+        for (case, src) in [
+            (
+                "return of a cast taint value (interprocedural)",
+                r#"fn get() -> u64 { let s = taint_source("pw"); return s as u64; }
+fn main() { sink(get()); }"#,
+            ),
+            (
+                "cast taint into a sink (intra-procedural)",
+                r#"fn main() { let s = taint_source("s"); sink(s as u64); }"#,
+            ),
+            (
+                "shadowing, returns the INNER tainted binding",
+                r#"fn f(cond: bool) -> u32 { let x = 5; if cond { let x = taint_source("s"); return x; } return x; }
+fn main() { sink(f(true)); }"#,
+            ),
+        ] {
+            let err = tc_ok(src).expect_err(&format!("{case}: a real leak must be rejected"));
+            assert!(
+                err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+                "{case} got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_bundle_rejects_manifest_rewrite_without_manifest_hash_update() {
         use sha2::{Digest, Sha256};
 

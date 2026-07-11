@@ -116,10 +116,15 @@ through indexing/field access.
   both base and index) and `Expr::FieldAccess` (base) arms. Previously `sink(tainted_arr[i])` and
   `sink(tainted_struct.field)` fell through a catch-all and silently escaped
   `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` — a real fail-open, now closed.
+- **Interprocedural return-taint + cast propagation (Phase-3 slice 2).** `sink(get_secret())` where
+  `get_secret` returns an internally-produced taint (a `taint_source()`/`tainted<T>` local, through
+  let-chains, casts, and transitive returns of other tainting functions) is now flagged, via a
+  monotone fixpoint summary consulted by `expr_taint_source`'s `Call` arm. See the boundaries below.
 - Tests: `is_tainted_*` (ty.rs, incl. the frozen-oracle-adjacent VOCAB test),
   `taint_propagates_through_field_access_and_indexing_to_sink`,
   `is_tainted_detects_qualifier_nested_in_a_container_annotation`,
-  `taint_from_a_let_seed_is_conservatively_sticky_across_reassignment`.
+  `taint_from_a_let_seed_is_conservatively_sticky_across_reassignment`,
+  `interprocedural_return_taint_is_flagged_at_the_call_site`.
 
 **Honest boundaries (deliberately deferred — this slice did NOT close them):**
 - **Taint flow is reassignment-INSENSITIVE.** A binding's taint is fixed at its `let`/param seeding.
@@ -129,8 +134,26 @@ through indexing/field access.
   this slice). Making reassignment flow-sensitive needs proper control-flow-merge dataflow (branch
   snapshot/restore/join); three adversarial rounds confirmed a naive incremental version is unsound
   across `if`/`else`/loop bodies, so it is a separate future Phase-3 slice, not shipped half-working.
-- **Intra-procedural only.** `Expr::Call` inspects arguments only — a callee that returns taint from
-  a clean argument is not modeled (no `FnTaintSummary`). The next Phase-3 slice.
+- **Interprocedural RETURN-taint is now modeled (Phase-3 slice 2).** A monotone fixpoint pre-pass
+  (`compute_tainting_fns`, run before per-function analysis) marks each function whose return value
+  carries INTERNAL taint — a `taint_source()`/`tainted<T>` local returned directly (through let-chains
+  and casts), or a return of another marked function. `expr_taint_source`'s `Call` arm consults it, so
+  `sink(get_secret())` is now flagged even with no tainted argument. The return-taint walk is
+  scope-aware (respects lexical block shadowing) and declassify-aware (a function that declassifies
+  before returning is clean). Also this slice: taint now propagates through an `as` cast (a new
+  `Expr::Cast` arm — `sink(s as u64)` no longer launders). Still NOT modeled interprocedurally:
+  **argument→return pass-through summaries** (calling `fn wrap(x){return x;}` with a tainted arg IS
+  caught by the existing per-argument check, but `wrap` is not summarized as "returns taint iff arg N
+  is tainted"), **parameter→sink summaries** (a callee that sinks its argument internally), and
+  **higher-order / indirect calls** (`let f = get_secret; sink(f())` — the summary keys on the callee
+  NAME; a function-valued variable is not resolved, same boundary as method calls via `CallExpr`).
+- **Block-scoped shadowing is respected by the return-taint summary but NOT yet by the intra-procedural
+  sink check.** The interprocedural walk snapshots/restores scope around blocks, so
+  `fn f(c){ let x=5; if c { let x=taint(); } return x; }` is correctly clean. The *inline* equivalent
+  (`let x=5; if c { let x=taint(); } sink(x);`) is still a pre-existing FALSE POSITIVE in
+  `analyze_stmts`, which keys taint on a flat per-name scope without block push/pop. Fixing
+  `analyze_stmts`' block scoping is a separate slice; it is a fail-CLOSED over-rejection (safe
+  direction), not a leak.
 - **Whole-binding granularity.** A struct field individually declared `tainted<T>` in the struct's
   own type definition does not by itself taint `.field` access on an otherwise-clean instance; only a
   binding seeded tainted at its own `let`/param propagates.

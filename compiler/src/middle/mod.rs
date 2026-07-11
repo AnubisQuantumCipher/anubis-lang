@@ -160,6 +160,13 @@ struct SemanticContext {
     fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
     /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
     all_fns: BTreeSet<String>,
+    /// Interprocedural taint summary: functions whose RETURN value carries INTERNAL taint (from a
+    /// `taint_source()`/`tainted<T>` local, or a return of another such function), computed by a
+    /// monotone fixpoint pre-pass before per-function analysis. `expr_taint_source`'s `Call` arm
+    /// consults it so `sink(get_secret())` is flagged even with no tainted argument. Monotone (only
+    /// grows), so no control-flow-merge hazard — the return-value over-approximation is the safe
+    /// direction for a security check.
+    tainting_fns: BTreeSet<String>,
     /// Method name → parameter count (including `self`). `None` marks a name defined with more than
     /// one arity across impls, so its direct-call arity is ambiguous and left unchecked.
     method_arities: BTreeMap<String, Option<usize>>,
@@ -174,6 +181,9 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
     let mut ctx = SemanticContext::default();
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
+    // Pass 1.5: interprocedural return-taint summary (which functions return internally-tainted data),
+    // computed before per-function analysis so every `Call` the analysis sees can consult it.
+    compute_tainting_fns(&ast.items, &mut ctx);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -972,8 +982,8 @@ fn analyze_stmts(
                     _ => {}
                 }
 
-                let init_taint = expr_taint_source(init, scope);
-                let declass_source = declassify_source(init, scope);
+                let init_taint = expr_taint_source(init, scope, &ctx.tainting_fns);
+                let declass_source = declassify_source(init, scope, &ctx.tainting_fns);
                 // mark known after unknown check so later stmts see it
                 ctx.known_bindings.insert(name.clone());
 
@@ -1240,7 +1250,7 @@ fn analyze_stmts(
                 check_expr_semantics(expr, scope, ctx);
             }
             Stmt::Assign { target, value } => {
-                if let Some(source) = expr_taint_source(value, scope) {
+                if let Some(source) = expr_taint_source(value, scope, &ctx.tainting_fns) {
                     if let Expr::Var(name) = target {
                         ctx.taint_traces.push(TaintTrace {
                             source: source.clone(),
@@ -1324,7 +1334,7 @@ fn analyze_stmts(
                 }
             }
             Stmt::If { cond, then, else_ } => {
-                if expr_taint_source(cond, scope).is_some() {
+                if expr_taint_source(cond, scope, &ctx.tainting_fns).is_some() {
                     effects.push("tainted-branch".into());
                 }
                 // A branch may not execute, so a fact it asserts (e.g. `x = 5`) must not leak out as
@@ -1353,7 +1363,7 @@ fn analyze_stmts(
                 body,
                 invariant,
             } => {
-                if expr_taint_source(cond, scope).is_some() {
+                if expr_taint_source(cond, scope, &ctx.tainting_fns).is_some() {
                     effects.push("tainted-branch".into());
                 }
                 effects.push("loop".into());
@@ -1448,10 +1458,10 @@ fn analyze_stmts(
                 }
                 let taint_src = match source {
                     crate::frontend::ForSource::Range { start, .. } => {
-                        expr_taint_source(start, scope)
+                        expr_taint_source(start, scope, &ctx.tainting_fns)
                     }
                     crate::frontend::ForSource::Collection { expr } => {
-                        expr_taint_source(expr, scope)
+                        expr_taint_source(expr, scope, &ctx.tainting_fns)
                     }
                 };
                 // The loop variable is a fresh in-scope binding for the body's analysis. A range
@@ -1568,7 +1578,7 @@ fn analyze_expr_effect(
             if is_sink(callee) {
                 effects.push(format!("sink:{}", callee));
                 for arg in args {
-                    if let Some(source) = expr_taint_source(arg, scope) {
+                    if let Some(source) = expr_taint_source(arg, scope, &ctx.tainting_fns) {
                         let declassified = expr_is_declassified(arg, scope);
                         ctx.taint_traces.push(TaintTrace {
                             source: source.clone(),
@@ -1595,7 +1605,7 @@ fn analyze_expr_effect(
             policy,
             reason,
         } => {
-            if let Some(source) = expr_taint_source(inner, scope) {
+            if let Some(source) = expr_taint_source(inner, scope, &ctx.tainting_fns) {
                 let mut steps = vec![format!("{} -> declassify", source)];
                 if let Some(p) = policy {
                     steps.push(format!("policy={}", p));
@@ -4105,31 +4115,54 @@ fn check_match_exhaustiveness(
     }
 }
 
-fn declassify_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
+fn declassify_source(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+) -> Option<String> {
     match expr {
         Expr::Declassify {
             inner,
             policy,
             reason,
             ..
-        } if policy.is_some() && reason.is_some() => expr_taint_source(inner, scope),
+        } if policy.is_some() && reason.is_some() => expr_taint_source(inner, scope, tainting_fns),
         _ => None,
     }
 }
 
-fn expr_taint_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
+/// The taint-source label of an expression, or `None` if clean. `tainting_fns` is the interprocedural
+/// return-taint summary (functions whose return value carries internal taint) — consulted at the
+/// `Call` arm so `sink(get_secret())` is caught even when no argument is tainted. Pass an EMPTY set to
+/// disable interprocedural reasoning (e.g. inside the summary fixpoint's own bootstrap).
+fn expr_taint_source(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+) -> Option<String> {
     match expr {
         Expr::Var(name) => scope
             .get(name)
             .and_then(|binding| binding.info.taint_source.clone())
             .filter(|_| scope.get(name).is_some_and(|binding| binding.info.tainted)),
-        Expr::Binary { lhs, rhs, .. } => {
-            expr_taint_source(lhs, scope).or_else(|| expr_taint_source(rhs, scope))
+        Expr::Binary { lhs, rhs, .. } => expr_taint_source(lhs, scope, tainting_fns)
+            .or_else(|| expr_taint_source(rhs, scope, tainting_fns)),
+        Expr::Unary { expr, .. } => expr_taint_source(expr, scope, tainting_fns),
+        // A call is tainted if the callee's RETURN carries internal taint (interprocedural summary),
+        // OR if any argument is tainted (taint passing THROUGH the call — the historical behavior).
+        // The callee check closes the fail-open where `fn get() { return taint_source(); }` made
+        // `sink(get())` pass silently. `return` itself is `Call{callee:"return"}` and can never be a
+        // user function name, so it never matches the summary.
+        Expr::Call { callee, args } => {
+            if tainting_fns.contains(callee) {
+                Some(format!("return value of `{}`", callee))
+            } else {
+                args.iter()
+                    .find_map(|arg| expr_taint_source(arg, scope, tainting_fns))
+            }
         }
-        Expr::Unary { expr, .. } => expr_taint_source(expr, scope),
-        Expr::Call { args, .. } => args.iter().find_map(|arg| expr_taint_source(arg, scope)),
-        Expr::Tainted { inner, .. } => expr_taint_source(inner, scope),
-        Expr::Assume(inner) | Expr::Assert(inner) => expr_taint_source(inner, scope),
+        Expr::Tainted { inner, .. } => expr_taint_source(inner, scope, tainting_fns),
+        Expr::Assume(inner) | Expr::Assert(inner) => expr_taint_source(inner, scope, tainting_fns),
         Expr::Declassify {
             inner,
             policy,
@@ -4139,7 +4172,7 @@ fn expr_taint_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Opt
             if policy.is_some() && reason.is_some() {
                 None // cleared
             } else {
-                expr_taint_source(inner, scope) // still tainted
+                expr_taint_source(inner, scope, tainting_fns) // still tainted
             }
         }
         Expr::TaintSource { label } => Some(label.clone()),
@@ -4153,11 +4186,203 @@ fn expr_taint_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Opt
         // tainted — only a binding whose own `let`/param annotation (or tainted initializer) seeded it
         // tainted propagates here, matching how every other walker in this file treats field/struct
         // definitions as opaque to flow analysis.
-        Expr::Index { base, index } => {
-            expr_taint_source(base, scope).or_else(|| expr_taint_source(index, scope))
-        }
-        Expr::FieldAccess { base, .. } => expr_taint_source(base, scope),
+        Expr::Index { base, index } => expr_taint_source(base, scope, tainting_fns)
+            .or_else(|| expr_taint_source(index, scope, tainting_fns)),
+        Expr::FieldAccess { base, .. } => expr_taint_source(base, scope, tainting_fns),
+        // A cast reinterprets a value without changing its provenance — `secret as u64` is still the
+        // secret. Without this arm, `sink(s as u64)` (and `return s as u64` interprocedurally)
+        // laundered taint through the cast (adversary-found fail-open, both intra- and inter-procedural).
+        Expr::Cast { expr, .. } => expr_taint_source(expr, scope, tainting_fns),
         _ => None,
+    }
+}
+
+// ── Interprocedural return-taint summary (`ctx.tainting_fns`) ────────────────────────────────────
+// A monotone fixpoint pre-pass (see `compute_tainting_fns`, run in `typecheck` before per-function
+// analysis) marks each function whose RETURN value carries INTERNAL taint — a `taint_source()` /
+// `tainted<T>` local returned directly, or a return of another already-marked function. Consumed by
+// `expr_taint_source`'s `Call` arm so `sink(get_secret())` is flagged even with no tainted argument.
+// It is deliberately whole-value + reassignment-insensitive + declassify-aware, exactly matching the
+// intra-procedural analysis, and MONOTONE (only grows) so it needs no control-flow-merge join.
+
+/// Whether an expression is a `return X` (Anubis models `return` as a call to the pseudo-function
+/// named `"return"`, never a real function).
+fn is_return_call(e: &Expr) -> bool {
+    matches!(e, Expr::Call { callee, .. } if callee == "return")
+}
+
+/// Seed one `let` binding's taint into `scope`, mirroring the real let-seeding (annotation OR a
+/// tainted, non-declassified initializer). Params are never seeded here — a returned parameter is
+/// arg-flow, handled at each call site; this isolates taint a function produces INTERNALLY.
+fn seed_one_let(
+    name: &str,
+    ty: Option<&str>,
+    init: &Expr,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+) {
+    let explicit = is_tainted_type(ty);
+    let init_taint = expr_taint_source(init, scope, tainting_fns);
+    let declassified = declassify_source(init, scope, tainting_fns).is_some();
+    let tainted = explicit || (init_taint.is_some() && !declassified);
+    let taint_source = if explicit {
+        Some(name.to_string())
+    } else if tainted {
+        init_taint
+    } else {
+        None
+    };
+    scope.insert(
+        name.to_string(),
+        ScopeBinding {
+            info: BindingInfo {
+                name: name.to_string(),
+                ty: ty.map(str::to_string),
+                mode: String::new(),
+                tainted,
+                taint_source,
+                declassified,
+                span: None,
+            },
+            closure_arity: None,
+        },
+    );
+}
+
+/// Whether any value a function body can RETURN carries internal taint, given the summary so far —
+/// respecting LEXICAL BLOCK SCOPE. A `let` inside an `if`/loop body shadows an outer same-named
+/// binding only within that block: the scope is snapshot/restored around every block, so a
+/// `return x` AFTER the block sees the outer binding (an adversary found the flat version wrongly
+/// marked `fn f(c){ let x=5; if c { let x=taint(); } return x; }`, which provably returns the clean
+/// outer 5). `tail` marks whether this statement sequence is in the function's tail position, so a
+/// bare trailing expression counts as an implicit return only when it truly is one (never a
+/// mid-function side-effecting statement, nor a loop body's last statement). Declassify-before-return
+/// reads clean automatically via `expr_taint_source`'s `Declassify` arm. Monotone in `tainting_fns`.
+fn body_returns_taint(
+    stmts: &[Stmt],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+    tail: bool,
+) -> bool {
+    let n = stmts.len();
+    for (i, stmt) in stmts.iter().enumerate() {
+        let stmt_is_tail = tail && i + 1 == n;
+        match stmt {
+            Stmt::Let { name, ty, init, .. } => {
+                // A `return` can hide inside the initializer (a `match`/`if` arm).
+                let mut rets = Vec::new();
+                expr_returns(init, &mut rets);
+                if rets
+                    .iter()
+                    .any(|e| expr_taint_source(e, scope, tainting_fns).is_some())
+                {
+                    return true;
+                }
+                seed_one_let(name, ty.as_deref(), init, scope, tainting_fns);
+            }
+            Stmt::If { then, else_, .. } => {
+                // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
+                let saved = scope.clone();
+                if body_returns_taint(then, scope, tainting_fns, stmt_is_tail) {
+                    return true;
+                }
+                *scope = saved.clone();
+                if let Some(else_body) = else_ {
+                    if body_returns_taint(else_body, scope, tainting_fns, stmt_is_tail) {
+                        return true;
+                    }
+                }
+                *scope = saved;
+            }
+            Stmt::While { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => {
+                // A loop/research body is never the function's implicit return value (tail = false);
+                // only an explicit `return` inside it counts. Its `let`s are block-scoped.
+                let saved = scope.clone();
+                if body_returns_taint(body, scope, tainting_fns, false) {
+                    return true;
+                }
+                *scope = saved;
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    let saved = scope.clone();
+                    if body_returns_taint(b, scope, tainting_fns, false) {
+                        return true;
+                    }
+                    *scope = saved;
+                }
+            }
+            _ => {
+                // Explicit `return X` in this (non-block) statement — statement position or hidden in
+                // an expression (match/if arm) — checked against the CURRENT lexical scope.
+                let mut rets = Vec::new();
+                collect_returns_in_stmt(stmt, &mut rets);
+                if rets
+                    .iter()
+                    .any(|e| expr_taint_source(e, scope, tainting_fns).is_some())
+                {
+                    return true;
+                }
+                // Implicit tail return: a bare trailing expression in tail position. (An `if`/`match`
+                // tail expression is not tracked — `expr_taint_source` has no such arm — a documented
+                // boundary, so only a direct bare expr matters here.)
+                if stmt_is_tail {
+                    if let Stmt::ExprStmt(e) = stmt {
+                        if !is_return_call(e) && expr_taint_source(e, scope, tainting_fns).is_some()
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Whether a function's return value carries internal taint (scope-aware; the function body is in
+/// tail position). Params-clean scope, so this isolates internal taint from arg-flow.
+fn fn_returns_taint(body: &[Stmt], tainting_fns: &BTreeSet<String>) -> bool {
+    let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
+    body_returns_taint(body, &mut scope, tainting_fns, true)
+}
+
+/// Collect `(name, body)` for every free function (recursing into modules), keyed by the same flat/
+/// mangled name the call `callee` and `all_fns` use. Impl methods are excluded — they are reached
+/// only through `CallExpr` (receiver syntax), which the bare-name `Call` arm never matches.
+fn collect_fn_bodies<'a>(items: &'a [Item], out: &mut Vec<(String, &'a [Stmt])>) {
+    for item in items {
+        match item {
+            Item::Fn { name, body, .. } => out.push((name.clone(), body.as_slice())),
+            Item::Module { items, .. } => collect_fn_bodies(items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Populate `ctx.tainting_fns` by a monotone fixpoint: repeatedly mark any not-yet-marked function
+/// whose return carries taint under the current summary, until no function is added. Converges in at
+/// most one round per function because the set only grows. Run once, before per-function analysis, so
+/// every `Call` the analysis later sees consults a complete summary.
+fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
+    let mut fns: Vec<(String, &[Stmt])> = Vec::new();
+    collect_fn_bodies(items, &mut fns);
+    loop {
+        let mut newly: Vec<String> = Vec::new();
+        for (name, body) in &fns {
+            if !ctx.tainting_fns.contains(name) && fn_returns_taint(body, &ctx.tainting_fns) {
+                newly.push(name.clone());
+            }
+        }
+        if newly.is_empty() {
+            break;
+        }
+        ctx.tainting_fns.extend(newly);
     }
 }
 
