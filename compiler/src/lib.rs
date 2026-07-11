@@ -7,6 +7,7 @@ pub mod evidence;
 pub mod frontend;
 pub mod middle;
 pub mod project;
+pub mod resolve;
 
 pub use backends::native::lower_to_native;
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
