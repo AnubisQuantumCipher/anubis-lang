@@ -1,0 +1,14 @@
+// An enum (Shape) and an imported module (geometry) coexist: `Shape::Rect` stays an enum
+// construct, `geometry::area` resolves to the module. Both work in one program.
+import geometry;
+
+enum Shape { Rect, Circle }
+
+fn describe(s) {
+    match s {
+        Shape::Rect => print("rect area = ${geometry::area(3, 4)}"),
+        _ => print("other"),
+    }
+}
+
+fn main() { describe(Shape::Rect); }

@@ -4139,6 +4139,32 @@ fn main() {
         assert_eq!(outcome.stdout.trim(), "5 25");
     }
 
+    fn modules_fixture(rel: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/modules").join(rel)
+    }
+
+    #[test]
+    fn committed_enum_vs_mod_fixture_runs() {
+        // An enum and an imported module coexist in one program (Shape::Rect stays an enum, and
+        // geometry::area resolves to the module — including inside a match arm).
+        let entry = modules_fixture("enum_vs_mod/main.anb");
+        let src = std::fs::read_to_string(&entry).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let outcome = run_anubis_source(&entry, &src, out.path(), false, &[])
+            .expect("enum_vs_mod fixture should run");
+        assert_eq!(outcome.stdout.trim(), "rect area = 12");
+    }
+
+    #[test]
+    fn committed_cycle_fixture_fails_closed() {
+        let entry = modules_fixture("cycle/a.anb");
+        let src = std::fs::read_to_string(&entry).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let err = run_anubis_source(&entry, &src, out.path(), false, &[])
+            .expect_err("cyclic imports must fail closed");
+        assert!(err.to_string().contains("ANUBIS_IMPORT_CYCLE"), "got: {err}");
+    }
+
     #[test]
     fn run_cross_module_private_call_fails_closed() {
         let dir = tempfile::tempdir().expect("tempdir");
