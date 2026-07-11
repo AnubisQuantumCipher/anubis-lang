@@ -3140,6 +3140,73 @@ fn main() {
     }
 
     #[test]
+    fn interprocedural_param_sink_is_flagged_at_the_call_site() {
+        // Phase-3 A1: a function that sinks a formal parameter makes the CALL SITE a sink for that
+        // argument — `fn log(x){ sink(x); } ... log(tainted)` must reject even though the actual
+        // `sink(...)` is inside the callee. Distinct code `ANUBIS_INTERPROC_SINK`.
+        for (case, src) in [
+            (
+                "direct param→sink",
+                r#"fn log(x: u32) { sink(x); }
+fn main() { let s = taint_source("pw"); log(s); }"#,
+            ),
+            (
+                "transitive: wrap → log → sink (fixpoint)",
+                r#"fn log(x: u32) { sink(x); }
+fn wrap(y: u32) { log(y); }
+fn main() { let s = taint_source("pw"); wrap(s); }"#,
+            ),
+            (
+                "param flows through a let before sink",
+                r#"fn log(x: u32) { let y = x; sink(y); }
+fn main() { let s = taint_source("pw"); log(s); }"#,
+            ),
+            (
+                "second param only is a sink",
+                r#"fn pair(a: u32, b: u32) { sink(b); }
+fn main() { let s = taint_source("pw"); pair(1, s); }"#,
+            ),
+        ] {
+            let err = tc_ok(src).expect_err(&format!(
+                "{case}: tainted arg into a param-sinking callee must reject"
+            ));
+            assert!(err.contains("ANUBIS_INTERPROC_SINK"), "{case} got: {err}");
+        }
+
+        // Must NOT over-reject: clean args, declassified args, and params that do not reach a sink.
+        for (case, src) in [
+            (
+                "clean arg into param-sinking callee",
+                r#"fn log(x: u32) { sink(x); }
+fn main() { log(5); }"#,
+            ),
+            (
+                "declassify before the interproc sink call",
+                r#"fn log(x: u32) { sink(x); }
+fn main() { let s = taint_source("pw"); let c = declassify(s, "p", "r"); log(c); }"#,
+            ),
+            (
+                "callee declassifies before its own sink",
+                r#"fn log(x: u32) { let c = declassify(x, "p", "r"); sink(c); }
+fn main() { let s = taint_source("pw"); log(s); }"#,
+            ),
+            (
+                "param that is NOT sunk stays clean",
+                r#"fn keep(a: u32, b: u32) { sink(b); }
+fn main() { let s = taint_source("pw"); keep(s, 1); }"#,
+            ),
+            (
+                "callee never sinks",
+                r#"fn id(x: u32) -> u32 { return x; }
+fn main() { let s = taint_source("pw"); let y = id(s); print(y); }"#,
+            ),
+        ] {
+            tc_ok(src)
+                .unwrap_or_else(|e| panic!("{case}: clean/declassified path must accept: {e}"));
+        }
+    }
+
+    #[test]
     fn block_scoped_shadowing_does_not_taint_outer_binding_at_sink() {
         // Phase-3 slice B: close the pre-existing fail-CLOSED false positive where `analyze_stmts`
         // keyed taint on a flat per-name scope (no block push/pop). The *interprocedural* walk

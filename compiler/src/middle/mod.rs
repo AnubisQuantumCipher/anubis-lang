@@ -167,6 +167,11 @@ struct SemanticContext {
     /// grows), so no control-flow-merge hazard — the return-value over-approximation is the safe
     /// direction for a security check.
     tainting_fns: BTreeSet<String>,
+    /// Interprocedural param→sink summary (Phase-3 A1): for each function, the set of formal
+    /// parameter indices that can flow to a sink (builtin `is_sink`, or a call argument position
+    /// that another function's summary marks as sinking) without declassify. Monotone fixpoint.
+    /// Call sites consult it: `log(tainted)` is `ANUBIS_INTERPROC_SINK` when `fn log(x){sink(x);}`.
+    param_sinks: BTreeMap<String, BTreeSet<usize>>,
     /// Method name → parameter count (including `self`). `None` marks a name defined with more than
     /// one arity across impls, so its direct-call arity is ambiguous and left unchecked.
     method_arities: BTreeMap<String, Option<usize>>,
@@ -181,9 +186,10 @@ pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
     let mut ctx = SemanticContext::default();
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
-    // Pass 1.5: interprocedural return-taint summary (which functions return internally-tainted data),
-    // computed before per-function analysis so every `Call` the analysis sees can consult it.
+    // Pass 1.5: interprocedural taint summaries (return-taint + param→sink), computed before
+    // per-function analysis so every `Call` the analysis sees can consult them.
     compute_tainting_fns(&ast.items, &mut ctx);
+    compute_param_sinks(&ast.items, &mut ctx);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -1637,6 +1643,38 @@ fn analyze_expr_effect(
                                 ),
                                 span: None,
                             });
+                        }
+                    }
+                }
+            }
+            // Phase-3 A1: interprocedural param→sink. A callee whose formal N reaches a sink
+            // makes the call site a sink for argument N — even though the actual `sink(...)` is
+            // inside the callee. Distinct code from the direct-sink check so callers can see
+            // `ANUBIS_INTERPROC_SINK` (the leak is at the call boundary, not a local sink name).
+            if let Some(sink_params) = ctx.param_sinks.get(callee).cloned() {
+                for i in sink_params {
+                    if let Some(arg) = args.get(i) {
+                        if let Some(source) = expr_taint_source(arg, scope, &ctx.tainting_fns) {
+                            let declassified = expr_is_declassified(arg, scope);
+                            ctx.taint_traces.push(TaintTrace {
+                                source: source.clone(),
+                                sink: Some(format!("{}(param {})", callee, i)),
+                                steps: vec![format!(
+                                    "{} -> call `{}` param {} -> sink",
+                                    source, callee, i
+                                )],
+                                declassified,
+                            });
+                            if mode == Mode::Safe && !declassified {
+                                ctx.diagnostics.push(SemanticDiagnostic {
+                                    code: Some("ANUBIS_INTERPROC_SINK".into()),
+                                    message: format!(
+                                        "safe mode tainted flow from `{}` into parameter {} of `{}`, which reaches a sink without declassify",
+                                        source, i, callee
+                                    ),
+                                    span: None,
+                                });
+                            }
                         }
                     }
                 }
@@ -4425,6 +4463,263 @@ fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
             break;
         }
         ctx.tainting_fns.extend(newly);
+    }
+}
+
+// ── Interprocedural param→sink summary (`ctx.param_sinks`) ───────────────────────────────────────
+// Monotone fixpoint: for each function, which formal parameters flow to a sink without declassify
+// (a builtin `is_sink`, or a call argument position another function's summary marks as sinking).
+// Call sites then reject `log(tainted)` when `fn log(x){sink(x);}` — `ANUBIS_INTERPROC_SINK`.
+
+/// Collect `(name, param_names, body)` for free functions (modules mangled the same way as calls).
+fn collect_fn_params_bodies<'a>(
+    items: &'a [Item],
+    out: &mut Vec<(String, Vec<String>, &'a [Stmt])>,
+) {
+    for item in items {
+        match item {
+            Item::Fn {
+                name, params, body, ..
+            } => {
+                out.push((
+                    name.clone(),
+                    params.iter().map(|(n, _)| n.clone()).collect(),
+                    body.as_slice(),
+                ));
+            }
+            Item::Module { items, .. } => collect_fn_params_bodies(items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Parameter indices that flow through `expr` under the current param-flow scope. Declassify clears;
+/// calls pass through argument taint (and, for known sink-params of the callee, only those positions
+/// matter at the *call site* — here we only need "which params are in this value").
+fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTreeSet<usize> {
+    match expr {
+        Expr::Var(name) => flow.get(name).cloned().unwrap_or_default(),
+        Expr::Binary { lhs, rhs, .. } => {
+            let mut s = expr_param_flow(lhs, flow);
+            s.extend(expr_param_flow(rhs, flow));
+            s
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Tainted { inner: expr, .. } => {
+            expr_param_flow(expr, flow)
+        }
+        Expr::Assume(inner) | Expr::Assert(inner) => expr_param_flow(inner, flow),
+        Expr::Declassify {
+            inner,
+            policy,
+            reason,
+            ..
+        } => {
+            if policy.is_some() && reason.is_some() {
+                BTreeSet::new() // cleared
+            } else {
+                expr_param_flow(inner, flow)
+            }
+        }
+        Expr::Call { args, .. } => {
+            // Union of arg flows (conservative over-approx of the call's value). Sink detection
+            // for user callees is handled separately at call sites via `known_param_sinks`.
+            args.iter().fold(BTreeSet::new(), |mut acc, a| {
+                acc.extend(expr_param_flow(a, flow));
+                acc
+            })
+        }
+        Expr::Index { base, index } => {
+            let mut s = expr_param_flow(base, flow);
+            s.extend(expr_param_flow(index, flow));
+            s
+        }
+        Expr::FieldAccess { base, .. } => expr_param_flow(base, flow),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Seed a let into the param-flow map (union of init's params; declassify clears).
+fn seed_param_flow_let(name: &str, init: &Expr, flow: &mut BTreeMap<String, BTreeSet<usize>>) {
+    // Mirror declassify_source: a full declassify clears param provenance.
+    let cleared = matches!(
+        init,
+        Expr::Declassify {
+            policy: Some(_),
+            reason: Some(_),
+            ..
+        }
+    );
+    if cleared {
+        flow.insert(name.to_string(), BTreeSet::new());
+    } else {
+        flow.insert(name.to_string(), expr_param_flow(init, flow));
+    }
+}
+
+/// Walk a body collecting parameter indices that reach a sink under the current
+/// `known_param_sinks` summary. Scope-aware (snapshot/restore around blocks).
+fn body_param_sinks(
+    stmts: &[Stmt],
+    flow: &mut BTreeMap<String, BTreeSet<usize>>,
+    known_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
+    found: &mut BTreeSet<usize>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let { name, init, .. } => {
+                // A sink can hide inside the initializer (e.g. `let _ = sink(x)`).
+                collect_param_sinks_in_expr(init, flow, known_param_sinks, found);
+                seed_param_flow_let(name, init, flow);
+            }
+            Stmt::If {
+                then, else_, cond, ..
+            } => {
+                collect_param_sinks_in_expr(cond, flow, known_param_sinks, found);
+                let saved = flow.clone();
+                body_param_sinks(then, flow, known_param_sinks, found);
+                *flow = saved.clone();
+                if let Some(else_body) = else_ {
+                    body_param_sinks(else_body, flow, known_param_sinks, found);
+                }
+                *flow = saved;
+            }
+            Stmt::While { body, cond, .. } => {
+                collect_param_sinks_in_expr(cond, flow, known_param_sinks, found);
+                let saved = flow.clone();
+                body_param_sinks(body, flow, known_param_sinks, found);
+                *flow = saved;
+            }
+            Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => {
+                let saved = flow.clone();
+                body_param_sinks(body, flow, known_param_sinks, found);
+                *flow = saved;
+            }
+            Stmt::For {
+                body, source, var, ..
+            } => {
+                let saved = flow.clone();
+                // Loop var inherits collection/range param flow (conservative).
+                let src_flow = match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        let mut s = expr_param_flow(start, flow);
+                        s.extend(expr_param_flow(end, flow));
+                        s
+                    }
+                    crate::frontend::ForSource::Collection { expr } => expr_param_flow(expr, flow),
+                };
+                flow.insert(var.clone(), src_flow);
+                body_param_sinks(body, flow, known_param_sinks, found);
+                *flow = saved;
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    let saved = flow.clone();
+                    body_param_sinks(b, flow, known_param_sinks, found);
+                    *flow = saved;
+                }
+            }
+            Stmt::Assign { target, value } => {
+                // Reassignment-insensitive for taint *clearing*, but we DO propagate param flow
+                // into an existing name when the RHS carries params (monotone add). Clearing is
+                // never performed — same discipline as the main taint analysis.
+                collect_param_sinks_in_expr(value, flow, known_param_sinks, found);
+                if let Expr::Var(name) = target {
+                    let rhs = expr_param_flow(value, flow);
+                    flow.entry(name.clone()).or_default().extend(rhs);
+                }
+            }
+            Stmt::ExprStmt(e) => {
+                collect_param_sinks_in_expr(e, flow, known_param_sinks, found);
+            }
+            _ => {
+                // Best-effort: scan any nested expressions in other stmt forms for sink calls.
+                let mut rets = Vec::new();
+                collect_returns_in_stmt(stmt, &mut rets);
+                for r in rets {
+                    collect_param_sinks_in_expr(&r, flow, known_param_sinks, found);
+                }
+            }
+        }
+    }
+}
+
+/// If `expr` is (or contains) a sink of params, record those indices. Handles direct `is_sink`
+/// builtins and calls to functions whose param_sinks summary marks specific argument positions.
+fn collect_param_sinks_in_expr(
+    expr: &Expr,
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+    known_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
+    found: &mut BTreeSet<usize>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if is_sink(callee) {
+                for arg in args {
+                    found.extend(expr_param_flow(arg, flow));
+                }
+            }
+            if let Some(sink_params) = known_param_sinks.get(callee) {
+                for &i in sink_params {
+                    if let Some(arg) = args.get(i) {
+                        found.extend(expr_param_flow(arg, flow));
+                    }
+                }
+            }
+            for arg in args {
+                collect_param_sinks_in_expr(arg, flow, known_param_sinks, found);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_param_sinks_in_expr(lhs, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(rhs, flow, known_param_sinks, found);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::FieldAccess { base: expr, .. } => {
+            collect_param_sinks_in_expr(expr, flow, known_param_sinks, found);
+        }
+        Expr::Declassify { inner, .. } => {
+            collect_param_sinks_in_expr(inner, flow, known_param_sinks, found);
+        }
+        Expr::Index { base, index } => {
+            collect_param_sinks_in_expr(base, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(index, flow, known_param_sinks, found);
+        }
+        _ => {}
+    }
+}
+
+/// Populate `ctx.param_sinks` by a monotone fixpoint over free functions.
+fn compute_param_sinks(items: &[Item], ctx: &mut SemanticContext) {
+    let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+    collect_fn_params_bodies(items, &mut fns);
+    loop {
+        let mut changed = false;
+        // Snapshot so we can consult a stable summary while updating.
+        let known = ctx.param_sinks.clone();
+        for (name, params, body) in &fns {
+            let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+            for (i, p) in params.iter().enumerate() {
+                flow.insert(p.clone(), BTreeSet::from([i]));
+            }
+            let mut found = BTreeSet::new();
+            body_param_sinks(body, &mut flow, &known, &mut found);
+            let entry = ctx.param_sinks.entry(name.clone()).or_default();
+            for i in found {
+                if entry.insert(i) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
 }
 
