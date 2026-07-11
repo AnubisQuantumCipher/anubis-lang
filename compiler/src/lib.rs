@@ -1743,6 +1743,181 @@ fn main() {
     }
 
     #[test]
+    fn differential_solver_encoder_matches_runtime_oracle() {
+        // The standing regression net (Phase-4 B3): generate random CONCRETE modelable integer
+        // expressions and assert the SMT encoder computes exactly what the i64 runtime does. This is
+        // the automation of the manual solver-vs-runtime probes — it catches encoder mismodeling of
+        // any operator (the `bvashr`-vs-`bvlshr`, `bvsrem`-vs-`bvsmod`, shift-mask, wrap bug class)
+        // across all op COMBINATIONS, deterministically (a failure reprints the exact expression).
+        //
+        // Oracle = a pure-i64 evaluator mirroring compiler/src/backends/run.rs EXACTLY. If the encoder
+        // and oracle ever disagree, P1 (`ensures(result == oracle)`) fails to discharge -> red test.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // Deterministic LCG (no Date/rand): reproducible failures.
+        struct Lcg(u64);
+        impl Lcg {
+            fn next(&mut self) -> u64 {
+                self.0 = self
+                    .0
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                self.0 >> 11
+            }
+            fn below(&mut self, n: usize) -> usize {
+                (self.next() as usize) % n
+            }
+        }
+        // A boundary-heavy value pool (wrap edges, shift edges, signs, zero).
+        let pool: [i64; 16] = [
+            0,
+            1,
+            2,
+            3,
+            7,
+            -1,
+            -2,
+            -7,
+            100,
+            -100,
+            63,
+            64,
+            65,
+            i64::MAX,
+            i64::MIN,
+            i64::MIN + 1,
+        ];
+        // Emit an Anubis integer literal (negatives as `(0 - k)`; i64::MIN specially since |MIN| overflows).
+        fn lit(v: i64) -> String {
+            if v == i64::MIN {
+                "(0 - 9223372036854775807 - 1)".to_string()
+            } else if v < 0 {
+                format!("(0 - {})", -v)
+            } else {
+                v.to_string()
+            }
+        }
+        // Build (source, oracle_value) for a random modelable expression of the given depth.
+        fn build(rng: &mut Lcg, depth: u32, pool: &[i64]) -> (String, i64) {
+            if depth == 0 || rng.below(3) == 0 {
+                let v = pool[rng.below(pool.len())];
+                return (lit(v), v);
+            }
+            // 0..=12 operator classes; each mirrors run.rs semantics in the oracle.
+            match rng.below(13) {
+                0 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    (format!("({ls} + {rs})"), lv.wrapping_add(rv))
+                }
+                1 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    (format!("({ls} - {rs})"), lv.wrapping_sub(rv))
+                }
+                2 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    (format!("({ls} * {rs})"), lv.wrapping_mul(rv))
+                }
+                3 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    (format!("({ls} & {rs})"), lv & rv)
+                }
+                4 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    (format!("({ls} | {rs})"), lv | rv)
+                }
+                5 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    (format!("({ls} ^ {rs})"), lv ^ rv)
+                }
+                6 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    let s = (rv.rem_euclid(64)) as u32;
+                    (format!("({ls} << {rs})"), lv.wrapping_shl(s))
+                }
+                7 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    let s = (rv.rem_euclid(64)) as u32;
+                    (format!("({ls} >> {rs})"), lv.wrapping_shr(s)) // ARITHMETIC (bvashr)
+                }
+                8 => {
+                    let (es, ev) = build(rng, depth - 1, pool);
+                    (format!("(0 - {es})"), ev.wrapping_neg())
+                }
+                9 => {
+                    let (es, ev) = build(rng, depth - 1, pool);
+                    (format!("~({es})"), !ev)
+                }
+                10 => {
+                    let (es, ev) = build(rng, depth - 1, pool);
+                    (format!("abs({es})"), ev.wrapping_abs())
+                }
+                11 => {
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let (rs, rv) = build(rng, depth - 1, pool);
+                    (format!("min({ls}, {rs})"), lv.min(rv))
+                }
+                _ => {
+                    // `/` and `%` are modelable ONLY with a non-zero POSITIVE integer LITERAL divisor:
+                    // `is_nonzero_int_literal` matches `Expr::Literal`, and a negative literal prints as
+                    // `(0 - k)` (a Binary, not a Literal) so it is (correctly) unmodelable. Keep the
+                    // divisor a bare positive literal so every generated expression stays modelable.
+                    let (ls, lv) = build(rng, depth - 1, pool);
+                    let mut d = pool[rng.below(pool.len())];
+                    if d <= 0 {
+                        d = d.wrapping_neg();
+                    }
+                    if d <= 0 {
+                        d = 1; // i64::MIN.wrapping_neg() is still negative
+                    }
+                    if rng.below(2) == 0 {
+                        (format!("({ls} / {d})"), lv.wrapping_div(d))
+                    } else {
+                        (format!("({ls} % {d})"), lv.wrapping_rem(d))
+                    }
+                }
+            }
+        }
+        let mut rng = Lcg(0x0da4_1e5c_9f37_b201);
+        for i in 0..1500 {
+            let (src, oracle) = build(&mut rng, 3, &pool);
+            let prog_true = format!(
+                "fn f() -> u32 ensures(result == {}) {{ return {}; }}",
+                lit(oracle),
+                src
+            );
+            // P1: the encoder must AGREE with the oracle — `result == oracle` is provable.
+            assert!(
+                discharged(&prog_true),
+                "iter {i}: encoder disagrees with runtime oracle ({oracle}) for `{src}`"
+            );
+            // P2: the modeling is REAL, not vacuous — a deliberately-wrong value is disproved.
+            let wrong = oracle.wrapping_add(1);
+            let prog_false = format!(
+                "fn f() -> u32 ensures(result == {}) {{ return {}; }}",
+                lit(wrong),
+                src
+            );
+            assert!(
+                !discharged(&prog_false),
+                "iter {i}: encoder vacuously accepted wrong value {wrong} for `{src}` (oracle {oracle})"
+            );
+        }
+    }
+
+    #[test]
     fn solver_modelability_is_function_local_and_shadow_safe() {
         // Solver integer-modelability must be FUNCTION-LOCAL and invalidated on a shadowing `let`.
         // Otherwise a name modeled as an i64 in one place leaks its modelability to a same-named
