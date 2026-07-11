@@ -1868,7 +1868,8 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
                 _ => false,
             }
         }
-        Expr::Unary { op, expr } => op == "-" && is_int_modelable(expr, int_vars),
+        // Unary negation (`-`) and bitwise NOT (`~`, i.e. `!v` on i64 = -v-1) model exactly.
+        Expr::Unary { op, expr } => (op == "-" || op == "~") && is_int_modelable(expr, int_vars),
         // A cast is modelable only when it cannot change the i64 value. `x as u8`/`u16`/`u32` truncate
         // at runtime, so modeling them as the identity is unsound (it "proved" `(x as u8) == x` while
         // `ident8(256)` runs to 0). Only 64-bit-target casts are value-preserving.
@@ -1990,6 +1991,7 @@ fn expr_to_smt_with_width(
             let inner = expr_to_smt_with_width(expr, widths, expected_width);
             match op.as_str() {
                 "-" => format!("(bvneg {})", inner),
+                "~" => format!("(bvnot {})", inner),
                 "!" => format!("(not {})", inner),
                 _ => inner,
             }

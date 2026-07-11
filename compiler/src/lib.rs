@@ -1354,6 +1354,9 @@ fn main() {
                 .all(|c| c.status != "FAIL"),
             Err(_) => false,
         };
+        // Bitwise NOT (`~v` = `!v` on i64 = -v-1) models as bvnot.
+        assert!(discharged("fn f() -> u32 ensures(result == 0 - 1) { return ~0; }"), "~0 == -1");
+        assert!(!discharged("fn f() -> u32 ensures(result == 0) { return ~0; }"), "~0 == 0 is false (it is -1)");
         // Left shift proves; the shift amount is masked mod 64 exactly like the runtime.
         assert!(discharged("fn f() -> u32 ensures(result == 16) { return 1 << 4; }"), "1 << 4 == 16");
         assert!(discharged("fn f() -> u32 ensures(result == 2) { return 1 << 65; }"), "1 << 65 masks to 1 << 1 == 2");
