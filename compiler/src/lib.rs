@@ -1365,6 +1365,26 @@ fn main() {
     }
 
     #[test]
+    fn solver_models_division_soundly() {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        // Truncated division by a non-zero literal proves (bvsdiv, toward zero).
+        assert!(discharged("fn f(x: u32) -> u32 requires(x == 10) ensures(result == 3) { return x / 3; }"), "10 / 3 == 3");
+        // Remainder takes the sign of the DIVIDEND (bvsrem, matching wrapping_rem — not bvsmod).
+        assert!(discharged("fn f() -> u32 ensures(result == 0 - 1) { return (0 - 7) % 3; }"), "-7 % 3 == -1");
+        // A literal-zero divisor is NOT modelable (runtime traps) -> the contract fails closed.
+        assert!(!discharged("fn f(x: u32) -> u32 requires(x == 5) ensures(result == 5) { return x / 0; }"), "x / 0 must not be modeled (it traps)");
+        // A variable divisor needs a proof it is non-zero (deferred) -> unmodelable, fail-closed.
+        assert!(!discharged("fn f(x: u32, y: u32) -> u32 requires(x == 6) requires(y == 2) ensures(result == 3) { return x / y; }"), "variable divisor is not yet modelable");
+        // A false division contract is disproved.
+        assert!(!discharged("fn f(x: u32) -> u32 requires(x == 10) ensures(result == 4) { return x / 3; }"), "10 / 3 == 4 is false (it is 3)");
+    }
+
+    #[test]
     fn solver_modelability_is_function_local_and_shadow_safe() {
         // Solver integer-modelability must be FUNCTION-LOCAL and invalidated on a shadowing `let`.
         // Otherwise a name modeled as an i64 in one place leaks its modelability to a same-named

@@ -1841,6 +1841,11 @@ fn assign_target_root(e: &Expr) -> Option<&str> {
 /// a modelable variable, or arithmetic/bitwise composition of such. Used to decide whether an
 /// assertion can be soundly encoded in QF_BV — a var that is NOT here (e.g. a string or bool
 /// binding) must not be silently treated as a 32-bit integer.
+/// A non-zero integer literal — a statically safe divisor for `/` and `%`.
+fn is_nonzero_int_literal(e: &Expr) -> bool {
+    matches!(e, Expr::Literal(l) if l.parse::<i64>().map(|n| n != 0).unwrap_or(false))
+}
+
 fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => int_vars.contains(v),
@@ -1850,12 +1855,18 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         Expr::Literal(l) => !l.is_empty() && l.parse::<i64>().is_ok(),
         Expr::Binary { op, lhs, rhs } => {
             // Ops that model i64 EXACTLY as 64-bit bit-vectors: add/sub/mul (wrap like i64), bitwise
-            // and/or/xor, and the shifts `<<`/`>>` (encoded with the runtime's mod-64 shift-amount
-            // mask and an ARITHMETIC right shift — see the encoder). `/` and `%` are still excluded:
-            // division-by-zero traps at runtime, so they need a provable non-zero divisor first.
-            matches!(op.as_str(), "+" | "-" | "*" | "&" | "|" | "^" | "<<" | ">>")
-                && is_int_modelable(lhs, int_vars)
-                && is_int_modelable(rhs, int_vars)
+            // and/or/xor, and the shifts `<<`/`>>` (mod-64 mask + arithmetic right shift — see the
+            // encoder). `/` and `%` are modelable only with a statically NON-ZERO divisor (a non-zero
+            // integer literal): then bvsdiv/bvsrem match wrapping_div/wrapping_rem and never model the
+            // runtime's division-by-zero trap. A variable divisor needs a proof it is non-zero first
+            // (a later increment), so it stays unmodelable — the contract fails closed, not unsound.
+            match op.as_str() {
+                "+" | "-" | "*" | "&" | "|" | "^" | "<<" | ">>" => {
+                    is_int_modelable(lhs, int_vars) && is_int_modelable(rhs, int_vars)
+                }
+                "/" | "%" => is_int_modelable(lhs, int_vars) && is_nonzero_int_literal(rhs),
+                _ => false,
+            }
         }
         Expr::Unary { op, expr } => op == "-" && is_int_modelable(expr, int_vars),
         // A cast is modelable only when it cannot change the i64 value. `x as u8`/`u16`/`u32` truncate
@@ -1966,8 +1977,12 @@ fn expr_to_smt_with_width(
                 // (it would "prove" `(-8 >> 1) == 4` while the program computes -4).
                 "<<" => format!("(bvshl {} (bvurem {} (_ bv64 64)))", l, r),
                 ">>" => format!("(bvashr {} (bvurem {} (_ bv64 64)))", l, r),
-                // `/ %` are still NOT encoded here: excluded from is_int_modelable (division-by-zero
-                // traps at runtime), so a modeled assertion never reaches this arm with them.
+                // Division/modulo, reached only with a non-zero literal divisor (is_int_modelable).
+                // bvsdiv = truncated toward zero and bvsdiv(MIN,-1)=MIN, matching i64::wrapping_div;
+                // bvsrem takes the sign of the dividend, matching i64::wrapping_rem (NOT bvsmod,
+                // which takes the sign of the divisor).
+                "/" => format!("(bvsdiv {} {})", l, r),
+                "%" => format!("(bvsrem {} {})", l, r),
                 _ => format!("({} {} {})", op, l, r),
             }
         }
