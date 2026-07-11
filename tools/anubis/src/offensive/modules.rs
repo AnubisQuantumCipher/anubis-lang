@@ -145,6 +145,54 @@ pub fn catalog() -> Vec<ModuleInfo> {
             risk: "medium",
             description: "Lab XOR packer + C unpack stub (T6)",
         },
+        ModuleInfo {
+            name: "vz_status",
+            side: "operator",
+            risk: "low",
+            description: "Apple VZ guest status (T8)",
+        },
+        ModuleInfo {
+            name: "vz_doctor",
+            side: "operator",
+            risk: "low",
+            description: "VZ sandbox readiness check (T8)",
+        },
+        ModuleInfo {
+            name: "vz_exec",
+            side: "operator",
+            risk: "high",
+            description: "Execute command inside VZ guest — crash + network isolated (T8)",
+        },
+        ModuleInfo {
+            name: "vz_exploit",
+            side: "operator",
+            risk: "critical",
+            description: "Run exploit module inside VZ sandbox (T8)",
+        },
+        ModuleInfo {
+            name: "vz_fuzz",
+            side: "operator",
+            risk: "high",
+            description: "Fuzz target inside VZ guest — no host crash risk (T8)",
+        },
+        ModuleInfo {
+            name: "vz_agent_test",
+            side: "operator",
+            risk: "high",
+            description: "Build + test agent binary inside VZ (T8)",
+        },
+        ModuleInfo {
+            name: "vz_c2_cycle",
+            side: "operator",
+            risk: "critical",
+            description: "Full C2 lifecycle inside VZ: listener + agent + tasks (T8)",
+        },
+        ModuleInfo {
+            name: "vz_stress",
+            side: "operator",
+            risk: "critical",
+            description: "Full offensive stress battery inside VZ (T8)",
+        },
     ]
 }
 

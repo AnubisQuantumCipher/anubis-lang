@@ -123,9 +123,14 @@ rand = "0.8"
         ),
     )?;
     fs::write(proj.join("src/main.rs"), src)?;
+    // Nested agent builds must not inherit a parent CARGO_TARGET_DIR (e.g. host
+    // offline VZ workspace target). Force a project-local target so the binary
+    // lands at proj/target/release/... where we look for it.
     let status = Command::new("cargo")
         .args(["build", "--release", "--manifest-path"])
         .arg(proj.join("Cargo.toml"))
+        .env_remove("CARGO_TARGET_DIR")
+        .env("CARGO_TARGET_DIR", proj.join("target"))
         .status()
         .map_err(|e| anyhow!("ANUBIS_AGENT_CARGO: {e}"))?;
     if !status.success() {

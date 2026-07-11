@@ -531,6 +531,150 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    // ── T8: Apple VZ sandbox integration ──
+
+    /// Show VZ guest status (Apple Virtualization.framework).
+    VzStatus {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// VZ sandbox readiness doctor.
+    VzDoctor {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Execute a command inside a VZ guest (network-isolated, crash-isolated).
+    VzExec {
+        /// Guest name (default: hermes-security-lab).
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        /// Command to run inside the guest.
+        #[arg(long)]
+        cmd: String,
+        /// Working directory inside the guest.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Timeout in seconds.
+        #[arg(long, default_value_t = 3600)]
+        timeout: u64,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run an exploit module inside a VZ sandbox (crash + network isolated).
+    VzExploit {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        /// Path to exploit module JSON.
+        #[arg(long)]
+        module: PathBuf,
+        #[arg(short, long, default_value = "out/engagements/lab/loot/vz-exploit")]
+        out: PathBuf,
+    },
+
+    /// Fuzz a target inside a VZ guest (no host crash risk, no egress).
+    VzFuzz {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long, default_value_t = 100)]
+        runs: u32,
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(short, long, default_value = "out/engagements/lab/loot/vz-fuzz")]
+        out: PathBuf,
+    },
+
+    /// Build and test an agent binary inside a VZ guest.
+    VzAgentTest {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        #[arg(long, default_value = "vz-agent0")]
+        name: String,
+        #[arg(long, default_value_t = 2000)]
+        sleep_ms: u64,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run the full C2 lifecycle inside a VZ guest: listener + agent + task dispatch.
+    VzC2Cycle {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        #[arg(long, default_value = "vz-c2-agent")]
+        agent_name: String,
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run the full offensive stress battery inside a VZ guest.
+    VzStress {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Start a VZ guest (network-isolated by default).
+    VzStart {
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        /// Network mode: off (default), loopback, nat.
+        #[arg(long, default_value = "off")]
+        network: String,
+    },
+
+    /// Stop a VZ guest.
+    VzStop {
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+    },
+
+    /// Sync engagement workspace into a VZ guest's exports directory.
+    VzSync {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        /// Project root to sync from (default: current directory).
+        #[arg(long, default_value = ".")]
+        project_root: PathBuf,
+    },
+
+    /// Run the Anubis test suite inside a VZ guest.
+    VzTestSuite {
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        /// Optional test filter pattern.
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Snapshot a VZ guest for reproducible offensive testing.
+    VzSnapshot {
+        #[arg(long, default_value = "hermes-security-lab")]
+        guest: String,
+        #[arg(long)]
+        label: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -1116,7 +1260,14 @@ fn main() -> Result<()> {
                     "action_receipt_chain": "REAL",
                     "poc_kit_packing": "REAL",
                     "poc_kit_process_fuzz": "REAL",
+                    "vz_sandbox_exec": "REAL",
+                    "vz_exploit_sandbox": "REAL",
+                    "vz_fuzz_sandbox": "REAL",
+                    "vz_agent_test": "REAL",
+                    "vz_c2_cycle": "REAL",
+                    "vz_stress_battery": "REAL",
                 },
+                "vz": offensive::vz::vz_doctor().unwrap_or_else(|_| serde_json::json!({"vz_available": false})),
                 "security_fixture_contract": {
                     "pass_ok": poc_kit::security_fixture_matches(false, false, false, false),
                     "fail_with_needle": poc_kit::security_fixture_matches(true, true, true, true),
@@ -1257,6 +1408,272 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+
+        // ── T8: Apple VZ sandbox commands ──
+
+        Commands::VzStatus { json } => {
+            let guests = offensive::vz::vz_status()?;
+            let active = offensive::vz::find_offensive_guest(None).ok();
+            if json {
+                let mut val = serde_json::to_value(&guests)?;
+                if let Some(a) = &active {
+                    val.as_array_mut().map(|arr| {
+                        arr.push(serde_json::json!({"_active_guest": a.name}));
+                    });
+                }
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                println!("{:<24} {:<10} {:<6} {:<8} {}", "NAME", "STATUS", "CPUS", "MEM_MB", "NETWORK");
+                println!("{}", "-".repeat(64));
+                for g in &guests {
+                    let marker = active.as_ref().map_or("", |a| if a.name == g.name { " *" } else { "" });
+                    println!(
+                        "{:<24} {:<10} {:<6} {:<8} {:?}{}",
+                        g.name,
+                        if g.running { "running" } else { "stopped" },
+                        g.cpu_count,
+                        g.memory_mib,
+                        g.network,
+                        marker,
+                    );
+                }
+                if let Some(a) = &active {
+                    println!("\n  * active offensive guest: {}", a.name);
+                }
+            }
+            Ok(())
+        }
+        Commands::VzDoctor { json } => {
+            let report = offensive::vz::vz_doctor()?;
+            let defaults = offensive::vz::VzLabConfig::default();
+            if json {
+                let mut val = report.clone();
+                val["defaults"] = serde_json::json!({
+                    "guest_name": defaults.guest_name,
+                    "network": format!("{:?}", defaults.network),
+                    "timeout_secs": defaults.timeout_secs,
+                    "sync_sources": defaults.sync_sources,
+                    "auto_build": defaults.auto_build,
+                });
+                println!("{}", serde_json::to_string_pretty(&val)?);
+            } else {
+                println!("Anubis VZ Sandbox Doctor");
+                println!("  vmctl:     {} ({})", report["vmctl_path"], if report["vz_available"].as_bool() == Some(true) { "ok" } else { "missing" });
+                println!("  guests:    {}/{} running", report["running_guests"], report["total_guests"]);
+                println!("  offensive: {}", if report["offensive_guest_ready"].as_bool() == Some(true) { "READY" } else { "NOT READY" });
+                println!("  exports:   {}", if report["exports_exist"].as_bool() == Some(true) { "staged" } else { "missing" });
+                println!("  toolchain: {}", if report["toolchain_staged"].as_bool() == Some(true) { "staged" } else { "missing" });
+                println!("  defaults:  guest={} net={:?} timeout={}s", defaults.guest_name, defaults.network, defaults.timeout_secs);
+                if let Some(caps) = report["capabilities"].as_object() {
+                    for (k, v) in caps {
+                        println!("  cap.{}: {}", k, v);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::VzExec {
+            guest,
+            cmd,
+            cwd,
+            timeout,
+            json,
+        } => {
+            let result = offensive::vz::vz_exec(
+                &guest,
+                &cmd,
+                cwd.as_deref(),
+                timeout,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                if !result.stdout.is_empty() {
+                    print!("{}", result.stdout);
+                }
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+                if result.exit_code != 0 {
+                    return Err(anyhow!("ANUBIS_VZ_EXEC: exit {}", result.exit_code));
+                }
+            }
+            Ok(())
+        }
+        Commands::VzExploit {
+            engage,
+            guest,
+            module,
+            out,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let result = offensive::vz::vz_exploit_run(&eng, &engage, &guest, &module, &out)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "vz_exploit_run",
+                "operator",
+                serde_json::to_value(&result)?,
+            );
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        Commands::VzFuzz {
+            engage,
+            guest,
+            target,
+            runs,
+            seed,
+            out,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let result = offensive::vz::vz_fuzz(&eng, &guest, &target, runs, seed, &out)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "vz_fuzz",
+                "operator",
+                serde_json::to_value(&result)?,
+            );
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        Commands::VzAgentTest {
+            engage,
+            guest,
+            name,
+            sleep_ms,
+            json,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let result = offensive::vz::vz_agent_test(&eng, &guest, &name, sleep_ms)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "vz_agent_test",
+                "operator",
+                serde_json::to_value(&result)?,
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", result.stdout);
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+            }
+            Ok(())
+        }
+        Commands::VzC2Cycle {
+            engage,
+            guest,
+            agent_name,
+            timeout,
+            json,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let tasks = vec![
+                ("whoami", "operator"),
+                ("hostname", "operator"),
+                ("pwd", "operator"),
+                ("id", "operator"),
+                ("uname", "operator"),
+            ];
+            let result = offensive::vz::vz_c2_cycle(
+                &eng,
+                &guest,
+                &agent_name,
+                &tasks,
+                timeout,
+            )?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "vz_c2_cycle",
+                "operator",
+                serde_json::to_value(&result)?,
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", result.stdout);
+            }
+            Ok(())
+        }
+        Commands::VzStress {
+            engage,
+            guest,
+            json,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let result = offensive::vz::vz_stress_battery(&eng, &guest, &engage)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "vz_stress_battery",
+                "operator",
+                serde_json::to_value(&result)?,
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", result.stdout);
+                if result.exit_code != 0 {
+                    eprintln!("\nstress battery exited with code {}", result.exit_code);
+                }
+            }
+            Ok(())
+        }
+        Commands::VzStart { guest, network } => {
+            let net = match network.as_str() {
+                "nat" => offensive::vz::VzNetwork::Nat,
+                "loopback" => offensive::vz::VzNetwork::LoopbackOnly,
+                _ => offensive::vz::VzNetwork::Off,
+            };
+            offensive::vz::vz_start(&guest, &net)?;
+            println!("guest `{guest}` started (network={network})");
+            Ok(())
+        }
+        Commands::VzStop { guest } => {
+            offensive::vz::vz_stop(&guest)?;
+            println!("guest `{guest}` stopped");
+            Ok(())
+        }
+        Commands::VzSync {
+            engage,
+            guest,
+            project_root,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let dest = offensive::vz::vz_sync_engagement(&eng, &engage, &guest, &project_root)?;
+            println!("synced engagement to {}", dest.display());
+            Ok(())
+        }
+        Commands::VzTestSuite {
+            guest,
+            filter,
+            json,
+        } => {
+            let result = offensive::vz::vz_test_suite(&guest, filter.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", result.stdout);
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+                if result.exit_code != 0 {
+                    eprintln!("\nvz test suite exited with code {}", result.exit_code);
+                }
+            }
+            Ok(())
+        }
+        Commands::VzSnapshot { guest, label } => {
+            offensive::vz::vz_snapshot(&guest, &label)?;
+            println!("snapshot `{label}` created for guest `{guest}`");
+            Ok(())
+        }
+
         Commands::Prove {
             input,
             backend,

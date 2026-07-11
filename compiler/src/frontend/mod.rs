@@ -2948,7 +2948,7 @@ impl Parser {
                         .unwrap_or_else(|| ("_".into(), tok.span));
                     let (fields, field_names) = if self.check_token(&Token::LParen) {
                         (self.parse_call_args(), vec![])
-                    } else if self.check_token(&Token::LBrace) {
+                    } else if !self.no_struct && self.check_token(&Token::LBrace) {
                         self.bump();
                         let mut names = vec![];
                         let mut vals = vec![];

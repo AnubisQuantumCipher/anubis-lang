@@ -1,7 +1,8 @@
 //! Anubis Offensive Platform (AOP) — engagement-scoped red-team / exploit platform.
 //!
 //! T1 encrypt+jitter+keys+mtls certs | T2 persistence | T3 dns/uds |
-//! T4 lateral | T5 rop/browser | T6 packer | T7 console+RBAC
+//! T4 lateral | T5 rop/browser | T6 packer | T7 console+RBAC |
+//! T8 Apple VZ sandbox integration
 
 pub mod agent;
 pub mod console;
@@ -17,6 +18,7 @@ pub mod protocol;
 pub mod receipts;
 pub mod rop;
 pub mod scope;
+pub mod vz;
 
 pub use engagement::{engage_init, engage_status, load_engagement};
 pub use receipts::{seal_action, verify_chain};
