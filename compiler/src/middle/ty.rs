@@ -180,6 +180,19 @@ pub(crate) fn is_integer(ty: &str) -> bool {
     matches!(normalize(inner).as_str(), "u8" | "u16" | "u32" | "u64")
 }
 
+/// A FLOAT type (`f32`/`f64`/`float`) — the complement of [`is_integer`] within [`is_numeric`].
+/// Unwraps a `tainted<T>` qualifier first, exactly like [`is_integer`], so the two partition the
+/// numeric types identically regardless of the taint wrapper.
+pub(crate) fn is_float(ty: &str) -> bool {
+    let inner = ty.trim();
+    let inner = if let Some(rest) = inner.strip_prefix("tainted<") {
+        rest.strip_suffix('>').unwrap_or(rest)
+    } else {
+        inner
+    };
+    matches!(normalize(inner).as_str(), "f32" | "f64" | "float")
+}
+
 /// True when `x as ty` cannot change the underlying i64 value, so the cast may be modeled as the
 /// identity in QF_BV.
 pub(crate) fn cast_preserves_i64(ty: &str) -> bool {
@@ -256,6 +269,30 @@ pub(crate) fn compatible(expected: &str, actual: &str) -> bool {
     false
 }
 
+/// Directional assignability: may a value of type `actual` be bound where type `expected` is
+/// declared — a `let` initializer, an assignment to an annotated variable, a call argument, or a
+/// return value — WITHOUT a lossy representation change?
+///
+/// This is [`compatible`] plus the one directional rule Phase 2 introduces: a **float value must
+/// not narrow into an integer annotation.** `let x: u32 = 3.14` is a type lie — the runtime keeps
+/// the float (annotations are inert), while the annotation claims an integer. Integer→float
+/// widening (`let r: f64 = 3`) stays allowed, as does every integer width-interop and every
+/// non-numeric case [`compatible`] already governs. `is_integer`/`is_float` both unwrap
+/// `tainted<T>`, so `tainted<u32> = 3.14` is caught too.
+///
+/// Unlike [`compatible`] (a symmetric "could these interoperate" relation, pinned byte-for-byte to
+/// the historical string logic by the `ty_parity` frozen oracle), this is deliberately asymmetric
+/// and NEW — it is the first place the checker rejects on a structural, directional type rule.
+/// It only ever refuses MORE than `compatible`, and only for a definitely-float value flowing into
+/// a definitely-integer annotation; when the value's type is unknown the caller infers `None` and
+/// never reaches here, so an undecidable program is still accepted.
+pub(crate) fn assignable(expected: &str, actual: &str) -> bool {
+    if !compatible(expected, actual) {
+        return false;
+    }
+    !(is_integer(expected) && is_float(actual))
+}
+
 /// The solver bit-vector width for an integer type (defaults to 32). Substring-based to match the
 /// historical behavior exactly.
 pub(crate) fn bitwidth(ty: &str) -> u32 {
@@ -301,6 +338,62 @@ mod tests {
         assert!(!is_numeric("string") && !is_numeric("Color"));
         assert!(is_integer("u32") && is_integer("tainted<u64>"));
         assert!(!is_integer("f64") && !is_integer("string"));
+    }
+
+    #[test]
+    fn is_float_partitions_the_numerics_against_is_integer() {
+        // `is_float`, like `is_integer`, unwraps `tainted<T>` — so the two partition every numeric
+        // type (bare or taint-wrapped) into exactly one class. (Note `is_numeric` does NOT unwrap
+        // tainted — that historical behavior is pinned by the `ty_parity` oracle — which is exactly
+        // why `assignable("u32","tainted<f64>")` still catches the narrowing.)
+        for t in ["f32", "f64", "float", "tainted<f64>"] {
+            assert!(is_float(t), "{t} must be float");
+            assert!(!is_integer(t), "{t} must not be integer");
+        }
+        for t in ["f32", "f64", "float"] {
+            assert!(is_numeric(t), "bare {t} must be numeric");
+        }
+        for t in ["u8", "u16", "u32", "u64", "i64", "int", "tainted<u32>"] {
+            assert!(!is_float(t), "{t} must not be float");
+            assert!(is_integer(t), "{t} must be integer");
+        }
+        // Non-numerics are neither.
+        for t in ["string", "bool", "Color", ""] {
+            assert!(
+                !is_float(t) && !is_integer(t),
+                "{t} is neither int nor float"
+            );
+        }
+    }
+
+    #[test]
+    fn assignable_rejects_float_to_int_narrowing_only() {
+        // The one new rejection: a float value into an integer annotation (lossy type lie).
+        assert!(!assignable("u32", "f64"), "float must not narrow into u32");
+        assert!(!assignable("u8", "float"), "float must not narrow into u8");
+        assert!(
+            !assignable("tainted<u32>", "f64"),
+            "tainted wrapper must not hide the narrowing"
+        );
+        // Integer→float widening stays allowed (3 is representable as f64).
+        assert!(assignable("f64", "u32"), "int widens into float");
+        assert!(assignable("float", "u8"), "int widens into float");
+        // Integer width-interop and same-type are unaffected.
+        assert!(assignable("u32", "u8") && assignable("u64", "i64") && assignable("u32", "u32"));
+        // Float→float and non-numeric cases behave exactly as `compatible`.
+        assert!(assignable("f64", "f32"));
+        assert!(assignable("string", "string") && !assignable("u32", "string"));
+        // Unknown/absent value type is dynamically compatible (never reached with a float in
+        // practice; here it documents that Any is not narrowed).
+        assert!(assignable("u32", "") && assignable("", "f64"));
+        // `assignable` only ever refuses MORE than `compatible`, never less.
+        for e in ["u8", "u32", "u64", "f64", "string", "bool", "tainted<u32>"] {
+            for a in ["u8", "u32", "f64", "float", "string", "tainted<f64>"] {
+                if assignable(e, a) {
+                    assert!(compatible(e, a), "assignable({e},{a}) implies compatible");
+                }
+            }
+        }
     }
 
     // --- Frozen reference implementations: verbatim copies of the former `middle/mod.rs` free

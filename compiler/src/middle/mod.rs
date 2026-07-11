@@ -983,7 +983,7 @@ fn analyze_stmts(
                 // A+ type mismatch: annotation vs inferred init type.
                 if let Some(t) = ty.as_deref() {
                     if let Some(got) = infer_expr_type_scoped(init, scope) {
-                        if !types_compatible(t, &got) {
+                        if !types_assignable(t, &got) {
                             ctx.diagnostics.push(SemanticDiagnostic {
                                 code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                 message: format!("type mismatch: expected `{}`, got `{}`", t, got),
@@ -1307,7 +1307,7 @@ fn analyze_stmts(
                             scope.get(name).and_then(|b| b.info.ty.clone()),
                             got.as_ref(),
                         ) {
-                            if !types_compatible(&expected, got) {
+                            if !types_assignable(&expected, got) {
                                 ctx.diagnostics.push(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
@@ -1515,7 +1515,7 @@ fn analyze_expr_effect(
                 } else {
                     for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                         if let Some(got) = infer_expr_type_scoped(arg, scope) {
-                            if !types_compatible(expected, &got) {
+                            if !types_assignable(expected, &got) {
                                 ctx.diagnostics.push(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(
@@ -3550,7 +3550,7 @@ fn check_one_return(
         return;
     }
     if let Some(actual) = infer_expr_type_scoped(expr, scope) {
-        if !types_compatible(rty, &actual) {
+        if !types_assignable(rty, &actual) {
             ctx.diagnostics.push(SemanticDiagnostic {
                 code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
                 message: format!(
@@ -3589,6 +3589,9 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
         Expr::StrLiteral(_) => Some("string".into()),
         Expr::Var(name) => scope.get(name).and_then(|b| b.info.ty.clone()),
         Expr::Unary { op, expr } if op == "!" => Some("bool".into()),
+        // Bitwise-not is integer at runtime (anubis_bnot `as_i64()`s and returns `Int`); unary `-`
+        // (anubis_neg) is float iff its operand is float, so it propagates.
+        Expr::Unary { op, .. } if op == "~" => Some("u32".into()),
         Expr::Unary { expr, .. } => infer_expr_type_scoped(expr, scope),
         Expr::Binary { op, lhs, rhs } => {
             if matches!(
@@ -3610,26 +3613,37 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
                 } else {
                     lt.or(rt)
                 }
+            } else if matches!(op.as_str(), "&" | "|" | "^" | "<<" | ">>") {
+                // Bitwise/shift are INTEGER at runtime regardless of operands: anubis_band/bor/bxor/
+                // shl/shr (run.rs) `as_i64()` both operands and unconditionally return `Int`. So
+                // `avg & 7` is an integer even when `avg` is a float — inferring it from the float
+                // operand (the arithmetic `else` below) wrongly typed it f64 and made the float→int
+                // narrowing rule reject a program that runs and yields an integer.
+                Some("u32".into())
             } else {
+                // Arithmetic (`- * / %`): float iff an operand is float (anubis_sub/mul/div/mod),
+                // so propagating the operand type is faithful to the runtime.
                 infer_expr_type_scoped(lhs, scope).or_else(|| infer_expr_type_scoped(rhs, scope))
             }
         }
         Expr::ArrayLiteral { .. } => Some("list".into()),
         Expr::MapLiteral { .. } => Some("map".into()),
         Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
-        Expr::If { then, else_, .. } => {
-            let t = infer_expr_type_scoped(then, scope);
-            let e = infer_expr_type_scoped(else_, scope);
-            match (t, e) {
-                (Some(a), Some(b)) if types_compatible(&a, &b) => Some(a),
-                (Some(a), None) | (None, Some(a)) => Some(a),
-                (Some(a), Some(_)) => Some(a),
-                _ => None,
-            }
-        }
-        Expr::Match { arms, .. } => arms
-            .first()
-            .and_then(|a| infer_expr_type_scoped(&a.body, scope)),
+        Expr::If { then, else_, .. } => value_branch_type(&[
+            infer_expr_type_scoped(then, scope),
+            infer_expr_type_scoped(else_, scope),
+        ]),
+        Expr::Match { arms, .. } => value_branch_type(
+            &arms
+                .iter()
+                .map(|a| infer_expr_type_scoped(&a.body, scope))
+                .collect::<Vec<_>>(),
+        ),
+        // A block used as a value (e.g. an `if`/`match` branch `{ let a = 3.14; a }`) has the type
+        // of its trailing expression; a statement block with no tail has no value. Without this,
+        // block-wrapped branches inferred `None`, letting an all-float nested `if` escape the
+        // float→int narrowing rule.
+        Expr::Block { tail, .. } => tail.as_ref().and_then(|t| infer_expr_type_scoped(t, scope)),
         Expr::Index { .. } => None, // dynamic
         Expr::FieldAccess { .. } => None,
         Expr::Call { .. } => None,
@@ -3713,12 +3727,48 @@ fn smt_var(name: &str) -> String {
     format!("anb_{}", name)
 }
 
-/// A+ compatibility: numeric widths interoperate; bool/string/enums do not cross.
-/// `tainted<T>` is a *qualifier*: clean `T` may flow into a tainted binding (labeling),
-/// and tainted flows are still policed by the separate taint analysis. (Generic-parameter and
-/// `tainted<T>` handling now live inside `ty::compatible`.)
-fn types_compatible(expected: &str, actual: &str) -> bool {
-    ty::compatible(expected, actual)
+/// Directional assignability for binding contexts (let-init, assignment to an annotated variable,
+/// call arguments, returns): `ty::compatible` (numeric widths interoperate; bool/string/enums do
+/// not cross; `tainted<T>` is a qualifier still policed by the taint analysis), refined with the
+/// one directional Phase-2 rule — a float value may not narrow into an integer annotation. Used
+/// only where a value flows INTO a declared type; the `if`/`match` arm-type join during inference
+/// is a symmetric context and uses `value_branch_type` instead. See `ty::assignable`.
+fn types_assignable(expected: &str, actual: &str) -> bool {
+    ty::assignable(expected, actual)
+}
+
+/// The inferred type of an `if`/`match` used as a value. The runtime takes exactly ONE branch, so
+/// the value is *definitely* float only when EVERY branch is a known float — order-independently.
+/// This drives the float→int narrowing rule, so it must be exact in both directions:
+///
+/// - every branch a known float → that float type (a real `let x: u32 = if c { 3.14 } else { 2.71 }`
+///   lie is caught regardless of branch order or block nesting);
+/// - a float branch mixed with a definite non-float, OR with an unseeable (`None`) branch → NOT
+///   definitely float (the taken branch may be the non-float one), so never report a float: prefer
+///   a known non-float type (keeps numeric-into-string/bool mismatches catchable), else `None`.
+///   This is what stops the Round-1 false positive `if c { 3.14 } else { 5 }` from being rejected;
+/// - no float branch → the first known branch's type (ordinary, historical inference — also
+///   restores the old `(None, Some(a)) => Some(a)` fallback that a first-`None` branch needs).
+///
+/// A branch whose type the checker cannot see (`None` — e.g. a call/index result) makes the value
+/// not-definitely-float and is therefore NOT narrowed; that residual float→int case is a documented
+/// completeness gap, not a soundness hole (the solver still fails closed on such a value).
+fn value_branch_type(branches: &[Option<String>]) -> Option<String> {
+    let known: Vec<&String> = branches.iter().flatten().collect();
+    let first_known = (*known.first()?).clone();
+    let any_float = known.iter().any(|t| ty::is_float(t));
+    if !any_float {
+        return Some(first_known);
+    }
+    let all_known = known.len() == branches.len();
+    let any_nonfloat = known.iter().any(|t| !ty::is_float(t));
+    if all_known && !any_nonfloat {
+        return Some(first_known); // every branch a known float → definitely float
+    }
+    known
+        .iter()
+        .find(|t| !ty::is_float(t))
+        .map(|t| (*t).clone())
 }
 
 /// Walk expressions for A+ call typing + match exhaustiveness (fail-closed).
@@ -3744,7 +3794,7 @@ fn check_expr_semantics(
                 } else {
                     for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                         if let Some(got) = infer_expr_type_scoped(arg, scope) {
-                            if !types_compatible(expected, &got) {
+                            if !types_assignable(expected, &got) {
                                 ctx.diagnostics.push(SemanticDiagnostic {
                                     code: Some("ANUBIS_TYPE_MISMATCH".into()),
                                     message: format!(

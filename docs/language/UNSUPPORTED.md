@@ -62,6 +62,28 @@ CPU-pinning child process.
 - Hex / binary / octal integer literals (`0x`/`0b`/`0o`) — REAL
 - `target_run` returns named **TargetRun** struct (`r.crashed`, …) with list-index compat — REAL
 
+## NOW REAL (float→integer narrowing rejection — Phase-2 slice 1, 2026-07-11)
+
+- A **float value may not narrow into an integer annotation** — `let x: u32 = 3.14`, `-> u32`
+  returning a float, or a float call-argument to an integer parameter — REAL (`ANUBIS_TYPE_MISMATCH`
+  / `ANUBIS_RETURN_TYPE_MISMATCH`). Directional: integer→float **widening** (`let r: f64 = 3`) and
+  all integer width-interop stay accepted. First rule to consume the structured `Ty` (new
+  `ty::assignable` / `ty::is_float`); `ty::compatible` and its `ty_parity` frozen oracle are
+  unchanged.
+- Faithful to the runtime, not the annotation: bitwise/shift `& | ^ << >>` and unary `~` infer
+  **integer** (they always return `Int` at runtime), so `let b: u32 = avg & 7` (float `avg`) is
+  accepted; float arithmetic `+ - * / %` stays float. An `if`/`match` value is only "definitely
+  float" when **every** statically-inferable branch is float (`if c { 3.14 } else { 5 }` is
+  accepted — its taken branch may be the integer). These were adversary-found false positives,
+  fixed before shipping.
+- **Boundary (completeness gap, NOT a soundness hole):** narrowing fires only when the value's
+  float type is statically inferable. A float arriving via a **function-return, an index/field
+  access, or a block whose value is a trailing statement-form `if`/`match`** infers `None` and is
+  NOT yet narrowed — it is accepted (the safe direction: a missed lint, never a false rejection,
+  and the solver still fails closed on such a value with `ANUBIS_CONTRACT_UNPROVABLE`). Closing
+  this needs return-type / index inference (a later Phase-2 step). Tests:
+  `cargo test -p anubis-compiler float_does_not_narrow` / `narrowing_rule_does_not_reject`.
+
 ## NOW REAL (shipped after this slice — verified firsthand 2026-07-10)
 
 These were listed as PLANNED below in an earlier slice and have since shipped. Moved up so the ledger

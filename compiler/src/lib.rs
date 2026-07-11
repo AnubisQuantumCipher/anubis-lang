@@ -353,6 +353,95 @@ mod tests {
         );
     }
 
+    /// Phase 2, first slice: a float value must not narrow into an integer annotation. The runtime
+    /// is dynamically typed (the `u32` is inert and the float survives), so this is a checker-level
+    /// rejection of a definite type lie — the same category as the already-rejected string→int, not
+    /// an undecidable case. Helper: does `src` type-check (Ok) or is it rejected (Err)?
+    fn tc_ok(src: &str) -> Result<(), String> {
+        let parsed = frontend::parse_source_detailed(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        typecheck(parsed.ast, frontend::Mode::Safe).map(|_| ())
+    }
+
+    #[test]
+    fn float_does_not_narrow_into_integer_let_binding() {
+        let err = tc_ok("fn main() { let x: u32 = 3.14; print(x); }")
+            .expect_err("float into u32 annotation must be rejected");
+        assert!(err.contains("ANUBIS_TYPE_MISMATCH"), "got: {err}");
+        // tainted wrapper must not hide it (research mode where tainted is legal).
+        let src = "fn main() { research { let x: tainted<u32> = 3.14; sink(x); } }";
+        let parsed = frontend::parse_source_detailed(src);
+        let res = typecheck(parsed.ast, frontend::Mode::Research);
+        assert!(
+            res.is_err() && res.unwrap_err().contains("ANUBIS_TYPE_MISMATCH"),
+            "float into tainted<u32> must still be rejected"
+        );
+    }
+
+    #[test]
+    fn float_narrowing_rejected_in_return_and_argument_position() {
+        let ret = tc_ok("fn f() -> u32 { return 3.14; } fn main() { let x = f(); print(x); }")
+            .expect_err("returning a float from a -> u32 fn must be rejected");
+        assert!(
+            ret.contains("ANUBIS_RETURN_TYPE_MISMATCH") || ret.contains("ANUBIS_TYPE_MISMATCH"),
+            "got: {ret}"
+        );
+        let arg = tc_ok("fn g(n: u32) { print(n); } fn main() { g(3.14); }")
+            .expect_err("passing a float to a u32 parameter must be rejected");
+        assert!(arg.contains("ANUBIS_TYPE_MISMATCH"), "got: {arg}");
+    }
+
+    #[test]
+    fn narrowing_rule_does_not_reject_running_programs_adversary_regressions() {
+        // Regressions for false positives found by the `assignable-adversary` workflow: expressions
+        // the RUNTIME makes integer must not be inferred float and wrongly rejected. Each of these
+        // runs and yields an integer, so `check` must accept them (the prime rule: a running program
+        // is not rejected unless it is a DEFINITE type error).
+        // (1) Bitwise/shift are always integer at runtime even over float operands.
+        tc_ok("fn main() { let avg = (4.0 + 6.0) / 2.0; let b: u32 = avg & 7; print(b); }")
+            .expect("bitwise-AND over a float is integer at runtime — must not reject");
+        tc_ok("fn main() { let f = 5.0; let s: u32 = f << 2; print(s); }")
+            .expect("shift is integer at runtime — must not reject");
+        tc_ok("fn take(n: u32) { print(n); } fn main() { let v = 6.0; take(v & 3); }")
+            .expect("bitwise arg is integer at runtime — must not reject");
+        // (2) An `if`/`match` whose taken branch is the integer one is not definitely float.
+        tc_ok("fn main() { let x: u32 = if false { 3.14 } else { 5 }; print(x); }")
+            .expect("mixed if-branches are not definitely float — must not reject");
+        tc_ok("fn main() { let x: u32 = match 1 { 0 => 3.14, _ => 7 }; print(x); }")
+            .expect("mixed match-arms are not definitely float — must not reject");
+        // Guard: an if/match whose EVERY statically-inferable branch is float still narrows — order
+        // independently, and through a block's tail expression (Round-2 regression guards).
+        for lie in [
+            "fn main() { let c = true; let x: u32 = if c { 3.14 } else { 2.71 }; print(x); }",
+            // float in the SECOND branch — order independence (Round-2 regression guard).
+            "fn main() { let c = true; let x: u32 = if c { 5.0 } else { 6.0 }; print(x); }",
+            "fn main() { let x: u32 = match 0 { 0 => 1.5, _ => 2.5 }; print(x); }",
+        ] {
+            let err = tc_ok(lie).expect_err("all-float branch value must narrow-reject");
+            assert!(
+                err.contains("ANUBIS_TYPE_MISMATCH"),
+                "for {lie:?} got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_to_float_widening_and_width_interop_still_accepted() {
+        // These MUST keep type-checking — the rule is directional, and rejecting any of them would
+        // be a false positive against a working program (the "never reject the decidable-good" side).
+        tc_ok("fn main() { let r: f64 = 3; print(r); }").expect("int widens into f64");
+        tc_ok("fn main() { let r: float = 7; print(r); }").expect("int widens into float");
+        tc_ok("fn main() { let a: u32 = 5; let b: u8 = 3; print(a + b); }")
+            .expect("integer width interop unaffected");
+        tc_ok("fn main() { let x: f64 = 3.14; print(x); }").expect("float into f64 is fine");
+        tc_ok("fn frac() -> f64 { return 3.14; } fn main() { print(frac()); }")
+            .expect("float return into f64 is fine");
+    }
+
     #[test]
     fn a_plus_match_non_exhaustive_fails_closed() {
         let src = r#"
