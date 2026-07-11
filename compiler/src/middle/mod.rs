@@ -2370,8 +2370,12 @@ fn type_has_raw_pointer(ty: Option<&str>) -> bool {
     ty.is_some_and(|ty| ty.contains('*') || ty.contains("rawptr") || ty.contains("RawPtr"))
 }
 
+/// Whether a declared type annotation carries the `tainted<T>` qualifier. Delegates to the anchored
+/// `ty::is_tainted` rather than a bare `.contains("tainted")` substring test — the substring version
+/// this replaced false-positived on any type merely NAMED with that substring (e.g. a struct called
+/// `TaintedRecord` would have been wrongly seeded as tainted).
 fn is_tainted_type(ty: Option<&str>) -> bool {
-    ty.is_some_and(|ty| ty.to_ascii_lowercase().contains("tainted"))
+    ty.is_some_and(ty::is_tainted)
 }
 
 /// The expression a function returns at its tail: the last statement when it is `return X` or a bare
@@ -4139,6 +4143,20 @@ fn expr_taint_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Opt
             }
         }
         Expr::TaintSource { label } => Some(label.clone()),
+        // Indexing/field-access on a tainted binding must not launder the taint — without these
+        // arms, `sink(tainted_arr[i])` / `sink(tainted_struct.field)` fell through to the catch-all
+        // below and silently escaped `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` (a real fail-open gap).
+        // `Index` checks both operands (like `Binary`, not `Unary`'s single-operand shape): a tainted
+        // INDEX into an otherwise-clean array (`sink(arr[tainted_offset])`) is an equally real leak.
+        // Whole-binding granularity only: a struct's OWN field individually declared `tainted<T>` in
+        // its type definition does not, by itself, make `.field` access on an otherwise-clean instance
+        // tainted — only a binding whose own `let`/param annotation (or tainted initializer) seeded it
+        // tainted propagates here, matching how every other walker in this file treats field/struct
+        // definitions as opaque to flow analysis.
+        Expr::Index { base, index } => {
+            expr_taint_source(base, scope).or_else(|| expr_taint_source(index, scope))
+        }
+        Expr::FieldAccess { base, .. } => expr_taint_source(base, scope),
         _ => None,
     }
 }

@@ -3000,6 +3000,146 @@ fn main() {
     }
 
     #[test]
+    fn taint_propagates_through_field_access_and_indexing_to_sink() {
+        // Regression for a real fail-open gap this Phase-3 slice closed: `expr_taint_source` had no
+        // arm for `Index`/`FieldAccess`, so they fell to the catch-all `_ => None` and silently
+        // laundered taint. Verified against the pre-fix binary (commit c20eb9f) that this exact
+        // struct-field program printed "check passed" — a genuine regression, not a hypothetical.
+        let struct_field = r#"
+struct Record { field: u32 }
+fn main() {
+    let r: tainted<Record> = Record { field: 42 };
+    sink(r.field);
+}
+"#;
+        let err =
+            tc_ok(struct_field).expect_err("tainted struct field into a sink must be rejected");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
+
+        let array_elem = r#"
+fn main() {
+    let arr: tainted<list> = [1, 2, 3];
+    sink(arr[0]);
+}
+"#;
+        let err =
+            tc_ok(array_elem).expect_err("tainted array element into a sink must be rejected");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
+
+        // The Binary-shape improvement over the plan's original Unary-shape draft: a TAINTED INDEX
+        // into an otherwise-CLEAN array is an equally real leak and must also be caught.
+        let tainted_index = r#"
+fn main() {
+    let arr = [10, 20, 30];
+    let idx: tainted<u32> = symbolic();
+    sink(arr[idx]);
+}
+"#;
+        let err =
+            tc_ok(tainted_index).expect_err("tainted index into a clean array must be rejected");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
+
+        // Declassify still clears it through the new arms (the fix integrates with existing policy).
+        let declassified = r#"
+struct Record { field: u32 }
+fn main() {
+    let r: tainted<Record> = Record { field: 42 };
+    let clean = declassify(r.field, "policy", "reason");
+    sink(clean);
+}
+"#;
+        tc_ok(declassified).expect("declassified field access into a sink must be accepted");
+
+        // No over-tainting: field/index access on a NON-tainted binding must still be accepted.
+        let clean_field = r#"
+struct Record { field: u32 }
+fn main() {
+    let r = Record { field: 42 };
+    sink(r.field);
+}
+"#;
+        tc_ok(clean_field).expect("clean struct field into a sink must not be flagged tainted");
+
+        let clean_index = r#"
+fn main() {
+    let arr = [1, 2, 3];
+    sink(arr[0]);
+}
+"#;
+        tc_ok(clean_index).expect("clean array element into a sink must not be flagged tainted");
+    }
+
+    #[test]
+    fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
+        // Regression for a false negative an adversarial workflow found in the first version of this
+        // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"
+        // guard, which only recognizes `tainted<T>` when it wraps the ENTIRE annotation — so a
+        // parameter declared `list<tainted<u32>>` was silently NOT seeded as tainted at all, letting
+        // `sink(x)` on it slip past `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` undetected. Confirmed
+        // against the intermediate (buggy) implementation that this exact program passed `check`.
+        for annotation in [
+            "list<tainted<u32>>",
+            "Option<tainted<u32>>",
+            "Map<string, tainted<u32>>",
+        ] {
+            let src = format!("fn entry(x: {annotation}) {{ sink(x); }} fn main() {{}}");
+            let err =
+                tc_ok(&src).expect_err(&format!("{annotation} param into a sink must be rejected"));
+            assert!(
+                err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+                "got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn taint_from_a_let_seed_is_conservatively_sticky_across_reassignment() {
+        // Honest boundary of this Phase-3 slice (documented in UNSUPPORTED.md): taint flow is
+        // reassignment-INSENSITIVE. A binding seeded tainted by its `let`/param annotation (or a
+        // tainted initializer) stays tainted for analysis even after it is reassigned to a provably
+        // clean value — clearing requires an explicit `declassify(...)`. This is a sound, conservative
+        // over-approximation (fail-closed: it may force an unnecessary declassify, but it NEVER lets a
+        // tainted value reach a sink undetected). Making reassignment flow-sensitive (so `x = 1` after
+        // a tainted `let` clears taint) needs proper control-flow-merge dataflow (branch snapshot /
+        // restore / join) — a separate, larger Phase-3 slice; three adversarial rounds confirmed a
+        // naive incremental version is unsound across `if`/`else`/loop bodies, so it is deliberately
+        // deferred rather than shipped half-working.
+        let reassigned_clean_still_tainted = r#"
+fn main() {
+    let mut x = taint_source("s");
+    x = 1;
+    sink(x);
+}
+"#;
+        let err = tc_ok(reassigned_clean_still_tainted).expect_err(
+            "a let-tainted binding stays conservatively tainted across reassignment (fail-closed)",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
+
+        // The idiomatic way to clear it: declassify with policy + reason.
+        let declassified = r#"
+fn main() {
+    let secret = taint_source("s");
+    let clean = declassify(secret, "policy", "reason");
+    sink(clean);
+}
+"#;
+        tc_ok(declassified).expect("a declassified value may reach a sink");
+    }
+
+    #[test]
     fn validate_bundle_rejects_manifest_rewrite_without_manifest_hash_update() {
         use sha2::{Digest, Sha256};
 

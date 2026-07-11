@@ -224,6 +224,37 @@ pub(crate) fn tainted_inner(ty: &str) -> Option<String> {
     None
 }
 
+/// Whether a raw annotation carries the `tainted<T>` qualifier — as the whole annotation
+/// (`tainted<u32>`) OR nested inside an outer container/generic (`list<tainted<u32>>`,
+/// `Option<tainted<u32>>`, `Map<string, tainted<u32>>`).
+///
+/// ADVERSARIALLY CORRECTED (2026-07-11): the first version of this predicate delegated to
+/// [`tainted_inner`]'s anchored "whole-string" guard (`starts_with("tainted<") && ends_with('>')`).
+/// That is exactly right for `tainted_inner`'s own use inside [`compatible`] (a symmetric
+/// annotation-compatibility question), but it is WRONG for this predicate's actual job — gating
+/// whether `middle::is_tainted_type` seeds a param/let binding as tainted, which in turn gates the
+/// `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` sink check. An adversarial workflow found that
+/// delegating to the anchored guard is a real, parser-producible SECURITY REGRESSION: a parameter
+/// declared `list<tainted<u32>>` was previously (correctly, if over-approximately) flagged by the
+/// substring check this predicate replaced, but the anchored version stopped seeing it, silently
+/// letting a genuinely tainted value reach a sink. `Ty::parse` cannot recurse into container/generic
+/// inner types today (its List/Map/Option/Result/Generic arms don't retain them at all — a
+/// materially larger, separate change), so the correct fix here is a substring check anchored on the
+/// qualifier's own opening bracket (`"tainted<"`), not on the whole annotation.
+///
+/// This still fixes the ORIGINAL bug this predicate exists to fix — a type merely NAMED with the
+/// substring "tainted" (`TaintedRecord`, `UntaintedBuffer`, `tainted_flag`) is NOT flagged, because
+/// none of those have `<` immediately following the word "tainted". The one residual, deliberately
+/// accepted edge case: a hypothetical FUTURE generic type whose name itself ends in "...tainted"
+/// immediately before its own generic bracket (e.g. `SomeTainted<T>`) would still be over-flagged.
+/// No such type exists anywhere in this codebase's corpus, and over-flagging (forcing an unnecessary
+/// `declassify()`) is the SAFE direction for a security check — the opposite of the false negative
+/// above, which is why this predicate deliberately leans toward over-approximation rather than
+/// precision.
+pub(crate) fn is_tainted(ty: &str) -> bool {
+    ty.trim().to_ascii_lowercase().contains("tainted<")
+}
+
 /// A+ compatibility: numeric widths interoperate; bool/string/enums do not cross. `tainted<T>` is
 /// a qualifier: clean `T` may flow into a tainted binding, and tainted flows are still policed by
 /// the separate taint analysis.
@@ -364,6 +395,70 @@ mod tests {
                 "{t} is neither int nor float"
             );
         }
+    }
+
+    #[test]
+    fn is_tainted_recognizes_the_qualifier_and_rejects_substring_lookalikes() {
+        // The bugfix: a type merely NAMED with the substring "tainted" is not the qualifier. The
+        // predicate it replaces (`ty.to_ascii_lowercase().contains("tainted")` in
+        // `middle/mod.rs::is_tainted_type`) would wrongly flag both of these as tainted today.
+        for not_a_qualifier in [
+            "TaintedRecord",
+            "UntaintedBuffer",
+            "tainted_flag",
+            "u32",
+            "",
+            "Color",
+        ] {
+            assert!(
+                !is_tainted(not_a_qualifier),
+                "{not_a_qualifier} is not the tainted<T> qualifier"
+            );
+        }
+        // Real qualifiers, case-insensitive, over the vocabulary the checker actually seeds.
+        for qualifier in [
+            "tainted<u32>",
+            "Tainted<U32>",
+            "tainted<string>",
+            "tainted<*mut u8>",
+            "  tainted<u32>  ",
+        ] {
+            assert!(is_tainted(qualifier), "{qualifier} must be recognized");
+        }
+    }
+
+    #[test]
+    fn is_tainted_sees_through_an_outer_container() {
+        // Regression for the adversarially-found false negative: an EARLIER version of this
+        // predicate delegated to `tainted_inner`'s anchored "whole-string" guard, which missed a
+        // taint qualifier nested inside a container/generic — a real, parser-producible security
+        // regression (a `list<tainted<u32>>` parameter was silently NOT seeded as tainted, letting an
+        // unsafe flow reach a sink undetected). The current substring-anchored-on-bracket
+        // implementation must catch all of these.
+        for nested in [
+            "list<tainted<u32>>",
+            "Option<tainted<u32>>",
+            "Map<string, tainted<u32>>",
+        ] {
+            assert!(
+                is_tainted(nested),
+                "{nested} must be detected (nested qualifier)"
+            );
+        }
+    }
+
+    #[test]
+    fn is_tainted_leans_toward_over_approximation_not_under() {
+        // The accepted, deliberate residual (documented on `is_tainted`'s doc comment): a
+        // hypothetical generic type whose OWN name ends in "...tainted" immediately before its own
+        // generic bracket is over-flagged. This is the SAFE direction for a security check (forces an
+        // unnecessary declassify rather than silently missing a real leak) and is pinned here so a
+        // future attempt to "tighten" this predicate doesn't accidentally reintroduce the dangerous
+        // false-negative direction instead.
+        assert!(
+            is_tainted("SomeTainted<u32>"),
+            "over-approximation is the accepted, safe direction"
+        );
     }
 
     #[test]
@@ -554,6 +649,27 @@ mod tests {
         "STRING",
         "Tainted<U32>",
     ];
+
+    #[test]
+    fn is_tainted_exhaustive_over_vocab() {
+        // Expectation-based (literal expected booleans), NOT a diff against a frozen snapshot — see
+        // `is_tainted`'s doc comment for why it is deliberately excluded from
+        // `ty_parity_exhaustive_against_frozen_reference` below. Exactly the 5 `tainted<...>`-wrapper
+        // entries in VOCAB (case-insensitive) are true; every other entry, including the adversarial
+        // `"Opt<T>"`/`"Box<int>"` (contain `<` but don't start with the qualifier) and the
+        // substring-lookalike-adjacent `"STRING"`/`"Foo"`/`"x"`, is false.
+        const TAINTED_VOCAB_ENTRIES: &[&str] = &[
+            "tainted<u32>",
+            "tainted<string>",
+            "tainted<u8>",
+            "tainted<i64>",
+            "Tainted<U32>",
+        ];
+        for &s in VOCAB {
+            let expected = TAINTED_VOCAB_ENTRIES.contains(&s);
+            assert_eq!(is_tainted(s), expected, "is_tainted({s:?})");
+        }
+    }
 
     #[test]
     fn ty_parity_exhaustive_against_frozen_reference() {

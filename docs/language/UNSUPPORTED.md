@@ -100,6 +100,45 @@ CPU-pinning child process.
   yield a float?), i.e. real interprocedural analysis (Phase 3), not declared types. Do not re-try
   the declared-type shortcut.
 
+## NOW REAL (taint as a structured qualifier + index/field propagation — Phase-3 slice, 2026-07-11)
+
+First step of Phase 3: taint recognition stops being a bare substring test and taint stops leaking
+through indexing/field access.
+
+- **Structured `tainted<T>` recognition.** `ty::is_tainted` (consumed by `is_tainted_type`, which
+  seeds param/`let` taint) replaced the old `.contains("tainted")` substring check. That substring
+  version false-positived on any type merely NAMED with the substring — a struct called
+  `TaintedRecord` was wrongly seeded tainted. The anchored `.contains("tainted<")` fixes that AND
+  correctly catches a qualifier nested in a container (`list<tainted<u32>>`, `Option<tainted<u32>>`,
+  `Map<string, tainted<u32>>`), which the truly-anchored whole-string guard would have MISSED — an
+  adversarial round caught that as a real security regression before it shipped.
+- **Index / field-access no longer launders taint.** `expr_taint_source` gained `Expr::Index` (checks
+  both base and index) and `Expr::FieldAccess` (base) arms. Previously `sink(tainted_arr[i])` and
+  `sink(tainted_struct.field)` fell through a catch-all and silently escaped
+  `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` — a real fail-open, now closed.
+- Tests: `is_tainted_*` (ty.rs, incl. the frozen-oracle-adjacent VOCAB test),
+  `taint_propagates_through_field_access_and_indexing_to_sink`,
+  `is_tainted_detects_qualifier_nested_in_a_container_annotation`,
+  `taint_from_a_let_seed_is_conservatively_sticky_across_reassignment`.
+
+**Honest boundaries (deliberately deferred — this slice did NOT close them):**
+- **Taint flow is reassignment-INSENSITIVE.** A binding's taint is fixed at its `let`/param seeding.
+  Reassignment (`x = ...`) does not add or clear taint: a `let`-tainted var reassigned to a clean
+  value stays conservatively tainted (fail-CLOSED, safe — clear it with `declassify(...)`), and a
+  clean var reassigned to a tainted value is NOT re-tainted (a pre-existing fail-OPEN, unchanged by
+  this slice). Making reassignment flow-sensitive needs proper control-flow-merge dataflow (branch
+  snapshot/restore/join); three adversarial rounds confirmed a naive incremental version is unsound
+  across `if`/`else`/loop bodies, so it is a separate future Phase-3 slice, not shipped half-working.
+- **Intra-procedural only.** `Expr::Call` inspects arguments only — a callee that returns taint from
+  a clean argument is not modeled (no `FnTaintSummary`). The next Phase-3 slice.
+- **Whole-binding granularity.** A struct field individually declared `tainted<T>` in the struct's
+  own type definition does not by itself taint `.field` access on an otherwise-clean instance; only a
+  binding seeded tainted at its own `let`/param propagates.
+- **Outermost-and-nested, but not every position.** `is_tainted` matches `tainted<` anywhere in the
+  annotation string (so container-nested qualifiers are caught); the tradeoff is a hypothetical
+  future generic type whose own name ends in "…tainted" immediately before its bracket would be
+  over-flagged — the SAFE direction for a security check, and no such type exists in the corpus.
+
 ## NOW REAL (shipped after this slice — verified firsthand 2026-07-10)
 
 These were listed as PLANNED below in an earlier slice and have since shipped. Moved up so the ledger
