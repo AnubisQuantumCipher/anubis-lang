@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-mod ty;
+pub(crate) mod ty;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BindingInfo {

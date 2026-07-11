@@ -300,6 +300,19 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     }
     let (head, tail) = split_tail_expr(def.body);
     let mut body_src = String::new();
+    // RC4 soundness: a parameter the checker models as an integer (u8/u16/u32/u64) is proved over a
+    // pure i64. Guard at entry that it actually holds an integer, so a float/string/... argument fails
+    // closed (ANUBIS_TYPE_VIOLATION) instead of taking a divergent runtime path that violates the
+    // proven contract. Uses the SAME predicate the solver's param-modeling gate uses, so they align.
+    for (p, ty) in def.params {
+        if crate::middle::ty::is_integer(ty) {
+            let id = sanitize_ident(p)?;
+            body_src.push_str(&format!(
+                "    anubis_require_int(&{id}, {});\n",
+                rust_string_lit(p)?
+            ));
+        }
+    }
     for stmt in &head {
         emit_safe_run_stmt(stmt, 1, &mut body_src, ctx)?;
     }
@@ -1342,6 +1355,23 @@ fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
 fn anubis_assert(cond: AnubisValue) -> AnubisValue {
     if !cond.as_bool() { panic!("ANUBIS_ASSERT_FAILED"); }
     AnubisValue::Bool(true)
+}
+// The checker adds every `assume(cond)` to the solver as a trusted axiom. For that trust to be SOUND
+// the runtime must guarantee the assumption actually holds — otherwise a satisfiable-but-false
+// `assume` (e.g. `assume(x < 100)` reached with x = i64::MAX) silently certifies a violated contract.
+// So `assume` fails closed at runtime, exactly like `assert`; it still yields `true` for value use.
+fn anubis_assume(cond: AnubisValue) -> AnubisValue {
+    if !cond.as_bool() { panic!("ANUBIS_ASSUME_VIOLATED: an `assume(...)` was false at runtime; the checker trusts assumptions, so this fails closed rather than silently certify a false contract"); }
+    AnubisValue::Bool(true)
+}
+// A parameter the checker models as an integer (u8/u16/u32/u64) is proved over a pure i64 bit-vector.
+// The runtime is dynamically typed, so a float/string/list argument would take a DIVERGENT arithmetic
+// path (float remainder, `+` concatenation/append) and violate the proven integer contract. Enforce
+// the model at entry: an integer-typed parameter must hold an integer, else fail closed.
+fn anubis_require_int(v: &AnubisValue, name: &str) {
+    if !matches!(v, AnubisValue::Int(_)) {
+        panic!("ANUBIS_TYPE_VIOLATION: integer parameter `{}` received a non-integer value at runtime; the checker models it as an i64, so a float/string/other argument is fail-closed rather than silently mis-proved", name);
+    }
 }
 fn anubis_panic(msg: AnubisValue) -> AnubisValue { panic!("ANUBIS_PANIC: {}", msg.display_string()); }
 
@@ -3291,11 +3321,9 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         Expr::Declassify { inner, .. } if ctx.allow_research => safe_run_expr(inner, ctx),
         // Runtime assertion: `assert(cond)` panics (fail-closed) when the condition is false.
         Expr::Assert(inner) => Ok(format!("anubis_assert({})", safe_run_expr(inner, ctx)?)),
-        // `assume(cond)` is a solver hint; at runtime it evaluates the expression and yields true.
-        Expr::Assume(inner) => Ok(format!(
-            "{{ let _ = {}; AnubisValue::Bool(true) }}",
-            safe_run_expr(inner, ctx)?
-        )),
+        // `assume(cond)` is trusted by the solver, so the runtime enforces it (fail-closed) — an
+        // assumption that is false at runtime would otherwise silently certify a violated contract.
+        Expr::Assume(inner) => Ok(format!("anubis_assume({})", safe_run_expr(inner, ctx)?)),
         Expr::Tainted { .. }
         | Expr::Symbolic { .. }
         | Expr::Declassify { .. }
@@ -3753,6 +3781,40 @@ mod run_tests {
         assert!(
             stderr.contains(needle),
             "expected trap {needle}, got stderr:\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn runtime_enforces_assume_and_integer_param_soundness() {
+        // REGRESSION — soundness audit 2026-07-11. RC3: the checker trusts every `assume` as an
+        // axiom, so the runtime must enforce it; a satisfiable-but-false assume would otherwise
+        // silently certify a violated contract. `assume(x < 100)` reached with x = i64::MAX fails closed.
+        run_expect_trap(
+            "fn f(x: i64) -> i64 requires(x > 0) ensures(result > x) { assume(x < 100); return x + 1; } \
+             fn main() { print(f(9223372036854775807)); }",
+            "ANUBIS_ASSUME_VIOLATED",
+        );
+        // A true assume does not trap and still yields a value in expression position.
+        assert_eq!(
+            run("fn f(x: u32) -> u32 { assume(x > 0); return x; } fn main() { print(f(5)); }"),
+            "5"
+        );
+        // RC4: an integer-typed parameter is modeled as a pure i64; a float/string argument would take
+        // a divergent runtime path (float remainder, `+` concatenation) and violate the proof — fail closed.
+        run_expect_trap(
+            "fn parity(x: u32) -> u32 ensures(result == 0 || result == 1) { return x % 2; } \
+             fn main() { print(parity(0.5)); }",
+            "ANUBIS_TYPE_VIOLATION",
+        );
+        run_expect_trap(
+            "fn twice(x: u32) -> u32 ensures(result == 2 * x) { return x + x; } \
+             fn main() { print(twice(\"5\")); }",
+            "ANUBIS_TYPE_VIOLATION",
+        );
+        // Valid integer arguments still run and compute correctly (no false positives).
+        assert_eq!(
+            run("fn parity(x: u32) -> u32 ensures(result == 0 || result == 1) { return x % 2; } fn main() { print(parity(7)); print(parity(8)); }"),
+            "1\n0"
         );
     }
 
