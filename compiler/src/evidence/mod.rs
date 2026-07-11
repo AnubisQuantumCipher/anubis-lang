@@ -153,8 +153,8 @@ pub fn build_evidence_bundle(
                 if let Some(first) = solver_checks.first() {
                     let _ = std::fs::write(dir.join("analysis").join("solver.smt2"), &first.smt);
                     let replay = if first.status == "FAIL" && first.model.is_some() {
-                        crate::middle::replay_counterexample_for_ir(
-                            &tainted,
+                        crate::middle::replay_counterexample(
+                            &first.smt,
                             first.model.as_deref().unwrap_or(""),
                         )
                     } else {

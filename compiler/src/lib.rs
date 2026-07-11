@@ -2325,20 +2325,79 @@ fn main() {
     }
 
     #[test]
-    fn solver_model_replay_failed_for_inconsistent_model() {
-        // Hostile test: bad model that violates assumption should cause replay fail
-        use crate::middle;
-        let obl = middle::SolverObligation {
-            name: "test-replay".into(),
-            assumptions: vec!["(bvult x (_ bv10 32))".into()],
-            assertion: "(bvugt x (_ bv20 32))".into(),
-            vars: vec!["x".into()],
-        };
-        let bad_model = "(define-fun x () (_ BitVec 32) #x0000000f)"; // x=15 violates <10
+    fn real_counterexample_replay_confirms_a_genuine_z3_model() {
+        // `x < 10` and `x > 20` cannot both hold, so z3 must produce a genuine witness for
+        // `assumptions ∧ ¬assertion`. Real replay: independently re-verify z3's OWN model
+        // against the SAME query it decided, rather than trusting the model text.
+        let src = r#"
+fn bad() {
+    research {
+        let x: tainted<u32> = symbolic();
+        assume(x < 10);
+        assert(x > 20);
+    }
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let failed = checks
+            .iter()
+            .find(|c| c.name.contains("assert") && c.status == "FAIL")
+            .expect("assert(x > 20) must fail given assume(x < 10)");
+        let model = failed.model.as_deref().expect("a FAIL must carry a model");
         assert!(
-            !middle::replay_counterexample(&obl, bad_model),
-            "replay must fail for inconsistent model"
+            middle::replay_counterexample(&failed.smt, model),
+            "z3's own witness must replay as a genuine counterexample"
         );
+    }
+
+    #[test]
+    fn real_counterexample_replay_rejects_a_forged_model() {
+        // Regression guard for the retired substring-matching replay stub, which special-cased
+        // exactly one magic value (`#x0000000f`/`15`). This forges a DIFFERENT value (100) that
+        // violates the SAME assumption (`x < 10`) against the real query z3 decided. A sound
+        // replay must reject it because it re-derives the answer from the query itself — it
+        // does not depend on which value is forged.
+        let src = r#"
+fn bad() {
+    research {
+        let x: tainted<u32> = symbolic();
+        assume(x < 10);
+        assert(x > 20);
+    }
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Research).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let failed = checks
+            .iter()
+            .find(|c| c.name.contains("assert") && c.status == "FAIL")
+            .expect("assert(x > 20) must fail given assume(x < 10)");
+        let real_model = failed.model.as_deref().expect("a FAIL must carry a model");
+        let var_name = real_model
+            .split("define-fun ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("model must name the symbolic variable");
+        // 100 (0x64) violates `x < 10` — a genuinely inconsistent witness, not the old stub's
+        // hardcoded special case.
+        let forged_model = format!("(define-fun {var_name} () (_ BitVec 64) #x0000000000000064)");
+        assert!(
+            !middle::replay_counterexample(&failed.smt, &forged_model),
+            "a forged witness that violates the assumption must fail to replay"
+        );
+    }
+
+    #[test]
+    fn real_counterexample_replay_rejects_an_unparseable_model() {
+        // No parseable witness means no confirmed counterexample — fail closed rather than
+        // treat unparseable/empty model text as a pass.
+        assert!(!middle::replay_counterexample(
+            "(set-logic QF_BV)\n(check-sat)\n",
+            "not a model"
+        ));
     }
 
     #[test]

@@ -1883,28 +1883,104 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     }
 }
 
-pub fn replay_counterexample(_obligation: &SolverObligation, model: &str) -> bool {
-    if model.contains("define-fun") || model.contains("x") || model.contains("secret") {
-        // Hostile: detect inconsistent model e.g. x=15 for assume x<10
-        if model.contains("#x0000000f") || model.contains("15") {
-            return false;
+/// Parses a z3 `(get-model)` response into a map from declared variable name to its literal
+/// SMT-LIB bit-vector value. Every variable this checker declares is a 64-bit bit-vector
+/// (`smt_bv_type(64)`, see `check_obligations`), so each model entry has the fixed shape
+/// `(define-fun <name> () (_ BitVec 64) <value>)`, with `<value>` either a `#x…`/`#b…` literal
+/// or a `(_ bvN 64)` term, and the whole entry possibly wrapped across lines. Anchoring on the
+/// fixed `(_ BitVec 64)` return-type tag (rather than a general-purpose SMT-LIB parser) is
+/// sufficient because that invariant already holds everywhere else in this module.
+fn parse_z3_model(model: &str) -> BTreeMap<String, String> {
+    let mut bindings = BTreeMap::new();
+    const MARK: &str = "(define-fun ";
+    const TYPE_TAG: &str = "(_ BitVec 64)";
+    let mut cursor = model;
+    while let Some(rel) = cursor.find(MARK) {
+        let after_mark = &cursor[rel + MARK.len()..];
+        let Some(name) = after_mark.split_whitespace().next() else {
+            break;
+        };
+        let name = name.to_string();
+        let Some(type_rel) = after_mark.find(TYPE_TAG) else {
+            break;
+        };
+        let after_type = after_mark[type_rel + TYPE_TAG.len()..].trim_start();
+        let (value, tail) = if let Some(inner) = after_type.strip_prefix('(') {
+            // `(_ bvDECIMAL 64)` nested-literal form — capture through its own close paren,
+            // then skip the outer define-fun's closing paren.
+            match inner.find(')') {
+                Some(close) => {
+                    let value = format!("({}", &inner[..=close]);
+                    let after_value = &inner[close + 1..];
+                    let tail = after_value.strip_prefix(')').unwrap_or(after_value);
+                    (value, tail)
+                }
+                None => break,
+            }
+        } else {
+            // `#x…`/`#b…` literal form — capture up to the define-fun's closing paren.
+            match after_type.find(')') {
+                Some(close) => (
+                    after_type[..close].trim().to_string(),
+                    &after_type[close + 1..],
+                ),
+                None => break,
+            }
+        };
+        if !value.is_empty() {
+            bindings.insert(name, value);
         }
-        return true;
+        cursor = tail;
     }
-    false
+    bindings
 }
 
-pub fn replay_counterexample_for_ir(_ir: &TypedIR, model: &str) -> bool {
-    // simple: if model present, consider valid for the fixtures
-    replay_counterexample(
-        &SolverObligation {
-            name: "".into(),
-            assumptions: vec![],
-            assertion: "".into(),
-            vars: vec![],
-        },
-        model,
-    )
+/// Runs `smt` through z3 and returns the first line of its stdout (`sat`/`unsat`/`unknown`),
+/// or `None` if z3 could not be spawned or its output could not be read.
+fn z3_check_sat_raw(smt: &str) -> Option<String> {
+    let mut child = Command::new("z3")
+        .args(Z3_ARGS)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    child.stdin.as_mut()?.write_all(smt.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(|l| l.trim().to_string())
+}
+
+/// Real counterexample replay: independent re-verification of a `sat` result, not a trust-the-model
+/// string match. `smt` is the EXACT query the solver already decided as `sat` (assumptions ∧
+/// ¬assertion, still carrying its own trailing `(check-sat)(get-model)`); `model` is the raw
+/// `(get-model)` response z3 returned for it. This parses the concrete witness z3 assigned to each
+/// variable, pins every variable to that literal value on top of the SAME assumptions and negated
+/// assertion the solver checked, and asks z3 to re-decide the now fully-ground formula.
+///
+/// A genuine counterexample stays `sat` under its own witness (evaluating a ground formula is
+/// decidable, not really "solving"). A bogus, hostile, or internally-inconsistent model — one that
+/// doesn't actually satisfy the assumptions, or doesn't actually violate the assertion — makes the
+/// ground formula `unsat`, and this returns `false`. Unlike the model text, this does not depend on
+/// variable names or on any pre-known "bad" values; it re-derives the answer from the query itself.
+pub fn replay_counterexample(smt: &str, model: &str) -> bool {
+    let bindings = parse_z3_model(model);
+    if bindings.is_empty() {
+        // No parseable witness — cannot confirm the counterexample; fail closed.
+        return false;
+    }
+    let base = match smt.find("(check-sat)") {
+        Some(idx) => &smt[..idx],
+        None => smt,
+    };
+    let mut replay_smt = base.to_string();
+    for (name, value) in &bindings {
+        replay_smt.push_str(&format!("(assert (= {name} {value}))\n"));
+    }
+    replay_smt.push_str("(check-sat)\n");
+    matches!(z3_check_sat_raw(&replay_smt).as_deref(), Some("sat"))
 }
 
 fn expr_to_smt(e: &Expr, widths: &BTreeMap<String, u32>) -> String {
