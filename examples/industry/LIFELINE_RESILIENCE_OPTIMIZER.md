@@ -14,13 +14,13 @@ A portfolio is feasible only when it satisfies all of these policies:
 - crew demand at or below 104 hours;
 - fuel demand at or below 48 units;
 - every action prerequisite selected;
-- at least two actions directed at assets with the highest vulnerability scores.
+- at least two actions directed at assets whose vulnerability score is `>= 9`.
 
 Feasible portfolios are compared lexicographically by hard service-floor violations, robust objective, cost, action count, and mask. The robust objective combines worst-case loss, probability-weighted expected loss, equity-weighted loss, and a large penalty for breaching minimum service floors.
 
-After choosing a plan, the program independently enumerates the entire search space in reverse order. It also recomputes the chosen plan twice, rejects an invalid dependency reference, and rejects a deliberately over-budget all-actions mask.
+After choosing a plan, the program enumerates the entire search space in reverse order using the same evaluator and comparator. This is a traversal-consistency check, not an independent implementation. It also recomputes the chosen plan twice and rejects an invalid dependency reference, a shortened bit-power table, an overflow-scale population, and a deliberately over-budget all-actions mask. An external red-team oracle separately reimplemented the model and confirmed the optimum.
 
-The final rolling checksum is deterministic but deliberately labeled non-cryptographic. Anubis's external evidence bundle provides the hashed artifact envelope.
+The final rolling checksum is deterministic but deliberately labeled non-cryptographic. The application gate signs the Anubis evidence bundle with a one-time Ed25519 key and requires that exact public key during verification. A real deployment would pin an institutional public key outside the bundle.
 
 ## Live result from the 2026-07-11 run
 
@@ -33,8 +33,10 @@ The current embedded model produced:
 - worst-case modeled loss reduced from `2,977,016` to `2,174,930`;
 - expected modeled loss reduced from `2,698,935` to `1,509,924`;
 - hard service-floor violations reduced from `22` to `6`;
-- reverse-order global-optimum audit `1`;
+- same-evaluator reverse traversal check `1`;
 - invalid-model negative control rejected `1`;
+- shortened powers-table negative control rejected `1`;
+- overflow-scale population negative control rejected `1`;
 - over-budget tamper negative control rejected `1`;
 - verdict `PLAN_CERTIFIED` and exit code `0`.
 
@@ -76,8 +78,9 @@ What is real here:
 - solver-checked contracts on four bounded integer helper functions;
 - a monotone bounded cascade simulation;
 - exact optimization over the declared ten-action set;
-- deterministic output and internal re-audit;
-- an external Anubis evidence bundle that can be hash-verified.
+- deterministic stdout and emitted Rust source across replay;
+- a same-evaluator reverse traversal check plus external independent oracle confirmation;
+- an Ed25519-signed Anubis evidence bundle verified against the gate's expected public key.
 
 What is not claimed:
 
@@ -86,6 +89,7 @@ What is not claimed:
 - optimality outside the declared action set and objective;
 - calibrated hazard probabilities or validated human-impact coefficients;
 - live data ingestion, databases, networking, asynchronous work, or a user interface;
+- reproducible native Mach-O bytes; the gate compares semantic stdout and emitted Rust source, not platform UUID/signature bytes;
 - production readiness or authorization for emergency deployment.
 
 The correct production architecture would keep this deterministic kernel behind a conventional host application with authenticated data, schema validation, calibration, human approval, monitoring, and independent safety review.

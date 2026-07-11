@@ -1,0 +1,616 @@
+// =============================================================================
+// ENNEAD — a Byzantine-Fault-Tolerant consensus kernel, written in Anubis
+// =============================================================================
+// In the myth, the Ennead is the tribunal of nine gods of Heliopolis. When Horus
+// and Set brought their contendings before it, the council had to reach ONE
+// binding verdict even though one of their number — Set, the deceiver — would lie,
+// equivocate, and split the room to get his way. That is Byzantine consensus, four
+// thousand years early: N judges, some honest, at least one a liar, and a protocol
+// that must still agree on a single truth.
+//
+// ENNEAD is that tribunal as running software. It is a deterministic, offline
+// State-Machine-Replication kernel — the beating heart of every blockchain,
+// replicated database, sovereign ledger, and fault-tolerant control plane — built
+// so it demonstrates BOTH halves of Anubis at once:
+//
+//   • anubis check examples/industry/ennead_consensus_kernel.anb
+//        asks Z3 to PROVE the six integer-safety theorems that make BFT sound —
+//        the quorum-intersection lemma among them. If any proof fails, the
+//        artifact is REJECTED. The safety of the protocol is not tested; it is
+//        proved.
+//
+//   • anubis run   examples/industry/ennead_consensus_kernel.anb
+//        boots a live council of replicas and drives it through five scenarios:
+//        the happy path, a crashed leader, an EQUIVOCATION ATTACK (Set himself),
+//        a too-many-faults case that must safely STALL rather than split-brain,
+//        and a nine-seat council under compound faults. Then it proves the honest
+//        replicas' logs are byte-identical (Agreement) and seals them into a
+//        tamper-evident hash chain.
+//
+//   • anubis build examples/industry/ennead_consensus_kernel.anb --evidence
+//        seals source + IR + solver query + native artifact into a Proof-Carrying
+//        Artifact you can verify and Ed25519-sign.
+//
+// Language surface exercised: enums (protocol ISA + fault model + verdicts),
+// exhaustive `match` with guards, traits with default methods, generics, closures
+// with map/filter/reduce/count/any/all, methods on structs, Option/Result + `?`,
+// maps for vote tallies, string interpolation, a hash-chained ledger — AND six
+// SMT-verified contracts with a loop invariant.
+//
+//   n = 3f + 1 replicas tolerate f Byzantine faults; a quorum is 2f + 1.
+// =============================================================================
+
+
+// =============================================================================
+// PART 1 — THE VERIFIED SAFETY KERNEL  (proved by Z3 at `anubis check` time)
+// =============================================================================
+// These six functions are the safety theorem of Byzantine consensus, written as
+// integer arithmetic the solver can discharge. At runtime they simply compute;
+// at check-time each carries a machine-checked proof. Every bound is load-bearing
+// (a `u32` annotation is runtime-inert, so the solver assumes nothing about range
+// unless a `requires` states it).
+
+// (1) A quorum strictly exceeds the fault budget. With n = 3f+1 a quorum is 2f+1,
+//     and 2f+1 > f for every f >= 0 — so a quorum can never be composed entirely
+//     of faulty replicas. This is why one honest voice always survives a quorum.
+fn quorum_exceeds_faults(f: u32) -> u32
+    requires(f >= 0) requires(f < 1000000)
+    ensures(result > f)
+{
+    return 2 * f + 1;
+}
+
+// (2) THE QUORUM-INTERSECTION LEMMA — the crown jewel of BFT safety.
+//     Any two quorums drawn from n = 3f+1 replicas overlap in at least
+//     |A| + |B| - n = 2(2f+1) - (3f+1) = f+1 replicas. Z3 proves the overlap is
+//     >= f+1 from the definitions alone. Two conflicting values cannot both gather
+//     a quorum, because their quorums would have to share f+1 replicas — more than
+//     the fault budget — forcing an honest replica to have voted for both, which an
+//     honest replica never does. No split-brain. Ever.
+fn two_quorums_overlap(n: u32, f: u32, q: u32) -> u32
+    requires(f >= 0) requires(f < 1000000)
+    requires(n == 3 * f + 1)
+    requires(q == 2 * f + 1)
+    ensures(result >= f + 1)
+{
+    return q + q - n;
+}
+
+// (3) Every two-quorum overlap contains at least one HONEST replica. The overlap
+//     is f+1 replicas and at most f are faulty, so >= 1 is honest. That honest
+//     replica is the witness that makes conflicting commits impossible.
+fn overlap_has_honest(f: u32, overlap: u32) -> u32
+    requires(f >= 0) requires(f < 1000000)
+    requires(overlap == f + 1)
+    ensures(result >= 1)
+{
+    return overlap - f;
+}
+
+// (4) View numbers advance monotonically — a new leadership epoch never reuses an
+//     old view number, so stale proposals from a deposed leader can never be
+//     mistaken for the current round.
+fn view_advances(v: u32) -> u32
+    requires(v >= 0) requires(v < 1000000)
+    ensures(result > v)
+{
+    return v + 1;
+}
+
+// (5) Log positions (sequence numbers) strictly increase — an honest replica never
+//     rebinds a slot it has already committed. This is the structural reason an
+//     equivocator cannot overwrite committed history.
+fn seq_advances(s: u32) -> u32
+    requires(s >= 0) requires(s < 1000000)
+    ensures(result > s)
+{
+    return s + 1;
+}
+
+// (6) A vote tally can never exceed the size of the electorate. Proved via a loop
+//     invariant discharged by the Hoare rule (holds on entry; preserved by one
+//     iteration under the loop condition + frame). This is the arithmetic that
+//     forbids ballot-stuffing beyond n replicas.
+fn tally_bounded(n: u32) -> u32
+    requires(n >= 0) requires(n < 1000000)
+    ensures(result <= n)
+{
+    let mut counted = 0;
+    let mut i = 0;
+    while i < n invariant(counted <= i) invariant(i <= n) {
+        counted = counted + 1;
+        i = i + 1;
+    }
+    return counted;
+}
+
+
+// =============================================================================
+// PART 2 — THE PROTOCOL DATA MODEL  (enums, structs, traits)
+// =============================================================================
+
+// The three-phase-commit ISA of a PBFT-style protocol.
+enum Phase {
+    PrePrepare,   // the leader proposes a value for (view, seq)
+    Prepare,      // a replica certifies it saw exactly one proposal
+    Commit,       // a replica certifies a quorum prepared the value
+}
+
+// The fault model. Honest replicas follow the protocol; Silent ones have crashed
+// (or are partitioned); an Equivocator is Set — it double-proposes as leader and
+// double-votes as a follower, trying to manufacture a split-brain.
+enum Role {
+    Honest,
+    Silent,
+    Equivocator,
+}
+
+// A protocol message on the wire.
+struct Msg {
+    phase: Phase,
+    view: int,
+    seq: int,
+    value: int,
+    from: int,
+}
+
+// A replica (a "seat" on the tribunal).
+struct Seat {
+    id: int,
+    role: Role,
+    log: [int],     // its committed history (one value per decided seq)
+}
+
+// What the council decides for a sequence slot — the auditor-facing verdict.
+enum Verdict {
+    Committed { value: int, seq: int, view: int },   // agreement reached
+    NoQuorum { seq: int },                           // safe stall: no false commit
+}
+
+// A trait with a default method, implemented by the verdict enum: render an
+// operator-readable line built entirely from the required accessor.
+trait Report {
+    fn line(self);                                   // required
+    fn banner(self) { "  ▸ ${self.line()}" }         // default, built from the interface
+}
+impl Report for Verdict {
+    fn line(self) {
+        match self {
+            Verdict::Committed { value: v, seq: s, view: w } =>
+                "seq ${s}: COMMIT value=${v} (settled in view ${w})",
+            Verdict::NoQuorum { seq: s } =>
+                "seq ${s}: NO-QUORUM — safe stall, nothing committed",
+        }
+    }
+}
+
+// Methods on the fault model, so the engine reads in domain language.
+impl Seat {
+    fn is_silent(self) { match self.role { Role::Silent => true, _ => false } }
+    fn is_equivocator(self) { match self.role { Role::Equivocator => true, _ => false } }
+    fn is_honest(self) { match self.role { Role::Honest => true, _ => false } }
+}
+
+
+// =============================================================================
+// PART 3 — HASHING & SEALS  (tamper-evident ledger primitives)
+// =============================================================================
+
+// FNV-1a over a string — the same self-sealing hash used across the Anubis corpus.
+fn fnv_str(s) {
+    let mut h = 2166136261;
+    for i in 0..len(s) {
+        h = (h * 16777619 + ord(char_at(s, i))) % 2147483647;
+    }
+    return h;
+}
+
+// Chain a new committed value onto a running ledger hash (hash-chained SMR log).
+fn chain_append(prev, value, seq) {
+    return fnv_str("${prev}|${seq}:${value}");
+}
+
+// Seal any list of values into one integrity tag.
+fn seal(entries) {
+    let mut h = 2166136261;
+    for e in entries {
+        h = (h * 16777619 + fnv_str(str(e))) % 2147483647;
+    }
+    return h;
+}
+
+// A digest binding a proposal to its (view, seq) — an equivocation shows up as two
+// different digests carrying the same (view, seq) from the same leader.
+fn digest(value, view, seq) {
+    return fnv_str("v${view}#${seq}=${value}");
+}
+
+
+// =============================================================================
+// PART 4 — QUORUM ARITHMETIC & VOTE TALLYING  (runtime side of Part 1)
+// =============================================================================
+
+// The runtime quorum size. Its safety (2f+1 > f, and two quorums intersect in an
+// honest replica) is exactly what Part 1 proves at check-time.
+fn quorum(f) { return 2 * f + 1; }
+
+// Round-robin leader for a view.
+fn leader_of(view, n) { return view % n; }
+
+// Generic: count the elements of a list that satisfy a predicate. Type parameter is
+// erased (values are dynamic) but documents intent — a reusable quorum counter.
+fn count_where<T>(xs, pred) -> u32 {
+    return count(xs, pred);
+}
+
+// Dedupe votes to at most one per (from, phase): an honest replica votes once per
+// phase per round. A second vote from the same seat in the same phase is an
+// equivocation — we keep the first and report the rejected doubles. This is the
+// runtime enforcement of Part 1's "log positions strictly increase" (seq_advances).
+fn dedup_votes(msgs) {
+    let mut kept = [];
+    let mut seen = {};
+    let mut rejected = 0;
+    for m in msgs {
+        let k = "${m.from}:${phase_tag(m.phase)}";
+        if has_key(seen, k) {
+            rejected = rejected + 1;      // double vote from the same seat → rejected
+        } else {
+            seen[k] = 1;
+            push(kept, m);
+        }
+    }
+    return (kept, rejected);
+}
+
+// A small integer tag per phase (used for tally keys and dedup keys).
+fn phase_tag(p) {
+    match p {
+        Phase::PrePrepare => 0,
+        Phase::Prepare    => 1,
+        Phase::Commit     => 2,
+    }
+}
+
+// Tally a bag of messages by their proposed value → { "value": count }.
+fn tally_by_value(msgs) {
+    let mut t = {};
+    for m in msgs {
+        let k = str(m.value);
+        t[k] = get(t, k, 0) + 1;
+    }
+    return t;
+}
+
+// Return Some(value) for the first value whose tally reaches the quorum, else None.
+// (Two-quorums-overlap guarantees at most one value can qualify — see Part 1.)
+fn value_with_quorum(tally, q) {
+    for k in tally {
+        if tally[k] >= q { return Some(int(k)); }
+    }
+    return None;
+}
+
+
+// =============================================================================
+// PART 5 — THE PROTOCOL ENGINE  (three-phase agreement over one sequence slot)
+// =============================================================================
+
+// The leader proposes. An honest (or, in this slot, non-silent) leader emits ONE
+// PrePrepare. Set-as-leader (Equivocator) emits TWO conflicting PrePreprares — the
+// classic equivocation. A Silent leader emits none (it has crashed / timed out).
+fn leader_propose(seats, leader, view, seq, base_value) {
+    let ldr = seats[leader];
+    let mut out = [];
+    if ldr.is_silent() {
+        return out;                              // crash → no proposal → timeout
+    }
+    push(out, Msg { phase: Phase::PrePrepare, view: view, seq: seq, value: base_value, from: leader });
+    if ldr.is_equivocator() {
+        // Set proposes a SECOND, conflicting value for the very same (view, seq).
+        push(out, Msg { phase: Phase::PrePrepare, view: view, seq: seq, value: base_value + 999, from: leader });
+    }
+    return out;
+}
+
+// Prepare phase. Each non-silent honest replica that sees EXACTLY ONE proposal for
+// (view, seq) certifies it with a Prepare. If it sees conflicting proposals it
+// refuses and raises a view-change request — it will not certify an equivocation.
+// An Equivocator follower double-votes (two Prepares) to try to inflate a tally;
+// dedup_votes strips the extra one.
+fn cast_prepares(seats, preprepares, view, seq) {
+    let values = unique(map(preprepares, |m| m.value));
+    let mut prepares = [];
+    let mut viewchange = 0;
+    for s in seats {
+        if s.is_silent() { continue; }
+        if len(values) == 0 { continue; }
+        if len(values) > 1 {
+            viewchange = viewchange + 1;         // saw an equivocation → demand a new leader
+            continue;
+        }
+        let v = values[0];
+        push(prepares, Msg { phase: Phase::Prepare, view: view, seq: seq, value: v, from: s.id });
+        if s.is_equivocator() {
+            // Set-as-follower casts a conflicting second Prepare.
+            push(prepares, Msg { phase: Phase::Prepare, view: view, seq: seq, value: v + 999, from: s.id });
+        }
+    }
+    return (prepares, viewchange);
+}
+
+// Commit phase. Every non-silent honest replica that saw the value reach a prepare
+// quorum casts a Commit for it. Equivocators again try to double-vote.
+fn cast_commits(seats, value, view, seq) {
+    let mut commits = [];
+    for s in seats {
+        if s.is_silent() { continue; }
+        push(commits, Msg { phase: Phase::Commit, view: view, seq: seq, value: value, from: s.id });
+        if s.is_equivocator() {
+            push(commits, Msg { phase: Phase::Commit, view: view, seq: seq, value: value + 999, from: s.id });
+        }
+    }
+    return commits;
+}
+
+// Drive one sequence slot to a decision, changing views (leaders) as needed until a
+// quorum commits or the view budget is exhausted. Returns (Verdict, telemetry).
+//
+// The whole safety story lives here: an equivocating or crashed leader produces no
+// prepare quorum, which forces a view change to the next (honest) leader; a value
+// only commits once a genuine 2f+1 quorum both prepares AND commits it; and if too
+// many replicas are faulty for any quorum to form, the slot returns NoQuorum — a
+// safe stall, never a false or split commit.
+fn agree(seats, seq, base_value, n, f, max_views) {
+    let q = quorum(f);
+    let mut view = 0;
+    let mut prepare_rejects = 0;
+    let mut commit_rejects = 0;
+    let mut equivocations = 0;
+
+    while view < max_views {
+        let leader = leader_of(view, n);
+        let preprepares = leader_propose(seats, leader, view, seq, base_value);
+
+        if len(preprepares) == 0 {
+            view = view + 1;                     // silent leader → timeout → next view
+            continue;
+        }
+        if len(preprepares) > 1 {
+            equivocations = equivocations + 1;   // caught the leader double-proposing
+        }
+
+        // --- Prepare phase (dedup, then tally, then test for a quorum) ---
+        let cast_p = cast_prepares(seats, preprepares, view, seq);
+        let raw_prepares = cast_p[0];
+        let viewchange = cast_p[1];
+        let dp = dedup_votes(raw_prepares);
+        let prepares = dp[0];
+        prepare_rejects = prepare_rejects + dp[1];
+
+        let prepared = value_with_quorum(tally_by_value(prepares), q);
+
+        match prepared {
+            None => { view = view + 1; }         // no prepare quorum → change view
+            Some(v) => {
+                // --- Commit phase ---
+                let cast_c = cast_commits(seats, v, view, seq);
+                let dc = dedup_votes(cast_c);
+                let commits = dc[0];
+                commit_rejects = commit_rejects + dc[1];
+
+                match value_with_quorum(tally_by_value(commits), q) {
+                    Some(cv) => {
+                        let tele = { "prepare_rejects": prepare_rejects, "commit_rejects": commit_rejects, "equivocations": equivocations, "views_used": view + 1 };
+                        return (Verdict::Committed { value: cv, seq: seq, view: view }, tele);
+                    }
+                    None => { view = view + 1; }
+                }
+            }
+        }
+    }
+
+    let tele = { "prepare_rejects": prepare_rejects, "commit_rejects": commit_rejects, "equivocations": equivocations, "views_used": max_views };
+    return (Verdict::NoQuorum { seq: seq }, tele);
+}
+
+
+// =============================================================================
+// PART 6 — AGREEMENT: APPLY A VERDICT TO EVERY HONEST REPLICA'S LOG
+// =============================================================================
+// Values pass by value across the call boundary, so we return a fresh seat list
+// (functional update) rather than mutating in place. Each honest replica appends a
+// committed value to its own log; silent/faulty replicas are left as-is.
+fn apply_verdict(seats, verdict) {
+    let mut out = [];
+    for s in seats {
+        let mut lg = s.log;
+        match verdict {
+            Verdict::Committed { value: v, seq: _sq, view: _w } => {
+                if s.is_honest() { push(lg, v); }
+            }
+            Verdict::NoQuorum { seq: _sq } => { }
+        }
+        push(out, Seat { id: s.id, role: s.role, log: lg });
+    }
+    return out;
+}
+
+// Agreement check: every honest replica must hold an identical committed log.
+fn honest_logs_agree(seats) {
+    let honest = filter(seats, |s| s.is_honest());
+    if len(honest) == 0 { return true; }
+    let reference = honest[0].log;
+    return all(honest, |s| s.log == reference);
+}
+
+
+// =============================================================================
+// PART 7 — COUNCIL CONSTRUCTION
+// =============================================================================
+// Build a council of n = 3f+1 seats, marking specific ids as Silent or Equivocator.
+fn make_council(n, silent_ids, equiv_ids) {
+    let mut seats = [];
+    for i in 0..n {
+        let role = if contains(equiv_ids, i) {
+            Role::Equivocator
+        } else if contains(silent_ids, i) {
+            Role::Silent
+        } else {
+            Role::Honest
+        };
+        push(seats, Seat { id: i, role: role, log: [] });
+    }
+    return seats;
+}
+
+fn role_name(s) {
+    match s.role {
+        Role::Honest => "honest",
+        Role::Silent => "silent",
+        Role::Equivocator => "SET/equivocator",
+    }
+}
+
+fn describe_council(seats) {
+    let names = map(seats, |s| "#${s.id}:${role_name(s)}");
+    return join(names, "  ");
+}
+
+
+// =============================================================================
+// PART 8 — SCENARIO RUNNER
+// =============================================================================
+// Runs one labelled scenario end-to-end: builds the council, drives agreement over
+// one sequence slot, applies the verdict to honest logs, checks Agreement, and
+// prints an operator line. Returns a compact result record used for the final seal.
+fn run_scenario(label, n, f, base_value, silent_ids, equiv_ids, expect_commit) {
+    let seats = make_council(n, silent_ids, equiv_ids);
+    print("");
+    print("── ${label}");
+    print("   council(n=${n}, f=${f}): ${describe_council(seats)}");
+
+    let outcome = agree(seats, 1, base_value, n, f, n + 1);
+    let verdict = outcome[0];
+    let tele = outcome[1];
+
+    let after = apply_verdict(seats, verdict);
+    let agree_ok = honest_logs_agree(after);
+
+    print("   ${verdict.banner()}");
+    print("   quorum=${quorum(f)}  views_used=${tele["views_used"]}  equivocations_caught=${tele["equivocations"]}  double_votes_rejected=${tele["prepare_rejects"] + tele["commit_rejects"]}");
+
+    // Determine committed value (0 sentinel if none) and whether the run met its
+    // stated expectation — a commit scenario must commit; a stall scenario must not.
+    let committed = match verdict {
+        Verdict::Committed { value: v, seq: _s, view: _w } => v,
+        Verdict::NoQuorum { seq: _s } => 0,
+    };
+    let did_commit = match verdict {
+        Verdict::Committed { value: _v, seq: _s, view: _w } => true,
+        Verdict::NoQuorum { seq: _s } => false,
+    };
+
+    let honest_agreement = agree_ok;
+    let meets_expectation = did_commit == expect_commit;
+    let ok = honest_agreement && meets_expectation;
+
+    print("   Agreement (all honest logs identical): ${honest_agreement}   expectation(${if expect_commit { "commit" } else { "stall" }}): ${meets_expectation}   → ${if ok { "PASS" } else { "FAIL" }}");
+
+    return { "label": label, "committed": committed, "did_commit": did_commit, "agreement": honest_agreement, "ok": ok };
+}
+
+
+// =============================================================================
+// PART 9 — MAIN: DRIVE THE TRIBUNAL THROUGH FIVE SCENARIOS
+// =============================================================================
+fn main() {
+    print("═══════════════════════════════════════════════════════════════");
+    print("  ENNEAD — a Byzantine-fault-tolerant consensus kernel in Anubis");
+    print("═══════════════════════════════════════════════════════════════");
+
+    // The safety envelope. At `anubis check` these carry Z3 proofs; here they simply
+    // compute — the same functions, two readings.
+    print("");
+    print("proved safety kernel (each discharged by Z3 at check-time):");
+    print("  quorum_exceeds_faults(1) = ${quorum_exceeds_faults(1)}     |= result > f            (a quorum is never all-faulty)");
+    print("  two_quorums_overlap(4,1,3) = ${two_quorums_overlap(4, 1, 3)}   |= result >= f+1         (quorum-intersection lemma)");
+    print("  overlap_has_honest(1,2) = ${overlap_has_honest(1, 2)}      |= result >= 1           (an honest witness in every overlap)");
+    print("  view_advances(7) = ${view_advances(7)}             |= result > v            (no view-number reuse)");
+    print("  seq_advances(41) = ${seq_advances(41)}            |= result > s            (log slots strictly advance)");
+    print("  tally_bounded(5) = ${tally_bounded(5)}             |= result <= n           (no ballot-stuffing; loop-invariant)");
+
+    print("");
+    print("live council (three-phase agreement; f Byzantine faults tolerated at n=3f+1):");
+
+    let mut results = [];
+
+    // Scenario 1 — happy path. n=4, f=1, everyone honest. One view, clean commit.
+    push(results, run_scenario(
+        "Scenario 1: quorum of honest judges (n=4, f=1)",
+        4, 1, 100, [], [], true));
+
+    // Scenario 2 — the leader has crashed. View 0's leader is silent; the council
+    // times out and the view-1 leader carries the round to a commit.
+    push(results, run_scenario(
+        "Scenario 2: crashed leader → view change (n=4, f=1, seat #0 silent)",
+        4, 1, 200, [0], [], true));
+
+    // Scenario 3 — SET. The view-0 leader (seat #0) equivocates, double-proposing
+    // two conflicting values, and also double-votes as a follower. Honest replicas
+    // refuse to certify the conflict, force a view change, and the honest view-1
+    // leader commits the ONE agreed value. No split-brain; the double-votes are
+    // rejected. This is the quorum-intersection lemma doing its job at runtime.
+    push(results, run_scenario(
+        "Scenario 3: THE EQUIVOCATION ATTACK — Set on the throne (n=4, f=1, seat #0 = Set)",
+        4, 1, 300, [], [0], true));
+
+    // Scenario 4 — too many faults. With 2 of 4 seats silent (exceeding f=1) no
+    // quorum of 2f+1=3 can ever form. The council must STALL safely — return
+    // NoQuorum — rather than commit a value only a minority saw. Fail-closed.
+    push(results, run_scenario(
+        "Scenario 4: beyond the fault budget → safe stall (n=4, f=1, seats #0,#2 silent)",
+        4, 1, 400, [0, 2], [], false));
+
+    // Scenario 5 — a full Ennead. n=7 (f=2) with one equivocator AND one crash. The
+    // council still musters a 2f+1=5 quorum among the honest and commits; agreement
+    // holds across all honest logs despite compound Byzantine + crash faults.
+    push(results, run_scenario(
+        "Scenario 5: the nine-seat tribunal under compound faults (n=7, f=2, #1=Set, #4 silent)",
+        7, 2, 700, [4], [1], true));
+
+    // -------------------------------------------------------------------------
+    // Cross-scenario Agreement + tamper-evident seal of the committed history.
+    // -------------------------------------------------------------------------
+    print("");
+    print("─────────────────────────────────────────────────────────────");
+    print("integrity roll-up:");
+
+    let committed_values = map(filter(results, |r| r["did_commit"]), |r| r["committed"]);
+    print("  committed values (in scenario order) = ${committed_values}");
+
+    // Hash-chain the committed history into a tamper-evident SMR ledger.
+    let mut chain = 2166136261;
+    let mut positions = [];
+    let mut seq = 1;
+    for v in committed_values {
+        chain = chain_append(chain, v, seq);
+        push(positions, "seq${seq}=${v}→${chain}");
+        seq = seq_advances(seq);          // the proved monotone advance, used for real
+    }
+    for p in positions { print("    ${p}"); }
+
+    // Global verdict: every scenario met its expectation AND kept Agreement.
+    let all_ok = all(results, |r| r["ok"]);
+    let all_agree = all(results, |r| r["agreement"]);
+    let verdicts = map(results, |r| if r["ok"] { 1 } else { 0 });
+
+    print("");
+    print("  scenarios: ${len(results)}   all-agreement=${all_agree}   all-expected=${all_ok}");
+    print("  ledger head = ${chain}");
+    print("  SEAL#${seal(committed_values)}  verdict=${if all_ok && all_agree { "PASS" } else { "FAIL" }}");
+    print("═══════════════════════════════════════════════════════════════");
+
+    // A single integrity tag over every scenario verdict — the artifact's identity.
+    return seal(verdicts);
+}

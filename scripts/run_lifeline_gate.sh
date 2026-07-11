@@ -24,7 +24,12 @@ if [[ -z "$BUNDLE" ]]; then
   exit 2
 fi
 
-"$BIN" verify "$BUNDLE" >"$OUT/verify.log" 2>&1
+KEY_DIR="$OUT/signer"
+"$BIN" keygen --out "$KEY_DIR" >"$OUT/keygen.log" 2>&1
+"$BIN" sign --key "$KEY_DIR/signing.key" "$BUNDLE" >"$OUT/sign.log" 2>&1
+PUBKEY="$(tr -d '\r\n ' <"$KEY_DIR/verifying.key")"
+rm -f "$KEY_DIR/signing.key"
+"$BIN" verify "$BUNDLE" --pubkey "$PUBKEY" >"$OUT/verify.log" 2>&1
 
 "$BIN" run "$SOURCE" \
   --evidence \
@@ -41,12 +46,13 @@ fi
 (cd "$OUT/run" && shasum -a 256 -c MANIFEST.sha256) >"$OUT/run-manifest.log"
 (cd "$OUT/replay" && shasum -a 256 -c MANIFEST.sha256) >"$OUT/replay-manifest.log"
 cmp "$OUT/run/stdout.txt" "$OUT/replay/stdout.txt"
+cmp "$OUT/run/anubis_run.rs" "$OUT/replay/anubis_run.rs"
 
 rg -q '^VALIDATION model_ok=1 ' "$OUT/run/stdout.txt"
 rg -q '^SEARCH method=exact_bounded_enumeration candidates=1024 feasible=134$' "$OUT/run/stdout.txt"
 rg -q '^PLAN mask=611 ' "$OUT/run/stdout.txt"
-rg -q '^AUDIT recompute_match=1 deterministic=1 reverse_global_optimum=1 improves_baseline=1$' "$OUT/run/stdout.txt"
-rg -q '^NEGATIVE invalid_model_rejected=1 over_budget_tamper_rejected=1$' "$OUT/run/stdout.txt"
+rg -q '^AUDIT recompute_match=1 deterministic=1 reverse_shared_evaluator=1 improves_baseline=1$' "$OUT/run/stdout.txt"
+rg -q '^NEGATIVE invalid_model_rejected=1 powers_table_rejected=1 overflow_model_rejected=1 over_budget_tamper_rejected=1$' "$OUT/run/stdout.txt"
 rg -q '^VERDICT=PLAN_CERTIFIED$' "$OUT/run/stdout.txt"
 rg -q '^SUMMARY ok=1 ' "$OUT/run/stdout.txt"
 [[ "$(tail -1 "$OUT/run/stdout.txt")" == "0" ]]
@@ -57,7 +63,7 @@ rm -rf "$TAMPER"
 cp -R "$BUNDLE" "$TAMPER"
 printf '\n// deliberate LIFELINE gate tamper\n' >>"$TAMPER/source.anubis"
 set +e
-"$BIN" verify "$TAMPER" >"$OUT/tamper-verify.log" 2>&1
+"$BIN" verify "$TAMPER" --pubkey "$PUBKEY" >"$OUT/tamper-verify.log" 2>&1
 TAMPER_RC=$?
 set -e
 if [[ "$TAMPER_RC" -eq 0 ]]; then
@@ -76,7 +82,10 @@ STDOUT_SHA="$(shasum -a 256 "$OUT/run/stdout.txt" | awk '{print $1}')"
   echo "candidate_portfolios=1024"
   echo "feasible_portfolios=134"
   echo "selected_mask=611"
-  echo "deterministic_replay=PASS"
+  echo "deterministic_stdout_and_rust_source=PASS"
+  echo "native_binary_reproducibility=NOT_CLAIMED"
   echo "tamper_rejection=PASS"
+  echo "signature_required=PASS"
+  echo "signer_pubkey=$PUBKEY"
   echo "stdout_sha256=$STDOUT_SHA"
 } | tee "$OUT/GATE_SUMMARY.txt"
