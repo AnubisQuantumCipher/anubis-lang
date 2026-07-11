@@ -1,0 +1,24 @@
+// Parameterized proof companion: journal = decision_code for disclose/declass case
+// Ordinary run prints and returns the decision so external gates can assert it.
+// Expected demo: sensitive=1 declass_ok=0 → decision 3 (Deny)
+
+fn decide_disclose(sensitive, declass_ok, has_witness) {
+    if sensitive != 0 && declass_ok == 0 { return 3; }
+    if sensitive != 0 && declass_ok == 2 && has_witness == 0 { return 2; }
+    return 0;
+}
+
+fn main() {
+    let sensitive = 1;
+    let declass_ok = 0;
+    let has_witness = 0;
+    let d = decide_disclose(sensitive, declass_ok, has_witness);
+    print("decision=${d}");
+    print("EXPECT=3");
+    if d == 3 {
+        print("VERDICT=PROOF_MINI_PASS");
+        return 0;
+    }
+    print("VERDICT=PROOF_MINI_FAIL");
+    return 1;
+}

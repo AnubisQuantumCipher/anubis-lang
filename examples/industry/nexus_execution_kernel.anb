@@ -1,0 +1,1414 @@
+// =============================================================================
+// NEXUS — Networked EXecution Under Sealed policy
+// =============================================================================
+//
+// Domain: autonomous-agent / dual-use security / high-assurance action control
+//
+// NEXUS is the missing middle layer between INTENT and SIDE EFFECT.
+// Agents with hands (shell, cloud, PRs, exploit modules) need a charter that
+// is machine-checkable — not a chat log, not a PDF, not hope.
+//
+// Layers implemented (offline deterministic kernel — no live tool execution):
+//   L0 Intent capture       — first-class Intent values
+//   L1 Capability & taint   — effect classes + secret/taint plane
+//   L2 Policy SMT helpers   — fuel, clamps, severity bounds (anubis check)
+//   L3 Execution journal    — hash-chained sealed ledger of ADT decisions
+//   L4 Selective disclosure — public journal rows vs private witness store
+//   L5 Hybrid scale meta    — honest CPU/Metal plan markers (not fake GPU)
+//   L6 Multi-party + kill   — roles, engagement expiry, freeze-on-Abort
+//
+// Distinct from AETHER: path-class scopes, engagement epoch/kill, target
+// digests, explicit declassify policies, fuel budgets, public/private split,
+// exploit-module dual-use gates, and expected-outcome scenario battery.
+//
+// Run:    ./target/release/anubis run   examples/industry/nexus_execution_kernel.anb
+// Check:  ./target/release/anubis check examples/industry/nexus_execution_kernel.anb
+// Prove:  ./target/release/anubis prove examples/industry/nexus_zk_decision.anb ...
+//
+// Honest boundary: ordinary safe Anubis execution + SMT contracts on helpers.
+// Not claimed: live mediation of real tools, production auth authority, or
+// full-engine formal verification of every branch.
+// =============================================================================
+
+// --- Action kinds (what the actor wants to do) ------------------------------
+enum ActionKind {
+    Shell,
+    FileRead,
+    FileWrite,
+    NetFetch,
+    CloudMutate,
+    ExploitModule,
+    Disclose,
+    ObserveOnly,
+    ProofEmit,
+}
+
+// --- Effect / capability class ----------------------------------------------
+enum EffectClass {
+    ReadLocal,
+    WriteLocal,
+    ProcessSpawn,
+    NetworkEgress,
+    SecretTouch,
+    Declassify,
+    CloudControl,
+    OffensiveLab,
+    PureCompute,
+}
+
+// --- Taint classification of payload / target context -----------------------
+enum TaintClass {
+    Clean,
+    UserPaste,
+    WebUntrusted,
+    ToolOutput,
+    CredentialMaterial,
+    CustomerPII,
+    Compromised,
+}
+
+// --- Declassify policy (only these may publish tainted data) ------------------
+enum DeclassPolicy {
+    None,
+    HashOnly,
+    RedactedSummary,
+    FullWithAuth,
+}
+
+// --- Path / host scope classes ----------------------------------------------
+enum PathClass {
+    SourceTree,
+    TestOnly,
+    SecretStore,
+    ProductionCluster,
+    EngagementLab,
+    PublicReport,
+    Unknown,
+}
+
+// --- Decision ADT (sealed into the ledger) ----------------------------------
+enum Decision {
+    Allow { fuel_left: int, receipt: int },
+    Watch { score: int, reason: string, fuel_left: int },
+    Hold  { score: int, reason: string, escalate_to: string },
+    Deny  { code: int, reason: string },
+    Abort { kill_reason: string },
+}
+
+// --- Engagement charter -----------------------------------------------------
+struct Charter {
+    id: string,
+    auth: string,            // authorization string
+    kill_epoch: int,         // expires at this clock tick (inclusive last live)
+    max_fuel: int,
+    allowed_hosts: list,     // string host digests / names
+    allowed_paths: list,     // PathClass tags as strings for simplicity
+    allow_offensive: int,    // 1 if ExploitModule permitted in-scope
+    policy_version: int,
+}
+
+// --- Actor (agent / human operator) -----------------------------------------
+struct Actor {
+    id: string,
+    role: string,            // agent | operator | admin | auditor
+    trust: int,              // 0..100
+    active: int,             // 1 live, 0 frozen
+}
+
+// --- Intent (unit of adjudication) ------------------------------------------
+struct Intent {
+    seq: int,
+    actor_id: string,
+    kind: ActionKind,
+    target_digest: string,   // public-ish digest; raw may stay private
+    path_class: PathClass,
+    host: string,
+    taint: TaintClass,
+    declass: DeclassPolicy,
+    claimed_reason: string,
+    witness: string,         // dual-control human/key id or ""
+    epoch: int,              // simulated wall clock for kill-date checks
+    private_hint: string,    // never enters public journal
+}
+
+// --- Public journal row (selective disclosure) ------------------------------
+struct PublicRow {
+    seq: int,
+    actor_id: string,
+    kind_code: int,
+    decision_code: int,      // 0 Allow 1 Watch 2 Hold 3 Deny 4 Abort
+    taint_code: int,
+    path_code: int,
+    policy_version: int,
+    fuel_left: int,
+    chain: int,
+    target_digest: string,
+}
+
+// --- Private witness entry (stays off public journal) -----------------------
+struct PrivateWitness {
+    seq: int,
+    raw_target: string,
+    private_hint: string,
+    claimed_reason: string,
+}
+
+// --- Hybrid plan metadata (honest: plan markers only) -----------------------
+struct HybridPlan {
+    lane: string,            // cpu | metal-plan | unavailable
+    planned: int,            // 1 plan emitted
+    executed: int,           // always 0 in this offline kernel
+    note: string,
+}
+
+// =============================================================================
+// L2 — SMT-dischargeable integer safety helpers
+// =============================================================================
+
+// Fuel strictly decreases on a successful tick (termination pressure).
+fn fuel_tick(fuel: u32) -> u32
+    requires(fuel > 0)
+    requires(fuel < 1000000)
+    ensures(result < fuel)
+{
+    return fuel - 1;
+}
+
+// Severity/score never silently deflates under the load bound.
+fn clamp_score(x: u32) -> u32
+    requires(x < 1000000)
+    ensures(result >= x)
+{
+    return x + 0;
+}
+
+// Policy version identity: accepted versions stay themselves.
+fn policy_id(v: u32) -> u32
+    requires(v < 1000000)
+    ensures(result == v)
+{
+    return v;
+}
+
+// Advance receipt counter (strict progress on allow paths).
+fn advance_receipt(r: u32) -> u32
+    requires(r < 1000000)
+    ensures(result > r)
+{
+    return r + 1;
+}
+
+// =============================================================================
+// Encoding / hashing helpers
+// =============================================================================
+
+fn kind_code(k) {
+    match k {
+        ActionKind::Shell => 1,
+        ActionKind::FileRead => 2,
+        ActionKind::FileWrite => 3,
+        ActionKind::NetFetch => 4,
+        ActionKind::CloudMutate => 5,
+        ActionKind::ExploitModule => 6,
+        ActionKind::Disclose => 7,
+        ActionKind::ObserveOnly => 8,
+        ActionKind::ProofEmit => 9,
+    }
+}
+
+fn kind_name(k) {
+    match k {
+        ActionKind::Shell => "Shell",
+        ActionKind::FileRead => "FileRead",
+        ActionKind::FileWrite => "FileWrite",
+        ActionKind::NetFetch => "NetFetch",
+        ActionKind::CloudMutate => "CloudMutate",
+        ActionKind::ExploitModule => "ExploitModule",
+        ActionKind::Disclose => "Disclose",
+        ActionKind::ObserveOnly => "ObserveOnly",
+        ActionKind::ProofEmit => "ProofEmit",
+    }
+}
+
+fn taint_code(t) {
+    match t {
+        TaintClass::Clean => 0,
+        TaintClass::UserPaste => 1,
+        TaintClass::WebUntrusted => 2,
+        TaintClass::ToolOutput => 3,
+        TaintClass::CredentialMaterial => 4,
+        TaintClass::CustomerPII => 5,
+        TaintClass::Compromised => 6,
+    }
+}
+
+fn taint_name(t) {
+    match t {
+        TaintClass::Clean => "Clean",
+        TaintClass::UserPaste => "UserPaste",
+        TaintClass::WebUntrusted => "WebUntrusted",
+        TaintClass::ToolOutput => "ToolOutput",
+        TaintClass::CredentialMaterial => "CredentialMaterial",
+        TaintClass::CustomerPII => "CustomerPII",
+        TaintClass::Compromised => "Compromised",
+    }
+}
+
+fn path_code(p) {
+    match p {
+        PathClass::SourceTree => 1,
+        PathClass::TestOnly => 2,
+        PathClass::SecretStore => 3,
+        PathClass::ProductionCluster => 4,
+        PathClass::EngagementLab => 5,
+        PathClass::PublicReport => 6,
+        PathClass::Unknown => 0,
+    }
+}
+
+fn path_tag(p) {
+    match p {
+        PathClass::SourceTree => "source",
+        PathClass::TestOnly => "test",
+        PathClass::SecretStore => "secret",
+        PathClass::ProductionCluster => "prod",
+        PathClass::EngagementLab => "lab",
+        PathClass::PublicReport => "public",
+        PathClass::Unknown => "unknown",
+    }
+}
+
+fn decision_code(d) {
+    match d {
+        Decision::Allow { fuel_left: _f, receipt: _r } => 0,
+        Decision::Watch { score: _s, reason: _r, fuel_left: _f } => 1,
+        Decision::Hold { score: _s, reason: _r, escalate_to: _e } => 2,
+        Decision::Deny { code: _c, reason: _r } => 3,
+        Decision::Abort { kill_reason: _k } => 4,
+    }
+}
+
+fn decision_label(code) {
+    if code == 0 { return "ALLOW"; }
+    if code == 1 { return "WATCH"; }
+    if code == 2 { return "HOLD"; }
+    if code == 3 { return "DENY"; }
+    if code == 4 { return "ABORT"; }
+    return "UNKNOWN";
+}
+
+fn decision_fuel(d) {
+    match d {
+        Decision::Allow { fuel_left: f, receipt: _r } => f,
+        Decision::Watch { score: _s, reason: _r, fuel_left: f } => f,
+        Decision::Hold { score: _s, reason: _r, escalate_to: _e } => 0,
+        Decision::Deny { code: _c, reason: _r } => 0,
+        Decision::Abort { kill_reason: _k } => 0,
+    }
+}
+
+// Rolling integrity chain (public, deterministic).
+fn chain_mix(prev, seq, kind_c, dec_c, taint_c, path_c, fuel) {
+    let x = prev;
+    x = ((x * 33) + seq) % 1000000007;
+    x = ((x * 33) + kind_c) % 1000000007;
+    x = ((x * 33) + dec_c) % 1000000007;
+    x = ((x * 33) + taint_c) % 1000000007;
+    x = ((x * 33) + path_c) % 1000000007;
+    x = ((x * 33) + fuel) % 1000000007;
+    return x;
+}
+
+// FNV-ish digest of a string for target_digest simulation.
+fn str_digest(s) {
+    let h = 2166136261;
+    let i = 0;
+    let n = len(s);
+    while i < n {
+        h = ((h ^ ord(char_at(s, i))) * 16777619) % 2147483647;
+        i = i + 1;
+    }
+    return "d${h}";
+}
+
+fn list_contains_str(xs, needle) {
+    for x in xs {
+        if x == needle { return 1; }
+    }
+    return 0;
+}
+
+fn find_actor(actors, id) {
+    for a in actors {
+        if a.id == id { return Some(a); }
+    }
+    return None;
+}
+
+fn role_rank(role) {
+    if role == "admin" { return 4; }
+    if role == "operator" { return 3; }
+    if role == "auditor" { return 2; }
+    if role == "agent" { return 1; }
+    return 0;
+}
+
+// =============================================================================
+// Effect inference + declassify rules
+// =============================================================================
+
+fn primary_effect(kind) {
+    match kind {
+        ActionKind::Shell => EffectClass::ProcessSpawn,
+        ActionKind::FileRead => EffectClass::ReadLocal,
+        ActionKind::FileWrite => EffectClass::WriteLocal,
+        ActionKind::NetFetch => EffectClass::NetworkEgress,
+        ActionKind::CloudMutate => EffectClass::CloudControl,
+        ActionKind::ExploitModule => EffectClass::OffensiveLab,
+        ActionKind::Disclose => EffectClass::Declassify,
+        ActionKind::ObserveOnly => EffectClass::PureCompute,
+        ActionKind::ProofEmit => EffectClass::PureCompute,
+    }
+}
+
+fn is_sensitive_taint(t) {
+    match t {
+        TaintClass::CredentialMaterial => 1,
+        TaintClass::CustomerPII => 1,
+        TaintClass::Compromised => 1,
+        _ => 0,
+    }
+}
+
+fn declass_allows_publish(policy, taint) {
+    if is_sensitive_taint(taint) == 0 { return 1; }
+    match policy {
+        DeclassPolicy::None => 0,
+        DeclassPolicy::HashOnly => 1,
+        DeclassPolicy::RedactedSummary => 1,
+        DeclassPolicy::FullWithAuth => 1,
+    }
+}
+
+fn declass_needs_witness(policy, taint) {
+    if is_sensitive_taint(taint) == 0 { return 0; }
+    match policy {
+        DeclassPolicy::FullWithAuth => 1,
+        _ => 0,
+    }
+}
+
+// Path allowed by charter tags.
+fn path_allowed(charter, p) {
+    let tag = path_tag(p);
+    return list_contains_str(charter.allowed_paths, tag);
+}
+
+fn host_allowed(charter, host) {
+    if host == "" { return 1; }
+    if host == "local" { return 1; }
+    return list_contains_str(charter.allowed_hosts, host);
+}
+
+// Risk score for Watch/Hold thresholds (runtime; clamp via SMT helper identity).
+fn risk_score(kind, taint, path) {
+    let base = match kind {
+        ActionKind::ObserveOnly => 5,
+        ActionKind::ProofEmit => 8,
+        ActionKind::FileRead => 15,
+        ActionKind::FileWrite => 28,
+        ActionKind::Shell => 45,
+        ActionKind::NetFetch => 40,
+        ActionKind::CloudMutate => 70,
+        ActionKind::ExploitModule => 85,
+        ActionKind::Disclose => 55,
+    };
+    let tadd = match taint {
+        TaintClass::Clean => 0,
+        TaintClass::UserPaste => 12,
+        TaintClass::WebUntrusted => 18,
+        TaintClass::ToolOutput => 10,
+        TaintClass::CredentialMaterial => 30,
+        TaintClass::CustomerPII => 28,
+        TaintClass::Compromised => 40,
+    };
+    let padd = match path {
+        PathClass::SourceTree => 0,
+        PathClass::TestOnly => 0,
+        PathClass::EngagementLab => 5,
+        PathClass::PublicReport => 8,
+        PathClass::SecretStore => 25,
+        PathClass::ProductionCluster => 35,
+        PathClass::Unknown => 20,
+    };
+    let raw = base + tadd + padd;
+    if raw > 100 { return clamp_score(100); }
+    return clamp_score(raw);
+}
+
+// =============================================================================
+// L0–L6 adjudicator
+// =============================================================================
+
+fn adjudicate(intent, actors, charter, fuel, receipt, frozen) {
+    // Engagement freeze (prior Abort)
+    if frozen == 1 {
+        return Decision::Abort { kill_reason: "engagement_frozen" };
+    }
+
+    // Kill date / epoch
+    if intent.epoch > charter.kill_epoch {
+        return Decision::Abort { kill_reason: "charter_expired" };
+    }
+
+    // Fuel exhausted
+    if fuel <= 0 {
+        return Decision::Deny { code: 100, reason: "fuel_exhausted" };
+    }
+
+    // Actor lookup
+    let actor_opt = find_actor(actors, intent.actor_id);
+    let actor = match actor_opt {
+        Some(a) => a,
+        None => {
+            return Decision::Deny { code: 101, reason: "unknown_actor" };
+        },
+    };
+
+    if actor.active == 0 {
+        return Decision::Deny { code: 102, reason: "actor_inactive" };
+    }
+
+    // Auditor is observe/proof only
+    if actor.role == "auditor" {
+        match intent.kind {
+            ActionKind::ObserveOnly => {},
+            ActionKind::ProofEmit => {},
+            _ => {
+                return Decision::Deny { code: 103, reason: "auditor_read_only" };
+            },
+        }
+    }
+
+    // Path scope
+    if path_allowed(charter, intent.path_class) == 0 {
+        // Production escapes are Abort-class for agents
+        if intent.path_class == PathClass::ProductionCluster && actor.role == "agent" {
+            return Decision::Abort { kill_reason: "agent_prod_escape" };
+        }
+        return Decision::Deny { code: 110, reason: "path_out_of_scope" };
+    }
+
+    // Host scope
+    if host_allowed(charter, intent.host) == 0 {
+        return Decision::Deny { code: 111, reason: "host_out_of_scope" };
+    }
+
+    // Offensive dual-use gate
+    if intent.kind == ActionKind::ExploitModule {
+        if charter.allow_offensive == 0 {
+            return Decision::Deny { code: 120, reason: "offensive_not_authorized" };
+        }
+        if intent.path_class != PathClass::EngagementLab && intent.path_class != PathClass::TestOnly {
+            return Decision::Deny { code: 121, reason: "exploit_outside_lab" };
+        }
+        if role_rank(actor.role) < 3 && intent.witness == "" {
+            return Decision::Hold {
+                score: risk_score(intent.kind, intent.taint, intent.path_class),
+                reason: "exploit_needs_operator_witness",
+                escalate_to: "operator",
+            };
+        }
+    }
+
+    // Secret store reads need elevated trust + witness for agents
+    if intent.path_class == PathClass::SecretStore {
+        if actor.trust < 80 {
+            return Decision::Deny { code: 130, reason: "trust_floor_secret" };
+        }
+        if actor.role == "agent" && intent.witness == "" {
+            return Decision::Hold {
+                score: risk_score(intent.kind, intent.taint, intent.path_class),
+                reason: "secret_touch_needs_witness",
+                escalate_to: "operator",
+            };
+        }
+    }
+
+    // Cloud mutate: dual control
+    if intent.kind == ActionKind::CloudMutate {
+        if intent.witness == "" {
+            return Decision::Deny { code: 140, reason: "cloud_mutate_needs_witness" };
+        }
+        if intent.path_class == PathClass::ProductionCluster && actor.role != "admin" && actor.role != "operator" {
+            return Decision::Deny { code: 141, reason: "prod_cloud_role" };
+        }
+    }
+
+    // Disclose / publish plane — declassify required for sensitive taint
+    if intent.kind == ActionKind::Disclose {
+        if declass_allows_publish(intent.declass, intent.taint) == 0 {
+            return Decision::Deny { code: 150, reason: "declassify_required" };
+        }
+        if declass_needs_witness(intent.declass, intent.taint) == 1 && intent.witness == "" {
+            return Decision::Hold {
+                score: risk_score(intent.kind, intent.taint, intent.path_class),
+                reason: "full_declass_needs_auth_witness",
+                escalate_to: "admin",
+            };
+        }
+        // Never full-declass credentials into PublicReport without FullWithAuth + witness
+        if intent.taint == TaintClass::CredentialMaterial {
+            match intent.declass {
+                DeclassPolicy::HashOnly => {},
+                DeclassPolicy::RedactedSummary => {},
+                DeclassPolicy::FullWithAuth => {
+                    if intent.witness == "" {
+                        return Decision::Deny { code: 151, reason: "cred_full_needs_witness" };
+                    }
+                },
+                DeclassPolicy::None => {
+                    return Decision::Deny { code: 152, reason: "cred_no_declass" };
+                },
+            }
+        }
+    }
+
+    // Compromised taint: escalate unless pure observe
+    if intent.taint == TaintClass::Compromised {
+        match intent.kind {
+            ActionKind::ObserveOnly => {
+                return Decision::Watch {
+                    score: risk_score(intent.kind, intent.taint, intent.path_class),
+                    reason: "compromised_observe",
+                    fuel_left: fuel,
+                };
+            },
+            _ => {
+                return Decision::Deny { code: 160, reason: "compromised_taint_blocked" };
+            },
+        }
+    }
+
+    // Shell into unknown path → Watch
+    if intent.kind == ActionKind::Shell && intent.path_class == PathClass::Unknown {
+        return Decision::Watch {
+            score: risk_score(intent.kind, intent.taint, intent.path_class),
+            reason: "shell_unknown_path",
+            fuel_left: fuel,
+        };
+    }
+
+    // NetFetch to non-local: agents need clean or tool taint only
+    if intent.kind == ActionKind::NetFetch {
+        if intent.taint == TaintClass::UserPaste || intent.taint == TaintClass::WebUntrusted {
+            let score = risk_score(intent.kind, intent.taint, intent.path_class);
+            if score >= 70 {
+                return Decision::Hold {
+                    score: score,
+                    reason: "untrusted_net_fetch",
+                    escalate_to: "operator",
+                };
+            }
+            return Decision::Watch {
+                score: score,
+                reason: "untrusted_net_watch",
+                fuel_left: fuel,
+            };
+        }
+    }
+
+    // Default allow with fuel tick + receipt advance
+    let next_fuel = fuel_tick(fuel);
+    let next_receipt = advance_receipt(receipt);
+    let score = risk_score(intent.kind, intent.taint, intent.path_class);
+
+    // Controlled declass paths and lab exploits are explicit ALLOW (not soft Watch).
+    // Watch is only for residual elevated risk without a governing declass/lab control.
+    let governed = match intent.kind {
+        ActionKind::ExploitModule => 1,
+        ActionKind::Disclose => {
+            match intent.declass {
+                DeclassPolicy::HashOnly => 1,
+                DeclassPolicy::RedactedSummary => 1,
+                DeclassPolicy::FullWithAuth => 1,
+                DeclassPolicy::None => 0,
+            }
+        },
+        _ => 0,
+    };
+
+    if score >= 80 && governed == 0 {
+        return Decision::Watch {
+            score: score,
+            reason: "elevated_risk_allow_watch",
+            fuel_left: next_fuel,
+        };
+    }
+
+    return Decision::Allow { fuel_left: next_fuel, receipt: next_receipt };
+}
+
+// =============================================================================
+// Stream processor — sealed public journal + private witnesses
+// =============================================================================
+
+fn process_stream(intents, actors0, charter) {
+    let mut actors = actors0;
+    let mut fuel = charter.max_fuel;
+    let mut receipt = 0;
+    let mut chain = policy_id(charter.policy_version);
+    let mut frozen = 0;
+    let mut public_journal = [];
+    let mut private_store = [];
+    let mut allow_n = 0;
+    let mut watch_n = 0;
+    let mut hold_n = 0;
+    let mut deny_n = 0;
+    let mut abort_n = 0;
+    let mut expected_hits = 0;
+    let mut expected_total = 0;
+
+    for intent in intents {
+        let d = adjudicate(intent, actors, charter, fuel, receipt, frozen);
+        let dc = decision_code(d);
+        let fl = decision_fuel(d);
+
+        // Update fuel/receipt only on Allow/Watch that carry fuel_left
+        match d {
+            Decision::Allow { fuel_left: f, receipt: r } => {
+                fuel = f;
+                receipt = r;
+                allow_n = allow_n + 1;
+            },
+            Decision::Watch { score: _s, reason: _r, fuel_left: f } => {
+                // Watch may keep fuel or use pre-tick fuel; if fuel decreased use it
+                if f > 0 && f < fuel { fuel = f; }
+                watch_n = watch_n + 1;
+            },
+            Decision::Hold { score: _s, reason: _r, escalate_to: _e } => {
+                hold_n = hold_n + 1;
+            },
+            Decision::Deny { code: _c, reason: _r } => {
+                deny_n = deny_n + 1;
+            },
+            Decision::Abort { kill_reason: _k } => {
+                abort_n = abort_n + 1;
+                frozen = 1;
+                // freeze all agents
+                let mut next_actors = [];
+                for a in actors {
+                    if a.role == "agent" {
+                        push(next_actors, Actor {
+                            id: a.id,
+                            role: a.role,
+                            trust: a.trust,
+                            active: 0,
+                        });
+                    } else {
+                        push(next_actors, a);
+                    }
+                }
+                actors = next_actors;
+            },
+        }
+
+        let kc = kind_code(intent.kind);
+        let tc = taint_code(intent.taint);
+        let pc = path_code(intent.path_class);
+        chain = chain_mix(chain, intent.seq, kc, dc, tc, pc, fl);
+
+        push(public_journal, PublicRow {
+            seq: intent.seq,
+            actor_id: intent.actor_id,
+            kind_code: kc,
+            decision_code: dc,
+            taint_code: tc,
+            path_code: pc,
+            policy_version: charter.policy_version,
+            fuel_left: fl,
+            chain: chain,
+            target_digest: intent.target_digest,
+        });
+
+        // Private witness always retained for auditors (offline store)
+        push(private_store, PrivateWitness {
+            seq: intent.seq,
+            raw_target: intent.private_hint,
+            private_hint: intent.private_hint,
+            claimed_reason: intent.claimed_reason,
+        });
+    }
+
+    return {
+        "journal": public_journal,
+        "private": private_store,
+        "actors": actors,
+        "fuel": fuel,
+        "receipt": receipt,
+        "chain": chain,
+        "frozen": frozen,
+        "allow": allow_n,
+        "watch": watch_n,
+        "hold": hold_n,
+        "deny": deny_n,
+        "abort": abort_n,
+    };
+}
+
+// =============================================================================
+// Hybrid plan (honest — plan only, executed=0)
+// =============================================================================
+
+fn plan_hybrid(volume) {
+    if volume >= 1000 {
+        return HybridPlan {
+            lane: "metal-plan",
+            planned: 1,
+            executed: 0,
+            note: "bulk_score_plan_only_no_gpu_claim",
+        };
+    }
+    return HybridPlan {
+        lane: "cpu",
+        planned: 1,
+        executed: 0,
+        note: "cpu_scoring_sufficient",
+    };
+}
+
+// =============================================================================
+// Negative controls + expected-outcome battery
+// =============================================================================
+
+fn negative_controls(actors, charter) {
+    let passes = 0;
+    let fails = 0;
+
+    // N1: expired charter → Abort
+    let i1 = Intent {
+        seq: 900,
+        actor_id: "hermes-coder",
+        kind: ActionKind::FileRead,
+        target_digest: str_digest("/src/x"),
+        path_class: PathClass::SourceTree,
+        host: "local",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "neg_expired",
+        witness: "",
+        epoch: charter.kill_epoch + 1,
+        private_hint: "/src/x",
+    };
+    let d1 = adjudicate(i1, actors, charter, 50, 0, 0);
+    if decision_code(d1) == 4 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N2: agent prod escape → Abort
+    let i2 = Intent {
+        seq: 901,
+        actor_id: "hermes-coder",
+        kind: ActionKind::CloudMutate,
+        target_digest: str_digest("prod/us-east"),
+        path_class: PathClass::ProductionCluster,
+        host: "prod-us-east",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "neg_prod",
+        witness: "human-ops",
+        epoch: 10,
+        private_hint: "kubectl apply -f evil.yaml",
+    };
+    let d2 = adjudicate(i2, actors, charter, 50, 0, 0);
+    // path not in charter → Abort for agent prod (strict: not soft Deny)
+    if decision_code(d2) == 4 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N3: disclose credentials without declass → Deny
+    let i3 = Intent {
+        seq: 902,
+        actor_id: "hermes-coder",
+        kind: ActionKind::Disclose,
+        target_digest: str_digest("pr-body"),
+        path_class: PathClass::PublicReport,
+        host: "local",
+        taint: TaintClass::CredentialMaterial,
+        declass: DeclassPolicy::None,
+        claimed_reason: "debug_env",
+        witness: "",
+        epoch: 10,
+        private_hint: "AWS_SECRET=...",
+    };
+    let d3 = adjudicate(i3, actors, charter, 50, 0, 0);
+    if decision_code(d3) == 3 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N4: exploit without offensive auth → Deny
+    let no_off = Charter {
+        id: charter.id,
+        auth: charter.auth,
+        kill_epoch: charter.kill_epoch,
+        max_fuel: charter.max_fuel,
+        allowed_hosts: charter.allowed_hosts,
+        allowed_paths: charter.allowed_paths,
+        allow_offensive: 0,
+        policy_version: charter.policy_version,
+    };
+    let i4 = Intent {
+        seq: 903,
+        actor_id: "redteam-lab",
+        kind: ActionKind::ExploitModule,
+        target_digest: str_digest("lab://vuln_local"),
+        path_class: PathClass::EngagementLab,
+        host: "lab-1",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "poc",
+        witness: "human-ops",
+        epoch: 10,
+        private_hint: "poc_local_overflow",
+    };
+    let d4 = adjudicate(i4, actors, no_off, 50, 0, 0);
+    if decision_code(d4) == 3 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N5: fuel exhausted → Deny
+    let i5 = Intent {
+        seq: 904,
+        actor_id: "hermes-coder",
+        kind: ActionKind::FileRead,
+        target_digest: str_digest("/src/a"),
+        path_class: PathClass::SourceTree,
+        host: "local",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "neg_fuel",
+        witness: "",
+        epoch: 10,
+        private_hint: "/src/a",
+    };
+    let d5 = adjudicate(i5, actors, charter, 0, 0, 0);
+    if decision_code(d5) == 3 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N6: frozen engagement → Abort
+    let d6 = adjudicate(i5, actors, charter, 50, 0, 1);
+    if decision_code(d6) == 4 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N7: auditor cannot Shell
+    let i7 = Intent {
+        seq: 905,
+        actor_id: "auditor-prime",
+        kind: ActionKind::Shell,
+        target_digest: str_digest("/src"),
+        path_class: PathClass::SourceTree,
+        host: "local",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "neg_auditor",
+        witness: "",
+        epoch: 10,
+        private_hint: "whoami",
+    };
+    let d7 = adjudicate(i7, actors, charter, 50, 0, 0);
+    if decision_code(d7) == 3 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N8: low-trust agent cannot touch secrets
+    let i8 = Intent {
+        seq: 906,
+        actor_id: "shadow-fork",
+        kind: ActionKind::FileRead,
+        target_digest: str_digest("keychain:x"),
+        path_class: PathClass::SecretStore,
+        host: "local",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "neg_trust",
+        witness: "ops-operator",
+        epoch: 10,
+        private_hint: "secret",
+    };
+    let d8 = adjudicate(i8, actors, charter, 50, 0, 0);
+    if decision_code(d8) == 3 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N9: exploit outside lab → Deny
+    let i9 = Intent {
+        seq: 907,
+        actor_id: "redteam-lab",
+        kind: ActionKind::ExploitModule,
+        target_digest: str_digest("source://oops"),
+        path_class: PathClass::SourceTree,
+        host: "lab-1",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "neg_lab",
+        witness: "ops-operator",
+        epoch: 10,
+        private_hint: "payload",
+    };
+    let d9 = adjudicate(i9, actors, charter, 50, 0, 0);
+    if decision_code(d9) == 3 { passes = passes + 1; } else { fails = fails + 1; }
+
+    // N10: unknown actor → Deny
+    let i10 = Intent {
+        seq: 908,
+        actor_id: "ghost",
+        kind: ActionKind::FileRead,
+        target_digest: str_digest("/src"),
+        path_class: PathClass::SourceTree,
+        host: "local",
+        taint: TaintClass::Clean,
+        declass: DeclassPolicy::None,
+        claimed_reason: "neg_ghost",
+        witness: "",
+        epoch: 10,
+        private_hint: "/src",
+    };
+    let d10 = adjudicate(i10, actors, charter, 50, 0, 0);
+    if decision_code(d10) == 3 { passes = passes + 1; } else { fails = fails + 1; }
+
+    return [passes, fails];
+}
+
+// Expected decision codes for the main scenario stream (by seq).
+fn expected_map() {
+    // STRICT codes only — no soft Allow↔Watch / Deny↔Abort aliases.
+    return {
+        "1": 0,   // FileRead source ALLOW
+        "2": 0,   // FileWrite source ALLOW
+        "3": 0,   // Observe ALLOW
+        "4": 3,   // Disclose creds no declass DENY
+        "5": 0,   // Disclose HashOnly ALLOW (governed declass)
+        "6": 2,   // Secret read agent no witness HOLD
+        "7": 0,   // Secret read with witness ALLOW
+        "8": 3,   // Cloud mutate no witness DENY
+        "9": 3,   // Host out of scope DENY
+        "10": 2,  // Exploit agent no witness HOLD
+        "11": 0,  // Exploit with operator witness ALLOW
+        "12": 4,  // Agent prod path ABORT
+        "13": 4,  // Post-freeze ABORT
+        "14": 4,  // Post-freeze ABORT
+        "15": 4,  // Post-freeze ABORT
+    };
+}
+
+// =============================================================================
+// Fixtures
+// =============================================================================
+
+fn demo_charter() {
+    return Charter {
+        id: "eng-nexus-2026-07-11",
+        auth: "local-lab-charter+repo-X-only",
+        kill_epoch: 100,
+        max_fuel: 40,
+        allowed_hosts: ["local", "lab-1", "ci.internal"],
+        allowed_paths: ["source", "test", "lab", "public", "secret"],
+        allow_offensive: 1,
+        policy_version: 7,
+    };
+}
+
+fn demo_actors() {
+    return [
+        Actor { id: "hermes-coder", role: "agent", trust: 85, active: 1 },
+        Actor { id: "redteam-lab", role: "agent", trust: 90, active: 1 },
+        Actor { id: "ops-operator", role: "operator", trust: 95, active: 1 },
+        Actor { id: "sec-admin", role: "admin", trust: 99, active: 1 },
+        Actor { id: "auditor-prime", role: "auditor", trust: 88, active: 1 },
+        Actor { id: "shadow-fork", role: "agent", trust: 40, active: 1 },
+    ];
+}
+
+fn demo_intents() {
+    return [
+        Intent {
+            seq: 1,
+            actor_id: "hermes-coder",
+            kind: ActionKind::FileRead,
+            target_digest: str_digest("/src/main.rs"),
+            path_class: PathClass::SourceTree,
+            host: "local",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "read_for_edit",
+            witness: "",
+            epoch: 10,
+            private_hint: "/src/main.rs",
+        },
+        Intent {
+            seq: 2,
+            actor_id: "hermes-coder",
+            kind: ActionKind::FileWrite,
+            target_digest: str_digest("/src/main.rs"),
+            path_class: PathClass::SourceTree,
+            host: "local",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "apply_patch",
+            witness: "",
+            epoch: 11,
+            private_hint: "/src/main.rs",
+        },
+        Intent {
+            seq: 3,
+            actor_id: "auditor-prime",
+            kind: ActionKind::ObserveOnly,
+            target_digest: str_digest("ledger://tail"),
+            path_class: PathClass::SourceTree,
+            host: "local",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "audit_tail",
+            witness: "",
+            epoch: 12,
+            private_hint: "journal_tail",
+        },
+        Intent {
+            seq: 4,
+            actor_id: "hermes-coder",
+            kind: ActionKind::Disclose,
+            target_digest: str_digest("pr://body"),
+            path_class: PathClass::PublicReport,
+            host: "local",
+            taint: TaintClass::CredentialMaterial,
+            declass: DeclassPolicy::None,
+            claimed_reason: "debug_env_dump",
+            witness: "",
+            epoch: 13,
+            private_hint: "AWS_SECRET=REDACTED_IN_REALITY",
+        },
+        Intent {
+            seq: 5,
+            actor_id: "hermes-coder",
+            kind: ActionKind::Disclose,
+            target_digest: str_digest("pr://body"),
+            path_class: PathClass::PublicReport,
+            host: "local",
+            taint: TaintClass::CredentialMaterial,
+            declass: DeclassPolicy::HashOnly,
+            claimed_reason: "env_fingerprint_only",
+            witness: "",
+            epoch: 14,
+            private_hint: "hash_only_publish",
+        },
+        Intent {
+            seq: 6,
+            actor_id: "hermes-coder",
+            kind: ActionKind::FileRead,
+            target_digest: str_digest("keychain:deploy-token"),
+            path_class: PathClass::SecretStore,
+            host: "local",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "need_token",
+            witness: "",
+            epoch: 15,
+            private_hint: "~/.ssh or keychain",
+        },
+        Intent {
+            seq: 7,
+            actor_id: "hermes-coder",
+            kind: ActionKind::FileRead,
+            target_digest: str_digest("keychain:deploy-token"),
+            path_class: PathClass::SecretStore,
+            host: "local",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "need_token_witnessed",
+            witness: "ops-operator",
+            epoch: 16,
+            private_hint: "keychain:deploy-token",
+        },
+        Intent {
+            seq: 8,
+            actor_id: "ops-operator",
+            kind: ActionKind::CloudMutate,
+            target_digest: str_digest("ci://restart"),
+            path_class: PathClass::SourceTree,
+            host: "ci.internal",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "restart_ci",
+            witness: "",
+            epoch: 17,
+            private_hint: "systemctl restart ci",
+        },
+        Intent {
+            seq: 9,
+            actor_id: "hermes-coder",
+            kind: ActionKind::NetFetch,
+            target_digest: str_digest("https://evil.example/pwn"),
+            path_class: PathClass::SourceTree,
+            host: "evil.example",
+            taint: TaintClass::WebUntrusted,
+            declass: DeclassPolicy::None,
+            claimed_reason: "fetch_deps",
+            witness: "",
+            epoch: 18,
+            private_hint: "https://evil.example/pwn",
+        },
+        Intent {
+            seq: 10,
+            actor_id: "redteam-lab",
+            kind: ActionKind::ExploitModule,
+            target_digest: str_digest("lab://vuln_local"),
+            path_class: PathClass::EngagementLab,
+            host: "lab-1",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "authorized_poc",
+            witness: "",
+            epoch: 19,
+            private_hint: "poc_local_overflow payload",
+        },
+        Intent {
+            seq: 11,
+            actor_id: "redteam-lab",
+            kind: ActionKind::ExploitModule,
+            target_digest: str_digest("lab://vuln_local"),
+            path_class: PathClass::EngagementLab,
+            host: "lab-1",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "authorized_poc_witnessed",
+            witness: "ops-operator",
+            epoch: 20,
+            private_hint: "poc_local_overflow payload",
+        },
+        Intent {
+            seq: 12,
+            actor_id: "shadow-fork",
+            kind: ActionKind::Shell,
+            target_digest: str_digest("prod/us-east"),
+            path_class: PathClass::ProductionCluster,
+            host: "prod-us-east",
+            taint: TaintClass::ToolOutput,
+            declass: DeclassPolicy::None,
+            claimed_reason: "ship_it",
+            witness: "",
+            epoch: 21,
+            private_hint: "kubectl apply -f pwn.yaml",
+        },
+        Intent {
+            seq: 13,
+            actor_id: "hermes-coder",
+            kind: ActionKind::FileRead,
+            target_digest: str_digest("/src/main.rs"),
+            path_class: PathClass::SourceTree,
+            host: "local",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "after_freeze_should_abort",
+            witness: "",
+            epoch: 22,
+            private_hint: "/src/main.rs",
+        },
+        Intent {
+            seq: 14,
+            actor_id: "shadow-fork",
+            kind: ActionKind::Disclose,
+            target_digest: str_digest("exfil://webhook"),
+            path_class: PathClass::PublicReport,
+            host: "local",
+            taint: TaintClass::Compromised,
+            declass: DeclassPolicy::RedactedSummary,
+            claimed_reason: "exfil_attempt",
+            witness: "",
+            epoch: 23,
+            private_hint: "webhook.evil/collect",
+        },
+        Intent {
+            seq: 15,
+            actor_id: "auditor-prime",
+            kind: ActionKind::ObserveOnly,
+            target_digest: str_digest("ledger://final"),
+            path_class: PathClass::SourceTree,
+            host: "local",
+            taint: TaintClass::Clean,
+            declass: DeclassPolicy::None,
+            claimed_reason: "final_audit",
+            witness: "",
+            epoch: 24,
+            private_hint: "final_tail",
+        },
+    ];
+}
+
+// =============================================================================
+// Reporting
+// =============================================================================
+
+fn hr() {
+    print("----------------------------------------------------------------------------");
+}
+
+fn print_journal(journal) {
+    print("PUBLIC JOURNAL (selective disclosure · raw targets excluded)");
+    hr();
+    for r in journal {
+        print("  #${pad_start(str(r.seq), 2)}  ${pad_end(r.actor_id, 14)}  kind=${r.kind_code}  ${pad_end(decision_label(r.decision_code), 6)}  taint=${r.taint_code} path=${r.path_code} fuel=${r.fuel_left}  chain=${r.chain}  tgt=${r.target_digest}");
+    }
+}
+
+fn print_private_count(priv) {
+    print("PRIVATE WITNESS STORE: ${len(priv)} rows retained offline (not in public journal)");
+}
+
+fn main() {
+    print("NEXUS — Networked EXecution Under Sealed policy");
+    print("Mode: SAFE · offline deterministic action kernel · not live tool mediation");
+    hr();
+
+    let charter = demo_charter();
+    let actors0 = demo_actors();
+    let intents = demo_intents();
+    let hybrid_plan = plan_hybrid(len(intents));
+
+    print("CHARTER  id=${charter.id}  policy=v${charter.policy_version}  kill_epoch=${charter.kill_epoch}  fuel=${charter.max_fuel}  offensive=${charter.allow_offensive}");
+    print("ACTORS   ${len(actors0)}   INTENTS  ${len(intents)}");
+    print("HYBRID   lane=${hybrid_plan.lane} planned=${hybrid_plan.planned} executed=${hybrid_plan.executed}  (${hybrid_plan.note})");
+    print("");
+
+    let result = process_stream(intents, actors0, charter);
+    let journal = result["journal"];
+    let priv = result["private"];
+    let actors = result["actors"];
+    let fuel = result["fuel"];
+    let receipt = result["receipt"];
+    let chain = result["chain"];
+    let frozen = result["frozen"];
+    let allow_n = result["allow"];
+    let watch_n = result["watch"];
+    let hold_n = result["hold"];
+    let deny_n = result["deny"];
+    let abort_n = result["abort"];
+
+    print_journal(journal);
+    print("");
+    print_private_count(priv);
+
+    print("");
+    print("ACTOR POSTURE (post-stream)");
+    hr();
+    for a in actors {
+        let st = if a.active == 1 { "ACTIVE" } else { "FROZEN" };
+        print("  ${pad_end(a.id, 14)}  role=${pad_end(a.role, 10)}  trust=${a.trust}  ${st}");
+    }
+
+    print("");
+    print("STREAM TOTALS");
+    hr();
+    print("  ALLOW   ${allow_n}");
+    print("  WATCH   ${watch_n}");
+    print("  HOLD    ${hold_n}");
+    print("  DENY    ${deny_n}");
+    print("  ABORT   ${abort_n}");
+    print("  FUEL    ${fuel}");
+    print("  RECEIPT ${receipt}");
+    print("  CHAIN   ${chain}");
+    print("  FROZEN  ${frozen}");
+
+    // Expected-outcome battery — STRICT equality only (no soft aliases)
+    let exp = expected_map();
+    let hits = 0;
+    let checks = 0;
+    let mut mismatches = [];
+    for r in journal {
+        let key = str(r.seq);
+        if has_key(exp, key) {
+            checks = checks + 1;
+            let want = exp[key];
+            if r.decision_code == want {
+                hits = hits + 1;
+            } else {
+                push(mismatches, "seq=${r.seq} want=${want} got=${r.decision_code}");
+            }
+        }
+    }
+    print("");
+    print("EXPECTED-OUTCOME BATTERY (strict)");
+    hr();
+    print("  checks  ${checks}");
+    print("  hits    ${hits}");
+    for m in mismatches {
+        print("  MISS    ${m}");
+    }
+    let exp_ok = if checks == 15 && hits == 15 { 1 } else { 0 };
+    print("  pass    ${exp_ok}");
+
+    // Negative controls
+    let neg = negative_controls(actors0, charter);
+    print("");
+    print("NEGATIVE CONTROLS");
+    hr();
+    print("  passed  ${neg[0]}");
+    print("  failed  ${neg[1]}");
+    let neg_ok = if neg[0] == 10 && neg[1] == 0 { 1 } else { 0 };
+
+    // Public journal must not contain private secrets strings
+    let leak = 0;
+    for r in journal {
+        if contains(r.target_digest, "AWS_SECRET") { leak = leak + 1; }
+        if contains(r.target_digest, "kubectl") { leak = leak + 1; }
+        if contains(r.target_digest, "webhook.evil") { leak = leak + 1; }
+    }
+    let no_leak = if leak == 0 { 1 } else { 0 };
+
+    // Private store size equals journal size
+    let priv_ok = if len(priv) == len(journal) { 1 } else { 0 };
+
+    // Freeze exercised
+    let freeze_ok = if frozen == 1 && abort_n >= 1 { 1 } else { 0 };
+
+    // Deny declass path exercised
+    let deny_ok = if deny_n >= 1 { 1 } else { 0 };
+
+    // Hold path exercised
+    let hold_ok = if hold_n >= 1 { 1 } else { 0 };
+
+    // Allow path exercised
+    let allow_ok = if allow_n >= 1 { 1 } else { 0 };
+
+    // Chain advanced
+    let chain_ok = if chain > policy_id(charter.policy_version) { 1 } else { 0 };
+
+    // Hybrid honesty: executed must be 0
+    let hybrid_ok = if hybrid_plan.executed == 0 && hybrid_plan.planned == 1 { 1 } else { 0 };
+
+    let seals = exp_ok + neg_ok + no_leak + priv_ok + freeze_ok + deny_ok + hold_ok + allow_ok + chain_ok + hybrid_ok;
+
+    print("");
+    print("INVARIANT SEALS");
+    hr();
+    print("  expected_outcomes     ${exp_ok}");
+    print("  negative_controls     ${neg_ok}");
+    print("  no_public_secret_leak ${no_leak}");
+    print("  private_parity        ${priv_ok}");
+    print("  freeze_on_abort       ${freeze_ok}");
+    print("  deny_exercised        ${deny_ok}");
+    print("  hold_exercised        ${hold_ok}");
+    print("  allow_exercised       ${allow_ok}");
+    print("  chain_advanced        ${chain_ok}");
+    print("  hybrid_honest         ${hybrid_ok}");
+    print("  seal_score            ${seals}/10");
+
+    let verdict = if seals == 10 {
+        "NEXUS_KERNEL_CERTIFIED"
+    } else if seals >= 8 {
+        "NEXUS_KERNEL_DEGRADED"
+    } else {
+        "NEXUS_KERNEL_REJECTED"
+    };
+
+    print("");
+    hr();
+    print("  VERDICT: ${verdict}");
+    print("  SUMMARY: allow=${allow_n} watch=${watch_n} hold=${hold_n} deny=${deny_n} abort=${abort_n} chain=${chain} seals=${seals}/10 frozen=${frozen}");
+    print("  PUBLIC_ROOT: ${chain}");
+    print("  POLICY: v${charter.policy_version}  AUTH: ${charter.auth}");
+    hr();
+    print("Boundary: offline Anubis safe execution; fuel_tick/clamp_score/policy_id/advance_receipt carry SMT contracts.");
+    print("Not claimed: live tool mediation, institutional deployment authority, or full-engine formal proof.");
+    print("Companion: examples/industry/nexus_zk_decision.anb (minimal public decision journal shape).");
+
+    if seals == 10 {
+        return 0;
+    }
+    return 1;
+}
