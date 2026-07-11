@@ -1298,6 +1298,12 @@ fn main() {
         assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > x) { x = 0; return x; }"), "C: reassigned-param ensures is checked at the return value (0 > 0 is false)");
         // D — a float param modeled as an i64 bit-vector: `dbl(0.5)` runs to 1.0.
         assert!(!discharged("fn dbl(x: f64) -> f64 requires(x > 0) requires(x < 10) ensures(result != 1) { return x + x; }"), "D: float param must not be modeled as i64");
+        // D2 — a float LITERAL bound to a variable (`let x = 0.5`) was typed `u32` and modeled as an
+        // integer, "proving" `result * 2 != 1` (true over all integers) though `0.5 * 2 == 1` at
+        // runtime. Float literals now type as f64 and stay out of the solver's integer domain.
+        assert!(!discharged("fn f() -> u32 ensures(result * 2 != 1) { let x = 0.5; return x; }"), "D2: a float-literal binding must not be modeled as an integer");
+        // D3 — the same integer shape (an actual int binding) still proves: 5 * 2 == 10 != 1.
+        assert!(discharged("fn f() -> u32 ensures(result * 2 != 1) { let x = 5; return x; }"), "D3: an integer-literal binding still proves");
         // E — an integer literal beyond i64::MAX reduced mod 2^64 by the solver but f64 at runtime.
         assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result <= x) { return x + 18446744073709551616; }"), "E: oversized literal must not reduce mod 2^64");
         // F — self-contradictory assumptions (`requires(x<100)` + `assume(x>1000)`) proving any

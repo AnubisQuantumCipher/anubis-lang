@@ -3000,9 +3000,13 @@ fn infer_expr_type_scoped(
         Expr::Declassify { inner, .. } => infer_expr_type_scoped(inner, scope),
         Expr::TaintSource { .. } => Some("tainted<string>".into()),
         Expr::Literal(s) if s == "true" || s == "false" => Some("bool".into()),
-        Expr::Literal(s) if s.parse::<i64>().is_ok() || s.parse::<f64>().is_ok() => {
-            Some("u32".into())
-        }
+        // Integer literal (i64, or a u64 bit-pattern for magnitudes above i64::MAX) → the
+        // width-polymorphic integer default. A literal that is ONLY f64-parseable (`3.14`, `1e9`)
+        // is a FLOAT: typing it as an integer would let the solver model it as an i64 bit-vector
+        // (unsound — it "proved" `2*x != 1` for x = 0.5). Mirrors the runtime discrimination in
+        // `literal_to_anubis_value`, so a float is kept out of the solver's integer domain.
+        Expr::Literal(s) if s.parse::<i64>().is_ok() || s.parse::<u64>().is_ok() => Some("u32".into()),
+        Expr::Literal(s) if s.parse::<f64>().is_ok() => Some("f64".into()),
         Expr::Literal(s) if s.starts_with('"') || s.starts_with('\'') => Some("string".into()),
         Expr::StrLiteral(_) => Some("string".into()),
         Expr::Var(name) => scope.get(name).and_then(|b| b.info.ty.clone()),
