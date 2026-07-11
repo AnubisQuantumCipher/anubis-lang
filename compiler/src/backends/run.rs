@@ -4092,6 +4092,20 @@ mod run_tests {
     }
 
     #[test]
+    fn match_scrutinee_disambiguates_unit_vs_struct_variant() {
+        // Unit-variant scrutinee: the `{` opens the match body (no fields to parse).
+        assert_eq!(
+            run("enum St { A, B } fn main() { print(match St::A { St::A => 1, St::B => 2 }) }"),
+            "1"
+        );
+        // Struct-variant scrutinee: `{ x: 7 }` is the construction; the following `{` is the body.
+        assert_eq!(
+            run("enum R { F { x: int } } fn main() { print(match R::F { x: 7 } { R::F { x: a } => a }) }"),
+            "7"
+        );
+    }
+
+    #[test]
     fn implicit_return_trailing_if() {
         let src = "fn sign(n) { if n < 0 { 111 } else { 222 } } \
                    fn main() { print(sign(-3)); print(sign(4)); }";
