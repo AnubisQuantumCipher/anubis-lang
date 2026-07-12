@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH|type mismatch
+// Call-return synthesis: a `string`-returning call passed where `u32` is expected — a mismatch the
+// flat inference could never see (it returned `None` for every `Call`).
+fn label() -> string { return "hi"; }
+fn takes_u32(n: u32) { return n; }
+fn main() {
+    takes_u32(label());
+    return 0;
+}

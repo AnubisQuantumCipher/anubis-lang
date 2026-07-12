@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Accept-bias (fail-closed toward accept): an arm the checker cannot type (a call with no declared
+// return) resolves to `Any` and absorbs, so no spurious arm-join conflict is raised.
+fn helper() { return 5; }
+fn main() {
+    let flag = true;
+    let x = if flag { helper() } else { "text" };
+    return 0;
+}

@@ -338,6 +338,325 @@ pub(crate) fn bitwidth(ty: &str) -> u32 {
     }
 }
 
+// =================================================================================================
+// Bidirectional inference core — union-find over `Ty::Var` + `synth`/`check`/arm-join `unify`.
+//
+// This is the foundation the remaining type-system workstreams (generics, traits, typed `?`) build
+// on, and it is deliberately kept SMALL and dependency-light so it can be re-expressed in Anubis
+// itself in the port phase: a `Vec`-backed union-find, a plain-map environment (no closures, no
+// trait objects), and a `synth` that is a flat recursive `match` over `Expr`.
+//
+// The absolute discipline is FAIL-CLOSED TOWARD ACCEPT: any type that resolves to `Any`, an unbound
+// unification variable, a generic parameter, or an unknown widens to ACCEPT — a working dynamic
+// program is never rejected on the checker's ignorance. Concrete-vs-concrete compatibility delegates
+// to [`compatible`] (the same relation the rest of the checker uses), so the only new rejection power
+// the core exposes is a genuine cross-category clash (`string` vs `u32`, an enum vs a different enum)
+// surfaced through arm-join and check-direction — and even that lands in shadow mode first.
+// =================================================================================================
+
+use crate::frontend::{Expr, MatchArm};
+use std::collections::BTreeMap;
+
+/// The typing environment `synth`/`check` consult, as three plain borrowed maps. Kept as raw string
+/// annotations (never `ScopeBinding`/`SemanticContext`) so the core stays decoupled from the
+/// middle-end and trivial to port: `vars` is variable-name → annotation, `fns` is function-name →
+/// declared return type, `structs` is struct-name → (field-name → field type).
+pub(crate) struct InferEnv<'a> {
+    pub vars: &'a BTreeMap<String, String>,
+    pub fns: &'a BTreeMap<String, String>,
+    pub structs: &'a BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// A union-find over `Ty::Var(id)`. Each `id` indexes `parent` (union-find links; `parent[i]==i` is a
+/// root) and `binding` (per-root optional resolved type). By construction a `binding` entry is never
+/// itself a `Ty::Var`, so [`InferCtx::resolve`] terminates in one hop after `find`.
+pub(crate) struct InferCtx {
+    parent: Vec<u32>,
+    binding: Vec<Option<Ty>>,
+}
+
+impl Default for InferCtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InferCtx {
+    pub(crate) fn new() -> Self {
+        InferCtx {
+            parent: Vec::new(),
+            binding: Vec::new(),
+        }
+    }
+
+    /// Allocate a fresh, unbound unification variable.
+    pub(crate) fn fresh(&mut self) -> Ty {
+        let id = self.parent.len() as u32;
+        self.parent.push(id);
+        self.binding.push(None);
+        Ty::Var(id)
+    }
+
+    fn find(&self, mut x: u32) -> u32 {
+        while self.parent[x as usize] != x {
+            x = self.parent[x as usize];
+        }
+        x
+    }
+
+    fn union(&mut self, x: u32, y: u32) {
+        let rx = self.find(x);
+        let ry = self.find(y);
+        if rx == ry {
+            return;
+        }
+        // Both roots are unbound whenever `union` runs (it is only reached from the Var–Var arm of
+        // `unify`, where both sides resolved to bare vars); carrying `ry`'s binding is defensive.
+        if self.binding[rx as usize].is_none() {
+            self.binding[rx as usize] = self.binding[ry as usize].take();
+        }
+        self.parent[ry as usize] = rx;
+    }
+
+    fn bind(&mut self, x: u32, t: Ty) {
+        let r = self.find(x);
+        self.binding[r as usize] = Some(t);
+    }
+
+    /// Follow a type through the union-find: a bound var yields its (non-var) binding, an unbound var
+    /// yields its representative `Ty::Var(root)`, and a non-var is returned unchanged.
+    pub(crate) fn resolve(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Var(x) => {
+                let r = self.find(*x);
+                match &self.binding[r as usize] {
+                    Some(t) => t.clone(),
+                    None => Ty::Var(r),
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Unify two types, accept-biased. A unification variable binds; `Any` and a generic parameter
+    /// absorb (they are compatible with everything, erased at runtime); two concretes agree exactly
+    /// when [`compatible`] says so (numeric widths interoperate, `tainted<T>`↔`T`, pointers). The one
+    /// `Err` case is a genuine cross-category clash of two concrete types — the new rejection power.
+    /// On success returns the joined representative type.
+    pub(crate) fn unify(&mut self, a: &Ty, b: &Ty) -> Result<Ty, (String, String)> {
+        let a = self.resolve(a);
+        let b = self.resolve(b);
+        match (&a, &b) {
+            (Ty::Var(x), Ty::Var(y)) => {
+                if x != y {
+                    self.union(*x, *y);
+                }
+                Ok(self.resolve(&a))
+            }
+            (Ty::Var(x), _) => {
+                self.bind(*x, b.clone());
+                Ok(b)
+            }
+            (_, Ty::Var(y)) => {
+                self.bind(*y, a.clone());
+                Ok(a)
+            }
+            // Dynamic / erased types absorb — the accept direction. `Any` on either side means the
+            // checker cannot see a type, and a generic parameter is runtime-erased; neither may drive
+            // a rejection, so the join is the *other* side (or `Any`).
+            (Ty::Any, _) => Ok(b),
+            (_, Ty::Any) => Ok(a),
+            (Ty::Generic(_), _) | (_, Ty::Generic(_)) => Ok(Ty::Any),
+            // Two concrete types: agree exactly when the historical compatibility relation says so.
+            _ => {
+                if compatible(&a.to_annotation(), &b.to_annotation()) {
+                    Ok(a)
+                } else {
+                    Err((a.to_annotation(), b.to_annotation()))
+                }
+            }
+        }
+    }
+}
+
+/// SYNTH direction: produce a type for `expr`. Total and accept-biased — every arm the checker cannot
+/// pin down (an unknown variable, a call to an unknown function, an index into a non-sequence, a
+/// field of an unknown struct, a `?`/closure/`CallExpr`) yields [`Ty::Any`], which unifies with
+/// everything. `Call`/`Index`/`FieldAccess` — which the legacy flat inference hard-returned `None`
+/// for — are synthesized here: a call yields its function's declared return type, an index yields the
+/// element type of what it indexes, a field access yields the field's declared type on the struct.
+pub(crate) fn synth(ictx: &mut InferCtx, env: &InferEnv, expr: &Expr) -> Ty {
+    match expr {
+        Expr::Literal(s) if s == "true" || s == "false" => Ty::Bool,
+        // Mirror the runtime literal discrimination: an i64/u64-parseable literal is the
+        // width-polymorphic integer default; a float-only literal is a float; a quoted literal is a
+        // string. (Kept identical to `infer_expr_type_scoped` so the two never disagree on literals.)
+        Expr::Literal(s) if s.parse::<i64>().is_ok() || s.parse::<u64>().is_ok() => Ty::U32,
+        Expr::Literal(s) if s.parse::<f64>().is_ok() => Ty::Float("f64".into()),
+        Expr::Literal(s) if s.starts_with('"') || s.starts_with('\'') => Ty::Str,
+        Expr::Literal(_) => Ty::Any,
+        Expr::StrLiteral(_) => Ty::Str,
+        Expr::Var(n) => env.vars.get(n).map(|t| Ty::parse(t)).unwrap_or(Ty::Any),
+        Expr::Unary { op, .. } if op == "!" => Ty::Bool,
+        Expr::Unary { op, .. } if op == "~" => Ty::U32,
+        Expr::Unary { expr, .. } => synth(ictx, env, expr),
+        Expr::Binary { op, lhs, rhs } => synth_binary(ictx, env, op, lhs, rhs),
+        Expr::ArrayLiteral { .. } => Ty::List(Box::new(Ty::Any)),
+        Expr::MapLiteral { .. } => Ty::Map(Box::new(Ty::Any), Box::new(Ty::Any)),
+        Expr::EnumConstruct { enum_name, .. } => Ty::parse(enum_name),
+        Expr::Cast { ty, .. } => Ty::parse(ty),
+        Expr::Symbolic { ty } => Ty::parse(ty),
+        Expr::Tainted { ty, .. } => Ty::Tainted(Box::new(Ty::parse(ty))),
+        Expr::TaintSource { .. } => Ty::Tainted(Box::new(Ty::Str)),
+        Expr::RawPtr { mutable } => Ty::RawPtr { mutable: *mutable },
+        Expr::Declassify { inner, .. } => synth(ictx, env, inner),
+        // `if`/`match` used as a value: the arm-join. This computes the branch type by unifying the
+        // arms; a *conflict* degrades to `Any` here (accept, no side effect) — the diagnostic is
+        // raised by the dedicated arm-join driver, not by synthesis.
+        Expr::If { then, else_, .. } => {
+            let t = synth(ictx, env, then);
+            let e = synth(ictx, env, else_);
+            ictx.unify(&t, &e).unwrap_or(Ty::Any)
+        }
+        Expr::Match { arms, .. } => synth_arms(ictx, env, arms),
+        Expr::Block { tail, .. } => tail
+            .as_ref()
+            .map(|t| synth(ictx, env, t))
+            .unwrap_or(Ty::Any),
+        // Newly synthesizable — the flat inference returned `None` for all three.
+        Expr::Call { callee, .. } => env.fns.get(callee).map(|t| Ty::parse(t)).unwrap_or(Ty::Any),
+        Expr::Index { base, .. } => {
+            let base_ty = synth(ictx, env, base);
+            match ictx.resolve(&base_ty) {
+                Ty::List(inner) => *inner,
+                Ty::Map(_, val) => *val,
+                Ty::Str => Ty::Str, // indexing a string yields a (one-char) string at runtime
+                _ => Ty::Any,       // unknown or non-sequence base → accept
+            }
+        }
+        Expr::FieldAccess { base, field, .. } => {
+            let base_ty = synth(ictx, env, base);
+            match ictx.resolve(&base_ty) {
+                Ty::Named(n) | Ty::Struct(n) => env
+                    .structs
+                    .get(&n)
+                    .and_then(|fields| fields.get(field))
+                    .map(|t| Ty::parse(t))
+                    .unwrap_or(Ty::Any),
+                _ => Ty::Any,
+            }
+        }
+        // Everything else — `CallExpr` (first-class closure call), `Try` (typed-`?` is a later
+        // workstream), `Lambda`, `StructLiteral`, `UnifiedBuffer`, `Assume`/`Assert`, `IfLet`, … —
+        // is left dynamic. Accept.
+        _ => Ty::Any,
+    }
+}
+
+/// Synthesize the type of a binary operator application, faithful to the runtime overloads:
+/// comparisons/logicals are `bool`; `+` is string-concat if either side is a string, list-concat if
+/// either is a list, else numeric; bitwise/shift are always integer; other arithmetic propagates an
+/// operand type (float iff an operand is float).
+fn synth_binary(ictx: &mut InferCtx, env: &InferEnv, op: &str, lhs: &Expr, rhs: &Expr) -> Ty {
+    match op {
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" => Ty::Bool,
+        "+" => {
+            let l = synth(ictx, env, lhs);
+            let r = synth(ictx, env, rhs);
+            let ln = normalize(&ictx.resolve(&l).to_annotation());
+            let rn = normalize(&ictx.resolve(&r).to_annotation());
+            if ln == "string" || rn == "string" {
+                Ty::Str
+            } else if ln == "list" || rn == "list" {
+                Ty::List(Box::new(Ty::Any))
+            } else if !matches!(l, Ty::Any) {
+                l
+            } else {
+                r
+            }
+        }
+        "&" | "|" | "^" | "<<" | ">>" => Ty::U32,
+        _ => {
+            let l = synth(ictx, env, lhs);
+            if matches!(l, Ty::Any) {
+                synth(ictx, env, rhs)
+            } else {
+                l
+            }
+        }
+    }
+}
+
+/// Join a `match`'s arm types via genuine union-find: seed a fresh var, unify each arm's type into
+/// it, and return the resolved join. A conflict degrades to `Any` (accept) — like `synth`'s `if`
+/// arm, emission is the driver's job, not synthesis's.
+fn synth_arms(ictx: &mut InferCtx, env: &InferEnv, arms: &[MatchArm]) -> Ty {
+    let acc = ictx.fresh();
+    for arm in arms {
+        let t = synth(ictx, env, &arm.body);
+        match ictx.unify(&acc, &t) {
+            Ok(_) => {}
+            Err(_) => return Ty::Any,
+        }
+    }
+    ictx.resolve(&acc)
+}
+
+/// The arm-join CONFLICT check driving the `ANUBIS_ARM_TYPE_CONFLICT` diagnostic: unify all branch
+/// types of an `if`/`match` through a fresh accumulator var and return the first genuine
+/// cross-category clash as `(left, right)` annotations, or `None` if the arms join cleanly (which
+/// includes any arm the checker cannot see — those resolve to `Any` and absorb). This is the one
+/// place the core exposes NEW rejection power over the corpus.
+pub(crate) fn arm_join_conflict(env: &InferEnv, branches: &[&Expr]) -> Option<(String, String)> {
+    let mut ictx = InferCtx::new();
+    let acc = ictx.fresh();
+    for br in branches {
+        let t = synth(&mut ictx, env, br);
+        match ictx.unify(&acc, &t) {
+            Ok(_) => {}
+            Err(conflict) => return Some(conflict),
+        }
+    }
+    None
+}
+
+/// CHECK direction: does `expr` have a type assignable to `expected`? Returns the synthesized type as
+/// an annotation when it is CONCRETE and NOT assignable to `expected` (the mismatch to report), and
+/// `None` whenever the synthesized type resolves toward accept (`Any`/unbound-var/generic) or is
+/// assignable. `expected` empty (no annotation) is dynamic ⇒ always accept. This is what lets a
+/// `Call`/`Index`/`FieldAccess` argument or return — invisible to the flat inference — be checked.
+pub(crate) fn check_mismatch(env: &InferEnv, expr: &Expr, expected: &str) -> Option<String> {
+    if expected.trim().is_empty() {
+        return None;
+    }
+    let got = synth_concrete(env, expr)?;
+    if assignable(expected, &got) {
+        None
+    } else {
+        Some(got)
+    }
+}
+
+/// Run `synth` for `expr` and return its type as an annotation ONLY when it resolves to something
+/// concrete; `Any`, an unbound unification variable, and a generic parameter all return `None` (the
+/// accept direction). The single boundary where "cannot determine ⇒ accept" is enforced for callers.
+pub(crate) fn synth_concrete(env: &InferEnv, expr: &Expr) -> Option<String> {
+    let mut ictx = InferCtx::new();
+    let synthesized = synth(&mut ictx, env, expr);
+    let t = ictx.resolve(&synthesized);
+    match t {
+        Ty::Any | Ty::Var(_) | Ty::Generic(_) => None,
+        other => {
+            let a = other.to_annotation();
+            if a.trim().is_empty() {
+                None
+            } else {
+                Some(a)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +808,186 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- Bidirectional inference core tests. Exercise the union-find, `synth` (including the newly
+    // synthesizable `Call`/`Index`/`FieldAccess`), arm-join `unify`, and the accept-biased boundary.
+
+    fn empty_env<'a>(
+        vars: &'a BTreeMap<String, String>,
+        fns: &'a BTreeMap<String, String>,
+        structs: &'a BTreeMap<String, BTreeMap<String, String>>,
+    ) -> InferEnv<'a> {
+        InferEnv { vars, fns, structs }
+    }
+
+    #[test]
+    fn unify_is_accept_biased_and_clashes_only_cross_category() {
+        let mut c = InferCtx::new();
+        // Numeric widths interoperate (no conflict) — the historical `compatible` relation.
+        assert!(c.unify(&Ty::U8, &Ty::U32).is_ok());
+        assert!(c.unify(&Ty::U32, &Ty::Float("f64".into())).is_ok());
+        // `Any` and a generic parameter absorb — the accept direction.
+        assert_eq!(c.unify(&Ty::Any, &Ty::Str).unwrap(), Ty::Str);
+        assert_eq!(c.unify(&Ty::Str, &Ty::Any).unwrap(), Ty::Str);
+        assert!(c.unify(&Ty::Generic("T".into()), &Ty::Str).is_ok());
+        // A genuine cross-category clash is the ONE rejection the core exposes.
+        assert_eq!(
+            c.unify(&Ty::Str, &Ty::U32).unwrap_err(),
+            ("string".into(), "u32".into())
+        );
+        assert!(c.unify(&Ty::Bool, &Ty::Str).is_err());
+    }
+
+    #[test]
+    fn unify_binds_variables_then_a_second_incompatible_arm_conflicts() {
+        let mut c = InferCtx::new();
+        let v = c.fresh();
+        // A fresh var unifies with anything and binds.
+        assert_eq!(c.unify(&v, &Ty::Str).unwrap(), Ty::Str);
+        assert_eq!(c.resolve(&v), Ty::Str);
+        // Once bound to `string`, a later `u32` clashes — the arm-join mechanism.
+        assert!(c.unify(&v, &Ty::U32).is_err());
+        // An unbound var stays a var and resolves toward accept at the boundary (`synth_concrete`).
+        let w = c.fresh();
+        assert!(matches!(c.resolve(&w), Ty::Var(_)));
+    }
+
+    #[test]
+    fn synth_types_literals_calls_indices_and_fields() {
+        let mut vars = BTreeMap::new();
+        vars.insert("xs".to_string(), "list".to_string());
+        vars.insert("name".to_string(), "string".to_string());
+        vars.insert("p".to_string(), "Point".to_string());
+        let mut fns = BTreeMap::new();
+        fns.insert("area".to_string(), "u32".to_string());
+        fns.insert("label".to_string(), "string".to_string());
+        fns.insert("mystery".to_string(), String::new()); // no declared return → Any
+        let mut structs = BTreeMap::new();
+        let mut point_fields = BTreeMap::new();
+        point_fields.insert("x".to_string(), "u32".to_string());
+        structs.insert("Point".to_string(), point_fields);
+        let env = empty_env(&vars, &fns, &structs);
+        let mut c = InferCtx::new();
+
+        // Literals.
+        assert_eq!(synth(&mut c, &env, &Expr::Literal("1".into())), Ty::U32);
+        assert_eq!(synth(&mut c, &env, &Expr::StrLiteral("a".into())), Ty::Str);
+        // Call → declared return type; unknown/blank-return → Any (accept).
+        assert_eq!(
+            synth(
+                &mut c,
+                &env,
+                &Expr::Call { callee: "area".into(), args: vec![] }
+            ),
+            Ty::U32
+        );
+        assert_eq!(
+            synth(
+                &mut c,
+                &env,
+                &Expr::Call { callee: "unknown_fn".into(), args: vec![] }
+            ),
+            Ty::Any
+        );
+        assert_eq!(
+            synth(
+                &mut c,
+                &env,
+                &Expr::Call { callee: "mystery".into(), args: vec![] }
+            ),
+            Ty::Any
+        );
+        // Index into a bare `list` → element `Any` (annotations lose element types) ⇒ accept.
+        assert_eq!(
+            synth(
+                &mut c,
+                &env,
+                &Expr::Index {
+                    base: Box::new(Expr::Var("xs".into())),
+                    index: Box::new(Expr::Literal("0".into())),
+                }
+            ),
+            Ty::Any
+        );
+        // Field access → the field's declared type on the struct; unknown field ⇒ accept.
+        assert_eq!(
+            synth(
+                &mut c,
+                &env,
+                &Expr::FieldAccess {
+                    base: Box::new(Expr::Var("p".into())),
+                    field: "x".into(),
+                    span: crate::frontend::Span { start: 0, end: 0 },
+                }
+            ),
+            Ty::U32
+        );
+        assert_eq!(
+            synth(
+                &mut c,
+                &env,
+                &Expr::FieldAccess {
+                    base: Box::new(Expr::Var("p".into())),
+                    field: "missing".into(),
+                    span: crate::frontend::Span { start: 0, end: 0 },
+                }
+            ),
+            Ty::Any
+        );
+    }
+
+    #[test]
+    fn arm_join_flags_string_vs_int_but_not_numeric_widths_or_unknowns() {
+        let vars = BTreeMap::new();
+        let fns = BTreeMap::new();
+        let structs = BTreeMap::new();
+        let env = empty_env(&vars, &fns, &structs);
+        // `if true { "a" } else { 1 }` — the headline conflict, silently accepted today.
+        let s = Expr::StrLiteral("a".into());
+        let one = Expr::Literal("1".into());
+        assert_eq!(
+            arm_join_conflict(&env, &[&s, &one]),
+            Some(("string".into(), "u32".into()))
+        );
+        // Numeric widths and int/float join cleanly — no conflict.
+        let two = Expr::Literal("2".into());
+        let pi = Expr::Literal("3.14".into());
+        assert_eq!(arm_join_conflict(&env, &[&one, &two]), None);
+        assert_eq!(arm_join_conflict(&env, &[&one, &pi]), None);
+        // An unseeable arm (call to an unknown fn) absorbs — never a spurious conflict.
+        let unknown = Expr::Call { callee: "who".into(), args: vec![] };
+        assert_eq!(arm_join_conflict(&env, &[&s, &unknown]), None);
+    }
+
+    #[test]
+    fn check_mismatch_sees_call_returns_and_stays_accept_biased() {
+        let vars = BTreeMap::new();
+        let mut fns = BTreeMap::new();
+        fns.insert("s".to_string(), "string".to_string());
+        fns.insert("n".to_string(), "u32".to_string());
+        fns.insert("blank".to_string(), String::new());
+        let structs = BTreeMap::new();
+        let env = empty_env(&vars, &fns, &structs);
+        // A `string`-returning call flowing where `u32` is expected — a mismatch the flat inference
+        // (which returned `None` for every `Call`) could never see.
+        assert_eq!(
+            check_mismatch(&env, &Expr::Call { callee: "s".into(), args: vec![] }, "u32"),
+            Some("string".into())
+        );
+        // Same type ⇒ no mismatch; blank return / unknown expected ⇒ accept (None).
+        assert_eq!(
+            check_mismatch(&env, &Expr::Call { callee: "n".into(), args: vec![] }, "u32"),
+            None
+        );
+        assert_eq!(
+            check_mismatch(&env, &Expr::Call { callee: "blank".into(), args: vec![] }, "u32"),
+            None
+        );
+        assert_eq!(
+            check_mismatch(&env, &Expr::Call { callee: "s".into(), args: vec![] }, ""),
+            None
+        );
     }
 
     // --- Frozen reference implementations: verbatim copies of the former `middle/mod.rs` free

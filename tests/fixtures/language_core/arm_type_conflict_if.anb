@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ARM_TYPE_CONFLICT|incompatible types
+// Bidirectional inference core: `if` arm-join unification catches a genuine cross-category clash
+// (`string` vs `u32`) that the flat inference silently accepted.
+fn main() {
+    let flag = true;
+    let x = if flag { "text" } else { 1 };
+    return 0;
+}

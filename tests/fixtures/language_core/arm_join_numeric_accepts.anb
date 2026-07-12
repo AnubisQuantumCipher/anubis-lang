@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Accept-bias: numeric arms (here both integer) join cleanly — the core never rejects on numeric
+// width/kind, only on a genuine cross-category clash.
+fn main() {
+    let flag = true;
+    let x = if flag { 1 } else { 3 };
+    return 0;
+}

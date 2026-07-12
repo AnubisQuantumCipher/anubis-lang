@@ -132,9 +132,9 @@ impl SemanticContext {
     /// UNEXPECTED = 0 over the whole corpus. Pre-existing diagnostics keep calling
     /// `diagnostics.push(...)` directly and are unaffected.
     ///
-    /// Dead until the first check slice wires it in; kept here so that slice is a one-call change
-    /// rather than a re-plumb.
-    #[allow(dead_code)]
+    /// Wired in by the bidirectional inference-core slice: the arm-join conflict and the
+    /// `Call`/`Index`/`FieldAccess` check-direction mismatches all route through here with
+    /// `shadow_gated=true`.
     fn emit(&mut self, diag: SemanticDiagnostic, shadow_gated: bool) {
         if shadow_gated {
             // A shadow-gated (not-yet-promoted) check NEVER enters the enforcing `diagnostics`
@@ -233,6 +233,10 @@ struct SemanticContext {
     /// Method name → parameter count (including `self`). `None` marks a name defined with more than
     /// one arity across impls, so its direct-call arity is ambiguous and left unchecked.
     method_arities: BTreeMap<String, Option<usize>>,
+    /// Struct name → (field name → declared field type). Registered in pass 1 so the bidirectional
+    /// inference core can synthesize `FieldAccess` results (`p.x` → the declared type of `x` on
+    /// `Point`). Purely additive analysis state — never consulted by codegen (types are erased).
+    struct_fields: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -329,6 +333,13 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
             Item::Enum { name, variants, .. } => {
                 let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
                 ctx.enum_variants.insert(name.clone(), names);
+            }
+            Item::Struct { name, fields, .. } => {
+                // Field name → declared type, for `FieldAccess` synthesis in the inference core.
+                ctx.struct_fields.insert(
+                    name.clone(),
+                    fields.iter().map(|(f, t)| (f.clone(), t.clone())).collect(),
+                );
             }
             Item::Fn {
                 name,
@@ -4281,21 +4292,44 @@ fn check_one_return(
     ctx: &mut SemanticContext,
 ) {
     // Only a CONSTANT has a reliable, stable static type; anything dynamic (variable, call, if/match
-    // over variables, a trailing statement that yields the default 0) is left unchecked. This also
-    // catches `return 5 as u32` from a `-> string` fn — a cast constant the checker trusts elsewhere.
-    if !is_constant_expr(expr) {
+    // over variables, a trailing statement that yields the default 0) is left unchecked here. This
+    // also catches `return 5 as u32` from a `-> string` fn — a cast constant the checker trusts.
+    if is_constant_expr(expr) {
+        if let Some(actual) = infer_expr_type_scoped(expr, scope) {
+            if !types_assignable(rty, &actual) {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
+                    message: format!(
+                        "function declared `-> {}` but returns a value of type `{}`",
+                        rty, actual
+                    ),
+                    span: Some((span.start, span.end)),
+                });
+            }
+        }
         return;
     }
-    if let Some(actual) = infer_expr_type_scoped(expr, scope) {
-        if !types_assignable(rty, &actual) {
-            ctx.diagnostics.push(SemanticDiagnostic {
-                code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
-                message: format!(
-                    "function declared `-> {}` but returns a value of type `{}`",
-                    rty, actual
-                ),
-                span: Some((span.start, span.end)),
-            });
+    // A `Call`/`Index`/`FieldAccess` return — invisible to the flat inference above (it returned
+    // `None` for all three) — can now be synthesized and checked against the declared return type
+    // (e.g. `return helper()` where `helper -> string` in a `-> u32` fn). Restricted to exactly those
+    // three newly-synthesizable forms so a variable/`if`/`match` return stays dynamic as before.
+    // PROMOTED to enforcing — corpus shadow diff UNEXPECTED=0.
+    if matches!(
+        expr,
+        Expr::Call { .. } | Expr::Index { .. } | Expr::FieldAccess { .. }
+    ) {
+        if let Some(actual) = check_mismatch_scoped(expr, rty, scope, ctx) {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_RETURN_TYPE_MISMATCH".into()),
+                    message: format!(
+                        "function declared `-> {}` but returns a value of type `{}`",
+                        rty, actual
+                    ),
+                    span: Some((span.start, span.end)),
+                },
+                false,
+            );
         }
     }
 }
@@ -4381,7 +4415,13 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
         // block-wrapped branches inferred `None`, letting an all-float nested `if` escape the
         // float→int narrowing rule.
         Expr::Block { tail, .. } => tail.as_ref().and_then(|t| infer_expr_type_scoped(t, scope)),
-        Expr::Index { .. } => None, // dynamic
+        // `Call`/`Index`/`FieldAccess` are now genuinely synthesizable — but in the bidirectional core
+        // (`ty::synth`), not here. This flat function stays the LEGACY substrate for the checks that
+        // are already enforcing (arg/return/let-init type checks that call it directly); returning
+        // `None` for these three preserves their exact behavior so the new synthesis lands only
+        // through the shadow-gated `check_mismatch_scoped` path until a check is promoted. See the
+        // inference-core section of `middle/ty.rs`.
+        Expr::Index { .. } => None,
         Expr::FieldAccess { .. } => None,
         Expr::Call { .. } => None,
         Expr::Cast { ty, .. } => Some(ty.clone()),
@@ -4508,6 +4548,54 @@ fn value_branch_type(branches: &[Option<String>]) -> Option<String> {
         .map(|t| (*t).clone())
 }
 
+/// The owned variable-type view the bidirectional inference core (`ty::synth`) consults, projected
+/// from the current lexical scope: variable name → its inferred/declared annotation.
+fn scope_vars(scope: &BTreeMap<String, ScopeBinding>) -> BTreeMap<String, String> {
+    scope
+        .iter()
+        .filter_map(|(k, b)| b.info.ty.clone().map(|t| (k.clone(), t)))
+        .collect()
+}
+
+/// Arm-join conflict across the branches of an `if`/`match`, via the bidirectional core. Returns the
+/// first genuine cross-category clash as `(left, right)` annotations, or `None` when the arms join
+/// cleanly (any arm the checker cannot see resolves to `Any` and absorbs). Borrows `ctx` immutably
+/// and returns owned data so the caller can then `emit` the shadow-gated diagnostic without a
+/// borrow conflict.
+fn arm_join_conflict_scoped(
+    branches: &[&Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<(String, String)> {
+    let vars = scope_vars(scope);
+    let env = ty::InferEnv {
+        vars: &vars,
+        fns: &ctx.fn_ret_types,
+        structs: &ctx.struct_fields,
+    };
+    ty::arm_join_conflict(&env, branches)
+}
+
+/// Check-direction mismatch for a value flowing into `expected`, via the bidirectional core. Unlike
+/// the flat `infer_expr_type_scoped` (which returns `None` for every `Call`/`Index`/`FieldAccess`),
+/// this synthesizes those; it returns the concrete synthesized type when it is NOT assignable to
+/// `expected`, else `None` (the accept direction — `Any`/unbound-var/generic and every assignable
+/// type). Borrows `ctx` immutably; the caller emits.
+fn check_mismatch_scoped(
+    expr: &Expr,
+    expected: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<String> {
+    let vars = scope_vars(scope);
+    let env = ty::InferEnv {
+        vars: &vars,
+        fns: &ctx.fn_ret_types,
+        structs: &ctx.struct_fields,
+    };
+    ty::check_mismatch(&env, expr, expected)
+}
+
 /// Walk expressions for A+ call typing + match exhaustiveness (fail-closed).
 fn check_expr_semantics(
     expr: &Expr,
@@ -4541,6 +4629,22 @@ fn check_expr_semantics(
                                     span: None,
                                 });
                             }
+                        } else if let Some(got) = check_mismatch_scoped(arg, expected, scope, ctx) {
+                            // The bidirectional core can type a `Call`/`Index`/`FieldAccess` argument
+                            // the flat inference above returned `None` for (e.g.
+                            // `takes_u32(returns_string())`). PROMOTED to enforcing — corpus shadow
+                            // diff UNEXPECTED=0.
+                            ctx.emit(
+                                SemanticDiagnostic {
+                                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                    message: format!(
+                                        "type mismatch: argument {} of `{}` expects `{}`, got `{}`",
+                                        i, callee, expected, got
+                                    ),
+                                    span: None,
+                                },
+                                false,
+                            );
                         }
                     }
                 }
@@ -4609,6 +4713,23 @@ fn check_expr_semantics(
             check_expr_semantics(cond, scope, ctx);
             check_expr_semantics(then, scope, ctx);
             check_expr_semantics(else_, scope, ctx);
+            // Arm-join type conflict. `if c { "a" } else { 1 }` is silently accepted by the flat
+            // inference; the bidirectional core unifies the branch types and surfaces a genuine
+            // cross-category clash. PROMOTED to enforcing (`shadow_gated=false`): the corpus shadow
+            // diff reported UNEXPECTED=0 (fires on zero currently-accepted programs).
+            if let Some((a, b)) = arm_join_conflict_scoped(&[&**then, &**else_], scope, ctx) {
+                ctx.emit(
+                    SemanticDiagnostic {
+                        code: Some("ANUBIS_ARM_TYPE_CONFLICT".into()),
+                        message: format!(
+                            "type mismatch: `if` branches have incompatible types `{}` and `{}`",
+                            a, b
+                        ),
+                        span: None,
+                    },
+                    false,
+                );
+            }
         }
         Expr::ArrayLiteral { elements } => {
             for e in elements {
@@ -4654,6 +4775,22 @@ fn check_expr_semantics(
                 check_expr_semantics(&arm.body, scope, ctx);
             }
             check_match_exhaustiveness(scrutinee, arms, scope, ctx);
+            // Arm-join type conflict across the match arms' bodies (same core as the `if` branch join
+            // above). PROMOTED to enforcing — corpus shadow diff UNEXPECTED=0.
+            let bodies: Vec<&Expr> = arms.iter().map(|arm| &arm.body).collect();
+            if let Some((a, b)) = arm_join_conflict_scoped(&bodies, scope, ctx) {
+                ctx.emit(
+                    SemanticDiagnostic {
+                        code: Some("ANUBIS_ARM_TYPE_CONFLICT".into()),
+                        message: format!(
+                            "type mismatch: `match` arms have incompatible types `{}` and `{}`",
+                            a, b
+                        ),
+                        span: None,
+                    },
+                    false,
+                );
+            }
         }
         Expr::CallExpr { callee, args } => {
             check_expr_semantics(callee, scope, ctx);

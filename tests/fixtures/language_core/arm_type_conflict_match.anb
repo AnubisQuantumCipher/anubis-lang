@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ARM_TYPE_CONFLICT|incompatible types
+// Arm-join over `match` arm bodies: a `string` arm and an integer arm cannot unify.
+enum Choice { A, B }
+fn main() {
+    let c = Choice::A;
+    let v = match c {
+        Choice::A => "text",
+        Choice::B => 7,
+        _ => 0,
+    };
+    return 0;
+}

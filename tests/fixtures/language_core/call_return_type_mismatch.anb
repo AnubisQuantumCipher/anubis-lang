@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_RETURN_TYPE_MISMATCH|returns a value of type
+// Call-return synthesis in check-direction: a `-> u32` function returning a `string`-returning call.
+fn label() -> string { return "hi"; }
+fn count() -> u32 { return label(); }
+fn main() { return count(); }

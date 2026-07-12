@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH|type mismatch
+// FieldAccess synthesis: `r.name` on a typed struct param resolves to the field's declared type
+// (`string`), caught flowing into a `u32` parameter.
+struct Rec { name: string, id: u32 }
+fn takes_u32(n: u32) { return n; }
+fn use_rec(r: Rec) {
+    takes_u32(r.name);
+    return 0;
+}
+fn main() {
+    return use_rec(Rec { name: "x", id: 5 });
+}
