@@ -3206,6 +3206,74 @@ fn main() {
     }
 
     #[test]
+    fn phase3_uses_authorizes_safe_io_and_verified_attr() {
+        // C5 crown: declared uses AUTHORIZES Safe-mode write/network (no hard forbid).
+        tc_ok(r#"fn main() uses(fs.write) { write_file("a.txt", "hi"); }"#)
+            .expect("uses(fs.write) must authorize write_file in Safe");
+        tc_ok(r#"fn main() uses(net.send) { send("h", 80, "x"); }"#)
+            .expect("uses(net.send) must authorize send in Safe");
+        // Still forbidden without uses:
+        let err = tc_ok(r#"fn main() { write_file("a.txt", "hi"); }"#)
+            .expect_err("write without uses must forbid");
+        assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN"), "got {err}");
+        // Undeclared effect when uses is present but wrong:
+        let err = tc_ok(r#"fn main() uses(fs.read) { write_file("a.txt", "hi"); }"#)
+            .expect_err("write under uses(fs.read) must reject");
+        assert!(
+            err.contains("ANUBIS_UNDECLARED_EFFECT") || err.contains("ANUBIS_EFFECT_FORBIDDEN"),
+            "got {err}"
+        );
+        // C4+C5: declared net + read without declassify → taint fail-closed (and net is authorized).
+        let err = tc_ok(
+            r#"fn main() uses(fs.read, net.send) {
+    let d = read_file("secret.txt");
+    send("evil", 80, d);
+}"#,
+        )
+        .expect_err("read→send without declassify must reject");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got {err}"
+        );
+        // declassify path authorized:
+        tc_ok(
+            r#"fn main() uses(fs.read, net.send) {
+    let d = read_file("secret.txt");
+    let c = declassify(d, "p", "r");
+    send("h", 80, c);
+}"#,
+        )
+        .expect("declassified read→send with uses must accept");
+        // @verified attribute forces uses requirement:
+        let err = tc_ok(
+            r#"@verified
+fn main() {
+    let d = read_file("x");
+    print(len(d));
+}"#,
+        )
+        .expect_err("@verified without uses must reject");
+        assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got {err}");
+        tc_ok(
+            r#"@verified
+fn main() uses(fs.read) {
+    let d = read_file("x");
+    print(len(d));
+}"#,
+        )
+        .expect("@verified + uses(fs.read) must accept");
+        // #[verified] rust-style also accepted:
+        tc_ok(
+            r#"#[verified]
+fn main() uses(fs.read) {
+    let d = read_file("x");
+    print(len(d));
+}"#,
+        )
+        .expect("#[verified] + uses must accept");
+    }
+
+    #[test]
     fn governed_io_read_write_file_executes() {
         // Phase-3 C3: read_file/write_file are real run builtins (not hard-rejected). Goldens with
         // no I/O remain byte-identical because these only fire when the names are used.

@@ -1,0 +1,8 @@
+// Multi-file Phase-3: import io, use declared fs.read, fail-closed taint without declassify is
+// tested separately. This program is the clean path.
+import io;
+
+fn main() uses(fs.read) {
+    let d = io::load("hello.txt");
+    print(len(d));
+}

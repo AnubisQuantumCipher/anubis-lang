@@ -860,12 +860,32 @@ fn main() -> Result<()> {
             let src = std::fs::read_to_string(&input)?;
             // Rich, rustc-grade parse diagnostics (path:line:col + source line + caret) for the
             // check verdict, instead of a bare `; `-joined message.
-            let parse_err = anubis_compiler::frontend::render_parse_errors(&src, input.to_str());
-            let ast = if parse_err.is_none() {
+            let mut parse_err =
+                anubis_compiler::frontend::render_parse_errors(&src, input.to_str());
+            let mut ast = if parse_err.is_none() {
                 parse_source(&src).ok()
             } else {
                 None
             };
+            // Multi-file modules: same combine path as `run` so `import` projects typecheck.
+            if parse_err.is_none()
+                && input.is_file()
+                && ast
+                    .as_ref()
+                    .is_some_and(|a| a.items.iter().any(|it| matches!(it, Item::Import { .. })))
+            {
+                match anubis_compiler::resolve::combine_from_entry(&input) {
+                    Ok(items) => {
+                        if let Some(a) = ast.as_mut() {
+                            a.items = items;
+                        }
+                    }
+                    Err(e) => {
+                        parse_err = Some(e);
+                        ast = None;
+                    }
+                }
+            }
 
             let mode = if let Some(ref a) = ast {
                 first_mode(&a.items).unwrap_or(Mode::Safe)

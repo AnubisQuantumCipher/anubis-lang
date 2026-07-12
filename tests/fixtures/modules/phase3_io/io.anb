@@ -1,0 +1,4 @@
+// Library: governed file read for Phase-3 multi-file demo.
+pub fn load(path: string) -> string uses(fs.read) {
+    return read_file(path);
+}

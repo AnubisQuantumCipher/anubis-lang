@@ -202,9 +202,15 @@ is honest in **both** directions (never over-claim, never under-claim):
 - **I/O writes/sends are sinks:** `write_file` / `write` / `send` / `network_send` are in `is_sink`,
   so undeclassified read→write/send is `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` (same machinery as
   `sink(...)`).
-- **Verification lane:** `typecheck_ex(..., verified=true)` and CLI `anubis check --verified` /
-  `anubis run --verified`. Capability effects without a `uses(...)` clause fail closed
-  (`ANUBIS_UNDECLARED_EFFECT`). Default lane remains permissive when `uses` is absent.
+- **Declared `uses` authorizes Safe-mode I/O (dual-mode crown):** `uses(fs.write)` allows
+  `write_file` in Safe; `uses(net.send)` allows `send`/`connect`; without the matching uses,
+  Safe still fails with `ANUBIS_EFFECT_FORBIDDEN_IN_MODE`. (Earlier gap: hard forbids ignored uses.)
+- **Verification lane:** `typecheck_ex(..., verified=true)`, CLI `--verified`, and item attrs
+  `@verified` / `#[verified]`. Capability effects without a `uses(...)` clause fail closed
+  (`ANUBIS_UNDECLARED_EFFECT`). Default lane remains permissive when `uses` is absent (for
+  `fs.read`; write/net still need uses or research).
+- **Multi-file:** `anubis check` resolves `import` graphs like `run` (`combine_from_entry`). Fixture:
+  `tests/fixtures/modules/phase3_io/` (clean path + leak path).
 
 ## DEFERRED (Phase-3 A3 — field/element-granular taint)
 

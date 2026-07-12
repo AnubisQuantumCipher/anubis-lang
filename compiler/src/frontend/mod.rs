@@ -1356,6 +1356,56 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     span: Span { start, end },
                 });
             }
+            // Phase-3 C5: `#[verified]` outer attributes (hash was previously dropped by `_`).
+            '#' => {
+                if matches!(chars.peek(), Some(&(_, '['))) {
+                    chars.next(); // '['
+                    let mut name = String::new();
+                    while let Some(&(_, nc)) = chars.peek() {
+                        if nc.is_ascii_alphanumeric() || nc == '_' {
+                            let (idx, c) = chars.next().unwrap();
+                            name.push(c);
+                            let _ = idx;
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Some(&(cidx, ']')) = chars.peek() {
+                        chars.next();
+                        tokens.push(SpannedToken {
+                            token: Token::Other(format!("#[{name}]")),
+                            span: Span {
+                                start,
+                                end: cidx + 1,
+                            },
+                        });
+                    } else {
+                        // Incomplete `#[` — emit bare pieces so diagnostics still locate them.
+                        tokens.push(SpannedToken {
+                            token: Token::Other("#".into()),
+                            span: Span {
+                                start,
+                                end: start + 1,
+                            },
+                        });
+                        tokens.push(SpannedToken {
+                            token: Token::LBracket,
+                            span: Span {
+                                start: start + 1,
+                                end: start + 2,
+                            },
+                        });
+                    }
+                } else {
+                    tokens.push(SpannedToken {
+                        token: Token::Other("#".into()),
+                        span: Span {
+                            start,
+                            end: start + 1,
+                        },
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -1524,6 +1574,24 @@ impl Parser {
             if self.at_eof() {
                 break;
             }
+            // Phase-3 C5: Rust-style `#[verified]` lexed as a single Other("#[verified]").
+            if let Some(Token::Other(s)) = self.tokens.get(self.pos).map(|t| &t.token) {
+                if s.starts_with("#[") && s.ends_with(']') {
+                    let inner = s
+                        .trim_start_matches("#[")
+                        .trim_end_matches(']')
+                        .trim()
+                        .to_string();
+                    self.bump();
+                    if !inner.is_empty() {
+                        attrs.push(Attribute {
+                            name: inner,
+                            args: vec![],
+                        });
+                    }
+                    continue;
+                }
+            }
             let tok = match self.tokens.get(self.pos) {
                 Some(t) => &t.token,
                 None => break,
@@ -1536,7 +1604,14 @@ impl Parser {
                 || s.starts_with('@')
                 || matches!(
                     s.as_str(),
-                    "safe" | "research" | "proof" | "audit" | "poc" | "fuzz" | "defensive"
+                    "safe"
+                        | "research"
+                        | "proof"
+                        | "audit"
+                        | "poc"
+                        | "fuzz"
+                        | "defensive"
+                        | "verified"
                 ))
             {
                 break;
@@ -3626,9 +3701,10 @@ impl Parser {
         while !self.at_eof()
             && !(depth == 0
                 && (stops.iter().any(|stop| self.check_token(stop))
-                    // Also stop at a B2 `requires`/`ensures` contract clause (matched by value —
-                    // no type is named these), so it is not absorbed into the type.
-                    || matches!(&self.current().token, Token::Ident(k) if k == "requires" || k == "ensures")))
+                    // Also stop at a B2 `requires`/`ensures` contract clause or Phase-3 `uses`
+                    // effect clause (matched by value — no type is named these), so they are not
+                    // absorbed into the return-type string.
+                    || matches!(&self.current().token, Token::Ident(k) if k == "requires" || k == "ensures" || k == "uses")))
         {
             let Some(tok) = self.bump() else {
                 break;

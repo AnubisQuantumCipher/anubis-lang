@@ -177,9 +177,13 @@ struct SemanticContext {
     /// Combined at call sites with argument taint: `wrap` with `returns_taint_of_params={0}` makes
     /// `wrap(tainted)` a taint source (even through further let/return chains).
     param_return_taint: BTreeMap<String, BTreeSet<usize>>,
-    /// Phase-3 C5: verification lane (`--verified` / `#[verified]`). When set, capability effects
-    /// require an explicit `uses(...)` declaration (fail-closed undeclared effects).
+    /// Phase-3 C5: verification lane (`--verified` / `@verified` / `#[verified]`). When set,
+    /// capability effects require an explicit `uses(...)` declaration (fail-closed).
     verified: bool,
+    /// Declared capability set for the function currently under analysis (from `uses(...)`).
+    /// Empty means the function has no `uses` clause. In Safe mode, write/network/shell are
+    /// forbidden unless the matching cap is present here (declared I/O is authorized).
+    authorized_caps: BTreeSet<String>,
     /// Method name → parameter count (including `self`). `None` marks a name defined with more than
     /// one arity across impls, so its direct-call arity is ambiguous and left unchecked.
     method_arities: BTreeMap<String, Option<usize>>,
@@ -616,6 +620,12 @@ fn collect_items(
                         });
                     }
                 }
+                // Per-item verification lane: `@verified` / `#[verified]` on this fn.
+                let item_verified = attributes.iter().any(|a| a.name == "verified");
+                let saved_verified = ctx.verified;
+                if item_verified {
+                    ctx.verified = true;
+                }
                 analyze_function(
                     name,
                     module,
@@ -630,6 +640,7 @@ fn collect_items(
                     false,
                     ctx,
                 );
+                ctx.verified = saved_verified;
             }
             Item::Struct { .. } => {
                 // Minimal support for this slice: structs are parsed and preserved in AST;
@@ -654,6 +665,7 @@ fn collect_items(
                         requires,
                         ensures,
                         effects: declared_effects,
+                        attributes,
                         ..
                     } = m
                     {
@@ -662,6 +674,11 @@ fn collect_items(
                         } else {
                             *mode
                         };
+                        let item_verified = attributes.iter().any(|a| a.name == "verified");
+                        let saved_verified = ctx.verified;
+                        if item_verified {
+                            ctx.verified = true;
+                        }
                         analyze_function(
                             name,
                             module,
@@ -676,6 +693,7 @@ fn collect_items(
                             true,
                             ctx,
                         );
+                        ctx.verified = saved_verified;
                     }
                 }
             }
@@ -710,6 +728,11 @@ fn analyze_function(
     // against the first's model. Reset per function. (Obligations/constraints accumulate globally.)
     ctx.solver_int_vars.clear();
     ctx.symbolic_widths.clear();
+    // Authorize declared capabilities for Safe-mode I/O (Phase-3 C5 dual-mode crown).
+    ctx.authorized_caps = declared_effects
+        .iter()
+        .map(|e| normalize_effect_name(e))
+        .collect();
 
     // A declared `-> T` return type is checked against any return value that is a LITERAL of an
     // unambiguously incompatible type (a bare string/number/bool/list/map/enum). Non-literal
@@ -1663,36 +1686,39 @@ fn analyze_expr_effect(
             }
             if callee == "shell" || callee == "exec" || callee == "system" {
                 effects.push("shell".to_string());
-                if mode == Mode::Safe {
+                // Safe: forbidden unless `uses(shell)` (or uses(exec)) declared on this function.
+                if mode == Mode::Safe && !safe_cap_allowed(ctx, "shell") {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
-                        message: "safe mode shell/exec effect is forbidden (use @research/@poc with authorization)".to_string(),
+                        message: "safe mode shell/exec effect is forbidden without `uses(shell)` (or use @research/@poc with authorization)".to_string(),
                         span: None,
                     });
                 }
             }
             if callee == "read_file" || callee == "open" {
                 effects.push("file_read".to_string());
-                if mode == Mode::Safe {
-                    // file_read is allowed in safe when declared via uses(fs.read) (C2); record only.
-                }
+                // file_read is allowed in Safe by default (legacy); verified lane still requires uses.
             }
             if callee == "write_file" || callee == "write" {
                 effects.push("file_write".to_string());
-                if mode == Mode::Safe {
+                // Safe: authorized when `uses(fs.write)` is declared on this function.
+                if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
-                        message: "safe mode file_write forbidden".to_string(),
+                        message: "safe mode file_write forbidden without `uses(fs.write)`"
+                            .to_string(),
                         span: None,
                     });
                 }
             }
             if callee.contains("network") || callee == "send" || callee == "connect" {
                 effects.push("network".to_string());
-                if mode == Mode::Safe {
+                // Safe: authorized when `uses(net.send)` (or net.connect) is declared.
+                if mode == Mode::Safe && !safe_cap_allowed(ctx, "net.send") {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
-                        message: "safe mode network effect forbidden".to_string(),
+                        message: "safe mode network effect forbidden without `uses(net.send)`"
+                            .to_string(),
                         span: None,
                     });
                 }
@@ -5114,6 +5140,14 @@ fn capability_effect(inferred: &str) -> Option<String> {
         // Direct sink tags are taint machinery, not I/O capabilities.
         _ => None,
     }
+}
+
+/// Safe-mode capability gate: a restricted effect is allowed only when this function's `uses(...)`
+/// declares the matching capability. Empty `authorized_caps` means no uses clause → deny restricted
+/// effects (write/network/shell). Research/Exploit modes do not consult this (caller already checked mode).
+fn safe_cap_allowed(ctx: &SemanticContext, cap: &str) -> bool {
+    let canon = normalize_effect_name(cap);
+    !ctx.authorized_caps.is_empty() && ctx.authorized_caps.contains(&canon)
 }
 
 fn mode_name(mode: Mode) -> &'static str {
