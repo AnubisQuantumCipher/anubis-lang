@@ -1,0 +1,1334 @@
+// Anubis-SH self-hosting compiler (Phase 8) — single-file ASCII.
+// args: lex|parse|check|compile <file> [-o out] | version
+//
+// Dogfood: the compiler's statement AST is an Anubis `enum` (below), built in
+// parse_stmt and consumed by `match` in jstmt (codegen) and check_stmt (checker).
+// The emitted JSON wire format is unchanged — this is internal representation.
+
+enum Stmt {
+    Let { name: any, ty: any, init: any },
+    Assign { target: any, value: any },
+    Return { value: any },
+    ExprStmt { expr: any },
+    If { cond: any, then_: any, else_: any, has_else: any },
+    While { cond: any, body: any },
+    For { var: any, iter: any, body: any },
+}
+
+// Expression AST. Tuple variants for the atoms (Int/Str/Bool/Var), struct variants
+// for compound nodes. Built in parse_prefix/parse_expr; consumed by `match` in jexpr
+// (codegen) and check_expr (checker). Emitted JSON wire format unchanged.
+enum Expr {
+    None,
+    Int(any),
+    Str(any),
+    Bool(any),
+    Var(any),
+    Call { callee: any, args: any },
+    Binary { op: any, lhs: any, rhs: any },
+    Unary { op: any, expr: any },
+    Index { base: any, index: any },
+    List { elements: any },
+    Range { start: any, end: any },
+    Map { keys: any, vals: any },
+    EnumInit { ty: any, variant: any, shape: any, tuple: any, fnames: any, fexprs: any },
+    IfExpr { cond: any, then_: any, else_: any },
+    Match { scrut: any, arms: any },
+}
+
+fn json_escape(s) {
+    let out = "";
+    let i = 0;
+    while i < len(s) {
+        let c = char_at(s, i);
+        let o = ord(c);
+        out = out + if o == 92 { "\\\\" }
+            else if o == 34 { "\\\"" }
+            else if o == 10 { "\\n" }
+            else if o == 9 { "\\t" }
+            else { c };
+        i = i + 1;
+    }
+    return out;
+}
+
+fn q(s) {
+    return "\"" + json_escape(s) + "\"";
+}
+
+fn jbool(b) {
+    return if b { "true" } else { "false" };
+}
+
+fn jtok(t) {
+    return "{\"kind\":" + q(t["kind"]) + ",\"text\":" + q(t["text"]) + ",\"start\":" + ("" + t["start"]) + ",\"end\":" + ("" + t["end"]) + "}";
+}
+
+fn jtokens(ts) {
+    let out = "[";
+    let i = 0;
+    while i < len(ts) {
+        if i > 0 { out = out + ","; }
+        out = out + jtok(ts[i]);
+        i = i + 1;
+    }
+    return out + "]";
+}
+
+fn is_ws(o) { return o == 32 || o == 9 || o == 10 || o == 13; }
+fn is_alpha(o) { return (o >= 65 && o <= 90) || (o >= 97 && o <= 122) || o == 95; }
+fn is_digit(o) { return o >= 48 && o <= 57; }
+fn is_alnum(o) { return is_alpha(o) || is_digit(o); }
+
+fn is_kw(text) {
+    return text == "fn" || text == "let" || text == "mut" || text == "if" || text == "else" || text == "while" || text == "for" || text == "in" || text == "return" || text == "pub" || text == "true" || text == "false" || text == "requires" || text == "ensures" || text == "uses";
+}
+
+fn tok(kind, text, start, end) {
+    return {"kind": kind, "text": text, "start": start, "end": end};
+}
+
+fn sh_lex(src) {
+    let tokens = [];
+    let i = 0;
+    let n = len(src);
+    while i < n {
+        let c = char_at(src, i);
+        let o = ord(c);
+        if is_ws(o) {
+            i = i + 1;
+        } else {
+            if c == "/" && i + 1 < n && char_at(src, i + 1) == "/" {
+                i = i + 2;
+                while i < n {
+                    if ord(char_at(src, i)) == 10 { break; }
+                    i = i + 1;
+                }
+            } else {
+                if c == "/" && i + 1 < n && char_at(src, i + 1) == "*" {
+                    i = i + 2;
+                    let depth = 1;
+                    while i < n {
+                        if depth == 0 { break; }
+                        if char_at(src, i) == "/" && i + 1 < n && char_at(src, i + 1) == "*" {
+                            depth = depth + 1;
+                            i = i + 2;
+                        } else {
+                            if char_at(src, i) == "*" && i + 1 < n && char_at(src, i + 1) == "/" {
+                                depth = depth - 1;
+                                i = i + 2;
+                            } else {
+                                i = i + 1;
+                            }
+                        }
+                    }
+                } else {
+                    let start = i;
+                    if is_alpha(o) {
+                        i = i + 1;
+                        while i < n {
+                            if is_alnum(ord(char_at(src, i))) == false { break; }
+                            i = i + 1;
+                        }
+                        let text = substr(src, start, i - start);
+                        let kind = "Ident";
+                        if is_kw(text) { kind = "Keyword"; }
+                        push(tokens, tok(kind, text, start, i));
+                    } else {
+                        if is_digit(o) {
+                            i = i + 1;
+                            while i < n {
+                                if is_digit(ord(char_at(src, i))) == false { break; }
+                                i = i + 1;
+                            }
+                            push(tokens, tok("Number", substr(src, start, i - start), start, i));
+                        } else {
+                            if c == "\"" {
+                                i = i + 1;
+                                let text = "";
+                                while i < n {
+                                    if char_at(src, i) == "\"" { break; }
+                                    if char_at(src, i) == "\\" && i + 1 < n {
+                                        let nx = char_at(src, i + 1);
+                                        if nx == "n" { text = text + chr(10); }
+                                        else {
+                                            if nx == "t" { text = text + chr(9); }
+                                            else { text = text + nx; }
+                                        }
+                                        i = i + 2;
+                                    } else {
+                                        text = text + char_at(src, i);
+                                        i = i + 1;
+                                    }
+                                }
+                                if i < n { i = i + 1; }
+                                push(tokens, tok("String", text, start, i));
+                            } else {
+                                let advanced = 0;
+                                if i + 1 < n {
+                                    let two = substr(src, i, 2);
+                                    if two == "::" { push(tokens, tok("ColonColon", "::", start, i + 2)); i = i + 2; advanced = 1; }
+                                    if advanced == 0 && two == ".." { push(tokens, tok("DotDot", "..", start, i + 2)); i = i + 2; advanced = 1; }
+                                    if advanced == 0 && two == "&&" { push(tokens, tok("AmpAmp", "&&", start, i + 2)); i = i + 2; advanced = 1; }
+                                    if advanced == 0 && two == "||" { push(tokens, tok("PipePipe", "||", start, i + 2)); i = i + 2; advanced = 1; }
+                                    if advanced == 0 && two == "==" { push(tokens, tok("EqEq", "==", start, i + 2)); i = i + 2; advanced = 1; }
+                                    if advanced == 0 && two == "!=" { push(tokens, tok("Ne", "!=", start, i + 2)); i = i + 2; advanced = 1; }
+                                    if advanced == 0 && two == "<=" { push(tokens, tok("Le", "<=", start, i + 2)); i = i + 2; advanced = 1; }
+                                    if advanced == 0 && two == ">=" { push(tokens, tok("Ge", ">=", start, i + 2)); i = i + 2; advanced = 1; }
+                                }
+                                if advanced == 0 {
+                                    let kind = if c == "(" { "LParen" }
+                                        else if c == ")" { "RParen" }
+                                        else if c == "{" { "LBrace" }
+                                        else if c == "}" { "RBrace" }
+                                        else if c == "[" { "LBracket" }
+                                        else if c == "]" { "RBracket" }
+                                        else if c == ":" { "Colon" }
+                                        else if c == ";" { "Semi" }
+                                        else if c == "," { "Comma" }
+                                        else if c == "." { "Dot" }
+                                        else if c == "+" { "Plus" }
+                                        else if c == "-" { "Minus" }
+                                        else if c == "*" { "Star" }
+                                        else if c == "/" { "Slash" }
+                                        else if c == "%" { "Percent" }
+                                        else if c == "=" { "Eq" }
+                                        else if c == "<" { "Lt" }
+                                        else if c == ">" { "Gt" }
+                                        else if c == "!" { "Bang" }
+                                        else if c == "&" { "Amp" }
+                                        else if c == "|" { "Pipe" }
+                                        else { "Other" };
+                                    push(tokens, tok(kind, c, start, start + 1));
+                                    i = i + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return tokens;
+}
+
+// Parser: integer pos threaded in results as "pos"
+fn perr(msg, pos) { return {"ok": false, "err": msg, "pos": pos}; }
+fn pok(node, pos) { return {"ok": true, "node": node, "pos": pos}; }
+
+fn prec_of(op) {
+    return if op == "||" { 1 }
+        else if op == "&&" { 2 }
+        else if op == "==" || op == "!=" { 3 }
+        else if op == "<" || op == ">" || op == "<=" || op == ">=" { 4 }
+        else if op == "+" || op == "-" { 5 }
+        else if op == "*" || op == "/" || op == "%" { 6 }
+        else { 0 };
+}
+
+fn at_end(tokens, pos) { return pos >= len(tokens); }
+fn peek(tokens, pos) {
+    if at_end(tokens, pos) { return {"kind": "Eof", "text": "", "start": 0, "end": 0}; }
+    return tokens[pos];
+}
+fn kind_is(tokens, pos, kind) { return peek(tokens, pos)["kind"] == kind; }
+fn text_is(tokens, pos, text) { return peek(tokens, pos)["text"] == text; }
+
+fn parse_prefix(tokens, pos) {
+    let t = peek(tokens, pos);
+    if t["text"] == "if" && t["kind"] == "Keyword" {
+        return parse_if_expr(tokens, pos);
+    }
+    if t["text"] == "match" && t["kind"] == "Ident" {
+        return parse_match_expr(tokens, pos);
+    }
+    if t["kind"] == "Number" {
+        return pok(Expr::Int(t["text"]), pos + 1);
+    }
+    if t["kind"] == "String" {
+        return pok(Expr::Str(t["text"]), pos + 1);
+    }
+    if t["text"] == "true" {
+        return pok(Expr::Bool(true), pos + 1);
+    }
+    if t["text"] == "false" {
+        return pok(Expr::Bool(false), pos + 1);
+    }
+    if t["kind"] == "Ident" || t["kind"] == "Keyword" {
+        // Keywords may be used as ordinary names in SH sources (e.g. list named `requires`).
+        let name = t["text"];
+        if name == "true" {
+            return pok(Expr::Bool(true), pos + 1);
+        }
+        if name == "false" {
+            return pok(Expr::Bool(false), pos + 1);
+        }
+        pos = pos + 1;
+        if kind_is(tokens, pos, "ColonColon") {
+            return parse_enum_init(tokens, pos + 1, name);
+        }
+        if kind_is(tokens, pos, "LParen") {
+            pos = pos + 1;
+            let args = [];
+            if kind_is(tokens, pos, "RParen") == false {
+                let a0 = parse_expr(tokens, pos, 0);
+                if a0["ok"] == false { return a0; }
+                push(args, a0["node"]);
+                pos = a0["pos"];
+                while kind_is(tokens, pos, "Comma") {
+                    pos = pos + 1;
+                    let a = parse_expr(tokens, pos, 0);
+                    if a["ok"] == false { return a; }
+                    push(args, a["node"]);
+                    pos = a["pos"];
+                }
+            }
+            if kind_is(tokens, pos, "RParen") == false { return perr("expected )", pos); }
+            pos = pos + 1;
+            return pok(Expr::Call { callee: name, args: args }, pos);
+        }
+        return pok(Expr::Var(name), pos);
+    }
+    if t["kind"] == "LParen" {
+        let e = parse_expr(tokens, pos + 1, 0);
+        if e["ok"] == false { return e; }
+        pos = e["pos"];
+        if kind_is(tokens, pos, "RParen") == false { return perr("expected )", pos); }
+        return pok(e["node"], pos + 1);
+    }
+    if t["kind"] == "LBracket" {
+        pos = pos + 1;
+        let els = [];
+        if kind_is(tokens, pos, "RBracket") == false {
+            let e0 = parse_expr(tokens, pos, 0);
+            if e0["ok"] == false { return e0; }
+            push(els, e0["node"]);
+            pos = e0["pos"];
+            while kind_is(tokens, pos, "Comma") {
+                pos = pos + 1;
+                let e = parse_expr(tokens, pos, 0);
+                if e["ok"] == false { return e; }
+                push(els, e["node"]);
+                pos = e["pos"];
+            }
+        }
+        if kind_is(tokens, pos, "RBracket") == false { return perr("expected ]", pos); }
+        return pok(Expr::List { elements: els }, pos + 1);
+    }
+    if t["kind"] == "LBrace" {
+        // map literal: { "k": expr, ... }  (expression position)
+        pos = pos + 1;
+        let keys = [];
+        let vals = [];
+        if kind_is(tokens, pos, "RBrace") == false {
+            while true {
+                let kt = peek(tokens, pos);
+                if kt["kind"] != "String" && kt["kind"] != "Ident" && kt["kind"] != "Keyword" {
+                    return perr("map key", pos);
+                }
+                pos = pos + 1;
+                let key = kt["text"];
+                if kind_is(tokens, pos, "Colon") == false { return perr("expected :", pos); }
+                pos = pos + 1;
+                let v = parse_expr(tokens, pos, 0);
+                if v["ok"] == false { return v; }
+                push(keys, key);
+                push(vals, v["node"]);
+                pos = v["pos"];
+                if kind_is(tokens, pos, "Comma") {
+                    pos = pos + 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        if kind_is(tokens, pos, "RBrace") == false { return perr("expected }", pos); }
+        return pok(Expr::Map { keys: keys, vals: vals }, pos + 1);
+    }
+    if t["kind"] == "Bang" || t["kind"] == "Minus" {
+        let op = t["text"];
+        let e = parse_prefix(tokens, pos + 1);
+        if e["ok"] == false { return e; }
+        return pok(Expr::Unary { op: op, expr: e["node"] }, e["pos"]);
+    }
+    return perr("bad expr near " + t["text"], pos);
+}
+
+fn parse_expr(tokens, pos, min_prec) {
+    let left = parse_prefix(tokens, pos);
+    if left["ok"] == false { return left; }
+    let node = left["node"];
+    pos = left["pos"];
+    while kind_is(tokens, pos, "LBracket") {
+        let ix = parse_expr(tokens, pos + 1, 0);
+        if ix["ok"] == false { return ix; }
+        pos = ix["pos"];
+        if kind_is(tokens, pos, "RBracket") == false { return perr("expected ]", pos); }
+        pos = pos + 1;
+        node = Expr::Index { base: node, index: ix["node"] };
+    }
+    while true {
+        let t = peek(tokens, pos);
+        let p = prec_of(t["text"]);
+        if p == 0 || p < min_prec { break; }
+        let op = t["text"];
+        let right = parse_expr(tokens, pos + 1, p + 1);
+        if right["ok"] == false { return right; }
+        node = Expr::Binary { op: op, lhs: node, rhs: right["node"] };
+        pos = right["pos"];
+    }
+    return pok(node, pos);
+}
+
+fn parse_type(tokens, pos) {
+    let t = peek(tokens, pos);
+    if t["kind"] == "Ident" || t["kind"] == "Keyword" {
+        return {"ok": true, "ty": t["text"], "pos": pos + 1};
+    }
+    return perr("type", pos);
+}
+
+// Enum construction: Name::Variant | Name::Variant(a, b) | Name::Variant { f: e, ... }
+// `pos` points at the variant name token (just past `::`); `ty` is the enum name.
+fn parse_enum_init(tokens, pos, ty) {
+    let vt = peek(tokens, pos);
+    let variant = vt["text"];
+    pos = pos + 1;
+    if kind_is(tokens, pos, "LParen") {
+        pos = pos + 1;
+        let tup = [];
+        if kind_is(tokens, pos, "RParen") == false {
+            let a0 = parse_expr(tokens, pos, 0);
+            if a0["ok"] == false { return a0; }
+            push(tup, a0["node"]);
+            pos = a0["pos"];
+            while kind_is(tokens, pos, "Comma") {
+                pos = pos + 1;
+                let a = parse_expr(tokens, pos, 0);
+                if a["ok"] == false { return a; }
+                push(tup, a["node"]);
+                pos = a["pos"];
+            }
+        }
+        if kind_is(tokens, pos, "RParen") == false { return perr("expected ) in variant", pos); }
+        pos = pos + 1;
+        return pok(Expr::EnumInit { ty: ty, variant: variant, shape: "tuple", tuple: tup, fnames: [], fexprs: [] }, pos);
+    }
+    if kind_is(tokens, pos, "LBrace") {
+        pos = pos + 1;
+        let fnames = [];
+        let fexprs = [];
+        if kind_is(tokens, pos, "RBrace") == false {
+            while true {
+                let fnt = peek(tokens, pos);
+                pos = pos + 1;
+                if kind_is(tokens, pos, "Colon") == false { return perr("expected : in variant", pos); }
+                pos = pos + 1;
+                let v = parse_expr(tokens, pos, 0);
+                if v["ok"] == false { return v; }
+                push(fnames, fnt["text"]);
+                push(fexprs, v["node"]);
+                pos = v["pos"];
+                if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+            }
+        }
+        if kind_is(tokens, pos, "RBrace") == false { return perr("expected } in variant", pos); }
+        pos = pos + 1;
+        return pok(Expr::EnumInit { ty: ty, variant: variant, shape: "struct", tuple: [], fnames: fnames, fexprs: fexprs }, pos);
+    }
+    return pok(Expr::EnumInit { ty: ty, variant: variant, shape: "unit", tuple: [], fnames: [], fexprs: [] }, pos);
+}
+
+// if-expression: `if cond { block } else { block }` / `else if ...` chains.
+// `pos` points at the `if` keyword.
+fn parse_if_expr(tokens, pos) {
+    let cond = parse_expr(tokens, pos + 1, 0);
+    if cond["ok"] == false { return cond; }
+    let th = parse_block(tokens, cond["pos"]);
+    if th["ok"] == false { return th; }
+    pos = th["pos"];
+    let el = [];
+    if text_is(tokens, pos, "else") {
+        pos = pos + 1;
+        if text_is(tokens, pos, "if") {
+            let nested = parse_if_expr(tokens, pos);
+            if nested["ok"] == false { return nested; }
+            el = [Stmt::ExprStmt { expr: nested["node"] }];
+            pos = nested["pos"];
+        } else {
+            let eb = parse_block(tokens, pos);
+            if eb["ok"] == false { return eb; }
+            el = eb["stmts"];
+            pos = eb["pos"];
+        }
+    }
+    return pok(Expr::IfExpr { cond: cond["node"], then_: th["stmts"], else_: el }, pos);
+}
+
+// match-expression: `match scrut { pat => expr, ... }`.  `pos` points at `match`.
+fn parse_match_expr(tokens, pos) {
+    let scrut = parse_expr(tokens, pos + 1, 0);
+    if scrut["ok"] == false { return scrut; }
+    pos = scrut["pos"];
+    if kind_is(tokens, pos, "LBrace") == false { return perr("expected { in match", pos); }
+    pos = pos + 1;
+    let arms = [];
+    while at_end(tokens, pos) == false && kind_is(tokens, pos, "RBrace") == false {
+        let pat = parse_pattern(tokens, pos);
+        if pat["ok"] == false { return pat; }
+        pos = pat["pos"];
+        // `=>` lexes as Eq then Gt (no fat-arrow token in the SH lexer).
+        if kind_is(tokens, pos, "Eq") == false { return perr("expected => in match arm", pos); }
+        pos = pos + 1;
+        if kind_is(tokens, pos, "Gt") == false { return perr("expected => in match arm", pos); }
+        pos = pos + 1;
+        let body = parse_expr(tokens, pos, 0);
+        if body["ok"] == false { return body; }
+        pos = body["pos"];
+        push(arms, {"pat": pat["node"], "body": body["node"]});
+        if kind_is(tokens, pos, "Comma") { pos = pos + 1; }
+    }
+    if kind_is(tokens, pos, "RBrace") == false { return perr("expected } in match", pos); }
+    pos = pos + 1;
+    return pok(Expr::Match { scrut: scrut["node"], arms: arms }, pos);
+}
+
+// match patterns: `_` | Enum::Variant | Enum::Variant(a, b) | Enum::Variant { f: bind, ... }
+fn parse_pattern(tokens, pos) {
+    let t = peek(tokens, pos);
+    if t["text"] == "_" {
+        return pok({"pk": "wild"}, pos + 1);
+    }
+    let ty = t["text"];
+    pos = pos + 1;
+    if kind_is(tokens, pos, "ColonColon") {
+        pos = pos + 1;
+        let vt = peek(tokens, pos);
+        let variant = vt["text"];
+        pos = pos + 1;
+        if kind_is(tokens, pos, "LParen") {
+            pos = pos + 1;
+            let binds = [];
+            if kind_is(tokens, pos, "RParen") == false {
+                while true {
+                    let b = peek(tokens, pos);
+                    pos = pos + 1;
+                    push(binds, b["text"]);
+                    if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+                }
+            }
+            if kind_is(tokens, pos, "RParen") == false { return perr("expected ) in pattern", pos); }
+            pos = pos + 1;
+            return pok({"pk": "enum", "ty": ty, "variant": variant, "shape": "tuple", "binds": binds}, pos);
+        }
+        if kind_is(tokens, pos, "LBrace") {
+            pos = pos + 1;
+            let fnames = [];
+            let binds = [];
+            if kind_is(tokens, pos, "RBrace") == false {
+                while true {
+                    let fnt = peek(tokens, pos);
+                    pos = pos + 1;
+                    if kind_is(tokens, pos, "Colon") == false { return perr("expected : in pattern", pos); }
+                    pos = pos + 1;
+                    let bnt = peek(tokens, pos);
+                    pos = pos + 1;
+                    push(fnames, fnt["text"]);
+                    push(binds, bnt["text"]);
+                    if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+                }
+            }
+            if kind_is(tokens, pos, "RBrace") == false { return perr("expected } in pattern", pos); }
+            pos = pos + 1;
+            return pok({"pk": "enum", "ty": ty, "variant": variant, "shape": "struct", "fnames": fnames, "binds": binds}, pos);
+        }
+        return pok({"pk": "enum", "ty": ty, "variant": variant, "shape": "unit"}, pos);
+    }
+    return pok({"pk": "wild"}, pos);
+}
+
+// top-level enum declaration: `enum Name { Unit, Tuple(T), Struct { f: T } }`
+fn parse_enum(tokens, pos) {
+    pos = pos + 1;
+    let name_t = peek(tokens, pos);
+    let name = name_t["text"];
+    pos = pos + 1;
+    if kind_is(tokens, pos, "LBrace") == false { return perr("expected { in enum", pos); }
+    pos = pos + 1;
+    let variants = [];
+    while at_end(tokens, pos) == false && kind_is(tokens, pos, "RBrace") == false {
+        let vt = peek(tokens, pos);
+        let vname = vt["text"];
+        pos = pos + 1;
+        if kind_is(tokens, pos, "LParen") {
+            pos = pos + 1;
+            let arity = 0;
+            if kind_is(tokens, pos, "RParen") == false {
+                while true {
+                    let tt = parse_type(tokens, pos);
+                    if tt["ok"] == false { return tt; }
+                    pos = tt["pos"];
+                    arity = arity + 1;
+                    if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+                }
+            }
+            if kind_is(tokens, pos, "RParen") == false { return perr("expected ) in enum", pos); }
+            pos = pos + 1;
+            push(variants, {"name": vname, "shape": "tuple", "arity": arity});
+        } else {
+            if kind_is(tokens, pos, "LBrace") {
+                pos = pos + 1;
+                let fnames = [];
+                if kind_is(tokens, pos, "RBrace") == false {
+                    while true {
+                        let fnt = peek(tokens, pos);
+                        pos = pos + 1;
+                        if kind_is(tokens, pos, "Colon") == false { return perr("expected : in enum", pos); }
+                        pos = pos + 1;
+                        let tt = parse_type(tokens, pos);
+                        if tt["ok"] == false { return tt; }
+                        pos = tt["pos"];
+                        push(fnames, fnt["text"]);
+                        if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+                    }
+                }
+                if kind_is(tokens, pos, "RBrace") == false { return perr("expected } in enum", pos); }
+                pos = pos + 1;
+                push(variants, {"name": vname, "shape": "struct", "fnames": fnames});
+            } else {
+                push(variants, {"name": vname, "shape": "unit"});
+            }
+        }
+        if kind_is(tokens, pos, "Comma") { pos = pos + 1; }
+    }
+    if kind_is(tokens, pos, "RBrace") == false { return perr("expected } in enum", pos); }
+    pos = pos + 1;
+    return pok({"kind": "Enum", "name": name, "variants": variants}, pos);
+}
+
+fn parse_block(tokens, pos) {
+    if kind_is(tokens, pos, "LBrace") == false { return perr("expected {", pos); }
+    pos = pos + 1;
+    let stmts = [];
+    while at_end(tokens, pos) == false && kind_is(tokens, pos, "RBrace") == false {
+        let st = parse_stmt(tokens, pos);
+        if st["ok"] == false { return st; }
+        push(stmts, st["node"]);
+        pos = st["pos"];
+    }
+    if kind_is(tokens, pos, "RBrace") == false { return perr("expected }", pos); }
+    return {"ok": true, "stmts": stmts, "pos": pos + 1};
+}
+
+fn parse_stmt(tokens, pos) {
+    if text_is(tokens, pos, "let") {
+        pos = pos + 1;
+        if text_is(tokens, pos, "mut") { pos = pos + 1; }
+        let name_t = peek(tokens, pos);
+        pos = pos + 1;
+        let ty = "";
+        if kind_is(tokens, pos, "Colon") {
+            let tn = parse_type(tokens, pos + 1);
+            if tn["ok"] == false { return tn; }
+            ty = tn["ty"];
+            pos = tn["pos"];
+        }
+        if kind_is(tokens, pos, "Eq") == false { return perr("expected =", pos); }
+        let init = parse_expr(tokens, pos + 1, 0);
+        if init["ok"] == false { return init; }
+        pos = init["pos"];
+        if kind_is(tokens, pos, "Semi") { pos = pos + 1; }
+        return pok(Stmt::Let { name: name_t["text"], ty: ty, init: init["node"] }, pos);
+    }
+    if text_is(tokens, pos, "break") {
+        pos = pos + 1;
+        if kind_is(tokens, pos, "Semi") { pos = pos + 1; }
+        return pok(Stmt::ExprStmt { expr: Expr::Call { callee: "break", args: [] } }, pos);
+    }
+    if text_is(tokens, pos, "return") {
+        pos = pos + 1;
+        let val = Expr::None;
+        if kind_is(tokens, pos, "Semi") == false && kind_is(tokens, pos, "RBrace") == false {
+            let e = parse_expr(tokens, pos, 0);
+            if e["ok"] == false { return e; }
+            val = e["node"];
+            pos = e["pos"];
+        }
+        if kind_is(tokens, pos, "Semi") { pos = pos + 1; }
+        return pok(Stmt::Return { value: val }, pos);
+    }
+    if text_is(tokens, pos, "if") {
+        let cond = parse_expr(tokens, pos + 1, 0);
+        if cond["ok"] == false { return cond; }
+        let th = parse_block(tokens, cond["pos"]);
+        if th["ok"] == false { return th; }
+        pos = th["pos"];
+        let el = [];
+        let has_else = false;
+        if text_is(tokens, pos, "else") {
+            let eb = parse_block(tokens, pos + 1);
+            if eb["ok"] == false { return eb; }
+            el = eb["stmts"];
+            pos = eb["pos"];
+            has_else = true;
+        }
+        return pok(Stmt::If { cond: cond["node"], then_: th["stmts"], else_: el, has_else: has_else }, pos);
+    }
+    if text_is(tokens, pos, "while") {
+        let cond = parse_expr(tokens, pos + 1, 0);
+        if cond["ok"] == false { return cond; }
+        let body = parse_block(tokens, cond["pos"]);
+        if body["ok"] == false { return body; }
+        return pok(Stmt::While { cond: cond["node"], body: body["stmts"] }, body["pos"]);
+    }
+    if text_is(tokens, pos, "for") {
+        pos = pos + 1;
+        let var_t = peek(tokens, pos);
+        pos = pos + 1;
+        if text_is(tokens, pos, "in") == false { return perr("expected in", pos); }
+        pos = pos + 1;
+        let start = parse_expr(tokens, pos, 0);
+        if start["ok"] == false { return start; }
+        pos = start["pos"];
+        if kind_is(tokens, pos, "DotDot") {
+            let end = parse_expr(tokens, pos + 1, 0);
+            if end["ok"] == false { return end; }
+            let body = parse_block(tokens, end["pos"]);
+            if body["ok"] == false { return body; }
+            return pok(Stmt::For { var: var_t["text"], iter: Expr::Range { start: start["node"], end: end["node"] }, body: body["stmts"] }, body["pos"]);
+        }
+        let bodyc = parse_block(tokens, pos);
+        if bodyc["ok"] == false { return bodyc; }
+        return pok(Stmt::For { var: var_t["text"], iter: start["node"], body: bodyc["stmts"] }, bodyc["pos"]);
+    }
+    let e = parse_expr(tokens, pos, 0);
+    if e["ok"] == false { return e; }
+    pos = e["pos"];
+    if kind_is(tokens, pos, "Eq") {
+        let v = parse_expr(tokens, pos + 1, 0);
+        if v["ok"] == false { return v; }
+        pos = v["pos"];
+        if kind_is(tokens, pos, "Semi") { pos = pos + 1; }
+        return pok(Stmt::Assign { target: e["node"], value: v["node"] }, pos);
+    }
+    if kind_is(tokens, pos, "Semi") { pos = pos + 1; }
+    return pok(Stmt::ExprStmt { expr: e["node"] }, pos);
+}
+
+fn parse_fn(tokens, pos) {
+    let is_pub = false;
+    if text_is(tokens, pos, "pub") { pos = pos + 1; is_pub = true; }
+    if text_is(tokens, pos, "fn") == false { return perr("expected fn", pos); }
+    pos = pos + 1;
+    let name_t = peek(tokens, pos);
+    pos = pos + 1;
+    if kind_is(tokens, pos, "LParen") == false { return perr("expected (", pos); }
+    pos = pos + 1;
+    let params = [];
+    if kind_is(tokens, pos, "RParen") == false {
+        while true {
+            let pn = peek(tokens, pos);
+            pos = pos + 1;
+            let pty = "";
+            if kind_is(tokens, pos, "Colon") {
+                let tn = parse_type(tokens, pos + 1);
+                if tn["ok"] == false { return tn; }
+                pty = tn["ty"];
+                pos = tn["pos"];
+            }
+            push(params, {"name": pn["text"], "ty": pty});
+            if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+        }
+    }
+    if kind_is(tokens, pos, "RParen") == false { return perr("expected )", pos); }
+    pos = pos + 1;
+    let ret = "";
+    if kind_is(tokens, pos, "Minus") {
+        pos = pos + 1;
+        if kind_is(tokens, pos, "Gt") == false { return perr("expected >", pos); }
+        let tn = parse_type(tokens, pos + 1);
+        if tn["ok"] == false { return tn; }
+        ret = tn["ty"];
+        pos = tn["pos"];
+    }
+    let requires = [];
+    let ensures = [];
+    let effects = [];
+    while text_is(tokens, pos, "requires") || text_is(tokens, pos, "ensures") || text_is(tokens, pos, "uses") {
+        let which = peek(tokens, pos)["text"];
+        pos = pos + 1;
+        if kind_is(tokens, pos, "LParen") == false { return perr("expected (", pos); }
+        pos = pos + 1;
+        if which == "uses" {
+            if kind_is(tokens, pos, "RParen") == false {
+                while true {
+                    let et = peek(tokens, pos);
+                    pos = pos + 1;
+                    let en = et["text"];
+                    while kind_is(tokens, pos, "Dot") {
+                        pos = pos + 1;
+                        let more = peek(tokens, pos);
+                        pos = pos + 1;
+                        en = en + "." + more["text"];
+                    }
+                    push(effects, en);
+                    if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+                }
+            }
+        } else {
+            let e = parse_expr(tokens, pos, 0);
+            if e["ok"] == false { return e; }
+            if which == "requires" { push(requires, e["node"]); } else { push(ensures, e["node"]); }
+            pos = e["pos"];
+        }
+        if kind_is(tokens, pos, "RParen") == false { return perr("expected )", pos); }
+        pos = pos + 1;
+    }
+    let body = parse_block(tokens, pos);
+    if body["ok"] == false { return body; }
+    return pok({
+        "kind": "Fn",
+        "name": name_t["text"],
+        "pub": is_pub,
+        "params": params,
+        "ret": ret,
+        "requires": requires,
+        "ensures": ensures,
+        "effects": effects,
+        "body": body["stmts"]
+    }, body["pos"]);
+}
+
+fn sh_parse(src) {
+    let tokens = sh_lex(src);
+    let pos = 0;
+    let items = [];
+    while at_end(tokens, pos) == false {
+        let f = parse_fn(tokens, pos);
+        if text_is(tokens, pos, "enum") {
+            f = parse_enum(tokens, pos);
+        }
+        if f["ok"] == false {
+            let t = peek(tokens, f["pos"]);
+            return {"ok": false, "err": f["err"] + " at pos " + ("" + f["pos"]) + " tok " + t["kind"] + ":" + t["text"] + " @" + ("" + t["start"])};
+        }
+        push(items, f["node"]);
+        pos = f["pos"];
+    }
+    return {"ok": true, "ast": {"kind": "Program", "items": items}};
+}
+
+fn jexpr(e) {
+    return match e {
+        Expr::None => "null",
+        Expr::Int(v) => "{\"kind\":\"Int\",\"value\":" + q(v) + "}",
+        Expr::Str(v) => "{\"kind\":\"Str\",\"value\":" + q(v) + "}",
+        Expr::Bool(v) => "{\"kind\":\"Bool\",\"value\":" + jbool(v) + "}",
+        Expr::Var(nm) => "{\"kind\":\"Var\",\"name\":" + q(nm) + "}",
+        Expr::Call { callee: cn, args: a } => jcall(cn, a),
+        Expr::Binary { op: o, lhs: l, rhs: r } => "{\"kind\":\"Binary\",\"op\":" + q(o) + ",\"lhs\":" + jexpr(l) + ",\"rhs\":" + jexpr(r) + "}",
+        Expr::Unary { op: o, expr: x } => "{\"kind\":\"Unary\",\"op\":" + q(o) + ",\"expr\":" + jexpr(x) + "}",
+        Expr::Index { base: b, index: ix } => "{\"kind\":\"Index\",\"base\":" + jexpr(b) + ",\"index\":" + jexpr(ix) + "}",
+        Expr::List { elements: els } => jlist(els),
+        Expr::Range { start: s, end: en } => "{\"kind\":\"Range\",\"start\":" + jexpr(s) + ",\"end\":" + jexpr(en) + "}",
+        Expr::Map { keys: k, vals: vs } => jmap(k, vs),
+        Expr::EnumInit { ty: ty, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => jenuminit(ty, vr, sh, tp, fnm, fx),
+        Expr::IfExpr { cond: c, then_: t, else_: el } => "{\"kind\":\"IfExpr\",\"cond\":" + jexpr(c) + ",\"then\":" + jstmts(t) + ",\"else\":" + jstmts(el) + "}",
+        Expr::Match { scrut: sc, arms: ar } => jmatch(sc, ar),
+        _ => "{\"kind\":\"UnsupportedExpr\"}",
+    };
+}
+
+fn jcall(cn, a) {
+    let out = "{\"kind\":\"Call\",\"callee\":" + q(cn) + ",\"args\":[";
+    let i = 0;
+    while i < len(a) {
+        if i > 0 { out = out + ","; }
+        out = out + jexpr(a[i]);
+        i = i + 1;
+    }
+    return out + "]}";
+}
+
+fn jlist(els) {
+    let out = "{\"kind\":\"List\",\"elements\":[";
+    let i = 0;
+    while i < len(els) {
+        if i > 0 { out = out + ","; }
+        out = out + jexpr(els[i]);
+        i = i + 1;
+    }
+    return out + "]}";
+}
+
+fn jmap(keys, vals) {
+    let out = "{\"kind\":\"Map\",\"keys\":[";
+    let i = 0;
+    while i < len(keys) {
+        if i > 0 { out = out + ","; }
+        out = out + q(keys[i]);
+        i = i + 1;
+    }
+    out = out + "],\"vals\":[";
+    i = 0;
+    while i < len(vals) {
+        if i > 0 { out = out + ","; }
+        out = out + jexpr(vals[i]);
+        i = i + 1;
+    }
+    return out + "]}";
+}
+
+fn jenuminit(ty, vr, sh, tp, fnames, fx) {
+    let out = "{\"kind\":\"EnumInit\",\"ty\":" + q(ty) + ",\"variant\":" + q(vr) + ",\"shape\":" + q(sh);
+    if sh == "tuple" {
+        out = out + ",\"tuple\":[";
+        let i = 0;
+        while i < len(tp) { if i > 0 { out = out + ","; } out = out + jexpr(tp[i]); i = i + 1; }
+        out = out + "]";
+    }
+    if sh == "struct" {
+        out = out + ",\"fnames\":[";
+        let i = 0;
+        while i < len(fnames) { if i > 0 { out = out + ","; } out = out + q(fnames[i]); i = i + 1; }
+        out = out + "],\"fexprs\":[";
+        i = 0;
+        while i < len(fx) { if i > 0 { out = out + ","; } out = out + jexpr(fx[i]); i = i + 1; }
+        out = out + "]";
+    }
+    return out + "}";
+}
+
+fn jmatch(sc, arms) {
+    let out = "{\"kind\":\"Match\",\"scrut\":" + jexpr(sc) + ",\"arms\":[";
+    let i = 0;
+    while i < len(arms) {
+        if i > 0 { out = out + ","; }
+        out = out + "{\"pat\":" + jpat(arms[i]["pat"]) + ",\"body\":" + jexpr(arms[i]["body"]) + "}";
+        i = i + 1;
+    }
+    return out + "]}";
+}
+
+fn jpat(p) {
+    if p["pk"] == "wild" { return "{\"pk\":\"wild\"}"; }
+    let out = "{\"pk\":\"enum\",\"variant\":" + q(p["variant"]) + ",\"shape\":" + q(p["shape"]);
+    if p["shape"] == "tuple" {
+        out = out + ",\"binds\":[";
+        let binds = p["binds"];
+        let i = 0;
+        while i < len(binds) {
+            if i > 0 { out = out + ","; }
+            out = out + q(binds[i]);
+            i = i + 1;
+        }
+        out = out + "]";
+    }
+    if p["shape"] == "struct" {
+        out = out + ",\"fnames\":[";
+        let fnames = p["fnames"];
+        let i = 0;
+        while i < len(fnames) {
+            if i > 0 { out = out + ","; }
+            out = out + q(fnames[i]);
+            i = i + 1;
+        }
+        out = out + "],\"binds\":[";
+        let binds = p["binds"];
+        i = 0;
+        while i < len(binds) {
+            if i > 0 { out = out + ","; }
+            out = out + q(binds[i]);
+            i = i + 1;
+        }
+        out = out + "]";
+    }
+    return out + "}";
+}
+
+fn jenum(it) {
+    let out = "{\"kind\":\"Enum\",\"name\":" + q(it["name"]) + ",\"variants\":[";
+    let vs = it["variants"];
+    let i = 0;
+    while i < len(vs) {
+        if i > 0 { out = out + ","; }
+        out = out + "{\"name\":" + q(vs[i]["name"]) + ",\"shape\":" + q(vs[i]["shape"]) + "}";
+        i = i + 1;
+    }
+    return out + "]}";
+}
+
+fn jitem(it) {
+    if it["kind"] == "Enum" { return jenum(it); }
+    return jfn(it);
+}
+
+fn jstmts(ss) {
+    let out = "[";
+    let i = 0;
+    while i < len(ss) {
+        if i > 0 { out = out + ","; }
+        out = out + jstmt(ss[i]);
+        i = i + 1;
+    }
+    return out + "]";
+}
+
+fn jstmt(s) {
+    return match s {
+        Stmt::Let { name: nm, ty: t, init: ini } =>
+            "{\"kind\":\"Let\",\"name\":" + q(nm) + ",\"ty\":" + (if t != "" { q(t) } else { "null" }) + ",\"init\":" + jexpr(ini) + "}",
+        Stmt::Assign { target: tg, value: v } =>
+            "{\"kind\":\"Assign\",\"target\":" + jexpr(tg) + ",\"value\":" + jexpr(v) + "}",
+        Stmt::Return { value: v } =>
+            "{\"kind\":\"Return\",\"value\":" + jexpr(v) + "}",
+        Stmt::ExprStmt { expr: e } =>
+            "{\"kind\":\"ExprStmt\",\"expr\":" + jexpr(e) + "}",
+        Stmt::If { cond: c, then_: t, else_: e, has_else: he } =>
+            "{\"kind\":\"If\",\"cond\":" + jexpr(c) + ",\"then\":" + jstmts(t) + ",\"else\":" + (if he { jstmts(e) } else { "null" }) + "}",
+        Stmt::While { cond: c, body: b } =>
+            "{\"kind\":\"While\",\"cond\":" + jexpr(c) + ",\"body\":" + jstmts(b) + "}",
+        Stmt::For { var: vr, iter: it, body: b } =>
+            "{\"kind\":\"For\",\"var\":" + q(vr) + ",\"iter\":" + jexpr(it) + ",\"body\":" + jstmts(b) + "}",
+        _ => "{\"kind\":\"UnsupportedStmt\"}",
+    };
+}
+
+fn jfn(f) {
+    let out = "{\"kind\":\"Fn\",\"name\":" + q(f["name"]) + ",\"pub\":" + jbool(f["pub"]) + ",\"params\":[";
+    let ps = f["params"];
+    let i = 0;
+    while i < len(ps) {
+        if i > 0 { out = out + ","; }
+        let tyj = "null";
+        if ps[i]["ty"] != "" { tyj = q(ps[i]["ty"]); }
+        out = out + "{\"name\":" + q(ps[i]["name"]) + ",\"ty\":" + tyj + "}";
+        i = i + 1;
+    }
+    out = out + "],\"ret\":";
+    if f["ret"] == "" { out = out + "null"; }
+    else { out = out + q(f["ret"]); }
+    out = out + ",\"requires\":[";
+    i = 0;
+    while i < len(f["requires"]) {
+        if i > 0 { out = out + ","; }
+        out = out + jexpr(f["requires"][i]);
+        i = i + 1;
+    }
+    out = out + "],\"ensures\":[";
+    i = 0;
+    while i < len(f["ensures"]) {
+        if i > 0 { out = out + ","; }
+        out = out + jexpr(f["ensures"][i]);
+        i = i + 1;
+    }
+    out = out + "],\"effects\":[";
+    i = 0;
+    while i < len(f["effects"]) {
+        if i > 0 { out = out + ","; }
+        out = out + q(f["effects"][i]);
+        i = i + 1;
+    }
+    out = out + "],\"body\":" + jstmts(f["body"]) + "}";
+    return out;
+}
+
+fn jast(ast) {
+    let out = "{\"kind\":\"Program\",\"items\":[";
+    let items = ast["items"];
+    let i = 0;
+    while i < len(items) {
+        if i > 0 { out = out + ","; }
+        out = out + jitem(items[i]);
+        i = i + 1;
+    }
+    return out + "]}";
+}
+
+
+fn is_builtin(name) {
+    return name == "print" || name == "println" || name == "len" || name == "push" || name == "char_at" || name == "ord" || name == "chr" || name == "substr" || name == "index_of" || name == "split" || name == "read_file" || name == "write_file" || name == "args" || name == "env" || name == "declassify" || name == "append_file" || name == "exit" || name == "get" || name == "has_key" || name == "keys" || name == "values" || name == "break" || name == "continue";
+}
+
+fn check_expr(e, env, fns, diags) {
+    return match e {
+        Expr::None => diags,
+        Expr::Int(v) => diags,
+        Expr::Str(v) => diags,
+        Expr::Bool(v) => diags,
+        Expr::Var(nm) => check_var(nm, env, fns, diags),
+        Expr::Call { callee: cn, args: a } => check_call(cn, a, env, fns, diags),
+        Expr::Binary { op: o, lhs: l, rhs: r } => check_expr(r, env, fns, check_expr(l, env, fns, diags)),
+        Expr::Unary { op: o, expr: x } => check_expr(x, env, fns, diags),
+        Expr::Index { base: b, index: ix } => check_expr(ix, env, fns, check_expr(b, env, fns, diags)),
+        Expr::List { elements: els } => check_exprs(els, env, fns, diags),
+        Expr::Range { start: s, end: en } => check_expr(en, env, fns, check_expr(s, env, fns, diags)),
+        Expr::Map { keys: k, vals: vs } => check_exprs(vs, env, fns, diags),
+        Expr::EnumInit { ty: ty, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => check_exprs(fx, env, fns, check_exprs(tp, env, fns, diags)),
+        Expr::IfExpr { cond: c, then_: t, else_: el } => check_stmts(el, env, fns, check_stmts(t, env, fns, check_expr(c, env, fns, diags))),
+        Expr::Match { scrut: sc, arms: ar } => check_match_arms(ar, env, fns, check_expr(sc, env, fns, diags)),
+        _ => diags,
+    };
+}
+
+fn check_exprs(es, env, fns, diags) {
+    let i = 0;
+    while i < len(es) {
+        diags = check_expr(es[i], env, fns, diags);
+        i = i + 1;
+    }
+    return diags;
+}
+
+fn check_var(nm, env, fns, diags) {
+    if get(env, nm, false) == false && is_builtin(nm) == false && get(fns, nm, -1) == -1 {
+        push(diags, "ANUBIS_SH_UNKNOWN_IDENT: " + nm);
+    }
+    return diags;
+}
+
+fn check_call(cn, a, env, fns, diags) {
+    diags = check_exprs(a, env, fns, diags);
+    if is_builtin(cn) { return diags; }
+    if get(fns, cn, -1) == -1 {
+        push(diags, "ANUBIS_SH_UNKNOWN_IDENT: " + cn);
+        return diags;
+    }
+    let arity = get(fns, cn, -1);
+    if len(a) != arity {
+        push(diags, "ANUBIS_SH_ARITY: " + cn + " expected " + ("" + arity) + " got " + ("" + len(a)));
+    }
+    return diags;
+}
+
+fn check_match_arms(arms, env, fns, diags) {
+    let i = 0;
+    while i < len(arms) {
+        env = bind_pattern(arms[i]["pat"], env);
+        diags = check_expr(arms[i]["body"], env, fns, diags);
+        i = i + 1;
+    }
+    return diags;
+}
+
+fn bind_pattern(p, env) {
+    if p["pk"] == "enum" {
+        if p["shape"] == "tuple" {
+            let binds = p["binds"];
+            let i = 0;
+            while i < len(binds) {
+                if binds[i] != "_" { env[binds[i]] = true; }
+                i = i + 1;
+            }
+        }
+        if p["shape"] == "struct" {
+            let binds = p["binds"];
+            let i = 0;
+            while i < len(binds) {
+                if binds[i] != "_" { env[binds[i]] = true; }
+                i = i + 1;
+            }
+        }
+    }
+    return env;
+}
+
+// `env` is threaded (returned) because Anubis passes maps by value: a helper that
+// binds a name must hand the updated env back so later statements see it. check_stmt
+// returns [env, diags]; check_stmts re-threads both. Nested blocks (if/while/for body)
+// receive env by value, so their inner binds do not leak up — only the loop var and
+// top-level `let` bindings persist, matching the original inline checker.
+fn check_stmts(ss, env, fns, diags) {
+    let i = 0;
+    while i < len(ss) {
+        let r = check_stmt(ss[i], env, fns, diags);
+        env = r[0];
+        diags = r[1];
+        i = i + 1;
+    }
+    return diags;
+}
+
+fn check_stmt(s, env, fns, diags) {
+    return match s {
+        Stmt::Let { name: nm, ty: t, init: ini } => check_let(nm, t, ini, env, fns, diags),
+        Stmt::Assign { target: tg, value: v } => [env, check_expr(v, env, fns, check_expr(tg, env, fns, diags))],
+        Stmt::Return { value: v } => [env, check_expr(v, env, fns, diags)],
+        Stmt::ExprStmt { expr: e } => [env, check_expr(e, env, fns, diags)],
+        Stmt::If { cond: c, then_: t, else_: e, has_else: he } => check_if(c, t, e, he, env, fns, diags),
+        Stmt::While { cond: c, body: b } => [env, check_stmts(b, env, fns, check_expr(c, env, fns, diags))],
+        Stmt::For { var: vr, iter: it, body: b } => check_for(vr, it, b, env, fns, diags),
+        _ => [env, diags],
+    };
+}
+
+fn is_bool_expr(e) {
+    return match e {
+        Expr::Bool(v) => true,
+        _ => false,
+    };
+}
+
+fn check_let(nm, t, ini, env, fns, diags) {
+    diags = check_expr(ini, env, fns, diags);
+    if t != "" {
+        if is_bool_expr(ini) {
+            if t == "u32" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
+            if t == "i64" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
+            if t == "i32" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
+            if t == "u64" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
+        }
+    }
+    env[nm] = true;
+    return [env, diags];
+}
+
+fn check_if(c, t, e, he, env, fns, diags) {
+    diags = check_expr(c, env, fns, diags);
+    diags = check_stmts(t, env, fns, diags);
+    if he { diags = check_stmts(e, env, fns, diags); }
+    return [env, diags];
+}
+
+fn check_for(vr, it, b, env, fns, diags) {
+    diags = check_expr(it, env, fns, diags);
+    env[vr] = true;
+    diags = check_stmts(b, env, fns, diags);
+    return [env, diags];
+}
+
+fn sh_check(ast) {
+    let diags = [];
+    let fns = {};
+    let items = ast["items"];
+    let i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" {
+            fns[items[i]["name"]] = len(items[i]["params"]);
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < len(items) {
+        let f = items[i];
+        if f["kind"] == "Fn" {
+            let env = {};
+            let j = 0;
+            while j < len(f["params"]) {
+                env[f["params"][j]["name"]] = true;
+                j = j + 1;
+            }
+            diags = check_stmts(f["body"], env, fns, diags);
+        }
+        i = i + 1;
+    }
+    return diags;
+}
+
+fn sh_codegen(ast) {
+    // Executable package: SH AST interpreter + payload AST of the compiled program.
+    // When payload is anubis_sh itself, the binary is a real stage-N compiler.
+    let payload = jast(ast);
+    let rt = declassify(read_file("selfhost/runtime/anubis_sh_interp_rt.rs"), "selfhost", "runtime");
+    let nl = chr(10);
+    let out = rt + nl;
+    out = out + "const PAYLOAD: &str = " + q(payload) + ";" + nl;
+    out = out + "fn main() {" + nl;
+    out = out + "    let argv: Vec<String> = std::env::args().skip(1).collect();" + nl;
+    out = out + "    let code = sh_run(PAYLOAD, argv);" + nl;
+    out = out + "    std::process::exit(code);" + nl;
+    out = out + "}" + nl;
+    return declassify(out, "selfhost", "emit");
+}
+
+fn main() uses(fs.read, fs.write) {
+    let a = args();
+    if len(a) < 1 {
+        print("usage: anubis_sh lex|parse|check|compile <file> [-o out]");
+        exit(1);
+        return;
+    }
+    let cmd = a[0];
+    if cmd == "version" {
+        print("anubis-sh 0.1.0");
+        return;
+    }
+    if len(a) < 2 {
+        print("usage: anubis_sh lex|parse|check|compile <file> [-o out]");
+        exit(1);
+        return;
+    }
+    let path = a[1];
+    let src = declassify(read_file(path), "selfhost", "input");
+    if cmd == "lex" {
+        print(jtokens(sh_lex(src)));
+        return;
+    }
+    if cmd == "parse" {
+        let r = sh_parse(src);
+        if r["ok"] == false {
+            print("PARSE_ERROR: " + r["err"]);
+            exit(1);
+            return;
+        }
+        print(jast(r["ast"]));
+        return;
+    }
+    if cmd == "check" {
+        let r = sh_parse(src);
+        if r["ok"] == false {
+            print("PARSE_ERROR: " + r["err"]);
+            exit(1);
+            return;
+        }
+        let diags = sh_check(r["ast"]);
+        if len(diags) == 0 {
+            print("check passed");
+        } else {
+            let i = 0;
+            while i < len(diags) {
+                print(diags[i]);
+                i = i + 1;
+            }
+            exit(1);
+        }
+        return;
+    }
+    if cmd == "compile" {
+        let out_path = "";
+        let i = 2;
+        while i < len(a) {
+            if a[i] == "-o" && i + 1 < len(a) {
+                out_path = a[i + 1];
+                i = i + 2;
+            } else {
+                i = i + 1;
+            }
+        }
+        let r = sh_parse(src);
+        if r["ok"] == false {
+            print("PARSE_ERROR: " + r["err"]);
+            exit(1);
+            return;
+        }
+        let diags = sh_check(r["ast"]);
+        if len(diags) > 0 {
+            let j = 0;
+            while j < len(diags) {
+                print(diags[j]);
+                j = j + 1;
+            }
+            exit(1);
+            return;
+        }
+        let rs = sh_codegen(r["ast"]);
+        if out_path == "" {
+            print(rs);
+        } else {
+            write_file(out_path, rs);
+            print("wrote " + out_path);
+        }
+        return;
+    }
+    print("unknown command");
+}

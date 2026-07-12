@@ -1,0 +1,1 @@
+{"items":[{"body":[{"expr":{"args":[{"kind":"Str","value":"hello, anubis"}],"callee":"print","kind":"Call"},"kind":"ExprStmt"}],"effects":[],"ensures":[],"kind":"Fn","name":"main","params":[],"pub":false,"requires":[],"ret":null}],"kind":"Program"}
