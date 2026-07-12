@@ -1,8 +1,9 @@
-// Multi-file Phase-3: import io, use declared fs.read, fail-closed taint without declassify is
-// tested separately. This program is the clean path.
+// Multi-file Phase-3: import io with uses(fs.read); main declares uses and exercises governed I/O.
+// EXPECT: PASS
 import io;
 
-fn main() uses(fs.read) {
-    let d = io::load("hello.txt");
+fn main() uses(fs.write, fs.read) {
+    write_file("/tmp/anubis_phase3_io.txt", "xyz");
+    let d = io::load("/tmp/anubis_phase3_io.txt");
     print(len(d));
 }

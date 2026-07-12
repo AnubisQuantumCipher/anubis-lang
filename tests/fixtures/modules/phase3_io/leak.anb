@@ -1,3 +1,6 @@
+// Undeclassified read→send across a module boundary must fail closed.
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
 import io;
 
 fn main() uses(fs.read, net.send) {
