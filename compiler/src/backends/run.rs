@@ -4368,28 +4368,20 @@ mod run_tests {
 
     /// Compile+run a program feeding `stdin_bytes` to its standard input, returning trimmed stdout.
     /// Mirrors the CLI `run` path, which inherits stdin so `input()`/`read_line()` work.
+    ///
+    /// Compile through the SAME cargo path the CLI uses (`compile_native_rust_to_exe`),
+    /// not bare `rustc`: the native runtime links audited crypto crates (argon2,
+    /// getrandom, subtle, …) that only resolve against the generated Cargo.toml. Bare
+    /// `rustc` has no dependency graph, so it cannot compile the emitted runtime — the
+    /// cargo path is what `anubis run` actually does.
     fn run_with_stdin(src: &str, stdin_bytes: &[u8]) -> String {
         use std::io::Write;
         let ast = crate::frontend::parse_source(src).expect("parse");
         let rust_source = lower_program_to_rust(&ast.items, false).expect("lower");
         let dir = std::env::temp_dir().join(format!("anubis-stdin-{}", anubis_unique_suffix()));
         std::fs::create_dir_all(&dir).unwrap();
-        let rs = dir.join("anubis_run.rs");
         let exe = dir.join("anubis_run");
-        std::fs::write(&rs, rust_source).unwrap();
-        let build = std::process::Command::new("rustc")
-            .arg(&rs)
-            .arg("--edition")
-            .arg("2021")
-            .arg("-o")
-            .arg(&exe)
-            .output()
-            .expect("rustc");
-        assert!(
-            build.status.success(),
-            "rustc failed: {}",
-            String::from_utf8_lossy(&build.stderr)
-        );
+        compile_native_rust_to_exe(&rust_source, &exe).expect("compile via cargo (audited crypto deps)");
         let mut child = std::process::Command::new(&exe)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
