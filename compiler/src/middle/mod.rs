@@ -123,6 +123,27 @@ fn closure_arity_of(
     }
 }
 
+impl SemanticContext {
+    /// The single diagnostic router for the type-system phase. New static checks (bidirectional
+    /// inference, captured generics, trait coherence, typed `?`) emit through this with
+    /// `shadow_gated=true`: while a check is in shadow mode AND `self.shadow` is on, its diagnostics
+    /// are diverted to `shadow_diags` (logged, never enforced). A check is promoted to enforcing by
+    /// passing `shadow_gated=false` — a one-line flip made ONLY after `run_shadow_diff.sh` proves
+    /// UNEXPECTED = 0 over the whole corpus. Pre-existing diagnostics keep calling
+    /// `diagnostics.push(...)` directly and are unaffected.
+    ///
+    /// Dead until the first check slice wires it in; kept here so that slice is a one-call change
+    /// rather than a re-plumb.
+    #[allow(dead_code)]
+    fn emit(&mut self, diag: SemanticDiagnostic, shadow_gated: bool) {
+        if shadow_gated && self.shadow {
+            self.shadow_diags.push(diag);
+        } else {
+            self.diagnostics.push(diag);
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct SemanticContext {
     hir: Hir,
@@ -133,6 +154,18 @@ struct SemanticContext {
     taint_traces: Vec<TaintTrace>,
     solver_obligations: Vec<SolverObligation>,
     diagnostics: Vec<SemanticDiagnostic>,
+    /// Shadow-mode switch (set from `ANUBIS_SHADOW_TYPES=1`). When on, diagnostics emitted through
+    /// `emit(.., shadow_gated=true)` are diverted to `shadow_diags` instead of `diagnostics`, so a
+    /// NEW static check (the type-system phase: inference, generics, traits, typed `?`) can be
+    /// exercised over the whole corpus WITHOUT rejecting any program. The verdict path (the
+    /// `diagnostics` Err-gate below) is bit-identical whether shadow is on or off — the safety net
+    /// that lets a check land atomic-green before it is promoted to enforcing. See
+    /// `scripts/run_shadow_diff.sh`. Off by default ⇒ zero behavioral change in normal builds.
+    shadow: bool,
+    /// Would-be rejections logged in shadow mode. NEVER feed the `diagnostics` Err-gate; they are
+    /// surfaced on stderr (as `ANUBIS_SHADOW: ...`) only when `shadow` is on, for the corpus-diff
+    /// tooling to classify EXPECTED vs UNEXPECTED. Empty and inert in normal builds.
+    shadow_diags: Vec<SemanticDiagnostic>,
     has_research: bool,
     symbolic_defs: Vec<String>,
     symbolic_widths: BTreeMap<String, u32>,
@@ -208,6 +241,9 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     };
     let mut ctx = SemanticContext {
         verified,
+        // Shadow-mode is opt-in and read once here. Default off ⇒ the enforcing `diagnostics`
+        // path (and therefore every gate verdict) is unchanged until a check is promoted.
+        shadow: std::env::var("ANUBIS_SHADOW_TYPES").as_deref() == Ok("1"),
         ..SemanticContext::default()
     };
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
@@ -221,6 +257,18 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
 
     if ctx.constraints.is_empty() {
         ctx.constraints.push("(assert true)".into());
+    }
+
+    // Shadow-mode sink: surface would-be rejections on stderr (never the Err-gate below) so the
+    // corpus-diff tooling can classify them. Gated on `shadow` ⇒ silent and inert by default.
+    if ctx.shadow && !ctx.shadow_diags.is_empty() {
+        for d in &ctx.shadow_diags {
+            eprintln!(
+                "ANUBIS_SHADOW: {} {}",
+                d.code.as_deref().unwrap_or("-"),
+                d.message
+            );
+        }
     }
 
     if !ctx.diagnostics.is_empty() {
