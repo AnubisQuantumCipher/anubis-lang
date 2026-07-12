@@ -136,8 +136,16 @@ impl SemanticContext {
     /// rather than a re-plumb.
     #[allow(dead_code)]
     fn emit(&mut self, diag: SemanticDiagnostic, shadow_gated: bool) {
-        if shadow_gated && self.shadow {
-            self.shadow_diags.push(diag);
+        if shadow_gated {
+            // A shadow-gated (not-yet-promoted) check NEVER enters the enforcing `diagnostics`
+            // Err-gate. Under `ANUBIS_SHADOW_TYPES=1` its would-be rejection is logged to
+            // `shadow_diags` for the corpus diff; with shadow off it is dropped entirely. Either
+            // way the verdict path is bit-identical whether shadow is on or off (exactly the
+            // property the `shadow` field's doc promises), so a new check lands atomic-green and
+            // stays silent until it is promoted to enforcing by passing `shadow_gated=false`.
+            if self.shadow {
+                self.shadow_diags.push(diag);
+            }
         } else {
             self.diagnostics.push(diag);
         }
