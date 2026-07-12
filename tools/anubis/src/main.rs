@@ -8,16 +8,22 @@ mod proof_input;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
-        lower_program_to_guest, lower_program_to_rust, resolved_run_timeout, run_child_capped,
+        compile_native_rust_to_exe, lower_program_to_guest, lower_program_to_rust,
+        resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
-        build_evidence_bundle, generate_keypair, pca_signature_status, sign_pca, verify_pca,
-        EvidenceManifest,
+        build_evidence_bundle, build_evidence_bundle_tree, generate_keypair, pca_signature_status,
+        sign_pca, verify_pca, EvidenceManifest,
     },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
     middle::{SymbolicEngine, TaintPass},
+    package::{
+        registry, resolve_workspace, ResolveOptions, ResolvedWorkspace, TrustStore, LOCK_FILENAME,
+    },
     parse_source, typecheck, typecheck_ex,
+    project::ProjectLayout,
+    resolve::combine_from_entry_opts,
 };
 use anyhow::anyhow;
 use anyhow::Result;
@@ -258,6 +264,59 @@ enum Commands {
         /// Path to the signing key file (hex), e.g. from `anubis keygen`.
         #[arg(long)]
         key: PathBuf,
+    },
+
+    /// Phase 6: package manager + proof-carrying dependencies.
+    Package {
+        #[command(subcommand)]
+        action: PackageCmd,
+    },
+
+    /// Trust store for dependency package signers.
+    Trust {
+        #[command(subcommand)]
+        action: TrustCmd,
+    },
+
+    /// Phase 7: verification-first API docs (Contracts from requires/ensures).
+    Doc {
+        /// Entry `.anb` file or project path.
+        path: PathBuf,
+        /// Output format: md (default) or json.
+        #[arg(long, default_value = "md")]
+        format: String,
+        /// Include private items.
+        #[arg(long)]
+        private: bool,
+        /// Write to file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Phase 7: interactive REPL (check every entry; default AST interpreter, --exact uses run path).
+    Repl {
+        /// Use lower+rustc fidelity instead of the fast AST interpreter.
+        #[arg(long)]
+        exact: bool,
+        /// Allow research-mode snippets.
+        #[arg(long)]
+        allow_research: bool,
+        /// Non-interactive: evaluate one program string and exit (for gates).
+        #[arg(long)]
+        eval: Option<String>,
+    },
+
+    /// Phase 7: Language Server Protocol (stdio) — diagnostics + contract hovers.
+    Lsp {
+        /// Explicit stdio transport marker used by LSP clients such as VS Code.
+        #[arg(long, hide = true)]
+        stdio: bool,
+    },
+
+    /// Phase 8: self-host schema dumps and gate helpers (host reference for Anubis-SH).
+    Selfhost {
+        #[command(subcommand)]
+        action: SelfhostCmd,
     },
 
     /// Print the Markdown bounty/evidence report from a bundle.
@@ -721,12 +780,681 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum PackageCmd {
+    /// Resolve dependencies and write `Anubis.lock` (pins version + content hash).
+    Lock {
+        /// Project root (directory containing Anubis.toml).
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Allow unsigned dep evidence (also requires ANUBIS_ALLOW_UNSIGNED_DEPS=1).
+        #[arg(long)]
+        allow_unsigned_deps: bool,
+    },
+    /// Verify lock + cache hashes + signed dependency proofs.
+    Verify {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        allow_unsigned_deps: bool,
+    },
+    /// Publish package to the local file registry (~/.anubis/registry).
+    Publish {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Ed25519 signing key (hex file) — required.
+        #[arg(long)]
+        key: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TrustCmd {
+    /// Add an Ed25519 verifying key (hex) to ~/.anubis/trust/signers.toml.
+    AddSigner {
+        public_key: String,
+        #[arg(long, default_value = "")]
+        name: String,
+    },
+    /// List trusted signers.
+    List,
+}
+
+/// Phase-8 host-side self-host helpers (goldens / schema dumps).
+#[derive(Subcommand, Debug)]
+enum SelfhostCmd {
+    /// Dump SH-schema tokens as compact JSON (comments omitted).
+    DumpTokens {
+        path: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Dump SH-schema AST as compact JSON.
+    DumpAst {
+        path: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+fn run_selfhost_cmd(action: SelfhostCmd) -> Result<()> {
+    match action {
+        SelfhostCmd::DumpTokens { path, out } => {
+            let j = anubis_compiler::selfhost_schema::dump_tokens_path(&path)
+                .map_err(|e| anyhow!("{}", e))?;
+            if let Some(p) = out {
+                std::fs::write(&p, &j)?;
+                println!("wrote {}", p.display());
+            } else {
+                println!("{j}");
+            }
+            Ok(())
+        }
+        SelfhostCmd::DumpAst { path, out } => {
+            let j = anubis_compiler::selfhost_schema::dump_ast_path(&path)
+                .map_err(|e| anyhow!("{}", e))?;
+            if let Some(p) = out {
+                std::fs::write(&p, &j)?;
+                println!("wrote {}", p.display());
+            } else {
+                println!("{j}");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Dual-gate: CLI flag AND `ANUBIS_ALLOW_UNSIGNED_DEPS=1` (fail-closed otherwise).
+fn allow_unsigned_policy(cli_flag: bool) -> bool {
+    cli_flag && std::env::var("ANUBIS_ALLOW_UNSIGNED_DEPS").ok().as_deref() == Some("1")
+}
+
+/// Default resolve options for check/run/build (no lock rewrite; proofs required).
+fn default_pkg_opts(allow_unsigned_cli: bool) -> ResolveOptions {
+    ResolveOptions {
+        write_lock: false,
+        allow_unsigned: allow_unsigned_policy(allow_unsigned_cli),
+        skip_proof: false,
+        ..Default::default()
+    }
+}
+
+/// Load a program: multi-file + Phase-6 deps when the entry is a real file.
+/// Package resolution + proof verify run whenever Anubis.toml declares dependencies.
+fn load_program_items(
+    input: &Path,
+    source: &str,
+) -> Result<(anubis_compiler::frontend::AST, Option<ResolvedWorkspace>)> {
+    let mut ast = parse_or_diag(source, input)?;
+    if !input.is_file() {
+        return Ok((ast, None));
+    }
+    let layout = ProjectLayout::discover(input).map_err(|e| anyhow!("{}", e))?;
+    let has_imports = ast
+        .items
+        .iter()
+        .any(|it| matches!(it, Item::Import { .. }));
+    let has_deps = !layout.manifest.dependencies.is_empty();
+    if !has_imports && !has_deps {
+        return Ok((ast, None));
+    }
+    let opts = default_pkg_opts(false);
+    let ws = if has_deps {
+        Some(resolve_workspace(&layout, &opts).map_err(|e| anyhow!("{}", e))?)
+    } else {
+        None
+    };
+    // combine_from_entry_opts re-resolves; pass same opts for lock/proof policy.
+    ast.items = combine_from_entry_opts(input, &opts).map_err(|e| anyhow!("{}", e))?;
+    Ok((ast, ws))
+}
+
+fn dep_closure_json(ws: &ResolvedWorkspace) -> serde_json::Value {
+    anubis_compiler::package::dep_closure_value(ws)
+}
+
+fn run_package_cmd(action: PackageCmd) -> Result<()> {
+    match action {
+        PackageCmd::Lock {
+            root,
+            allow_unsigned_deps,
+        } => {
+            let entry = find_package_entry(&root)?;
+            let layout = ProjectLayout::discover(&entry).map_err(|e| anyhow!("{}", e))?;
+            let ws = resolve_workspace(
+                &layout,
+                &ResolveOptions {
+                    write_lock: true,
+                    allow_unsigned: allow_unsigned_policy(allow_unsigned_deps),
+                    skip_proof: false,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| anyhow!("{}", e))?;
+            println!(
+                "wrote {} ({} package(s))",
+                layout.root.join(LOCK_FILENAME).display(),
+                ws.deps.len()
+            );
+            for (n, d) in &ws.deps {
+                println!(
+                    "  {}@{}  content={}",
+                    n,
+                    d.version,
+                    &d.content_sha256[..d.content_sha256.len().min(16)]
+                );
+            }
+        }
+        PackageCmd::Verify {
+            root,
+            allow_unsigned_deps,
+        } => {
+            let entry = find_package_entry(&root)?;
+            let layout = ProjectLayout::discover(&entry).map_err(|e| anyhow!("{}", e))?;
+            let ws = resolve_workspace(
+                &layout,
+                &ResolveOptions {
+                    write_lock: false,
+                    allow_unsigned: allow_unsigned_policy(allow_unsigned_deps),
+                    skip_proof: false,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| anyhow!("{}", e))?;
+            println!("package verify: OK ({} deps)", ws.deps.len());
+        }
+        PackageCmd::Publish { root, key } => {
+            let entry = find_package_entry(&root)?;
+            let layout = ProjectLayout::discover(&entry).map_err(|e| anyhow!("{}", e))?;
+            let name = layout.manifest.package.name.clone();
+            let version = layout.manifest.package.version.clone();
+            if name.is_empty() || version.is_empty() {
+                return Err(anyhow!(
+                    "ANUBIS_DEP_UNRESOLVED: [package] name and version required to publish"
+                ));
+            }
+            // Typecheck package sources.
+            let items = combine_from_entry_opts(
+                &entry,
+                &ResolveOptions {
+                    write_lock: layout.manifest.dependencies.is_empty(),
+                    allow_unsigned: false,
+                    skip_proof: layout.manifest.dependencies.is_empty(),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| anyhow!("{}", e))?;
+            typecheck(
+                anubis_compiler::frontend::AST { items },
+                Mode::Safe,
+            )
+            .map_err(|e| anyhow!("{}", e))?;
+            let src = std::fs::read_to_string(&entry)?;
+            let out = layout.root.join("out");
+            let bundle = build_evidence_bundle(&src, "safe", None, vec![], &out, None, None)
+                .map_err(|e| anyhow!("{}", e))?;
+            // Faithful package summaries (name/version/module merkle) before signing.
+            let sum = anubis_compiler::package::summary::extract_from_package(&layout.root)
+                .map_err(|e| anyhow!("{}", e))?;
+            anubis_compiler::package::summary::write_to_evidence_dir(&bundle.dir, &sum)
+                .map_err(|e| anyhow!("{}", e))?;
+            anubis_compiler::evidence::refresh_manifest_hashes(&bundle.dir)
+                .map_err(|e| anyhow!("{}", e))?;
+            let sk = std::fs::read_to_string(&key)?.trim().to_string();
+            let pk = sign_pca(&bundle.dir, &sk).map_err(|e| anyhow!("{}", e))?;
+            // Seal evidence/ into package root.
+            let sealed = layout.root.join("evidence");
+            let _ = std::fs::remove_dir_all(&sealed);
+            copy_dir_recursive(&bundle.dir, &sealed)?;
+            let dest = registry::publish_to_registry(
+                &registry::default_registry_root(),
+                &name,
+                &version,
+                &layout.root,
+            )
+            .map_err(|e| anyhow!("{}", e))?;
+            println!("published {}@{} → {}", name, version, dest.display());
+            println!("signer {}", pk);
+        }
+    }
+    Ok(())
+}
+
+fn run_trust_cmd(action: TrustCmd) -> Result<()> {
+    let path = anubis_compiler::package::trust::default_trust_path();
+    match action {
+        TrustCmd::AddSigner { public_key, name } => {
+            let mut store = TrustStore::load(&path).map_err(|e| anyhow!("{}", e))?;
+            store.add(&public_key, &name);
+            store.save(&path).map_err(|e| anyhow!("{}", e))?;
+            println!("trusted {} → {}", public_key.trim(), path.display());
+        }
+        TrustCmd::List => {
+            let store = TrustStore::load(&path).map_err(|e| anyhow!("{}", e))?;
+            if store.signer.is_empty() {
+                println!("(no trusted signers in {})", path.display());
+            } else {
+                for s in &store.signer {
+                    println!("{}  {}", s.public_key, s.name);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn find_package_entry(root: &Path) -> Result<PathBuf> {
+    let root = if root.is_file() {
+        return Ok(root.to_path_buf());
+    } else {
+        root
+    };
+    for name in ["src/main.anb", "main.anb", "src/lib.anb", "lib.anb"] {
+        let p = root.join(name);
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    // Any .anb under root
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("anb") {
+                return Ok(p);
+            }
+        }
+    }
+    Err(anyhow!(
+        "ANUBIS_DEP_UNRESOLVED: no .anb entry under {}",
+        root.display()
+    ))
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for ent in std::fs::read_dir(src)? {
+        let ent = ent?;
+        let from = ent.path();
+        let to = dst.join(ent.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Wrap a REPL line into a full program.
+/// Expressions → `print(expr)`; statements (`let`, `if`, …) → body as-is so typecheck sees them.
+fn wrap_repl_input(src: &str) -> String {
+    let t = src.trim();
+    if t.is_empty() {
+        return "fn main() {}".into();
+    }
+    if t.contains("fn main") {
+        return t.to_string();
+    }
+    // Top-level item definitions (may lack main — load-only).
+    let item_prefix = t.starts_with("fn ")
+        || t.starts_with("pub fn")
+        || t.starts_with("pub struct")
+        || t.starts_with("struct ")
+        || t.starts_with("enum ")
+        || t.starts_with("impl ")
+        || t.starts_with("module ")
+        || t.starts_with("import ");
+    if item_prefix {
+        return t.to_string();
+    }
+    let stmt_like = t.starts_with("let ")
+        || t.starts_with("if ")
+        || t.starts_with("while ")
+        || t.starts_with("for ")
+        || t.starts_with("loop ")
+        || t.starts_with("return ")
+        || t.starts_with("match ")
+        || t.starts_with("print(")
+        || t.starts_with("print ")
+        || t.ends_with(';');
+    if stmt_like {
+        format!("fn main() {{ {t} }}")
+    } else {
+        format!("fn main() {{ print({t}); }}")
+    }
+}
+
+/// Phase-7 REPL: always typecheck (+ obligations when present) before eval.
+fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Result<()> {
+    use anubis_compiler::frontend::{parse_source, Mode, AST};
+    use anubis_compiler::interp::Interp;
+    use anubis_compiler::middle::{typecheck, SymbolicEngine};
+    use anubis_compiler::backends::run::{
+        compile_native_rust_to_exe, lower_program_to_rust, run_child_capped, resolved_run_timeout,
+    };
+    use std::io::{self, BufRead, Write};
+
+    let mode = if allow_research {
+        Mode::Research
+    } else {
+        Mode::Safe
+    };
+
+    let check_src = |src: &str| -> Result<AST> {
+        let ast = parse_source(src).map_err(|e| anyhow!("parse: {e}"))?;
+        let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("check: {e}"))?;
+        let obs = SymbolicEngine::check_obligations(&typed);
+        for c in &obs {
+            if c.status == "FAIL" {
+                return Err(anyhow!(
+                    "ANUBIS_ASSERTION_UNPROVEN: {} — {}",
+                    c.name,
+                    c.detail
+                ));
+            }
+        }
+        Ok(ast)
+    };
+
+    let run_snippet = |src: &str, session: &mut Interp| -> Result<()> {
+        let ast = check_src(src)?;
+        if exact {
+            let rust = lower_program_to_rust(&ast.items, allow_research)
+                .map_err(|e| anyhow!("{e}"))?;
+            let dir = tempfile::tempdir()?;
+            let bin = dir.path().join("repl_bin");
+            compile_native_rust_to_exe(&rust, &bin).map_err(|e| anyhow!("{e}"))?;
+            let out = run_child_capped(
+                std::process::Command::new(&bin),
+                resolved_run_timeout(),
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+            print!("{}", String::from_utf8_lossy(&out.output.stdout));
+            eprint!("{}", String::from_utf8_lossy(&out.output.stderr));
+            if !out.output.status.success() {
+                return Err(anyhow!("exact run failed"));
+            }
+        } else {
+            session.load_items(&ast.items);
+            if session.fns.contains_key("main") {
+                session.output.clear();
+                session
+                    .eval_program(&ast.items)
+                    .map_err(|e| anyhow!("{e}"))?;
+                print!("{}", session.output);
+            } else {
+                // Evaluate last expression-like: wrap is already full program
+                session
+                    .eval_program(&ast.items)
+                    .map_err(|e| anyhow!("{e}"))?;
+                print!("{}", session.output);
+            }
+        }
+        Ok(())
+    };
+
+    if let Some(src) = eval_once {
+        let mut session = Interp::new();
+        let wrapped = wrap_repl_input(src);
+        run_snippet(&wrapped, &mut session)?;
+        return Ok(());
+    }
+
+    println!("anubis repl  (check-first; {} mode; :quit to exit)",
+        if exact { "exact" } else { "fast" });
+    let mut session = Interp::new();
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    loop {
+        print!("anubis> ");
+        stdout.flush()?;
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            break;
+        }
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t == ":quit" || t == ":q" {
+            break;
+        }
+        if t == ":help" {
+            println!(":quit  :reset  -- expressions print; statements (let/if/…) check-first");
+            continue;
+        }
+        if t == ":reset" {
+            session = Interp::new();
+            println!("session cleared");
+            continue;
+        }
+        let src = wrap_repl_input(t);
+        if let Err(e) = run_snippet(&src, &mut session) {
+            eprintln!("{e}");
+        }
+    }
+    Ok(())
+}
+
+/// Minimal stdio LSP (JSON-RPC Content-Length framing).
+fn run_lsp() -> Result<()> {
+    use anubis_compiler::lsp_analysis::{analyze_source, hover_at};
+    use std::collections::HashMap;
+    use std::io::{self, Read, Write};
+
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let mut docs: HashMap<String, String> = HashMap::new();
+
+    let read_msg = |stdin: &mut dyn Read| -> Result<Option<serde_json::Value>> {
+        let mut headers = Vec::new();
+        let mut buf = [0u8; 1];
+        let mut line = Vec::new();
+        loop {
+            let n = stdin.read(&mut buf)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if buf[0] == b'\n' {
+                if line == b"\r" || line.is_empty() {
+                    break;
+                }
+                headers.push(String::from_utf8_lossy(&line).trim().to_string());
+                line.clear();
+            } else {
+                line.push(buf[0]);
+            }
+        }
+        let mut content_len = 0usize;
+        for h in &headers {
+            if let Some(rest) = h.strip_prefix("Content-Length:") {
+                content_len = rest.trim().parse().unwrap_or(0);
+            }
+        }
+        if content_len == 0 {
+            return Ok(None);
+        }
+        let mut body = vec![0u8; content_len];
+        stdin.read_exact(&mut body)?;
+        let v: serde_json::Value = serde_json::from_slice(&body)?;
+        Ok(Some(v))
+    };
+
+    let write_msg = |stdout: &mut dyn Write, v: &serde_json::Value| -> Result<()> {
+        let body = serde_json::to_vec(v)?;
+        write!(
+            stdout,
+            "Content-Length: {}\r\n\r\n",
+            body.len()
+        )?;
+        stdout.write_all(&body)?;
+        stdout.flush()?;
+        Ok(())
+    };
+
+    let publish = |stdout: &mut dyn Write, uri: &str, source: &str| -> Result<()> {
+        let (diags, _, _) = analyze_source(source);
+        let arr: Vec<_> = diags
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "range": {
+                        "start": {"line": d.line, "character": d.character},
+                        "end": {"line": d.end_line, "character": d.end_character}
+                    },
+                    "severity": d.severity,
+                    "source": "anubis",
+                    "code": d.code,
+                    "message": d.message,
+                })
+            })
+            .collect();
+        write_msg(
+            stdout,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": { "uri": uri, "diagnostics": arr }
+            }),
+        )
+    };
+
+    loop {
+        let Some(msg) = read_msg(&mut stdin)? else {
+            break;
+        };
+        let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        let id = msg.get("id").cloned();
+        match method {
+            "initialize" => {
+                let result = serde_json::json!({
+                    "capabilities": {
+                        "textDocumentSync": 1,
+                        "hoverProvider": true,
+                    },
+                    "serverInfo": { "name": "anubis-lsp", "version": env!("CARGO_PKG_VERSION") }
+                });
+                write_msg(
+                    &mut stdout,
+                    &serde_json::json!({"jsonrpc":"2.0","id": id, "result": result}),
+                )?;
+            }
+            "initialized" | "shutdown" => {
+                if id.is_some() {
+                    write_msg(
+                        &mut stdout,
+                        &serde_json::json!({"jsonrpc":"2.0","id": id, "result": null}),
+                    )?;
+                }
+            }
+            "exit" => break,
+            "textDocument/didOpen" => {
+                let p = &msg["params"]["textDocument"];
+                let uri = p["uri"].as_str().unwrap_or("").to_string();
+                let text = p["text"].as_str().unwrap_or("").to_string();
+                docs.insert(uri.clone(), text.clone());
+                publish(&mut stdout, &uri, &text)?;
+            }
+            "textDocument/didChange" => {
+                let uri = msg["params"]["textDocument"]["uri"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(text) = msg["params"]["contentChanges"]
+                    .as_array()
+                    .and_then(|a| a.last())
+                    .and_then(|c| c.get("text"))
+                    .and_then(|t| t.as_str())
+                {
+                    docs.insert(uri.clone(), text.to_string());
+                    publish(&mut stdout, &uri, text)?;
+                }
+            }
+            "textDocument/hover" => {
+                let uri = msg["params"]["textDocument"]["uri"]
+                    .as_str()
+                    .unwrap_or("");
+                let line = msg["params"]["position"]["line"].as_u64().unwrap_or(0) as usize;
+                let ch = msg["params"]["position"]["character"]
+                    .as_u64()
+                    .unwrap_or(0) as usize;
+                let text = docs.get(uri).cloned().unwrap_or_default();
+                let offset = {
+                    let mut o = 0usize;
+                    for (i, l) in text.split_inclusive('\n').enumerate() {
+                        if i == line {
+                            o += ch.min(l.len());
+                            break;
+                        }
+                        o += l.len();
+                    }
+                    o
+                };
+                let result = hover_at(&text, offset).map(|h| {
+                    serde_json::json!({
+                        "contents": { "kind": "markdown", "value": h.contents }
+                    })
+                });
+                write_msg(
+                    &mut stdout,
+                    &serde_json::json!({"jsonrpc":"2.0","id": id, "result": result}),
+                )?;
+            }
+            _ => {
+                if id.is_some() {
+                    write_msg(
+                        &mut stdout,
+                        &serde_json::json!({
+                            "jsonrpc":"2.0","id": id,
+                            "error": {"code": -32601, "message": format!("method not found: {method}")}
+                        }),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Package { action } => run_package_cmd(action),
+        Commands::Trust { action } => run_trust_cmd(action),
+        Commands::Doc {
+            path,
+            format,
+            private,
+            out,
+        } => {
+            let fmt = match format.as_str() {
+                "json" => anubis_compiler::doc::DocFormat::Json,
+                _ => anubis_compiler::doc::DocFormat::Markdown,
+            };
+            let opts = anubis_compiler::doc::DocOptions {
+                include_private: private,
+                format: fmt,
+            };
+            let rendered = anubis_compiler::doc::render_path(&path, &opts)
+                .map_err(|e| anyhow!("{}", e))?;
+            if let Some(p) = out {
+                std::fs::write(&p, &rendered)?;
+                println!("wrote {}", p.display());
+            } else {
+                print!("{}", rendered);
+            }
+            Ok(())
+        }
+        Commands::Repl {
+            exact,
+            allow_research,
+            eval,
+        } => run_repl(exact, allow_research, eval.as_deref()),
+        Commands::Lsp { stdio: _ } => run_lsp(),
+        Commands::Selfhost { action } => run_selfhost_cmd(action),
         Commands::Test { path, json } => {
             let report = run_anubis_test_suite(&path)?;
             if json {
@@ -766,7 +1494,7 @@ fn main() -> Result<()> {
             );
 
             let src = std::fs::read_to_string(&input)?;
-            let ast = parse_or_diag(&src, &input)?;
+            let (ast, ws) = load_program_items(&input, &src)?;
 
             // Use parsed AST for mode (from first Fn item if present)
             let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
@@ -789,12 +1517,15 @@ fn main() -> Result<()> {
             };
 
             if do_evidence {
-                let logs = vec![
+                let mut logs = vec![
                     format!("build input: {}", input.display()),
                     format!("mode: {:?}", mode),
                     "taint pass: applied".into(),
                     "symbolic: constraints generated".into(),
                 ];
+                if let Some(ref w) = ws {
+                    logs.push(format!("dep_closure: {} package(s) verified", w.deps.len()));
+                }
                 let lane = if src.contains("hybrid") || src.contains("Hybrid") {
                     Some("hybrid-metal-risc0")
                 } else if matches!(mode, Mode::Safe) {
@@ -802,19 +1533,48 @@ fn main() -> Result<()> {
                 } else {
                     Some("research")
                 };
-                let bundle = build_evidence_bundle(
-                    &src,
-                    if matches!(mode, Mode::Safe) {
-                        "safe"
+                let mode_s = if matches!(mode, Mode::Safe) {
+                    "safe"
+                } else {
+                    "research"
+                };
+                let closure = ws.as_ref().map(dep_closure_json);
+                // Multi-file merkle when project has more than the entry body.
+                let bundle = if let Ok(layout) = ProjectLayout::discover(&input) {
+                    let tree = anubis_compiler::package::merkle::collect_tree_files(&layout.src_root)
+                        .unwrap_or_else(|_| {
+                            vec![("source.anubis".into(), src.as_bytes().to_vec())]
+                        });
+                    let files = if tree.is_empty() {
+                        vec![("source.anubis".into(), src.as_bytes().to_vec())]
+                    } else if tree.len() == 1 {
+                        // Single-file identity: keep golden source_hash stable.
+                        vec![("source.anubis".into(), tree[0].1.clone())]
                     } else {
-                        "research"
-                    },
-                    artifact.as_deref(),
-                    logs,
-                    &out,
-                    lane,
-                    None, // security block (populated from attrs in check/fuzz paths)
-                )
+                        tree
+                    };
+                    build_evidence_bundle_tree(
+                        &files,
+                        mode_s,
+                        artifact.as_deref(),
+                        logs,
+                        &out,
+                        lane,
+                        None,
+                        closure.as_ref(),
+                    )
+                } else {
+                    build_evidence_bundle_tree(
+                        &[("source.anubis".into(), src.as_bytes().to_vec())],
+                        mode_s,
+                        artifact.as_deref(),
+                        logs,
+                        &out,
+                        lane,
+                        None,
+                        closure.as_ref(),
+                    )
+                }
                 .map_err(|e| anyhow!("{}", e))?;
                 println!("evidence bundle: {}", bundle.dir.display());
                 println!("verdict: {}", bundle.manifest.verdict);
@@ -826,6 +1586,7 @@ fn main() -> Result<()> {
                     "source_hash": bundle.manifest.source_hash,
                     "lane": bundle.manifest.lane,
                     "verdict": bundle.manifest.verdict,
+                    "dep_closure": closure,
                     "reports": {
                         "markdown": bundle.dir.join("bounty-report.md").to_string_lossy(),
                         "sarif": bundle.dir.join("checks.sarif").to_string_lossy(),
@@ -867,22 +1628,24 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            // Multi-file modules: same combine path as `run` so `import` projects typecheck.
-            if parse_err.is_none()
-                && input.is_file()
-                && ast
-                    .as_ref()
-                    .is_some_and(|a| a.items.iter().any(|it| matches!(it, Item::Import { .. })))
-            {
-                match anubis_compiler::resolve::combine_from_entry(&input) {
-                    Ok(items) => {
-                        if let Some(a) = ast.as_mut() {
-                            a.items = items;
+            // Multi-file modules + Phase-6 package deps: same combine path as `run`.
+            if parse_err.is_none() && input.is_file() {
+                let needs_combine = ast.as_ref().is_some_and(|a| {
+                    a.items.iter().any(|it| matches!(it, Item::Import { .. }))
+                }) || ProjectLayout::discover(&input)
+                    .map(|l| !l.manifest.dependencies.is_empty())
+                    .unwrap_or(false);
+                if needs_combine {
+                    match combine_from_entry_opts(&input, &default_pkg_opts(false)) {
+                        Ok(items) => {
+                            if let Some(a) = ast.as_mut() {
+                                a.items = items;
+                            }
                         }
-                    }
-                    Err(e) => {
-                        parse_err = Some(e);
-                        ast = None;
+                        Err(e) => {
+                            parse_err = Some(e);
+                            ast = None;
+                        }
                     }
                 }
             }
@@ -3599,14 +4362,8 @@ fn run_anubis_source(
     allow_research: bool,
     args: &[String],
 ) -> Result<RunOutcome> {
-    let mut ast = parse_or_diag(source, input)?;
-    // Multi-file modules: if the entry is a real file that declares `import`s, resolve them against
-    // the enclosing project and combine the graph into one program. Inline sources and single-file
-    // programs (no imports) are untouched — the combine pass is a no-op for them.
-    if input.is_file() && ast.items.iter().any(|it| matches!(it, Item::Import { .. })) {
-        ast.items =
-            anubis_compiler::resolve::combine_from_entry(input).map_err(|e| anyhow!("{}", e))?;
-    }
+    // Multi-file + Phase-6 deps: resolve/lock/proof-check then combine into one program.
+    let (ast, _ws) = load_program_items(input, source)?;
     let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
@@ -3642,37 +4399,33 @@ fn run_anubis_source(
     };
     let work = std::env::temp_dir().join(format!("anubis-run-{unique}"));
     std::fs::create_dir_all(&work)?;
+    // Persist lowered source for inspection (`out/anubis_run.rs`).
     let work_rs = work.join("anubis_run.rs");
     std::fs::write(&work_rs, &rust_source)?;
 
-    // Content-addressed compile cache. The emitted Rust is deterministic, so the same program
-    // always compiles to the same binary; reuse a cached one and skip rustc entirely on a repeat
-    // run (turning the ~1-2s rustc baseline into a near-instant re-run). Correctness is preserved
-    // because the key is the emitted source itself. Opt out with ANUBIS_NO_CACHE=1.
+    // Content-addressed compile cache. Key includes crypto stack tag so switching pure→audited
+    // crates never reuses a stale binary. Opt out with ANUBIS_NO_CACHE=1.
     let cache_disabled = std::env::var("ANUBIS_NO_CACHE").is_ok();
-    let cache_key = sha256_bytes(format!("edition=2021\n{}", rust_source).as_bytes());
+    let cache_key = sha256_bytes(
+        format!(
+            "edition=2021\ncrypto={}\n{}",
+            ANUBIS_RUN_CRYPTO_CACHE_TAG, rust_source
+        )
+        .as_bytes(),
+    );
     let cache_dir = std::env::var("HOME")
         .map(|h| PathBuf::from(h).join(".anubis").join("run-cache"))
         .unwrap_or_else(|_| std::env::temp_dir().join("anubis-run-cache"));
     let cached_exe = cache_dir.join(&cache_key);
 
     let work_exe = if !cache_disabled && cached_exe.is_file() {
-        cached_exe.clone() // cache hit — no rustc
+        cached_exe.clone() // cache hit — no cargo
     } else {
         let tmp_exe = work.join("anubis_run");
-        let status = std::process::Command::new("rustc")
-            // Pin edition 2021 so `anubis run`, `anubis build`, and `anubis prove` compile the
-            // byte-identical lowering the same way (see native::compile_rust_to_exe).
-            .arg("--edition")
-            .arg("2021")
-            .arg(&work_rs)
-            .arg("-o")
-            .arg(&tmp_exe)
-            .status()
-            .map_err(|e| anyhow!("rustc spawn failed: {}", e))?;
-        if !status.success() {
+        // Native run links audited crypto crates (argon2, chacha20poly1305, hmac, …).
+        if let Err(e) = compile_native_rust_to_exe(&rust_source, &tmp_exe) {
             let _ = std::fs::remove_dir_all(&work);
-            return Err(anyhow!("ANUBIS_UNSUPPORTED_NATIVE_LOWERING: rustc failed"));
+            return Err(e);
         }
         // Publish to the cache atomically (copy to a staging name on the same filesystem, then
         // rename), capped so the cache cannot grow without bound.
