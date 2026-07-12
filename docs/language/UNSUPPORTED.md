@@ -191,9 +191,38 @@ is honest in **both** directions (never over-claim, never under-claim):
 - Parse `fn f(...) uses(fs.read, net.send, time.now, rand.gen) { ... }` on `Item::Fn.effects`.
 - Declared-vs-inferred: when `uses` is present, every capability effect inferred from the body
   (`file_read`/`file_write`/`network`/`shell`/…) must be ⊆ the declared set →
-  `ANUBIS_UNDECLARED_EFFECT`. Absent `uses` skips the check (C5 verified mode will require it).
+  `ANUBIS_UNDECLARED_EFFECT`. Absent `uses` skips the check in the default lane.
 - Effect inference now sees calls in let-initializers and nested call arguments (not only bare
   expression statements).
+
+## NOW REAL (I/O ↔ taint + verified lane — Phase-3 C4+C5, 2026-07-11)
+
+- **I/O reads are taint sources:** `read_file` / `open` / `input` / `read_line` seed taint via
+  `expr_taint_source` (`io source \`...\``).
+- **I/O writes/sends are sinks:** `write_file` / `write` / `send` / `network_send` are in `is_sink`,
+  so undeclassified read→write/send is `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` (same machinery as
+  `sink(...)`).
+- **Verification lane:** `typecheck_ex(..., verified=true)` and CLI `anubis check --verified` /
+  `anubis run --verified`. Capability effects without a `uses(...)` clause fail closed
+  (`ANUBIS_UNDECLARED_EFFECT`). Default lane remains permissive when `uses` is absent.
+
+## DEFERRED (Phase-3 A3 — field/element-granular taint)
+
+- **Whole-binding granularity remains.** A struct with one `tainted<T>` field still does not seed
+  only `.that_field` as tainted on an otherwise-clean instance; taint is per binding (let/param),
+  not per field/element of a clean binding. This is a **precision** gain (fail-closed over-approx
+  when a whole binding is seeded tainted), not a fail-open. Deferred: needs field-sensitive
+  BindingInfo / path-qualified taint labels and sound joins at merges — not shipped half-working.
+
+## Contract composition (Phase-3 D — status)
+
+- **Present:** callee `requires`/`ensures` are registered in `fn_contracts` and at `let x = f(args)`
+  specialized: preconditions become solver obligations (`requires@callee:...`); postconditions are
+  assumed into the caller only when every requires was modelable and the callee returns an integer.
+- **Not a separate error code:** unmet requires surface as failed solver obligations / check failure,
+  not a dedicated `ANUBIS_CALLEE_REQUIRES_UNMET` diagnostic. Cross-file composition works through the
+  resolved flat namespace (same as other interprocedural summaries). No extra slice needed for the
+  core path; a named error code remains optional polish.
 
 ## Explicitly PLANNED (not real yet — verified still-unshipped 2026-07-10)
 

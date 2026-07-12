@@ -17,7 +17,7 @@ use anubis_compiler::{
     frontend::{Item, Mode},
     gate11_fixture_verdict,
     middle::{SymbolicEngine, TaintPass},
-    parse_source, typecheck,
+    parse_source, typecheck, typecheck_ex,
 };
 use anyhow::anyhow;
 use anyhow::Result;
@@ -223,6 +223,10 @@ enum Commands {
         #[arg(long)]
         allow_research: bool,
 
+        /// Verification lane (Phase-3 C5): require `uses(...)` for capability I/O before run.
+        #[arg(long)]
+        verified: bool,
+
         /// Program arguments passed after `--`.
         #[arg(last = true)]
         args: Vec<String>,
@@ -303,6 +307,11 @@ enum Commands {
         /// Output directory for evidence bundles
         #[arg(short, long, default_value = "out")]
         out: PathBuf,
+
+        /// Verification lane (Phase-3 C5): capability I/O requires an explicit `uses(...)`
+        /// declaration; undeclared effects fail closed (`ANUBIS_UNDECLARED_EFFECT`).
+        #[arg(long)]
+        verified: bool,
     },
 
     /// Prove using a specific backend (e.g. risc0 for ZK receipt).
@@ -839,8 +848,14 @@ fn main() -> Result<()> {
             evidence,
             emit,
             out,
+            verified,
         } => {
-            println!("anubis check {} (evidence={})", input.display(), evidence);
+            println!(
+                "anubis check {} (evidence={}, verified={})",
+                input.display(),
+                evidence,
+                verified
+            );
 
             let src = std::fs::read_to_string(&input)?;
             // Rich, rustc-grade parse diagnostics (path:line:col + source line + caret) for the
@@ -859,7 +874,7 @@ fn main() -> Result<()> {
             };
 
             let typed_res = if let Some(ref a) = ast {
-                typecheck(a.clone(), mode)
+                typecheck_ex(a.clone(), mode, verified)
             } else {
                 Err(parse_err.clone().unwrap_or_else(|| "parse failed".into()))
             };
@@ -2577,9 +2592,17 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             evidence,
             json,
             allow_research,
+            verified,
             args,
         } => {
             let src = std::fs::read_to_string(&input)?;
+            // Verification lane: fail closed on undeclared capability I/O before emitting/running.
+            if verified {
+                let ast = parse_source(&src).map_err(|e| anyhow!("parse: {}", e))?;
+                let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+                typecheck_ex(ast, mode, true)
+                    .map_err(|e| anyhow!("verified check failed: {}", e))?;
+            }
             let outcome = run_anubis_source(&input, &src, &out, allow_research, &args)?;
             if evidence {
                 write_run_evidence(&out, &outcome)?;
@@ -4697,11 +4720,13 @@ mod tests {
                 evidence,
                 json,
                 allow_research,
+                verified,
                 args,
             } => {
                 assert_eq!(input, PathBuf::from("examples/hello_normal.anb"));
                 assert_eq!(out, PathBuf::from("out/run-test"));
                 assert!(evidence);
+                assert!(!verified);
                 assert!(json);
                 assert!(!allow_research);
                 assert_eq!(args, vec!["alice".to_string()]);

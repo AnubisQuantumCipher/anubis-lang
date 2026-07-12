@@ -177,18 +177,30 @@ struct SemanticContext {
     /// Combined at call sites with argument taint: `wrap` with `returns_taint_of_params={0}` makes
     /// `wrap(tainted)` a taint source (even through further let/return chains).
     param_return_taint: BTreeMap<String, BTreeSet<usize>>,
+    /// Phase-3 C5: verification lane (`--verified` / `#[verified]`). When set, capability effects
+    /// require an explicit `uses(...)` declaration (fail-closed undeclared effects).
+    verified: bool,
     /// Method name → parameter count (including `self`). `None` marks a name defined with more than
     /// one arity across impls, so its direct-call arity is ambiguous and left unchecked.
     method_arities: BTreeMap<String, Option<usize>>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
+    typecheck_ex(ast, mode, false)
+}
+
+/// Typecheck with an explicit verification-lane flag (Phase-3 C5). Prefer `typecheck` for the
+/// default lane; pass `verified=true` for `--verified` / fail-closed effect declarations.
+pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, String> {
     let bmode = match mode {
         Mode::Safe => BuildMode::Safe,
         Mode::Research => BuildMode::Research,
         Mode::Exploit => BuildMode::Exploit,
     };
-    let mut ctx = SemanticContext::default();
+    let mut ctx = SemanticContext {
+        verified,
+        ..SemanticContext::default()
+    };
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
     // Pass 1.5: interprocedural taint summaries (return-taint + param→sink), computed before
@@ -867,29 +879,41 @@ fn analyze_function(
         ctx,
     );
 
-    // Phase-3 C2: declared-vs-inferred effect check. When a function has a `uses(...)` clause,
-    // every capability effect inferred from the body must be ⊆ the declared set. Missing
-    // declaration of a used capability → `ANUBIS_UNDECLARED_EFFECT`. Absent `uses` skips the
-    // check (C5 verified mode will require declarations). Internal analysis tags (taint-*,
-    // assume, assert, loop, declassify, …) are not capability effects and are not gated here.
+    // Phase-3 C2/C5: declared-vs-inferred effect check.
+    // - When `uses(...)` is present: inferred capability effects must be ⊆ declared.
+    // - Verification lane (`ctx.verified` / `--verified`): capability effects also require that a
+    //   `uses(...)` clause exists at all (absent clause is fail-closed).
+    // Internal analysis tags (taint-*, assume, assert, loop, declassify, …) are not gated.
+    let caps_used: BTreeSet<String> = effects
+        .iter()
+        .filter_map(|e| capability_effect(e))
+        .collect();
+    if ctx.verified && !caps_used.is_empty() && declared_effects.is_empty() {
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
+            message: format!(
+                "verification lane: function `{name}` uses capability effect(s) [{}] but declares no `uses(...)` clause",
+                caps_used.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            span: Some((span.start, span.end)),
+        });
+    }
     if !declared_effects.is_empty() {
         let declared: BTreeSet<String> = declared_effects
             .iter()
             .map(|e| normalize_effect_name(e))
             .collect();
         let mut seen_undeclared = BTreeSet::new();
-        for inf in &effects {
-            if let Some(cap) = capability_effect(inf) {
-                if !declared.contains(&cap) && seen_undeclared.insert(cap.clone()) {
-                    ctx.diagnostics.push(SemanticDiagnostic {
-                        code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
-                        message: format!(
-                            "function `{name}` uses effect `{cap}` but does not declare it in `uses(...)` (declared: {})",
-                            declared_effects.join(", ")
-                        ),
-                        span: Some((span.start, span.end)),
-                    });
-                }
+        for cap in &caps_used {
+            if !declared.contains(cap) && seen_undeclared.insert(cap.clone()) {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
+                    message: format!(
+                        "function `{name}` uses effect `{cap}` but does not declare it in `uses(...)` (declared: {})",
+                        declared_effects.join(", ")
+                    ),
+                    span: Some((span.start, span.end)),
+                });
             }
         }
     }
@@ -4310,7 +4334,10 @@ fn expr_taint_source(
             expr_taint_source(expr, scope, tainting_fns, param_return_taint)
         }
         Expr::Call { callee, args } => {
-            if tainting_fns.contains(callee) {
+            // C4: an I/O read is itself a taint source (untrusted input), even with clean args.
+            if is_io_taint_source(callee) {
+                Some(format!("io source `{callee}`"))
+            } else if tainting_fns.contains(callee) {
                 Some(format!("return value of `{}`", callee))
             } else if let Some(rets) = param_return_taint.get(callee) {
                 // Known user function: only params that the summary says reach the return.
@@ -5044,9 +5071,19 @@ fn expr_is_declassified(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> 
 }
 
 fn is_sink(callee: &str) -> bool {
+    // Phase-3 C4: I/O write/send paths are sinks (so an undeclassified read→send is
+    // `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` via the existing machinery).
     matches!(
         callee,
-        "sink" | "send" | "network_send" | "write" | "memcpy" | "exec" | "sql"
+        "sink" | "send" | "network_send" | "write" | "write_file" | "memcpy" | "exec" | "sql"
+    )
+}
+
+/// Phase-3 C4: I/O reads (and stdin) are taint sources — their return value is untrusted input.
+fn is_io_taint_source(callee: &str) -> bool {
+    matches!(
+        callee,
+        "read_file" | "open" | "input" | "read_line" | "recv" | "net_recv"
     )
 }
 

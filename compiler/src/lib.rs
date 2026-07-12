@@ -13,7 +13,7 @@ pub mod resolve;
 pub use backends::native::lower_to_native;
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
 pub use frontend::{lex, parse, parse_source, Mode, AST};
-pub use middle::{typecheck, SymbolicEngine, TaintPass};
+pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
 pub use project::{AnubisManifest, ProjectLayout};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3137,6 +3137,72 @@ fn main() {
 }
 "#;
         tc_ok(declassified).expect("a declassified value may reach a sink");
+    }
+
+    #[test]
+    fn io_read_is_taint_source_and_write_is_sink() {
+        // Phase-3 C4: I/O reads are taint sources; write_file/send are sinks (is_sink).
+        // Use `sink(...)` as the sink probe so we do not couple this test to network/research mode.
+        let err = tc_ok(
+            r#"fn main() {
+    let data = read_file("secret.txt");
+    sink(data);
+}"#,
+        )
+        .expect_err("read→sink without declassify must reject");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
+
+        tc_ok(
+            r#"fn main() {
+    let data = read_file("secret.txt");
+    let clean = declassify(data, "policy", "reason");
+    sink(clean);
+}"#,
+        )
+        .expect("declassified read may reach sink");
+
+        // write_file is a sink: a tainted value into write_file is rejected in Safe mode
+        // (also ANUBIS_EFFECT_FORBIDDEN for file_write — either code proves the wiring).
+        let err = tc_ok(
+            r#"fn main() {
+    let data = read_file("secret.txt");
+    write_file("out.txt", data);
+}"#,
+        )
+        .expect_err("read→write_file without declassify must reject");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY")
+                || err.contains("ANUBIS_EFFECT_FORBIDDEN"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn verified_lane_requires_uses_for_capability_io() {
+        // Phase-3 C5: in the verification lane, capability I/O without uses(...) is fail-closed.
+        let src = r#"fn main() {
+    let data = read_file("x.txt");
+    print(data);
+}"#;
+        let ast = parse_source(src).expect("parse");
+        let err = typecheck_ex(ast, frontend::Mode::Safe, true)
+            .expect_err("verified lane must require uses for read_file");
+        assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got: {err}");
+
+        // Same program with uses(fs.read) is accepted in verified lane.
+        let ok = r#"fn main() uses(fs.read) {
+    let data = read_file("x.txt");
+    print(len(data));
+}"#;
+        let ast = parse_source(ok).expect("parse");
+        typecheck_ex(ast, frontend::Mode::Safe, true)
+            .expect("verified + uses(fs.read) must accept read_file");
+
+        // Default lane (verified=false) still accepts absent uses (permissive).
+        tc_ok(src).expect("default lane permits absent uses");
     }
 
     #[test]
