@@ -121,25 +121,77 @@ else
   fail_one "repro_no_machine_paths"
 fi
 
-# 4. Reproducibility manifest — what a third party pins to re-derive the bytes.
-python3 - "$OUT" "$TC_VER" "$SRC_SHA" "$REPRO_SHA" <<'PY' || true
+# ---------------------------------------------------------------------------
+# HERMETIC LANE (unit 2) — the externally-publishable claim. Build the fixpoint
+# source inside a pinned rust container twice, in independent runs; require a
+# bit-identical Linux ELF. Inside the image every path is fixed (toolchain,
+# HOME, /work), so a third party with the same image DIGEST + source re-derives
+# the exact bytes. Runs when Docker is available; REQUIRED when ANUBIS_REPRO_DOCKER=1.
+# ---------------------------------------------------------------------------
+LINUX_STATUS="skipped"; LINUX_SHA=""; IMG_DIGEST=""
+REPRO_IMAGE="${ANUBIS_REPRO_IMAGE:-rust:1.83-slim-bookworm}"
+echo "== hermetic Linux lane (Docker) =="
+if docker info >/dev/null 2>&1; then
+  docker pull -q "$REPRO_IMAGE" >/dev/null 2>&1 || true
+  IMG_DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$REPRO_IMAGE" 2>/dev/null || true)"
+  hermetic_sha() {
+    docker run --rm -v "$OUT:/src:ro" "$REPRO_IMAGE" bash -c '
+      set -e; mkdir -p /work; cp /src/fixpoint.rs /work/canon.rs; cd /work
+      SOURCE_DATE_EPOCH=0 rustc -O -C codegen-units=1 -C debuginfo=0 \
+        -C link-args=-Wl,--build-id=none canon.rs -o out.bin 2>/dev/null
+      sha256sum out.bin | cut -d" " -f1' 2>/dev/null | tail -1
+  }
+  L1="$(hermetic_sha)"; L2="$(hermetic_sha)"
+  if [[ -n "$L1" && "$L1" == "$L2" ]]; then
+    LINUX_STATUS="reproducible"; LINUX_SHA="$L1"
+    note "hermetic Linux ELF sha256: $L1 (image $IMG_DIGEST)"
+    pass_one "repro_hermetic_linux"
+  else
+    LINUX_STATUS="differ"
+    note "hermetic builds differ: $L1 vs $L2"
+    fail_one "repro_hermetic_linux"
+  fi
+elif [[ "${ANUBIS_REPRO_DOCKER:-0}" == "1" ]]; then
+  note "ANUBIS_REPRO_DOCKER=1 but Docker daemon is down"
+  fail_one "repro_hermetic_linux"
+else
+  note "repro_hermetic_linux: SKIP (Docker unavailable; set ANUBIS_REPRO_DOCKER=1 to require)"
+fi
+
+# Reproducibility manifest — what a third party pins to re-derive the bytes.
+python3 - "$OUT" "$TC_VER" "$SRC_SHA" "$REPRO_SHA" "$LINUX_STATUS" "$LINUX_SHA" "$IMG_DIGEST" "$REPRO_IMAGE" <<'PY' || true
 import json, sys
-out, tc, src_sha, repro_sha = sys.argv[1:5]
+out, tc, src_sha, repro_sha, lin_status, lin_sha, img_digest, img = sys.argv[1:9]
 manifest = {
     "artifact": "anubis-sh self-host compiler (stage2 fixpoint source)",
-    "toolchain": tc,
-    "target": "aarch64-apple-darwin",
     "source_sha256": src_sha,
-    "reproducible_sha256": repro_sha,
-    "build": {
-        "flags": ["-O", "-C codegen-units=1", "-C debuginfo=0"],
-        "remap_path_prefix": ["$HOME=/anubis-home", "<builddir>=/anubis-build"],
-        "SOURCE_DATE_EPOCH": "0",
-        "canonical_source_name": "canon.rs",
-        "normalize": ["codesign --remove-signature", "zero LC_UUID"],
+    "macos_lane": {
+        "toolchain": tc,
+        "target": "aarch64-apple-darwin",
+        "reproducible_sha256": repro_sha,
+        "build": {
+            "flags": ["-O", "-C codegen-units=1", "-C debuginfo=0"],
+            "remap_path_prefix": ["$HOME=/anubis-home", "<builddir>=/anubis-build"],
+            "SOURCE_DATE_EPOCH": "0",
+            "canonical_source_name": "canon.rs",
+            "normalize": ["codesign --remove-signature", "zero LC_UUID"],
+        },
     },
-    "claim": "Reproducible under the pinned toolchain + normalized environment. "
-             "NOT toolchain-diversity / trusting-trust closure.",
+    "hermetic_linux_lane": {
+        "status": lin_status,
+        "image": img,
+        "image_digest": img_digest,
+        "target": "aarch64-unknown-linux-gnu (or host arch in image)",
+        "reproducible_sha256": lin_sha,
+        "build": {
+            "flags": ["-O", "-C codegen-units=1", "-C debuginfo=0",
+                      "-C link-args=-Wl,--build-id=none"],
+            "SOURCE_DATE_EPOCH": "0",
+            "note": "all paths fixed by the container image; no remap needed",
+        },
+    },
+    "claim": "Reproducible under the pinned toolchain/image + normalized "
+             "environment. NOT toolchain-diversity / trusting-trust closure.",
 }
 open(f"{out}/repro_manifest.json", "w").write(json.dumps(manifest, indent=2) + "\n")
 print("  wrote repro_manifest.json")

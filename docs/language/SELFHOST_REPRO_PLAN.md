@@ -56,9 +56,14 @@ tracked in SELFHOST.md as the open `NEEDS-HUMAN`. Keep the two claims distinct.
 
 ## Order of work
 
-- Land 1–4 first (macOS, no container) — small, uses existing normalizer, closes
-  the "same-machine-only" gap in the current fixpoint. Ship as one green unit.
-- Then 5 (hermetic Linux) — the externally-publishable claim. Ship as a second unit.
-- Do NOT start the second-backend DDC capstone until both land.
+- **DONE (unit 1, commit 9b7d3bf) — macOS remap + determinism.** `run_selfhost_repro_gate.sh`,
+  5 checks, fail-closed. Reproducible sha `1db6a019` (stable across runs); negative control
+  (no-remap build leaks 9 machine paths) confirms the check is load-bearing.
+- **DONE (unit 2) — hermetic Linux lane.** Same script; builds the fixpoint source inside a
+  pinned `rust:1.83-slim-bookworm` (digest `sha256:540c902e…`) twice → bit-identical ELF
+  `80323a20…`. Runs when Docker is up; `ANUBIS_REPRO_DOCKER=1` makes it required.
+  Gate now `SELFHOST_REPRO_GATE: PASS (6/6)`.
+- **NEXT — second-backend DDC capstone** (trusting-trust closure). Not started; needs an
+  independent lowering (emit-C or bytecode VM) so a subverted rustc can't hide in both paths.
 
 Related: [[anubis-host-runtime-rc-fix-2026-07-12]], SELFHOST.md (trusting-trust residual).

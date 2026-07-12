@@ -164,7 +164,10 @@ emit) is also checked for hello.
 
 - **Cross-toolchain-version** binary identity. The binary seal holds for *one* rustc +
   flag set. A different rustc version emits different code; that is expected and not
-  claimed.
+  claimed. What *is* now gated is **external reproducibility under a pinned
+  toolchain/image** — see the reproducibility note below and
+  `scripts/run_selfhost_repro_gate.sh`; that is a distinct, weaker claim than
+  cross-version identity.
 - **Trusting-trust closure.** A byte-identical self-host fixpoint does **not** prove the
   seed (Rust host + rustc + LLVM) is backdoor-free — a compromised seed reproduces its own
   backdoor through the fixpoint silently. We do **no** Diverse Double-Compilation (Wheeler).
@@ -188,6 +191,18 @@ emit) is also checked for hello.
 subset.* It now uses `enum Stmt` / `enum Expr` + `match` + if-expressions in load-bearing
 positions and still reaches the byte-identical source + binary fixpoint. Enforced by
 `scripts/run_selfhost_dogfood_gate.sh` (structural + ablation). See *Dogfood* above.
+
+**Earned 2026-07-12 — external reproducibility (`scripts/run_selfhost_repro_gate.sh`, fail-closed):**
+the byte-identical fixpoint source, compiled under a pinned toolchain with `$HOME` + build
+dir remapped and `SOURCE_DATE_EPOCH=0`, produces a binary that is (a) deterministic across
+independent build dirs and (b) free of host/user identity paths — verified by a negative
+control (a build without the remap leaks 9 machine paths). A **hermetic Linux lane** builds
+the same source inside a pinned `rust` image (recorded by digest) and reproduces a
+bit-identical ELF across independent container runs. A third party can re-derive the exact
+bytes from `repro_manifest.json`. **This proves reproducibility, not trust:** it does *not*
+close trusting-trust (a subverted rustc reproduces its own subversion here too) — that
+remains the open `NEEDS-HUMAN` above, needing a second independent backend
+(see `SELFHOST_REPRO_PLAN.md`).
 
 ## Codegen honesty
 
