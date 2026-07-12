@@ -3,14 +3,23 @@
 //! v0.1 MVP scope per plan.
 
 pub mod backends;
+pub mod doc;
 pub mod evidence;
 pub mod fmt;
 pub mod frontend;
+pub mod interp;
+pub mod lsp_analysis;
 pub mod middle;
+pub mod package;
 pub mod project;
 pub mod resolve;
+pub mod selfhost_schema;
+pub mod stdlib;
 
 pub use backends::native::lower_to_native;
+pub use backends::run::{
+    compile_native_rust_to_exe, ANUBIS_RUN_CRYPTO_CACHE_TAG,
+};
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
 pub use frontend::{lex, parse, parse_source, Mode, AST};
 pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
@@ -2490,6 +2499,838 @@ fn bad() {
     }
 
     #[test]
+    fn phase4_divisor_maybe_zero_is_named_and_shifts_use_bvashr() {
+        // A1 residual: unguarded variable divisor → ANUBIS_DIVISOR_MAYBE_ZERO (not a silent cert).
+        let err = tc_ok("fn f(n: u32) -> u32 ensures(result == 1) { return 6 / n; }")
+            .expect_err("unguarded / n must reject ensures");
+        assert!(err.contains("ANUBIS_DIVISOR_MAYBE_ZERO"), "got: {err}");
+        // Zero literal divisor:
+        let err =
+            tc_ok("fn f(x: u32) -> u32 requires(x == 5) ensures(result == 5) { return x / 0; }")
+                .expect_err("/ 0 must reject");
+        assert!(
+            err.contains("ANUBIS_DIVISOR_MAYBE_ZERO") || err.contains("ANUBIS_CONTRACT"),
+            "got: {err}"
+        );
+        // Proven non-zero still models (no reject):
+        tc_ok("fn f(n: u32) -> u32 requires(n != 0) ensures(result == 3) { return 6 / n; }")
+            .expect("guarded divisor must accept");
+        // bvashr lock via discharge helpers (false arithmetic-shift claim fails):
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL"),
+            Err(_) => false,
+        };
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 0 - 4) { return (0 - 8) >> 1; }"),
+            "bvashr: -8 >> 1 == -4"
+        );
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 4) { return (0 - 8) >> 1; }"),
+            "bvlshr trap must not pass"
+        );
+    }
+
+    #[test]
+    fn phase4_replay_mismatch_detail_on_forged_path() {
+        // B1 residual: a FAIL model that does not replay is labeled ANUBIS_REPLAY_MISMATCH.
+        // Force a sat path then forge — unit-level on SolverCheck detail after check_obligations
+        // already tags genuine models as "(replayed)".
+        let src = r#"
+fn bad() {
+    research {
+        let x: tainted<u32> = symbolic();
+        assume(x < 10);
+        assert(x > 20);
+    }
+}
+"#;
+        let ir = typecheck(parse_source(src).expect("parse"), Mode::Research).expect("tc");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let failed = checks
+            .iter()
+            .find(|c| c.name.contains("assert") && c.status == "FAIL")
+            .expect("must FAIL");
+        assert!(
+            failed.detail.contains("replayed") || failed.detail.contains("ANUBIS_REPLAY_MISMATCH"),
+            "FAIL detail should mention replay: {}",
+            failed.detail
+        );
+        // Direct API: forged model fails replay
+        let model = failed.model.as_deref().unwrap();
+        let var = model
+            .split("define-fun ")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .unwrap();
+        let forged = format!("(define-fun {var} () (_ BitVec 64) #x0000000000000064)");
+        assert!(!middle::replay_counterexample(&failed.smt, &forged));
+    }
+
+    #[test]
+    fn phase4_proptest_discharge_and_disproof() {
+        // B3: program-level differential net.
+        use backends::run::compile_and_run_source;
+        use middle::proptest;
+
+        let discharged = |src: &str| -> bool {
+            match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+
+        // P_discharge: true contracts discharge; runtime prints oracle.
+        for seed in 1u64..40 {
+            let (src, oracle) = proptest::gen_true_contract_program(seed, 2);
+            assert!(
+                discharged(&src),
+                "seed {seed} true contract must discharge:\n{src}"
+            );
+            let out = compile_and_run_source(&src, false, &[]).expect("run");
+            assert!(
+                out.status.success(),
+                "seed {seed} run failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            // Runtime prints i64; may wrap display — compare as i64 parse when possible.
+            if let Ok(got) = printed.parse::<i64>() {
+                assert_eq!(got, oracle, "seed {seed} runtime != oracle\n{src}");
+            }
+        }
+
+        // Symbolic true program discharges + runs.
+        let sym_ok = proptest::gen_symbolic_true_program();
+        assert!(discharged(&sym_ok), "symbolic true must discharge");
+        let out = compile_and_run_source(&sym_ok, false, &[]).expect("run");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "8");
+
+        // P_disproof: false contracts fail obligations; runtime value != wrong ensures constant.
+        for seed in 1u64..25 {
+            let (src, body_val) = proptest::gen_false_contract_program(seed, 2);
+            let ir = match typecheck(parse_source(&src).expect("parse"), Mode::Safe) {
+                Ok(ir) => ir,
+                Err(e) => panic!("seed {seed} parse/tc: {e}\n{src}"),
+            };
+            let checks = SymbolicEngine::check_obligations(&ir);
+            let any_fail = checks.iter().any(|c| c.status == "FAIL");
+            assert!(
+                any_fail,
+                "seed {seed} false contract must FAIL:\n{src}\n{:?}",
+                checks
+            );
+            // Runtime still computes body value.
+            let out = compile_and_run_source(&src, false, &[]).expect("run");
+            assert!(out.status.success(), "seed {seed}");
+            let got: i64 = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(body_val);
+            assert_eq!(got, body_val, "seed {seed}");
+            // Model replay when present:
+            if let Some(f) = checks
+                .iter()
+                .find(|c| c.status == "FAIL" && c.model.is_some())
+            {
+                assert!(
+                    middle::replay_counterexample(&f.smt, f.model.as_deref().unwrap()),
+                    "seed {seed} FAIL model must replay"
+                );
+            }
+        }
+
+        let sym_bad = proptest::gen_symbolic_false_program();
+        assert!(!discharged(&sym_bad), "symbolic false must not discharge");
+    }
+
+    #[test]
+    fn phase4_bounded_seq_qf_abv_and_fail_closed_codes() {
+        // A2: fixed list literal + constant in-range index + len — discharge.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        assert!(
+            discharged(
+                "fn f() -> u32 ensures(result == 20) { let xs = [10, 20, 30]; return xs[1]; }"
+            ),
+            "xs[1] of fixed list must prove"
+        );
+        assert!(
+            discharged(
+                "fn f() -> u32 ensures(result == 3) { let xs = [1, 2, 3]; return len(xs); }"
+            ),
+            "len of fixed list must prove"
+        );
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 20) { return [10, 20, 30][1]; }"),
+            "inline literal index must prove"
+        );
+        // False postcondition on seq read must FAIL (not silent pass).
+        assert!(
+            !discharged(
+                "fn f() -> u32 ensures(result == 99) { let xs = [10, 20, 30]; return xs[1]; }"
+            ),
+            "wrong ensures on xs[1] must fail"
+        );
+        // OOB-possible index → ANUBIS_INDEX_MAYBE_OOB
+        let err =
+            tc_ok("fn f(i: u32) -> u32 ensures(result == 0) { let xs = [1, 2, 3]; return xs[i]; }")
+                .expect_err("symbolic index must reject");
+        assert!(err.contains("ANUBIS_INDEX_MAYBE_OOB"), "got: {err}");
+        // Constant OOB index also rejected (not proven in-range).
+        let err = tc_ok("fn f() -> u32 ensures(result == 0) { let xs = [1, 2]; return xs[5]; }")
+            .expect_err("OOB constant must reject");
+        assert!(err.contains("ANUBIS_INDEX_MAYBE_OOB"), "got: {err}");
+        // Unbounded list param → ANUBIS_SEQ_UNBOUNDED
+        let err = tc_ok("fn f(xs: list) -> u32 ensures(result == xs[0]) { return xs[0]; }")
+            .expect_err("unbounded seq must reject");
+        assert!(
+            err.contains("ANUBIS_SEQ_UNBOUNDED") || err.contains("ANUBIS_INDEX"),
+            "got: {err}"
+        );
+        let err = tc_ok("fn f(xs: list) -> u32 ensures(result == len(xs)) { return len(xs); }")
+            .expect_err("len of param must reject");
+        assert!(err.contains("ANUBIS_SEQ_UNBOUNDED"), "got: {err}");
+    }
+
+    #[test]
+    fn phase4_string_and_float_opaque_diagnostics() {
+        // S: strings/floats stay opaque with precise codes (no silent cert).
+        let err = tc_ok(r#"fn f() -> string ensures(result == "ok") { return "ok"; }"#)
+            .expect_err("string ensures must reject");
+        assert!(
+            err.contains("ANUBIS_STRING_CONTRACT_UNMODELED"),
+            "got: {err}"
+        );
+        let err = tc_ok("fn f() -> f64 ensures(result == 1.5) { return 1.5; }")
+            .expect_err("float ensures must reject");
+        assert!(
+            err.contains("ANUBIS_FLOAT_CONTRACT_UNMODELED"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase5_stdlib_import_resolve_combine_and_run() {
+        // Virtual std.*: no project std on disk; combine + run pure modules.
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-stdlib-run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.math;
+import std.collections;
+import std.str;
+import std.testing;
+fn main() {
+    testing::assert_eq(math::math_add(20, 22), 42);
+    let s = collections::set_insert(collections::set_new(), 7);
+    testing::assert_true(collections::set_contains(s, 7));
+    testing::assert_eq(str::str_upper("ok"), "OK");
+    print(42);
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine std");
+        let names: Vec<_> = items
+            .iter()
+            .filter_map(|it| match it {
+                frontend::Item::Fn { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("std_math__")),
+            "expected namespaced std.math fns, got {names:?}"
+        );
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42");
+    }
+
+    #[test]
+    fn phase5_stdlib_not_shadowable_from_project_tree() {
+        // User src/std/math.anb must NOT override embedded std.math.
+        let dir = unique_test_dir("phase5-stdlib-noshadow");
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("std")).unwrap();
+        std::fs::write(
+            src.join("std/math.anb"),
+            "pub fn math_add(a, b) { return 0; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("Anubis.toml"),
+            "[package]\nname = \"shadow\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let entry = src.join("main.anb");
+        std::fs::write(
+            &entry,
+            "import std.math;\nfn main() { print(math::math_add(2, 3)); }\n",
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = backends::run::compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(out.status.success());
+        // Embedded math_add(2,3) == 5, not the hostile 0.
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "5");
+    }
+
+    #[test]
+    fn phase5_std_io_taint_and_uses() {
+        let dir = unique_test_dir("phase5-io");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Runtime: write/read without declassify (declassify is check/prove surface).
+        let run_src = dir.join("run.anb");
+        std::fs::write(
+            &run_src,
+            r#"
+import std.io;
+fn main() uses(fs.write, fs.read) {
+    let p = "hello_phase5.txt";
+    io::write_text(p, "x");
+    print(io::read_text(p));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&run_src).expect("combine run");
+        // Write-then-read of a constant we just wrote: return is still tainted by policy,
+        // but main does not sink it — check should accept.
+        typecheck(
+            frontend::AST {
+                items: items.clone(),
+            },
+            Mode::Safe,
+        )
+        .expect("run check");
+        let out = backends::run::compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "x");
+
+        // Clean check path: declassify before write (typecheck only; declassify is not in run).
+        let clean = dir.join("clean.anb");
+        std::fs::write(
+            &clean,
+            r#"
+import std.io;
+fn main() uses(fs.read, fs.write) {
+    let t = io::read_text("hello_phase5.txt");
+    let c = declassify(t, "test", "round-trip");
+    io::write_text("out.txt", c);
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&clean).expect("combine clean");
+        typecheck(frontend::AST { items }, Mode::Safe).expect("declassify path must check");
+
+        let leak = dir.join("leak.anb");
+        std::fs::write(
+            &leak,
+            r#"
+import std.io;
+fn main() uses(fs.read, fs.write) {
+    let t = io::read_text("hello_phase5.txt");
+    io::write_text("out.txt", t);
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&leak).expect("combine leak");
+        let err = typecheck(frontend::AST { items }, Mode::Safe).expect_err("leak must fail");
+        assert!(
+            err.contains("ANUBIS_INTERPROC_SINK") || err.contains("TAINTED"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase5_crypto_hmac_verify_ct_and_aead_roundtrip() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-crypto");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    print(crypto::mac_verify("k", "m", crypto::mac_hmac_sha256("k", "m")));
+    print(crypto::mac_verify("k", "m", crypto::mac_hmac_sha256("k", "nope")));
+    let key = crypto::aead_keygen();
+    let nonce = crypto::aead_nonce();
+    let ct = crypto::aead_encrypt(key, nonce, "aad", "hello");
+    let pt = crypto::aead_decrypt(key, nonce, "aad", ct);
+    print(len(pt));
+    print(len(crypto::kdf_hkdf_sha256("ikm", "", "info", 32)));
+    print(len(crypto::rand_bytes(24)));
+    // Known-answer HMAC-SHA256 (Wikipedia / standard test vector)
+    print(crypto::mac_hmac_sha256("key", "The quick brown fox jumps over the lazy dog"));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(lines[0], "true");
+        assert_eq!(lines[1], "false");
+        assert_eq!(lines[2], "5"); // hello
+        assert_eq!(lines[3], "32");
+        assert_eq!(lines[4], "24");
+        assert_eq!(
+            lines[5],
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    #[test]
+    fn phase5_crypto_aead_wrong_aad_fail_closed() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-aead-aad");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    let key = crypto::aead_keygen();
+    let n = crypto::aead_nonce();
+    let ct = crypto::aead_encrypt(key, n, "aad-good", "payload");
+    let _ = crypto::aead_decrypt(key, n, "aad-BAD", ct);
+    print("should-not-reach");
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("spawned");
+        assert!(
+            !out.status.success(),
+            "wrong AAD must fail closed, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("ANUBIS_CRYPTO_AEAD_OPEN_FAILED")
+                || err.contains("authentication tag mismatch"),
+            "got stderr: {err}"
+        );
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("should-not-reach"));
+    }
+
+    #[test]
+    fn phase5_crypto_password_pbkdf2_and_argon2id_kats() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-pwd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        // Hard KATs: RFC 6070 PBKDF2-HMAC-SHA256 c=1; Argon2id vs RustCrypto argon2 0.5
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    let d1 = crypto::kdf_pbkdf2_hmac_sha256("password", "salt", 1, 32);
+    print(crypto::bytes_hex(d1));
+    let h = crypto::kdf_argon2id("password", "somesalt", 32, 3, 1, 32);
+    print(crypto::bytes_hex(h));
+    let d4096 = crypto::kdf_pbkdf2_hmac_sha256("password", "salt", 4096, 32);
+    print(crypto::bytes_hex(d4096));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        // RFC 6070 §2
+        assert_eq!(
+            lines[0],
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+        );
+        // RustCrypto argon2 0.5 hash_password_into (m=32,t=3,p=1)
+        assert_eq!(
+            lines[1],
+            "6d4c5fa26a057c23e3a4f72ae34c64e71398c851f2c79464e3e670ed41b543f9"
+        );
+        // RFC 6070 c=4096
+        assert_eq!(
+            lines[2],
+            "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a"
+        );
+    }
+
+    #[test]
+    fn phase5_crypto_password_hash_verify_roundtrip() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-pwd-rt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        // Argon2id production + PBKDF2 encoding path (was broken: 5-field verify).
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    let stored = crypto::password_hash("correct horse battery staple");
+    print(crypto::password_verify("correct horse battery staple", stored));
+    print(crypto::password_verify("wrong password", stored));
+    let p = crypto::password_hash_pbkdf2("secret");
+    print(crypto::password_verify("secret", p));
+    print(crypto::password_verify("nope", p));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(lines[0], "true");
+        assert_eq!(lines[1], "false");
+        assert_eq!(lines[2], "true", "pbkdf2 verify must accept correct password");
+        assert_eq!(lines[3], "false");
+    }
+
+    #[test]
+    fn phase5_crypto_build_path_uses_cargo_not_bare_rustc() {
+        // Regression: anubis build / lower_to_native must not use bare rustc (can't link crates).
+        use backends::native::lower_to_native;
+        let dir = unique_test_dir("phase5-build-crypto");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    print(crypto::mac_hmac_sha256("k", "m"));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let ast = frontend::AST { items: items.clone() };
+        let ir = typecheck(ast, Mode::Safe).expect("typecheck");
+        let art = lower_to_native(ir, &items, &dir, "crypto_build", false)
+            .expect("build must succeed with audited crypto via cargo");
+        assert!(
+            std::path::Path::new(&art).is_file(),
+            "artifact missing: {art}"
+        );
+    }
+
+    #[test]
+    fn phase5_crypto_ed25519_and_phc_and_byte_range() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-adv");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    print(crypto::backend());
+    let kp = crypto::sign_keygen();
+    let sk = kp[0];
+    let pk = kp[1];
+    let sig = crypto::sign(sk, "hello-ed25519");
+    print(crypto::sign_verify(pk, "hello-ed25519", sig));
+    print(crypto::sign_verify(pk, "tampered", sig));
+    let phc = crypto::password_hash_phc("hunter2-advanced");
+    print(crypto::password_verify("hunter2-advanced", phc));
+    print(crypto::password_verify("wrong", phc));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(lines[0], "audited-crates");
+        assert_eq!(lines[1], "true");
+        assert_eq!(lines[2], "false");
+        assert_eq!(lines[3], "true");
+        assert_eq!(lines[4], "false");
+
+        // Byte-range fail-closed: list element 300 must not truncate into a key byte.
+        let bad = dir.join("bad_bytes.anb");
+        std::fs::write(
+            &bad,
+            r#"
+import std.crypto;
+fn main() {
+    let bogus = [300, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
+    let _ = crypto::aead_encrypt(bogus, crypto::aead_nonce(), "", "x");
+    print("reached");
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&bad).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("spawn");
+        assert!(!out.status.success());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("ANUBIS_CRYPTO_BYTE_RANGE"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase5_crypto_misuse_rejects_hmac_eq_compare() {
+        let err = tc_ok(
+            r#"fn main() {
+                let t = hmac_sha256("k", "m");
+                assert(t == hmac_sha256("k", "m"));
+            }"#,
+        )
+        .expect_err("hmac == must be CRYPTO_MISUSE");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
+
+        // Fail-open regression: `if` conditions must be analyzed too.
+        let err = tc_ok(
+            r#"fn main() {
+                if hmac_sha256("k", "m") == "x" { print(1); }
+            }"#,
+        )
+        .expect_err("hmac == in if-cond must be CRYPTO_MISUSE");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
+    }
+
+    #[test]
+    fn phase5_crypto_misuse_rejects_password_hash_eq_compare() {
+        let err = tc_ok(
+            r#"fn main() {
+                assert(password_hash("x") == password_hash("x"));
+            }"#,
+        )
+        .expect_err("password_hash == must be CRYPTO_MISUSE");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
+    }
+
+    #[test]
+    fn phase5_crypto_misuse_rejects_std_crypto_wrapper_eq() {
+        let dir = unique_test_dir("phase5-crypto-misuse-std");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("m.anb");
+        std::fs::write(
+            &f,
+            "import std.crypto;\nfn main() {\n  if crypto::mac_hmac_sha256(\"k\", \"m\") == \"x\" { print(1); }\n}\n",
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&f).expect("combine");
+        let err = typecheck(frontend::AST { items }, Mode::Safe)
+            .expect_err("std.crypto mac == must fail");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
+    }
+
+    #[test]
+    fn phase5_callee_uses_propagate_to_caller_safe_gate() {
+        // Critical: std wrappers must not launder capabilities past Safe.
+        let dir = unique_test_dir("phase5-effect-inherit");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // write_text without uses(fs.write) → forbid
+        let w = dir.join("write0.anb");
+        std::fs::write(
+            &w,
+            "import std.io;\nfn main() { io::write_text(\"/tmp/x\", \"y\"); }\n",
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&w).expect("combine");
+        let err = typecheck(frontend::AST { items }, Mode::Safe).expect_err("write must fail");
+        assert!(
+            err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("file_write"),
+            "got: {err}"
+        );
+
+        // run_local without uses(shell) → forbid
+        let s = dir.join("shell0.anb");
+        std::fs::write(
+            &s,
+            "import std.pwn;\nfn main() { let _ = pwn::run_local(\"x\", [1]); }\n",
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&s).expect("combine");
+        let err = typecheck(frontend::AST { items }, Mode::Safe).expect_err("shell must fail");
+        assert!(
+            err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("shell"),
+            "got: {err}"
+        );
+
+        // Authorized call site passes check
+        let ok = dir.join("ok.anb");
+        std::fs::write(
+            &ok,
+            "import std.io;\nfn main() uses(fs.write) { io::write_text(\"/tmp/x\", \"y\"); }\n",
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&ok).expect("combine");
+        typecheck(frontend::AST { items }, Mode::Safe).expect("authorized write must pass");
+    }
+
+    #[test]
+    fn phase5_std_pwn_pack_and_cyclic_find() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-pwn");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.pwn;
+fn main() {
+    let le = pwn::pack_le_u32(0x41424344);
+    print(pwn::unpack_le_u32(le));
+    let be = pwn::pack_be_u16(0x1234);
+    print(pwn::unpack_be_u16(be));
+    let pat = pwn::cyclic_pattern(32);
+    let off = pwn::cyclic_find(32, [pat[4], pat[5], pat[6], pat[7]]);
+    print(off);
+    print(pwn::hexdump([0x0a, 0x0b]));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        // LE 0x41424344
+        assert_eq!(lines[0], "1094861636");
+        // BE 0x1234
+        assert_eq!(lines[1], "4660");
+        // offset of bytes at index 4
+        assert_eq!(lines[2], "4");
+        assert_eq!(lines[3], "0a 0b");
+    }
+
+    #[test]
+    fn phase5_std_pwn_payload_and_crash_report_helpers() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("phase5-pwn-adv");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.pwn;
+fn main() {
+    let j = pwn::junk(8);
+    print(len(j));
+    print(j[0]);
+    let fitted = pwn::fit([1, 2, 3], 5, 0);
+    print(len(fitted));
+    print(fitted[4]);
+    let joined = pwn::payload_join([pwn::pwn_p32(0x41414141), pwn::junk_byte(2, 0x42)]);
+    print(len(joined));
+    let chain = pwn::chain_u64([1, 2]);
+    print(len(chain));
+    print(pwn::signal_name(6));
+    print(pwn::signal_name(11));
+    // Synthetic TargetRun-shaped report fields (no process spawn).
+    // Build via run only when research gold is present — here test pure formatters with a fake struct.
+    // We only exercise pure helpers that don't need a live TargetRun type:
+    print(pwn::offset_report(32, pwn::cyclic_pattern(32)[0]));
+    print(pwn::xor_key([1, 2, 3], [0xff]));
+    print(len(pwn::nop_sled(4)));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(lines[0], "8");
+        assert_eq!(lines[1], "65"); // 'A'
+        assert_eq!(lines[2], "5");
+        assert_eq!(lines[3], "0");
+        assert_eq!(lines[4], "6"); // 4 + 2
+        assert_eq!(lines[5], "16"); // 2 * 8
+        assert_eq!(lines[6], "SIGABRT");
+        assert_eq!(lines[7], "SIGSEGV");
+        assert!(lines[8].contains("offset:"), "got {}", lines[8]);
+        // xor_key prints a list — just ensure we got a line
+        assert!(!lines[9].is_empty());
+        assert_eq!(lines[10], "4");
+    }
+
+    #[test]
     fn risc0_receipt_fixture() {
         let src = "fn main() { let x = 1; }";
         let ast = parse_source(src).expect("parse risc0 fixture");
@@ -3966,6 +4807,1099 @@ fn main() { sink(f(true)); }"#,
             full.contains("decode().expect(\"decode journal\")"),
             "full host must assert the journal after stock receipt verification:\n{}",
             full
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase6_package_tests {
+    use super::*;
+    use crate::package::lock::LOCK_FILENAME;
+    use crate::package::merkle;
+    use crate::package::registry;
+    use crate::package::resolve_deps::{resolve_workspace, ResolveOptions};
+    use crate::package::trust::TrustStore;
+    use crate::project::ProjectLayout;
+
+    fn write(root: &std::path::Path, rel: &str, body: &str) {
+        let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(p, body).unwrap();
+    }
+
+    fn seal_signed_evidence(pkg_root: &std::path::Path, src: &str) -> String {
+        let out = pkg_root.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let bundle = evidence::build_evidence_bundle(src, "safe", None, vec![], &out, None, None)
+            .expect("evidence");
+        // Crown: overwrite summaries with package-faithful extract (name/version/module merkle).
+        let sum = crate::package::summary::extract_from_package(pkg_root).expect("summaries");
+        crate::package::summary::write_to_evidence_dir(&bundle.dir, &sum).expect("write sum");
+        evidence::refresh_manifest_hashes(&bundle.dir).expect("manifest");
+        let (sk, pk) = evidence::generate_keypair().unwrap();
+        evidence::sign_pca(&bundle.dir, &sk).unwrap();
+        // Copy sealed evidence into package as evidence/
+        let dest = pkg_root.join("evidence");
+        let _ = std::fs::remove_dir_all(&dest);
+        copy_dir(&bundle.dir, &dest);
+        pk
+    }
+
+    fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for ent in std::fs::read_dir(src).unwrap() {
+            let ent = ent.unwrap();
+            let from = ent.path();
+            let to = dst.join(ent.file_name());
+            if from.is_dir() {
+                copy_dir(&from, &to);
+            } else {
+                std::fs::copy(&from, &to).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn phase6_merkle_single_leaf_matches_sha256_golden() {
+        let body = b"fn main() { print(1); }\n";
+        let root = merkle::merkle_root(vec![("source.anubis".into(), body.to_vec())]);
+        assert_eq!(root, merkle::sha256_hex(body));
+        // build_evidence_bundle single-file path must stay golden-stable
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = evidence::build_evidence_bundle(
+            std::str::from_utf8(body).unwrap(),
+            "safe",
+            None,
+            vec![],
+            tmp.path(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(bundle.manifest.source_hash, merkle::sha256_hex(body));
+    }
+
+    #[test]
+    fn phase6_unsigned_dep_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        // Unsigned evidence only
+        let out = lib.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let bundle =
+            evidence::build_evidence_bundle(&src, "safe", None, vec![], &out, None, None).unwrap();
+        copy_dir(&bundle.dir, &lib.join("evidence"));
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { path = \"../math_lib\" }\n",
+        );
+        write(&app, "main.anb", "fn main() {}\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                write_lock: true,
+                allow_unsigned: false,
+                skip_proof: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                trust_path: Some(root.join("trust.toml")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_DEP_PROOF_UNVERIFIED"),
+            "got: {err}"
+        );
+        // Dual-gate allow: only when allow_unsigned=true (CLI+env enforced by CLI layer)
+        let ws = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                write_lock: true,
+                allow_unsigned: true,
+                skip_proof: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                trust_path: Some(root.join("trust.toml")),
+                ..Default::default()
+            },
+        )
+        .expect("unsigned allowed");
+        assert!(ws.deps.contains_key("math"));
+    }
+
+    #[test]
+    fn phase6_registry_publish_and_resolve() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.2.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        let src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let pk = seal_signed_evidence(&lib, &src);
+        let reg = root.join("registry");
+        let dest = registry::publish_to_registry(&reg, "math", "1.2.0", &lib).unwrap();
+        assert!(dest.is_dir());
+        let (ver, path, sha) = registry::resolve_version(&reg, "math", "^1.0").unwrap();
+        assert_eq!(ver, "1.2.0");
+        assert_eq!(path, dest);
+        assert_eq!(sha, merkle::merkle_root_dir(&dest).unwrap());
+
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = \"^1.0\"\n",
+        );
+        write(
+            &app,
+            "main.anb",
+            "import math;\nfn main() { print(math::add(1, 2)); }\n",
+        );
+        let trust_path = root.join("trust.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk, "reg");
+        trust.save(&trust_path).unwrap();
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let opts = ResolveOptions {
+            write_lock: true,
+            allow_unsigned: false,
+            skip_proof: false,
+            cache_root: Some(root.join("cache")),
+            registry_root: Some(reg),
+            trust_path: Some(trust_path.clone()),
+                ..Default::default()
+            };
+        let ws = resolve_workspace(&layout, &opts).expect("registry resolve");
+        assert_eq!(ws.deps["math"].version, "1.2.0");
+        assert!(app.join(LOCK_FILENAME).is_file());
+        // Cache materialization path exists
+        assert!(ws.deps["math"].root.is_dir());
+    }
+
+    #[test]
+    fn phase6_dep_closure_bound_in_evidence_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = vec![
+            ("a.anb".into(), b"fn a() {}".to_vec()),
+            ("b.anb".into(), b"fn b() {}".to_vec()),
+        ];
+        let closure = serde_json::json!({
+            "schema": "anubis.dep_closure.v1",
+            "packages": [{"name": "math", "version": "1.0.0", "content_sha256": "abc"}]
+        });
+        let bundle = evidence::build_evidence_bundle_tree(
+            &files,
+            "safe",
+            None,
+            vec!["test".into()],
+            tmp.path(),
+            Some("safe"),
+            None,
+            Some(&closure),
+        )
+        .unwrap();
+        assert!(bundle.dir.join("dep_closure.json").is_file());
+        assert!(bundle.dir.join("source-merkle-leaves.json").is_file());
+        let man = std::fs::read_to_string(bundle.dir.join("MANIFEST.sha256")).unwrap();
+        assert!(
+            man.contains("dep_closure.json"),
+            "top-level signature binds dep_closure via MANIFEST"
+        );
+        // Multi-leaf source_hash is not bare sha of either file alone
+        assert_ne!(
+            bundle.manifest.source_hash,
+            merkle::sha256_hex(b"fn a() {}")
+        );
+    }
+
+    #[test]
+    fn phase6_path_dep_resolves_imports_and_typechecks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        let lib_src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let pk = seal_signed_evidence(&lib, &lib_src);
+
+        // Trust the signer
+        let trust_path = root.join("trust/signers.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk, "test");
+        trust.save(&trust_path).unwrap();
+
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { path = \"../math_lib\" }\n",
+        );
+        write(
+            &app,
+            "main.anb",
+            "import math;\nfn main() { print(math::add(2, 3)); }\n",
+        );
+
+        // Lock with write + proof verify
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let opts = ResolveOptions {
+            trust_path: Some(trust_path.clone()),
+            write_lock: true,
+            allow_unsigned: false,
+            skip_proof: false,
+            cache_root: Some(root.join("cache")),
+            registry_root: Some(root.join("registry")),
+                ..Default::default()
+            };
+        let ws = resolve_workspace(&layout, &opts).expect("resolve");
+        assert!(ws.deps.contains_key("math"));
+        assert!(app.join(LOCK_FILENAME).is_file());
+
+        let items = resolve::combine_from_entry_opts(
+            &app.join("main.anb"),
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: false,
+                allow_unsigned: false,
+                skip_proof: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .expect("combine");
+        let names: Vec<_> = items
+            .iter()
+            .filter_map(|it| match it {
+                frontend::Item::Fn { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "math__add"),
+            "expected math__add in {names:?}"
+        );
+        typecheck(frontend::AST { items }, Mode::Safe).expect("typecheck");
+    }
+
+    #[test]
+    fn phase6_untrusted_signer_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        let lib_src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let _pk = seal_signed_evidence(&lib, &lib_src);
+        // Empty trust store — do not add signer
+        let trust_path = root.join("trust/signers.toml");
+        TrustStore::default().save(&trust_path).unwrap();
+
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { path = \"../math_lib\" }\n",
+        );
+        write(&app, "main.anb", "import math;\nfn main() { print(1); }\n");
+
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: true,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_DEP_UNTRUSTED_SIGNER"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase6_lock_missing_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { path = \"../nope\" }\n",
+        );
+        write(&app, "main.anb", "fn main() { print(1); }\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(&layout, &ResolveOptions::default()).unwrap_err();
+        assert!(err.contains("ANUBIS_LOCK_MISSING"), "got: {err}");
+    }
+
+    #[test]
+    fn phase6_content_hash_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        let lib_src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let pk = seal_signed_evidence(&lib, &lib_src);
+        let trust_path = root.join("trust/signers.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk, "t");
+        trust.save(&trust_path).unwrap();
+
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { path = \"../math_lib\" }\n",
+        );
+        write(&app, "main.anb", "fn main() {}\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                trust_path: Some(trust_path.clone()),
+                write_lock: true,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Tamper dep source after lock
+        std::fs::write(lib.join("src/lib.anb"), "pub fn add(a, b) { return 0; }\n").unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: false,
+                skip_proof: true, // hash check still runs
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_CACHE_HASH_MISMATCH"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase6_evidence_source_must_match_package_module() {
+        // Swap attack: signed evidence for benign source, package module is different.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        let benign = "pub fn add(a, b) { return a + b; }\n";
+        write(&lib, "src/lib.anb", benign);
+        let pk = seal_signed_evidence(&lib, benign);
+        // After sealing, replace package module with different body (evidence still benign).
+        write(
+            &lib,
+            "src/lib.anb",
+            "pub fn add(a, b) { return 0; /* swapped */ }\n",
+        );
+        let trust_path = root.join("trust.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk, "t");
+        trust.save(&trust_path).unwrap();
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { path = \"../math_lib\" }\n",
+        );
+        write(&app, "main.anb", "fn main() {}\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: true,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_DEP_PROOF_UNVERIFIED")
+                && (err.contains("does not match package") || err.contains("unbound")),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase6_package_trust_signers_in_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        let lib_src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let pk = seal_signed_evidence(&lib, &lib_src);
+        // Empty global trust store — only project [package.trust]
+        let trust_path = root.join("empty_trust.toml");
+        TrustStore::default().save(&trust_path).unwrap();
+        write(
+            &app,
+            "Anubis.toml",
+            &format!(
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[package.trust]\nsigners = [\"{pk}\"]\n\n[dependencies]\nmath = {{ path = \"../math_lib\" }}\n"
+            ),
+        );
+        write(
+            &app,
+            "main.anb",
+            "import math;\nfn main() { print(math::add(1, 1)); }\n",
+        );
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        assert!(
+            layout.manifest.package.trust.signers.iter().any(|s| s == &pk),
+            "manifest must parse [package.trust] signers"
+        );
+        let ws = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: true,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .expect("project trust should accept signer");
+        assert!(ws.deps.contains_key("math"));
+    }
+
+    #[test]
+    fn phase6_taint_and_effect_inherit_at_consumer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("io_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"iolib\"\nversion = \"1.0.0\"\n",
+        );
+        // Effectful export + taint-preserving param (Phase-3 interproc is args/params-based).
+        write(
+            &lib,
+            "src/lib.anb",
+            "pub fn need_shell() uses(shell) { return 1; }\npub fn identity(x: tainted<u64>) -> tainted<u64> { return x; }\n",
+        );
+        let lib_src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let pk = seal_signed_evidence(&lib, &lib_src);
+        let trust_path = root.join("trust.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk, "t");
+        trust.save(&trust_path).unwrap();
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\niolib = { path = \"../io_lib\" }\n",
+        );
+        write(
+            &app,
+            "main.anb",
+            "import iolib;\nfn main() { print(iolib::need_shell()); }\n",
+        );
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let opts = ResolveOptions {
+            trust_path: Some(trust_path.clone()),
+            write_lock: true,
+            skip_proof: false,
+            allow_unsigned: false,
+            cache_root: Some(root.join("cache")),
+            registry_root: Some(root.join("registry")),
+                ..Default::default()
+            };
+        resolve_workspace(&layout, &opts).expect("resolve");
+        let items = resolve::combine_from_entry_opts(
+            &app.join("main.anb"),
+            &ResolveOptions {
+                trust_path: Some(trust_path.clone()),
+                write_lock: false,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .expect("combine");
+        let err = typecheck(frontend::AST { items }, Mode::Safe).unwrap_err();
+        assert!(
+            err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("shell"),
+            "effect must inherit across package mount: {err}"
+        );
+
+        // Taint: consumer sinks value that only flows through dep identity (param-tainted).
+        write(
+            &app,
+            "main.anb",
+            "import iolib;\nfn sink(x: u64) { print(x); }\nfn main() {\n  let s: tainted<u64> = 9;\n  sink(iolib::identity(s));\n}\n",
+        );
+        let items = resolve::combine_from_entry_opts(
+            &app.join("main.anb"),
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: false,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .expect("combine taint");
+        let err = typecheck(frontend::AST { items }, Mode::Safe).unwrap_err();
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK") || err.contains("taint") || err.contains("TAINTED"),
+            "taint must inherit across package mount: {err}"
+        );
+    }
+
+    #[test]
+    fn phase6_missing_evidence_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("math_lib");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        // No evidence/
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { path = \"../math_lib\" }\n",
+        );
+        write(&app, "main.anb", "fn main() {}\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                write_lock: true,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                trust_path: Some(root.join("trust.toml")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_DEP_PROOF_UNVERIFIED"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase6_git_rev_required() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &app,
+            "Anubis.toml",
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+math = { git = "https://example.invalid/math.git" }
+"#,
+        );
+        write(&app, "main.anb", "fn main() {}\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                write_lock: true,
+                skip_proof: true,
+                allow_unsigned: true,
+                cache_root: Some(tmp.path().join("cache")),
+                registry_root: Some(tmp.path().join("registry")),
+                trust_path: Some(tmp.path().join("trust.toml")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_GIT_REV_REQUIRED"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase6_git_local_repo_resolves_and_typechecks() {
+        // Offline git source: local repo + pinned rev (no network).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let repo = root.join("math_repo");
+        let app = root.join("app");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &repo,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.0.0\"\n",
+        );
+        write(&repo, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        let lib_src = std::fs::read_to_string(repo.join("src/lib.anb")).unwrap();
+        let pk = seal_signed_evidence(&repo, &lib_src);
+
+        // Init git, commit, capture rev.
+        let git = |args: &[&str]| {
+            let st = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_AUTHOR_NAME", "anubis")
+                .env("GIT_AUTHOR_EMAIL", "anubis@test")
+                .env("GIT_COMMITTER_NAME", "anubis")
+                .env("GIT_COMMITTER_EMAIL", "anubis@test")
+                .status()
+                .expect("git");
+            assert!(st.success(), "git {:?} failed", args);
+        };
+        git(&["init"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-m", "init"]);
+        let rev = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .expect("rev-parse")
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        assert!(!rev.is_empty());
+
+        let trust_path = root.join("trust.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk, "git");
+        trust.save(&trust_path).unwrap();
+
+        let git_url = format!("file://{}", repo.display());
+        write(
+            &app,
+            "Anubis.toml",
+            &format!(
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = {{ git = \"{git_url}\", rev = \"{rev}\" }}\n"
+            ),
+        );
+        write(
+            &app,
+            "main.anb",
+            "import math;\nfn main() { print(math::add(2, 2)); }\n",
+        );
+
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let opts = ResolveOptions {
+            trust_path: Some(trust_path.clone()),
+            write_lock: true,
+            skip_proof: false,
+            allow_unsigned: false,
+            cache_root: Some(root.join("cache")),
+            registry_root: Some(root.join("registry")),
+                ..Default::default()
+            };
+        let ws = resolve_workspace(&layout, &opts).expect("git resolve");
+        assert!(ws.deps.contains_key("math"));
+        assert!(app.join(LOCK_FILENAME).is_file());
+        let lock_txt = std::fs::read_to_string(app.join(LOCK_FILENAME)).unwrap();
+        assert!(
+            lock_txt.contains("source = \"git\"") || lock_txt.contains("source = 'git'"),
+            "lock must record git source: {lock_txt}"
+        );
+        assert!(
+            lock_txt.contains(&rev),
+            "lock must pin rev {rev}: {lock_txt}"
+        );
+
+        let items = resolve::combine_from_entry_opts(
+            &app.join("main.anb"),
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: false,
+                skip_proof: false,
+                allow_unsigned: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .expect("combine git dep");
+        assert!(
+            items.iter().any(|it| matches!(it, frontend::Item::Fn { name, .. } if name == "math__add")),
+            "expected math__add from git dep"
+        );
+        typecheck(frontend::AST { items }, Mode::Safe).expect("typecheck");
+    }
+
+    #[test]
+    fn phase6_transitive_path_deps_lock_and_mount() {
+        // app → mid → leaf; lock must contain both mid and leaf.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let leaf = root.join("leaf");
+        let mid = root.join("mid");
+        let app = root.join("app");
+        for p in [&leaf, &mid, &app] {
+            std::fs::create_dir_all(p.join("src")).unwrap_or_else(|_| {
+                std::fs::create_dir_all(p).unwrap();
+            });
+        }
+        std::fs::create_dir_all(leaf.join("src")).unwrap();
+        std::fs::create_dir_all(mid.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+
+        write(
+            &leaf,
+            "Anubis.toml",
+            "[package]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
+        );
+        write(&leaf, "src/lib.anb", "pub fn ten() { return 10; }\n");
+        let leaf_src = std::fs::read_to_string(leaf.join("src/lib.anb")).unwrap();
+        let pk_leaf = seal_signed_evidence(&leaf, &leaf_src);
+
+        write(
+            &mid,
+            "Anubis.toml",
+            "[package]\nname = \"mid\"\nversion = \"1.0.0\"\n\n[dependencies]\nleaf = { path = \"../leaf\" }\n",
+        );
+        // mid declares leaf transitively; body is self-contained so isolated PCA typecheck PASSes
+        // (import of external packages is resolved at consumer combine, not package seal time).
+        write(&mid, "src/lib.anb", "pub fn twenty() { return 20; }\n");
+        let mid_src = std::fs::read_to_string(mid.join("src/lib.anb")).unwrap();
+        let pk_mid = seal_signed_evidence(&mid, &mid_src);
+
+        let trust_path = root.join("trust.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk_leaf, "leaf");
+        trust.add(&pk_mid, "mid");
+        trust.save(&trust_path).unwrap();
+
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmid = { path = \"../mid\" }\n",
+        );
+        write(
+            &app,
+            "main.anb",
+            "import mid;\nimport leaf;\nfn main() { print(mid::twenty() + leaf::ten()); }\n",
+        );
+
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let opts = ResolveOptions {
+            trust_path: Some(trust_path.clone()),
+            write_lock: true,
+            cache_root: Some(root.join("cache")),
+            registry_root: Some(root.join("registry")),
+            ..Default::default()
+        };
+        let ws = resolve_workspace(&layout, &opts).expect("transitive resolve");
+        assert!(ws.deps.contains_key("mid"), "direct mid");
+        assert!(ws.deps.contains_key("leaf"), "transitive leaf");
+        assert!(ws.deps["mid"].direct);
+        assert!(!ws.deps["leaf"].direct);
+        let lock = std::fs::read_to_string(app.join(LOCK_FILENAME)).unwrap();
+        assert!(lock.contains("name = \"leaf\"") || lock.contains("name = 'leaf'"));
+        assert!(lock.contains("name = \"mid\"") || lock.contains("name = 'mid'"));
+
+        let items = resolve::combine_from_entry_opts(
+            &app.join("main.anb"),
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: false,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .expect("combine transitive");
+        let names: Vec<_> = items
+            .iter()
+            .filter_map(|it| match it {
+                frontend::Item::Fn { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(names.iter().any(|n| n == "leaf__ten"), "{names:?}");
+        assert!(names.iter().any(|n| n == "mid__twenty"), "{names:?}");
+        typecheck(frontend::AST { items }, Mode::Safe).expect("typecheck");
+    }
+
+    #[test]
+    fn phase6_dep_cycle_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let a = root.join("a");
+        let b = root.join("b");
+        std::fs::create_dir_all(a.join("src")).unwrap();
+        std::fs::create_dir_all(b.join("src")).unwrap();
+        write(
+            &a,
+            "Anubis.toml",
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n\n[dependencies]\nb = { path = \"../b\" }\n",
+        );
+        write(&a, "src/lib.anb", "pub fn a() { return 1; }\n");
+        write(
+            &b,
+            "Anubis.toml",
+            "[package]\nname = \"b\"\nversion = \"1.0.0\"\n\n[dependencies]\na = { path = \"../a\" }\n",
+        );
+        write(&b, "src/lib.anb", "pub fn b() { return 2; }\n");
+        // Skip proof — cycle detection is structural
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\na = { path = \"../a\" }\n",
+        );
+        write(&app, "main.anb", "fn main() {}\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                write_lock: true,
+                skip_proof: true,
+                skip_summaries: true,
+                allow_unsigned: true,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("ANUBIS_DEP_CYCLE"), "got: {err}");
+    }
+
+    #[test]
+    fn phase6_version_conflict_fails_closed() {
+        // app needs foo@1 via path A and bar which needs foo@2 via path B
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let foo1 = root.join("foo1");
+        let foo2 = root.join("foo2");
+        let bar = root.join("bar");
+        let app = root.join("app");
+        for d in [&foo1, &foo2, &bar] {
+            std::fs::create_dir_all(d.join("src")).unwrap();
+        }
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &foo1,
+            "Anubis.toml",
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        );
+        write(&foo1, "src/lib.anb", "pub fn f() { return 1; }\n");
+        write(
+            &foo2,
+            "Anubis.toml",
+            "[package]\nname = \"foo\"\nversion = \"2.0.0\"\n",
+        );
+        write(&foo2, "src/lib.anb", "pub fn f() { return 2; }\n");
+        write(
+            &bar,
+            "Anubis.toml",
+            "[package]\nname = \"bar\"\nversion = \"1.0.0\"\n\n[dependencies]\nfoo = { path = \"../foo2\" }\n",
+        );
+        write(&bar, "src/lib.anb", "pub fn b() { return 3; }\n");
+        write(
+            &app,
+            "Anubis.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nfoo = { path = \"../foo1\" }\nbar = { path = \"../bar\" }\n",
+        );
+        write(&app, "main.anb", "fn main() {}\n");
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let err = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                write_lock: true,
+                skip_proof: true,
+                skip_summaries: true,
+                allow_unsigned: true,
+                cache_root: Some(root.join("cache")),
+                registry_root: Some(root.join("registry")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_DEP_VERSION_CONFLICT"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn phase6_file_registry_url_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let reg = root.join("reg");
+        let lib = root.join("math_src");
+        let app = root.join("app");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"math\"\nversion = \"1.2.0\"\n",
+        );
+        write(&lib, "src/lib.anb", "pub fn add(a, b) { return a + b; }\n");
+        let src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let pk = seal_signed_evidence(&lib, &src);
+        crate::package::registry::publish_to_registry(&reg, "math", "1.2.0", &lib).unwrap();
+
+        let trust_path = root.join("trust.toml");
+        let mut trust = TrustStore::default();
+        trust.add(&pk, "t");
+        trust.save(&trust_path).unwrap();
+
+        let url = format!("file://{}", reg.display());
+        write(
+            &app,
+            "Anubis.toml",
+            &format!(
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = {{ version = \"^1.0\", registry = \"{url}\" }}\n"
+            ),
+        );
+        write(
+            &app,
+            "main.anb",
+            "import math;\nfn main() { print(math::add(1, 1)); }\n",
+        );
+        let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
+        let ws = resolve_workspace(
+            &layout,
+            &ResolveOptions {
+                trust_path: Some(trust_path),
+                write_lock: true,
+                registry_root: Some(root.join("empty_local_reg")),
+                cache_root: Some(root.join("cache")),
+                ..Default::default()
+            },
+        )
+        .expect("file registry");
+        assert_eq!(ws.deps["math"].version, "1.2.0");
+    }
+
+    #[test]
+    fn phase6_summaries_detect_effect_lie() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib = root.join("lib");
+        std::fs::create_dir_all(lib.join("src")).unwrap();
+        write(
+            &lib,
+            "Anubis.toml",
+            "[package]\nname = \"lib\"\nversion = \"1.0.0\"\n",
+        );
+        write(
+            &lib,
+            "src/lib.anb",
+            "pub fn need_shell() uses(shell) { return 1; }\n",
+        );
+        let src = std::fs::read_to_string(lib.join("src/lib.anb")).unwrap();
+        let _pk = seal_signed_evidence(&lib, &src);
+        // Tamper sealed summaries: strip shell effect
+        let sum_path = lib.join("evidence/summaries.json");
+        let mut sum: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&sum_path).unwrap()).unwrap();
+        sum["functions"][0]["effects"] = serde_json::json!([]);
+        std::fs::write(&sum_path, serde_json::to_string_pretty(&sum).unwrap()).unwrap();
+        // Rehash MANIFEST so PCA hash layer is consistent — summary verify must still fail.
+        evidence::refresh_manifest_hashes(&lib.join("evidence")).unwrap();
+        let err = crate::package::summary::verify_against_package(&lib, &lib.join("evidence"))
+            .unwrap_err();
+        assert!(
+            err.contains("ANUBIS_DEP_PROOF_UNVERIFIED") && err.contains("summaries"),
+            "got: {err}"
         );
     }
 }

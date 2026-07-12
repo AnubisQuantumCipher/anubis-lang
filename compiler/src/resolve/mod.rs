@@ -11,9 +11,27 @@
 //! outside the source root is a hard `ANUBIS_IMPORT_*` error, never a silent skip.
 
 use crate::frontend::{parse_source, Expr, Item, Span, Stmt, Visibility, AST};
+use crate::package::{resolve_workspace, ResolveOptions, ResolvedWorkspace};
 use crate::project::ProjectLayout;
+use crate::stdlib;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+/// Mounted package dependency roots: first path segment → package `src_root`.
+#[derive(Debug, Clone, Default)]
+pub struct DepMounts {
+    pub roots: BTreeMap<String, PathBuf>,
+}
+
+impl DepMounts {
+    pub fn from_workspace(ws: &ResolvedWorkspace) -> Self {
+        let mut roots = BTreeMap::new();
+        for (name, dep) in &ws.deps {
+            roots.insert(name.clone(), dep.src_root.clone());
+        }
+        Self { roots }
+    }
+}
 
 /// Source-file extensions Anubis recognizes, in resolution-priority order.
 pub const MODULE_EXTENSIONS: &[&str] = &["anb", "anub", "anubis"];
@@ -25,6 +43,7 @@ pub struct LoadedModule {
     /// `import a.b`.
     pub module_path: String,
     /// The canonical source file this module was loaded from.
+    /// Embedded stdlib modules use a virtual `anubis-stdlib://…` path (never project disk).
     pub file: PathBuf,
     /// The module's parsed AST.
     pub ast: AST,
@@ -48,9 +67,80 @@ pub struct ModuleGraph {
 /// `src_root/a/b/mod.{...}`. A path with no source file is `ANUBIS_IMPORT_UNRESOLVED`; a file that
 /// resolves OUTSIDE `src_root` (e.g. via a symlink) is `ANUBIS_IMPORT_ESCAPE`.
 pub fn resolve_module_file(src_root: &Path, dotted: &str) -> Result<PathBuf, String> {
+    resolve_module_file_with_deps(src_root, dotted, None)
+}
+
+/// Resolve a dotted import, optionally mounting Phase-6 package dependencies.
+pub fn resolve_module_file_with_deps(
+    src_root: &Path,
+    dotted: &str,
+    deps: Option<&DepMounts>,
+) -> Result<PathBuf, String> {
     if dotted.trim().is_empty() {
         return Err("ANUBIS_IMPORT_UNRESOLVED: empty module path".to_string());
     }
+    // Phase-5: `std.*` is embedded and never resolved from the project tree (no shadowing).
+    if stdlib::is_stdlib_module(dotted) {
+        return Ok(stdlib::virtual_path(dotted));
+    }
+    // A bare `std.foo` that is NOT registered is still fail-closed — do not fall through to
+    // a user `src/std/foo.anb` (that would re-open shadowing of the std namespace).
+    if dotted == "std" || dotted.starts_with("std.") {
+        return Err(format!(
+            "ANUBIS_IMPORT_UNRESOLVED: unknown stdlib module `{dotted}` (not in the embedded registry)"
+        ));
+    }
+
+    // Phase-6: first segment names a locked dependency package.
+    if let Some(mounts) = deps {
+        let mut parts = dotted.split('.');
+        if let Some(head) = parts.next() {
+            if let Some(pkg_src) = mounts.roots.get(head) {
+                let rest: Vec<&str> = parts.collect();
+                let rel: PathBuf = if rest.is_empty() {
+                    // `import math;` → math/mod.anb or math.anb under package src
+                    PathBuf::new()
+                } else {
+                    rest.iter().collect()
+                };
+                let mut candidates = Vec::new();
+                if rest.is_empty() {
+                    for ext in MODULE_EXTENSIONS {
+                        candidates.push(pkg_src.join(format!("lib.{ext}")));
+                        candidates.push(pkg_src.join(format!("mod.{ext}")));
+                        candidates.push(pkg_src.join(head).with_extension(ext));
+                    }
+                } else {
+                    for ext in MODULE_EXTENSIONS {
+                        candidates.push(pkg_src.join(&rel).with_extension(ext));
+                    }
+                    for ext in MODULE_EXTENSIONS {
+                        candidates.push(pkg_src.join(&rel).join(format!("mod.{ext}")));
+                    }
+                }
+                let canon_root = pkg_src
+                    .canonicalize()
+                    .unwrap_or_else(|_| pkg_src.to_path_buf());
+                for cand in candidates {
+                    if cand.is_file() {
+                        let canon = cand.canonicalize().unwrap_or(cand);
+                        if !canon.starts_with(&canon_root) {
+                            return Err(format!(
+                                "ANUBIS_IMPORT_ESCAPE: dependency module `{dotted}` escapes package root ({})",
+                                canon.display()
+                            ));
+                        }
+                        return Ok(canon);
+                    }
+                }
+                return Err(format!(
+                    "ANUBIS_IMPORT_UNRESOLVED: no source for dependency module `{dotted}` under {}",
+                    pkg_src.display()
+                ));
+            }
+        }
+    }
+
     let rel: PathBuf = dotted.split('.').collect(); // "a.b" -> a/b
     let mut candidates = Vec::new();
     for ext in MODULE_EXTENSIONS {
@@ -97,6 +187,15 @@ pub fn collect_imports(ast: &AST) -> Vec<(String, Span)> {
 /// Depth-first with three-color marking so a re-imported module is loaded once and a back-edge is a
 /// fail-closed `ANUBIS_IMPORT_CYCLE`. Returns modules in dependency order (imports before importers).
 pub fn load_graph(entry: &Path, src_root: &Path) -> Result<ModuleGraph, String> {
+    load_graph_with_deps(entry, src_root, None)
+}
+
+/// Load import graph with optional Phase-6 dependency mounts.
+pub fn load_graph_with_deps(
+    entry: &Path,
+    src_root: &Path,
+    deps: Option<&DepMounts>,
+) -> Result<ModuleGraph, String> {
     let entry_canon = entry.canonicalize().map_err(|e| {
         format!(
             "ANUBIS_IMPORT_UNRESOLVED: cannot read entry `{}`: {e}",
@@ -109,6 +208,7 @@ pub fn load_graph(entry: &Path, src_root: &Path) -> Result<ModuleGraph, String> 
         &entry_canon,
         String::new(),
         src_root,
+        deps,
         &mut color,
         &mut order,
     )?;
@@ -128,6 +228,7 @@ fn load_dfs(
     file: &Path,
     module_path: String,
     src_root: &Path,
+    deps: Option<&DepMounts>,
     color: &mut BTreeMap<PathBuf, Color>,
     order: &mut Vec<LoadedModule>,
 ) -> Result<(), String> {
@@ -148,19 +249,45 @@ fn load_dfs(
     }
     color.insert(file.to_path_buf(), Color::Gray);
 
-    let src = std::fs::read_to_string(file).map_err(|e| {
-        format!(
-            "ANUBIS_IMPORT_UNRESOLVED: cannot read `{}`: {e}",
-            file.display()
-        )
-    })?;
+    let src = if stdlib::is_virtual_path(file) {
+        let dotted = stdlib::dotted_from_virtual(file).ok_or_else(|| {
+            format!(
+                "ANUBIS_IMPORT_UNRESOLVED: malformed stdlib path `{}`",
+                file.display()
+            )
+        })?;
+        stdlib::source(&dotted)
+            .ok_or_else(|| {
+                format!("ANUBIS_IMPORT_UNRESOLVED: unknown embedded stdlib module `{dotted}`")
+            })?
+            .to_string()
+    } else {
+        std::fs::read_to_string(file).map_err(|e| {
+            format!(
+                "ANUBIS_IMPORT_UNRESOLVED: cannot read `{}`: {e}",
+                file.display()
+            )
+        })?
+    };
     let ast = parse_source(&src)
         .map_err(|e| format!("ANUBIS_IMPORT_PARSE: in `{}`: {e}", file.display()))?;
     let imports = collect_imports(&ast);
 
+    // Embedded std modules may only import other registered `std.*` modules (no project code).
+    if module_path.starts_with("std.") || module_path == "std" {
+        for (dotted, _span) in &imports {
+            if !stdlib::is_stdlib_module(dotted) {
+                return Err(format!(
+                    "ANUBIS_STDLIB_IMPORT_FORBIDDEN: embedded module `{module_path}` cannot import \
+                     non-stdlib `{dotted}`"
+                ));
+            }
+        }
+    }
+
     for (dotted, _span) in &imports {
-        let child = resolve_module_file(src_root, dotted)?;
-        load_dfs(&child, dotted.clone(), src_root, color, order)?;
+        let child = resolve_module_file_with_deps(src_root, dotted, deps)?;
+        load_dfs(&child, dotted.clone(), src_root, deps, color, order)?;
     }
 
     color.insert(file.to_path_buf(), Color::Black);
@@ -308,8 +435,23 @@ pub fn combine_graph(graph: &ModuleGraph) -> Result<Vec<Item>, String> {
 
 /// Discover the project for `entry`, load its import graph, and combine it into one item list.
 pub fn combine_from_entry(entry: &Path) -> Result<Vec<Item>, String> {
+    combine_from_entry_opts(entry, &ResolveOptions::default())
+}
+
+/// Combine entry + project modules + Phase-6 dependencies (resolved & proof-checked).
+pub fn combine_from_entry_opts(
+    entry: &Path,
+    pkg_opts: &ResolveOptions,
+) -> Result<Vec<Item>, String> {
     let layout = ProjectLayout::discover(entry)?;
-    let graph = load_graph(&layout.entry, &layout.src_root)?;
+    let ws = resolve_workspace(&layout, pkg_opts)?;
+    let mounts = DepMounts::from_workspace(&ws);
+    let deps = if mounts.roots.is_empty() {
+        None
+    } else {
+        Some(&mounts)
+    };
+    let graph = load_graph_with_deps(&layout.entry, &layout.src_root, deps)?;
     combine_graph(&graph)
 }
 

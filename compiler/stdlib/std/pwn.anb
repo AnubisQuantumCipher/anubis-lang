@@ -1,0 +1,434 @@
+// std.pwn — Anubis-source packing / pattern / local-lab PoC library.
+//
+// Dual-use / verification-first (authorized local lab / CTF / bounty only):
+//   - Pure helpers (xor, unpack, hexdump, pad, junk, report formatting) need no research flag.
+//   - Pack/cyclic/flat/run_local call research-gated builtins → `anubis run --allow-research`.
+//   - run_local is a process-exec sink (uses(shell)); network targets stay forbidden in target_run.
+//
+// Export names intentionally differ from bare builtins so wrappers compose
+// (`pwn::cyclic_pattern` → builtin `cyclic`) without self-shadowing.
+
+// ---- LE pack (pwntools: p8/p16/p32/p64) ----
+
+pub fn pack_le_u8(n) {
+    return p8(n);
+}
+
+pub fn pack_le_u16(n) {
+    return p16(n);
+}
+
+pub fn pack_le_u32(n) {
+    return p32(n);
+}
+
+pub fn pack_le_u64(n) {
+    return p64(n);
+}
+
+// Short aliases matching classic lab surface (still not shadowing builtins).
+pub fn pwn_p8(n) { return p8(n); }
+pub fn pwn_p16(n) { return p16(n); }
+pub fn pwn_p32(n) { return p32(n); }
+pub fn pwn_p64(n) { return p64(n); }
+
+// ---- BE pack: LE then reverse ----
+
+fn reverse_bytes(bs) {
+    let mut out = [];
+    let n = len(bs);
+    let mut i = n - 1;
+    while i >= 0 {
+        push(out, bs[i]);
+        i = i - 1;
+    }
+    return out;
+}
+
+pub fn pack_be_u16(n) {
+    return reverse_bytes(p16(n));
+}
+
+pub fn pack_be_u32(n) {
+    return reverse_bytes(p32(n));
+}
+
+pub fn pack_be_u64(n) {
+    return reverse_bytes(p64(n));
+}
+
+// ---- Unpack pure byte lists (0..255 ints) ----
+
+pub fn unpack_le_u8(bs) {
+    if len(bs) < 1 { return 0; }
+    return bs[0] & 255;
+}
+
+pub fn unpack_le_u16(bs) {
+    if len(bs) < 2 { return 0; }
+    return (bs[0] & 255) | ((bs[1] & 255) * 256);
+}
+
+pub fn unpack_le_u32(bs) {
+    if len(bs) < 4 { return 0; }
+    let b0 = bs[0] & 255;
+    let b1 = bs[1] & 255;
+    let b2 = bs[2] & 255;
+    let b3 = bs[3] & 255;
+    return b0 | (b1 * 256) | (b2 * 65536) | (b3 * 16777216);
+}
+
+pub fn unpack_le_u64(bs) {
+    if len(bs) < 8 { return 0; }
+    let lo = unpack_le_u32(bs);
+    let hi_bytes = [bs[4], bs[5], bs[6], bs[7]];
+    let hi = unpack_le_u32(hi_bytes);
+    return lo + hi * 4294967296;
+}
+
+pub fn unpack_be_u16(bs) {
+    if len(bs) < 2 { return 0; }
+    return unpack_le_u16(reverse_bytes(bs));
+}
+
+pub fn unpack_be_u32(bs) {
+    if len(bs) < 4 { return 0; }
+    return unpack_le_u32(reverse_bytes(bs));
+}
+
+pub fn unpack_be_u64(bs) {
+    if len(bs) < 8 { return 0; }
+    return unpack_le_u64(reverse_bytes(bs));
+}
+
+// ---- Cyclic / flat (research-gated builtins) ----
+
+pub fn cyclic_pattern(n) {
+    return cyclic(n);
+}
+
+pub fn de_bruijn(n) {
+    return cyclic(n);
+}
+
+pub fn flat_buf(x) {
+    return flat(x);
+}
+
+// Find first offset of needle (byte-list or integer packed LE u32) in cyclic(n).
+// Returns -1 if not found. Classic crash-offset workflow.
+pub fn cyclic_find(n, needle) {
+    let pat = cyclic(n);
+    let mut needle_bytes = needle;
+    if type(needle) == "int" {
+        needle_bytes = p32(needle);
+    }
+    let nlen = len(needle_bytes);
+    let plen = len(pat);
+    if nlen == 0 || nlen > plen { return 0 - 1; }
+    let mut i = 0;
+    while i + nlen <= plen {
+        let mut ok = true;
+        let mut j = 0;
+        while j < nlen {
+            if pat[i + j] != needle_bytes[j] {
+                ok = false;
+                j = nlen;
+            } else {
+                j = j + 1;
+            }
+        }
+        if ok { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+pub fn pattern_offset(n, needle) {
+    return cyclic_find(n, needle);
+}
+
+// 8-byte needle (LE u64) for 64-bit overflow labs.
+pub fn cyclic_find_u64(n, needle_int) {
+    return cyclic_find(n, p64(needle_int));
+}
+
+// ---- Payload assembly (pure where possible) ----
+
+// Concatenate a list of byte-lists into one payload.
+pub fn payload_join(parts) {
+    let mut out = [];
+    for p in parts {
+        for b in p {
+            push(out, b & 255);
+        }
+    }
+    return out;
+}
+
+// Pad `buf` on the right to length `n` with byte `pad` (default callers use 0x00).
+pub fn pad_right(buf, n, pad) {
+    let mut out = [];
+    for b in buf {
+        push(out, b & 255);
+    }
+    let p = pad & 255;
+    while len(out) < n {
+        push(out, p);
+    }
+    return out;
+}
+
+pub fn pad_left(buf, n, pad) {
+    let need = n - len(buf);
+    let mut out = [];
+    let p = pad & 255;
+    let mut i = 0;
+    while i < need {
+        push(out, p);
+        i = i + 1;
+    }
+    for b in buf {
+        push(out, b & 255);
+    }
+    return out;
+}
+
+// Fit buffer into exactly `n` bytes: truncate if longer, pad_right if shorter.
+pub fn fit(buf, n, pad) {
+    if len(buf) >= n {
+        let mut out = [];
+        let mut i = 0;
+        while i < n {
+            push(out, buf[i] & 255);
+            i = i + 1;
+        }
+        return out;
+    }
+    return pad_right(buf, n, pad);
+}
+
+// Classic filler: n copies of byte (default 'A' = 0x41).
+pub fn junk(n) {
+    return junk_byte(n, 0x41);
+}
+
+pub fn junk_byte(n, b) {
+    let mut out = [];
+    let v = b & 255;
+    let mut i = 0;
+    while i < n {
+        push(out, v);
+        i = i + 1;
+    }
+    return out;
+}
+
+// x86/x64 NOP sled for *local* lab only (0x90). Not a remote implant primitive.
+pub fn nop_sled(n) {
+    return junk_byte(n, 0x90);
+}
+
+// Pack a list of integer addresses as consecutive LE u64 words (local ROP-style chain).
+pub fn chain_u64(addrs) {
+    let mut out = [];
+    for a in addrs {
+        let w = p64(a);
+        for b in w {
+            push(out, b);
+        }
+    }
+    return out;
+}
+
+pub fn chain_u32(addrs) {
+    let mut out = [];
+    for a in addrs {
+        let w = p32(a);
+        for b in w {
+            push(out, b);
+        }
+    }
+    return out;
+}
+
+// ---- Byte helpers (pure) ----
+
+pub fn xor_bytes(a, b) {
+    let na = len(a);
+    let nb = len(b);
+    let n = if na < nb { na } else { nb };
+    let mut out = [];
+    let mut i = 0;
+    while i < n {
+        push(out, (a[i] & 255) ^ (b[i] & 255));
+        i = i + 1;
+    }
+    return out;
+}
+
+// XOR with a repeating key (classic single-byte or multi-byte mask).
+pub fn xor_key(buf, key) {
+    let nk = len(key);
+    if nk == 0 { return buf; }
+    let mut out = [];
+    let mut i = 0;
+    let n = len(buf);
+    while i < n {
+        push(out, (buf[i] & 255) ^ (key[i % nk] & 255));
+        i = i + 1;
+    }
+    return out;
+}
+
+pub fn repeat_buf(buf, n) {
+    let mut out = [];
+    let mut i = 0;
+    while i < n {
+        for b in buf {
+            push(out, b);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+fn hex_digit(n) {
+    let d = n & 15;
+    if d < 10 {
+        return char_at("0123456789abcdef", d);
+    }
+    return char_at("0123456789abcdef", d);
+}
+
+pub fn hexdump(buf) {
+    let mut out = "";
+    let mut i = 0;
+    let n = len(buf);
+    while i < n {
+        if i > 0 { out = out + " "; }
+        let b = buf[i] & 255;
+        out = out + hex_digit(b / 16) + hex_digit(b);
+        i = i + 1;
+    }
+    return out;
+}
+
+// Compact hex without spaces (for evidence filenames / one-line logs).
+pub fn hexdump_compact(buf) {
+    let mut out = "";
+    let mut i = 0;
+    let n = len(buf);
+    while i < n {
+        let b = buf[i] & 255;
+        out = out + hex_digit(b / 16) + hex_digit(b);
+        i = i + 1;
+    }
+    return out;
+}
+
+// ---- Crash / TargetRun report helpers (pure; no process spawn) ----
+// TargetRun fields: crashed, signal, exit_code, payload_len, timed_out
+
+pub fn is_crash(r) {
+    return r.crashed == 1;
+}
+
+pub fn is_timeout(r) {
+    return r.timed_out == 1;
+}
+
+// Map common Unix signal numbers to short names (unknown → "SIG?").
+pub fn signal_name(sig) {
+    if sig == 1 { return "SIGHUP"; }
+    if sig == 2 { return "SIGINT"; }
+    if sig == 3 { return "SIGQUIT"; }
+    if sig == 4 { return "SIGILL"; }
+    if sig == 5 { return "SIGTRAP"; }
+    if sig == 6 { return "SIGABRT"; }
+    if sig == 8 { return "SIGFPE"; }
+    if sig == 9 { return "SIGKILL"; }
+    if sig == 11 { return "SIGSEGV"; }
+    if sig == 13 { return "SIGPIPE"; }
+    if sig == 14 { return "SIGALRM"; }
+    if sig == 15 { return "SIGTERM"; }
+    if sig == 0 - 1 { return "NONE"; }
+    return "SIG?";
+}
+
+// One-line summary for logs / evidence.
+pub fn crash_summary(r) {
+    let c = "ok";
+    if r.crashed == 1 { c = "CRASH"; }
+    if r.timed_out == 1 { c = "TIMEOUT"; }
+    return "TargetRun " + c
+        + " signal=" + str(r.signal) + "(" + signal_name(r.signal) + ")"
+        + " exit=" + str(r.exit_code)
+        + " payload_len=" + str(r.payload_len)
+        + " timed_out=" + str(r.timed_out);
+}
+
+// Multi-line report for operator / bounty writeups.
+pub fn crash_report(r) {
+    let lines = "=== Anubis PoC TargetRun report ===\n";
+    lines = lines + "crashed:     " + str(r.crashed) + "\n";
+    lines = lines + "signal:      " + str(r.signal) + " (" + signal_name(r.signal) + ")\n";
+    lines = lines + "exit_code:   " + str(r.exit_code) + "\n";
+    lines = lines + "payload_len: " + str(r.payload_len) + "\n";
+    lines = lines + "timed_out:   " + str(r.timed_out) + "\n";
+    if r.crashed == 1 {
+        lines = lines + "verdict:     IMPACT (local process crashed)\n";
+    } else {
+        if r.timed_out == 1 {
+            lines = lines + "verdict:     TIMEOUT (no crash within harness budget)\n";
+        } else {
+            lines = lines + "verdict:     NO_CRASH\n";
+        }
+    }
+    return lines;
+}
+
+// Fail closed if the harness did not observe a crash (PoC assertion helper).
+pub fn assert_crash(r) {
+    if r.crashed != 1 {
+        panic("ANUBIS_POC_ASSERT_CRASH: expected local process crash; " + crash_summary(r));
+    }
+    return r;
+}
+
+pub fn assert_signal(r, expected_sig) {
+    assert_crash(r);
+    if r.signal != expected_sig {
+        panic("ANUBIS_POC_ASSERT_SIGNAL: expected signal "
+            + str(expected_sig) + " got " + str(r.signal)
+            + " (" + signal_name(r.signal) + ")");
+    }
+    return r;
+}
+
+// cyclic_find + human message for overflow writeups.
+pub fn offset_report(pattern_len, needle) {
+    let off = cyclic_find(pattern_len, needle);
+    if off < 0 {
+        return "offset: NOT_FOUND in cyclic(" + str(pattern_len) + ")";
+    }
+    return "offset: " + str(off) + " (cyclic pattern length " + str(pattern_len) + ")";
+}
+
+// ---- Process harness (research + shell/exec capability + sink) ----
+
+pub fn run_local(path, payload) uses(shell) {
+    return target_run(path, payload);
+}
+
+// Run local target and return [result, report_string] for evidence pipelines.
+pub fn run_local_report(path, payload) uses(shell) {
+    let r = target_run(path, payload);
+    return [r, crash_report(r)];
+}
+
+// Run and fail closed unless crashed (gold PoC style).
+pub fn run_local_expect_crash(path, payload) uses(shell) {
+    let r = target_run(path, payload);
+    return assert_crash(r);
+}

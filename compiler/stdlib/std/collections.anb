@@ -1,0 +1,149 @@
+// std.collections — Set (unique list, O(n)) and OrderedMap (list of [k, v] pairs).
+// Immutable style: every mutator returns a new structure.
+
+// ---- Set (list of unique values) ----
+
+pub fn set_new() {
+    return [];
+}
+
+pub fn set_contains(s, x) {
+    for v in s {
+        if v == x { return true; }
+    }
+    return false;
+}
+
+pub fn set_len(s) {
+    return len(s);
+}
+
+pub fn set_to_list(s) {
+    return s;
+}
+
+pub fn set_insert(s, x) {
+    if set_contains(s, x) {
+        return s;
+    }
+    let mut out = [];
+    for v in s {
+        push(out, v);
+    }
+    push(out, x);
+    return out;
+}
+
+pub fn set_remove(s, x) {
+    let mut out = [];
+    for v in s {
+        if v != x {
+            push(out, v);
+        }
+    }
+    return out;
+}
+
+pub fn set_union(a, b) {
+    let mut out = a;
+    for x in b {
+        out = set_insert(out, x);
+    }
+    return out;
+}
+
+pub fn set_intersect(a, b) {
+    let mut out = [];
+    for x in a {
+        if set_contains(b, x) {
+            push(out, x);
+        }
+    }
+    return out;
+}
+
+pub fn set_diff(a, b) {
+    let mut out = [];
+    for x in a {
+        if !set_contains(b, x) {
+            push(out, x);
+        }
+    }
+    return out;
+}
+
+// ---- Ordered map: list of [key, value] pairs (insertion order) ----
+
+pub fn omap_new() {
+    return [];
+}
+
+pub fn omap_len(m) {
+    return len(m);
+}
+
+pub fn omap_has(m, k) {
+    for pair in m {
+        if pair[0] == k { return true; }
+    }
+    return false;
+}
+
+pub fn omap_get(m, k, default) {
+    for pair in m {
+        if pair[0] == k { return pair[1]; }
+    }
+    return default;
+}
+
+pub fn omap_put(m, k, v) {
+    let mut out = [];
+    let mut found = false;
+    for pair in m {
+        if pair[0] == k {
+            push(out, [k, v]);
+            found = true;
+        } else {
+            push(out, pair);
+        }
+    }
+    if !found {
+        push(out, [k, v]);
+    }
+    return out;
+}
+
+pub fn omap_remove(m, k) {
+    let mut out = [];
+    for pair in m {
+        if pair[0] != k {
+            push(out, pair);
+        }
+    }
+    return out;
+}
+
+pub fn omap_keys(m) {
+    let mut ks = [];
+    for pair in m {
+        push(ks, pair[0]);
+    }
+    return ks;
+}
+
+pub fn omap_values(m) {
+    let mut vs = [];
+    for pair in m {
+        push(vs, pair[1]);
+    }
+    return vs;
+}
+
+// Collapse ordered pairs into a builtin map (order discarded).
+pub fn omap_to_map(m) {
+    let mut acc = {};
+    for pair in m {
+        acc[pair[0]] = pair[1];
+    }
+    return acc;
+}

@@ -1,0 +1,41 @@
+// std.testing — runtime assertion helpers for Anubis programs and stdlib self-tests.
+
+pub fn assert_true(cond) {
+    assert(cond);
+    return true;
+}
+
+pub fn assert_eq(a, b) {
+    if a != b {
+        assert(false);
+    }
+    return true;
+}
+
+pub fn assert_ne(a, b) {
+    if a == b {
+        assert(false);
+    }
+    return true;
+}
+
+pub fn assert_lt(a, b) {
+    if !(a < b) {
+        assert(false);
+    }
+    return true;
+}
+
+pub fn assert_le(a, b) {
+    if !(a <= b) {
+        assert(false);
+    }
+    return true;
+}
+
+pub fn assert_gt(a, b) {
+    if !(a > b) {
+        assert(false);
+    }
+    return true;
+}

@@ -44,6 +44,10 @@ pub enum Token {
     Minus,
     /// A compound-assignment operator; the payload is the base op (`"+"`, `"<<"`, …).
     OpAssign(String),
+    /// Phase-7: preserved line comment body (without leading `//`). Trivia for `doc` attach.
+    LineComment(String),
+    /// Phase-7: preserved block comment body (inner text, nesting already resolved).
+    BlockComment(String),
     Eof,
     Other(String),
 }
@@ -639,33 +643,62 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
             '/' => {
                 if let Some(&(_, '/')) = chars.peek() {
                     chars.next();
-                    // Line comment: skip to end of line.
-                    while let Some(&(_, nc)) = chars.peek() {
+                    // Phase-7: preserve line comment body for doc association.
+                    let mut body = String::new();
+                    let mut end = start + 2;
+                    while let Some(&(idx, nc)) = chars.peek() {
                         if nc == '\n' {
                             break;
                         }
+                        body.push(nc);
+                        end = idx + nc.len_utf8();
                         chars.next();
                     }
+                    tokens.push(SpannedToken {
+                        token: Token::LineComment(body),
+                        span: Span { start, end },
+                    });
                     continue;
                 }
                 if let Some(&(_, '*')) = chars.peek() {
                     chars.next(); // consume '*'
                                   // Block comment, nesting-aware: `/* ... /* ... */ ... */`.
                     let mut depth = 1usize;
+                    let mut body = String::new();
+                    let mut end = start + 2;
                     while depth > 0 {
                         match chars.next() {
-                            Some((_, '/')) if matches!(chars.peek(), Some(&(_, '*'))) => {
+                            Some((idx, '/')) if matches!(chars.peek(), Some(&(_, '*'))) => {
                                 chars.next();
+                                if depth > 1 {
+                                    body.push('/');
+                                    body.push('*');
+                                }
                                 depth += 1;
+                                end = idx + 2;
                             }
-                            Some((_, '*')) if matches!(chars.peek(), Some(&(_, '/'))) => {
+                            Some((idx, '*')) if matches!(chars.peek(), Some(&(_, '/'))) => {
                                 chars.next();
                                 depth -= 1;
+                                end = idx + 2;
+                                if depth > 0 {
+                                    body.push('*');
+                                    body.push('/');
+                                }
                             }
-                            Some(_) => {}
+                            Some((idx, ch)) => {
+                                if depth >= 1 {
+                                    body.push(ch);
+                                }
+                                end = idx + ch.len_utf8();
+                            }
                             None => break,
                         }
                     }
+                    tokens.push(SpannedToken {
+                        token: Token::BlockComment(body),
+                        span: Span { start, end },
+                    });
                     continue;
                 }
                 if let Some(&(idx, '=')) = chars.peek() {
@@ -1474,8 +1507,117 @@ where
 pub fn lex(source: &str) -> Vec<Token> {
     lex_spanned(source)
         .into_iter()
+        .filter(|spanned| !matches!(spanned.token, Token::LineComment(_) | Token::BlockComment(_)))
         .map(|spanned| spanned.token)
         .collect()
+}
+
+/// Spanned tokens with comments stripped (parse path). Comments remain available via `lex_spanned`.
+pub fn lex_spanned_no_comments(source: &str) -> Vec<SpannedToken> {
+    lex_spanned(source)
+        .into_iter()
+        .filter(|spanned| !matches!(spanned.token, Token::LineComment(_) | Token::BlockComment(_)))
+        .collect()
+}
+
+/// Walk left from a parsed item start (`fn`/`struct`/…) over whitespace and an optional
+/// leading `pub` so doc comments attach to `pub fn` the same as bare `fn`.
+fn doc_attach_head(source: &str, item_start: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut i = item_start.min(source.len());
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i >= 3 && source.get(i - 3..i) == Some("pub") {
+        let j = i - 3;
+        if j == 0 || bytes[j - 1].is_ascii_whitespace() {
+            i = j;
+        }
+    }
+    i
+}
+
+/// Map item start byte offset → leading doc comment text (from contiguous comments above the item).
+pub fn associate_docs(source: &str, items: &[Item]) -> std::collections::BTreeMap<usize, String> {
+    let tokens = lex_spanned(source);
+    let mut out = std::collections::BTreeMap::new();
+    for it in items {
+        let start = item_span_start(it);
+        if start == 0 {
+            continue;
+        }
+        // Attach point includes optional `pub` before `fn` (span starts at `fn` keyword).
+        let head = doc_attach_head(source, start);
+        // Collect comments whose end is before the attach head.
+        let mut collected: Vec<(usize, usize, String)> = Vec::new();
+        for sp in &tokens {
+            let text = match &sp.token {
+                Token::LineComment(t) => t.trim().to_string(),
+                Token::BlockComment(t) => t.trim().to_string(),
+                _ => continue,
+            };
+            if sp.span.end > head {
+                break;
+            }
+            collected.push((sp.span.start, sp.span.end, text));
+        }
+        if collected.is_empty() {
+            continue;
+        }
+        // Walk backwards: keep a trailing contiguous run (only whitespace between comment end and head).
+        let mut run: Vec<String> = Vec::new();
+        let mut cursor = head;
+        for (cs, ce, text) in collected.into_iter().rev() {
+            let between = source.get(ce..cursor).unwrap_or("");
+            if between.chars().all(|c| c.is_whitespace()) {
+                // blank line between comment groups ends the run (except pure spaces/tabs on same block)
+                if between.contains('\n') {
+                    let nl = between.matches('\n').count();
+                    if nl > 1 {
+                        break;
+                    }
+                }
+                run.push(text);
+                cursor = cs;
+            } else {
+                break;
+            }
+        }
+        run.reverse();
+        if !run.is_empty() {
+            // Key by item span.start so collect_fn_pages can look up via Item::Fn.span.
+            out.insert(start, run.join("\n"));
+        }
+    }
+    // Nested items (module/impl methods)
+    for it in items {
+        match it {
+            Item::Module { items: inner, .. } | Item::Impl { methods: inner, .. } => {
+                for (k, v) in associate_docs(source, inner) {
+                    out.insert(k, v);
+                }
+            }
+            Item::Trait { methods: inner, .. } => {
+                for (k, v) in associate_docs(source, inner) {
+                    out.insert(k, v);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn item_span_start(it: &Item) -> usize {
+    match it {
+        Item::Fn { span, .. }
+        | Item::Struct { span, .. }
+        | Item::Enum { span, .. }
+        | Item::Impl { span, .. }
+        | Item::Trait { span, .. }
+        | Item::Module { span, .. }
+        | Item::Import { span, .. } => span.start,
+    }
 }
 
 struct Parser {
@@ -1493,6 +1635,16 @@ struct Parser {
 
 impl Parser {
     fn new(tokens: Vec<SpannedToken>) -> Self {
+        // Parse path: comments must not participate in expect/peek.
+        let tokens: Vec<SpannedToken> = tokens
+            .into_iter()
+            .filter(|spanned| {
+                !matches!(
+                    spanned.token,
+                    Token::LineComment(_) | Token::BlockComment(_)
+                )
+            })
+            .collect();
         Self {
             tokens,
             pos: 0,

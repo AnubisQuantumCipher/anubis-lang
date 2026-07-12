@@ -27,27 +27,16 @@ fn has_hybrid_block(stmts: &[Stmt]) -> bool {
     false
 }
 
-/// Write `name.rs` next to the artifact, compile it with `rustc`, mark it executable, and return
-/// the executable path. Shared by the faithful and analysis-only branches.
+/// Write `name.rs` next to the artifact, compile via the **same cargo + audited crypto** path as
+/// `anubis run`, mark it executable, and return the executable path.
+///
+/// CRITICAL: bare `rustc` cannot link `argon2` / `chacha20poly1305` / … — using rustc here would
+/// make `anubis build` fail on any program that touches `std.crypto` while `anubis run` succeeds.
 fn compile_rust_to_exe(src: &str, out_dir: &Path, name: &str) -> Result<String, String> {
     let rs_path = out_dir.join(format!("{}.rs", name));
     std::fs::write(&rs_path, src).map_err(|e| e.to_string())?;
     let exe = out_dir.join(name);
-    let status = std::process::Command::new("rustc")
-        // Match the shipped `anubis run` compile (tools/anubis::run_anubis_source, also pinned to
-        // edition 2021) so a program that runs also builds: same edition, same emitted source.
-        .args([
-            "--edition",
-            "2021",
-            "-o",
-            exe.to_str().ok_or("non-utf8 output path")?,
-            rs_path.to_str().ok_or("non-utf8 source path")?,
-        ])
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err("rustc failed".into());
-    }
+    crate::backends::run::compile_native_rust_to_exe(src, &exe).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

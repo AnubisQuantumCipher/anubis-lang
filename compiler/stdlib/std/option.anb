@@ -1,0 +1,36 @@
+// std.option — helpers over the built-in Option enum (Some / None).
+
+pub fn option_is_some(o) {
+    return match o {
+        Some(_) => true,
+        None => false,
+    };
+}
+
+pub fn option_is_none(o) {
+    return match o {
+        Some(_) => false,
+        None => true,
+    };
+}
+
+pub fn option_unwrap_or(o, default) {
+    return match o {
+        Some(x) => x,
+        None => default,
+    };
+}
+
+pub fn option_map(o, f) {
+    return match o {
+        Some(x) => Some(f(x)),
+        None => None,
+    };
+}
+
+pub fn option_and_then(o, f) {
+    return match o {
+        Some(x) => f(x),
+        None => None,
+    };
+}

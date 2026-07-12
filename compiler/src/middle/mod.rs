@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+pub mod proptest;
 pub(crate) mod ty;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,6 +159,10 @@ struct SemanticContext {
     /// postcondition — the composition that makes contracts chain.
     #[allow(clippy::type_complexity)]
     fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
+    /// Function name → declared `uses(...)` capability tags (raw strings from the AST).
+    /// Phase-5: at a call site, the caller's inferred effects inherit the callee's declared
+    /// capabilities so `std.io` / `std.pwn` wrappers cannot launder `fs.write` / `shell` past Safe.
+    fn_declared_effects: BTreeMap<String, Vec<String>>,
     /// Every user-defined function name (flat namespace; used for duplicate + unknown-call checks).
     all_fns: BTreeSet<String>,
     /// Interprocedural taint summary: functions whose RETURN value carries INTERNAL taint (from a
@@ -276,6 +281,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 requires,
                 ensures,
                 ret,
+                effects,
                 ..
             } => {
                 // Flat function namespace: a redefinition is an error.
@@ -292,6 +298,10 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 );
                 ctx.fn_ret_types
                     .insert(name.clone(), ret.clone().unwrap_or_default());
+                if !effects.is_empty() {
+                    ctx.fn_declared_effects
+                        .insert(name.clone(), effects.clone());
+                }
                 if !requires.is_empty() || !ensures.is_empty() {
                     ctx.fn_contracts.insert(
                         name.clone(),
@@ -1183,13 +1193,16 @@ fn analyze_stmts(
                 // drop its modelability and any stale fact, so an integer predicate over the NEW
                 // binding (which may hold a string/list/bool) is not "proved" against the shadowed
                 // integer's model (e.g. `let v = 0; let v = "hi"; assert(v + 0 == v)`).
-                ctx.solver_int_vars.remove(name);
+                clear_binding_modelability(&mut ctx.solver_int_vars, name);
                 {
+                    // Also drop stale array/len symbols for a shadowed sequence binding.
                     let mangled = smt_var(name);
+                    let arr = seq_arr_smt(name);
+                    let len = seq_len_smt(name);
                     assumptions.retain(|a| {
                         let mut vs = BTreeSet::new();
                         collect_vars_from_smt(a, &mut vs);
-                        !vs.contains(&mangled)
+                        !vs.contains(&mangled) && !vs.contains(&arr) && !vs.contains(&len)
                     });
                 }
                 ctx.symbolic_widths.insert(name.clone(), w);
@@ -1204,13 +1217,43 @@ fn analyze_stmts(
                     ctx.solver_int_vars.insert(name.clone());
                 }
 
+                // Phase-4 A2: a list literal of int-modelable elements is a *bounded* sequence —
+                // model as QF_ABV array + fixed length. Unbounded lists (params, push results, …)
+                // stay unmodeled (contracts fail with ANUBIS_SEQ_UNBOUNDED).
+                if let Expr::ArrayLiteral { elements } = init {
+                    if elements
+                        .iter()
+                        .all(|e| is_int_modelable(e, &ctx.solver_int_vars))
+                    {
+                        let n = elements.len() as u64;
+                        ctx.solver_int_vars.insert(seq_mark(name));
+                        ctx.solver_int_vars.insert(seq_len_mark(name, n));
+                        let arr = seq_arr_smt(name);
+                        let len = seq_len_smt(name);
+                        let len_fact = format!("(= {len} (_ bv{n} 64))");
+                        assumptions.push(len_fact.clone());
+                        ctx.symbolic_defs.push(len_fact);
+                        for (i, el) in elements.iter().enumerate() {
+                            if let Some(es) = expr_to_smt_value(el, &ctx.symbolic_widths) {
+                                let cell = format!("(= (select {arr} (_ bv{i} 64)) {es})");
+                                assumptions.push(cell.clone());
+                                ctx.symbolic_defs.push(cell);
+                            }
+                        }
+                    }
+                }
+
                 // For solver faithfulness: concrete lets become path assumptions.
                 // Symbolic sources remain unconstrained until assume()/assert() shape them.
-                if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
-                    let def_smt = format!("(= {} {})", smt_var(name), init_smt);
-                    ctx.symbolic_defs.push(def_smt.clone());
-                    ctx.constraints.push(format!("(assert {})", def_smt));
-                    assumptions.push(def_smt); // so it is included in subsequent obligations
+                // (Array literals are handled above via select/len facts — do not also bind the
+                // list name as a BitVec, which would be an unsound sort.)
+                if !matches!(init, Expr::ArrayLiteral { .. }) {
+                    if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
+                        let def_smt = format!("(= {} {})", smt_var(name), init_smt);
+                        ctx.symbolic_defs.push(def_smt.clone());
+                        ctx.constraints.push(format!("(assert {})", def_smt));
+                        assumptions.push(def_smt); // so it is included in subsequent obligations
+                    }
                 }
                 // NOTE: a symbolic input's `u8`/`u32` type annotation is NOT turned into a
                 // [0, 2^w-1] range assumption — the annotation is runtime-inert, so assuming a range
@@ -1341,6 +1384,8 @@ fn analyze_stmts(
                 effects.push("assume".into());
             }
             Stmt::ExprStmt(Expr::Assert(expr)) => {
+                // Walk the assertion expression for effect/taint/crypto-misuse (RWC Ch3: HMAC == tag).
+                analyze_expr_effect(expr, mode, scope, effects, ctx);
                 // Only discharge an assertion the solver can soundly model in QF_BV (a boolean
                 // formula over integer-modelable terms). A bare bool var, a string comparison, or
                 // any other value is left to the runtime `assert` — the checker must not fabricate
@@ -1391,12 +1436,14 @@ fn analyze_stmts(
                 // modelability — is essential: a loop invariant later RE-MODELS the variable, and a
                 // surviving `x == <old>` would then launder a false invariant/postcondition.
                 if let Some(root) = assign_target_root(target) {
-                    ctx.solver_int_vars.remove(root);
+                    clear_binding_modelability(&mut ctx.solver_int_vars, root);
                     let mangled = smt_var(root);
+                    let arr = seq_arr_smt(root);
+                    let len = seq_len_smt(root);
                     assumptions.retain(|a| {
                         let mut vs = BTreeSet::new();
                         collect_vars_from_smt(a, &mut vs);
-                        !vs.contains(&mangled)
+                        !vs.contains(&mangled) && !vs.contains(&arr) && !vs.contains(&len)
                     });
                     // Re-establish a fresh fact when the new value is modelable and does NOT reference
                     // the reassigned variable itself — a constant or an expression over OTHER modelable
@@ -1413,6 +1460,27 @@ fn analyze_stmts(
                         ctx.symbolic_widths.entry(root.to_string()).or_insert(64);
                         ctx.constraints.push(format!("(assert {})", def));
                         assumptions.push(def);
+                    }
+                    // Re-bind a bounded sequence when reassigned from a modelable array literal.
+                    if matches!(target, Expr::Var(_)) {
+                        if let Expr::ArrayLiteral { elements } = value {
+                            if elements
+                                .iter()
+                                .all(|e| is_int_modelable(e, &ctx.solver_int_vars))
+                            {
+                                let n = elements.len() as u64;
+                                ctx.solver_int_vars.insert(seq_mark(root));
+                                ctx.solver_int_vars.insert(seq_len_mark(root, n));
+                                let len_fact = format!("(= {len} (_ bv{n} 64))");
+                                assumptions.push(len_fact);
+                                for (i, el) in elements.iter().enumerate() {
+                                    if let Some(es) = expr_to_smt_value(el, &ctx.symbolic_widths) {
+                                        assumptions
+                                            .push(format!("(= (select {arr} (_ bv{i} 64)) {es})"));
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 check_expr_semantics(value, scope, ctx);
@@ -1455,6 +1523,9 @@ fn analyze_stmts(
                 }
             }
             Stmt::If { cond, then, else_ } => {
+                // CRYPTO_MISUSE / effect analysis must see the condition (fail-open if skipped:
+                // `if hmac_sha256(k,m) == tag { ... }` would otherwise pass).
+                analyze_expr_effect(cond, mode, scope, effects, ctx);
                 if expr_taint_source(cond, scope, &ctx.tainting_fns, &ctx.param_return_taint)
                     .is_some()
                 {
@@ -1495,6 +1566,7 @@ fn analyze_stmts(
                 body,
                 invariant,
             } => {
+                analyze_expr_effect(cond, mode, scope, effects, ctx);
                 if expr_taint_source(cond, scope, &ctx.tainting_fns, &ctx.param_return_taint)
                     .is_some()
                 {
@@ -1533,7 +1605,13 @@ fn analyze_stmts(
                     }
                 }
             }
-            Stmt::WhileLet { pattern, body, .. } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+                ..
+            } => {
+                analyze_expr_effect(expr, mode, scope, effects, ctx);
                 effects.push("loop".into());
                 // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
                 let snap_scope = scope.clone();
@@ -1645,6 +1723,43 @@ fn analyze_stmts(
     }
 }
 
+/// RWC Ch3: comparing HMAC tags with `==` (early-exit) enables timing attacks.
+/// Prefer `hmac_sha256_verify` / `std.crypto::mac_verify` (constant-time).
+fn expr_is_hmac_tag_call(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Call { callee, .. }
+            if callee == "hmac_sha256"
+                || callee == "hmac_sha256_hex"
+                || callee == "hmac_sha256_bytes"
+                || callee.ends_with("__mac_hmac_sha256")
+                || callee.ends_with("__mac_hmac_sha256_bytes")
+    )
+}
+
+/// RWC Ch8: password encodings / KDF outputs must not be compared with early-exit `==`.
+fn expr_is_password_secret_call(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Call { callee, .. }
+            if callee == "password_hash"
+                || callee == "password_hash_encode"
+                || callee == "password_hash_pbkdf2"
+                || callee == "password_hash_pbkdf2_encode"
+                || callee == "password_hash_phc"
+                || callee == "password_hash_phc_raw"
+                || callee == "argon2id_hash"
+                || callee == "pbkdf2_hmac_sha256"
+                || callee == "ed25519_sign"
+                || callee.ends_with("__password_hash")
+                || callee.ends_with("__password_hash_pbkdf2")
+                || callee.ends_with("__password_hash_phc")
+                || callee.ends_with("__kdf_argon2id")
+                || callee.ends_with("__kdf_pbkdf2_hmac_sha256")
+                || callee.ends_with("__sign")
+    )
+}
+
 fn analyze_expr_effect(
     expr: &Expr,
     mode: Mode,
@@ -1653,6 +1768,29 @@ fn analyze_expr_effect(
     ctx: &mut SemanticContext,
 ) {
     match expr {
+        Expr::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
+            if expr_is_hmac_tag_call(lhs) || expr_is_hmac_tag_call(rhs) {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_CRYPTO_MISUSE".into()),
+                    message: "comparing an HMAC tag with `==`/`!=` is not constant-time and is \
+                         vulnerable to timing attacks (RWC Ch3). Use `hmac_sha256_verify(key, msg, tag)` \
+                         or `std.crypto::mac_verify` instead"
+                        .into(),
+                    span: None,
+                });
+            }
+            if expr_is_password_secret_call(lhs) || expr_is_password_secret_call(rhs) {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_CRYPTO_MISUSE".into()),
+                    message: "comparing a password hash/KDF output with `==`/`!=` is not constant-time \
+                         (RWC Ch8). Use `password_verify(password, encoding)` or `std.crypto::password_verify`"
+                        .into(),
+                    span: None,
+                });
+            }
+            analyze_expr_effect(lhs, mode, scope, effects, ctx);
+            analyze_expr_effect(rhs, mode, scope, effects, ctx);
+        }
         Expr::Call { callee, args } => {
             // A+ call-site type checks for user functions (not builtins).
             if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
@@ -1684,13 +1822,15 @@ fn analyze_expr_effect(
                     }
                 }
             }
-            if callee == "shell" || callee == "exec" || callee == "system" {
+            if callee == "shell" || callee == "exec" || callee == "system" || callee == "target_run"
+            {
                 effects.push("shell".to_string());
-                // Safe: forbidden unless `uses(shell)` (or uses(exec)) declared on this function.
+                // Safe: forbidden unless `uses(shell)` (or uses(exec)/proc.exec) declared.
+                // `target_run` is the PoC process harness — same capability gate as shell/exec.
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "shell") {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
-                        message: "safe mode shell/exec effect is forbidden without `uses(shell)` (or use @research/@poc with authorization)".to_string(),
+                        message: "safe mode shell/exec/target_run effect is forbidden without `uses(shell)` (or use @research/@poc with authorization)".to_string(),
                         span: None,
                     });
                 }
@@ -1699,7 +1839,7 @@ fn analyze_expr_effect(
                 effects.push("file_read".to_string());
                 // file_read is allowed in Safe by default (legacy); verified lane still requires uses.
             }
-            if callee == "write_file" || callee == "write" {
+            if callee == "write_file" || callee == "write" || callee == "append_file" {
                 effects.push("file_write".to_string());
                 // Safe: authorized when `uses(fs.write)` is declared on this function.
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
@@ -1728,6 +1868,16 @@ fn analyze_expr_effect(
             }
             if matches!(callee.as_str(), "rand" | "rand_gen" | "random") {
                 effects.push("rand".to_string());
+            }
+            // Phase-5: inherit declared `uses(...)` from a user-defined callee (incl. namespaced
+            // std wrappers after combine). Without this, `std.io::write_text` / `std.pwn::run_local`
+            // would launder fs.write/shell past Safe — the wrapper itself has the uses clause, but
+            // the *caller* never saw the capability. Fail-closed: same Safe/verified gates as a
+            // direct builtin of that capability.
+            if let Some(caps) = ctx.fn_declared_effects.get(callee).cloned() {
+                for raw in caps {
+                    apply_inherited_capability(raw, mode, effects, ctx);
+                }
             }
             if is_sink(callee) {
                 effects.push(format!("sink:{}", callee));
@@ -1891,21 +2041,27 @@ impl SymbolicEngine {
             .iter()
             .map(|obl| {
                 // Faithful complete smt with defs from ir + obligation
-                let mut smt = String::from("(set-logic QF_BV)\n");
                 let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
+                let mut body = String::new();
+                for a in &obl.assumptions {
+                    body.push_str(&format!("(assert {})\n", a));
+                }
+                body.push_str(&format!("(assert (not {}))\n", obl.assertion));
+                let logic = if smt_uses_arrays(&body, &vars) {
+                    "QF_ABV"
+                } else {
+                    "QF_BV"
+                };
+                let mut smt = format!("(set-logic {logic})\n");
                 for v in &vars {
                     if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
                         // Every integer variable is a 64-bit bit-vector: the runtime is i64 and
                         // type-annotation widths are inert, so a narrower declaration would be an
-                        // unsound abstraction. (A contract that needs a bound must state it via
-                        // `requires`; parameter type widths carry no range assumption.)
-                        smt.push_str(&format!("(declare-const {} {})\n", v, smt_bv_type(64)));
+                        // unsound abstraction. Sequence arrays use the `__arr` Array sort (A2).
+                        smt.push_str(&declare_smt_var(v));
                     }
                 }
-                for a in &obl.assumptions {
-                    smt.push_str(&format!("(assert {})\n", a));
-                }
-                smt.push_str(&format!("(assert (not {}))\n", obl.assertion));
+                smt.push_str(&body);
                 smt.push_str("(check-sat)\n(get-model)\n");
                 let mut check = run_z3_obligation_with_smt(obl, smt);
                 // Vacuity guard for CONTRACT obligations: `A ⟹ P` is proved by `A ∧ ¬P` UNSAT, but
@@ -1963,15 +2119,23 @@ impl SymbolicEngine {
 const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "-t:10000", "-T:20"];
 
 fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
-    let mut smt = String::from("(set-logic QF_BV)\n");
-    for v in obl.vars.iter().collect::<BTreeSet<_>>() {
+    let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
+    let mut body = String::new();
+    for a in &obl.assumptions {
+        body.push_str(&format!("(assert {})\n", a));
+    }
+    let logic = if smt_uses_arrays(&body, &vars) {
+        "QF_ABV"
+    } else {
+        "QF_BV"
+    };
+    let mut smt = format!("(set-logic {logic})\n");
+    for v in &vars {
         if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
-            smt.push_str(&format!("(declare-const {} {})\n", v, smt_bv_type(64)));
+            smt.push_str(&declare_smt_var(v));
         }
     }
-    for a in &obl.assumptions {
-        smt.push_str(&format!("(assert {})\n", a));
-    }
+    smt.push_str(&body);
     smt.push_str("(check-sat)\n");
     let out = Command::new("z3")
         .args(Z3_ARGS)
@@ -2052,13 +2216,32 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
             model: None,
             smt,
         },
-        "sat" => SolverCheck {
-            name: obligation.name.clone(),
-            status: "FAIL".into(),
-            detail: "counterexample satisfies assumptions and negates assertion".into(),
-            model: Some(stdout),
-            smt,
-        },
+        "sat" => {
+            // Phase-4 B1: every FAIL model must replay. A model that does not re-satisfy the
+            // query is an encoder/solver soundness alarm — not a trustworthy counterexample.
+            let model = stdout.clone();
+            if !replay_counterexample(&smt, &model) {
+                SolverCheck {
+                    name: obligation.name.clone(),
+                    status: "FAIL".into(),
+                    detail: "ANUBIS_REPLAY_MISMATCH: z3 returned sat with a model that does not \
+                         re-verify under model-substitution replay (encoder-vs-solver soundness \
+                         alarm); failing closed"
+                        .into(),
+                    model: Some(model),
+                    smt,
+                }
+            } else {
+                SolverCheck {
+                    name: obligation.name.clone(),
+                    status: "FAIL".into(),
+                    detail: "counterexample satisfies assumptions and negates assertion (replayed)"
+                        .into(),
+                    model: Some(model),
+                    smt,
+                }
+            }
+        }
         // A z3 parse/sort ERROR means the SMT WE emitted is malformed (e.g. an undeclared symbol).
         // That is our bug, not an undecidable query — treat it as FAIL so it fails CLOSED. Emitting a
         // malformed obligation and then calling it "not a disproof" was the fail-OPEN hole that let a
@@ -2176,14 +2359,32 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
 /// variable names or on any pre-known "bad" values; it re-derives the answer from the query itself.
 pub fn replay_counterexample(smt: &str, model: &str) -> bool {
     let bindings = parse_z3_model(model);
-    if bindings.is_empty() {
-        // No parseable witness — cannot confirm the counterexample; fail closed.
-        return false;
-    }
     let base = match smt.find("(check-sat)") {
         Some(idx) => &smt[..idx],
         None => smt,
     };
+    // Ground formulas (no free constants) decide `sat` with an empty model `()`. That is a real
+    // counterexample: re-check the base query alone. Open formulas must produce parseable BitVec
+    // bindings — without them we cannot pin a witness and fail closed (a bare re-check of an open
+    // formula would stay `sat` even when the model text was garbage).
+    if bindings.is_empty() {
+        let has_declare = base.contains("declare-const") || base.contains("declare-fun");
+        if has_declare {
+            return false;
+        }
+        // Refuse garbage model text: only z3's empty-model shape (typically `sat` + `()`) qualifies.
+        let looks_empty_model = !model.contains("define-fun")
+            && (model.contains("sat")
+                || model.trim() == "()"
+                || model.contains("(\n)")
+                || model.contains("( )"));
+        if !looks_empty_model {
+            return false;
+        }
+        let mut replay_smt = base.to_string();
+        replay_smt.push_str("(check-sat)\n");
+        return matches!(z3_check_sat_raw(&replay_smt).as_deref(), Some("sat"));
+    }
     let mut replay_smt = base.to_string();
     for (name, value) in &bindings {
         replay_smt.push_str(&format!("(assert (= {name} {value}))\n"));
@@ -2222,6 +2423,61 @@ fn is_nonzero_int_literal(e: &Expr) -> bool {
 /// variable and stays inert in the SMT (nothing references it); it only gates variable-divisor modeling.
 fn nzdiv_mark(v: &str) -> String {
     format!("\u{1}nzdiv:{v}")
+}
+
+/// Phase-4 A2: mark `v` as a **bounded** sequence modelable in QF_ABV (array + length).
+fn seq_mark(v: &str) -> String {
+    format!("\u{1}seq:{v}")
+}
+
+/// Phase-4 A2: fixed length of a modeled sequence (literal-derived, compile-time known).
+fn seq_len_mark(v: &str, n: u64) -> String {
+    format!("\u{1}seqlen:{v}:{n}")
+}
+
+fn is_seq_var(v: &str, int_vars: &BTreeSet<String>) -> bool {
+    int_vars.contains(&seq_mark(v))
+}
+
+fn seq_fixed_len(v: &str, int_vars: &BTreeSet<String>) -> Option<u64> {
+    let prefix = format!("\u{1}seqlen:{v}:");
+    int_vars
+        .iter()
+        .find_map(|m| m.strip_prefix(&prefix)?.parse().ok())
+}
+
+/// Drop every solver fact / modelability mark for a binding (int, nzdiv, seq, seqlen).
+fn clear_binding_modelability(int_vars: &mut BTreeSet<String>, name: &str) {
+    int_vars.remove(name);
+    int_vars.remove(&nzdiv_mark(name));
+    int_vars.remove(&seq_mark(name));
+    let prefix = format!("\u{1}seqlen:{name}:");
+    int_vars.retain(|m| !m.starts_with(&prefix));
+}
+
+fn as_nonneg_int_lit(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::Literal(l) => l.parse::<i64>().ok().filter(|&n| n >= 0).map(|n| n as u64),
+        _ => None,
+    }
+}
+
+/// Index proven in-range for a fixed-length modeled sequence (non-negative constant only).
+/// Negative indices exist at runtime (`anubis_norm_index`) but are NOT modeled — contracts that
+/// need them stay fail-closed via `ANUBIS_INDEX_MAYBE_OOB`.
+fn index_bounds_proven(seq: &str, index: &Expr, int_vars: &BTreeSet<String>) -> bool {
+    match seq_fixed_len(seq, int_vars) {
+        Some(n) => as_nonneg_int_lit(index).is_some_and(|i| i < n),
+        None => false,
+    }
+}
+
+fn seq_arr_smt(name: &str) -> String {
+    smt_var(&format!("{name}__arr"))
+}
+
+fn seq_len_smt(name: &str) -> String {
+    smt_var(&format!("{name}__len"))
 }
 
 /// If `req` directly guarantees a bare variable is non-zero, return that variable. Recognizes a
@@ -2303,9 +2559,7 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
                 // non-zero integer literal, or a variable proven non-zero by a `requires` guard (marked
                 // via `nzdiv_mark` in `int_vars`). A bare variable with no such guard stays fail-closed.
                 "/" | "%" => {
-                    is_int_modelable(lhs, int_vars)
-                        && (is_nonzero_int_literal(rhs)
-                            || matches!(rhs.as_ref(), Expr::Var(v) if int_vars.contains(&nzdiv_mark(v))))
+                    is_int_modelable(lhs, int_vars) && divisor_is_proven_nonzero(rhs, int_vars)
                 }
                 _ => false,
             }
@@ -2323,11 +2577,37 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // Pure integer builtins that select/negate operands: `abs(x)` (wrapping_abs -> bvneg, wraps at
         // MIN identically), and `min`/`max` of two i64 args (signed `bvsle` select, matching
         // anubis_value_cmp). Only these exact callee/arity shapes; any other call stays unmodelable.
+        // Phase-4 A2: `len(xs)` over a bounded modeled sequence (fixed array literal or seq-marked var).
         Expr::Call { callee, args } => match (callee.as_str(), args.len()) {
             ("abs", 1) => is_int_modelable(&args[0], int_vars),
             ("min", 2) | ("max", 2) => args.iter().all(|a| is_int_modelable(a, int_vars)),
+            ("len", 1) => match &args[0] {
+                Expr::Var(v) if is_seq_var(v, int_vars) => true,
+                Expr::ArrayLiteral { elements }
+                    if !elements.is_empty()
+                        && elements.iter().all(|e| is_int_modelable(e, int_vars)) =>
+                {
+                    true
+                }
+                Expr::ArrayLiteral { elements } if elements.is_empty() => true,
+                _ => false,
+            },
             _ => false,
         },
+        // Phase-4 A2: `xs[i]` only when the base is a bounded modeled seq AND `i` is a proven
+        // in-range non-negative constant (else OOB traps at runtime — fail closed, not select).
+        Expr::Index { base, index } => match base.as_ref() {
+            Expr::Var(v) if is_seq_var(v, int_vars) => {
+                is_int_modelable(index, int_vars) && index_bounds_proven(v, index, int_vars)
+            }
+            Expr::ArrayLiteral { elements }
+                if elements.iter().all(|e| is_int_modelable(e, int_vars)) =>
+            {
+                as_nonneg_int_lit(index).is_some_and(|i| (i as usize) < elements.len())
+            }
+            _ => false,
+        },
+        // A bare array literal is a sequence value, not an integer — not int-modelable.
         _ => false,
     }
 }
@@ -2376,12 +2656,27 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
         // ALARM). Mirror the exact callee/arity set is_int_modelable admits, so the two never diverge.
         Expr::Call { callee, args }
             if (callee == "abs" && args.len() == 1)
-                || ((callee == "min" || callee == "max") && args.len() == 2) =>
+                || ((callee == "min" || callee == "max") && args.len() == 2)
+                || (callee == "len" && args.len() == 1) =>
         {
             for a in args {
                 expr_to_smt_value(a, widths)?;
             }
             Some(expr_to_smt(e, widths))
+        }
+        // Phase-4 A2: bounded index read → `(select arr idx)` (or unfolded literal element).
+        Expr::Index { base, index } => {
+            expr_to_smt_value(index, widths)?;
+            match base.as_ref() {
+                Expr::Var(_) => Some(expr_to_smt(e, widths)),
+                Expr::ArrayLiteral { elements } => {
+                    for el in elements {
+                        expr_to_smt_value(el, widths)?;
+                    }
+                    Some(expr_to_smt(e, widths))
+                }
+                _ => None,
+            }
         }
         Expr::Cast { expr, ty } => {
             // A TRUNCATING cast (`x as u8`) has NO sound integer value fact — modeling it as the
@@ -2484,6 +2779,41 @@ fn expr_to_smt_with_width(
                 format!("(ite (bvsle {a} {b}) {b} {a})")
             }
         }
+        // Phase-4 A2: `len(xs)` → length symbol (or ground length of a literal).
+        Expr::Call { callee, args } if callee == "len" && args.len() == 1 => match &args[0] {
+            Expr::Var(v) => seq_len_smt(v),
+            Expr::ArrayLiteral { elements } => format!("(_ bv{} 64)", elements.len()),
+            _ => "(_ bv0 64)".into(),
+        },
+        // Phase-4 A2: `xs[i]` → `(select arr i)` or unfolded constant element of a literal.
+        Expr::Index { base, index } => match base.as_ref() {
+            Expr::Var(v) => {
+                let arr = seq_arr_smt(v);
+                let idx = expr_to_smt_with_width(index, widths, Some(64));
+                format!("(select {arr} {idx})")
+            }
+            Expr::ArrayLiteral { elements } => {
+                if let Some(i) = as_nonneg_int_lit(index) {
+                    if (i as usize) < elements.len() {
+                        return expr_to_smt_with_width(
+                            &elements[i as usize],
+                            widths,
+                            expected_width,
+                        );
+                    }
+                }
+                // Fallback (should be unreachable when gated by is_int_modelable): const array.
+                let mut acc =
+                    "((as const (Array (_ BitVec 64) (_ BitVec 64))) (_ bv0 64))".to_string();
+                for (i, el) in elements.iter().enumerate() {
+                    let es = expr_to_smt_with_width(el, widths, Some(64));
+                    acc = format!("(store {acc} (_ bv{i} 64) {es})");
+                }
+                let idx = expr_to_smt_with_width(index, widths, Some(64));
+                format!("(select {acc} {idx})")
+            }
+            _ => "(_ bv0 64)".into(),
+        },
         Expr::TaintSource { label } => format!("taint_source_{}", label.replace("\"", "")),
         Expr::Symbolic { .. } => "symbolic".into(),
         _ => "true".into(),
@@ -2511,9 +2841,30 @@ fn collect_vars_from_smt(smt: &str, vars: &mut BTreeSet<String>) {
                     | "bvule"
                     | "bvuge"
                     | "bvsub"
+                    | "bvshl"
+                    | "bvashr"
+                    | "bvlshr"
+                    | "bvsdiv"
+                    | "bvsrem"
+                    | "bvsmod"
+                    | "bvslt"
+                    | "bvsle"
+                    | "bvsgt"
+                    | "bvsge"
+                    | "bvneg"
+                    | "bvnot"
+                    | "bvxor"
+                    | "bvor"
+                    | "bvurem"
+                    | "select"
+                    | "store"
+                    | "Array"
+                    | "BitVec"
+                    | "as"
                     | "set"
                     | "logic"
                     | "QF_BV"
+                    | "QF_ABV"
                     | "declare"
                     | "const"
                     | "check"
@@ -2532,6 +2883,22 @@ fn collect_vars_from_smt(smt: &str, vars: &mut BTreeSet<String>) {
         }
         vars.insert(token.to_string());
     }
+}
+
+/// Declare free symbols for an obligation. BitVec-64 by default; `*__arr` symbols are
+/// `(Array (_ BitVec 64) (_ BitVec 64))` (Phase-4 A2 QF_ABV sequences).
+fn declare_smt_var(v: &str) -> String {
+    if v.ends_with("__arr") {
+        format!("(declare-const {v} (Array (_ BitVec 64) (_ BitVec 64)))\n")
+    } else {
+        format!("(declare-const {v} {})\n", smt_bv_type(64))
+    }
+}
+
+fn smt_uses_arrays(smt_body: &str, vars: &BTreeSet<String>) -> bool {
+    smt_body.contains("(select ")
+        || smt_body.contains("(store ")
+        || vars.iter().any(|v| v.ends_with("__arr"))
 }
 
 fn first_fn_body(items: &[Item]) -> Option<Vec<Stmt>> {
@@ -2670,13 +3037,21 @@ fn substitute_vars(e: &Expr, map: &BTreeMap<String, Expr>) -> Expr {
         // contract; if a MODELABLE subterm is cloned WITHOUT substituting, its callee-parameter names
         // survive and re-bind to the caller's scope — a precondition bypass + a certified-false
         // postcondition (e.g. `g(150)` against `requires(abs(x) < 100)` was checked as `abs(5) < 100`).
-        // The modelable set is exactly: Var/Literal/Binary/Unary/Cast (above) + the abs/min/max builtin
-        // Call + Declassify/Assume/Assert. Any NON-modelable form is safely cloned by the catch-all: a
-        // mapped var hidden inside it makes the whole contract non-modelable, so the gate rejects it
-        // fail-closed rather than mis-model it. If a new modelable form is added to the gate, ADD IT HERE.
+        // The modelable set is exactly: Var/Literal/Binary/Unary/Cast (above) + the abs/min/max/len
+        // builtin Call + Index (bounded seq) + Declassify/Assume/Assert. Any NON-modelable form is
+        // safely cloned by the catch-all: a mapped var hidden inside it makes the whole contract
+        // non-modelable, so the gate rejects it fail-closed rather than mis-model it. If a new
+        // modelable form is added to the gate, ADD IT HERE.
         Expr::Call { callee, args } => Expr::Call {
             callee: callee.clone(),
             args: args.iter().map(|a| substitute_vars(a, map)).collect(),
+        },
+        Expr::Index { base, index } => Expr::Index {
+            base: Box::new(substitute_vars(base, map)),
+            index: Box::new(substitute_vars(index, map)),
+        },
+        Expr::ArrayLiteral { elements } => Expr::ArrayLiteral {
+            elements: elements.iter().map(|a| substitute_vars(a, map)).collect(),
         },
         Expr::Declassify {
             inner,
@@ -2743,28 +3118,65 @@ fn push_ensures_obligations(
             // so certifying this would be a silent overclaim: fail closed. Name the detectable cause
             // precisely (float vs string) so the diagnostic tells the truth about *why*, rather than
             // lumping every non-modelable case under one code.
-            ctx.diagnostics.push(SemanticDiagnostic {
-                code: Some(unmodelable_contract_code(&concrete).into()),
-                message: "cannot verify this `ensures` postcondition: it is not statically \
+            let code = unmodelable_contract_code(&concrete, &ctx.solver_int_vars);
+            let message = match code {
+                "ANUBIS_DIVISOR_MAYBE_ZERO" => {
+                    "cannot verify this `ensures`: it uses `/` or `%` with a divisor that is not \
+                     proven non-zero (need a non-zero literal, or `requires(d != 0)` / `requires(d > 0)` \
+                     on an unreassigned parameter). Modeling an unguarded divide would silently ignore \
+                     the runtime division-by-zero trap — fail closed"
+                        .to_string()
+                }
+                "ANUBIS_INDEX_MAYBE_OOB" => {
+                    "cannot verify this `ensures`: it indexes a sequence at an index that is not \
+                     proven in-range (need a non-negative constant index strictly less than the \
+                     known fixed length). Modeling an unguarded index would ignore the runtime \
+                     ANUBIS_INDEX_OUT_OF_BOUNDS trap — fail closed"
+                        .to_string()
+                }
+                "ANUBIS_SEQ_UNBOUNDED" => {
+                    "cannot verify this `ensures`: it uses a sequence that is not a bounded, \
+                     int-element array literal (or a let bound to one). Unbounded lists \
+                     (parameters, push results, maps, …) are not modeled in QF_ABV — fail closed"
+                        .to_string()
+                }
+                "ANUBIS_STRING_CONTRACT_UNMODELED" => {
+                    "cannot verify this `ensures`: it mentions a string value. Strings stay opaque \
+                     in the QF_BV/QF_ABV checker (optional QF_S later) — use a runtime `assert` or \
+                     restate as an integer bound"
+                        .to_string()
+                }
+                "ANUBIS_FLOAT_CONTRACT_UNMODELED" => {
+                    "cannot verify this `ensures`: it mentions a float value. Floats stay opaque \
+                     in the QF_BV/QF_ABV checker (optional QF_FP later) — use a runtime `assert` or \
+                     restate as an integer bound"
+                        .to_string()
+                }
+                _ => {
+                    "cannot verify this `ensures` postcondition: it is not statically \
                      modelable (a float, a string/list, a truncating cast, an unmodeled or reassigned \
                      variable, or a value from a call whose contract is not carried). Contracts are \
                      compile-time only and are never checked at runtime, so an unprovable one is \
                      rejected — restate it as a provable integer bound, or use a runtime `assert` in \
                      the body instead"
-                    .to_string(),
+                        .to_string()
+                }
+            };
+            ctx.diagnostics.push(SemanticDiagnostic {
+                code: Some(code.into()),
+                message,
                 span: Some((span.start, span.end)),
             });
         }
     }
 }
 
-/// Best-effort precise diagnostic code for a non-modelable `ensures`. A float or string literal in
-/// the (result-substituted) predicate is the common, cheaply-detectable cause; anything else
-/// (truncating cast, reassigned/unmodeled variable, uncarried call contract) stays under the
-/// general `ANUBIS_CONTRACT_UNPROVABLE`. Honest by construction: a specific code is emitted only
-/// when that specific cause is actually present in the predicate.
-fn unmodelable_contract_code(e: &Expr) -> &'static str {
-    fn scan(e: &Expr) -> Option<&'static str> {
+/// Best-effort precise diagnostic code for a non-modelable `ensures`. Specific causes (string,
+/// float, unguarded `/`/`%`, OOB index, unbounded seq) win over the general
+/// `ANUBIS_CONTRACT_UNPROVABLE`. Phase-4 A1: `ANUBIS_DIVISOR_MAYBE_ZERO`. Phase-4 A2:
+/// `ANUBIS_INDEX_MAYBE_OOB` / `ANUBIS_SEQ_UNBOUNDED`.
+fn unmodelable_contract_code(e: &Expr, int_vars: &BTreeSet<String>) -> &'static str {
+    fn scan(e: &Expr, int_vars: &BTreeSet<String>) -> Option<&'static str> {
         match e {
             Expr::StrLiteral(_) => Some("ANUBIS_STRING_CONTRACT_UNMODELED"),
             Expr::Literal(s) => {
@@ -2777,12 +3189,58 @@ fn unmodelable_contract_code(e: &Expr) -> &'static str {
                     None
                 }
             }
-            Expr::Binary { lhs, rhs, .. } => scan(lhs).or_else(|| scan(rhs)),
-            Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => scan(expr),
+            Expr::Binary { op, lhs, rhs } => {
+                if (op == "/" || op == "%") && !divisor_is_proven_nonzero(rhs, int_vars) {
+                    return Some("ANUBIS_DIVISOR_MAYBE_ZERO");
+                }
+                scan(lhs, int_vars).or_else(|| scan(rhs, int_vars))
+            }
+            Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => scan(expr, int_vars),
+            // Phase-4 A2: index / sequence diagnostics (priority: OOB over unbounded when known).
+            Expr::Index { base, index } => match base.as_ref() {
+                Expr::Var(v) if is_seq_var(v, int_vars) => {
+                    // Bounded seq known but index not proven in-range.
+                    Some("ANUBIS_INDEX_MAYBE_OOB")
+                }
+                Expr::ArrayLiteral { elements }
+                    if elements.iter().all(|el| is_int_modelable(el, int_vars)) =>
+                {
+                    // Literal elements modelable but index not a proven constant in range.
+                    Some("ANUBIS_INDEX_MAYBE_OOB")
+                }
+                Expr::Var(_) | Expr::Call { .. } | Expr::Index { .. } => {
+                    Some("ANUBIS_SEQ_UNBOUNDED")
+                }
+                Expr::ArrayLiteral { elements } => elements
+                    .iter()
+                    .find_map(|el| scan(el, int_vars))
+                    .or(Some("ANUBIS_SEQ_UNBOUNDED")),
+                other => scan(other, int_vars)
+                    .or_else(|| scan(index, int_vars))
+                    .or(Some("ANUBIS_SEQ_UNBOUNDED")),
+            },
+            Expr::ArrayLiteral { elements } => elements
+                .iter()
+                .find_map(|el| scan(el, int_vars))
+                .or(Some("ANUBIS_SEQ_UNBOUNDED")),
+            Expr::Call { callee, args } if callee == "len" => {
+                // len of something that is not a bounded modeled sequence.
+                Some("ANUBIS_SEQ_UNBOUNDED")
+            }
+            Expr::Call { args, .. } => args.iter().find_map(|a| scan(a, int_vars)),
+            Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
+                scan(inner, int_vars)
+            }
             _ => None,
         }
     }
-    scan(e).unwrap_or("ANUBIS_CONTRACT_UNPROVABLE")
+    scan(e, int_vars).unwrap_or("ANUBIS_CONTRACT_UNPROVABLE")
+}
+
+/// True when `e` is a divisor the solver may use in `bvsdiv`/`bvsrem` without modeling a trap:
+/// non-zero integer literal, or a variable marked `nzdiv` (from `requires` that excludes 0).
+fn divisor_is_proven_nonzero(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
+    is_nonzero_int_literal(e) || matches!(e, Expr::Var(v) if int_vars.contains(&nzdiv_mark(v)))
 }
 
 /// Collect the variable names referenced by an expression (for deciding which loop-carried
@@ -3179,14 +3637,19 @@ fn drop_written_after_scope(
     for b in bodies {
         collect_assigned_roots(b, &mut written);
     }
-    let wm: BTreeSet<String> = written.iter().map(|v| smt_var(v)).collect();
+    let mut wm: BTreeSet<String> = BTreeSet::new();
+    for v in &written {
+        wm.insert(smt_var(v));
+        wm.insert(seq_arr_smt(v));
+        wm.insert(seq_len_smt(v));
+    }
     assumptions.retain(|a| {
         let mut vs = BTreeSet::new();
         collect_vars_from_smt(a, &mut vs);
         vs.is_disjoint(&wm)
     });
     for v in &written {
-        ctx.solver_int_vars.remove(v);
+        clear_binding_modelability(&mut ctx.solver_int_vars, v);
     }
 }
 
@@ -3199,9 +3662,14 @@ fn drop_written_after_scope(
 fn havoc_loop_written(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, body: &[Stmt]) {
     let mut written = BTreeSet::new();
     collect_assigned_roots(body, &mut written);
-    let mangled: BTreeSet<String> = written.iter().map(|v| smt_var(v)).collect();
+    let mut mangled: BTreeSet<String> = BTreeSet::new();
     for v in &written {
-        ctx.solver_int_vars.remove(v);
+        mangled.insert(smt_var(v));
+        mangled.insert(seq_arr_smt(v));
+        mangled.insert(seq_len_smt(v));
+    }
+    for v in &written {
+        clear_binding_modelability(&mut ctx.solver_int_vars, v);
     }
     assumptions.retain(|a| {
         let mut vs = BTreeSet::new();
@@ -5099,18 +5567,88 @@ fn expr_is_declassified(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> 
 fn is_sink(callee: &str) -> bool {
     // Phase-3 C4: I/O write/send paths are sinks (so an undeclassified read→send is
     // `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` via the existing machinery).
+    // Phase-5: `target_run` is a process-exec sink (payload is attacker-controlled input to a
+    // local binary — tracked the same way as write/send for dual-use discipline).
     matches!(
         callee,
-        "sink" | "send" | "network_send" | "write" | "write_file" | "memcpy" | "exec" | "sql"
+        "sink"
+            | "send"
+            | "network_send"
+            | "write"
+            | "write_file"
+            | "append_file"
+            | "memcpy"
+            | "exec"
+            | "sql"
+            | "target_run"
     )
 }
 
 /// Phase-3 C4: I/O reads (and stdin) are taint sources — their return value is untrusted input.
+/// Phase-5: `env`/`getenv` seed taint (environment is untrusted input).
 fn is_io_taint_source(callee: &str) -> bool {
     matches!(
         callee,
-        "read_file" | "open" | "input" | "read_line" | "recv" | "net_recv"
+        "read_file" | "open" | "input" | "read_line" | "recv" | "net_recv" | "env" | "getenv"
     )
+}
+
+/// Inherit a callee's declared capability into the caller's effect set and enforce Safe-mode gates.
+/// Maps raw `uses` tags to the same inferred tags builtins emit (`file_write`, `shell`, …).
+fn apply_inherited_capability(
+    raw: String,
+    mode: Mode,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    let canon = normalize_effect_name(&raw);
+    match canon.as_str() {
+        "fs.read" => {
+            effects.push("file_read".into());
+        }
+        "fs.write" => {
+            effects.push("file_write".into());
+            if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
+                    message: format!(
+                        "safe mode file_write (via callee `uses({raw})`) forbidden without `uses(fs.write)`"
+                    ),
+                    span: None,
+                });
+            }
+        }
+        "net.send" => {
+            effects.push("network".into());
+            if mode == Mode::Safe && !safe_cap_allowed(ctx, "net.send") {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
+                    message: format!(
+                        "safe mode network (via callee `uses({raw})`) forbidden without `uses(net.send)`"
+                    ),
+                    span: None,
+                });
+            }
+        }
+        "shell" => {
+            effects.push("shell".into());
+            if mode == Mode::Safe && !safe_cap_allowed(ctx, "shell") {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
+                    message: format!(
+                        "safe mode shell/exec (via callee `uses({raw})`) forbidden without `uses(shell)`"
+                    ),
+                    span: None,
+                });
+            }
+        }
+        "time.now" => effects.push("time".into()),
+        "rand.gen" => effects.push("rand".into()),
+        other => {
+            // Unknown/custom tags still surface as inferred so verified-lane uses checks can see them.
+            effects.push(other.to_string());
+        }
+    }
 }
 
 /// Normalize a declared `uses(...)` effect name (or an inferred effect tag) to a canonical
@@ -5119,11 +5657,11 @@ fn normalize_effect_name(raw: &str) -> String {
     let s = raw.trim().to_ascii_lowercase();
     match s.as_str() {
         "fs.read" | "file_read" | "read_file" | "open" => "fs.read".into(),
-        "fs.write" | "file_write" | "write_file" => "fs.write".into(),
+        "fs.write" | "file_write" | "write_file" | "append_file" => "fs.write".into(),
         "net.send" | "net.connect" | "network" | "send" | "connect" | "network_send" => {
             "net.send".into()
         }
-        "shell" | "exec" | "system" => "shell".into(),
+        "shell" | "exec" | "system" | "proc.exec" | "target_run" => "shell".into(),
         "time.now" | "time" => "time.now".into(),
         "rand.gen" | "rand" | "random" => "rand.gen".into(),
         other => other.to_string(),

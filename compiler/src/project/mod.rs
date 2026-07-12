@@ -37,6 +37,17 @@ pub struct PackageMeta {
     pub version: String,
     pub description: String,
     pub authors: Vec<String>,
+    /// Project-local trusted dependency signers (`[package.trust] signers = [...]`).
+    #[serde(default)]
+    pub trust: PackageTrust,
+}
+
+/// Trusted Ed25519 verifying keys declared in the project manifest.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PackageTrust {
+    #[serde(default)]
+    pub signers: Vec<String>,
 }
 
 /// A dependency spec: either a bare version string (`math = "1.2"`) or a detailed table
@@ -55,6 +66,9 @@ pub enum DepSpec {
         git: Option<String>,
         #[serde(default)]
         rev: Option<String>,
+        /// Optional registry base (`file:///…` or `https://…`) overriding the default local registry.
+        #[serde(default)]
+        registry: Option<String>,
     },
 }
 

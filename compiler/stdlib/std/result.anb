@@ -1,0 +1,43 @@
+// std.result — helpers over the built-in Result enum (Ok / Err).
+
+pub fn result_is_ok(r) {
+    return match r {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+}
+
+pub fn result_is_err(r) {
+    return match r {
+        Ok(_) => false,
+        Err(_) => true,
+    };
+}
+
+pub fn result_unwrap_or(r, default) {
+    return match r {
+        Ok(x) => x,
+        Err(_) => default,
+    };
+}
+
+pub fn result_map(r, f) {
+    return match r {
+        Ok(x) => Ok(f(x)),
+        Err(e) => Err(e),
+    };
+}
+
+pub fn result_map_err(r, f) {
+    return match r {
+        Ok(x) => Ok(x),
+        Err(e) => Err(f(e)),
+    };
+}
+
+pub fn result_and_then(r, f) {
+    return match r {
+        Ok(x) => f(x),
+        Err(e) => Err(e),
+    };
+}

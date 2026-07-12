@@ -1,0 +1,60 @@
+// std.iter — list-shaped “iterator” helpers over map/filter/reduce builtins.
+// Honest boundary: no lazy streams; every iter is a concrete list.
+
+pub fn iter_map(xs, f) {
+    return map(xs, f);
+}
+
+pub fn iter_filter(xs, f) {
+    return filter(xs, f);
+}
+
+// Builtin order: reduce(list, f, init)
+pub fn iter_reduce(xs, f, init) {
+    return reduce(xs, f, init);
+}
+
+pub fn iter_sum(xs) {
+    return reduce(xs, |a, b| a + b, 0);
+}
+
+pub fn iter_count(xs) {
+    return len(xs);
+}
+
+pub fn iter_any(xs, f) {
+    return any(xs, f);
+}
+
+pub fn iter_all(xs, f) {
+    return all(xs, f);
+}
+
+pub fn iter_find(xs, f) {
+    for x in xs {
+        if f(x) {
+            return Some(x);
+        }
+    }
+    return None;
+}
+
+pub fn iter_enumerate(xs) {
+    return enumerate(xs);
+}
+
+pub fn iter_zip(a, b) {
+    return zip(a, b);
+}
+
+pub fn iter_flatten(xs) {
+    return flatten(xs);
+}
+
+// Apply f for side effects; returns the list unchanged (f return value ignored).
+pub fn iter_for_each(xs, f) {
+    for x in xs {
+        let _ = f(x);
+    }
+    return xs;
+}

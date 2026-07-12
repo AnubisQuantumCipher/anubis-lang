@@ -93,11 +93,49 @@ pub fn build_evidence_bundle(
     lane: Option<&str>,
     security: Option<serde_json::Value>,
 ) -> Result<EvidenceBundle, String> {
+    // Phase-6: single-file path uses Merkle one-leaf identity (= sha256(source)).
+    build_evidence_bundle_tree(
+        &[( "source.anubis".to_string(), source.as_bytes().to_vec() )],
+        mode,
+        artifact,
+        logs,
+        out_base,
+        lane,
+        security,
+        None,
+    )
+}
+
+/// Multi-file / multi-package evidence: `source_hash` is the Merkle root over sorted leaves.
+/// Optional `dep_closure` is written and included in MANIFEST (top-level signature binds it).
+#[allow(clippy::too_many_arguments)] // cohesive evidence-bundle inputs; a struct would not clarify
+pub fn build_evidence_bundle_tree(
+    files: &[(String, Vec<u8>)],
+    mode: &str,
+    artifact: Option<&str>,
+    logs: Vec<String>,
+    out_base: &Path,
+    lane: Option<&str>,
+    security: Option<serde_json::Value>,
+    dep_closure: Option<&serde_json::Value>,
+) -> Result<EvidenceBundle, String> {
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let dir = out_base.join(format!("evidence-{}-{}", ts, mode));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let source_hash = sha256_bytes(source.as_bytes());
+    let source_hash = crate::package::merkle::merkle_root(files.to_vec());
+    // Primary source body for re-derive: first leaf named source.anubis, else concat.
+    let source = files
+        .iter()
+        .find(|(p, _)| p == "source.anubis" || p.ends_with("/source.anubis"))
+        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_else(|| {
+            files
+                .iter()
+                .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
     let build_log = logs.join("\n");
     let build_log_hash = sha256_bytes(build_log.as_bytes());
     let artifact_data = artifact
@@ -107,10 +145,37 @@ pub fn build_evidence_bundle(
     let artifact_hash = artifact_data.as_deref().map(sha256_bytes);
     let hybrid_sidecars = copy_hybrid_sidecars(artifact, &dir)?;
 
-    std::fs::write(dir.join("source.anubis"), source).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("source.anubis"), &source).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("build.log"), &build_log).map_err(|e| e.to_string())?;
     if let Some(data) = &artifact_data {
         std::fs::write(dir.join("artifact"), data).map_err(|e| e.to_string())?;
+    }
+    if let Some(closure) = dep_closure {
+        write_json(&dir.join("dep_closure.json"), closure)?;
+    }
+    // Phase-6 crown: seal function summaries from the sealed source text.
+    // Package publish overwrites with extract_from_package (correct name/version/merkle) before sign.
+    if let Ok(sum) =
+        crate::package::summary::extract_from_source_text("package", "0.0.0", &source)
+    {
+        let _ = crate::package::summary::write_to_evidence_dir(&dir, &sum);
+    }
+    // Optional multi-leaf listing for re-verify of Merkle source_hash.
+    if files.len() > 1 {
+        let leaves: Vec<serde_json::Value> = files
+            .iter()
+            .map(|(p, b)| {
+                serde_json::json!({
+                    "path": p,
+                    "sha256": sha256_bytes(b),
+                    "bytes": b.len(),
+                })
+            })
+            .collect();
+        write_json(
+            &dir.join("source-merkle-leaves.json"),
+            &serde_json::json!({ "source_merkle_root": source_hash, "leaves": leaves }),
+        )?;
     }
     std::fs::create_dir_all(dir.join("analysis")).map_err(|e| e.to_string())?;
 
@@ -120,7 +185,7 @@ pub fn build_evidence_bundle(
     let mut taint_json = serde_json::json!([]);
     let mut solver_json = serde_json::json!([]);
 
-    let parse_res = crate::frontend::parse_source(source);
+    let parse_res = crate::frontend::parse_source(&source);
     checks.push(match &parse_res {
         Ok(_) => Check {
             name: "parse".into(),
@@ -353,7 +418,7 @@ pub fn build_evidence_bundle(
     // the manifest hashing so it is covered by MANIFEST.sha256.
     write_json(
         &dir.join("pca.json"),
-        &derive_claim_block_bound(&dir, source, mode),
+        &derive_claim_block_bound(&dir, &source, mode),
     )?;
     write_manifest_hashes(&dir)?;
 
@@ -370,8 +435,19 @@ pub fn validate_bundle(dir: &Path) -> Result<bool, String> {
         serde_json::from_str(&manifest_text).map_err(|e| e.to_string())?;
 
     let manifest_entries_ok = validate_manifest_hashes(dir)?;
-    let source_ok =
-        sha256_file(&dir.join("source.anubis")).is_some_and(|hash| hash == manifest.source_hash);
+    // Single-file: source_hash == sha256(source.anubis). Multi-file: matches recorded merkle.
+    let source_ok = sha256_file(&dir.join("source.anubis"))
+        .is_some_and(|hash| hash == manifest.source_hash)
+        || dir.join("source-merkle-leaves.json").is_file()
+            && std::fs::read_to_string(dir.join("source-merkle-leaves.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| {
+                    v.get("source_merkle_root")
+                        .and_then(|r| r.as_str())
+                        .map(|r| r == manifest.source_hash)
+                })
+                .unwrap_or(false);
     let build_log_ok = manifest.build_log_hash.is_empty()
         || sha256_file(&dir.join("build.log")).is_some_and(|hash| hash == manifest.build_log_hash);
     let artifact_ok = match &manifest.artifact_hash {
@@ -753,8 +829,16 @@ fn build_sarif(checks: &[Check]) -> serde_json::Value {
                 "ANUBIS_DECLASSIFY_MISSING_REASON".to_string()
             } else if check.detail.contains("assert") && check.status == "FAIL" {
                 "ANUBIS_ASSERTION_COUNTEREXAMPLE".to_string()
-            } else if check.detail.contains("replay") || check.detail.contains("REPLAY_FAILED") {
-                "ANUBIS_SOLVER_MODEL_REPLAY_FAILED".to_string()
+            } else if check.detail.contains("ANUBIS_REPLAY_MISMATCH")
+                || check.detail.contains("replay")
+                || check.detail.contains("REPLAY_FAILED")
+            {
+                // Prefer the Phase-4 B1 code when present; keep legacy alias for older bundles.
+                if check.detail.contains("ANUBIS_REPLAY_MISMATCH") {
+                    "ANUBIS_REPLAY_MISMATCH".to_string()
+                } else {
+                    "ANUBIS_SOLVER_MODEL_REPLAY_FAILED".to_string()
+                }
             } else if check.detail.contains("unsupported") {
                 "ANUBIS_SOLVER_UNSUPPORTED_EXPRESSION".to_string()
             } else if check.detail.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE")
@@ -1063,6 +1147,11 @@ fn build_source_tree(dir: &Path, files: Vec<String>) -> Result<Vec<SourceTreeEnt
             })
         })
         .collect()
+}
+
+/// Recompute `MANIFEST.sha256` after adding files (e.g. package summaries before sign).
+pub fn refresh_manifest_hashes(dir: &Path) -> Result<(), String> {
+    write_manifest_hashes(dir)
 }
 
 fn write_manifest_hashes(dir: &Path) -> Result<(), String> {

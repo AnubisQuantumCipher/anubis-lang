@@ -1,0 +1,163 @@
+// std.crypto — RWC / Shannon-aligned composition over the crypto microarchitecture.
+//
+// Grounding (do not invent):
+//   David Wong, Real-World Cryptography:
+//     Ch1 Kerckhoffs (only the key is secret); Ch2 hash ≠ MAC / password hash;
+//     Ch3 HMAC + constant-time verify (never early-exit tag compare);
+//     Ch4 AEAD (ChaCha20-Poly1305) + unique nonces + AAD binding;
+//     Ch8 CSPRNG for secrets + password hashing (Argon2id / strong KDF);
+//     Ch16 boring crypto / 83% misuse.
+//   Zheng et al., Modern Cryptography Vol 1: authentication as integrity, fail closed.
+//   Zheng Vol 2: PQ (lattices) is future — not DIY here; document only.
+//
+// Microarchitecture:
+//   Native `anubis run` → cargo + audited crates (sha2, hmac, hkdf, chacha20poly1305,
+//   argon2, pbkdf2, getrandom, subtle). RWC Ch16: don't roll your own on the host.
+//   RISC0 guest → pure embedded fallback (zkVM dep surface).
+//
+// Rules for callers:
+//   - Authenticate with mac_verify / aead_open — never `hmac(...) == tag`.
+//   - Nonce for aead_encrypt must be 12 unique bytes per key (caller-owned).
+//   - Keys: 32 bytes for AEAD; use rand_bytes(32) or kdf_hkdf_sha256.
+//   - Passwords: password_hash / password_verify (Argon2id) — NEVER raw sha256(password).
+
+// ---- Hashing (integrity / commitments; NOT authentication alone) ----
+
+pub fn hash_sha256(data) {
+    return sha256(data);
+}
+
+pub fn hash_sha256_bytes(data) {
+    return sha256_bytes(data);
+}
+
+// Hex of a byte list (KATs, logging). Prefer secret_eq for secret compares.
+pub fn bytes_hex(data) {
+    return to_hex(data);
+}
+
+// Domain-separated hash (avoids ambiguous multi-part concat — RWC TupleHash spirit).
+pub fn commit(label, data) {
+    return domain_hash(label, data);
+}
+
+// ---- MAC (RWC Ch3) ----
+
+pub fn mac_hmac_sha256(key, msg) {
+    return hmac_sha256(key, msg);
+}
+
+pub fn mac_hmac_sha256_bytes(key, msg) {
+    return hmac_sha256_bytes(key, msg);
+}
+
+// Constant-time verify — the ONLY correct way to check a tag.
+pub fn mac_verify(key, msg, tag) {
+    return hmac_sha256_verify(key, msg, tag);
+}
+
+// ---- Constant-time equality for secrets ----
+
+pub fn secret_eq(a, b) {
+    return ct_eq(a, b);
+}
+
+// ---- Key derivation (RWC: HKDF, not ad-hoc hash(key||msg)) ----
+
+pub fn kdf_hkdf_sha256(ikm, salt, info, length) {
+    return hkdf_sha256(ikm, salt, info, length);
+}
+
+// ---- Password hashing (RWC Ch8 / Ch16 — low-entropy secrets) ----
+// Prefer Argon2id (memory-hard). PBKDF2-HMAC-SHA256 is available with high iteration
+// counts for vectors / constrained targets. Always unique per-user salt.
+
+// Low-level PBKDF2 (RFC 8018). For password *storage* prefer password_hash.
+pub fn kdf_pbkdf2_hmac_sha256(password, salt, iterations, length) {
+    return pbkdf2_hmac_sha256(password, salt, iterations, length);
+}
+
+// Low-level Argon2id (RFC 9106). m = KiB memory, t = passes, p = lanes.
+// OWASP-ish default for storage: m=19456 (19 MiB), t=2, p=1, length=32.
+pub fn kdf_argon2id(password, salt, m_kib, t, p, length) {
+    return argon2id_hash(password, salt, m_kib, t, p, length);
+}
+
+// Production password store: Argon2id + random 16-byte salt → encoding string.
+// Verify with password_verify — never compare with ==.
+pub fn password_hash(password) {
+    return password_hash_encode(password);
+}
+
+pub fn password_verify(password, encoding) {
+    return password_verify_encoding(password, encoding);
+}
+
+// Fallback PHC-like encoding using PBKDF2-HMAC-SHA256 @ 600_000 iterations (OWASP).
+pub fn password_hash_pbkdf2(password) {
+    return password_hash_pbkdf2_encode(password);
+}
+
+// Standard PHC `$argon2id$…` (argon2 crate PasswordHasher) — interoperable with other tools.
+// Builtin name differs from export so resolve cannot self-recurse.
+pub fn password_hash_phc(password) {
+    return password_hash_phc_raw(password);
+}
+
+// ---- Ed25519 signatures (RWC; audited ed25519-dalek on host) ----
+
+pub fn sign_keygen() {
+    return ed25519_keygen();
+}
+
+pub fn sign_pubkey(secret_key) {
+    return ed25519_public_key(secret_key);
+}
+
+pub fn sign(secret_key, msg) {
+    return ed25519_sign(secret_key, msg);
+}
+
+pub fn sign_verify(public_key, msg, signature) {
+    return ed25519_verify(public_key, msg, signature);
+}
+
+// "audited-crates" on host; "pure-guest" inside RISC0 guest lowering.
+pub fn backend() {
+    return crypto_backend();
+}
+
+// ---- CSPRNG (RWC Ch8) — export name does not shadow builtin `random_bytes` ----
+
+pub fn rand_bytes(n) {
+    return random_bytes(n);
+}
+
+// 32-byte AEAD key (caller still owns rotation / storage).
+pub fn aead_keygen() {
+    return random_bytes(32);
+}
+
+// 12-byte nonce — MUST be unique per key (RWC Ch4). Prefer random for moderate volume.
+pub fn aead_nonce() {
+    return random_bytes(12);
+}
+
+// ---- AEAD ChaCha20-Poly1305 (RWC Ch4 default boring choice for software) ----
+// seal: returns ciphertext||tag (bytes). open: fail-closed on tag mismatch.
+// aad: bind protocol metadata (version, seq, headers) so it is authenticated.
+
+pub fn aead_encrypt(key, nonce, aad, plaintext) {
+    return aead_seal(key, nonce, aad, plaintext);
+}
+
+pub fn aead_decrypt(key, nonce, aad, ciphertext) {
+    return aead_open(key, nonce, aad, ciphertext);
+}
+
+// Convenience: fresh random nonce, returns [nonce, ciphertext_and_tag]
+pub fn aead_encrypt_random_nonce(key, aad, plaintext) {
+    let n = random_bytes(12);
+    let c = aead_seal(key, n, aad, plaintext);
+    return [n, c];
+}

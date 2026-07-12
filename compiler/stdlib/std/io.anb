@@ -1,0 +1,32 @@
+// std.io — effect-tracked capability wrappers over I/O microarchitecture.
+// Phase-3: uses(...) is required for capability effects; reads are taint sources,
+// writes are sinks (via interprocedural summaries over read_file / write_file).
+
+pub fn read_text(path) uses(fs.read) {
+    return read_file(path);
+}
+
+pub fn write_text(path, data) uses(fs.write) {
+    write_file(path, data);
+    return true;
+}
+
+pub fn append_text(path, data) uses(fs.write) {
+    append_file(path, data);
+    return true;
+}
+
+// Environment read — treated as an I/O taint source at the checker (getenv/env).
+pub fn read_env(name) {
+    return env(name);
+}
+
+pub fn print_line(s) {
+    println(s);
+    return true;
+}
+
+pub fn print_err(s) {
+    eprintln(s);
+    return true;
+}

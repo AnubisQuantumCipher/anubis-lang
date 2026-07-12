@@ -1,0 +1,94 @@
+// std.str — composition over the string microarchitecture builtins.
+
+pub fn str_is_empty(s) {
+    return len(s) == 0;
+}
+
+pub fn str_len(s) {
+    return len(s);
+}
+
+pub fn str_upper(s) {
+    return upper(s);
+}
+
+pub fn str_lower(s) {
+    return lower(s);
+}
+
+pub fn str_trim(s) {
+    return trim(s);
+}
+
+pub fn str_contains(s, needle) {
+    return contains(s, needle);
+}
+
+pub fn str_starts_with(s, prefix) {
+    return starts_with(s, prefix);
+}
+
+pub fn str_ends_with(s, suffix) {
+    return ends_with(s, suffix);
+}
+
+pub fn str_join(parts, sep) {
+    return join(parts, sep);
+}
+
+pub fn str_lines(s) {
+    return split(s, "\n");
+}
+
+pub fn str_eq_ignore_case(a, b) {
+    return lower(a) == lower(b);
+}
+
+pub fn str_repeat(s, n) {
+    return repeat(s, n);
+}
+
+pub fn str_index_of(s, needle) {
+    return index_of(s, needle);
+}
+
+pub fn str_substr(s, start, count) {
+    return substr(s, start, count);
+}
+
+// Left-pad with spaces to at least width characters.
+pub fn str_pad_left(s, width) {
+    let n = len(s);
+    if n >= width { return s; }
+    let pad = width - n;
+    let mut out = "";
+    let mut i = 0;
+    while i < pad {
+        out = out + " ";
+        i = i + 1;
+    }
+    return out + s;
+}
+
+pub fn str_pad_right(s, width) {
+    let n = len(s);
+    if n >= width { return s; }
+    let pad = width - n;
+    let mut out = s;
+    let mut i = 0;
+    while i < pad {
+        out = out + " ";
+        i = i + 1;
+    }
+    return out;
+}
+
+// If s starts with prefix, return the remainder; else return s unchanged.
+pub fn str_strip_prefix(s, prefix) {
+    if starts_with(s, prefix) {
+        let plen = len(prefix);
+        let slen = len(s);
+        return substr(s, plen, slen - plen);
+    }
+    return s;
+}
