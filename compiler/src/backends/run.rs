@@ -538,28 +538,46 @@ fn lower_program_with_entry(
         functions_src.push_str(&emit_fn(def, &ctx)?);
         functions_src.push('\n');
     }
-    let poc_kit_runtime = if allow_research {
-        POC_KIT_RUNTIME_RS
-    } else {
-        ""
-    };
+    // Packing/cyclic helpers are always available (local data transforms). Process spawn
+    // (`target_run`) remains gated at the call site by `allow_research` (see `safe_run_expr`).
+    // Always inject the runtime so `std.pwn` pure helpers and unused pack wrappers in the same
+    // module lower without requiring `--allow-research` for the whole program.
+    let poc_kit_runtime = POC_KIT_RUNTIME_RS;
     let proof_input_runtime = if guest_proof_inputs {
         PROOF_INPUT_GUEST_RUNTIME_RS
     } else {
         // Native `anubis run`: commits are no-op (return value); asserts still fail-closed.
         NATIVE_PROOF_STUBS_RS
     };
+    // Native run: audited crates (RWC Ch16). RISC0 guest: pure DIY (no cargo deps on guest).
+    let crypto_runtime = if guest_proof_inputs {
+        format!(
+            "{pure}\n{pwd}",
+            pure = ANUBIS_PURE_CRYPTO_RS,
+            pwd = ANUBIS_PASSWORD_CRYPTO_PURE_RS
+        )
+    } else {
+        ANUBIS_AUDITED_CRYPTO_RS.to_string()
+    };
     Ok(format!(
-        "{header}{prelude}\n{core}\n{poc}\n{proof}\n{functions}\n{entry}",
+        "{header}{prelude}\n{core}\n{crypto}\n{poc}\n{proof}\n{functions}\n{entry}",
         header = "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\n",
         prelude = prelude,
         core = ANUBIS_CORE_RUNTIME_RS,
+        crypto = crypto_runtime,
         poc = poc_kit_runtime,
         proof = proof_input_runtime,
         functions = functions_src,
         entry = entry,
     ))
 }
+
+/// Pure SHA-256/HMAC/HKDF/AEAD for RISC0 guests (no external crates).
+const ANUBIS_PURE_CRYPTO_RS: &str = include_str!("pure_crypto_runtime.inc.rs");
+/// Pure password KDFs for guests (DIY Argon2id/PBKDF2 — zkVM has no argon2 crate lane).
+const ANUBIS_PASSWORD_CRYPTO_PURE_RS: &str = include_str!("password_crypto_runtime.inc.rs");
+/// Native `anubis run`: audited crates only (argon2, chacha20poly1305, hmac, sha2, hkdf, …).
+const ANUBIS_AUDITED_CRYPTO_RS: &str = include_str!("audited_crypto_runtime.inc.rs");
 
 /// The Anubis runtime value model + operator helpers, shared by native `run` and RISC0
 /// guest lowering. Emitted verbatim into every generated Rust program.
@@ -569,8 +587,13 @@ enum AnubisValue {
     Int(i64),
     Float(f64),
     Bool(bool),
-    Str(String),
-    List(Vec<AnubisValue>),
+    // The three heap-backed kinds share their payload through `Rc`, so cloning an AnubisValue
+    // (which the generated code does on every variable read and argument pass) is an O(1) refcount
+    // bump rather than a deep copy. Mutation goes through `Rc::make_mut` (copy-on-write): a uniquely
+    // held payload is edited in place, a shared one is cloned first. Observable semantics are
+    // identical to owning `String`/`Vec` directly; only the cost of clone changes.
+    Str(std::rc::Rc<String>),
+    List(std::rc::Rc<Vec<AnubisValue>>),
     /// Algebraic data: unit/tuple/struct variants.
     /// `field_names` non-empty only for struct-like variants (parallel to `fields`).
     Enum {
@@ -584,10 +607,25 @@ enum AnubisValue {
         ty: String,
         fields: Vec<(String, AnubisValue)>,
     },
-    /// Dictionary: string keys (via display_string) -> values.
-    Map(Vec<(String, AnubisValue)>),
+    /// Dictionary: string keys (via display_string) -> values, insertion-ordered.
+    Map(std::rc::Rc<Vec<(String, AnubisValue)>>),
     /// A first-class function value (lambda), callable with a positional argument vector.
     Closure(std::rc::Rc<dyn Fn(Vec<AnubisValue>) -> AnubisValue>),
+}
+
+/// Construct the Rc-backed heap kinds. Named with an `anubis_` prefix (never `anb_<ident>`, the
+/// shape reserved for lowered user functions) so they cannot collide with a user-defined function.
+#[inline]
+fn anubis_mk_str(s: String) -> AnubisValue { AnubisValue::Str(std::rc::Rc::new(s)) }
+#[inline]
+fn anubis_mk_list(v: Vec<AnubisValue>) -> AnubisValue { AnubisValue::List(std::rc::Rc::new(v)) }
+#[inline]
+fn anubis_mk_map(v: Vec<(String, AnubisValue)>) -> AnubisValue { AnubisValue::Map(std::rc::Rc::new(v)) }
+/// Move the contents out of an `Rc` without cloning when it is uniquely held; clone only when the
+/// payload is still shared (copy-on-write for the by-value consuming builtins).
+#[inline]
+fn anubis_rc_take<T: Clone>(rc: std::rc::Rc<T>) -> T {
+    std::rc::Rc::try_unwrap(rc).unwrap_or_else(|rc| (*rc).clone())
 }
 
 impl std::fmt::Debug for AnubisValue {
@@ -676,7 +714,7 @@ impl AnubisValue {
             AnubisValue::Int(v) => v.to_string(),
             AnubisValue::Float(v) => anubis_float_str(*v),
             AnubisValue::Bool(v) => v.to_string(),
-            AnubisValue::Str(v) => v.clone(),
+            AnubisValue::Str(v) => v.to_string(),
             AnubisValue::List(v) => {
                 let parts: Vec<String> = v.iter().map(|x| x.display_string()).collect();
                 format!("[{}]", parts.join(", "))
@@ -746,7 +784,7 @@ impl AnubisValue {
             AnubisValue::Str(s) => {
                 let chars: Vec<char> = s.chars().collect();
                 match anubis_norm_index(i.as_i64(), chars.len()) {
-                    Some(k) => AnubisValue::Str(chars[k].to_string()),
+                    Some(k) => anubis_mk_str(chars[k].to_string()),
                     None => panic!(
                         "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a string of length {}",
                         i.as_i64(), chars.len()
@@ -788,11 +826,12 @@ impl AnubisValue {
         match self {
             AnubisValue::List(v) => {
                 if let Some(k) = anubis_norm_index(i.as_i64(), v.len()) {
-                    v[k] = val;
+                    std::rc::Rc::make_mut(v)[k] = val;
                 }
             }
             AnubisValue::Map(m) => {
                 let key = i.display_string();
+                let m = std::rc::Rc::make_mut(m);
                 if let Some(slot) = m.iter_mut().find(|(k, _)| k == &key) {
                     slot.1 = val;
                 } else {
@@ -824,6 +863,7 @@ impl AnubisValue {
                 else { fields.push((name.to_string(), val)); }
             }
             AnubisValue::Map(m) => {
+                let m = std::rc::Rc::make_mut(m);
                 if let Some(slot) = m.iter_mut().find(|(k, _)| k == name) { slot.1 = val; }
                 else { m.push((name.to_string(), val)); }
             }
@@ -833,7 +873,7 @@ impl AnubisValue {
 
     fn push_val(&mut self, val: AnubisValue) {
         if let AnubisValue::List(v) = self {
-            v.push(val);
+            std::rc::Rc::make_mut(v).push(val);
         }
     }
 
@@ -851,10 +891,10 @@ impl AnubisValue {
     /// Keys of a map as a list of strings (for `for k in m`).
     fn map_keys(&self) -> AnubisValue {
         match self {
-            AnubisValue::Map(m) => AnubisValue::List(
-                m.iter().map(|(k, _)| AnubisValue::Str(k.clone())).collect()
+            AnubisValue::Map(m) => anubis_mk_list(
+                m.iter().map(|(k, _)| anubis_mk_str(k.clone())).collect()
             ),
-            _ => AnubisValue::List(vec![]),
+            _ => anubis_mk_list(vec![]),
         }
     }
 }
@@ -876,10 +916,10 @@ fn anubis_norm_index(idx: i64, len: usize) -> Option<usize> {
 
 fn anubis_add(lhs: AnubisValue, rhs: AnubisValue) -> AnubisValue {
     match (lhs, rhs) {
-        (AnubisValue::List(mut a), AnubisValue::List(b)) => { a.extend(b); AnubisValue::List(a) }
-        (AnubisValue::List(mut a), b) => { a.push(b); AnubisValue::List(a) }
-        (AnubisValue::Str(a), b) => AnubisValue::Str(format!("{}{}", a, b.display_string())),
-        (a, AnubisValue::Str(b)) => AnubisValue::Str(format!("{}{}", a.display_string(), b)),
+        (AnubisValue::List(a), AnubisValue::List(b)) => { let mut a = anubis_rc_take(a); a.extend(anubis_rc_take(b)); anubis_mk_list(a) }
+        (AnubisValue::List(a), b) => { let mut a = anubis_rc_take(a); a.push(b); anubis_mk_list(a) }
+        (AnubisValue::Str(a), b) => anubis_mk_str(format!("{}{}", a, b.display_string())),
+        (a, AnubisValue::Str(b)) => anubis_mk_str(format!("{}{}", a.display_string(), b)),
         (a, b) => {
             if a.is_float() || b.is_float() {
                 AnubisValue::Float(a.as_f64() + b.as_f64())
@@ -1069,6 +1109,7 @@ impl AnubisValue {
                     }
                 }
                 AnubisValue::Map(m) => {
+                    let m = std::rc::Rc::make_mut(m);
                     if let Some(slot) = m.iter_mut().find(|(k, _)| k == name) {
                         slot.1.set_at(rest, val);
                     } else if rest.is_empty() {
@@ -1080,11 +1121,12 @@ impl AnubisValue {
             Some((AnubisPathSeg::Index(i), rest)) => match self {
                 AnubisValue::List(v) => {
                     if let Some(k) = anubis_norm_index(i.as_i64(), v.len()) {
-                        v[k].set_at(rest, val);
+                        std::rc::Rc::make_mut(v)[k].set_at(rest, val);
                     }
                 }
                 AnubisValue::Map(m) => {
                     let key = i.display_string();
+                    let m = std::rc::Rc::make_mut(m);
                     if let Some(slot) = m.iter_mut().find(|(k, _)| k == &key) {
                         slot.1.set_at(rest, val);
                     } else if rest.is_empty() {
@@ -1096,7 +1138,7 @@ impl AnubisValue {
                     if let Some(k) = anubis_norm_index(i.as_i64(), chars.len()) {
                         if let Some(c) = val.display_string().chars().next() {
                             chars[k] = c;
-                            *s = chars.into_iter().collect();
+                            *std::rc::Rc::make_mut(s) = chars.into_iter().collect();
                         }
                     }
                 }
@@ -1108,11 +1150,11 @@ impl AnubisValue {
 
 // ---- Anubis standard library runtime (shared by native run + guest) ----
 
-fn anubis_str(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string()) }
+fn anubis_str(v: AnubisValue) -> AnubisValue { anubis_mk_str(v.display_string()) }
 fn anubis_int(v: AnubisValue) -> AnubisValue { AnubisValue::Int(v.as_i64()) }
 fn anubis_float(v: AnubisValue) -> AnubisValue { AnubisValue::Float(v.as_f64()) }
 fn anubis_bool_of(v: AnubisValue) -> AnubisValue { AnubisValue::Bool(v.as_bool()) }
-fn anubis_type_of(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.type_name().to_string()) }
+fn anubis_type_of(v: AnubisValue) -> AnubisValue { anubis_mk_str(v.type_name().to_string()) }
 
 fn anubis_abs(v: AnubisValue) -> AnubisValue {
     if v.is_float() { AnubisValue::Float(v.as_f64().abs()) } else { AnubisValue::Int(v.as_i64().wrapping_abs()) }
@@ -1122,7 +1164,7 @@ fn anubis_abs(v: AnubisValue) -> AnubisValue {
 fn anubis_min2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if anubis_value_cmp(&a, &b) != std::cmp::Ordering::Greater { a } else { b } }
 fn anubis_max2(a: AnubisValue, b: AnubisValue) -> AnubisValue { if anubis_value_cmp(&a, &b) != std::cmp::Ordering::Less { a } else { b } }
 fn anubis_seq(items: Vec<AnubisValue>) -> Vec<AnubisValue> {
-    if items.len() == 1 { if let AnubisValue::List(l) = &items[0] { return l.clone(); } }
+    if items.len() == 1 { if let AnubisValue::List(l) = &items[0] { return (**l).clone(); } }
     items
 }
 fn anubis_min(items: Vec<AnubisValue>) -> AnubisValue {
@@ -1152,26 +1194,26 @@ fn anubis_gcd(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     AnubisValue::Int(x)
 }
 
-fn anubis_upper(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string().to_uppercase()) }
-fn anubis_lower(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string().to_lowercase()) }
-fn anubis_trim(v: AnubisValue) -> AnubisValue { AnubisValue::Str(v.display_string().trim().to_string()) }
+fn anubis_upper(v: AnubisValue) -> AnubisValue { anubis_mk_str(v.display_string().to_uppercase()) }
+fn anubis_lower(v: AnubisValue) -> AnubisValue { anubis_mk_str(v.display_string().to_lowercase()) }
+fn anubis_trim(v: AnubisValue) -> AnubisValue { anubis_mk_str(v.display_string().trim().to_string()) }
 fn anubis_split(s: AnubisValue, sep: AnubisValue) -> AnubisValue {
     let hay = s.display_string();
     let sp = sep.display_string();
     let parts: Vec<AnubisValue> = if sp.is_empty() {
-        hay.chars().map(|c| AnubisValue::Str(c.to_string())).collect()
+        hay.chars().map(|c| anubis_mk_str(c.to_string())).collect()
     } else {
-        hay.split(sp.as_str()).map(|p| AnubisValue::Str(p.to_string())).collect()
+        hay.split(sp.as_str()).map(|p| anubis_mk_str(p.to_string())).collect()
     };
-    AnubisValue::List(parts)
+    anubis_mk_list(parts)
 }
 fn anubis_join(list: AnubisValue, sep: AnubisValue) -> AnubisValue {
     let sp = sep.display_string();
     match list {
-        AnubisValue::List(items) => AnubisValue::Str(
+        AnubisValue::List(items) => anubis_mk_str(
             items.iter().map(|x| x.display_string()).collect::<Vec<_>>().join(sp.as_str())
         ),
-        other => AnubisValue::Str(other.display_string()),
+        other => anubis_mk_str(other.display_string()),
     }
 }
 fn anubis_contains(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
@@ -1194,7 +1236,7 @@ fn anubis_ends_with(s: AnubisValue, p: AnubisValue) -> AnubisValue {
     AnubisValue::Bool(s.display_string().ends_with(p.display_string().as_str()))
 }
 fn anubis_replace(s: AnubisValue, from: AnubisValue, to: AnubisValue) -> AnubisValue {
-    AnubisValue::Str(s.display_string().replace(from.display_string().as_str(), to.display_string().as_str()))
+    anubis_mk_str(s.display_string().replace(from.display_string().as_str(), to.display_string().as_str()))
 }
 fn anubis_index_of(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
     match &hay {
@@ -1218,7 +1260,7 @@ fn anubis_ord(v: AnubisValue) -> AnubisValue {
     AnubisValue::Int(v.display_string().chars().next().map(|c| c as i64).unwrap_or(0))
 }
 fn anubis_chr(v: AnubisValue) -> AnubisValue {
-    AnubisValue::Str(char::from_u32(v.as_i64() as u32).map(|c| c.to_string()).unwrap_or_default())
+    anubis_mk_str(char::from_u32(v.as_i64() as u32).map(|c| c.to_string()).unwrap_or_default())
 }
 fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
     let count = n.as_i64().max(0) as usize;
@@ -1226,16 +1268,16 @@ fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
         AnubisValue::List(items) => {
             let mut out = Vec::new();
             for _ in 0..count { out.extend(items.iter().cloned()); }
-            AnubisValue::List(out)
+            anubis_mk_list(out)
         }
-        other => AnubisValue::Str(other.display_string().repeat(count)),
+        other => anubis_mk_str(other.display_string().repeat(count)),
     }
 }
 fn anubis_substr(s: AnubisValue, start: AnubisValue, len: AnubisValue) -> AnubisValue {
     let chars: Vec<char> = s.display_string().chars().collect();
     let st = start.as_i64().max(0) as usize;
     let ln = len.as_i64().max(0) as usize;
-    AnubisValue::Str(chars.into_iter().skip(st).take(ln).collect())
+    anubis_mk_str(chars.into_iter().skip(st).take(ln).collect())
 }
 fn anubis_slice(x: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
     let (ai, bi) = (a.as_i64(), b.as_i64());
@@ -1244,13 +1286,13 @@ fn anubis_slice(x: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
         AnubisValue::List(items) => {
             let n = items.len() as i64;
             let (lo, hi) = (bound(ai, n), bound(bi, n));
-            AnubisValue::List(if lo <= hi { items[lo..hi].to_vec() } else { vec![] })
+            anubis_mk_list(if lo <= hi { items[lo..hi].to_vec() } else { vec![] })
         }
         AnubisValue::Str(s) => {
             let chars: Vec<char> = s.chars().collect();
             let n = chars.len() as i64;
             let (lo, hi) = (bound(ai, n), bound(bi, n));
-            AnubisValue::Str(if lo <= hi { chars[lo..hi].iter().collect() } else { String::new() })
+            anubis_mk_str(if lo <= hi { chars[lo..hi].iter().collect() } else { String::new() })
         }
         other => other,
     }
@@ -1317,27 +1359,28 @@ fn anubis_range(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     let (mut i, hi) = (a.as_i64(), b.as_i64());
     let mut out = Vec::new();
     while i < hi { out.push(AnubisValue::Int(i)); i += 1; }
-    AnubisValue::List(out)
+    anubis_mk_list(out)
 }
 fn anubis_range_step(a: AnubisValue, b: AnubisValue, step: AnubisValue) -> AnubisValue {
     let (mut i, hi, st) = (a.as_i64(), b.as_i64(), step.as_i64());
     let mut out = Vec::new();
     if st > 0 { while i < hi { out.push(AnubisValue::Int(i)); i += st; } }
     else if st < 0 { while i > hi { out.push(AnubisValue::Int(i)); i += st; } }
-    AnubisValue::List(out)
+    anubis_mk_list(out)
 }
 fn anubis_reverse(x: AnubisValue) -> AnubisValue {
     match x {
-        AnubisValue::List(mut items) => { items.reverse(); AnubisValue::List(items) }
-        AnubisValue::Str(s) => AnubisValue::Str(s.chars().rev().collect()),
+        AnubisValue::List(items) => { let mut items = anubis_rc_take(items); items.reverse(); anubis_mk_list(items) }
+        AnubisValue::Str(s) => anubis_mk_str(s.chars().rev().collect()),
         other => other,
     }
 }
 fn anubis_sort(x: AnubisValue) -> AnubisValue {
     match x {
-        AnubisValue::List(mut items) => {
+        AnubisValue::List(items) => {
+            let mut items = anubis_rc_take(items);
             items.sort_by(anubis_value_cmp);
-            AnubisValue::List(items)
+            anubis_mk_list(items)
         }
         other => other,
     }
@@ -1356,7 +1399,7 @@ fn anubis_sum(x: AnubisValue) -> AnubisValue {
 }
 fn anubis_keys(m: AnubisValue) -> AnubisValue { m.map_keys() }
 fn anubis_values(m: AnubisValue) -> AnubisValue {
-    match m { AnubisValue::Map(e) => AnubisValue::List(e.into_iter().map(|(_, v)| v).collect()), _ => AnubisValue::List(vec![]) }
+    match m { AnubisValue::Map(e) => anubis_mk_list(anubis_rc_take(e).into_iter().map(|(_, v)| v).collect()), _ => anubis_mk_list(vec![]) }
 }
 fn anubis_has_key(m: AnubisValue, k: AnubisValue) -> AnubisValue {
     let key = k.display_string();
@@ -1364,7 +1407,7 @@ fn anubis_has_key(m: AnubisValue, k: AnubisValue) -> AnubisValue {
 }
 
 fn anubis_pop(v: &mut AnubisValue) -> AnubisValue {
-    if let AnubisValue::List(l) = v { l.pop().unwrap_or(AnubisValue::Int(0)) } else { AnubisValue::Int(0) }
+    if let AnubisValue::List(l) = v { std::rc::Rc::make_mut(l).pop().unwrap_or(AnubisValue::Int(0)) } else { AnubisValue::Int(0) }
 }
 fn anubis_insert(v: &mut AnubisValue, i: AnubisValue, val: AnubisValue) -> AnubisValue {
     if let AnubisValue::List(l) = v {
@@ -1372,18 +1415,18 @@ fn anubis_insert(v: &mut AnubisValue, i: AnubisValue, val: AnubisValue) -> Anubi
         let len = l.len() as i64;
         // Negative indices count from the end (consistent with element indexing).
         let idx = if raw < 0 { (raw + len).max(0) } else { raw.min(len) } as usize;
-        l.insert(idx, val);
+        std::rc::Rc::make_mut(l).insert(idx, val);
     }
     AnubisValue::Int(0)
 }
 fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
     match v {
         AnubisValue::List(l) => {
-            match anubis_norm_index(key.as_i64(), l.len()) { Some(k) => l.remove(k), None => AnubisValue::Int(0) }
+            match anubis_norm_index(key.as_i64(), l.len()) { Some(k) => std::rc::Rc::make_mut(l).remove(k), None => AnubisValue::Int(0) }
         }
         AnubisValue::Map(m) => {
             let k = key.display_string();
-            match m.iter().position(|(kk, _)| kk == &k) { Some(pos) => m.remove(pos).1, None => AnubisValue::Int(0) }
+            match m.iter().position(|(kk, _)| kk == &k) { Some(pos) => std::rc::Rc::make_mut(m).remove(pos).1, None => AnubisValue::Int(0) }
         }
         _ => AnubisValue::Int(0),
     }
@@ -1425,16 +1468,16 @@ fn anubis_input() -> AnubisValue {
     let mut line = String::new();
     let _ = std::io::stdin().lock().read_line(&mut line);
     while line.ends_with('\n') || line.ends_with('\r') { line.pop(); }
-    AnubisValue::Str(line)
+    anubis_mk_str(line)
 }
 fn anubis_args() -> AnubisValue {
-    AnubisValue::List(std::env::args().skip(1).map(AnubisValue::Str).collect())
+    anubis_mk_list(std::env::args().skip(1).map(anubis_mk_str).collect())
 }
 
 // ---- Governed capability I/O (Phase-3 C3) — additive builtins; AnubisValue path unchanged ----
 fn anubis_read_file(path: AnubisValue) -> AnubisValue {
     match std::fs::read_to_string(path.display_string()) {
-        Ok(s) => AnubisValue::Str(s),
+        Ok(s) => anubis_mk_str(s),
         Err(e) => panic!("ANUBIS_IO_ERROR: read_file({}): {}", path.display_string(), e),
     }
 }
@@ -1448,7 +1491,7 @@ fn anubis_open(path: AnubisValue) -> AnubisValue {
     // `open` is a path-existence / openability probe that returns the path string on success
     // (contents are read via read_file). Fail-closed on missing/unreadable paths.
     match std::fs::File::open(path.display_string()) {
-        Ok(_) => AnubisValue::Str(path.display_string()),
+        Ok(_) => anubis_mk_str(path.display_string()),
         Err(e) => panic!("ANUBIS_IO_ERROR: open({}): {}", path.display_string(), e),
     }
 }
@@ -1493,7 +1536,7 @@ fn anubis_net_connect(host: AnubisValue, port: AnubisValue) -> AnubisValue {
     use std::net::TcpStream;
     let addr = format!("{}:{}", host.display_string(), port.as_i64());
     match TcpStream::connect(&addr) {
-        Ok(_) => AnubisValue::Str(addr),
+        Ok(_) => anubis_mk_str(addr),
         Err(e) => panic!("ANUBIS_IO_ERROR: connect({}): {}", addr, e),
     }
 }
@@ -1501,10 +1544,10 @@ fn anubis_net_connect(host: AnubisValue, port: AnubisValue) -> AnubisValue {
 // ---- Higher-order functions over closures ----
 
 fn anubis_map(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    AnubisValue::List(anubis_iter(list).into_iter().map(|x| f.call_closure(vec![x])).collect())
+    anubis_mk_list(anubis_iter(list).into_iter().map(|x| f.call_closure(vec![x])).collect())
 }
 fn anubis_filter(list: AnubisValue, f: AnubisValue) -> AnubisValue {
-    AnubisValue::List(anubis_iter(list).into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).collect())
+    anubis_mk_list(anubis_iter(list).into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).collect())
 }
 fn anubis_reduce(list: AnubisValue, f: AnubisValue, init: AnubisValue) -> AnubisValue {
     let mut acc = init;
@@ -1530,20 +1573,21 @@ fn anubis_count_by(list: AnubisValue, f: AnubisValue) -> AnubisValue {
 }
 fn anubis_sort_by(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     match list {
-        AnubisValue::List(mut items) => {
+        AnubisValue::List(items) => {
+            let mut items = anubis_rc_take(items);
             items.sort_by(|a, b| {
                 let ka = f.call_closure(vec![a.clone()]);
                 let kb = f.call_closure(vec![b.clone()]);
                 anubis_value_cmp(&ka, &kb)
             });
-            AnubisValue::List(items)
+            anubis_mk_list(items)
         }
         other => other,
     }
 }
 fn anubis_apply(f: AnubisValue, args: AnubisValue) -> AnubisValue {
     match args {
-        AnubisValue::List(items) => f.call_closure(items),
+        AnubisValue::List(items) => f.call_closure(anubis_rc_take(items)),
         other => f.call_closure(vec![other]),
     }
 }
@@ -1559,15 +1603,15 @@ fn anubis_map_lit(pairs: Vec<(String, AnubisValue)>) -> AnubisValue {
             out.push((k, v));
         }
     }
-    AnubisValue::Map(out)
+    anubis_mk_map(out)
 }
 
 /// Materialize a value's iteration elements: list items, string characters, or map keys.
 fn anubis_iter(v: AnubisValue) -> Vec<AnubisValue> {
     match v {
-        AnubisValue::List(items) => items,
-        AnubisValue::Str(s) => s.chars().map(|c| AnubisValue::Str(c.to_string())).collect(),
-        AnubisValue::Map(m) => m.into_iter().map(|(k, _)| AnubisValue::Str(k)).collect(),
+        AnubisValue::List(items) => anubis_rc_take(items),
+        AnubisValue::Str(s) => s.chars().map(|c| anubis_mk_str(c.to_string())).collect(),
+        AnubisValue::Map(m) => anubis_rc_take(m).into_iter().map(|(k, _)| anubis_mk_str(k)).collect(),
         other => vec![other],
     }
 }
@@ -1608,20 +1652,20 @@ fn anubis_factorial(n: AnubisValue) -> AnubisValue {
 
 // ---- strings ----
 fn anubis_chars(s: AnubisValue) -> AnubisValue {
-    AnubisValue::List(s.display_string().chars().map(|c| AnubisValue::Str(c.to_string())).collect())
+    anubis_mk_list(s.display_string().chars().map(|c| anubis_mk_str(c.to_string())).collect())
 }
 fn anubis_words(s: AnubisValue) -> AnubisValue {
-    AnubisValue::List(s.display_string().split_whitespace().map(|w| AnubisValue::Str(w.to_string())).collect())
+    anubis_mk_list(s.display_string().split_whitespace().map(|w| anubis_mk_str(w.to_string())).collect())
 }
 fn anubis_lines(s: AnubisValue) -> AnubisValue {
-    AnubisValue::List(s.display_string().lines().map(|l| AnubisValue::Str(l.to_string())).collect())
+    anubis_mk_list(s.display_string().lines().map(|l| anubis_mk_str(l.to_string())).collect())
 }
 fn anubis_capitalize(s: AnubisValue) -> AnubisValue {
     let s = s.display_string();
     let mut ch = s.chars();
     match ch.next() {
-        Some(f) => AnubisValue::Str(f.to_uppercase().collect::<String>() + &ch.as_str().to_lowercase()),
-        None => AnubisValue::Str(String::new()),
+        Some(f) => anubis_mk_str(f.to_uppercase().collect::<String>() + &ch.as_str().to_lowercase()),
+        None => anubis_mk_str(String::new()),
     }
 }
 fn anubis_pad(s: AnubisValue, width: AnubisValue, pad: AnubisValue, at_start: bool) -> AnubisValue {
@@ -1629,30 +1673,30 @@ fn anubis_pad(s: AnubisValue, width: AnubisValue, pad: AnubisValue, at_start: bo
     let w = width.as_i64().max(0) as usize;
     let p = { let ps = pad.display_string(); if ps.is_empty() { " ".to_string() } else { ps } };
     let have = s.chars().count();
-    if have >= w { return AnubisValue::Str(s); }
+    if have >= w { return anubis_mk_str(s); }
     let mut fill = String::new();
     while fill.chars().count() < w - have { fill.push_str(&p); }
     let fill: String = fill.chars().take(w - have).collect();
-    AnubisValue::Str(if at_start { format!("{}{}", fill, s) } else { format!("{}{}", s, fill) })
+    anubis_mk_str(if at_start { format!("{}{}", fill, s) } else { format!("{}{}", s, fill) })
 }
 
 // ---- lists ----
 fn anubis_zip(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     let bv = anubis_iter(b);
-    AnubisValue::List(anubis_iter(a).into_iter().zip(bv).map(|(x, y)| AnubisValue::List(vec![x, y])).collect())
+    anubis_mk_list(anubis_iter(a).into_iter().zip(bv).map(|(x, y)| anubis_mk_list(vec![x, y])).collect())
 }
 fn anubis_enumerate(a: AnubisValue) -> AnubisValue {
-    AnubisValue::List(anubis_iter(a).into_iter().enumerate().map(|(i, x)| AnubisValue::List(vec![AnubisValue::Int(i as i64), x])).collect())
+    anubis_mk_list(anubis_iter(a).into_iter().enumerate().map(|(i, x)| anubis_mk_list(vec![AnubisValue::Int(i as i64), x])).collect())
 }
 fn anubis_flatten(a: AnubisValue) -> AnubisValue {
     let mut out = Vec::new();
     for x in anubis_iter(a) { for y in anubis_iter(x) { out.push(y); } }
-    AnubisValue::List(out)
+    anubis_mk_list(out)
 }
 fn anubis_flat_map(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     let mut out = Vec::new();
     for x in anubis_iter(a) { for y in anubis_iter(f.call_closure(vec![x])) { out.push(y); } }
-    AnubisValue::List(out)
+    anubis_mk_list(out)
 }
 fn anubis_unique(a: AnubisValue) -> AnubisValue {
     let mut out: Vec<AnubisValue> = Vec::new();
@@ -1661,38 +1705,38 @@ fn anubis_unique(a: AnubisValue) -> AnubisValue {
         // are distinct, while `1` and `1.0` are the same.
         if !out.iter().any(|y| anubis_value_eq(y, &x)) { out.push(x); }
     }
-    AnubisValue::List(out)
+    anubis_mk_list(out)
 }
 fn anubis_take(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n = n.as_i64().max(0) as usize;
-    AnubisValue::List(anubis_iter(a).into_iter().take(n).collect())
+    anubis_mk_list(anubis_iter(a).into_iter().take(n).collect())
 }
 fn anubis_drop(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n = n.as_i64().max(0) as usize;
-    AnubisValue::List(anubis_iter(a).into_iter().skip(n).collect())
+    anubis_mk_list(anubis_iter(a).into_iter().skip(n).collect())
 }
 fn anubis_take_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     let mut out = Vec::new();
     for x in anubis_iter(a) {
         if f.call_closure(vec![x.clone()]).as_bool() { out.push(x); } else { break; }
     }
-    AnubisValue::List(out)
+    anubis_mk_list(out)
 }
 fn anubis_drop_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     let items = anubis_iter(a);
     let mut i = 0;
     while i < items.len() && f.call_closure(vec![items[i].clone()]).as_bool() { i += 1; }
-    AnubisValue::List(items[i..].to_vec())
+    anubis_mk_list(items[i..].to_vec())
 }
 fn anubis_chunk(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n = n.as_i64().max(1) as usize;
-    AnubisValue::List(anubis_iter(a).chunks(n).map(|c| AnubisValue::List(c.to_vec())).collect())
+    anubis_mk_list(anubis_iter(a).chunks(n).map(|c| anubis_mk_list(c.to_vec())).collect())
 }
 fn anubis_window(a: AnubisValue, n: AnubisValue) -> AnubisValue {
     let n = n.as_i64().max(1) as usize;
     let items = anubis_iter(a);
-    if items.len() < n { return AnubisValue::List(vec![]); }
-    AnubisValue::List(items.windows(n).map(|w| AnubisValue::List(w.to_vec())).collect())
+    if items.len() < n { return anubis_mk_list(vec![]); }
+    anubis_mk_list(items.windows(n).map(|w| anubis_mk_list(w.to_vec())).collect())
 }
 fn anubis_position(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     for (i, x) in anubis_iter(a).into_iter().enumerate() {
@@ -1726,7 +1770,7 @@ fn anubis_is_empty(v: AnubisValue) -> AnubisValue {
 fn anubis_concat(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     let mut out = anubis_iter(a);
     out.extend(anubis_iter(b));
-    AnubisValue::List(out)
+    anubis_mk_list(out)
 }
 fn anubis_min_by(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_iter(a).into_iter()
@@ -1744,14 +1788,14 @@ fn anubis_partition(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     for x in anubis_iter(a) {
         if f.call_closure(vec![x.clone()]).as_bool() { yes.push(x); } else { no.push(x); }
     }
-    AnubisValue::List(vec![AnubisValue::List(yes), AnubisValue::List(no)])
+    anubis_mk_list(vec![anubis_mk_list(yes), anubis_mk_list(no)])
 }
 
 // ---- maps ----
 fn anubis_entries(m: AnubisValue) -> AnubisValue {
     match m {
-        AnubisValue::Map(m) => AnubisValue::List(m.into_iter().map(|(k, v)| AnubisValue::List(vec![AnubisValue::Str(k), v])).collect()),
-        _ => AnubisValue::List(vec![]),
+        AnubisValue::Map(m) => anubis_mk_list(anubis_rc_take(m).into_iter().map(|(k, v)| anubis_mk_list(vec![anubis_mk_str(k), v])).collect()),
+        _ => anubis_mk_list(vec![]),
     }
 }
 // The fail-SOFT counterpart to fail-closed `coll[key]`: returns the element if the key is present
@@ -1769,7 +1813,7 @@ fn anubis_get(m: AnubisValue, k: AnubisValue, default: AnubisValue) -> AnubisVal
         AnubisValue::Str(s) => {
             let chars: Vec<char> = s.chars().collect();
             match anubis_norm_index(k.as_i64(), chars.len()) {
-                Some(idx) => AnubisValue::Str(chars[idx].to_string()),
+                Some(idx) => anubis_mk_str(chars[idx].to_string()),
                 None => default,
             }
         }
@@ -1777,17 +1821,17 @@ fn anubis_get(m: AnubisValue, k: AnubisValue, default: AnubisValue) -> AnubisVal
     }
 }
 fn anubis_merge(a: AnubisValue, b: AnubisValue) -> AnubisValue {
-    let mut out = match a { AnubisValue::Map(m) => m, _ => vec![] };
+    let mut out = match a { AnubisValue::Map(m) => anubis_rc_take(m), _ => vec![] };
     if let AnubisValue::Map(bm) = b {
-        for (k, v) in bm {
+        for (k, v) in anubis_rc_take(bm) {
             if let Some(slot) = out.iter_mut().find(|(kk, _)| kk == &k) { slot.1 = v; } else { out.push((k, v)); }
         }
     }
-    AnubisValue::Map(out)
+    anubis_mk_map(out)
 }
 fn anubis_map_values(m: AnubisValue, f: AnubisValue) -> AnubisValue {
     match m {
-        AnubisValue::Map(mm) => AnubisValue::Map(mm.into_iter().map(|(k, v)| (k, f.call_closure(vec![v]))).collect()),
+        AnubisValue::Map(mm) => anubis_mk_map(anubis_rc_take(mm).into_iter().map(|(k, v)| (k, f.call_closure(vec![v]))).collect()),
         other => other,
     }
 }
@@ -1802,7 +1846,29 @@ fn anubis_compose(f: AnubisValue, g: AnubisValue) -> AnubisValue {
 }
 fn anubis_times(n: AnubisValue, f: AnubisValue) -> AnubisValue {
     let n = n.as_i64().max(0);
-    AnubisValue::List((0..n).map(|i| f.call_closure(vec![AnubisValue::Int(i)])).collect())
+    anubis_mk_list((0..n).map(|i| f.call_closure(vec![AnubisValue::Int(i)])).collect())
+}
+
+// CRYPTO_RUNTIME_INJECTED_BELOW — pure (guest) or audited crates (native run)
+
+fn anubis_append_file(path: AnubisValue, contents: AnubisValue) -> AnubisValue {
+    use std::io::Write;
+    let p = path.display_string();
+    let mut f = match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        Ok(f) => f,
+        Err(e) => panic!("ANUBIS_IO_ERROR: append_file({}): {}", p, e),
+    };
+    if let Err(e) = write!(f, "{}", contents.display_string()) {
+        panic!("ANUBIS_IO_ERROR: append_file({}): {}", p, e);
+    }
+    AnubisValue::Int(0)
+}
+
+fn anubis_env(name: AnubisValue) -> AnubisValue {
+    match std::env::var(name.display_string()) {
+        Ok(v) => anubis_mk_str(v),
+        Err(_) => anubis_mk_str(String::new()),
+    }
 }
 
 "#;
@@ -1912,7 +1978,7 @@ fn anubis_commit_journal(result: AnubisValue) {
     }
     match result {
         AnubisValue::List(items) => {
-            for item in items {
+            for item in anubis_rc_take(items) {
                 let w: u32 = match item {
                     AnubisValue::List(inner) => inner.len() as u32,
                     other => other.as_i64() as u32,
@@ -1956,24 +2022,24 @@ fn anubis_to_bytes(v: &AnubisValue) -> Vec<u8> {
 }
 
 fn anubis_p8(v: AnubisValue) -> AnubisValue {
-    AnubisValue::List(vec![AnubisValue::Int((v.as_i64() as u8) as i64)])
+    anubis_mk_list(vec![AnubisValue::Int((v.as_i64() as u8) as i64)])
 }
 fn anubis_p16(v: AnubisValue) -> AnubisValue {
     let n = v.as_i64() as u16;
-    AnubisValue::List(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
+    anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_p32(v: AnubisValue) -> AnubisValue {
     let n = v.as_i64() as u32;
-    AnubisValue::List(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
+    anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_p64(v: AnubisValue) -> AnubisValue {
     let n = v.as_i64() as u64;
-    AnubisValue::List(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
+    anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_cyclic(v: AnubisValue) -> AnubisValue {
     let n = v.as_i64().max(0) as usize;
     let alphabet = b"abcdefghijklmnopqrstuvwxyz";
-    AnubisValue::List((0..n).map(|i| AnubisValue::Int(alphabet[i % alphabet.len()] as i64)).collect())
+    anubis_mk_list((0..n).map(|i| AnubisValue::Int(alphabet[i % alphabet.len()] as i64)).collect())
 }
 
 /// A+ target_run result: named struct fields (and list-index compatible).
@@ -2685,10 +2751,58 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "panic" => fixed("anubis_panic", callee, args, 1),
         "input" | "read_line" => fixed("anubis_input", callee, args, 0),
         "args" => fixed("anubis_args", callee, args, 0),
+        // Phase-8: process exit for fail-closed CLI tools (self-host driver)
+        "exit" => {
+            if args.len() == 1 {
+                Ok(format!(
+                    "{{ std::process::exit(({}).as_i64() as i32); AnubisValue::Int(0) }}",
+                    args[0]
+                ))
+            } else if args.is_empty() {
+                // Probe from is_builtin_name(&[], ...) — treat as known builtin.
+                Ok("/* exit */ AnubisValue::Int(0)".into())
+            } else {
+                Err(unsupported_run("`exit` expects 1 argument"))
+            }
+        }
         // Phase-3 C3: governed capability I/O (additive; programs without these names emit unchanged)
         "read_file" => fixed("anubis_read_file", callee, args, 1),
         "write_file" | "write" => fixed("anubis_write_file", callee, args, 2),
+        "append_file" => fixed("anubis_append_file", callee, args, 2),
         "open" => fixed("anubis_open", callee, args, 1),
+        // Cryptography (SHA-256 / HMAC-SHA256) — pure std in emitted runtime
+        // Cryptography — RWC-aligned surface (pure embedded runtime; no cargo deps in `anubis run`)
+        "sha256" | "sha256_hex" => fixed("anubis_sha256", callee, args, 1),
+        "sha256_bytes" => fixed("anubis_sha256_bytes_val", callee, args, 1),
+        "bytes_hex" | "to_hex" => fixed("anubis_bytes_hex", callee, args, 1),
+        "hmac_sha256" | "hmac_sha256_hex" => fixed("anubis_hmac_sha256", callee, args, 2),
+        "hmac_sha256_bytes" => fixed("anubis_hmac_sha256_bytes", callee, args, 2),
+        "hmac_sha256_verify" => fixed("anubis_hmac_sha256_verify", callee, args, 3),
+        "ct_eq" | "constant_time_eq" => fixed("anubis_ct_eq", callee, args, 2),
+        "hkdf_sha256" => fixed("anubis_hkdf_sha256", callee, args, 4),
+        "domain_hash" => fixed("anubis_domain_hash", callee, args, 2),
+        "random_bytes" => fixed("anubis_random_bytes", callee, args, 1),
+        "aead_seal" | "chacha20_poly1305_seal" => fixed("anubis_aead_seal", callee, args, 4),
+        "aead_open" | "chacha20_poly1305_open" => fixed("anubis_aead_open", callee, args, 4),
+        // Password hashing (RWC: Argon2id preferred; PBKDF2-HMAC-SHA256 acceptable with high iters)
+        "pbkdf2_hmac_sha256" => fixed("anubis_pbkdf2_hmac_sha256", callee, args, 4),
+        "argon2id_hash" => fixed("anubis_argon2id_hash", callee, args, 6),
+        "password_hash_encode" | "password_hash" => {
+            fixed("anubis_password_hash_encode", callee, args, 1)
+        }
+        "password_verify_encoding" | "password_verify" => {
+            fixed("anubis_password_verify_encoding", callee, args, 2)
+        }
+        "password_hash_pbkdf2_encode" => fixed("anubis_password_hash_pbkdf2_encode", callee, args, 1),
+        "password_hash_phc" | "password_hash_phc_raw" => {
+            fixed("anubis_password_hash_phc", callee, args, 1)
+        }
+        "ed25519_keygen" => fixed("anubis_ed25519_keygen", callee, args, 0),
+        "ed25519_public_key" => fixed("anubis_ed25519_public_key", callee, args, 1),
+        "ed25519_sign" => fixed("anubis_ed25519_sign", callee, args, 2),
+        "ed25519_verify" => fixed("anubis_ed25519_verify", callee, args, 3),
+        "crypto_backend" => fixed("anubis_crypto_backend", callee, args, 0),
+        "env" | "getenv" => fixed("anubis_env", callee, args, 1),
         "send" | "network_send" if args.len() == 3 => Ok(format!(
             "anubis_net_send({}, {}, {})",
             args[0], args[1], args[2]
@@ -2769,7 +2883,7 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
 fn fixed_pad(callee: &str, args: &[String], at_start: bool) -> Result<String> {
     match args.len() {
         2 => Ok(format!(
-            "anubis_pad({}, {}, AnubisValue::Str(\" \".to_string()), {})",
+            "anubis_pad({}, {}, anubis_mk_str(\" \".to_string()), {})",
             args[0], args[1], at_start
         )),
         3 => Ok(format!(
@@ -2868,7 +2982,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
     match expr {
         Expr::Literal(value) => Ok(literal_to_anubis_value(value)),
         Expr::StrLiteral(s) => Ok(format!(
-            "AnubisValue::Str({}.to_string())",
+            "anubis_mk_str({}.to_string())",
             rust_string_lit(s)?
         )),
         Expr::Var(name) => var_as_value(name, ctx),
@@ -3070,11 +3184,9 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 };
             }
             if is_poc_kit_builtin(callee) {
-                if !ctx.allow_research {
-                    return Err(unsupported_run(format!(
-                        "PoC kit builtin `{callee}` requires `anubis run --allow-research`"
-                    )));
-                }
+                // Packing/cyclic/flat always lower. `target_run` without `--allow-research`
+                // lowers to a runtime panic so `std.pwn` modules that *define* run_local still
+                // compile when only pure helpers are called; invoking run_local still fails closed.
                 let mut lowered = Vec::new();
                 for arg in args {
                     lowered.push(safe_run_expr(arg, ctx)?);
@@ -3086,13 +3198,24 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     "p64" if lowered.len() == 1 => Ok(format!("anubis_p64({})", lowered[0])),
                     "cyclic" if lowered.len() == 1 => Ok(format!("anubis_cyclic({})", lowered[0])),
                     "flat" if lowered.len() == 1 => Ok(format!(
-                        "AnubisValue::List(anubis_to_bytes(&{}).into_iter().map(|b| AnubisValue::Int(b as i64)).collect())",
+                        "anubis_mk_list(anubis_to_bytes(&{}).into_iter().map(|b| AnubisValue::Int(b as i64)).collect())",
                         lowered[0]
                     )),
-                    "target_run" if lowered.len() == 2 => Ok(format!(
-                        "anubis_target_run({}, {})",
-                        lowered[0], lowered[1]
-                    )),
+                    "target_run" if lowered.len() == 2 => {
+                        if ctx.allow_research {
+                            Ok(format!(
+                                "anubis_target_run({}, {})",
+                                lowered[0], lowered[1]
+                            ))
+                        } else {
+                            // Must type as AnubisValue: std.pwn wrappers bind `let r = target_run(...)`
+                            // even when only pure helpers run. panic! alone is untyped.
+                            Ok(format!(
+                                "{{ let _p = {}; let _q = {}; panic!(\"ANUBIS_POC_REQUIRES_ALLOW_RESEARCH: target_run requires `anubis run --allow-research`\"); #[allow(unreachable_code)] AnubisValue::Int(0) }}",
+                                lowered[0], lowered[1]
+                            ))
+                        }
+                    }
                     _ => Err(unsupported_run(format!(
                         "PoC kit builtin `{callee}` arity mismatch"
                     ))),
@@ -3106,7 +3229,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     if callee == "taint_source" {
                         let a = args.first().map(|e| safe_run_expr(e, ctx)).transpose()?;
                         return Ok(a.unwrap_or_else(|| {
-                            "AnubisValue::Str(\"tainted\".to_string())".into()
+                            "anubis_mk_str(\"tainted\".to_string())".into()
                         }));
                     }
                     if let Some(first) = args.first() {
@@ -3201,7 +3324,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             for el in elements {
                 lowered.push(safe_run_expr(el, ctx)?);
             }
-            Ok(format!("AnubisValue::List(vec![{}])", lowered.join(", ")))
+            Ok(format!("anubis_mk_list(vec![{}])", lowered.join(", ")))
         }
         Expr::EnumConstruct {
             enum_name,
@@ -3440,7 +3563,7 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
             ))
         }
         Expr::TaintSource { label } if ctx.allow_research => Ok(format!(
-            "AnubisValue::Str({}.to_string())",
+            "anubis_mk_str({}.to_string())",
             rust_string_lit(label)?
         )),
         Expr::Declassify { inner, .. } if ctx.allow_research => safe_run_expr(inner, ctx),
@@ -3738,7 +3861,7 @@ fn literal_to_anubis_value(value: &str) -> String {
         format!("AnubisValue::Float({}f64)", f)
     } else {
         format!(
-            "AnubisValue::Str({}.to_string())",
+            "anubis_mk_str({}.to_string())",
             rust_string_lit(value).expect("string literal serialization cannot fail")
         )
     }
@@ -3943,8 +4066,8 @@ pub fn run_child_capped(
     })
 }
 
-/// Transpile an Anubis source to Rust, compile it with `rustc`, and execute the binary.
-/// Returns the raw process `Output`. Fails closed if lowering or `rustc` fails.
+/// Transpile an Anubis source to Rust, compile it with cargo (audited crypto deps), and execute.
+/// Returns the raw process `Output`. Fails closed if lowering or build fails.
 pub fn compile_and_run_source(
     source: &str,
     allow_research: bool,
@@ -3954,8 +4077,98 @@ pub fn compile_and_run_source(
     compile_and_run_items(&ast.items, allow_research, args)
 }
 
+/// Bump when crypto dependency set or audited runtime changes (invalidates run cache).
+pub const ANUBIS_RUN_CRYPTO_CACHE_TAG: &str = "audited-crypto-v3";
+
+/// Shared cargo target dir so audited deps download once per machine.
+pub fn anubis_run_shared_target_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("anubis-run-cargo-target")
+}
+
+fn anubis_run_cargo_toml(package_name: &str) -> String {
+    // Unique package name per build so parallel `cargo build`s never clobber the same binary
+    // under a shared CARGO_TARGET_DIR.
+    format!(
+        r#"[package]
+name = "{package_name}"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+chacha20poly1305 = "0.10"
+argon2 = {{ version = "0.5", features = ["std", "password-hash", "rand"] }}
+pbkdf2 = {{ version = "0.12", default-features = false, features = ["hmac"] }}
+getrandom = "0.2"
+subtle = "2"
+ed25519-dalek = {{ version = "2", features = ["std", "rand_core"] }}
+
+[profile.release]
+opt-level = 2
+lto = false
+"#
+    )
+}
+
+/// Compile lowered native Rust (with audited crypto) into `out_exe` via cargo.
+pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) -> Result<()> {
+    let suffix = anubis_unique_suffix().replace('-', "_");
+    // Cargo package names must be valid identifiers (no leading digits after renames).
+    let package_name = format!("anubis_run_{suffix}");
+    let dir = std::env::temp_dir().join(format!("anubis-run-build-{suffix}"));
+    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::write(dir.join("Cargo.toml"), anubis_run_cargo_toml(&package_name))?;
+    std::fs::write(dir.join("src/main.rs"), rust_source)?;
+
+    let target_dir = anubis_run_shared_target_dir();
+    let build = std::process::Command::new("cargo")
+        .args(["build", "--release", "--quiet"])
+        .current_dir(&dir)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()
+        .map_err(|e| anyhow!("cargo spawn failed: {}", e))?;
+    if !build.status.success() {
+        let stderr = String::from_utf8_lossy(&build.stderr).to_string();
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(anyhow!(
+            "ANUBIS_UNSUPPORTED_NATIVE_LOWERING: cargo build failed (audited crypto deps):\n{}",
+            stderr
+        ));
+    }
+    let built = target_dir.join("release").join(&package_name);
+    let built = if built.exists() {
+        built
+    } else {
+        let alt = target_dir
+            .join("release")
+            .join(format!("{package_name}.exe"));
+        if !alt.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(anyhow!(
+                "ANUBIS_UNSUPPORTED_NATIVE_LOWERING: cargo reported success but binary missing at {}",
+                built.display()
+            ));
+        }
+        alt
+    };
+    if let Some(parent) = out_exe.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&built, out_exe).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&dir);
+        anyhow!("copy binary failed: {}", e)
+    })?;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 /// Compile+run an already-assembled item list (e.g. a multi-file program combined by `resolve`).
-/// The single-file `compile_and_run_source` is this over `parse_source(...).items`.
+///
+/// Native path builds a temporary Cargo project so the runtime can link **audited** crypto crates
+/// (argon2, chacha20poly1305, hmac/sha2, hkdf, getrandom, subtle). RISC0 guests keep pure crypto.
 pub fn compile_and_run_items(
     items: &[Item],
     allow_research: bool,
@@ -3964,25 +4177,8 @@ pub fn compile_and_run_items(
     let rust_source = lower_program_to_rust(items, allow_research)?;
     let dir = std::env::temp_dir().join(format!("anubis-run-{}", anubis_unique_suffix()));
     std::fs::create_dir_all(&dir)?;
-    let rs = dir.join("anubis_run.rs");
     let exe = dir.join("anubis_run");
-    std::fs::write(&rs, rust_source)?;
-    let build = std::process::Command::new("rustc")
-        .arg(&rs)
-        .arg("--edition")
-        .arg("2021")
-        .arg("-o")
-        .arg(&exe)
-        .output()
-        .map_err(|e| anyhow!("rustc spawn failed: {}", e))?;
-    if !build.status.success() {
-        let stderr = String::from_utf8_lossy(&build.stderr).to_string();
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(anyhow!(
-            "ANUBIS_UNSUPPORTED_NATIVE_LOWERING: rustc failed:\n{}",
-            stderr
-        ));
-    }
+    compile_native_rust_to_exe(&rust_source, &exe)?;
     let mut cmd = std::process::Command::new(&exe);
     // No interactive input on this path: mirror the old `.output()` semantics
     // where a child that reads stdin sees an immediate EOF rather than blocking.
@@ -6245,5 +6441,38 @@ mod run_tests {
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "4");
+    }
+
+    #[test]
+    fn sha256_and_hmac_match_nist_and_rfc() {
+        // SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+        let out = compile_and_run_source(
+            r#"fn main() {
+                print(sha256("abc"));
+                print(hmac_sha256("key", "The quick brown fox jumps over the lazy dog"));
+            }"#,
+            false,
+            &[],
+        )
+        .expect("compile+run crypto");
+        assert!(
+            out.status.success(),
+            "crypto program failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(
+            lines[0], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "SHA-256(abc)"
+        );
+        // RFC 4231-style known vector for key="key", data=fox sentence
+        assert_eq!(
+            lines[1], "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
+            "HMAC-SHA256(key, fox)"
+        );
     }
 }
