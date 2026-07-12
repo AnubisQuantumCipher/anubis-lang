@@ -7,6 +7,9 @@
 ```bash
 bash scripts/run_selfhost_gate.sh out/selfhost_gate
 # SELFHOST_GATE: PASS (N/N)
+
+bash scripts/run_selfhost_ddc_gate.sh out/selfhost_ddc_gate
+# SELFHOST_DDC_GATE: PASS (N/N)   — trusting-trust defense (see below)
 ```
 
 ### What the gate proves
@@ -170,9 +173,15 @@ emit) is also checked for hello.
   cross-version identity.
 - **Trusting-trust closure.** A byte-identical self-host fixpoint does **not** prove the
   seed (Rust host + rustc + LLVM) is backdoor-free — a compromised seed reproduces its own
-  backdoor through the fixpoint silently. We do **no** Diverse Double-Compilation (Wheeler).
-  This is an explicit open `NEEDS-HUMAN` obligation, never a checkbox the fixpoint ticks.
-  Forbidden phrasing: "backdoor-free", "trust root proven".
+  backdoor through the fixpoint silently. As of 2026-07-12 there is now a **Diverse
+  Double-Compiling** lane (Wheeler) that materially narrows this — see *Diverse
+  Double-Compiling* below and `scripts/run_selfhost_ddc_gate.sh`. It diversifies the
+  *execution* of the compiler across two independent native toolchains (rustc/LLVM and
+  gcc/non-LLVM) and requires byte-identical output. It does **not** yet diversify the
+  source-level derivation of the payload AST (no C-native Anubis parser exists), so a
+  subversion baked into the shared AST *source* would be inherited by both engines. That
+  residual is the remaining open `NEEDS-HUMAN` obligation. Forbidden phrasing regardless:
+  "backdoor-free", "trust root proven".
 - **Compiler correctness.** `stage2 ≡ stage3` proves *determinism / self-reproduction*, not
   semantic correctness. The differential oracle raises confidence over the corpus; it is
   not a proof for all programs.
@@ -200,9 +209,62 @@ control (a build without the remap leaks 9 machine paths). A **hermetic Linux la
 the same source inside a pinned `rust` image (recorded by digest) and reproduces a
 bit-identical ELF across independent container runs. A third party can re-derive the exact
 bytes from `repro_manifest.json`. **This proves reproducibility, not trust:** it does *not*
-close trusting-trust (a subverted rustc reproduces its own subversion here too) — that
-remains the open `NEEDS-HUMAN` above, needing a second independent backend
-(see `SELFHOST_REPRO_PLAN.md`).
+close trusting-trust (a subverted rustc reproduces its own subversion here too) — the
+second independent backend that begins to address that now exists as the DDC lane below
+(see also `SELFHOST_REPRO_PLAN.md`).
+
+## Diverse Double-Compiling (trusting-trust defense)
+
+**Earned 2026-07-12 (`scripts/run_selfhost_ddc_gate.sh`, fail-closed).** The self-host
+fixpoint and the reproducibility gate both run entirely through **one** native toolchain:
+rustc + LLVM. A Thompson-subverted rustc would sit in every lane and reproduce its own
+subversion silently. Diverse Double-Compiling (Wheeler, <https://dwheeler.com/trusting-trust>)
+introduces a genuinely independent second toolchain and requires the two independently-built
+compilers to emit **byte-identical output for the same input**:
+
+```
+cA = anubis_sh executed by the REFERENCE interpreter,
+     selfhost/runtime/anubis_sh_interp_rt.rs  →  rustc/LLVM  →  native binary
+cB = anubis_sh executed by a faithful PORT of that interpreter,
+     selfhost/backend_c/anubis_sh_interp_rt.c  →  gcc (non-LLVM)  →  native binary
+
+capstone:  cA compile anubis_sh.anb  ==  cB compile anubis_sh.anb   (byte-identical)
+```
+
+Both engines run the *identical* anubis_sh compiler program (same AST payload); the only
+variable is the native toolchain that produced the interpreter. The gate also cross-checks
+`lex` / `parse` / `check` agreement across the corpus (including the exit codes of the
+failure cases). On agreement it writes `ddc_manifest.json` (both toolchains, versions,
+payload sha, agreed output sha). The two toolchains converge on the **same** fixpoint
+output hash the self-host gate seals (`ca310c4b…`).
+
+**Why the comparison is of OUTPUT, not binaries:** different toolchains legitimately emit
+different machine code, so comparing the two compiler *binaries* would be meaningless. DDC
+is about *output agreement* — a hidden subversion in rustc's machine code for the
+interpreter would make cA's emitted compiler diverge from cB's.
+
+**Load-bearing (negative control):** the gate perturbs the C interpreter by one token (a
+stray byte on the general string-concat path), rebuilds cB, and *requires* the capstone to
+go red. If a one-token semantic change did not diverge, the comparison would be vacuous and
+the gate fails closed.
+
+**Fail-closed toolchain choice:** the second compiler must not be clang — clang shares the
+LLVM backend with rustc and adds no diversity. The gate refuses any `--version` that reports
+clang (Apple ships `/usr/bin/gcc` as clang). Override with `ANUBIS_DDC_CC=<gcc|tcc|…>`.
+
+**Honest scope — what DDC here does and does NOT prove:**
+
+- **Does** narrow the classic Thompson attack: a subversion that rustc/LLVM injects into the
+  *machine code* of the compiler would have to be independently reproduced, identically, by
+  gcc to survive. That is implausible.
+- **Does not** prove semantic correctness — only that no single toolchain hid a divergence in
+  the compiler's executable behavior over the tested inputs.
+- **Does not** yet diversify the *source-level derivation* of the payload AST. Both engines
+  run the same anubis_sh AST, and that AST is produced through the Rust host (there is no
+  C-native Anubis parser yet). A subversion baked into the shared AST source would be
+  inherited by both cA and cB and go undetected. Closing this needs an independent,
+  non-rustc Anubis parser for cB. **[NEEDS-HUMAN / future work.]** Forbidden phrasing:
+  "trusting-trust closed", "backdoor-free".
 
 ## Codegen honesty
 
@@ -219,10 +281,12 @@ Codegen emits a deterministic **interpreter package** (runtime + AST payload), n
 selfhost/
   SUBSET.md
   src/anubis_sh.anb
-  runtime/anubis_sh_interp_rt.rs
+  runtime/anubis_sh_interp_rt.rs      # reference interpreter (rustc/LLVM lane, cA)
+  backend_c/anubis_sh_interp_rt.c     # diverse interpreter port (gcc/non-LLVM lane, cB)
   corpus/
   golden/{tokens,ast}/
 scripts/run_selfhost_gate.sh
+scripts/run_selfhost_ddc_gate.sh      # Diverse Double-Compiling (trusting-trust defense)
 compiler/src/selfhost_schema/
 docs/language/SELFHOST.md
 ```
