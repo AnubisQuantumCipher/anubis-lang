@@ -29,11 +29,15 @@
 #     a divergence in the compiler's executable behavior.
 #   * The C compiler MUST NOT be clang: clang shares the LLVM backend with rustc,
 #     so it would add no toolchain diversity. The gate refuses clang, fail-closed.
-#   * The anubis_sh AST payload that BOTH engines run is itself derived through
-#     the Rust host (there is no non-rustc Anubis parser yet). DDC here diversifies
-#     the EXECUTION of that compiler program across two toolchains; it does not yet
-#     diversify the source-level derivation of the payload AST. Writing a C-native
-#     Anubis parser would close that residual. [NEEDS-HUMAN / future work]
+#   * Source-level derivation is ALSO diversified: a hand-written C-native parser
+#     (selfhost/backend_c/anubis_sh_parse.c, compiled with the same non-LLVM $CC)
+#     derives the anubis_sh AST directly from source text, proven byte-identical to
+#     the Rust host derivation, and the full-pipeline capstone re-runs cB on THAT
+#     payload. So the whole source -> AST -> execution path is non-rustc on the cB
+#     lane. (Prior residual "no non-rustc Anubis parser exists" is now closed.)
+#   * Remaining honest scope: the C parser and C interpreter were authored by the
+#     same human as the reference; DDC defends against a subverted TOOLCHAIN, not
+#     against a subversion present identically in both hand-written sources.
 #
 # Load-bearing: a NEGATIVE CONTROL perturbs the C interpreter by one token and
 # requires the gate to go red, proving the comparison is not trivially green.
@@ -227,27 +231,118 @@ else
   fail_one "ddc_negative_control"
 fi
 
+# ---------------------------------------------------------------------------
+# C-NATIVE PARSER LANE — closes the shared-AST-source residual.
+#
+# The payload above is derived by the Rust host. Here a hand-written C parser
+# (selfhost/backend_c/anubis_sh_parse.c), compiled with the SAME non-LLVM $CC,
+# derives the anubis_sh AST FROM SOURCE TEXT with zero rustc involvement. Requiring
+# it byte-identical to the host payload proves the derivation is faithful; feeding
+# THAT payload to cB and re-running the capstone makes the WHOLE pipeline
+# (source -> AST -> execution) diverse, not just the execution.
+# ---------------------------------------------------------------------------
+echo "== C-native parser lane (source -> AST via $CC, no rustc) =="
+PARSER_C="selfhost/backend_c/anubis_sh_parse.c"
+parser_ok=0
+if "$CC" -O2 -std=c11 -Wall -Wextra -o "$OUT/ashparse" "$PARSER_C" 2>"$OUT/parser_cc.err"; then
+  parser_ok=1
+  pass_one "ddc_parser_build_${CC//-/_}"
+else
+  fail_one "ddc_parser_build"; cat "$OUT/parser_cc.err" >>"$OUT/summary.txt" 2>/dev/null || true
+fi
+
+PARSER_SELF_SHA="n/a"
+if [[ $parser_ok -eq 1 ]]; then
+  # Faithfulness oracle: C-parser(anubis_sh.anb) == host-derived payload, byte-for-byte.
+  "$OUT/ashparse" parse "$SELF" >"$OUT/payload_C.json" 2>"$OUT/parser_run.err" || true
+  if cmp -s "$OUT/payload_C.json" "$OUT/payload.json"; then
+    PARSER_SELF_SHA="$(shasum -a 256 "$OUT/payload_C.json" | awk '{print $1}')"
+    note "C-parser payload sha256: $PARSER_SELF_SHA (byte-identical to host derivation)"
+    pass_one "ddc_parser_faithful_self"
+  else
+    echo "C-parser payload != host payload" >>"$OUT/ddc_fail.log"
+    cmp "$OUT/payload_C.json" "$OUT/payload.json" >>"$OUT/ddc_fail.log" 2>&1 || true
+    fail_one "ddc_parser_faithful_self"
+  fi
+  # Breadth: agree with the host on lex + parse across the corpus (incl. the error path).
+  for f in selfhost/corpus/ok_*.anb selfhost/corpus/bad_parse.anb; do
+    b=$(basename "$f" .anb)
+    for cmd in lex parse; do
+      set +e
+      "$OUT/ashparse" "$cmd" "$f" >"$OUT/CP_${cmd}_${b}.out" 2>&1
+      "$BIN" run "$SELF" --allow-research -- "$cmd" "$f" >"$OUT/HP_${cmd}_${b}.out" 2>/dev/null
+      set -e
+      if cmp -s "$OUT/CP_${cmd}_${b}.out" "$OUT/HP_${cmd}_${b}.out"; then
+        pass_one "ddc_parser_${cmd}_${b}"
+      else
+        echo "C-parser ${cmd} ${b} != host" >>"$OUT/ddc_fail.log"
+        fail_one "ddc_parser_${cmd}_${b}"
+      fi
+    done
+  done
+
+  # Full-pipeline capstone: cB running the C-DERIVED payload must emit the same stage
+  # as the rustc lane. This is the actual residual closure: source -> AST -> exec, all
+  # non-rustc, still byte-identical to the reference.
+  if [[ -f "$OUT/payload_C.json" && -x "$OUT/cB" && -f "$OUT/stageA.rs" ]]; then
+    set +e
+    "$OUT/cB" "$OUT/payload_C.json" compile "$SELF" -o "$OUT/stageBC.rs" >/dev/null 2>&1; ebc=$?
+    set -e
+    if [[ $ebc -eq 0 ]] && cmp -s "$OUT/stageA.rs" "$OUT/stageBC.rs"; then
+      note "full-pipeline: gcc-from-source (C parser + C interp) emits the SAME stage as the rustc lane"
+      pass_one "ddc_fullpipeline_self_compile"
+    else
+      echo "full-pipeline divergence: cB(payload_C) != cA (exit=$ebc)" >>"$OUT/ddc_fail.log"
+      fail_one "ddc_fullpipeline_self_compile"
+    fi
+  fi
+
+  # Negative control on the PARSER: recompile with the perturbation hook defined and
+  # require the derived payload to change. If it does not, the faithfulness check is
+  # not actually comparing the C parser's output — fail closed.
+  echo "== negative control: perturb C parser, require payload divergence =="
+  pneg_ok=0
+  if "$CC" -O2 -std=c11 -DANUBIS_DDC_NEG_CONTROL -o "$OUT/ashparse_perturbed" "$PARSER_C" 2>"$OUT/parser_neg_cc.err"; then
+    set +e
+    "$OUT/ashparse_perturbed" parse "$SELF" >"$OUT/payload_neg.json" 2>/dev/null
+    set -e
+    if [[ -f "$OUT/payload_neg.json" ]] && ! cmp -s "$OUT/payload.json" "$OUT/payload_neg.json"; then
+      pneg_ok=1
+    fi
+  fi
+  if [[ $pneg_ok -eq 1 ]]; then
+    note "parser negative control: perturbation DIVERGES (parser faithfulness check is load-bearing)"
+    pass_one "ddc_parser_negative_control"
+  else
+    fail_one "ddc_parser_negative_control"
+  fi
+fi
+
 # --- Manifest ------------------------------------------------------------------
 python3 - "$OUT/ddc_manifest.json" "$RUSTC_VERSION_LINE" "$CC" "$CC_VERSION_LINE" \
-  "$PAYLOAD_SHA" "$OUTPUT_SHA" "$pass" "$fail" <<'PY'
+  "$PAYLOAD_SHA" "$OUTPUT_SHA" "$pass" "$fail" "${PARSER_SELF_SHA:-n/a}" <<'PY'
 import json, sys
-path, rustc_v, cc, cc_v, payload_sha, output_sha, npass, nfail = sys.argv[1:9]
+path, rustc_v, cc, cc_v, payload_sha, output_sha, npass, nfail, parser_sha = sys.argv[1:10]
 m = {
   "gate": "selfhost_ddc",
   "claim": "Diverse Double-Compiling: two independent toolchains emit byte-identical compiler output",
   "reference_toolchain": {"role": "cA", "compiler": "rustc", "version": rustc_v,
                           "interpreter_source": "selfhost/runtime/anubis_sh_interp_rt.rs"},
   "diverse_toolchain":   {"role": "cB", "compiler": cc, "version": cc_v,
-                          "interpreter_source": "selfhost/backend_c/anubis_sh_interp_rt.c"},
+                          "interpreter_source": "selfhost/backend_c/anubis_sh_interp_rt.c",
+                          "parser_source": "selfhost/backend_c/anubis_sh_parse.c"},
   "input": "selfhost/src/anubis_sh.anb",
   "payload_sha256": payload_sha,
+  "c_native_parser_payload_sha256": parser_sha,
   "agreed_output_sha256": output_sha,
   "result": ("PASS" if int(nfail) == 0 else "FAIL"),
   "checks_pass": int(npass),
   "checks_fail": int(nfail),
-  "scope": "Diversifies EXECUTION of the compiler across two native toolchains. "
-           "Does NOT prove semantic correctness, and does NOT yet diversify the "
-           "source-level derivation of the payload AST (no C-native Anubis parser).",
+  "scope": "Diversifies BOTH the source-level derivation of the AST (via a C-native, "
+           "non-rustc parser proven byte-identical to the host) AND the execution of "
+           "the compiler across two native toolchains (rustc/LLVM vs gcc/non-LLVM). "
+           "Does NOT prove semantic correctness; it proves no single toolchain hid a "
+           "divergence across the whole source -> AST -> execution pipeline.",
 }
 open(path, "w").write(json.dumps(m, indent=2) + "\n")
 PY

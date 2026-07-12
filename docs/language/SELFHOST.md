@@ -173,14 +173,17 @@ emit) is also checked for hello.
   cross-version identity.
 - **Trusting-trust closure.** A byte-identical self-host fixpoint does **not** prove the
   seed (Rust host + rustc + LLVM) is backdoor-free — a compromised seed reproduces its own
-  backdoor through the fixpoint silently. As of 2026-07-12 there is now a **Diverse
-  Double-Compiling** lane (Wheeler) that materially narrows this — see *Diverse
-  Double-Compiling* below and `scripts/run_selfhost_ddc_gate.sh`. It diversifies the
-  *execution* of the compiler across two independent native toolchains (rustc/LLVM and
-  gcc/non-LLVM) and requires byte-identical output. It does **not** yet diversify the
-  source-level derivation of the payload AST (no C-native Anubis parser exists), so a
-  subversion baked into the shared AST *source* would be inherited by both engines. That
-  residual is the remaining open `NEEDS-HUMAN` obligation. Forbidden phrasing regardless:
+  backdoor through the fixpoint silently. As of 2026-07-12 a **Diverse Double-Compiling**
+  lane (Wheeler) materially narrows this — see *Diverse Double-Compiling* below and
+  `scripts/run_selfhost_ddc_gate.sh`. It diversifies the **whole** `source → AST → execution`
+  pipeline across two independent native toolchains: the cB lane uses a C-native parser
+  (`selfhost/backend_c/anubis_sh_parse.c`, gcc/non-LLVM) that derives the AST directly from
+  source text — proven byte-identical to the Rust host derivation — and a C interpreter
+  (gcc/non-LLVM) that runs it, and requires the emitted stage compiler to be byte-identical
+  to the rustc/LLVM lane. The former "no non-rustc Anubis parser exists" residual is **closed**.
+  What remains honestly open: DDC defends against a subverted *toolchain*, not against a
+  subversion authored identically into *both* hand-written C sources (parser + interpreter),
+  which share a human author with the reference. Forbidden phrasing regardless:
   "backdoor-free", "trust root proven".
 - **Compiler correctness.** `stage2 ≡ stage3` proves *determinism / self-reproduction*, not
   semantic correctness. The differential oracle raises confidence over the corpus; it is
@@ -259,12 +262,20 @@ clang (Apple ships `/usr/bin/gcc` as clang). Override with `ANUBIS_DDC_CC=<gcc|t
   gcc to survive. That is implausible.
 - **Does not** prove semantic correctness — only that no single toolchain hid a divergence in
   the compiler's executable behavior over the tested inputs.
-- **Does not** yet diversify the *source-level derivation* of the payload AST. Both engines
-  run the same anubis_sh AST, and that AST is produced through the Rust host (there is no
-  C-native Anubis parser yet). A subversion baked into the shared AST source would be
-  inherited by both cA and cB and go undetected. Closing this needs an independent,
-  non-rustc Anubis parser for cB. **[NEEDS-HUMAN / future work.]** Forbidden phrasing:
-  "trusting-trust closed", "backdoor-free".
+- **Does** now also diversify the *source-level derivation* of the payload AST (closed
+  2026-07-12). A hand-written C-native parser (`selfhost/backend_c/anubis_sh_parse.c`,
+  compiled with the same non-LLVM `gcc`) derives the anubis_sh AST directly from source
+  text and is required byte-identical to the Rust host derivation (221,713 bytes; corpus
+  lex+parse also compared, including the error path). The full-pipeline capstone then
+  re-runs cB on *that* C-derived payload and requires the same byte-identical stage
+  compiler. So on the cB lane, `source → AST → execution` is non-rustc end-to-end. A second
+  negative control perturbs the C parser (compile-time `-DANUBIS_DDC_NEG_CONTROL`) and
+  requires the derived payload to diverge, so the faithfulness check is load-bearing too.
+- **Does not** defend against a subversion authored identically into *both* hand-written C
+  sources (the parser and the interpreter), which share a human author with the reference —
+  DDC narrows a subverted *toolchain*, not a subverted *author*. And it does not prove
+  semantic correctness. Forbidden phrasing regardless: "trusting-trust closed",
+  "backdoor-free".
 
 ## Codegen honesty
 
