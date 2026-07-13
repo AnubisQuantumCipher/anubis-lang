@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Phase-2 slice 1: transitive effect inference. `helper` declares nothing, so the per-body check
+// (direct builtins + one-hop callee-DECLARED caps) sees nothing in `main` — only the call-graph
+// effect-row fixpoint can see that `main` transitively performs `time.now` it never declared.
+fn helper() {
+    time_now();
+}
+
+fn main() uses(fs.read) {
+    let d = read_file("x.txt");
+    helper();
+    print(d);
+}

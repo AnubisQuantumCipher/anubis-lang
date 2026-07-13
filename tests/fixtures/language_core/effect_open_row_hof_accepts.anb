@@ -1,0 +1,18 @@
+// EXPECT: PASS
+// Phase-2 slice 1 accept-guard: effect-polymorphic higher-order function. Calling the parameter
+// `f` opens the effect row (unknown tail) — and an OPEN row alone never fires: the reject decision
+// stays accept-biased on ignorance, so HOFs are never falsely rejected. The declared `time.now`
+// covers the one concrete cap the body performs.
+fn apply(f, x: i64) uses(time.now) {
+    time_now();
+    return f(x);
+}
+
+fn double(x: i64) -> i64 {
+    return x * 2;
+}
+
+fn main() {
+    let y = apply(double, 3);
+    print(y);
+}

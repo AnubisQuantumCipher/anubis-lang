@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// Phase-2 slice 1 accept-guard: a function that correctly declares the effects it reaches
+// transitively (time.now via `helper`, fs.read directly) produces no diagnostic.
+fn helper() {
+    time_now();
+}
+
+fn main() uses(fs.read, time.now) {
+    let d = read_file("x.txt");
+    helper();
+    print(d);
+}

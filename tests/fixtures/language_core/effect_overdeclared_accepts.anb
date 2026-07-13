@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Phase-2 slice 1 accept-guard: over-declaration is always legal — the check is subset-direction
+// only (a function may declare more than it uses, never perform more than it declares).
+fn main() uses(fs.read, net.send) {
+    let d = read_file("x.txt");
+    print(d);
+}

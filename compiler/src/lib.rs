@@ -4223,6 +4223,114 @@ fn main() {}"#,
     }
 
     #[test]
+    fn transitive_undeclared_effect_is_rejected_across_the_call_graph() {
+        // Phase-2 slice 1: an unclaused helper's builtin effects must not launder past a claused
+        // caller. `main` has no direct time builtin and `helper` declares nothing, so the per-body
+        // check (direct builtins + one-hop callee-DECLARED caps) sees nothing — only the transitive
+        // effect-row fixpoint can catch this.
+        let err = tc_ok(
+            r#"fn helper() { time_now(); }
+fn main() uses(fs.read) {
+    let d = read_file("x.txt");
+    helper();
+    print(d);
+}"#,
+        )
+        .expect_err("transitive time.now without declaration must reject");
+        assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got: {err}");
+        assert!(err.contains("via transitive call"), "got: {err}");
+
+        // Depth 2: the chain composes across the whole call graph, not one hop.
+        let err = tc_ok(
+            r#"fn deep() { time_now(); }
+fn mid() { deep(); }
+fn main() uses(fs.read) { let d = read_file("y"); mid(); print(d); }"#,
+        )
+        .expect_err("depth-2 transitive effect must reject");
+        assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got: {err}");
+    }
+
+    #[test]
+    fn transitive_effects_declared_or_overdeclared_accept() {
+        // Correctly declared: the transitive time.now is in the clause.
+        tc_ok(
+            r#"fn helper() { time_now(); }
+fn main() uses(fs.read, time.now) { let d = read_file("x"); helper(); print(d); }"#,
+        )
+        .expect("declared transitive effects must accept");
+        // Over-declared: declaring more than used is always legal (subset direction only).
+        tc_ok(r#"fn main() uses(fs.read, net.send) { let d = read_file("x"); print(d); }"#)
+            .expect("over-declaration must accept");
+    }
+
+    #[test]
+    fn open_row_never_fires_but_concrete_caps_still_do() {
+        // Effect-polymorphic HOF: calling a parameter opens the row; open alone must NOT reject —
+        // the reject decision stays accept-biased on ignorance.
+        tc_ok(
+            r#"fn apply(f, x: i64) uses(time.now) { time_now(); return f(x); }
+fn double(x: i64) -> i64 { return x * 2; }
+fn main() { let y = apply(double, 3); print(y); }"#,
+        )
+        .expect("open row (param call) must not reject on ignorance");
+        // …but a CONCRETE transitive cap alongside the open tail still fires — an unknown callee
+        // never hides a genuine undeclared effect (the effect SET widens; the rejection does not).
+        let err = tc_ok(
+            r#"fn helper_time() { time_now(); }
+fn driver(f) uses(fs.read) {
+    let d = read_file("x");
+    f(1);
+    helper_time();
+    print(d);
+}
+fn id(x: i64) -> i64 { return x; }
+fn main() { driver(id); }"#,
+        )
+        .expect_err("concrete undeclared cap must fire despite open row");
+        assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got: {err}");
+    }
+
+    #[test]
+    fn closure_shadow_of_effectful_global_does_not_reject() {
+        // Flat-name closure-shadow: a local closure named like an effectful global — calling it is
+        // the closure (open row), never the global's effect row. If the walker wrongly pulled the
+        // global's row, the transitive check would reject on undeclared time.now. (The closure is
+        // 0-ary to match the global's arity: the PRE-EXISTING arity check resolves the bare name to
+        // the global — a separate, older flat-name limitation this slice does not touch; the
+        // row-level shadow discrimination is pinned by `local_shadow_of_global_fn_does_not_pull_row`
+        // in middle/effects.rs.)
+        tc_ok(
+            r#"fn helper() { time_now(); }
+fn main() uses(fs.read) {
+    let d = read_file("x");
+    let helper = || 1;
+    let y = helper();
+    print(y);
+}"#,
+        )
+        .expect("shadowed local call must not pull the effectful global row");
+    }
+
+    #[test]
+    fn verified_lane_transitive_caps_require_clause() {
+        // Verified lane: caps reached ONLY transitively still require a `uses(...)` clause. The
+        // chain is depth-2 through an unclaused `mid` so `main`'s one-hop inherited caps are empty:
+        // only the transitive arm can flag `main` (the per-body verified rule flags `mid` one-hop).
+        let src = r#"fn helper() uses(fs.read) { let d = read_file("x.txt"); return d; }
+fn mid() { return helper(); }
+fn main() { let d = mid(); print(d); }"#;
+        let ast = parse_source(src).expect("parse");
+        let err = typecheck_ex(ast, frontend::Mode::Safe, true)
+            .expect_err("verified lane must see transitive fs.read");
+        assert!(
+            err.contains("function `main` uses capability effect(s) [fs.read] (via transitive call)"),
+            "got: {err}"
+        );
+        // Default lane: same program accepts (absent clause is permissive outside verified).
+        tc_ok(src).expect("default lane permits absent clause");
+    }
+
+    #[test]
     fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {
         // Phase-3 A2: a function that RETURNS a formal parameter is summarized as
         // `returns_taint_of_params`; call sites combine that with argument taint so

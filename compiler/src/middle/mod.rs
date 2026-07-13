@@ -8,6 +8,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub mod proptest;
+pub(crate) mod effects;
 pub(crate) mod ty;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -251,6 +252,12 @@ struct SemanticContext {
     /// annotation supplies the wrong number of type arguments. Built-in containers (`Result`/`Option`/
     /// `list`/`Map`/…) are absent, so their instantiations are never arity-checked (accept).
     type_generics: BTreeMap<String, usize>,
+    /// Phase-2 slice 1: function name → TRANSITIVE effect row (canonical capability ids reached
+    /// through the whole call graph, `open` when an unknown callee / closure / method call is hit).
+    /// Computed by the pure pre-pass `effects::compute_fn_effect_rows`; consulted by the transitive
+    /// declared-vs-inferred check. Sidecar analysis state only — never serialized, never fed to
+    /// codegen, absent from the `selfhost_schema` projection by construction.
+    fn_effect_rows: BTreeMap<String, effects::EffectRow>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -283,6 +290,11 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     compute_tainting_fns(&ast.items, &mut ctx);
     compute_param_sinks(&ast.items, &mut ctx);
     compute_param_return_taint(&ast.items, &mut ctx);
+    // Pass 1.6 (Phase-2 slice 1): transitive effect rows — a pure monotone fixpoint over the call
+    // graph (middle/effects.rs). Reads only the pass-1 tables (`all_fns`, declared `uses`); emits
+    // nothing itself. Consumed by the transitive declared-vs-inferred effect check per function.
+    ctx.fn_effect_rows =
+        effects::compute_fn_effect_rows(&ast.items, &ctx.all_fns, &ctx.fn_declared_effects);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -1066,6 +1078,67 @@ fn analyze_function(
                     ),
                     span: Some((span.start, span.end)),
                 });
+            }
+        }
+    }
+
+    // Phase-2 slice 1: TRANSITIVE declared-vs-inferred effect check. The per-body check above sees
+    // only direct builtins plus a direct callee's DECLARED caps, so an unclaused helper
+    // (`fn helper() { time_now(); }`) launders its effects past every caller. `fn_effect_rows` is
+    // the monotone call-graph fixpoint (middle/effects.rs); here we check the caps this function
+    // TRANSITIVELY performs. Two directions held at once:
+    //   - the EFFECT SET widens on uncertainty (an unresolvable callee marks the row `open`), so a
+    //     genuine undeclared effect is never hidden by an unknown callee sitting next to it;
+    //   - the REJECT DECISION stays accept-biased: `open` alone NEVER fires — only CONCRETE caps
+    //     do — so effect-polymorphic higher-order code is never falsely rejected on ignorance.
+    // Fires only on caps beyond `caps_used` (never re-reports what the enforcing check above
+    // already caught). ENFORCING (`emit(.., false)`): promoted on evidence — corpus shadow diff at
+    // UNEXPECTED=0 over 162 programs, zero shadow lines on `selfhost/src/anubis_sh.anb` and every
+    // stdlib module, fire/inert/accept-edge scratch runs verified before the flip.
+    let transitive_caps: Vec<String> = ctx
+        .fn_effect_rows
+        .get(name)
+        .map(|row| {
+            row.effects
+                .iter()
+                .filter(|cap| !caps_used.contains(*cap))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if !transitive_caps.is_empty() {
+        if ctx.verified && declared_effects.is_empty() {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
+                    message: format!(
+                        "verification lane: function `{name}` uses capability effect(s) [{}] (via transitive call) but declares no `uses(...)` clause",
+                        transitive_caps.join(", ")
+                    ),
+                    span: Some((span.start, span.end)),
+                },
+                false,
+            );
+        }
+        if !declared_effects.is_empty() {
+            let declared: BTreeSet<String> = declared_effects
+                .iter()
+                .map(|e| normalize_effect_name(e))
+                .collect();
+            for cap in &transitive_caps {
+                if !declared.contains(cap) {
+                    ctx.emit(
+                        SemanticDiagnostic {
+                            code: Some("ANUBIS_UNDECLARED_EFFECT".into()),
+                            message: format!(
+                                "function `{name}` uses effect `{cap}` (via transitive call) but does not declare it in `uses(...)` (declared: {})",
+                                declared_effects.join(", ")
+                            ),
+                            span: Some((span.start, span.end)),
+                        },
+                        false,
+                    );
+                }
             }
         }
     }
@@ -5544,7 +5617,7 @@ fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
 // Call sites then reject `log(tainted)` when `fn log(x){sink(x);}` — `ANUBIS_INTERPROC_SINK`.
 
 /// Collect `(name, param_names, body)` for free functions (modules mangled the same way as calls).
-fn collect_fn_params_bodies<'a>(
+pub(crate) fn collect_fn_params_bodies<'a>(
     items: &'a [Item],
     out: &mut Vec<(String, Vec<String>, &'a [Stmt])>,
 ) {
@@ -6097,7 +6170,7 @@ fn apply_inherited_capability(
 
 /// Normalize a declared `uses(...)` effect name (or an inferred effect tag) to a canonical
 /// capability id used for declared ⊆ inferred checking.
-fn normalize_effect_name(raw: &str) -> String {
+pub(crate) fn normalize_effect_name(raw: &str) -> String {
     let s = raw.trim().to_ascii_lowercase();
     match s.as_str() {
         "fs.read" | "file_read" | "read_file" | "open" => "fs.read".into(),

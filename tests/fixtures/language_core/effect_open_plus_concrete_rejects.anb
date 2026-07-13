@@ -1,0 +1,23 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Phase-2 slice 1: an unknown callee (the function-valued parameter `f`) opens the effect row —
+// but the CONCRETE transitive `time.now` alongside it must still fire. The effect SET widens on
+// uncertainty; the rejection never hides a genuinely-inferable undeclared effect behind it.
+fn helper_time() {
+    time_now();
+}
+
+fn driver(f) uses(fs.read) {
+    let d = read_file("x.txt");
+    f(1);
+    helper_time();
+    print(d);
+}
+
+fn id(x: i64) -> i64 {
+    return x;
+}
+
+fn main() {
+    driver(id);
+}
