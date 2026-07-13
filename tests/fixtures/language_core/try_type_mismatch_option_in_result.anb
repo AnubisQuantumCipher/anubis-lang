@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TRY_TYPE_MISMATCH|cannot be returned from a `Result`
+// Typed `?`: propagating an Option's `None` out of a `-> Result<...>` function is a container-kind
+// mismatch — the whole `None` value would be returned verbatim from a Result-returning function.
+fn opt() -> Option<u32> { return Some(1); }
+fn f() -> Result<u32, string> {
+    let x = opt()?;
+    return Ok(x);
+}
+fn main() { return 0; }

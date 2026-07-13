@@ -237,6 +237,11 @@ struct SemanticContext {
     /// inference core can synthesize `FieldAccess` results (`p.x` → the declared type of `x` on
     /// `Point`). Purely additive analysis state — never consulted by codegen (types are erased).
     struct_fields: BTreeMap<String, BTreeMap<String, String>>,
+    /// The declared return type of the function whose body is currently being walked (`None` for a
+    /// function with no `-> T`, and cleared inside a lambda body — a `?` there early-returns from the
+    /// closure, not the enclosing function). Read by the typed-`?` check in `check_expr_semantics` to
+    /// compare each `?` operand's container kind against the enclosing `Result`/`Option` return.
+    current_fn_return: Option<String>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -798,6 +803,11 @@ fn analyze_function(
     if mode != Mode::Safe {
         ctx.has_research = true;
     }
+
+    // Record this function's declared return type for the typed-`?` check (read at each `?` site in
+    // `check_expr_semantics`). Functions do not nest, so a plain assignment per function is correct;
+    // the lambda arm of `check_expr_semantics` clears it around a closure body. `None` for no `-> T`.
+    ctx.current_fn_return = ret.map(|r| r.to_string());
 
     // Solver integer-modelability and symbolic widths are FUNCTION-LOCAL: a variable modeled as an
     // i64 in one function must not leak that modelability to a same-named binding in another function
@@ -4596,6 +4606,35 @@ fn check_mismatch_scoped(
     ty::check_mismatch(&env, expr, expected)
 }
 
+/// The `Result`/`Option` container kind of a `?` operand, via the bidirectional core — `Some("Result")`
+/// / `Some("Option")` or `None` (accept). Borrows `ctx` immutably; the caller emits.
+fn try_operand_kind_scoped(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<String> {
+    let vars = scope_vars(scope);
+    let env = ty::InferEnv {
+        vars: &vars,
+        fns: &ctx.fn_ret_types,
+        structs: &ctx.struct_fields,
+    };
+    ty::synth_container_kind(&env, expr)
+}
+
+/// The `Result`/`Option` kind named by a declared return-type annotation, or `None` when it is not a
+/// container (empty / `Any` / a concrete non-container / a generic parameter) — the accept direction.
+fn return_container_kind(rty: &str) -> Option<&'static str> {
+    let r = rty.trim();
+    if r.starts_with("Result") {
+        Some("Result")
+    } else if r.starts_with("Option") {
+        Some("Option")
+    } else {
+        None
+    }
+}
+
 /// Walk expressions for A+ call typing + match exhaustiveness (fail-closed).
 fn check_expr_semantics(
     expr: &Expr,
@@ -4836,8 +4875,48 @@ fn check_expr_semantics(
         }
         // Descend into closure and block bodies so B1's constant-type checks apply there too —
         // otherwise `|q| 5[0]` or `{ let z = 7[2]; z }` slipped past the checker and crashed at run.
-        Expr::Lambda { body, .. } => check_expr_semantics(body, scope, ctx),
+        // A `?` inside a closure early-returns from the CLOSURE (not the enclosing function), so clear
+        // the enclosing return type across the lambda body — the typed-`?` check must not compare a
+        // closure's `?` against the outer function's declared return.
+        Expr::Lambda { body, .. } => {
+            let saved = ctx.current_fn_return.take();
+            check_expr_semantics(body, scope, ctx);
+            ctx.current_fn_return = saved;
+        }
         Expr::Block { stmts, tail } => check_block_exprs(stmts, tail.as_deref(), scope, ctx),
+        // Typed `?`: the operator early-returns the operand's `Err`/`None` VERBATIM from the enclosing
+        // function (run.rs lowers it with no coercion), so propagating an `Option`'s `None` out of a
+        // `-> Result<…>` function — or an `Err` out of a `-> Option<…>` function — is a genuine kind
+        // mismatch. Checked only when the enclosing return is itself a `Result`/`Option` (the
+        // `ANUBIS_TRY_OUTSIDE_RESULT` check already governs `?` under a concrete non-container return,
+        // and an `Any`/generic/absent return is dynamic ⇒ skip). Accept-biased: an operand whose
+        // container kind the core cannot see resolves to `None` and never mismatches.
+        Expr::Try(inner) => {
+            check_expr_semantics(inner, scope, ctx);
+            // `return_container_kind` yields a `&'static str`, so this holds no borrow of `ctx`.
+            let ret_kind = ctx.current_fn_return.as_deref().and_then(return_container_kind);
+            if let Some(ret_kind) = ret_kind {
+                let op_kind = try_operand_kind_scoped(inner, scope, ctx);
+                if let Some(op_kind) = op_kind {
+                    if op_kind != ret_kind {
+                        // PROMOTED to enforcing (`shadow_gated=false`) — corpus shadow diff
+                        // UNEXPECTED=0.
+                        ctx.emit(
+                            SemanticDiagnostic {
+                                code: Some("ANUBIS_TRY_TYPE_MISMATCH".into()),
+                                message: format!(
+                                    "`?` propagates a `{op_kind}` value but the enclosing function returns `{ret_kind}`; \
+                                     the propagated `{}` cannot be returned from a `{ret_kind}` function",
+                                    if op_kind == "Option" { "None" } else { "Err" }
+                                ),
+                                span: None,
+                            },
+                            false,
+                        );
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }

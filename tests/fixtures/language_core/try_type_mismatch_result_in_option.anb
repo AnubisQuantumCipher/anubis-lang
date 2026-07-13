@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TRY_TYPE_MISMATCH|cannot be returned from a `Option`
+// Typed `?`: propagating a Result's `Err` out of a `-> Option<...>` function is a container-kind
+// mismatch (the mirror of the Option-in-Result case).
+fn res() -> Result<u32, string> { return Ok(1); }
+fn g() -> Option<u32> {
+    let x = res()?;
+    return Some(x);
+}
+fn main() { return 0; }

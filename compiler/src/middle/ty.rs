@@ -657,6 +657,27 @@ pub(crate) fn synth_concrete(env: &InferEnv, expr: &Expr) -> Option<String> {
     }
 }
 
+/// The outer `Result`/`Option` constructor of `expr`'s synthesized type, for typed-`?` checking:
+/// `Some("Result")` / `Some("Option")` when the operand's synthesized type is (or names) one of those
+/// two containers, else `None`. `None` is the accept direction — an operand the checker cannot pin to
+/// a container (a call to an unknown fn, a variable of unknown type, `Any`) never drives a mismatch.
+/// Note the annotation for a container instantiation like `Result<u32, string>` parses to
+/// `Ty::Generic("Result<u32, string>")`, whose annotation still begins with `Result`, so the prefix
+/// test sees through the generic wrapper the structured `Ty` does not yet retain.
+pub(crate) fn synth_container_kind(env: &InferEnv, expr: &Expr) -> Option<String> {
+    let mut ictx = InferCtx::new();
+    let synthesized = synth(&mut ictx, env, expr);
+    let ann = ictx.resolve(&synthesized).to_annotation();
+    let a = ann.trim();
+    if a.starts_with("Result") {
+        Some("Result".into())
+    } else if a.starts_with("Option") {
+        Some("Option".into())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -986,6 +1007,42 @@ mod tests {
         );
         assert_eq!(
             check_mismatch(&env, &Expr::Call { callee: "s".into(), args: vec![] }, ""),
+            None
+        );
+    }
+
+    #[test]
+    fn synth_container_kind_classifies_result_option_and_accepts_the_rest() {
+        let vars = BTreeMap::new();
+        let mut fns = BTreeMap::new();
+        fns.insert("ropt".to_string(), "Option<u32>".to_string());
+        fns.insert("rres".to_string(), "Result<u32, string>".to_string());
+        fns.insert("rint".to_string(), "u32".to_string());
+        fns.insert("rblank".to_string(), String::new());
+        let structs = BTreeMap::new();
+        let env = empty_env(&vars, &fns, &structs);
+        // A call whose declared return is `Option<...>`/`Result<...>` classifies by its outer
+        // constructor (the annotation begins with the container name even though `Ty` wraps it as a
+        // generic) — this is what the typed-`?` check compares against the enclosing return.
+        assert_eq!(
+            synth_container_kind(&env, &Expr::Call { callee: "ropt".into(), args: vec![] }),
+            Some("Option".into())
+        );
+        assert_eq!(
+            synth_container_kind(&env, &Expr::Call { callee: "rres".into(), args: vec![] }),
+            Some("Result".into())
+        );
+        // A non-container return, a blank return, and an unknown call all resolve toward accept (None).
+        assert_eq!(
+            synth_container_kind(&env, &Expr::Call { callee: "rint".into(), args: vec![] }),
+            None
+        );
+        assert_eq!(
+            synth_container_kind(&env, &Expr::Call { callee: "rblank".into(), args: vec![] }),
+            None
+        );
+        assert_eq!(
+            synth_container_kind(&env, &Expr::Call { callee: "who".into(), args: vec![] }),
             None
         );
     }

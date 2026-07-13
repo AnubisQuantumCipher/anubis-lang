@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TRY_OUTSIDE_RESULT|requires the function to return
+// The pre-existing whole-function `?`-outside-Result/Option check is untouched by the typed-`?` slice:
+// `?` under a concrete `-> u32` return is still rejected.
+fn opt() -> Option<u32> { return Some(1); }
+fn bad() -> u32 {
+    let x = opt()?;
+    return x;
+}
+fn main() { return 0; }

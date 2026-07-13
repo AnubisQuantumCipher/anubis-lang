@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Accept-bias: `?` on a Result operand inside a `-> Result<...>` function is the matching container
+// kind — no mismatch. And a `?` in a function with no declared return stays dynamic (accepted).
+fn res() -> Result<u32, string> { return Ok(1); }
+fn h() -> Result<u32, string> {
+    let x = res()?;
+    return Ok(x);
+}
+fn dyn_fn() {
+    let y = res()?;
+    return y;
+}
+fn main() { return 0; }
