@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Accept-side guard: a default method (`area`) need not be re-implemented, the
+// one required method (`name`) is provided, and there is a single impl. Plus an
+// impl of an undeclared trait, which is fail-closed toward accept (not checked).
+struct Circle { r: u32 }
+trait Shape { fn area(self) { return 0; } fn name(self); }
+impl Shape for Circle { fn name(self) { return "circle"; } }
+impl Display for Circle { fn fmt(self) { return "c"; } }
+fn main() { print(1); }

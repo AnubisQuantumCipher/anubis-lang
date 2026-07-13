@@ -274,6 +274,10 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     };
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
+    // Trait coherence + missing-required-method, over the trait environment captured before
+    // `resolve_traits` erased it. Analysis-only: emits (shadow-gated) diagnostics and reads no
+    // desugaring output, so it cannot move the fixpoint.
+    check_trait_env(&ast.trait_env, &mut ctx);
     // Pass 1.5: interprocedural taint summaries (return-taint + param→sink), computed before
     // per-function analysis so every `Call` the analysis sees can consult them.
     compute_tainting_fns(&ast.items, &mut ctx);
@@ -2140,8 +2144,11 @@ pub struct SymbolicEngine;
 impl SymbolicEngine {
     /// Returns usable SMT-LIB path constraints (ready for Z3 or other solver).
     pub fn generate_constraints(source: &str) -> Vec<String> {
-        let ast =
-            crate::frontend::parse_source(source).unwrap_or(crate::frontend::AST { items: vec![] });
+        let ast = crate::frontend::parse_source(source)
+            .unwrap_or(crate::frontend::AST {
+                items: vec![],
+                ..Default::default()
+            });
         let ir = typecheck(ast, Mode::Safe).unwrap_or_else(|_| empty_ir());
         ir.constraints
     }
@@ -4696,6 +4703,58 @@ fn generic_conflict_scoped(
         structs: &ctx.struct_fields,
     };
     ty::generic_call_conflict(&env, generics, params, args)
+}
+
+/// Trait coherence + missing-required-method, over the [`TraitEnv`] captured before `resolve_traits`
+/// erased it. Both are STRUCTURAL (no type inference): they read only trait declarations and impl
+/// blocks. Fail-closed toward accept — an `impl` of a trait NOT declared in this program is skipped
+/// (we never reject on a trait we cannot see), and a trait with no required methods can never be
+/// missing one. ENFORCING (`shadow_gated=false`): the corpus shadow diff is UNEXPECTED=0 and NO
+/// existing program triggers either check — verified across examples/, tests/fixtures/, and the
+/// self-host source anubis_sh.anb — so they fire only on the two `EXPECT: FAIL` trait fixtures.
+fn check_trait_env(env: &crate::frontend::TraitEnv, ctx: &mut SemanticContext) {
+    use std::collections::BTreeSet;
+    // Coherence: two `impl Trait for Type` for the same (trait, type) pair conflict.
+    let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for imp in &env.impls {
+        if !seen.insert((imp.trait_name.as_str(), imp.type_name.as_str())) {
+            ctx.emit(
+                SemanticDiagnostic {
+                    code: Some("ANUBIS_TRAIT_OVERLAP".into()),
+                    message: format!(
+                        "conflicting implementations of trait `{}` for type `{}` — only one \
+                         `impl {} for {}` is allowed",
+                        imp.trait_name, imp.type_name, imp.trait_name, imp.type_name
+                    ),
+                    span: None,
+                },
+                false,
+            );
+        }
+    }
+    // Missing method: an `impl Trait for Type` must provide every REQUIRED (bodyless) trait method.
+    for imp in &env.impls {
+        // Fail-closed toward accept: a trait this program does not declare is not checked.
+        let Some(decl) = env.traits.get(&imp.trait_name) else {
+            continue;
+        };
+        let provided: BTreeSet<&str> = imp.methods.iter().map(String::as_str).collect();
+        for req in &decl.required {
+            if !provided.contains(req.as_str()) {
+                ctx.emit(
+                    SemanticDiagnostic {
+                        code: Some("ANUBIS_TRAIT_MISSING_METHOD".into()),
+                        message: format!(
+                            "`impl {} for {}` is missing required method `{}` of trait `{}`",
+                            imp.trait_name, imp.type_name, req, imp.trait_name
+                        ),
+                        span: None,
+                    },
+                    false,
+                );
+            }
+        }
+    }
 }
 
 /// Emit `ANUBIS_GENERIC_ARITY` when `annotation` instantiates a user generic type with the wrong

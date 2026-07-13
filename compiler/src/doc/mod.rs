@@ -46,7 +46,13 @@ pub fn render_path(path: &Path, opts: &DocOptions) -> Result<String, String> {
     // (contracts still come from AST requires/ensures on those items).
     let entry_ast = parse_source(&source)?;
     let docs = associate_docs(&source, &entry_ast.items);
-    let _typed: TypedIR = typecheck(AST { items }, Mode::Safe)?;
+    let _typed: TypedIR = typecheck(
+        AST {
+            items,
+            ..Default::default()
+        },
+        Mode::Safe,
+    )?;
     render_items(&entry_ast.items, &docs, opts)
 }
 

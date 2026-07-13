@@ -985,7 +985,10 @@ fn run_package_cmd(action: PackageCmd) -> Result<()> {
             )
             .map_err(|e| anyhow!("{}", e))?;
             typecheck(
-                anubis_compiler::frontend::AST { items },
+                anubis_compiler::frontend::AST {
+                    items,
+                    ..Default::default()
+                },
                 Mode::Safe,
             )
             .map_err(|e| anyhow!("{}", e))?;
@@ -1697,7 +1700,10 @@ fn main() -> Result<()> {
 
             let ast_for_json = ast
                 .clone()
-                .unwrap_or_else(|| anubis_compiler::frontend::AST { items: vec![] });
+                .unwrap_or_else(|| anubis_compiler::frontend::AST {
+                    items: vec![],
+                    ..Default::default()
+                });
 
             // Support --emit ast,hir,mir (or via --evidence) for Gate 2/3 ordinary workflows
             let stem = input

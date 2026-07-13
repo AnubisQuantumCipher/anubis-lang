@@ -92,9 +92,110 @@ pub enum Mode {
     Exploit,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AST {
     pub items: Vec<Item>,
+    /// Trait environment captured BEFORE `resolve_traits` desugars traits away, for analysis only
+    /// (coherence / missing-method checking in the middle-end). `resolve_traits` drops `Item::Trait`
+    /// and clears `impl Trait for Type`'s `trait_name` at parse time, so the checker never sees a
+    /// trait otherwise. This is a read-only sidecar: codegen and the self-host schema projection
+    /// never read it, and it changes no field the emitter consumes. Defaulted (empty) so existing
+    /// `AST { items }` constructions/destructures stay valid.
+    pub trait_env: TraitEnv,
+}
+
+/// Read-only trait environment for the checker, populated by [`collect_trait_env`] from the ORIGINAL
+/// items (with `Item::Trait` and `impl Trait for Type` intact). Analysis-only — it feeds the
+/// shadow-gated trait diagnostics and touches nothing the emitter reads, so it cannot move the
+/// desugaring output or the binary fixpoint.
+#[derive(Debug, Clone, Default)]
+pub struct TraitEnv {
+    /// trait name -> its required (bodyless) and default (with-body) method names.
+    pub traits: std::collections::BTreeMap<String, TraitDecl>,
+    /// Every `impl Trait for Type` occurrence in source order — for coherence (overlap) and
+    /// missing-required-method checks.
+    pub impls: Vec<TraitImplRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitDecl {
+    /// Method names declared WITHOUT a body — an implementor must provide these.
+    pub required: Vec<String>,
+    /// Method names declared WITH a body — inherited by implementors that do not override them.
+    pub defaults: Vec<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitImplRef {
+    pub trait_name: String,
+    pub type_name: String,
+    /// Method names this `impl` block provides explicitly.
+    pub methods: Vec<String>,
+    pub span: Span,
+}
+
+/// Capture the trait environment from the original items, BEFORE `resolve_traits` erases traits.
+/// Read-only: it constructs no `Item` and mutates nothing downstream. Recurses into modules exactly
+/// as `collect_trait_defaults` does, so it sees every trait/impl the desugarer sees.
+pub fn collect_trait_env(items: &[Item]) -> TraitEnv {
+    let mut env = TraitEnv::default();
+    collect_trait_env_into(items, &mut env);
+    env
+}
+
+fn collect_trait_env_into(items: &[Item], env: &mut TraitEnv) {
+    for item in items {
+        match item {
+            Item::Trait {
+                name,
+                methods,
+                span,
+            } => {
+                let mut required = Vec::new();
+                let mut defaults = Vec::new();
+                for m in methods {
+                    if let Item::Fn { name: mn, body, .. } = m {
+                        if body.is_empty() {
+                            required.push(mn.clone());
+                        } else {
+                            defaults.push(mn.clone());
+                        }
+                    }
+                }
+                env.traits.insert(
+                    name.clone(),
+                    TraitDecl {
+                        required,
+                        defaults,
+                        span: *span,
+                    },
+                );
+            }
+            Item::Impl {
+                type_name,
+                trait_name: Some(t),
+                methods,
+                span,
+            } => {
+                let method_names = methods
+                    .iter()
+                    .filter_map(|m| match m {
+                        Item::Fn { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                env.impls.push(TraitImplRef {
+                    trait_name: t.clone(),
+                    type_name: type_name.clone(),
+                    methods: method_names,
+                    span: *span,
+                });
+            }
+            Item::Module { items, .. } => collect_trait_env_into(items, env),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -1723,9 +1824,12 @@ impl Parser {
                 self.bump();
             }
         }
+        // Capture the trait environment BEFORE `resolve_traits` consumes `items` and erases traits.
+        let trait_env = collect_trait_env(&items);
         ParseOutput {
             ast: AST {
                 items: resolve_traits(items),
+                trait_env,
             },
             diagnostics: self.diagnostics,
         }

@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TRAIT_MISSING_METHOD
+// `Shape` requires `area` (declared without a body). The `impl` provides no
+// methods, so the required method is missing — coherence the desugarer erases.
+struct Circle { r: u32 }
+trait Shape { fn area(self); }
+impl Shape for Circle { }
+fn main() { print(1); }

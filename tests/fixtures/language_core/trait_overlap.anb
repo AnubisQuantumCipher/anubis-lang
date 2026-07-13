@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TRAIT_OVERLAP
+// Two `impl Shape for Circle` blocks conflict — trait coherence forbids more
+// than one implementation of a trait for a type.
+struct Circle { r: u32 }
+trait Shape { fn area(self) { return 0; } }
+impl Shape for Circle { fn area(self) { return 1; } }
+impl Shape for Circle { fn area(self) { return 2; } }
+fn main() { print(1); }

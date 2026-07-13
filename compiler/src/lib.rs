@@ -2818,6 +2818,7 @@ fn main() uses(fs.write, fs.read) {
         typecheck(
             frontend::AST {
                 items: items.clone(),
+                ..Default::default()
             },
             Mode::Safe,
         )
@@ -2841,7 +2842,7 @@ fn main() uses(fs.read, fs.write) {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&clean).expect("combine clean");
-        typecheck(frontend::AST { items }, Mode::Safe).expect("declassify path must check");
+        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("declassify path must check");
 
         let leak = dir.join("leak.anb");
         std::fs::write(
@@ -2856,7 +2857,7 @@ fn main() uses(fs.read, fs.write) {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&leak).expect("combine leak");
-        let err = typecheck(frontend::AST { items }, Mode::Safe).expect_err("leak must fail");
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect_err("leak must fail");
         assert!(
             err.contains("ANUBIS_INTERPROC_SINK") || err.contains("TAINTED"),
             "got: {err}"
@@ -3057,7 +3058,10 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&entry).expect("combine");
-        let ast = frontend::AST { items: items.clone() };
+        let ast = frontend::AST {
+            items: items.clone(),
+            ..Default::default()
+        };
         let ir = typecheck(ast, Mode::Safe).expect("typecheck");
         let art = lower_to_native(ir, &items, &dir, "crypto_build", false)
             .expect("build must succeed with audited crypto via cargo");
@@ -3177,7 +3181,7 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&f).expect("combine");
-        let err = typecheck(frontend::AST { items }, Mode::Safe)
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe)
             .expect_err("std.crypto mac == must fail");
         assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
     }
@@ -3196,7 +3200,7 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&w).expect("combine");
-        let err = typecheck(frontend::AST { items }, Mode::Safe).expect_err("write must fail");
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect_err("write must fail");
         assert!(
             err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("file_write"),
             "got: {err}"
@@ -3210,7 +3214,7 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&s).expect("combine");
-        let err = typecheck(frontend::AST { items }, Mode::Safe).expect_err("shell must fail");
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect_err("shell must fail");
         assert!(
             err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("shell"),
             "got: {err}"
@@ -3224,7 +3228,7 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&ok).expect("combine");
-        typecheck(frontend::AST { items }, Mode::Safe).expect("authorized write must pass");
+        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("authorized write must pass");
     }
 
     #[test]
@@ -5123,7 +5127,7 @@ mod phase6_package_tests {
             names.iter().any(|n| n == "math__add"),
             "expected math__add in {names:?}"
         );
-        typecheck(frontend::AST { items }, Mode::Safe).expect("typecheck");
+        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("typecheck");
     }
 
     #[test]
@@ -5416,7 +5420,7 @@ mod phase6_package_tests {
             },
         )
         .expect("combine");
-        let err = typecheck(frontend::AST { items }, Mode::Safe).unwrap_err();
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).unwrap_err();
         assert!(
             err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("shell"),
             "effect must inherit across package mount: {err}"
@@ -5441,7 +5445,7 @@ mod phase6_package_tests {
             },
         )
         .expect("combine taint");
-        let err = typecheck(frontend::AST { items }, Mode::Safe).unwrap_err();
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).unwrap_err();
         assert!(
             err.contains("ANUBIS_TAINTED_SINK") || err.contains("taint") || err.contains("TAINTED"),
             "taint must inherit across package mount: {err}"
@@ -5632,7 +5636,7 @@ math = { git = "https://example.invalid/math.git" }
             items.iter().any(|it| matches!(it, frontend::Item::Fn { name, .. } if name == "math__add")),
             "expected math__add from git dep"
         );
-        typecheck(frontend::AST { items }, Mode::Safe).expect("typecheck");
+        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("typecheck");
     }
 
     #[test]
@@ -5726,7 +5730,7 @@ math = { git = "https://example.invalid/math.git" }
             .collect();
         assert!(names.iter().any(|n| n == "leaf__ten"), "{names:?}");
         assert!(names.iter().any(|n| n == "mid__twenty"), "{names:?}");
-        typecheck(frontend::AST { items }, Mode::Safe).expect("typecheck");
+        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("typecheck");
     }
 
     #[test]
