@@ -8,8 +8,14 @@ members = [
 # For RISC0 receipt (Gate 10+) on Apple Silicon: use the in-repo vendored
 # patched circuit crate. The vendor/ tree is checked into this repo; no
 # external path dependency is required.
+#
+# risc0-sys is vendored + patched (2026-07-13) to give poolstl worker threads a
+# 64 MB stack on Apple: macOS std::thread's 512 KB default overflows on risc0's
+# generated exec_Top* frames and SIGBUS-crashes the CPU prover. It stays provably
+# pristine + patches/risc0-sys-1.5.0-macos-worker-stack.diff (CI-checked).
 [patch.crates-io]
 risc0-circuit-rv32im = { path = "vendor/risc0-circuit-rv32im" }
+risc0-sys = { path = "vendor/risc0-sys" }
 
 [workspace.package]
 version = "0.1.0"

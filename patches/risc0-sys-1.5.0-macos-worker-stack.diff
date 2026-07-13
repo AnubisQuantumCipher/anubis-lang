@@ -1,0 +1,189 @@
+diff -ruN --exclude=.cargo-checksum.json --exclude=target a/risc0-sys-1.5.0/cxx/vendor/poolstl.hpp b/risc0-sys-1.5.0/cxx/vendor/poolstl.hpp
+--- a/risc0-sys-1.5.0/cxx/vendor/poolstl.hpp	2026-07-13 02:18:56
++++ b/risc0-sys-1.5.0/cxx/vendor/poolstl.hpp	2026-07-13 02:18:56
+@@ -114,6 +114,17 @@
+ #include <thread>
+ #include <type_traits>
+ 
++// [anubis fork] MODIFIED from risc0-sys 1.5.0 (2026-07-13): give poolstl worker
++// threads a large stack on Apple platforms. macOS std::thread stacks default to
++// 512 KB, too small for risc0's generated rv32im exec_Top* frames -> SIGBUS stack
++// overflow in the CPU prover. On Apple we create workers via pthread with a 64 MB
++// stack (std::thread offers no stack-size control); every other platform keeps the
++// original std::thread path byte-for-byte. See
++// patches/risc0-sys-1.5.0-macos-worker-stack.diff.
++#if defined(__APPLE__)
++#include <pthread.h>
++#endif
++
+ // MSVC does not correctly set the __cplusplus macro by default, so we must read it from _MSVC_LANG
+ // See https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cplusplus/
+ #if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+@@ -214,7 +225,11 @@
+          */
+         TTP_NODISCARD unsigned int get_num_threads() const {
+             const std::lock_guard<std::recursive_mutex> threads_lock(thread_mutex);
++#if defined(__APPLE__)
++            return static_cast<unsigned int>(apple_threads.size());  // [anubis fork]
++#else
+             return static_cast<unsigned int>(threads.size());
++#endif
+         }
+ 
+         /**
+@@ -403,9 +418,23 @@
+         void start_threads(const unsigned int num_threads) {
+             const std::lock_guard<std::recursive_mutex> threads_lock(thread_mutex);
+ 
++#if defined(__APPLE__)
++            // [anubis fork] 64 MB worker stacks on Apple (see file header).
++            pthread_attr_t ttp_attr;
++            pthread_attr_init(&ttp_attr);
++            pthread_attr_setstacksize(&ttp_attr, static_cast<size_t>(64) * 1024 * 1024);
+             for (unsigned int i = 0; i < num_threads; ++i) {
++                pthread_t tid;
++                if (pthread_create(&tid, &ttp_attr, &task_thread_pool::apple_worker_entry, this) == 0) {
++                    apple_threads.push_back(tid);
++                }
++            }
++            pthread_attr_destroy(&ttp_attr);
++#else
++            for (unsigned int i = 0; i < num_threads; ++i) {
+                 threads.emplace_back(&task_thread_pool::worker_main, this);
+             }
++#endif
+         }
+ 
+         /**
+@@ -420,12 +449,20 @@
+                 task_cv.notify_all();
+             }
+ 
++#if defined(__APPLE__)
++            // [anubis fork] join pthread-backed workers.
++            for (pthread_t tid : apple_threads) {
++                pthread_join(tid, nullptr);
++            }
++            apple_threads.clear();
++#else
+             for (auto& thread : threads) {
+                 if (thread.joinable()) {
+                     thread.join();
+                 }
+             }
+             threads.clear();
++#endif
+         }
+ 
+         /**
+@@ -435,6 +472,17 @@
+          */
+         std::vector<std::thread> threads;
+ 
++#if defined(__APPLE__)
++        // [anubis fork] pthread-backed workers with a 64 MB stack (see file header).
++        // std::thread cannot set a stack size on macOS, so on Apple the pool lives
++        // here instead of in `threads`; this static trampoline bridges to worker_main().
++        std::vector<pthread_t> apple_threads;
++        static void* apple_worker_entry(void* self) {
++            static_cast<task_thread_pool*>(self)->worker_main();
++            return nullptr;
++        }
++#endif
++
+         /**
+          * A mutex for methods that start/stop threads.
+          */
+@@ -896,6 +944,17 @@
+ #include <thread>
+ #include <type_traits>
+ 
++// [anubis fork] MODIFIED from risc0-sys 1.5.0 (2026-07-13): give poolstl worker
++// threads a large stack on Apple platforms. macOS std::thread stacks default to
++// 512 KB, too small for risc0's generated rv32im exec_Top* frames -> SIGBUS stack
++// overflow in the CPU prover. On Apple we create workers via pthread with a 64 MB
++// stack (std::thread offers no stack-size control); every other platform keeps the
++// original std::thread path byte-for-byte. See
++// patches/risc0-sys-1.5.0-macos-worker-stack.diff.
++#if defined(__APPLE__)
++#include <pthread.h>
++#endif
++
+ // MSVC does not correctly set the __cplusplus macro by default, so we must read it from _MSVC_LANG
+ // See https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cplusplus/
+ #if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
+@@ -996,7 +1055,11 @@
+          */
+         TTP_NODISCARD unsigned int get_num_threads() const {
+             const std::lock_guard<std::recursive_mutex> threads_lock(thread_mutex);
++#if defined(__APPLE__)
++            return static_cast<unsigned int>(apple_threads.size());  // [anubis fork]
++#else
+             return static_cast<unsigned int>(threads.size());
++#endif
+         }
+ 
+         /**
+@@ -1185,9 +1248,23 @@
+         void start_threads(const unsigned int num_threads) {
+             const std::lock_guard<std::recursive_mutex> threads_lock(thread_mutex);
+ 
++#if defined(__APPLE__)
++            // [anubis fork] 64 MB worker stacks on Apple (see file header).
++            pthread_attr_t ttp_attr;
++            pthread_attr_init(&ttp_attr);
++            pthread_attr_setstacksize(&ttp_attr, static_cast<size_t>(64) * 1024 * 1024);
+             for (unsigned int i = 0; i < num_threads; ++i) {
++                pthread_t tid;
++                if (pthread_create(&tid, &ttp_attr, &task_thread_pool::apple_worker_entry, this) == 0) {
++                    apple_threads.push_back(tid);
++                }
++            }
++            pthread_attr_destroy(&ttp_attr);
++#else
++            for (unsigned int i = 0; i < num_threads; ++i) {
+                 threads.emplace_back(&task_thread_pool::worker_main, this);
+             }
++#endif
+         }
+ 
+         /**
+@@ -1202,12 +1279,20 @@
+                 task_cv.notify_all();
+             }
+ 
++#if defined(__APPLE__)
++            // [anubis fork] join pthread-backed workers.
++            for (pthread_t tid : apple_threads) {
++                pthread_join(tid, nullptr);
++            }
++            apple_threads.clear();
++#else
+             for (auto& thread : threads) {
+                 if (thread.joinable()) {
+                     thread.join();
+                 }
+             }
+             threads.clear();
++#endif
+         }
+ 
+         /**
+@@ -1216,6 +1301,17 @@
+          * Access protected by thread_mutex
+          */
+         std::vector<std::thread> threads;
++
++#if defined(__APPLE__)
++        // [anubis fork] pthread-backed workers with a 64 MB stack (see file header).
++        // std::thread cannot set a stack size on macOS, so on Apple the pool lives
++        // here instead of in `threads`; this static trampoline bridges to worker_main().
++        std::vector<pthread_t> apple_threads;
++        static void* apple_worker_entry(void* self) {
++            static_cast<task_thread_pool*>(self)->worker_main();
++            return nullptr;
++        }
++#endif
+ 
+         /**
+          * A mutex for methods that start/stop threads.

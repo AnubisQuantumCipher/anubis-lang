@@ -3384,8 +3384,6 @@ dependencies = [
 [[package]]
 name = "risc0-sys"
 version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "960c8295fbb87e1e73e332f8f7de2fba0252377575042d9d3e9a4eb50a38e078"
 dependencies = [
  "anyhow",
  "risc0-build-kernel",
