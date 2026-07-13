@@ -3715,9 +3715,24 @@ fn bad() {
         std::fs::write(risc0_dir.join("guest.elf"), b"nested guest").unwrap();
         std::fs::write(risc0_dir.join("image_id.txt"), b"1 2 3 4 5 6 7 8").unwrap();
         std::fs::write(risc0_dir.join("receipt.bin"), b"real receipt bytes").unwrap();
+        // The evidence check validates the metal-hybrid reference by EXISTENCE + STRUCTURE
+        // (reference_path is a real dir; vendored_patch_path == {ref}/vendor/risc0-circuit-rv32im
+        // carrying a Cargo.toml) rather than by matching a fixed env-var string. Build that
+        // structure under the test's isolated out_dir so the FRESH bundle validates for the right
+        // reason before we tamper the nested receipt.
+        let metal_ref = out_dir.join("metal-ref");
+        let vendor_patch = metal_ref.join("vendor/risc0-circuit-rv32im");
+        std::fs::create_dir_all(&vendor_patch).unwrap();
+        std::fs::write(
+            vendor_patch.join("Cargo.toml"),
+            b"[package]\nname = \"risc0-circuit-rv32im\"\n",
+        )
+        .unwrap();
         std::fs::write(
             risc0_dir.join("risc0_metadata.json"),
-            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"/tmp/test-metal-prover","vendored_patch_path":"/tmp/test-metal-prover/vendor/risc0-circuit-rv32im","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#,
+            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"__REF__","vendored_patch_path":"__VP__","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#
+                .replace("__REF__", metal_ref.to_str().unwrap())
+                .replace("__VP__", vendor_patch.to_str().unwrap()),
         )
         .unwrap();
         std::fs::write(
