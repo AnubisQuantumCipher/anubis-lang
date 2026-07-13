@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_OPEN_IN_VERIFIED
+// Phase-2 slice 2: verified mode forbids an open (unbounded) effect row. `apply` calls a
+// function-valued parameter `g`, whose effects cannot be determined — the row is open. Tokens can
+// only gate a COMPLETE effect set, so verified mode requires the row be closed.
+@verified
+fn apply(g) {
+    g(1);
+}
+
+fn main() { }

@@ -8,6 +8,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub mod proptest;
+pub(crate) mod capability;
 pub(crate) mod effects;
 pub(crate) mod ty;
 
@@ -1043,6 +1044,25 @@ fn analyze_function(
         ctx,
     );
 
+    // Phase-2 slice 2: capability-token LINEARITY. `capability::check_linearity` is the pure
+    // intraprocedural use-once walk (middle/capability.rs); it proves a `cap_acquire`-minted token
+    // is used exactly once, non-duplicable (move-on-rebind), and unforgeable (`cap_use` on a
+    // non-token is MISSING). Dual-mode: default lane accept-biased, verified lane fail-closed
+    // toward consumed. ENFORCING (`emit(.., false)`): promoted on evidence — the linearity surface
+    // is inert on the whole corpus (no committed program mints a `cap_acquire` token), proven by the
+    // shadow diff at UNEXPECTED=0 over 170 programs, zero shadow lines on `selfhost/src/anubis_sh.anb`
+    // and every stdlib module, and scratch fire/inert/accept-edge runs before the flip.
+    for f in capability::check_linearity(params, body, ctx.verified, (span.start, span.end)) {
+        ctx.emit(
+            SemanticDiagnostic {
+                code: Some(f.code.into()),
+                message: f.message,
+                span: f.span,
+            },
+            false,
+        );
+    }
+
     // Phase-3 C2/C5: declared-vs-inferred effect check.
     // - When `uses(...)` is present: inferred capability effects must be ⊆ declared.
     // - Verification lane (`ctx.verified` / `--verified`): capability effects also require that a
@@ -1139,6 +1159,32 @@ fn analyze_function(
                         false,
                     );
                 }
+            }
+        }
+    }
+
+    // Phase-2 slice 2: an OPEN effect row is forbidden in the verification lane. The effect slice
+    // left `open` accept-biased (an unresolvable callee — function-valued parameter, closure, or
+    // method call — never fired a diagnostic). But the capability discipline needs the effect set
+    // to be a total upper bound: tokens can only gate a COMPLETE set. Verified mode therefore
+    // requires a closed row (no unbounded effect tail); the default lane stays permissive and open
+    // rows remain legal. Independent of `transitive_caps` — a purely-open row (no concrete caps)
+    // still fires. ENFORCING (`emit(.., false)`), promoted on evidence: inert on the corpus (no
+    // committed program is checked under `--verified`/`@verified`, shadow diff UNEXPECTED=0), with
+    // `@verified` fixtures and unit tests proving the reject/accept pair before the flip.
+    if ctx.verified {
+        if let Some(row) = ctx.fn_effect_rows.get(name) {
+            if row.open {
+                ctx.emit(
+                    SemanticDiagnostic {
+                        code: Some("ANUBIS_EFFECT_OPEN_IN_VERIFIED".into()),
+                        message: format!(
+                            "verification lane: function `{name}` has an open (unbounded) effect row — it calls a function-valued parameter, closure, or method whose effects cannot be determined. Verified mode requires a complete effect set; make every callee's effects determinable."
+                        ),
+                        span: Some((span.start, span.end)),
+                    },
+                    false,
+                );
             }
         }
     }

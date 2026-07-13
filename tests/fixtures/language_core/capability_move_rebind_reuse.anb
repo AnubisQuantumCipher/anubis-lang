@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CAPABILITY_REUSE
+// Phase-2 slice 2: `let y = c` MOVES the token (c is consumed, y holds it). Using `c` after the
+// move is a reuse — aliasing cannot duplicate a linear capability.
+fn main() {
+    let c = cap_acquire("fs.read");
+    let y = c;
+    cap_use(c);
+}

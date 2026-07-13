@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Phase-2 slice 2, default-lane accept-bias: `c` is consumed on one branch only (maybe-consumed).
+// The reject decision stays accept-biased on uncertainty — must-consume leaves `c` live, so the
+// later use accepts. (The verified counterpart, capability_branch_reuse_verified, rejects.)
+fn f(cond) {
+    let c = cap_acquire("x");
+    if cond {
+        cap_use(c);
+    }
+    cap_use(c);
+}
+
+fn main() { }

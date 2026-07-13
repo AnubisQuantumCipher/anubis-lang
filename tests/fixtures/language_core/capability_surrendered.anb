@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Phase-2 slice 2 accept-guard: passing the token to a callee surrenders it (consumed here, once);
+// it is not used again. Inside `consume_it`, the param arrives with unknown provenance (accept).
+fn consume_it(c) {
+    cap_use(c);
+}
+
+fn main() {
+    let c = cap_acquire("fs.read");
+    consume_it(c);
+}

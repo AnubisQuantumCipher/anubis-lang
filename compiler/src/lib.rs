@@ -4330,6 +4330,107 @@ fn main() { let d = mid(); print(d); }"#;
         tc_ok(src).expect("default lane permits absent clause");
     }
 
+    // ── Phase-2 slice 2: capability tokens as linear (use-once) values ──────────────────────────
+
+    /// Typecheck under a chosen lane, returning the error string on rejection.
+    fn tc_lane(src: &str, verified: bool) -> Result<(), String> {
+        let ast = parse_source(src).expect("parse");
+        typecheck_ex(ast, frontend::Mode::Safe, verified).map(|_| ())
+    }
+
+    #[test]
+    fn capability_reuse_and_missing_reject_in_both_lanes() {
+        // Use-once: a token consumed twice is a reuse — caught straight-line in both lanes.
+        for verified in [false, true] {
+            let err = tc_lane(
+                r#"fn main() { let c = cap_acquire("fs.read"); cap_use(c); cap_use(c); }"#,
+                verified,
+            )
+            .expect_err("double use must reject");
+            assert!(err.contains("ANUBIS_CAPABILITY_REUSE"), "verified={verified} got: {err}");
+            // Unforgeable: cap_use on a provable non-capability is MISSING (a token cannot be conjured).
+            let err = tc_lane(r#"fn main() { cap_use(5); }"#, verified)
+                .expect_err("cap_use on a literal must reject");
+            assert!(err.contains("ANUBIS_CAPABILITY_MISSING"), "verified={verified} got: {err}");
+        }
+    }
+
+    #[test]
+    fn capability_used_once_surrendered_and_unknown_provenance_accept() {
+        tc_ok(r#"fn main() { let c = cap_acquire("fs.read"); cap_use(c); }"#)
+            .expect("a token used exactly once accepts");
+        // Passing the token to a callee surrenders it; not reused → accept.
+        tc_ok(
+            r#"fn consume_it(c) { cap_use(c); }
+fn main() { let c = cap_acquire("fs.read"); consume_it(c); }"#,
+        )
+        .expect("surrendered-once capability accepts");
+        // Accept-bias: a param arrives with unknown provenance; cap_use(param) does not fire MISSING
+        // on ignorance — in either lane.
+        for verified in [false, true] {
+            tc_lane(r#"fn handler(c) { cap_use(c); } fn main() { }"#, verified)
+                .expect("unknown-provenance cap_use must accept");
+        }
+    }
+
+    #[test]
+    fn capability_move_on_rebind_keeps_token_singular() {
+        // `let y = c` MOVES: using `c` after the move is a reuse (aliasing cannot launder).
+        let err = tc_ok(
+            r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(c); }"#,
+        )
+        .expect_err("use after move must reject");
+        assert!(err.contains("ANUBIS_CAPABILITY_REUSE"), "got: {err}");
+        // Using the token via its new name exactly once accepts.
+        tc_ok(r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(y); }"#)
+            .expect("used-once via the moved-to name accepts");
+    }
+
+    #[test]
+    fn capability_aggregate_double_use_rejects() {
+        // The unified "any read-occurrence is a use" rule catches duplication into an aggregate.
+        let err = tc_ok(r#"fn main() { let c = cap_acquire("fs.read"); let pair = [c, c]; }"#)
+            .expect_err("[c, c] must reject");
+        assert!(err.contains("ANUBIS_CAPABILITY_REUSE"), "got: {err}");
+    }
+
+    #[test]
+    fn capability_branch_dual_default_accepts_verified_rejects() {
+        // Consumed on one branch only: default lane must-consume accepts (accept-bias), verified
+        // lane may-consume rejects (fail-closed toward consumed).
+        let src = r#"fn f(cond) { let c = cap_acquire("x"); if cond { cap_use(c); } cap_use(c); }
+fn main() { }"#;
+        tc_lane(src, false).expect("default lane must-consume accepts uncertain consumption");
+        let err = tc_lane(src, true).expect_err("verified lane may-consume rejects");
+        assert!(err.contains("ANUBIS_CAPABILITY_REUSE"), "got: {err}");
+    }
+
+    #[test]
+    fn capability_loop_carried_rejects_in_verified_only() {
+        // A cap acquired outside a loop and consumed inside is re-consumed on iteration 2.
+        let carried = r#"fn f() { let c = cap_acquire("x"); for i in 0..3 { cap_use(c); } }
+fn main() { }"#;
+        tc_lane(carried, false).expect("default lane accepts (loop may not run)");
+        let err = tc_lane(carried, true).expect_err("verified lane rejects loop-carried consume");
+        assert!(err.contains("ANUBIS_CAPABILITY_REUSE"), "got: {err}");
+        // A fresh token minted each iteration is linear in both lanes.
+        let fresh = r#"fn f() { for i in 0..3 { let c = cap_acquire("x"); cap_use(c); } }
+fn main() { }"#;
+        tc_lane(fresh, false).expect("loop-local mint accepts (default)");
+        tc_lane(fresh, true).expect("loop-local mint accepts (verified)");
+    }
+
+    #[test]
+    fn open_effect_row_rejected_in_verified_accepted_in_default() {
+        // Verified mode forbids an open (unbounded) effect row (a call to a function-valued param).
+        let src = r#"fn apply(g) { g(1); }
+fn main() { }"#;
+        let err = tc_lane(src, true).expect_err("open row must reject under verified");
+        assert!(err.contains("ANUBIS_EFFECT_OPEN_IN_VERIFIED"), "got: {err}");
+        // Default lane keeps open rows legal (the effect slice's accept-bias is unchanged).
+        tc_lane(src, false).expect("default lane permits an open row");
+    }
+
     #[test]
     fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {
         // Phase-3 A2: a function that RETURNS a formal parameter is summarized as

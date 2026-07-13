@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Phase-2 slice 2 accept-guard: a capability token used exactly once is correct.
+fn main() {
+    let c = cap_acquire("fs.read");
+    cap_use(c);
+}

@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CAPABILITY_REUSE
+// Phase-2 slice 2: a linear capability token is used exactly once. Using `c` twice is a reuse —
+// the token is non-duplicable. Caught in both lanes (straight-line, no branch uncertainty).
+fn main() {
+    let c = cap_acquire("fs.read");
+    cap_use(c);
+    cap_use(c);
+}

@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CAPABILITY_MISSING
+// Phase-2 slice 2: `cap_use` requires a live capability token. A literal is provably not a
+// capability — a token cannot be conjured from nothing (the only constructor is `cap_acquire`).
+fn main() {
+    cap_use(5);
+}

@@ -2444,6 +2444,12 @@ pub fn is_builtin_name(name: &str) -> bool {
                 | "return"
                 | "break"
                 | "continue"
+                // Phase-2 slice 2: capability-token surface (checker-only this slice). `cap_acquire`
+                // mints an unforgeable linear token; `cap_use` is the authorized use-once consumer.
+                // Recognized here so the unknown-call gate accepts them; linearity is enforced by
+                // middle/capability.rs. Executing a `cap_*` program is a documented later concern.
+                | "cap_acquire"
+                | "cap_use"
         )
         || is_proof_input_builtin(name)
         || is_poc_kit_builtin(name)
