@@ -1066,14 +1066,26 @@ fn risc0_metadata_check(bundle_dir: &Path) -> Option<Check> {
         .get("prover_patch_crates_io_active")
         .and_then(|v| v.as_bool())
         .unwrap_or(patch_active);
-    let expected_base = std::env::var("ANUBIS_RISC0_METAL_REFERENCE")
-        .unwrap_or_else(|_| "/tmp/test-metal-prover".to_string());
-    let reference_ok =
-        metal_hybrid.get("reference_path").and_then(|v| v.as_str()) == Some(expected_base.as_str());
-    let vendor_ok = metal_hybrid
+    // Validate the metal-hybrid reference by existence + structure, not by matching a
+    // specific ANUBIS_RISC0_METAL_REFERENCE value. prove() resolves an in-repo default
+    // when the env var is unset, so the previous env-var string match (with a
+    // "/tmp/test-metal-prover" fallback) spuriously FAILed otherwise-valid in-repo proofs.
+    // The real "did this use the vendored patched circuit" guarantee is carried by the
+    // patch_active flags above (from cargo metadata); these two are structural sanity checks.
+    let reference_path = metal_hybrid.get("reference_path").and_then(|v| v.as_str());
+    let vendored_patch_path = metal_hybrid
         .get("vendored_patch_path")
-        .and_then(|v| v.as_str())
-        == Some(format!("{}/vendor/risc0-circuit-rv32im", expected_base).as_str());
+        .and_then(|v| v.as_str());
+    let reference_ok = reference_path
+        .map(|p| !p.is_empty() && std::path::Path::new(p).is_dir())
+        .unwrap_or(false);
+    let vendor_ok = match (reference_path, vendored_patch_path) {
+        (Some(base), Some(vp)) => {
+            vp == format!("{}/vendor/risc0-circuit-rv32im", base)
+                && std::path::Path::new(vp).join("Cargo.toml").is_file()
+        }
+        _ => false,
+    };
     let passed = verify_status == "passed"
         && fresh
         && !dev_mode

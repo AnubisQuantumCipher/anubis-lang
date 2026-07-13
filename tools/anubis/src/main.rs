@@ -4661,6 +4661,8 @@ fn resolve_metal_reference(cli_ref: Option<&Path>) -> MetalReferenceConfig {
         )
     } else if let Some(path) = read_anubis_toml_metal_reference() {
         (path, "Anubis.toml:risc0_metal_reference".to_string())
+    } else if let Some(root) = default_in_repo_metal_reference() {
+        (root, "default:in-repo-vendor".to_string())
     } else {
         (
             PathBuf::from(DEFAULT_METAL_REFERENCE),
@@ -4672,6 +4674,26 @@ fn resolve_metal_reference(cli_ref: Option<&Path>) -> MetalReferenceConfig {
         root,
         vendor,
         config_source,
+    }
+}
+
+/// When no metal reference is configured (no `--metal-reference`, no
+/// `ANUBIS_RISC0_METAL_REFERENCE`, no `Anubis.toml`), fall back to the repo's own
+/// vendored `risc0-circuit-rv32im`, resolved to an ABSOLUTE path. The generated
+/// `methods/` project lives under the prove out-dir and patches
+/// `risc0-circuit-rv32im` by path; the old `DEFAULT_METAL_REFERENCE = ""` default
+/// produced a RELATIVE `vendor/...` path that could not resolve from that subdir,
+/// so real proving failed with "failed to load source for dependency". Walk up
+/// from the current dir to stay relocatable — no hardcoded user path.
+fn default_in_repo_metal_reference() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join("vendor/risc0-circuit-rv32im/Cargo.toml").is_file() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
     }
 }
 
