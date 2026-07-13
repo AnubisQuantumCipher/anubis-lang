@@ -79,7 +79,18 @@ no new key in `selfhost_schema::project_item` (would move the fixpoint) — the 
 Every check that adds rejection power lands in **shadow mode** first: it emits through
 `SemanticContext::emit(.., shadow_gated=true)`, so under `ANUBIS_SHADOW_TYPES=1` its would-be
 rejections are logged (`ANUBIS_SHADOW: …` on stderr) but never enter the enforcing `diagnostics`
-Err-gate. `scripts/run_shadow_diff.sh` runs the whole corpus and classifies each would-be rejection
+Err-gate.
+
+> **Ledger correction (surfaced by the inference-core slice).** The shadow harness's `emit` shipped
+> in `bbf3117` with a latent inversion — `if shadow_gated && self.shadow { shadow_diags } else {
+> diagnostics }` — which routed a shadow-gated diagnostic to the *enforcing* Err-gate whenever shadow
+> was off, contradicting its own "verdict path bit-identical whether shadow on/off" contract. It was
+> harmless only because nothing had called `emit` yet (dead code). It was corrected in **`cfba865`**
+> to drop-when-off. **The harness contract is therefore only truly load-bearing from `cfba865`
+> onward**; any "shadow-clean" claim made before that commit rested on an `emit` that mis-routed when
+> shadow was off. This is a note for honesty, not a redo: no check had been wired through `emit`
+> before the inference slice, so no earlier verdict was actually affected — but the *guarantee* the
+> word "shadow-clean" implies did not hold until `cfba865`. `scripts/run_shadow_diff.sh` runs the whole corpus and classifies each would-be rejection
 as EXPECTED (fixture is `// EXPECT: FAIL` with a matching `// ERROR_CONTAINS`) or UNEXPECTED (a
 currently-accepted program). A check is promoted to enforcing (`shadow_gated=false`, one-line flip)
 **only when UNEXPECTED = 0**. Corpus baseline captured at harness time: **111 accept / 28 reject**
