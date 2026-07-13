@@ -132,6 +132,12 @@ pub enum Item {
         intent: Option<String>,
         /// Declared return type (`-> T`), captured verbatim; `None` if omitted.
         ret: Option<String>,
+        /// Captured generic type-parameter names (`fn foo<T, U>` → `["T", "U"]`), previously
+        /// discarded by `skip_generic_params`. NEW, defaulted to `vec![]` so every existing
+        /// `Item::Fn { .. }` destructure and every construction that omits it stays valid, exactly
+        /// like `effects` above. Checker-only (monomorphization is type-arg substitution in the
+        /// middle-end); the runtime erases types, so codegen and the self-host schema ignore it.
+        generics: Vec<String>,
         /// B2 contracts: `requires(P)` preconditions and `ensures(Q)` postconditions declared after
         /// the signature. Each is a boolean expression; `ensures` may reference `result` (the return
         /// value). Empty when the function declares no contracts.
@@ -147,12 +153,17 @@ pub enum Item {
     Struct {
         name: String,
         fields: Vec<(String, String)>,
+        /// Captured generic type-parameter names (`struct Pair<A, B>` → `["A", "B"]`). NEW,
+        /// defaulted to `vec![]`. Used to arity-check `Pair<...>` instantiations in annotations.
+        generics: Vec<String>,
         span: Span,
     },
     /// `enum Status { Ok, Err(u32), Pending }`
     Enum {
         name: String,
         variants: Vec<EnumVariant>,
+        /// Captured generic type-parameter names (`enum Opt<T>` → `["T"]`). NEW, defaulted `vec![]`.
+        generics: Vec<String>,
         span: Span,
     },
     /// `impl Point { ... }` or `impl Shape for Circle { ... }` — methods for a struct/enum type.
@@ -1877,7 +1888,7 @@ impl Parser {
     fn parse_struct(&mut self) -> Option<Item> {
         let start = self.expect_keyword("struct")?.span;
         let (name, _) = self.expect_ident("expected struct name")?;
-        self.skip_generic_params();
+        let generics = self.parse_generic_params();
         self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after struct name");
         let mut fields = vec![];
@@ -1896,6 +1907,7 @@ impl Parser {
         Some(Item::Struct {
             name,
             fields,
+            generics,
             span: Span {
                 start: start.start,
                 end,
@@ -2151,16 +2163,19 @@ impl Parser {
 
     fn parse_impl(&mut self) -> Option<Item> {
         let start = self.expect_keyword("impl")?.span;
-        self.skip_generic_params(); // `impl<T> ...`
+        // Impl-level and type-argument generics are consumed but not captured onto an AST field this
+        // slice (impl/trait generics are entangled with the deferred trait workstream); the impl's
+        // methods are `Item::Fn` and capture their own generics via `parse_fn`.
+        let _ = self.parse_generic_params(); // `impl<T> ...`
         let (first, _) = self.expect_ident("expected type name after `impl`")?;
-        self.skip_generic_params(); // `impl Type<T>` or `impl Trait<T> for ...`
-                                    // `impl Type { ... }`  or  `impl Trait for Type { ... }`.
+        let _ = self.parse_generic_params(); // `impl Type<T>` or `impl Trait<T> for ...`
+                                             // `impl Type { ... }` or `impl Trait for Type { ... }`.
         let (trait_name, type_name) = if self.check_keyword("for") {
             self.bump();
             let (ty, _) = self
                 .expect_ident("expected type name after `for`")
                 .unwrap_or_else(|| ("_".into(), start));
-            self.skip_generic_params(); // `for Type<T>`
+            let _ = self.parse_generic_params(); // `for Type<T>`
             (Some(first), ty)
         } else {
             (None, first)
@@ -2197,7 +2212,7 @@ impl Parser {
     fn parse_trait(&mut self) -> Option<Item> {
         let start = self.expect_keyword("trait")?.span;
         let (name, _) = self.expect_ident("expected trait name")?;
-        self.skip_generic_params();
+        let _ = self.parse_generic_params(); // trait-level generics — deferred trait workstream
         self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after trait name");
         let mut methods = vec![];
@@ -2229,7 +2244,7 @@ impl Parser {
     fn parse_enum(&mut self) -> Option<Item> {
         let start = self.expect_keyword("enum")?.span;
         let (name, _) = self.expect_ident("expected enum name")?;
-        self.skip_generic_params();
+        let generics = self.parse_generic_params();
         self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after enum name");
         let mut variants = vec![];
@@ -2287,6 +2302,7 @@ impl Parser {
         Some(Item::Enum {
             name,
             variants,
+            generics,
             span: Span {
                 start: start.start,
                 end,
@@ -2528,24 +2544,48 @@ impl Parser {
         })
     }
 
-    /// Consume a generic parameter list `<T, U: Bound, ...>` if present, ignoring it — the runtime
-    /// is dynamically typed, so generics are purely syntactic. Balances nested `<...>` and `>>`.
-    fn skip_generic_params(&mut self) {
+    /// Consume a generic parameter list `<T, U: Bound, ...>` if present, CAPTURING the declared
+    /// type-parameter names (`["T", "U"]`) and discarding bounds / nested arguments. Balances nested
+    /// `<...>` and `>>` exactly as the former `skip_generic_params` did — the token stream consumed is
+    /// byte-for-byte identical, so no existing program's parse shifts; only the (previously thrown
+    /// away) leading identifier of each top-level parameter is now returned. Returns `vec![]` when no
+    /// `<...>` is present. The runtime is dynamically typed, so these names are checker-only.
+    fn parse_generic_params(&mut self) -> Vec<String> {
+        let mut names = Vec::new();
         if !self.check_token(&Token::Lt) {
-            return;
+            return names;
         }
         self.bump();
         let mut depth = 1i32;
+        // At the start of the list and immediately after a top-level comma, the next identifier is a
+        // parameter *name* (`T` in `T: Bound`); everything else at any depth is a bound / argument and
+        // is discarded. This mirrors the depth accounting of the former skip so token consumption is
+        // unchanged.
+        let mut expect_name = true;
         while depth > 0 && !self.at_eof() {
             if self.check_token(&Token::Lt) {
                 depth += 1;
+                self.bump();
             } else if self.check_token(&Token::Gt) {
                 depth -= 1;
+                self.bump();
             } else if self.check_token(&Token::Shr) {
                 depth -= 2; // `>>` closes two levels
+                self.bump();
+            } else if depth == 1 && self.check_token(&Token::Comma) {
+                expect_name = true;
+                self.bump();
+            } else {
+                if depth == 1 && expect_name {
+                    if let Token::Ident(s) = &self.current().token {
+                        names.push(s.clone());
+                    }
+                    expect_name = false;
+                }
+                self.bump();
             }
-            self.bump();
         }
+        names
     }
 
     /// Consume a `where T: Bound, ...` clause (up to the body `{` or `;`), ignoring it.
@@ -2596,7 +2636,7 @@ impl Parser {
     fn parse_fn(&mut self, pre_attrs: Vec<Attribute>, visibility: Visibility) -> Option<Item> {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
-        self.skip_generic_params(); // `fn foo<T>(...)`
+        let generics = self.parse_generic_params(); // `fn foo<T>(...)`
         let params = self.parse_params();
         // Optional return type: `-> Type` (lexed as Minus Gt then the type). Captured in the AST
         // for tooling/typecheck even though the runtime is dynamically typed.
@@ -2727,6 +2767,7 @@ impl Parser {
             mode,
             intent: None,
             ret,
+            generics,
             requires,
             ensures,
             effects,

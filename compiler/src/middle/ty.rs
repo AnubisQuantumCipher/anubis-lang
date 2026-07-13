@@ -678,6 +678,82 @@ pub(crate) fn synth_container_kind(env: &InferEnv, expr: &Expr) -> Option<String
     }
 }
 
+/// Monomorphization by type-argument substitution, in the checker only: at a call to a generic
+/// function, each declared type parameter becomes one fresh unification variable, and every argument
+/// whose declared parameter type IS that bare type parameter is unified into it. A parameter used in
+/// two positions with two incompatible CONCRETE arguments (`fn same<T>(a: T, b: T)` called as
+/// `same(1, "x")`) makes the variable bind `u32` then clash with `string` — returned as `(param,
+/// first, second)` for `ANUBIS_GENERIC_CONFLICT`. Accept-biased throughout: an argument the core
+/// cannot type synthesizes to `Any` and absorbs (never a spurious conflict), and a parameter whose
+/// declared type is concrete or a container is left to the ordinary argument checks — only bare
+/// type-parameter positions participate here.
+pub(crate) fn generic_call_conflict(
+    env: &InferEnv,
+    generics: &[String],
+    params: &[String],
+    args: &[Expr],
+) -> Option<(String, String, String)> {
+    let mut ictx = InferCtx::new();
+    let mut var_of: BTreeMap<&str, Ty> = BTreeMap::new();
+    for g in generics {
+        let v = ictx.fresh();
+        var_of.insert(g.as_str(), v);
+    }
+    for (param_ty, arg) in params.iter().zip(args.iter()) {
+        if let Some(var) = var_of.get(param_ty.trim()).cloned() {
+            let t = synth(&mut ictx, env, arg);
+            if let Err((first, second)) = ictx.unify(&var, &t) {
+                return Some((param_ty.trim().to_string(), first, second));
+            }
+        }
+    }
+    None
+}
+
+/// Arity check for a generic-type instantiation in a type annotation: if `annotation` names a user
+/// generic type `Base<…>` (present in `type_generics` with a declared parameter count) whose supplied
+/// type-argument count differs, return `(base, declared, given)` for `ANUBIS_GENERIC_ARITY`. Returns
+/// `None` for everything else — a bare type parameter (`T`, no `<`), a built-in container
+/// (`Result`/`Option`/`list`/`Map`/`tainted`, absent from `type_generics`), or a matching arity —
+/// the accept direction. Counts only the OUTERMOST instantiation's top-level type arguments, so
+/// `Pair<Box<u32>, string>` counts 2.
+pub(crate) fn generic_arity_mismatch(
+    annotation: &str,
+    type_generics: &BTreeMap<String, usize>,
+) -> Option<(String, usize, usize)> {
+    let a = annotation.trim();
+    let lt = a.find('<')?;
+    let base = a[..lt].trim();
+    let declared = *type_generics.get(base)?;
+    let inner = &a[lt + 1..];
+    let close = inner.rfind('>')?;
+    let given = count_top_level_type_args(&inner[..close]);
+    if given == declared {
+        None
+    } else {
+        Some((base.to_string(), declared, given))
+    }
+}
+
+/// Count the top-level (depth-0) comma-separated type arguments in the inside of a `<…>`. Empty ⇒ 0.
+fn count_top_level_type_args(inner: &str) -> usize {
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return 0;
+    }
+    let mut depth = 0i32;
+    let mut count = 1usize;
+    for c in inner.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

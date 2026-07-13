@@ -242,6 +242,15 @@ struct SemanticContext {
     /// closure, not the enclosing function). Read by the typed-`?` check in `check_expr_semantics` to
     /// compare each `?` operand's container kind against the enclosing `Result`/`Option` return.
     current_fn_return: Option<String>,
+    /// Function name → its captured generic type-parameter names (`fn same<T>(a: T, b: T)` → `["T"]`).
+    /// Registered in pass 1. Drives `ANUBIS_GENERIC_CONFLICT`: at a call, a type parameter used in two
+    /// argument positions is unified across them, and two incompatible concrete arguments clash.
+    fn_generics: BTreeMap<String, Vec<String>>,
+    /// User struct/enum name → its declared generic-parameter arity (`struct Pair<A, B>` → 2).
+    /// Registered in pass 1. Drives `ANUBIS_GENERIC_ARITY`: an instantiation `Pair<u32>` in an
+    /// annotation supplies the wrong number of type arguments. Built-in containers (`Result`/`Option`/
+    /// `list`/`Map`/…) are absent, so their instantiations are never arity-checked (accept).
+    type_generics: BTreeMap<String, usize>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -335,16 +344,32 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
     for item in items {
         match item {
             Item::Module { items, .. } => register_program_surface(items, ctx),
-            Item::Enum { name, variants, .. } => {
+            Item::Enum {
+                name,
+                variants,
+                generics,
+                ..
+            } => {
                 let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
                 ctx.enum_variants.insert(name.clone(), names);
+                if !generics.is_empty() {
+                    ctx.type_generics.insert(name.clone(), generics.len());
+                }
             }
-            Item::Struct { name, fields, .. } => {
+            Item::Struct {
+                name,
+                fields,
+                generics,
+                ..
+            } => {
                 // Field name → declared type, for `FieldAccess` synthesis in the inference core.
                 ctx.struct_fields.insert(
                     name.clone(),
                     fields.iter().map(|(f, t)| (f.clone(), t.clone())).collect(),
                 );
+                if !generics.is_empty() {
+                    ctx.type_generics.insert(name.clone(), generics.len());
+                }
             }
             Item::Fn {
                 name,
@@ -354,6 +379,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 ensures,
                 ret,
                 effects,
+                generics,
                 ..
             } => {
                 // Flat function namespace: a redefinition is an error.
@@ -370,6 +396,9 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 );
                 ctx.fn_ret_types
                     .insert(name.clone(), ret.clone().unwrap_or_default());
+                if !generics.is_empty() {
+                    ctx.fn_generics.insert(name.clone(), generics.clone());
+                }
                 if !effects.is_empty() {
                     ctx.fn_declared_effects
                         .insert(name.clone(), effects.clone());
@@ -809,6 +838,15 @@ fn analyze_function(
     // the lambda arm of `check_expr_semantics` clears it around a closure body. `None` for no `-> T`.
     ctx.current_fn_return = ret.map(|r| r.to_string());
 
+    // Generic-instantiation arity over this function's signature annotations (`fn f(p: Pair<u32>)` or
+    // `-> Pair<u32>` when `Pair` declares two parameters). Shadow-gated inside the helper.
+    for (_, pty) in params {
+        check_generic_arity_annotation(pty, Some((span.start, span.end)), ctx);
+    }
+    if let Some(rty) = ret {
+        check_generic_arity_annotation(rty, Some((span.start, span.end)), ctx);
+    }
+
     // Solver integer-modelability and symbolic widths are FUNCTION-LOCAL: a variable modeled as an
     // i64 in one function must not leak that modelability to a same-named binding in another function
     // (which could hold a string/list/bool), or an integer predicate over the second would be "proved"
@@ -1144,6 +1182,11 @@ fn analyze_stmts(
                         ),
                         span: Some((span.start, span.end)),
                     });
+                }
+
+                // Generic-instantiation arity on a `let x: Pair<u32> = …` annotation (shadow-gated).
+                if let Some(t) = ty {
+                    check_generic_arity_annotation(t, Some((span.start, span.end)), ctx);
                 }
 
                 // Unknown-variable detection (covers `let y = x;` and simple `x + 1` cases). A bare
@@ -4635,6 +4678,55 @@ fn return_container_kind(rty: &str) -> Option<&'static str> {
     }
 }
 
+/// Generic-parameter conflict at a call to a generic function, via the bidirectional core's
+/// monomorphization (`ty::generic_call_conflict`). Returns `(param, first, second)` on a clash, else
+/// `None` (including for a non-generic callee). Borrows `ctx` immutably; the caller emits.
+fn generic_conflict_scoped(
+    callee: &str,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<(String, String, String)> {
+    let generics = ctx.fn_generics.get(callee)?;
+    let params = ctx.fn_params.get(callee)?;
+    let vars = scope_vars(scope);
+    let env = ty::InferEnv {
+        vars: &vars,
+        fns: &ctx.fn_ret_types,
+        structs: &ctx.struct_fields,
+    };
+    ty::generic_call_conflict(&env, generics, params, args)
+}
+
+/// Emit `ANUBIS_GENERIC_ARITY` when `annotation` instantiates a user generic type with the wrong
+/// number of type arguments. No-op for a bare parameter / built-in container / matching arity, and
+/// no-op on an unknown/`Any` base — fail-closed toward accept. ENFORCING: the corpus shadow diff is
+/// UNEXPECTED=0 (no existing program, including the self-host source, triggers it — verified), so it
+/// fires only on the `EXPECT: FAIL` generic-arity fixture. Kept as one call so every annotation site
+/// is a single line.
+fn check_generic_arity_annotation(
+    annotation: &str,
+    span: Option<(usize, usize)>,
+    ctx: &mut SemanticContext,
+) {
+    if let Some((base, declared, given)) =
+        ty::generic_arity_mismatch(annotation, &ctx.type_generics)
+    {
+        ctx.emit(
+            SemanticDiagnostic {
+                code: Some("ANUBIS_GENERIC_ARITY".into()),
+                message: format!(
+                    "generic type `{base}` expects {declared} type argument(s), but {given} \
+                     {} supplied",
+                    if given == 1 { "was" } else { "were" }
+                ),
+                span,
+            },
+            false,
+        );
+    }
+}
+
 /// Walk expressions for A+ call typing + match exhaustiveness (fail-closed).
 fn check_expr_semantics(
     expr: &Expr,
@@ -4703,6 +4795,27 @@ fn check_expr_semantics(
                         span: None,
                     });
                 }
+            }
+            // Generic-parameter conflict: a type parameter used in two argument positions bound to two
+            // incompatible concrete arguments (`fn same<T>(a: T, b: T)` called `same(1, "x")`). This is
+            // the checker-only monomorphization the captured generics enable — the flat arg checks
+            // above accept it (a bare `T` is compatible with everything). Fires only on two definitely-
+            // incompatible CONCRETE args; an unknown/`Any`/generic arg is not a conflict, so it is
+            // fail-closed toward accept. ENFORCING (`shadow_gated=false`): the corpus shadow diff is
+            // UNEXPECTED=0 — no existing program triggers it (verified across examples, fixtures, and
+            // the self-host source), so it fires only on the `EXPECT: FAIL` generic-conflict fixture.
+            if let Some((param, first, second)) = generic_conflict_scoped(callee, args, scope, ctx) {
+                ctx.emit(
+                    SemanticDiagnostic {
+                        code: Some("ANUBIS_GENERIC_CONFLICT".into()),
+                        message: format!(
+                            "generic parameter `{param}` of `{callee}` is used as both `{first}` and \
+                             `{second}` at the same call",
+                        ),
+                        span: None,
+                    },
+                    false,
+                );
             }
             for a in args {
                 check_expr_semantics(a, scope, ctx);
