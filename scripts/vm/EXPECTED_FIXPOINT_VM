@@ -1,0 +1,18 @@
+# In-VM self-host BINARY fixpoint baseline for the Anubis compiler.
+#
+# This is the sha256 the self-host seal (scripts/run_selfhost_gate.sh) must produce
+# when run inside the tart macOS guest. It is DISTINCT from the host fixpoint
+# (c640badd..., produced on macOS 26.5.2) because the guest is on a different macOS
+# point-build — a byte difference in Mach-O normalization, not a correctness change.
+#
+# Environment that produced this hash:
+#   guest image : ghcr.io/cirruslabs/macos-tahoe-xcode  (macOS 26.4 / 25E246)
+#   toolchain   : rustc 1.97.0-nightly (82bee9650 2026-05-09) == host commit
+#   allocation  : 8 vCPU / 24 GiB
+#   established : 2026-07-14 at commit 7aa9f63 (Phase-2 slice 3, effect-capability composition)
+#
+# The invariant the seal proves is stage2 == stage3 AND this hash is stable across
+# every slice run in this same golden image. Re-bake the golden image (OS point
+# update, toolchain bump, risc0 change) => re-baseline this file DELIBERATELY (a
+# logged event), never a silent drift. run-slice.sh asserts the seal matches this.
+dc680001e8e4b17774abf01110e6c94dee7d94dbcb939f57fb1da038df4e438e
