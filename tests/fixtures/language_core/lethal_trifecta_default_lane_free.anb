@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Phase-2 final slice accept-bias: the exact three-leg body WITHOUT @verified stays accepted — the
+// trifecta is a verified-lane discipline only; the default lane never runs the check. (declassify
+// keeps the Safe-mode value-flow taint check quiet so this isolates the verified-only point.)
+fn agent() uses(fs.read, net.send) {
+    let steer = input();
+    let secret = declassify(read_file("notes"), "hash-only", "safe");
+    send("host", 80, secret);
+}
+
+fn main() { }

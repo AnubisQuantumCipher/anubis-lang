@@ -1,0 +1,16 @@
+// EXPECT: PASS
+// Phase-2 final slice accept-guard: all three legs present, but a WELL-FORMED declassify (policy +
+// reason) is the author's reviewed sanitization barrier → the trifecta is discharged.
+@verified
+fn agent() uses(fs.read, net.send) {
+    let rcap = cap_acquire("fs.read");
+    let scap = cap_acquire("net.send");
+    let steer = input();
+    let secret = read_file("notes");
+    let safe = declassify(secret, "hash-only", "reviewed egress");
+    cap_use(rcap);
+    cap_use(scap);
+    send("host", 80, safe);
+}
+
+fn main() { }

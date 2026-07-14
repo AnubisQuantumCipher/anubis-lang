@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LETHAL_TRIFECTA
+// Phase-2 final slice: the lethal trifecta as a verified-lane compile error. `agent` holds all three
+// lethal legs at once: it reads private data (read_file → fs.read), is exposed to untrusted input
+// through a DISTINCT channel (input()), and communicates externally (send → net.send). The egress arg
+// is a CONSTANT ("beacon") on purpose: no value literally flows read→send, so the value-flow taint
+// check stays silent and this fixture isolates the NEW coexistence rejection. An injection in `steer`
+// could drive the private read and the send at runtime — that is the trifecta.
+@verified
+fn agent() uses(fs.read, net.send) {
+    let rcap = cap_acquire("fs.read");
+    let scap = cap_acquire("net.send");
+    let steer = input();
+    let secret = read_file("notes");
+    cap_use(rcap);
+    cap_use(scap);
+    send("host", 80, "beacon");
+}
+
+fn main() { }

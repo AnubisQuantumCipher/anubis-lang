@@ -4486,6 +4486,76 @@ fn main() { }"#;
     // so a whole-program `fn send(...)` is independently flagged by the older Safe/verified effect
     // gates — a pre-existing inconsistency out of this slice's scope.)
 
+    // ── Phase-2 final slice: the lethal trifecta as a verified-lane compile error ────────────────
+
+    // A three-leg trifecta body with a CONSTANT egress arg: no value flows read→send, so the
+    // Safe-mode value-flow taint check is silent and ANUBIS_LETHAL_TRIFECTA is the sole new error —
+    // isolating the genuinely-new coexistence coverage.
+    const TRIFECTA_BODY: &str = r#"fn agent() uses(fs.read, net.send) {
+    let rc = cap_acquire("fs.read");
+    let sc = cap_acquire("net.send");
+    let steer = input();
+    let secret = read_file("notes");
+    cap_use(rc);
+    cap_use(sc);
+    send("host", 80, "beacon");
+}
+fn main() { }"#;
+
+    #[test]
+    fn lethal_trifecta_rejected_in_verified_accepted_in_default() {
+        let err = tc_lane(TRIFECTA_BODY, true).expect_err("trifecta must reject under verified");
+        assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
+        // Default lane never runs the check — the exact same body compiles.
+        tc_lane(TRIFECTA_BODY, false).expect("default lane does not run the trifecta check");
+    }
+
+    #[test]
+    fn lethal_trifecta_needs_all_three_legs() {
+        // Two legs only — no distinct untrusted channel (leg 2 absent): accepts under verified.
+        let two = r#"fn agent() uses(fs.read, net.send) {
+    let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
+    let secret = read_file("cfg"); cap_use(rc); cap_use(sc); send("host", 80, "ping");
+}
+fn main() { }"#;
+        tc_lane(two, true).expect("private read + egress with no untrusted channel is two legs");
+        // Untrusted + egress but NO private read (leg 1 absent): accepts.
+        let no_read = r#"fn agent() uses(net.send) {
+    let sc = cap_acquire("net.send"); let steer = input(); cap_use(sc); send("host", 80, "beacon");
+}
+fn main() { }"#;
+        tc_lane(no_read, true).expect("no fs.read → not a trifecta");
+    }
+
+    #[test]
+    fn lethal_trifecta_wellformed_declassify_discharges() {
+        // A well-formed declassify (policy + reason) is the reviewed sanitization barrier.
+        let ok = r#"fn agent() uses(fs.read, net.send) {
+    let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
+    let steer = input(); let secret = read_file("notes");
+    let safe = declassify(secret, "hash-only", "reviewed");
+    cap_use(rc); cap_use(sc); send("host", 80, safe);
+}
+fn main() { }"#;
+        tc_lane(ok, true).expect("well-formed declassify discharges the trifecta");
+    }
+
+    #[test]
+    fn lethal_trifecta_malformed_declassify_does_not_discharge() {
+        // THE S1 FIX: a malformed declassify (no policy/reason) must NOT silence the trifecta — the
+        // hatch keys on the AST shape, not the raw "declassify" effect tag (which is pushed even for
+        // malformed ones). All three legs remain, so the trifecta still fires.
+        let bad = r#"fn agent() uses(fs.read, net.send) {
+    let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
+    let steer = input(); let secret = read_file("notes");
+    let junk = declassify(steer);
+    cap_use(rc); cap_use(sc); send("host", 80, "beacon");
+}
+fn main() { }"#;
+        let err = tc_lane(bad, true).expect_err("malformed declassify must not discharge the trifecta");
+        assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
+    }
+
     #[test]
     fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {
         // Phase-3 A2: a function that RETURNS a formal parameter is summarized as
