@@ -12,13 +12,13 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 
 ---
 
-## STATUS — as of 2026-07-14 (branch `a-plus-maturity/20260705-1649`, HEAD `59585f0`)
+## STATUS — as of 2026-07-14 (branch `a-plus-maturity/20260705-1649`, HEAD `2ac45ab`)
 
 | Phase | State | Evidence / residuals |
 |---|---|---|
 | **0 — Trust spine** | ✅ **DONE** | byte-identical source + binary fixpoint (`c640badd` host / `dc680001` in-VM), ablation gate, DDC C-native parser lane, hermetic repro. Residual → author-diversity (Phase 7). |
 | **1 — Real type system** | 🟡 **~90%** | bidirectional inference (`97c17f3`), floats, captured generics (`898cc3e`), real traits + coherence + missing-method (`fa88628`) — all enforcing, fixpoint held. **RESIDUALS:** typed `?` propagation; generic-bound capture + trait **bound** checking (`ANUBIS_TRAIT_BOUND_UNSATISFIED` — parser currently discards `T: Trait` bounds). |
-| **2 — Capability & effect (the differentiator)** | 🟢 **CORE DONE** | transitive effect inference / Koka rows (`da28de4`); linear capability tokens / Austral (`9824807`); effect-capability composition (`7aa9f63`); **lethal trifecta as a verified-lane compile error** (`27554fb`) + shell egress (`c7cec93`) + leg-1 confidentiality label `secret_source` (`59585f0`). **RESIDUALS:** ⚠ the documented **taint reassignment fail-open** (needs control-flow-merge dataflow); higher-order taint summaries + field granularity; leg-1 confidentiality *flow* tracking (currently presence, not flow); leg-2 interprocedural; trifecta in **Safe** mode (currently verified-lane only); coarse declassify hatch; `sql` egress. |
+| **2 — Capability & effect (the differentiator)** | 🟢 **CORE DONE** | transitive effect inference / Koka rows (`da28de4`); linear capability tokens / Austral (`9824807`); effect-capability composition (`7aa9f63`); **lethal trifecta as a verified-lane compile error** (`27554fb`) + shell egress (`c7cec93`) + leg-1 confidentiality label `secret_source` (`59585f0`). taint **reassignment fail-open CLOSED** (`2ac45ab` — control-flow-merge dataflow, `merge_taint_over`, span-identity). **RESIDUALS:** higher-order taint summaries + field granularity; leg-1 confidentiality *flow* tracking (currently presence, not flow) + auto-labelling `getenv`/param secrets; leg-2 interprocedural (untrusted input through a helper); trifecta in **Safe** mode (currently verified-lane only); coarse declassify hatch (function-level, not value-tied); `sql` egress. |
 | **3 — Broaden verified surface** | ⬜ TODO | QF_FP (float) + QF_S (string) solver lanes + bounded-array maturity, each fail-closed, differential harness beyond i64. Can run partly parallel to Phase 2. |
 | **4 — Port checker into Anubis** | ⬜ TODO | port inference + effect + taint engines to Anubis so the ablation gate covers type-checking too. Do once, after 1–3 settle. Fixpoint may reseal. |
 | **5 — Mechanized semantics + soundness** | ⬜ TODO | small-step semantics in Lean/Rocq; prove (a) Safe-mode non-interference, (b) inferred-⊆-declared effect soundness, (c) SMT-encoding soundness. |
@@ -30,25 +30,23 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 
 ### ➡ NEXT ACTION
 
-**Close the Phase-2 taint reassignment fail-open with proper control-flow-merge dataflow.**
+The Phase-2 soundness residual (taint reassignment fail-open) is **closed** (`2ac45ab`), and the
+taint layer now has real control-flow-merge dataflow. Candidate next moves (operator steers the
+order; each is a clean, self-contained slice in the same VM-validated shadow-first shape):
 
-Why this and not another residual:
-1. It is a **fail-open in a shipped security check** (`ANUBIS_TAINTED_SINK`), the one soundness hole
-   the arc explicitly names for Phase 2 — soundness outranks any feature-completion residual.
-2. It is a **hard prerequisite for Phase 5**: the non-interference theorem ("no tainted value reaches
-   a sink without declassification") is *false / unprovable* while a reassignment can launder taint.
-   Close it now, in the phase that owns it, before proofs are built on top.
-3. It strengthens the trifecta's own foundation (leg 2 = untrusted taint).
-4. It reuses the branch-merge dataflow pattern already built in `capability.rs` / `trifecta.rs`.
+1. **Leg-1 confidentiality FLOW** *(recommended — reuses the machinery just built).* Make
+   `secret_source` a tracked flow (the confidentiality dual of the taint integrity flow), so leg 1
+   is precise (a secret that actually reaches an egress) rather than presence-only, and `getenv`/
+   param secrets are auto-labelled. Directly reuses `merge_taint_over` + the flow-sensitive Assign.
+2. **Leg-2 interprocedural** — untrusted input arriving through a helper (`fn get(){ input() }`);
+   needs a monotone body-exposure summary, sibling to `compute_tainting_fns`.
+3. **Trifecta into Safe mode** — the arc frames the trifecta as a Safe-mode compile error; it is
+   currently verified-lane only. Decide the accept-bias carefully (Safe is the default lane).
+4. **Broaden (arc dependency order):** Phase 3 solver lanes (QF_FP / QF_S, parallel-able), or finish
+   the Phase-1 residuals (typed `?`, generic-bound capture + trait bound checking).
 
-**Step 1 is to REPRODUCE the specific fail-open** — a concrete `.anb` that exfiltrates through a
-reassignment/branch and compiles clean — before fixing it (reproduce-before-you-certify). Then land
-the branch-merge fix shadow-first, VM-validated, fixpoint held at `dc680001`.
-
-*Runner-up residuals (same phase, deferrable): leg-1 confidentiality FLOW (make `secret_source` a
-tracked flow, the dual of taint); leg-2 interprocedural untrusted-input summary; wiring the trifecta
-coexistence check into Safe mode. Phase-1 residuals (typed `?`, generic-bound capture) are also open
-but non-blocking — Phase 2 was built on the current type system successfully.*
+Every slice: reproduce-before-certify where it's a soundness fix, shadow-first for a new check,
+VM-validated via `scripts/vm/run-slice.sh`, fixpoint held at `dc680001`.
 
 ### Working discipline (unchanged, every slice)
 Every heavy build runs in the tart macOS VM via `scripts/vm/run-slice.sh` (the host twice hit a
