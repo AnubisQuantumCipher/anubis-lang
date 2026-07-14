@@ -138,6 +138,22 @@ through indexing/field access.
   (the shadow-vs-reassign case they flagged is handled by the span identity check). Fixtures:
   `taint_reassign_straightline`/`_branch`/`_to_clean_accepts`; tests: `taint_reassignment_*`,
   `taint_is_flow_sensitive_across_reassignment_residual_closed`, `block_scoped_shadowing_*`.
+- **CONFIDENTIALITY flow is REAL (Phase-2 leg-1, `c727b8d`) — with named boundaries.** The dual of
+  the taint integrity flow: a value seeded by `secret_source(..)` that actually REACHES a
+  network/shell egress (`send`/`network_send`/`connect`/`http_get`/`http_post`/`shell`/`exec`/
+  `system`/`target_run`, exact-match) without a well-formed `declassify(value, policy, reason)` is
+  `ANUBIS_SECRET_EXFILTRATION` (Safe mode, enforcing). The `secret` label lives on `ScopeBinding`
+  (analysis-only, never serialized), flows through let/assign (SET on secret RHS, CLEAR on clean),
+  and merges may-secret across branches/loops via the same `merge_taint_over` + span-identity as
+  taint. A malformed declassify does NOT release (AST-shape keyed). Boundaries this slice, stated
+  not hidden: **no interprocedural secret summary** (a secret returned from a helper arrives
+  unlabelled — the dual of `compute_tainting_fns` is future work); **`getenv`/params are not
+  auto-labelled** (needs a `secret<T>` qualifier decision); **local `fs.write` is not egress**
+  (a secret written to a local file passes — pinned by `secret_local_write_accepts.anb`). Fixtures:
+  `secret_exfiltration_send`/`_reassign`/`_shell`, `secret_declassified_egress_accepts`,
+  `secret_local_write_accepts`, `secret_reassigned_clean_before_egress_accepts`; tests:
+  `secret_flows_to_egress_without_declassify_rejects`, `secret_egress_accept_edges_are_precise`,
+  `secret_egress_malformed_declassify_still_rejects`.
 - **Interprocedural RETURN-taint is now modeled (Phase-3 slice 2).** A monotone fixpoint pre-pass
   (`compute_tainting_fns`, run before per-function analysis) marks each function whose return value
   carries INTERNAL taint — a `taint_source()`/`tainted<T>` local returned directly (through let-chains
