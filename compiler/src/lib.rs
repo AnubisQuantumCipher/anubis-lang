@@ -4052,14 +4052,18 @@ fn main() {
             .expect_err("verified lane must require uses for read_file");
         assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got: {err}");
 
-        // Same program with uses(fs.read) is accepted in verified lane.
+        // Same program with uses(fs.read) AND a genuinely-acquired fs.read capability is accepted in
+        // the verified lane. (Slice 3 composition tightened verified mode: a `uses(...)` clause is
+        // necessary but no longer sufficient — the effect must also hold its authorizing token.)
         let ok = r#"fn main() uses(fs.read) {
+    let cap = cap_acquire("fs.read");
     let data = read_file("x.txt");
+    cap_use(cap);
     print(len(data));
 }"#;
         let ast = parse_source(ok).expect("parse");
         typecheck_ex(ast, frontend::Mode::Safe, true)
-            .expect("verified + uses(fs.read) must accept read_file");
+            .expect("verified + uses(fs.read) + acquired capability must accept read_file");
 
         // Default lane (verified=false) still accepts absent uses (permissive).
         tc_ok(src).expect("default lane permits absent uses");
@@ -4114,23 +4118,29 @@ fn main() {
         )
         .expect_err("@verified without uses must reject");
         assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got {err}");
+        // Slice 3 composition: @verified now also requires the effect hold its authorizing token
+        // (a `uses(...)` clause alone no longer suffices in verified mode).
         tc_ok(
             r#"@verified
 fn main() uses(fs.read) {
+    let cap = cap_acquire("fs.read");
     let d = read_file("x");
+    cap_use(cap);
     print(len(d));
 }"#,
         )
-        .expect("@verified + uses(fs.read) must accept");
+        .expect("@verified + uses(fs.read) + acquired capability must accept");
         // #[verified] rust-style also accepted:
         tc_ok(
             r#"#[verified]
 fn main() uses(fs.read) {
+    let cap = cap_acquire("fs.read");
     let d = read_file("x");
+    cap_use(cap);
     print(len(d));
 }"#,
         )
-        .expect("#[verified] + uses must accept");
+        .expect("#[verified] + uses + acquired capability must accept");
     }
 
     #[test]
@@ -4430,6 +4440,51 @@ fn main() { }"#;
         // Default lane keeps open rows legal (the effect slice's accept-bias is unchanged).
         tc_lane(src, false).expect("default lane permits an open row");
     }
+
+    // ── Phase-2 slice 3: effect-capability composition ──────────────────────────────────────────
+
+    #[test]
+    fn verified_effect_requires_a_genuinely_acquired_capability() {
+        // Performing a privileged effect in verified mode without acquiring its capability is
+        // unauthorized. `uses(net.send)` keeps the declared-effect check satisfied, so the sole
+        // diagnostic is the composition one.
+        let src = r#"fn f() uses(net.send) { send("h", 80, "x"); }
+fn main() { }"#;
+        let err = tc_lane(src, true).expect_err("verified net without a capability must reject");
+        assert!(err.contains("ANUBIS_EFFECT_UNAUTHORIZED"), "got: {err}");
+        // A genuinely-acquired matching capability authorizes it.
+        let ok = r#"fn f() uses(net.send) { let n = cap_acquire("net.send"); send("h", 80, "x"); cap_use(n); }
+fn main() { }"#;
+        tc_lane(ok, true).expect("verified net with an acquired net capability must accept");
+        // Default lane imposes no authorization requirement.
+        tc_lane(src, false).expect("default lane performs effects freely");
+    }
+
+    #[test]
+    fn unknown_provenance_token_does_not_authorize_under_verified() {
+        // THE FORGE CLOSURE (load-bearing): a capability of unknown provenance — here a parameter —
+        // does not authorize an effect in verified mode. The SAME program accepts without --verified.
+        let src = r#"fn f(netcap) uses(net.send) { send("h", 80, "x"); }
+fn main() { }"#;
+        let err = tc_lane(src, true).expect_err("a param cap must not authorize under verified");
+        assert!(err.contains("ANUBIS_EFFECT_UNAUTHORIZED"), "got: {err}");
+        // The exact same source, default lane → accepts (the hole is verified-lane-only).
+        tc_lane(src, false).expect("the same program accepts without --verified");
+    }
+
+    #[test]
+    fn verified_no_privileged_effect_needs_no_capability() {
+        // A verified function that performs no privileged effect has nothing to authorize.
+        let src = r#"fn f() { let x = 1 + 2; print(x); }
+fn main() { }"#;
+        tc_lane(src, true).expect("no privileged effect → no authorization required");
+    }
+    // (capability.rs's `callee ∉ all_fns` guard — a user fn shadowing a builtin name performs no
+    // effect for authorization — is proven in isolation by the module test
+    // `user_fn_shadowing_a_builtin_name_is_not_a_performed_effect`. An end-to-end assertion is not
+    // added here: the pre-existing inline effect classifier in mod.rs (1949-1995) lacks that guard,
+    // so a whole-program `fn send(...)` is independently flagged by the older Safe/verified effect
+    // gates — a pre-existing inconsistency out of this slice's scope.)
 
     #[test]
     fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {

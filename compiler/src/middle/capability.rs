@@ -3,9 +3,18 @@
 //! A capability is an unforgeable linear token: minted only by `cap_acquire(...)`, used exactly
 //! once, non-duplicable, and surrendered when passed away. This module is the intraprocedural
 //! linearity checker that proves that discipline — the Austral half of the capability-and-effect
-//! fusion. It is deliberately decoupled from the effect row (effects.rs): a token grants no
-//! authority *yet* (composition — "performing effect X requires holding a cap for X" — is the next
-//! slice), so `cap_acquire`/`cap_use` carry no effect and this check only proves linearity.
+//! fusion.
+//!
+//! Phase-2 slice 3 (composition) joins this surface to the effect row: in VERIFIED mode, a function
+//! that DIRECTLY performs a privileged effect must have genuinely ACQUIRED the capability
+//! authorizing it (`ANUBIS_EFFECT_UNAUTHORIZED`). "Genuinely acquired" means a `cap_acquire("<id>")`
+//! with a string-literal kind bound in this body — a parameter, a return, or a non-literal value
+//! does NOT authorize, which closes the forge vector slice 2 flagged (an unknown-provenance token
+//! must not authorize an effect it was never granted). The property is KIND-level, path-insensitive,
+//! and DIRECT-builtins-only: it checks that the body contains a matching acquisition, not that a
+//! live token is held at the exact call; and it authorizes only effects performed by direct builtins
+//! here (transitive effects through callees are the callee's to authorize — interprocedural cap flow
+//! is a later slice; declaration stays transitive via the effect row, acquisition is direct-only).
 //!
 //! Core rule: a *use* is any read-occurrence of a tracked capability variable, **except** a plain
 //! rebind (`let y = c` / `y = c`), which MOVES the token (source consumed, target live). That one
@@ -51,6 +60,15 @@ struct Lin<'a> {
     verified: bool,
     span: (usize, usize),
     findings: &'a mut Vec<Finding>,
+    /// User-function names, so a direct builtin call can be distinguished from a user call (a user
+    /// function shadowing a builtin name must not be misclassified as performing that effect).
+    all_fns: &'a BTreeSet<String>,
+    /// Canonical capability ids genuinely acquired in this body — `cap_acquire("<id>")` with a
+    /// string-literal kind bound to a local. The ONLY thing that authorizes an effect (unknown
+    /// provenance never enters here). Path-insensitive union across branches.
+    acquired: BTreeSet<String>,
+    /// Canonical capability ids performed by DIRECT builtin calls in this body.
+    performed: BTreeSet<String>,
 }
 
 impl Lin<'_> {
@@ -74,23 +92,42 @@ impl Lin<'_> {
     }
 }
 
-/// Check one function body for capability linearity. `params` seed the scope as unknown-provenance
-/// names (never tracked as capabilities — an incoming param arrives with unknown provenance, so
-/// `cap_use(param)` accepts). Pure: returns findings, mutates nothing outside.
+/// Check one function body for capability linearity AND effect authorization (verified mode).
+/// `params` seed the scope as unknown-provenance names (never tracked as capabilities — an incoming
+/// param arrives with unknown provenance, so `cap_use(param)` accepts, and a param never authorizes
+/// an effect). `all_fns` distinguishes direct builtin calls from user calls. Pure: returns findings.
 pub(crate) fn check_linearity(
     _params: &[(String, String)],
     body: &[Stmt],
     verified: bool,
     span: (usize, usize),
+    all_fns: &BTreeSet<String>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut lin = Lin {
         verified,
         span,
         findings: &mut findings,
+        all_fns,
+        acquired: BTreeSet::new(),
+        performed: BTreeSet::new(),
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
+    // Composition (verified mode only): each directly-performed privileged effect must have a
+    // matching genuine acquisition in this body. `performed \ acquired` is the unauthorized set.
+    if verified {
+        let unauthorized: Vec<String> = lin.performed.difference(&lin.acquired).cloned().collect();
+        for effect in unauthorized {
+            lin.findings.push(Finding {
+                code: "ANUBIS_EFFECT_UNAUTHORIZED",
+                message: format!(
+                    "verification lane: function performs privileged effect `{effect}` but never acquires the capability authorizing it — acquire it with `cap_acquire(\"{effect}\")` in scope. An unknown-provenance value (a parameter, return, or non-literal) does not authorize an effect in verified mode."
+                ),
+                span: Some(span),
+            });
+        }
+    }
     findings
 }
 
@@ -132,6 +169,12 @@ fn provably_non_capability(expr: &Expr) -> bool {
 fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
     if is_acquire(init) {
         if let Expr::Call { args, .. } = init {
+            // A string-literal kind is what authorizes an effect (composition). A non-literal kind
+            // authorizes nothing specific — fail-closed. Provenance is genuine: only cap_acquire
+            // bound to a local ever populates `acquired`.
+            if let Some(Expr::StrLiteral(kind)) = args.first() {
+                lin.acquired.insert(super::normalize_effect_name(kind));
+            }
             for a in args {
                 walk_expr(a, caps, lin);
             }
@@ -355,6 +398,13 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                         lin.missing();
                     }
                 }
+            } else if !lin.all_fns.contains(callee) {
+                // Composition: a DIRECT builtin call performing a privileged effect. The
+                // `callee ∉ all_fns` guard means a user function shadowing a builtin name is a user
+                // call, not a performed builtin effect. (cap_acquire/cap_use classify as None.)
+                if let Some(effect) = super::effects::builtin_effect_of(callee) {
+                    lin.performed.insert(effect.to_string());
+                }
             }
         }
         Expr::CallExpr { callee, args } => {
@@ -467,13 +517,25 @@ mod tests {
 
     fn findings_of(src: &str, verified: bool) -> Vec<Finding> {
         let ast = frontend::parse_source(src).expect("parse");
+        let mut all_fns = BTreeSet::new();
+        for item in &ast.items {
+            if let frontend::Item::Fn { name, .. } = item {
+                all_fns.insert(name.clone());
+            }
+        }
         let mut out = Vec::new();
         for item in &ast.items {
             if let frontend::Item::Fn {
                 params, body, span, ..
             } = item
             {
-                out.extend(check_linearity(params, body, verified, (span.start, span.end)));
+                out.extend(check_linearity(
+                    params,
+                    body,
+                    verified,
+                    (span.start, span.end),
+                    &all_fns,
+                ));
             }
         }
         out
@@ -565,5 +627,47 @@ mod tests {
         let fresh = r#"fn f() { for i in 0..3 { let c = cap_acquire("x"); cap_use(c); } }"#;
         assert!(codes(fresh, false).is_empty());
         assert!(codes(fresh, true).is_empty());
+    }
+
+    // ── Slice 3: effect authorization (composition) ─────────────────────────────────────────────
+
+    #[test]
+    fn verified_effect_without_acquisition_is_unauthorized() {
+        // Performs net.send directly with no genuine acquisition → UNAUTHORIZED in verified only.
+        let src = r#"fn f() { send("h", 80, "x"); }"#;
+        assert!(codes(src, false).is_empty(), "default lane requires no authorization");
+        assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
+    }
+
+    #[test]
+    fn verified_effect_with_genuine_acquisition_is_authorized() {
+        // A matching cap_acquire in scope authorizes the effect; the token is used once (linear).
+        let src = r#"fn f() { let n = cap_acquire("net.send"); send("h", 80, "x"); cap_use(n); }"#;
+        assert!(codes(src, true).is_empty());
+    }
+
+    #[test]
+    fn param_capability_does_not_authorize_an_effect() {
+        // THE FORGE: an unknown-provenance param is not a genuine acquisition. Performing net with
+        // only `netcap` in hand is UNAUTHORIZED in verified; the same body accepts in default lane.
+        let src = r#"fn f(netcap) { send("h", 80, "x"); }"#;
+        assert!(codes(src, false).is_empty());
+        assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
+    }
+
+    #[test]
+    fn user_fn_shadowing_a_builtin_name_is_not_a_performed_effect() {
+        // `send` is a user function here (in all_fns), so calling it is a user call, not a net
+        // effect — no authorization required.
+        let src = r#"fn send(x) { return x; }
+fn f() { let y = send(3); }"#;
+        assert!(codes(src, true).is_empty());
+    }
+
+    #[test]
+    fn non_literal_acquisition_kind_does_not_authorize() {
+        // A non-literal cap_acquire kind authorizes nothing specific (fail-closed).
+        let src = r#"fn f(kind) { let n = cap_acquire(kind); send("h", 80, "x"); cap_use(n); }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
     }
 }

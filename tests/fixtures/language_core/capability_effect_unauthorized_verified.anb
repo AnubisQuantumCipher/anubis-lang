@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_UNAUTHORIZED
+// Phase-2 slice 3 (composition): in verified mode, performing a privileged effect requires holding
+// the capability that authorizes it. `f` performs net.send (send) but never acquires a net
+// capability — declaring `uses(net.send)` is necessary but no longer sufficient in verified mode.
+@verified
+fn f() uses(net.send) {
+    send("host", 80, "payload");
+}
+
+fn main() { }

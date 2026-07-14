@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Phase-2 slice 3 accept-bias: the default lane imposes no authorization requirement. `f` performs
+// net.send with a `uses(net.send)` declaration (which the Safe-mode gate requires) and no
+// capability — accepted, because authorization is a verified-lane discipline only.
+fn f() uses(net.send) {
+    send("host", 80, "payload");
+}
+
+fn main() { }

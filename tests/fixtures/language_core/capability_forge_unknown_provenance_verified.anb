@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_UNAUTHORIZED
+// Phase-2 slice 3, THE FORGE CLOSURE (the load-bearing fixture): an unknown-provenance token does
+// not authorize an effect. `netcap` is a parameter — whatever the caller passes, it is not a
+// genuine acquisition, so it cannot authorize net.send in verified mode. The token slice accepted
+// unknown-provenance tokens because they granted no authority; this slice grants authority, so the
+// forge is closed. (The same program without `@verified` accepts — see the unit test.)
+@verified
+fn f(netcap) uses(net.send) {
+    send("host", 80, "payload");
+}
+
+fn main() { }

@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Phase-2 slice 3 accept-guard: a verified function that performs no privileged effect has nothing
+// to authorize and is accepted.
+@verified
+fn f() {
+    let x = 1 + 2;
+    print(x);
+}
+
+fn main() { }

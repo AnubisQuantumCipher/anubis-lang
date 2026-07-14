@@ -1044,15 +1044,20 @@ fn analyze_function(
         ctx,
     );
 
-    // Phase-2 slice 2: capability-token LINEARITY. `capability::check_linearity` is the pure
-    // intraprocedural use-once walk (middle/capability.rs); it proves a `cap_acquire`-minted token
-    // is used exactly once, non-duplicable (move-on-rebind), and unforgeable (`cap_use` on a
-    // non-token is MISSING). Dual-mode: default lane accept-biased, verified lane fail-closed
-    // toward consumed. ENFORCING (`emit(.., false)`): promoted on evidence — the linearity surface
-    // is inert on the whole corpus (no committed program mints a `cap_acquire` token), proven by the
-    // shadow diff at UNEXPECTED=0 over 170 programs, zero shadow lines on `selfhost/src/anubis_sh.anb`
-    // and every stdlib module, and scratch fire/inert/accept-edge runs before the flip.
-    for f in capability::check_linearity(params, body, ctx.verified, (span.start, span.end)) {
+    // Phase-2 slice 2/3: capability-token LINEARITY + effect AUTHORIZATION. `check_linearity`
+    // (middle/capability.rs) is the pure intraprocedural walk. Slice 2 (linearity): a
+    // `cap_acquire`-minted token is used exactly once, non-duplicable (move-on-rebind), unforgeable
+    // (`cap_use` on a non-token is MISSING) — dual-mode, default accept-biased / verified fail-closed
+    // toward consumed. Slice 3 (composition): in verified mode, a directly-performed privileged
+    // effect must have a genuine acquisition (`ANUBIS_EFFECT_UNAUTHORIZED`), closing the
+    // unknown-provenance forge vector.
+    // All three (REUSE / MISSING / EFFECT_UNAUTHORIZED) are ENFORCING. EFFECT_UNAUTHORIZED promoted
+    // on evidence — the corpus shadow diff at UNEXPECTED=0 over 175 programs, zero shadow lines on
+    // `selfhost/src/anubis_sh.anb` and every stdlib module, scratch fire/inert/accept runs, AND the
+    // full `cargo test` green (the shadow diff scans only `.anb`, so it cannot see the verified-lane
+    // Rust tests this composition tightens — those are updated to acquire their authorizing token).
+    for f in capability::check_linearity(params, body, ctx.verified, (span.start, span.end), &ctx.all_fns)
+    {
         ctx.emit(
             SemanticDiagnostic {
                 code: Some(f.code.into()),
