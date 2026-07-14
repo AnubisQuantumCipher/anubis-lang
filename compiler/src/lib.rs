@@ -4587,6 +4587,85 @@ fn main() { }"#;
         tc_lane(two, true).expect("secret + egress, no untrusted channel is two legs");
     }
 
+    // ── Phase-2 leg-1 confidentiality FLOW: secret → egress = ANUBIS_SECRET_EXFILTRATION ──────────
+    // The value-flow dual of the taint integrity flow. A value seeded by `secret_source(..)` that
+    // actually REACHES a network/shell egress without a well-formed declassify() is exfiltration —
+    // precise (only when the secret value flows), flow-sensitive (set/clear on reassignment), and
+    // control-flow-merged (may-secret across branches), exactly mirroring the taint machinery.
+
+    #[test]
+    fn secret_flows_to_egress_without_declassify_rejects() {
+        // Direct: a secret sent over the network without release is exfiltration.
+        let err = tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("api_key"); send("h", 80, k); }"#,
+            false,
+        )
+        .expect_err("secret -> net egress must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+        // Shell-out (exec) is an egress channel too — the canonical agent exfil path.
+        let err = tc_lane(
+            r#"fn main() uses(shell) { let s = secret_source("key"); exec(s); }"#,
+            false,
+        )
+        .expect_err("secret -> shell egress must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+        // Flow-sensitive SET: a clean var reassigned to a secret then sent (dual of the taint fail-open).
+        let err = tc_lane(
+            r#"fn main() uses(net.send) { let x = 5; x = secret_source("t"); send("h", 80, x); }"#,
+            false,
+        )
+        .expect_err("reassign-to-secret then egress must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+        // Control-flow merge: a secret assigned on ONE branch may-reaches the post-if egress.
+        let err = tc_lane(
+            r#"fn main(c: bool) uses(net.send) { let x = 5; if c { x = secret_source("t"); } send("h", 80, x); }"#,
+            false,
+        )
+        .expect_err("branch reassign-to-secret then egress must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+    }
+
+    #[test]
+    fn secret_egress_accept_edges_are_precise() {
+        // Declassify hatch: a well-formed declassify (policy AND reason) releases the secret.
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("api_key"); send("h", 80, declassify(k, "redact", "reviewed")); }"#,
+            false,
+        )
+        .expect("declassified secret may egress");
+        // Flow-sensitive CLEAR: a secret reassigned to a clean constant before egress accepts.
+        tc_lane(
+            r#"fn main() uses(net.send) { let x = secret_source("k"); x = 42; send("h", 80, x); }"#,
+            false,
+        )
+        .expect("secret cleared before egress accepts");
+        // Precision: a secret HELD but never sent (a literal is egressed instead) does not fire.
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, "beacon"); }"#,
+            false,
+        )
+        .expect("a held-but-not-sent secret accepts");
+        // Named boundary: a secret to a LOCAL file (fs.write) is not network/shell egress this slice.
+        tc_lane(
+            r#"fn main() uses(fs.write) { let k = secret_source("k"); write_file("/tmp/x", k); }"#,
+            false,
+        )
+        .expect("secret to local write is out of egress scope this slice");
+    }
+
+    #[test]
+    fn secret_egress_malformed_declassify_still_rejects() {
+        // A declassify missing its reason is not a valid release (AST-shape keyed, like the taint
+        // side) — the secret still leaks. The program also raises the missing-policy/reason error;
+        // the point here is that the confidentiality check is NOT hatched by a malformed declassify.
+        let err = tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("api_key"); send("h", 80, declassify(k)); }"#,
+            false,
+        )
+        .expect_err("malformed declassify does not hatch the secret");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+    }
+
     // ── Phase-2 taint soundness: the reassignment fail-open (control-flow-merge dataflow) ────────
 
     #[test]

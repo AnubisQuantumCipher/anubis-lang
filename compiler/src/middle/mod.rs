@@ -105,6 +105,12 @@ struct ScopeBinding {
     /// Arity of the value when it is a closure / first-class function bound here (a lambda literal or
     /// a named-function reference); `None` when unknown. Used to arity-check direct closure calls.
     closure_arity: Option<usize>,
+    /// CONFIDENTIALITY label (Phase-2, the dual of `info.tainted` which is the INTEGRITY label): this
+    /// binding holds PRIVATE data, seeded by `secret_source(..)` and propagated flow-sensitively
+    /// (let/assign/branch-merge). Rides on ScopeBinding (NOT the serialized `BindingInfo`) so it is
+    /// pure analysis scratch — no HIR/evidence/fixpoint surface. A secret reaching a network/shell
+    /// egress without declassify is `ANUBIS_SECRET_EXFILTRATION`.
+    secret: bool,
 }
 
 /// Arity of an initializer if it is a closure or first-class function reference, else `None`.
@@ -898,6 +904,7 @@ fn analyze_function(
                             span: None,
                         },
                         closure_arity: None,
+                        secret: false,
                     },
                 )
             })
@@ -981,6 +988,9 @@ fn analyze_function(
                 ScopeBinding {
                     info: info.clone(),
                     closure_arity: None,
+                    // Params default non-secret: a `secret<T>` param qualifier is a deferred boundary
+                    // (see ROADMAP leg-1); secrecy currently originates only at a `secret_source(..)` seed.
+                    secret: false,
                 },
             );
             // Parameters are in-scope for the whole body, so a `let s = param` must not
@@ -1356,14 +1366,15 @@ fn restore_block_scope(
     *scope = saved.clone();
 }
 
-/// Control-flow-merge for taint (may-taint / union) — the sound closure of the reassignment
-/// fail-open. `scope` has already been restored to the pre-block state (so block-local `let`s are
-/// correctly dropped); this re-applies taint that any alternative PATH established on an outer
-/// binding. A variable is tainted after the block iff it is tainted on ANY analyzed path, and clean
-/// only if clean on EVERY path (so a value declassified/reset on all branches is precisely cleared).
-/// `paths` are the post-analysis scopes of the alternatives — an `if`'s then/else, or a loop's
-/// zero-iteration pre-state and its body. Without this, `restore_block_scope` discarded a branch or
-/// loop reassignment to a tainted value, and a later sink read the stale clean state and never fired.
+/// Control-flow-merge for the two flow labels — INTEGRITY (`info.tainted`, may-taint) and
+/// CONFIDENTIALITY (`secret`, may-secret) — the sound closure of the reassignment fail-open. `scope`
+/// has already been restored to the pre-block state (so block-local `let`s are correctly dropped);
+/// this re-applies a label that any alternative PATH established on an outer binding. A variable
+/// carries a label after the block iff it carries it on ANY analyzed path, and is clean only if clean
+/// on EVERY path (so a value declassified/reset on all branches is precisely cleared). `paths` are the
+/// post-analysis scopes of the alternatives — an `if`'s then/else, or a loop's zero-iteration
+/// pre-state and its body. Without this, `restore_block_scope` discarded a branch or loop reassignment
+/// to a tainted/secret value, and a later sink read the stale clean state and never fired.
 fn merge_taint_over(
     scope: &mut BTreeMap<String, ScopeBinding>,
     paths: &[&BTreeMap<String, ScopeBinding>],
@@ -1371,18 +1382,25 @@ fn merge_taint_over(
     let names: Vec<String> = scope.keys().cloned().collect();
     for name in names {
         // Identity by span: only the SAME binding — a reassignment (`x = …`), which preserves the
-        // binding's span — carries taint across the merge. A block-local `let x = …` SHADOW inside a
-        // branch is a NEW binding (its own span) that the restore already dropped; its taint must not
+        // binding's span — carries a label across the merge. A block-local `let x = …` SHADOW inside a
+        // branch is a NEW binding (its own span) that the restore already dropped; its label must not
         // leak to the outer `x` (`let x = clean; if c { let x = taint(); } sink(x)` stays clean). The
         // adversarial rounds that deferred this slice were about exactly this shadow-vs-reassign case.
         let outer_span = scope.get(&name).and_then(|b| b.info.span);
         let mut tainted = false;
         let mut source: Option<String> = None;
+        let mut secret = false;
         for p in paths {
             if let Some(pb) = p.get(&name) {
-                if pb.info.span == outer_span && pb.info.tainted {
+                if pb.info.span != outer_span {
+                    continue;
+                }
+                if pb.info.tainted {
                     tainted = true;
                     source = source.or_else(|| pb.info.taint_source.clone());
+                }
+                if pb.secret {
+                    secret = true;
                 }
             }
         }
@@ -1392,6 +1410,9 @@ fn merge_taint_over(
                 b.info.declassified = false;
                 b.info.taint_source = b.info.taint_source.take().or(source);
             }
+            // Confidentiality is the DUAL: a secret cleared on every path (e.g. declassified in both
+            // branches) is precisely un-labelled; secret on any path re-secrets the outer binding.
+            b.secret = secret;
         }
     }
 }
@@ -1460,6 +1481,10 @@ fn analyze_stmts(
 
                 let init_taint =
                     expr_taint_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+                // CONFIDENTIALITY seed (dual of `init_taint`): the secret label the initializer carries.
+                // `expr_secret_source`'s Declassify arm already clears a released value, so no separate
+                // declassify gate is needed here (unlike the taint side's `declass_source`).
+                let init_secret = expr_secret_source(init, scope);
                 let declass_source =
                     declassify_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
                 // Effect inference must see calls in let-initializers (`let d = read_file(p)`),
@@ -1530,6 +1555,7 @@ fn analyze_stmts(
                     ScopeBinding {
                         info: info.clone(),
                         closure_arity: ca,
+                        secret: init_secret.is_some(),
                     },
                 );
                 fn_symbols.push(info);
@@ -1798,6 +1824,16 @@ fn analyze_stmts(
                         }
                     }
                 }
+                // Flow-sensitive CONFIDENTIALITY (dual of the taint propagation above): a reassignment
+                // carries the RHS's secret label — SET when the RHS is a secret, CLEAR when it is
+                // clean/declassified. The branch/loop merge (`merge_taint_over`) refines it across
+                // control flow, exactly as for taint.
+                if let Expr::Var(name) = target {
+                    let value_secret = expr_secret_source(value, scope).is_some();
+                    if let Some(b) = scope.get_mut(name) {
+                        b.secret = value_secret;
+                    }
+                }
                 // A reassigned binding can no longer be modeled from its initial `let` value: the
                 // solver does straight-line analysis and cannot follow a loop/branch update, so its
                 // concrete-let assumption goes stale. Drop it from the modelable set AND remove any
@@ -2015,6 +2051,7 @@ fn analyze_stmts(
                         ScopeBinding {
                             info,
                             closure_arity: None,
+                            secret: false,
                         },
                     );
                     ctx.known_bindings.insert(n);
@@ -2077,6 +2114,15 @@ fn analyze_stmts(
                         expr_taint_source(expr, scope, &ctx.tainting_fns, &ctx.param_return_taint)
                     }
                 };
+                // Confidentiality dual: iterating a secret collection binds a secret element.
+                let secret_src = match source {
+                    crate::frontend::ForSource::Range { start, .. } => {
+                        expr_secret_source(start, scope).is_some()
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        expr_secret_source(expr, scope).is_some()
+                    }
+                };
                 // The loop variable is a fresh in-scope binding for the body's analysis. A range
                 // loop (`for i in a..b`) binds a number; a collection loop (`for x in xs`) binds an
                 // element whose type is dynamic (unknown) — typing it `u32` was a heuristic that
@@ -2101,6 +2147,7 @@ fn analyze_stmts(
                     ScopeBinding {
                         info: info.clone(),
                         closure_arity: None,
+                        secret: secret_src,
                     },
                 );
                 ctx.known_bindings.insert(var.clone());
@@ -2299,6 +2346,33 @@ fn analyze_expr_effect(
                                 span: None,
                             });
                         }
+                    }
+                }
+            }
+            // CONFIDENTIALITY egress — the DUAL of the taint sink check above (leg-1 of the lethal
+            // trifecta, made precise). A SECRET value (seeded by `secret_source(..)`, flowed through
+            // let/assign/branch-merge) reaching a network/shell EGRESS is exfiltration unless it was
+            // released. `expr_secret_source` already returns `None` for a well-formed
+            // `declassify(x, policy, reason)`, so the release hatch is built in (a MALFORMED declassify
+            // does NOT hatch — AST-shape keyed, matching the taint side). Safe-mode; independent of
+            // `is_sink` so it also covers egress builtins (`http_post`, `connect`) not in that set.
+            if mode == Mode::Safe && is_egress_sink(callee) {
+                for arg in args {
+                    if let Some(source) = expr_secret_source(arg, scope) {
+                        ctx.emit(
+                            SemanticDiagnostic {
+                                code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
+                                message: format!(
+                                    "safe mode confidentiality violation: secret `{source}` flows to egress `{callee}` without declassify() — release a private value with declassify(value, policy=…, reason=…) before it leaves the program"
+                                ),
+                                span: None,
+                            },
+                            // ENFORCING. Corpus-inert by construction (no committed program sends a
+                            // `secret_source` VALUE — every existing usage egresses a literal), verified
+                            // both statically (every `secret_source` occurrence audited) and empirically
+                            // (the enforcing language/turing/security/stdlib gates stay green in the VM).
+                            false,
+                        );
                     }
                 }
             }
@@ -5606,6 +5680,78 @@ fn expr_taint_source(
     }
 }
 
+/// The sole confidentiality SEED builtin — the constructor of a private value (the dual of the taint
+/// I/O sources). Corpus-inert: no committed program calls it, so the whole secrecy flow is silent on
+/// the corpus and shadow-clean by construction (like the linear-capability builtins).
+const SECRET_SOURCE_NAME: &str = "secret_source";
+
+/// Whether a sink is an EGRESS — external communication (network / shell), the leg-3 surface. A secret
+/// reaching one of THESE without declassify is exfiltration; a secret written to a LOCAL file
+/// (`write_file`/`memcpy`) is out of scope for this slice (a named boundary — local persistence is a
+/// weaker leak than network/shell egress, and folding it in would newly reject more corpus shapes).
+/// This is the same egress subset the lethal-trifecta leg-3 uses (`net.send` ∪ shell builtins).
+fn is_egress_sink(callee: &str) -> bool {
+    // Exact-match only (like `is_sink`) — a substring rule would false-positive on a user function
+    // such as `compute_network_stats`. `net.send` builtins ∪ shell builtins = the leg-3 egress set.
+    matches!(
+        callee,
+        "send"
+            | "network_send"
+            | "connect"
+            | "http_get"
+            | "http_post"
+            | "shell"
+            | "exec"
+            | "system"
+            | "target_run"
+    )
+}
+
+/// Confidentiality (secrecy) provenance — the DUAL of `expr_taint_source`. Returns a source label if
+/// `expr` carries PRIVATE data: a `secret_source(..)` seed, a binding whose `secret` flag is set, or a
+/// value structurally derived from either (binary / unary / index / field / cast / call-arg). A
+/// well-formed `declassify(x, policy, reason)` clears it — the sanctioned release hatch, identical to
+/// the taint side, so the Let/Assign seeding needs no separate declassify test. There is NO
+/// interprocedural secret summary this slice: a secret returned from a user function arrives
+/// unlabelled (a named boundary; the integrity side has `tainting_fns`, its dual is future work).
+fn expr_secret_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
+    match expr {
+        Expr::Var(name) => scope.get(name).filter(|b| b.secret).map(|_| name.clone()),
+        Expr::Call { callee, args } => {
+            if callee == SECRET_SOURCE_NAME {
+                Some(SECRET_SOURCE_NAME.to_string())
+            } else {
+                // A transform of a secret may still reveal it (a hash/encoding is not a release);
+                // declassify is the only sanctioned clear. Mirrors taint's conservative builtin arm.
+                args.iter().find_map(|a| expr_secret_source(a, scope))
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_secret_source(lhs, scope).or_else(|| expr_secret_source(rhs, scope))
+        }
+        Expr::Unary { expr, .. } => expr_secret_source(expr, scope),
+        Expr::Index { base, index } => {
+            expr_secret_source(base, scope).or_else(|| expr_secret_source(index, scope))
+        }
+        Expr::FieldAccess { base, .. } => expr_secret_source(base, scope),
+        Expr::Cast { expr, .. } => expr_secret_source(expr, scope),
+        Expr::Assume(inner) | Expr::Assert(inner) => expr_secret_source(inner, scope),
+        Expr::Declassify {
+            inner,
+            policy,
+            reason,
+            ..
+        } => {
+            if policy.is_some() && reason.is_some() {
+                None // released — dual of the taint declassify clear
+            } else {
+                expr_secret_source(inner, scope)
+            }
+        }
+        _ => None,
+    }
+}
+
 // ── Interprocedural return-taint summary (`ctx.tainting_fns`) ────────────────────────────────────
 // A monotone fixpoint pre-pass (see `compute_tainting_fns`, run in `typecheck` before per-function
 // analysis) marks each function whose RETURN value carries INTERNAL taint — a `taint_source()` /
@@ -5655,6 +5801,9 @@ fn seed_one_let(
                 span: None,
             },
             closure_arity: None,
+            // This scope feeds the INTEGRITY return summary only; confidentiality has no
+            // interprocedural summary this slice (named boundary), so secrecy is not seeded here.
+            secret: false,
         },
     );
 }
