@@ -72,5 +72,8 @@ which the VM now contains — did.
 If `anubis-xcode` is lost, rebuild it: `tart clone ghcr.io/cirruslabs/macos-tahoe-xcode:latest anubis-xcode`
 → `tart set --cpu 8 --memory 24576 --disk-size 150` → boot headless → install SSH key
 → `rustup` pinned `nightly-2026-05-10` (fetch-to-file then run; a `curl | sh` pipe is
-blocked by the host guard) → `brew install z3` → rsync the repo → warm `cargo build
---release -p anubis` → re-run the seal to re-establish `EXPECTED_FIXPOINT_VM`.
+blocked by the host guard) → `brew install z3 coreutils` (**coreutils is required** — macOS
+ships no GNU `timeout`, which `run_shadow_diff.sh` wraps every check in; without it that gate
+silently runs zero checks and reports `UNEXPECTED=0` vacuously) → put
+`/opt/homebrew/opt/coreutils/libexec/gnubin` first on PATH → rsync the repo → warm `cargo
+build --release -p anubis` → re-run the seal to re-establish `EXPECTED_FIXPOINT_VM`.

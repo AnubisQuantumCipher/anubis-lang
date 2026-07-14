@@ -74,9 +74,13 @@ echo "[4/6] run full gate battery in guest (this is the heavy part — in the ca
 ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'bash -s' <<'REMOTE'
 set -u
 . "$HOME/.cargo/env" 2>/dev/null || true
-export PATH=/opt/homebrew/bin:$PATH
+# coreutils/libexec/gnubin FIRST so GNU `timeout` resolves — macOS ships none, and
+# scripts/run_shadow_diff.sh wraps every check in `timeout`; without it that gate silently
+# no-ops (runs zero checks, reports UNEXPECTED=0 vacuously). The golden image has coreutils.
+export PATH=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:$PATH
 export CARGO_BUILD_JOBS=6 RAYON_NUM_THREADS=6 CARGO_INCREMENTAL=0 RUST_MIN_STACK=67108864
 ulimit -n 65536 2>/dev/null || true
+command -v timeout >/dev/null || { echo "FATAL: GNU timeout missing in guest — run: brew install coreutils"; exit 3; }
 cd "$HOME/anubis-lang"
 LOG="$HOME/battery.log"; : > "$LOG"
 run(){ name="$1"; shift; echo "===== $name =====" | tee -a "$LOG"; if "$@" >> "$LOG" 2>&1; then echo "EXIT=0 $name" | tee -a "$LOG"; else echo "EXIT=$? $name" | tee -a "$LOG"; fi; }
