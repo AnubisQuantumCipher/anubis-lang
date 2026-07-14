@@ -1198,7 +1198,8 @@ fn analyze_function(
     // Phase-2 FINAL slice: the LETHAL TRIFECTA as a verified-lane compile error. A function forms the
     // trifecta when it holds all three lethal capabilities at once: leg 1 — reads PRIVATE data
     // (fs.read); leg 2 — is exposed to UNTRUSTED input from a channel DISTINCT from the read
-    // (input/recv/env/taint_source/tainted<T> param); leg 3 — COMMUNICATES externally (net.send).
+    // (input/recv/env/taint_source/tainted<T> param); leg 3 — COMMUNICATES externally (net.send OR
+    // a shell-out: exec/system/shell/target_run).
     // An injection in the untrusted input can then steer the private read and the egress — the danger
     // the value-flow taint check (`ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`, Safe-mode) cannot see when
     // no value literally flows read→send (e.g. a constant beacon steered by control flow). This is a
@@ -1213,18 +1214,28 @@ fn analyze_function(
     // diff UNEXPECTED=0 over 179 programs (the FAIL fixture the sole EXPECTED line), zero trifecta
     // lines on `selfhost/src/anubis_sh.anb` and every stdlib module.
     // Honest boundaries (deferred): leg 1 = fs.read proxy (no confidentiality label — a secret in
-    // memory/env is not leg 1); leg 2 intra-procedural + direct-source only; leg 3 = net.send only
-    // (shell/exec egress out of scope this increment); the declassify hatch is coarse (function-level,
-    // not tied to the specific outbound value).
+    // memory/env is not leg 1); leg 2 intra-procedural + direct-source only; leg 3 = net.send or a
+    // shell-out (`sql` egress still deferred); the declassify hatch is coarse (function-level, not
+    // tied to the specific outbound value).
     if ctx.verified {
-        let (has_fs_read, has_net_send) = {
+        let (has_fs_read, has_net_send, has_shell) = {
             let row = ctx.fn_effect_rows.get(name);
             let held = |cap: &str| {
                 caps_used.contains(cap) || row.is_some_and(|r| r.effects.contains(cap))
             };
-            (held("fs.read"), held("net.send"))
+            (held("fs.read"), held("net.send"), held("shell"))
         };
-        if has_fs_read && has_net_send {
+        // Leg 3 — external communication — is network egress (net.send) OR a shell-out (exec/system/
+        // shell/target_run → the `shell` cap): a shell command (`curl -d @secret …`, `nc`) is the
+        // canonical agent exfiltration channel and reaches the network as directly as net.send, so
+        // the coexistence is exactly as lethal. Name the actual channel(s) held in the diagnostic.
+        let egress = match (has_net_send, has_shell) {
+            (true, true) => Some("net.send, shell"),
+            (true, false) => Some("net.send"),
+            (false, true) => Some("shell"),
+            (false, false) => None,
+        };
+        if let (true, Some(egress)) = (has_fs_read, egress) {
             let legs = trifecta::scan_legs(body, params);
             if let Some(leg2) = legs.leg2_untrusted {
                 if !legs.wellformed_declassify {
@@ -1232,7 +1243,7 @@ fn analyze_function(
                         SemanticDiagnostic {
                             code: Some("ANUBIS_LETHAL_TRIFECTA".into()),
                             message: format!(
-                                "verification lane: function `{name}` forms the lethal trifecta — it reads private data (fs.read), is exposed to untrusted input (`{leg2}`), and communicates externally (net.send) with no declassify barrier. An injection in the untrusted input can steer the private read and exfiltrate it. Drop or isolate a leg (remove net.send or fs.read, or handle the untrusted input in a separate function), or interpose a well-formed `declassify(value, policy, reason)` on the outbound value."
+                                "verification lane: function `{name}` forms the lethal trifecta — it reads private data (fs.read), is exposed to untrusted input (`{leg2}`), and communicates externally (`{egress}`) with no declassify barrier. An injection in the untrusted input can steer the private read and exfiltrate it. Drop or isolate a leg (remove the external channel or fs.read, or handle the untrusted input in a separate function), or interpose a well-formed `declassify(value, policy, reason)` on the outbound value."
                             ),
                             span: Some((span.start, span.end)),
                         },

