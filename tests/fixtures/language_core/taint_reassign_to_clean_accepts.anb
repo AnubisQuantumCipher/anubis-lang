@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Phase-2 taint soundness accept-guard (precision, not just over-tainting): a tainted `x` reassigned
+// to a clean constant before the send is genuinely clean — the flow-sensitive CLEAR makes this pass
+// (a reassignment-insensitive checker would have over-rejected it).
+fn main() uses(net.send) {
+    let x = input();
+    x = 42;
+    send("host", 80, x);
+}

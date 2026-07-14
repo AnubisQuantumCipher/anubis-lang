@@ -1356,6 +1356,46 @@ fn restore_block_scope(
     *scope = saved.clone();
 }
 
+/// Control-flow-merge for taint (may-taint / union) — the sound closure of the reassignment
+/// fail-open. `scope` has already been restored to the pre-block state (so block-local `let`s are
+/// correctly dropped); this re-applies taint that any alternative PATH established on an outer
+/// binding. A variable is tainted after the block iff it is tainted on ANY analyzed path, and clean
+/// only if clean on EVERY path (so a value declassified/reset on all branches is precisely cleared).
+/// `paths` are the post-analysis scopes of the alternatives — an `if`'s then/else, or a loop's
+/// zero-iteration pre-state and its body. Without this, `restore_block_scope` discarded a branch or
+/// loop reassignment to a tainted value, and a later sink read the stale clean state and never fired.
+fn merge_taint_over(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    paths: &[&BTreeMap<String, ScopeBinding>],
+) {
+    let names: Vec<String> = scope.keys().cloned().collect();
+    for name in names {
+        // Identity by span: only the SAME binding — a reassignment (`x = …`), which preserves the
+        // binding's span — carries taint across the merge. A block-local `let x = …` SHADOW inside a
+        // branch is a NEW binding (its own span) that the restore already dropped; its taint must not
+        // leak to the outer `x` (`let x = clean; if c { let x = taint(); } sink(x)` stays clean). The
+        // adversarial rounds that deferred this slice were about exactly this shadow-vs-reassign case.
+        let outer_span = scope.get(&name).and_then(|b| b.info.span);
+        let mut tainted = false;
+        let mut source: Option<String> = None;
+        for p in paths {
+            if let Some(pb) = p.get(&name) {
+                if pb.info.span == outer_span && pb.info.tainted {
+                    tainted = true;
+                    source = source.or_else(|| pb.info.taint_source.clone());
+                }
+            }
+        }
+        if let Some(b) = scope.get_mut(&name) {
+            b.info.tainted = tainted;
+            if tainted {
+                b.info.declassified = false;
+                b.info.taint_source = b.info.taint_source.take().or(source);
+            }
+        }
+    }
+}
+
 fn analyze_stmts(
     stmts: &[Stmt],
     mode: Mode,
@@ -1734,16 +1774,28 @@ fn analyze_stmts(
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
-                if let Some(source) =
-                    expr_taint_source(value, scope, &ctx.tainting_fns, &ctx.param_return_taint)
-                {
-                    if let Expr::Var(name) = target {
-                        ctx.taint_traces.push(TaintTrace {
-                            source: source.clone(),
-                            sink: Some(name.clone()),
-                            steps: vec![format!("{} -> assign -> {}", source, name)],
-                            declassified: false,
-                        });
+                let value_taint =
+                    expr_taint_source(value, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+                if let (Some(source), Expr::Var(name)) = (&value_taint, target) {
+                    ctx.taint_traces.push(TaintTrace {
+                        source: source.clone(),
+                        sink: Some(name.clone()),
+                        steps: vec![format!("{} -> assign -> {}", source, name)],
+                        declassified: false,
+                    });
+                }
+                // Flow-sensitive taint on reassignment: propagate the RHS's taint status to the
+                // binding. SETTING it when the RHS is tainted closes the reassignment fail-open
+                // (`let x = clean; x = input(); sink(x)` was accepted because the binding kept its
+                // stale clean state); CLEARING it when the RHS is clean/declassified is sound
+                // straight-line, and the branch/loop taint MERGE refines it across control flow.
+                if let Expr::Var(name) = target {
+                    if let Some(b) = scope.get_mut(name) {
+                        b.info.tainted = value_taint.is_some();
+                        b.info.taint_source = value_taint.clone();
+                        if value_taint.is_some() {
+                            b.info.declassified = false;
+                        }
                     }
                 }
                 // A reassigned binding can no longer be modeled from its initial `let` value: the
@@ -1864,7 +1916,8 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
-                if let Some(else_body) = else_ {
+                let then_scope = scope.clone();
+                let else_scope = if let Some(else_body) = else_ {
                     *assumptions = snapshot.clone();
                     restore_block_scope(scope, &snap_scope);
                     analyze_stmts(
@@ -1876,8 +1929,16 @@ fn analyze_stmts(
                         assumptions,
                         ctx,
                     );
-                }
+                    scope.clone()
+                } else {
+                    // No `else`: the alternative path leaves outer bindings at their pre-`if` state.
+                    snap_scope.clone()
+                };
                 restore_block_scope(scope, &snap_scope);
+                // Control-flow-merge for taint (may-taint): a reassignment to a tainted value in
+                // EITHER branch survives so a later sink sees it — closing the branch reassignment
+                // fail-open a bare restore left open.
+                merge_taint_over(scope, &[&then_scope, &else_scope]);
                 let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
             }
@@ -1909,7 +1970,11 @@ fn analyze_stmts(
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
+                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
+                merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 if let Some((post, _written, readmit)) = admit {
                     // A VERIFIED invariant DOES hold after the loop: re-model the tracked variables
@@ -1957,7 +2022,11 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
+                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
+                merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::Loop { body, invariant } => {
@@ -1976,7 +2045,11 @@ fn analyze_stmts(
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
+                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
+                merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::For {
@@ -2034,7 +2107,11 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
+                // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
+                // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
+                merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::Break | Stmt::Continue => {}

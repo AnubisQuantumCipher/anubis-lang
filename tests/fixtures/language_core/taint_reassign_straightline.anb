@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK
+// Phase-2 taint soundness: closing the reassignment fail-open. `x` starts clean, is REASSIGNED to
+// untrusted input, then sent — a real exfiltration. Before the flow-sensitive fix the binding kept
+// its stale clean state from the `let` and this compiled clean (fail-open). Now the reassignment
+// propagates the taint and the sink fires.
+fn main() uses(net.send) {
+    let x = 5;
+    x = input();
+    send("host", 80, x);
+}

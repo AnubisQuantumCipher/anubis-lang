@@ -3962,33 +3962,23 @@ fn main() {
     }
 
     #[test]
-    fn taint_from_a_let_seed_is_conservatively_sticky_across_reassignment() {
-        // Honest boundary of this Phase-3 slice (documented in UNSUPPORTED.md): taint flow is
-        // reassignment-INSENSITIVE. A binding seeded tainted by its `let`/param annotation (or a
-        // tainted initializer) stays tainted for analysis even after it is reassigned to a provably
-        // clean value — clearing requires an explicit `declassify(...)`. This is a sound, conservative
-        // over-approximation (fail-closed: it may force an unnecessary declassify, but it NEVER lets a
-        // tainted value reach a sink undetected). Making reassignment flow-sensitive (so `x = 1` after
-        // a tainted `let` clears taint) needs proper control-flow-merge dataflow (branch snapshot /
-        // restore / join) — a separate, larger Phase-3 slice; three adversarial rounds confirmed a
-        // naive incremental version is unsound across `if`/`else`/loop bodies, so it is deliberately
-        // deferred rather than shipped half-working.
-        let reassigned_clean_still_tainted = r#"
-fn main() {
-    let mut x = taint_source("s");
-    x = 1;
-    sink(x);
-}
-"#;
-        let err = tc_ok(reassigned_clean_still_tainted).expect_err(
-            "a let-tainted binding stays conservatively tainted across reassignment (fail-closed)",
-        );
-        assert!(
-            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
-            "got: {err}"
-        );
+    fn taint_is_flow_sensitive_across_reassignment_residual_closed() {
+        // RESIDUAL NOW CLOSED (Phase-2 taint soundness). This formerly documented a deferred boundary
+        // — "taint flow is reassignment-INSENSITIVE; a tainted binding stays tainted even after
+        // reassignment to a clean value; making it flow-sensitive needs proper control-flow-merge
+        // dataflow… deferred." That dataflow now exists (middle/mod.rs: the Assign handler propagates
+        // the RHS taint, and if/loop bodies MERGE taint may-taint with binding-identity by span). Both
+        // directions are now precise: reassign tainted→clean CLEARS, and — the fail-open this closes —
+        // reassign clean→tainted TAINTS.
+        // Reassign tainted -> clean now clears (precision, was over-tainted before):
+        tc_ok(r#"fn main() { let mut x = taint_source("s"); x = 1; sink(x); }"#)
+            .expect("reassign to a clean value now clears the taint (flow-sensitive)");
+        // Reassign clean -> tainted now taints (the reassignment fail-open, now caught):
+        let leak = tc_ok(r#"fn main() { let mut x = 1; x = taint_source("s"); sink(x); }"#)
+            .expect_err("reassign to a tainted value now taints the binding (fail-open closed)");
+        assert!(leak.contains("ANUBIS_TAINTED_SINK"), "got: {leak}");
 
-        // The idiomatic way to clear it: declassify with policy + reason.
+        // The idiomatic way to clear a genuinely-tainted value at a sink: declassify with policy + reason.
         let declassified = r#"
 fn main() {
     let secret = taint_source("s");
@@ -4595,6 +4585,35 @@ fn main() { }"#;
 }
 fn main() { }"#;
         tc_lane(two, true).expect("secret + egress, no untrusted channel is two legs");
+    }
+
+    // ── Phase-2 taint soundness: the reassignment fail-open (control-flow-merge dataflow) ────────
+
+    #[test]
+    fn taint_reassignment_to_tainted_closes_the_fail_open() {
+        // Straight-line: a clean var reassigned to untrusted input then sent — the reproduced hole.
+        tc_ok(r#"fn main() uses(net.send) { let x = 5; x = input(); send("h", 80, x); }"#)
+            .expect_err("reassign-to-tainted then sink must be flagged");
+        // Through a branch: may-taint merge makes x tainted after the if.
+        tc_ok(r#"fn main(c: bool) uses(net.send) { let x = 5; if c { x = input(); } send("h", 80, x); }"#)
+            .expect_err("branch reassign-to-tainted then sink must be flagged");
+    }
+
+    #[test]
+    fn taint_reassignment_to_clean_clears_precisely() {
+        // Reassign a tainted var to a clean constant → genuinely clean (precision, not over-taint).
+        tc_ok(r#"fn main() uses(net.send) { let x = input(); x = 42; send("h", 80, x); }"#)
+            .expect("straight-line reassign-to-clean clears the taint");
+        // Cleared on BOTH branches (must-clean) → clean after the merge.
+        tc_ok(r#"fn main(c: bool) uses(net.send) { let x = input(); if c { x = 1; } else { x = 2; } send("h", 80, x); }"#)
+            .expect("must-clean (cleared on every path) clears the taint");
+    }
+
+    #[test]
+    fn taint_reassign_clean_in_one_branch_only_stays_flagged() {
+        // Cleared in one arm but tainted on the other path (no else) → may-taint keeps it flagged.
+        tc_ok(r#"fn main(c: bool) uses(net.send) { let x = input(); if c { x = 1; } send("h", 80, x); }"#)
+            .expect_err("tainted on the not-taken path must stay flagged (fail-closed)");
     }
 
     #[test]

@@ -69,7 +69,7 @@ CPU-pinning child process.
   (`ANUBIS_PRIVATE_ITEM`); fail-closed on cycles (`ANUBIS_IMPORT_CYCLE`), path escape, ambiguity;
   the `A::B` enum-vs-module case disambiguates. Fixtures: `tests/fixtures/modules/{mathlib,
   private_reject,cycle,enum_vs_mod}`. (Supersedes the earlier "import parses but does not resolve"
-  PLANNED note.) Still PLANNED: an Anubis-source stdlib reachable as `import std.*` (Phase 5).
+  PLANNED note.) **`import std.*` is REAL (Phase 5)** — see NOW REAL Phase-5 section below.
 
 ## NOW REAL (float→integer narrowing rejection — Phase-2 slice 1, 2026-07-11)
 
@@ -123,17 +123,21 @@ through indexing/field access.
 - Tests: `is_tainted_*` (ty.rs, incl. the frozen-oracle-adjacent VOCAB test),
   `taint_propagates_through_field_access_and_indexing_to_sink`,
   `is_tainted_detects_qualifier_nested_in_a_container_annotation`,
-  `taint_from_a_let_seed_is_conservatively_sticky_across_reassignment`,
+  `taint_is_flow_sensitive_across_reassignment_residual_closed`,
   `interprocedural_return_taint_is_flagged_at_the_call_site`.
 
-**Honest boundaries (deliberately deferred — this slice did NOT close them):**
-- **Taint flow is reassignment-INSENSITIVE.** A binding's taint is fixed at its `let`/param seeding.
-  Reassignment (`x = ...`) does not add or clear taint: a `let`-tainted var reassigned to a clean
-  value stays conservatively tainted (fail-CLOSED, safe — clear it with `declassify(...)`), and a
-  clean var reassigned to a tainted value is NOT re-tainted (a pre-existing fail-OPEN, unchanged by
-  this slice). Making reassignment flow-sensitive needs proper control-flow-merge dataflow (branch
-  snapshot/restore/join); three adversarial rounds confirmed a naive incremental version is unsound
-  across `if`/`else`/loop bodies, so it is a separate future Phase-3 slice, not shipped half-working.
+**Closed / current boundaries:**
+- **Taint flow is now reassignment-SENSITIVE (residual CLOSED — Phase-2 taint soundness).** The
+  former fail-open — a clean var reassigned to a tainted value was NOT re-tainted, so `let x = 5;
+  x = input(); sink(x)` compiled clean — is closed: the `Assign` handler propagates the RHS's taint
+  to the binding (SET on tainted, CLEAR on clean/declassified), and `if`/loop bodies MERGE taint
+  may-taint (`merge_taint_over`) with binding-identity by span so a block-local `let` SHADOW never
+  leaks to the outer binding. Both directions are precise: reassign tainted→clean clears; reassign
+  clean→tainted taints; a value tainted on any path stays tainted (fail-closed); cleared on every
+  path clears. This is the proper control-flow-merge dataflow the three adversarial rounds required
+  (the shadow-vs-reassign case they flagged is handled by the span identity check). Fixtures:
+  `taint_reassign_straightline`/`_branch`/`_to_clean_accepts`; tests: `taint_reassignment_*`,
+  `taint_is_flow_sensitive_across_reassignment_residual_closed`, `block_scoped_shadowing_*`.
 - **Interprocedural RETURN-taint is now modeled (Phase-3 slice 2).** A monotone fixpoint pre-pass
   (`compute_tainting_fns`, run before per-function analysis) marks each function whose return value
   carries INTERNAL taint — a `taint_source()`/`tainted<T>` local returned directly (through let-chains
@@ -230,17 +234,117 @@ is honest in **both** directions (never over-claim, never under-claim):
   resolved flat namespace (same as other interprocedural summaries). No extra slice needed for the
   core path; a named error code remains optional polish.
 
+## NOW REAL (Phase-4 — proof-surface breadth + verifier trust, 2026-07-12)
+
+Deepens the solver moat. Everything below is fail-closed and unit-tested (`cargo test -p anubis-compiler --lib phase4_`).
+
+### A1 — Safe division / modulo / shift (`bvashr` lock)
+
+- `/` and `%` model as `bvsdiv`/`bvsrem` only when the divisor is a non-zero literal **or** a
+  parameter proven non-zero by `requires(d != 0)` / `requires(d > 0)` (and never reassigned) —
+  marked via `nzdiv` side-channel in `solver_int_vars`.
+- Unguarded or zero divisor → **`ANUBIS_DIVISOR_MAYBE_ZERO`** (not a silent cert). Modeling an
+  unguarded divide would ignore the runtime trap.
+- `>>` is **arithmetic** (`bvashr` + mod-64 mask), matching `i64::wrapping_shr`. `bvlshr` would be
+  unsound (the historical 32-bit-unsound bug class). Locked by discharge tests (`-8 >> 1 == -4`).
+
+### B1 — Real counterexample replay
+
+- Every z3 `sat` FAIL path runs `replay_counterexample`: model-substitution + independent
+  re-`check-sat`. A model that does not re-verify is **`ANUBIS_REPLAY_MISMATCH`** (encoder-vs-solver
+  soundness alarm) — fail closed.
+- Ground formulas (no free constants) legitimately return an empty model `()`; those re-check the
+  base query alone. Open formulas with unparseable models still fail closed.
+- Evidence SARIF maps `ANUBIS_REPLAY_MISMATCH` (legacy alias retained).
+
+### B3 — Program-level differential harness (`middle/proptest.rs`)
+
+- Deterministic LCG generates random modelable pure-i64 programs (true contracts + false contracts).
+- Property **P_discharge:** solver says discharged ⇒ runtime prints the oracle value.
+- Property **P_disproof:** solver says FAIL ⇒ model (when present) replays; runtime body value is
+  the true result (not the wrong ensures constant).
+- Standing regression net against false-proofs for every future proof-surface change.
+
+### A2 — Bounded arrays / sequences (QF_ABV)
+
+- List **literals** of int-modelable elements (and lets bound to them) model as SMT
+  `(Array (_ BitVec 64) (_ BitVec 64))` + length BitVec; obligations use **`QF_ABV`** when arrays
+  appear, else `QF_BV`.
+- `len(xs)` and `xs[i]` are int-modelable only for bounded modeled sequences with a **proven
+  in-range non-negative constant index** (negative indices exist at runtime but are not modeled).
+- Index not proven in-range → **`ANUBIS_INDEX_MAYBE_OOB`**.
+- Unbounded lists (parameters, push results, …) → **`ANUBIS_SEQ_UNBOUNDED`**.
+- Tests: `phase4_bounded_seq_qf_abv_and_fail_closed_codes`.
+
+### S — Strings / floats (opaque, precise diagnostics)
+
+- String contracts → **`ANUBIS_STRING_CONTRACT_UNMODELED`**.
+- Float contracts → **`ANUBIS_FLOAT_CONTRACT_UNMODELED`**.
+- Optional QF_S / QF_FP lanes remain **PLANNED** behind feature flags + the same fail-closed
+  discipline (not shipped). Tests: `phase4_string_and_float_opaque_diagnostics`.
+
+## NOW REAL (Phase-5 — Anubis-source standard library, 2026-07-12)
+
+- **Embedded `import std.*`** — modules under `compiler/stdlib/std/*.anb` baked via `include_str!`
+  (`compiler/src/stdlib/mod.rs`). `std.*` resolves **only** from the embedded registry (no project
+  shadowing). Content lock: `compiler/stdlib/MANIFEST.sha256`.
+- Modules (**10**): `std.collections` (Set + OrderedMap), `std.iter`, `std.option`, `std.result`,
+  `std.str`, `std.math` (`math_add`/`math_sub`/… with contracts — not bare `add`), `std.testing`,
+  `std.io` (uses + taint), `std.pwn` (pack LE/BE, unpack, cyclic_find, pad/junk/chain, crash helpers,
+  run_local), **`std.crypto`** (HMAC CT verify, HKDF, CSPRNG, ChaCha20-Poly1305, Argon2id/PBKDF2
+  password_hash, PHC, Ed25519 — see `CRYPTO.md`).
+- Rust builtins remain the microarchitecture; stdlib is composition. Phase-2/3 summaries apply after
+  combine (namespaced `std_io__read_text`, etc.).
+- **Capability inheritance (fail-closed):** a caller's Safe/verified gates inherit the callee's
+  declared `uses(...)`. `std.io::write_text` / `std.pwn::run_local` cannot launder `fs.write` /
+  `shell` past a caller that omitted the capability (`ANUBIS_EFFECT_FORBIDDEN_IN_MODE`).
+- **std.pwn**: packing always available; `target_run` / `run_local` requires `--allow-research`
+  (runtime panic if called without). Gold: `examples/security/poc_stdlib_overflow.anb`.
+- Gate: `bash scripts/run_stdlib_gate.sh`. Tests: `cargo test -p anubis-compiler --lib phase5_`.
+
+## NOW REAL (Phase-6 — package manager + proof-carrying dependencies, 2026-07-12)
+
+- **`[dependencies]`** with registry SemVer / `path` / pinned-`git` / optional `registry =` URL — REAL
+- **`Anubis.lock`** full **transitive** closure: version + content Merkle — REAL
+- **Cycles / conflicts:** `ANUBIS_DEP_CYCLE`, `ANUBIS_DEP_VERSION_CONFLICT` — REAL
+- **Content-addressed cache** + `ANUBIS_CACHE_HASH_MISMATCH` — REAL
+- **Local + file:// + https registries** + `anubis package publish --key` — REAL
+- **Proof composition:** signed `evidence/` + PCA + Ed25519 trust + **source binding** +
+  **`summaries.json` re-derive** — REAL (`ANUBIS_DEP_PROOF_UNVERIFIED`, `ANUBIS_DEP_UNTRUSTED_SIGNER`)
+- **Deps mount as modules** (direct + transitive); Phase 1–5 at consumer call sites — REAL
+- **Evidence Merkle + dep_closure** (direct flag, transitive:true) — REAL
+- Gate: `bash scripts/run_package_gate.sh`. Docs: `docs/language/PACKAGES.md`.
+  Tests: `cargo test -p anubis-compiler --lib phase6_` (19+).
+
+### Phase-6 residual boundaries (not gaps in the crown)
+
+- Not crates.io/npm wire protocol — Anubis registry is local / `file://` / simple HTTP
+  (`versions.txt` + tree or `.tar.gz`).
+- Git requires `git` on PATH + pinned `rev`.
+- Summaries are sealed and re-derived; call-site enforcement is live re-typecheck of mounted
+  sources (Phase-3 taint interproc limits still apply).
+- SemVer conflict is exact version/content clash on the same package name (not full PubGrub
+  backtracking across a multi-version solution space).
+
 ## Explicitly PLANNED (not real yet — verified still-unshipped 2026-07-10)
 
 - Array/list slicing **sugar** `xs[1..3]` (clean parse error today; use explicit list builtins)
-- An Anubis-level standard library (`stdlib/` is empty; the ~150 builtins are baked into the Rust
-  emitter). Multi-file `import` now resolves (see NOW REAL below) but there is no `import std.*`
-  prelude yet — that is Phase 5.
 - Async / await / tasks (language-level). **Governed I/O builtins** `read_file`/`write_file`/`open`/
   `send`/`connect`/`time`/`rand` are REAL executables (Phase-3 C3) via `std::fs`/`std::net`/
   `std::time`; they are still gated by mode + `uses(...)` in the checker
-- Package manager, crates, publishing
-- LSP / IDE support
+- Full IDE matrix beyond Phase-7 MVP (rename, completions, debugger) — **LSP diagnostics + contract hover are REAL** (`anubis lsp`, `editors/vscode-anubis`)
+- Full-language self-host — **partially closed (2026-07-12).** The Anubis-SH self-host
+  compiler now **compiles and runs the full executable language** (enums, `Name::Variant`,
+  match, if-expressions, `for x in <collection>`, maps), verified byte-for-byte against the
+  Rust host over the corpus (`bash scripts/run_selfhost_fulllang_gate.sh` →
+  `SELFHOST_FULLLANG_GATE: PASS`). The stage0→1→2→3 bootstrap seal holds, now with a
+  **same-toolchain binary fixpoint** (`bash scripts/run_selfhost_gate.sh`; see
+  `docs/language/SELFHOST.md`). Still **not** claimed: (a) the compiler's *own source*
+  rewritten to use full-language constructs and still fixpoint — `anubis_sh.anb` remains
+  authored in the stable SH subset; (b) native lowering in Anubis (codegen emits an
+  interpreter package, not host `lower_program_to_rust`); (c) cross-rustc-version binary
+  identity; (d) Z3/taint engine in Anubis; (e) replacing the Rust host as the trusted
+  default toolchain (a trusted seed is standard for bootstraps).
 - Automatic remote exploit / ROP / C2 (out of scope by design — not a gap to “close” for A+)
 
 ## Current Gaps That Must Be Addressed in Fixtures / Tests (but are targeted for this slice)
@@ -256,9 +360,10 @@ is honest in **both** directions (never over-claim, never under-claim):
 
 - "General-purpose language complete" (Anubis targets a niche: a proof-carrying, evidence-native
   systems language — not a Python/Haskell/Swift replacement)
-- An Anubis-level stdlib (`import std.*`), async, or language-level networking (all PLANNED above).
-  Multi-file modules ARE real now (see NOW REAL) — do not claim them unsupported.
-- Mature package / build / release story; LSP / IDE tooling
+- Async or language-level networking (PLANNED). Multi-file modules and `import std.*` ARE real
+  now (see NOW REAL) — do not claim them unsupported.
+- Full public-registry ecosystem maturity / LSP / IDE tooling (local package + proof-carrying
+  deps **are** real — Phase 6; see PACKAGES.md)
 
 (Note: full enums — unit/tuple/struct variants — and built-in `Option`/`Result` + `?` **are** real now,
 so they are no longer on this never-claim list; see the NOW REAL sections above.)

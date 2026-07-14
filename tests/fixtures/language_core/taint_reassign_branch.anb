@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK
+// Phase-2 taint soundness: the same fail-open through a branch. `x` is tainted in one arm; the
+// control-flow-merge (may-taint) makes it tainted after the `if`, so the send is flagged. A bare
+// scope-restore used to discard the branch's taint (fail-open).
+fn main(cond: bool) uses(net.send) {
+    let x = 5;
+    if cond {
+        x = input();
+    }
+    send("host", 80, x);
+}
