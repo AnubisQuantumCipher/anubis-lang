@@ -2450,6 +2450,12 @@ pub fn is_builtin_name(name: &str) -> bool {
                 // middle/capability.rs. Executing a `cap_*` program is a documented later concern.
                 | "cap_acquire"
                 | "cap_use"
+                // Phase-2 leg-1 confidentiality label (checker-only this slice). `secret_source(v)`
+                // marks a value CONFIDENTIAL — the dual of `taint_source` (which marks a value
+                // untrusted). Recognized here so the unknown-call gate accepts it; the lethal-trifecta
+                // check (middle/trifecta.rs) reads its presence as leg 1 (private-data access), a
+                // precise alternative to the coarse `fs.read` proxy. Executing it is a later concern.
+                | "secret_source"
         )
         || is_proof_input_builtin(name)
         || is_poc_kit_builtin(name)

@@ -18,6 +18,11 @@
 
 use crate::frontend::{Expr, ForSource, Stmt};
 
+/// The confidentiality label: `secret_source(v)` marks a value as PRIVATE — the dual of
+/// `taint_source` (which marks a value untrusted). Its presence is leg 1 (private-data access), a
+/// precise alternative to the coarse "a file was read" (`fs.read`) proxy the trifecta also accepts.
+const SECRET_SOURCE: &str = "secret_source";
+
 #[derive(Debug, Default)]
 pub(crate) struct TrifectaLegs {
     /// Label of the first untrusted source that is NOT the private file read (`input`, `recv`,
@@ -26,6 +31,9 @@ pub(crate) struct TrifectaLegs {
     /// A well-formed `declassify(inner, policy, reason)` (both policy and reason present) appears
     /// somewhere in the body — the author's explicit, reviewed sanitization barrier.
     pub wellformed_declassify: bool,
+    /// A `secret_source(..)` value appears in the body — leg 1 (private-data access) via the
+    /// explicit confidentiality label, independent of any `fs.read`.
+    pub secret_present: bool,
 }
 
 /// Scan one function body + its parameters for the two body-side trifecta signals.
@@ -133,6 +141,9 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs) {
                 .get_or_insert_with(|| format!("taint_source(\"{label}\")"));
         }
         Expr::Call { callee, args } => {
+            if callee == SECRET_SOURCE {
+                legs.secret_present = true;
+            }
             if is_leg2_source(callee) {
                 legs.leg2_untrusted.get_or_insert_with(|| callee.clone());
             }
@@ -274,6 +285,14 @@ mod tests {
     fn wellformed_declassify_detected_malformed_ignored() {
         assert!(legs_of(r#"fn agent() { let s = input(); let x = declassify(s, "p", "r"); }"#).wellformed_declassify);
         assert!(!legs_of(r#"fn agent() { let s = input(); let x = declassify(s); }"#).wellformed_declassify);
+    }
+
+    #[test]
+    fn secret_source_is_leg1_confidentiality() {
+        let legs = legs_of(r#"fn agent() { let k = secret_source("api_key"); send("h", 80, "b"); }"#);
+        assert!(legs.secret_present);
+        // A plain read with no secret_source: the label is absent (fs.read handles that leg in mod.rs).
+        assert!(!legs_of(r#"fn agent() { let d = read_file("x"); }"#).secret_present);
     }
 
     #[test]

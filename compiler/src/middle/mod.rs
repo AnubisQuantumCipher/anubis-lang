@@ -1196,8 +1196,9 @@ fn analyze_function(
     }
 
     // Phase-2 FINAL slice: the LETHAL TRIFECTA as a verified-lane compile error. A function forms the
-    // trifecta when it holds all three lethal capabilities at once: leg 1 — reads PRIVATE data
-    // (fs.read); leg 2 — is exposed to UNTRUSTED input from a channel DISTINCT from the read
+    // trifecta when it holds all three lethal capabilities at once: leg 1 — accesses PRIVATE data
+    // (fs.read — a file was read — OR an explicit `secret_source(..)` confidentiality label); leg 2
+    // — is exposed to UNTRUSTED input from a channel DISTINCT from the read
     // (input/recv/env/taint_source/tainted<T> param); leg 3 — COMMUNICATES externally (net.send OR
     // a shell-out: exec/system/shell/target_run).
     // An injection in the untrusted input can then steer the private read and the egress — the danger
@@ -1213,10 +1214,12 @@ fn analyze_function(
     // on evidence: fires under shadow on the trifecta fixture, all accept-edges silent, corpus shadow
     // diff UNEXPECTED=0 over 179 programs (the FAIL fixture the sole EXPECTED line), zero trifecta
     // lines on `selfhost/src/anubis_sh.anb` and every stdlib module.
-    // Honest boundaries (deferred): leg 1 = fs.read proxy (no confidentiality label — a secret in
-    // memory/env is not leg 1); leg 2 intra-procedural + direct-source only; leg 3 = net.send or a
-    // shell-out (`sql` egress still deferred); the declassify hatch is coarse (function-level, not
-    // tied to the specific outbound value).
+    // Honest boundaries (deferred): leg 1 recognizes an explicit `secret_source(..)` label + the
+    // coarse `fs.read` proxy, but there is no confidentiality FLOW tracking yet (a secret value
+    // reaching a sink — the dual of the taint integrity check — is a further increment), and a
+    // secret arriving via `getenv`/a param is not auto-labelled; leg 2 intra-procedural + direct-
+    // source only; leg 3 = net.send or a shell-out (`sql` egress still deferred); the declassify
+    // hatch is coarse (function-level, not tied to the specific outbound value).
     if ctx.verified {
         let (has_fs_read, has_net_send, has_shell) = {
             let row = ctx.fn_effect_rows.get(name);
@@ -1235,15 +1238,24 @@ fn analyze_function(
             (false, true) => Some("shell"),
             (false, false) => None,
         };
-        if let (true, Some(egress)) = (has_fs_read, egress) {
+        if let Some(egress) = egress {
             let legs = trifecta::scan_legs(body, params);
-            if let Some(leg2) = legs.leg2_untrusted {
+            // Leg 1 — private-data access — is `fs.read` (a file was read: coarse over-approximating
+            // proxy) OR an explicit `secret_source(..)` confidentiality label (precise). The label
+            // closes the gap that a secret held in memory — not from a file — was invisible to fs.read.
+            let leg1 = match (has_fs_read, legs.secret_present) {
+                (true, true) => Some("fs.read + a secret_source value"),
+                (true, false) => Some("fs.read"),
+                (false, true) => Some("a secret_source value"),
+                (false, false) => None,
+            };
+            if let (Some(leg1), Some(leg2)) = (leg1, legs.leg2_untrusted) {
                 if !legs.wellformed_declassify {
                     ctx.emit(
                         SemanticDiagnostic {
                             code: Some("ANUBIS_LETHAL_TRIFECTA".into()),
                             message: format!(
-                                "verification lane: function `{name}` forms the lethal trifecta — it reads private data (fs.read), is exposed to untrusted input (`{leg2}`), and communicates externally (`{egress}`) with no declassify barrier. An injection in the untrusted input can steer the private read and exfiltrate it. Drop or isolate a leg (remove the external channel or fs.read, or handle the untrusted input in a separate function), or interpose a well-formed `declassify(value, policy, reason)` on the outbound value."
+                                "verification lane: function `{name}` forms the lethal trifecta — it accesses private data (`{leg1}`), is exposed to untrusted input (`{leg2}`), and communicates externally (`{egress}`) with no declassify barrier. An injection in the untrusted input can steer the private read and exfiltrate it. Drop or isolate a leg (remove the external channel or the private-data access, or handle the untrusted input in a separate function), or interpose a well-formed `declassify(value, policy, reason)` on the outbound value."
                             ),
                             span: Some((span.start, span.end)),
                         },

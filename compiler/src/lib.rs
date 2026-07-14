@@ -4577,6 +4577,27 @@ fn main() { }"#;
     }
 
     #[test]
+    fn lethal_trifecta_secret_source_is_leg1_without_a_file_read() {
+        // The confidentiality label: leg 1 via secret_source, NO fs.read. Closes the gap that a
+        // secret held in memory (not from a file) was invisible to the fs.read proxy.
+        let src = r#"fn agent() uses(net.send) {
+    let sc = cap_acquire("net.send");
+    let key = secret_source("api_key"); let steer = input();
+    cap_use(sc); send("host", 80, "beacon");
+}
+fn main() { }"#;
+        let err = tc_lane(src, true).expect_err("secret_source + untrusted + egress is a trifecta");
+        assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
+        // A secret + egress with NO untrusted channel is two legs → accepts.
+        let two = r#"fn agent() uses(net.send) {
+    let sc = cap_acquire("net.send"); let key = secret_source("api_key");
+    cap_use(sc); send("host", 80, "beacon");
+}
+fn main() { }"#;
+        tc_lane(two, true).expect("secret + egress, no untrusted channel is two legs");
+    }
+
+    #[test]
     fn interprocedural_param_return_taint_is_flagged_at_the_call_site() {
         // Phase-3 A2: a function that RETURNS a formal parameter is summarized as
         // `returns_taint_of_params`; call sites combine that with argument taint so
