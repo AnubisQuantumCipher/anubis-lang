@@ -147,8 +147,9 @@ through indexing/field access.
   and merges may-secret across branches/loops via the same `merge_taint_over` + span-identity as
   taint. A malformed declassify does NOT release (AST-shape keyed). Boundaries this slice, stated
   not hidden: **no interprocedural secret summary** (a secret returned from a helper arrives
-  unlabelled — the dual of `compute_tainting_fns` is future work); **`getenv`/params are not
-  auto-labelled** (needs a `secret<T>` qualifier decision); **local `fs.write` is not egress**
+  unlabelled — the dual of `compute_tainting_fns` is future work); **a `secret<T>`-annotated param/let
+  IS now auto-labelled** (`e6fd51a`, the qualifier — but an unannotated `getenv`/`env` value is
+  deliberately NOT auto-secreted: env is untrusted input, not secret output); **local `fs.write` is not egress**
   (a secret written to a local file passes — pinned by `secret_local_write_accepts.anb`). Fixtures:
   `secret_exfiltration_send`/`_reassign`/`_shell`, `secret_declassified_egress_accepts`,
   `secret_local_write_accepts`, `secret_reassigned_clean_before_egress_accepts`; tests:
@@ -204,8 +205,12 @@ through indexing/field access.
     `secret_into_shell_helper_rejects`, `secret_into_egress_transitive_rejects`,
     `secret_egress_declassified_arg_accepts`, `secret_into_local_write_param_accepts`,
     `secret_into_discard_helper_accepts`.
-  - **No `secret<T>` qualifier**: `getenv`/param secrets are not auto-labelled (a surface-syntax
-    decision, mirroring `tainted<T>`).
+  - **`secret<T>` qualifier is REAL (`e6fd51a`)**: a param or `let` annotated `secret<T>` is
+    auto-labelled secret (mirroring `tainted<T>`) at all 5 sites the taint qualifier is honored,
+    including a `secret<T>` param as trifecta leg-1. Residual: an unannotated `getenv`/`env` value is
+    deliberately NOT auto-secreted (untrusted input ≠ secret output), and interprocedural propagation of
+    a `secret<T>` PARAM to the return is future work (`seed_one_let_secret` stays param-blind, as does
+    its taint twin `seed_one_let`).
   - **Presence-level declassify hatch** (pre-existing): any one well-formed declassify in an agent body
     suppresses the trifecta, even if applied to unrelated data — the hatch is not tied to the outbound
     value. Interprocedural legs make it slightly easier to trip.
