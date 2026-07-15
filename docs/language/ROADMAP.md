@@ -12,13 +12,13 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 
 ---
 
-## STATUS — as of 2026-07-14 (branch `a-plus-maturity/20260705-1649`, HEAD `c727b8d`)
+## STATUS — as of 2026-07-14 (branch `a-plus-maturity/20260705-1649`, HEAD `8624882`)
 
 | Phase | State | Evidence / residuals |
 |---|---|---|
 | **0 — Trust spine** | ✅ **DONE** | byte-identical source + binary fixpoint (`c640badd` host / `dc680001` in-VM), ablation gate, DDC C-native parser lane, hermetic repro. Residual → author-diversity (Phase 7). |
 | **1 — Real type system** | 🟡 **~90%** | bidirectional inference (`97c17f3`), floats, captured generics (`898cc3e`), real traits + coherence + missing-method (`fa88628`) — all enforcing, fixpoint held. **RESIDUALS:** typed `?` propagation; generic-bound capture + trait **bound** checking (`ANUBIS_TRAIT_BOUND_UNSATISFIED` — parser currently discards `T: Trait` bounds). |
-| **2 — Capability & effect (the differentiator)** | 🟢 **CORE DONE** | transitive effect inference / Koka rows (`da28de4`); linear capability tokens / Austral (`9824807`); effect-capability composition (`7aa9f63`); **lethal trifecta as a verified-lane compile error** (`27554fb`) + shell egress (`c7cec93`) + leg-1 confidentiality label `secret_source` (`59585f0`). taint **reassignment fail-open CLOSED** (`2ac45ab` — control-flow-merge dataflow, `merge_taint_over`, span-identity). **leg-1 confidentiality FLOW REAL** (`c727b8d` — `ANUBIS_SECRET_EXFILTRATION`: a `secret_source` value that actually reaches net/shell egress without well-formed declassify is a Safe-mode compile error; flow-sensitive + may-secret branch merge, enforcing, corpus-inert). **RESIDUALS:** higher-order taint summaries + field granularity; interprocedural secret summary (dual of `compute_tainting_fns`) + auto-labelling `getenv`/param secrets (`secret<T>` qualifier decision); leg-2 interprocedural (untrusted input through a helper); trifecta in **Safe** mode (currently verified-lane only); coarse declassify hatch (function-level, not value-tied); `sql` egress; local `fs.write` not egress for the secrecy check. |
+| **2 — Capability & effect (the differentiator)** | 🟢 **CORE DONE** | transitive effect inference / Koka rows (`da28de4`); linear capability tokens / Austral (`9824807`); effect-capability composition (`7aa9f63`); **lethal trifecta as a verified-lane compile error** (`27554fb`) + shell egress (`c7cec93`) + leg-1 confidentiality label `secret_source` (`59585f0`). taint **reassignment fail-open CLOSED** (`2ac45ab` — control-flow-merge dataflow, `merge_taint_over`, span-identity). **leg-1 confidentiality FLOW REAL** (`c727b8d` — `ANUBIS_SECRET_EXFILTRATION`: a `secret_source` value that actually reaches net/shell egress without well-formed declassify is a Safe-mode compile error; flow-sensitive + may-secret branch merge, enforcing, corpus-inert). **INTERPROCEDURAL secret + leg-2 REAL** (`8624882` — `compute_secret_fns` (dual of `compute_tainting_fns`) so `send(get_key())` fires when the secret is minted in a helper; `compute_leg2_fns` (presence, `is_leg2_source`-built so file reads excluded) so the trifecta leg-2 sees a helper wrapping `input()`; discard-arg-precise via shared `param_return_taint`; declassify barrier holds across the call boundary. Design + landed code both adversarially reviewed). **RESIDUALS:** higher-order taint summaries + field granularity; **composite/aggregate laundering** (shared `expr_param_return_flow` + `expr_secret_source`/`expr_taint_source` lack aggregate/match arms — symmetric taint+secret, high-leverage own slice); **confidentiality param→egress-sink dual** (`leak(secret)` where `fn leak(x){send(x)}` — twin of `param_sinks`); `secret<T>` qualifier + auto-labelling `getenv`/param secrets; trifecta in **Safe** mode (currently verified-lane only); coarse **presence-level** declassify hatch (not value-tied); callee-name keyed (no method/closure calls); `sql` egress; local `fs.write` not egress for the secrecy check. |
 | **3 — Broaden verified surface** | ⬜ TODO | QF_FP (float) + QF_S (string) solver lanes + bounded-array maturity, each fail-closed, differential harness beyond i64. Can run partly parallel to Phase 2. |
 | **4 — Port checker into Anubis** | ⬜ TODO | port inference + effect + taint engines to Anubis so the ablation gate covers type-checking too. Do once, after 1–3 settle. Fixpoint may reseal. |
 | **5 — Mechanized semantics + soundness** | ⬜ TODO | small-step semantics in Lean/Rocq; prove (a) Safe-mode non-interference, (b) inferred-⊆-declared effect soundness, (c) SMT-encoding soundness. |
@@ -30,20 +30,24 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 
 ### ➡ NEXT ACTION
 
-Leg-1 confidentiality FLOW is **real** (`c727b8d` — `ANUBIS_SECRET_EXFILTRATION`, the value-flow
-dual of the taint layer, enforcing from day one). Both flow lanes (integrity + confidentiality) now
-share the same control-flow-merge dataflow. Candidate next moves (operator steers the order; each
-is a clean, self-contained slice in the same VM-validated shape):
+Interprocedural secret + leg-2 summaries are **real** (`8624882` — both monotone fixpoints, both
+adversarially reviewed). The confidentiality and integrity lanes now share flow-sensitive dataflow
+AND interprocedural summaries. Candidate next moves (operator steers the order; each is a clean,
+self-contained, VM-validated slice):
 
-1. **Leg-2 interprocedural** *(recommended — completes the flow-precision story).* Untrusted input
-   arriving through a helper (`fn get(){ input() }`); needs a monotone body-exposure summary,
-   sibling to `compute_tainting_fns`. Natural twin: the **interprocedural secret summary** (a
-   returned `secret_source` value is currently unlabelled) — same fixpoint shape, one slice.
-2. **Trifecta into Safe mode** — the arc frames the trifecta as a Safe-mode compile error; it is
+1. **Composite / aggregate flow** *(recommended — highest leverage, closes a real missed-leak on
+   BOTH labels).* `expr_secret_source`/`expr_taint_source` lack `ArrayLiteral`/`StructLiteral`/
+   `MapLiteral`/`EnumConstruct` arms and the shared `expr_param_return_flow` returns ∅ for those +
+   `Match`/block-`If`, so a secret/tainted value stashed in a container or wrapped-then-returned is
+   laundered. Fix the shared machinery once → improves taint and secrecy together. Changes taint-side
+   behavior, so needs its own corpus re-validation (that's why it wasn't bundled into `8624882`).
+2. **Confidentiality param→egress-sink dual** — the twin of `param_sinks`/`ANUBIS_INTERPROC_SINK`:
+   catch `leak(secret)` where `fn leak(x){ send(x) }`. A clean sibling summary.
+3. **Trifecta into Safe mode** — the arc frames the trifecta as a Safe-mode compile error; it is
    currently verified-lane only. Decide the accept-bias carefully (Safe is the default lane).
-3. **`secret<T>` qualifier + auto-labelling** — `getenv`/param secrets seeded without an explicit
+4. **`secret<T>` qualifier + auto-labelling** — `getenv`/param secrets seeded without an explicit
    `secret_source` call (a surface-syntax decision: mirror `tainted<T>`).
-4. **Broaden (arc dependency order):** Phase 3 solver lanes (QF_FP / QF_S, parallel-able), or finish
+5. **Broaden (arc dependency order):** Phase 3 solver lanes (QF_FP / QF_S, parallel-able), or finish
    the Phase-1 residuals (typed `?`, generic-bound capture + trait bound checking).
 
 Every slice: reproduce-before-certify where it's a soundness fix, shadow-first for a new check,

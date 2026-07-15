@@ -154,6 +154,37 @@ through indexing/field access.
   `secret_local_write_accepts`, `secret_reassigned_clean_before_egress_accepts`; tests:
   `secret_flows_to_egress_without_declassify_rejects`, `secret_egress_accept_edges_are_precise`,
   `secret_egress_malformed_declassify_still_rejects`.
+- **CONFIDENTIALITY + leg-2 are now INTERPROCEDURAL (Phase-2, `8624882`).** Two monotone-fixpoint
+  summaries, siblings of `compute_tainting_fns`: `secret_fns` (`compute_secret_fns` — functions whose
+  return carries a secret; consumed by `expr_secret_source`'s Call arm AND the trifecta leg-1) closes
+  the "secret returned from a helper" boundary (`send(get_key())` now fires); `leg2_fns`
+  (`trifecta::compute_leg2_fns` — functions whose body PRESENCE-exposes untrusted input, built with
+  `is_leg2_source` so file reads are excluded) makes the trifecta leg-2 interprocedural (a helper
+  wrapping `input()` is untrusted-input exposure). Discard-arg precision is preserved via the shared
+  `param_return_taint` summary (`send(ignore(secret))` with `fn ignore(x){0}` does NOT fire); a
+  well-formed declassify inside a helper is a release barrier ACROSS the call boundary (a sanitizing
+  helper is not a leg-2 exposer). Fixtures: `secret_exfiltration_via_helper`,
+  `secret_discard_helper_accepts`, `lethal_trifecta_interproc_helpers_verified`.
+  **Remaining named boundaries (stated, not hidden — adversarial-review-confirmed):**
+  - **Composite laundering** (symmetric with taint, pre-existing): `expr_secret_source`/
+    `expr_taint_source` have no `ArrayLiteral`/`StructLiteral`/`MapLiteral`/`EnumConstruct` read arm,
+    and `expr_param_return_flow` (which builds the shared `param_return_taint`) returns the empty set
+    for those + `Match`/block-`If`. So a secret stashed into a container/struct, or a pass-through
+    helper that wraps its arg in one before returning, is not tracked. Fixing `expr_param_return_flow`
+    improves BOTH labels — a high-leverage follow-up slice, kept separate because it changes taint-side
+    behavior and needs its own corpus re-validation.
+  - **No confidentiality param→egress-sink dual**: the integrity side has `param_sinks` +
+    `ANUBIS_INTERPROC_SINK` (`log(tainted)` when `fn log(x){sink(x)}`); the confidentiality side has no
+    twin yet, so `leak(secret)` with `fn leak(x){ send(x) }` is not caught. A clean sibling slice.
+  - **No `secret<T>` qualifier**: `getenv`/param secrets are not auto-labelled (a surface-syntax
+    decision, mirroring `tainted<T>`).
+  - **Presence-level declassify hatch** (pre-existing): any one well-formed declassify in an agent body
+    suppresses the trifecta, even if applied to unrelated data — the hatch is not tied to the outbound
+    value. Interprocedural legs make it slightly easier to trip.
+  - **Callee-name keyed**: method/closure-valued calls (`recv.m()`, `let f = get; f()`) are not
+    resolved by the interprocedural summaries (same boundary as the taint side).
+  - **Tail if/match implicit return**: a secret returned via a bare tail `if`/`match` (no explicit
+    `return` on a direct source) is not summarized — identical to the taint return summary's boundary.
 - **Interprocedural RETURN-taint is now modeled (Phase-3 slice 2).** A monotone fixpoint pre-pass
   (`compute_tainting_fns`, run before per-function analysis) marks each function whose return value
   carries INTERNAL taint — a `taint_source()`/`tainted<T>` local returned directly (through let-chains
