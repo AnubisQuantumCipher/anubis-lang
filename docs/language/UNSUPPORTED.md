@@ -165,14 +165,16 @@ through indexing/field access.
   well-formed declassify inside a helper is a release barrier ACROSS the call boundary (a sanitizing
   helper is not a leg-2 exposer). Fixtures: `secret_exfiltration_via_helper`,
   `secret_discard_helper_accepts`, `lethal_trifecta_interproc_helpers_verified`.
-- **The LETHAL TRIFECTA now runs in the Safe (default) lane, SHADOW-FIRST (Phase-2, `ec69ab6`).** The
-  coexistence check (one function holding private-data access + a distinct untrusted-input channel + a
-  net/shell egress, with no well-formed declassify) is ENFORCING in the verified lane and SHADOW-gated
-  in Safe (`emit(.., !ctx.verified)`): under a normal `check` a 3-leg body still compiles (default-lane
-  verdicts unchanged), and under `ANUBIS_SHADOW_TYPES=1` it emits `ANUBIS_LETHAL_TRIFECTA` for the
-  corpus shadow diff (which fires on nothing committed → `UNEXPECTED=0`). The accept-bias of a
-  coexistence check in the default lane was decided with the operator: land shadow-first, PROMOTE to
-  Safe-enforcing (a single-flag flip) after it soaks against real programs. Residuals: `http_get`/
+- **The LETHAL TRIFECTA is a Safe-mode COMPILE ERROR (Phase-2 differentiator, `ec69ab6` shadow-first →
+  `ad86af2` enforcing).** The coexistence check (one function holding private-data access + a distinct
+  untrusted-input channel + a net/shell egress, with no well-formed declassify) is now ENFORCING in the
+  Safe (default) lane AND verified (`emit(.., false)`) — a 3-leg body rejects by default with
+  `ANUBIS_LETHAL_TRIFECTA`; Research/Exploit bypass unless `@verified` (dual-use lanes). It landed
+  shadow-first (shadow diff `UNEXPECTED=0`) then promoted after a full-corpus verdict-diff (145/75, zero
+  flips — no committed program forms an undeclassified 3-leg trifecta in a non-`@verified` function).
+  The accept-bias of a coexistence check in the default lane was decided with the operator. Relief:
+  interpose a well-formed declassify on the outbound value, or split the legs across functions that
+  share no common transitive caller. Residuals: `http_get`/
   `http_post` are not yet a net.send effect so leg-3 under-fires an http constant-beacon; in Safe an
   open effect row stays legal so leg detection under-approximates (accept-biased); the declassify hatch
   is coarse (function-level); leg-isolation only relieves when the untrusted-input path and the private
