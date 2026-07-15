@@ -6123,6 +6123,16 @@ fn expr_taint_source(
         }
         // `expr?` unwraps Ok/Some to the inner value, which carries the same provenance (no binding).
         Expr::Try(inner) => expr_taint_source(inner, scope, tainting_fns, param_return_taint),
+        // A method/closure application (`x.clone()`, `f(a)`) may carry the taint of its receiver/callee
+        // or any argument — conservatively surface the first tainted sub-expression (the symmetric
+        // intra-procedural twin of the `CallExpr` arm in `expr_param_return_flow`, so `s.clone()` does
+        // not launder a tainted value).
+        Expr::CallExpr { callee, args } => {
+            expr_taint_source(callee, scope, tainting_fns, param_return_taint).or_else(|| {
+                args.iter()
+                    .find_map(|a| expr_taint_source(a, scope, tainting_fns, param_return_taint))
+            })
+        }
         _ => None,
     }
 }
@@ -6313,6 +6323,14 @@ fn expr_secret_source(
                 .or_else(|| expr_secret_source(else_, scope, secret_fns, param_return_taint))
         }
         Expr::Try(inner) => expr_secret_source(inner, scope, secret_fns, param_return_taint),
+        // A method/closure application on a secret (`s.clone()`) may carry the secret — conservatively
+        // surface the first secret sub-expression (twin of the `expr_taint_source` CallExpr arm).
+        Expr::CallExpr { callee, args } => {
+            expr_secret_source(callee, scope, secret_fns, param_return_taint).or_else(|| {
+                args.iter()
+                    .find_map(|a| expr_secret_source(a, scope, secret_fns, param_return_taint))
+            })
+        }
         _ => None,
     }
 }
@@ -7401,6 +7419,18 @@ fn expr_param_return_flow(
                         let set = expr_param_return_flow(value, &local, known_param_return);
                         local.insert(name.clone(), set);
                     }
+                    // Non-`Var` assign target (`buf[0]=k`) — MAY-update the root binding (weak union,
+                    // mirroring body_param_returns; an overwrite would drop the value's other flow).
+                    Stmt::Assign { target, value } => {
+                        if let Some(root) = assign_target_root(target) {
+                            let set = expr_param_return_flow(value, &local, known_param_return);
+                            local.entry(root.to_string()).or_default().extend(set);
+                        }
+                    }
+                    // Nested control-flow inside a value-position block (`{ let r=0; if c { r=x; } r }`)
+                    // is a NAMED residual: this arm does not may-union the branch bodies into `local`,
+                    // so a param assigned only inside a nested branch here is not seen by the tail. The
+                    // function-body walker (body_param_returns) DOES handle the statement-level form.
                     _ => {}
                 }
             }
@@ -7439,11 +7469,35 @@ fn expr_param_return_flow(
             s
         }
         Expr::Try(inner) => expr_param_return_flow(inner, flow, known_param_return),
+        // Closure/method application (`x.clone()`, `f(a)(b)`): the returned value MAY derive from the
+        // callee expression or any argument — conservatively union them (a bare-name `f(a)` is
+        // `Expr::Call`, handled precisely above via the return summary; this arm is only the
+        // higher-order `CallExpr`). Without it, `fn fwd(x){ return x.clone(); }` summarized `{}` and a
+        // forwarded secret leaked. (Residual: a returned `Lambda` capturing a param — no downstream
+        // consumer models closure application, so a Lambda arm would only add over-rejections.)
+        Expr::CallExpr { callee, args } => {
+            let mut s = expr_param_return_flow(callee, flow, known_param_return);
+            for a in args {
+                s.extend(expr_param_return_flow(a, flow, known_param_return));
+            }
+            s
+        }
         _ => BTreeSet::new(),
     }
 }
 
 /// Collect parameter indices that a function body can RETURN under `known_param_return`.
+/// Union `src`'s param-flow into `dst` (per-name index-set union) — the may-merge used when joining
+/// a branch/loop body's flow back into the outer flow for the param→return summary.
+fn union_flow_into(
+    dst: &mut BTreeMap<String, BTreeSet<usize>>,
+    src: &BTreeMap<String, BTreeSet<usize>>,
+) {
+    for (k, v) in src {
+        dst.entry(k.clone()).or_default().extend(v.iter().copied());
+    }
+}
+
 fn body_param_returns(
     stmts: &[Stmt],
     flow: &mut BTreeMap<String, BTreeSet<usize>>,
@@ -7479,28 +7533,48 @@ fn body_param_returns(
                     );
                 }
             }
+            // A destructuring `let [a,b] = [x,0]; return a` propagates the init's param-flow to each
+            // bound name — without this arm a destructured param that is returned was silently dropped.
+            Stmt::LetPattern { pattern, init, .. } => {
+                let mut rets = Vec::new();
+                expr_returns(init, &mut rets);
+                for r in rets {
+                    found.extend(expr_param_return_flow(&r, flow, known_param_return));
+                }
+                let set = expr_param_return_flow(init, flow, known_param_return);
+                seed_flow_pattern(flow, pattern, &set);
+            }
+            // A param assigned to a local inside a branch MAY reach a later return, so MERGE (union)
+            // each branch-end flow into the outer flow rather than RESTORING the pre-branch flow — the
+            // restore dropped `let r=0; if c { r=x; } return r`. `found` accumulates unconditionally
+            // across the branch recursions (only the flow map is merged here).
             Stmt::If { then, else_, .. } => {
                 let saved = flow.clone();
-                body_param_returns(then, flow, known_param_return, found, stmt_is_tail);
-                *flow = saved.clone();
+                let mut t = saved.clone();
+                body_param_returns(then, &mut t, known_param_return, found, stmt_is_tail);
+                let mut e = saved.clone();
                 if let Some(else_body) = else_ {
-                    body_param_returns(else_body, flow, known_param_return, found, stmt_is_tail);
+                    body_param_returns(else_body, &mut e, known_param_return, found, stmt_is_tail);
                 }
                 *flow = saved;
+                union_flow_into(flow, &t);
+                union_flow_into(flow, &e);
             }
             Stmt::While { body, .. }
             | Stmt::WhileLet { body, .. }
             | Stmt::Loop { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
-                let saved = flow.clone();
-                body_param_returns(body, flow, known_param_return, found, false);
-                *flow = saved;
+                // Single-pass may-union: a param assigned in the body MAY reach a post-loop return.
+                // (Residual: a loop-CARRIED flow that only manifests across iterations needs a
+                // loop-body fixpoint — named, rarer.)
+                let mut b = flow.clone();
+                body_param_returns(body, &mut b, known_param_return, found, false);
+                union_flow_into(flow, &b);
             }
             Stmt::For {
                 body, var, source, ..
             } => {
-                let saved = flow.clone();
                 let src_flow = match source {
                     crate::frontend::ForSource::Range { start, end } => {
                         let mut s = expr_param_return_flow(start, flow, known_param_return);
@@ -7511,21 +7585,25 @@ fn body_param_returns(
                         expr_param_return_flow(expr, flow, known_param_return)
                     }
                 };
-                flow.insert(var.clone(), src_flow);
-                body_param_returns(body, flow, known_param_return, found, false);
-                *flow = saved;
+                let mut b = flow.clone();
+                b.insert(var.clone(), src_flow);
+                body_param_returns(body, &mut b, known_param_return, found, false);
+                union_flow_into(flow, &b);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
-                    let saved = flow.clone();
-                    body_param_returns(b, flow, known_param_return, found, false);
-                    *flow = saved;
+                    let mut bf = flow.clone();
+                    body_param_returns(b, &mut bf, known_param_return, found, false);
+                    union_flow_into(flow, &bf);
                 }
             }
+            // A `Var` reassignment weak-unions (the summary never clears — conservative); a non-`Var`
+            // target (`buf[0]=k`, `obj.f=k`) is a MAY-update of the root binding, so weak-union into
+            // the root (overwriting would drop the param-flow the value already carries).
             Stmt::Assign { target, value } => {
-                if let Expr::Var(name) = target {
+                if let Some(root) = assign_target_root(target) {
                     let rhs = expr_param_return_flow(value, flow, known_param_return);
-                    flow.entry(name.clone()).or_default().extend(rhs);
+                    flow.entry(root.to_string()).or_default().extend(rhs);
                 }
             }
             _ => {

@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// A secret param destructured out of a let-pattern and returned — the new LetPattern arm closes it.
+fn fwd(x) { let [a, b] = [x, 0]; return a; }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }

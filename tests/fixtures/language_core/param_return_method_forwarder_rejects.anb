@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// A secret param returned via a method/CallExpr (x.clone()) — the conservative CallExpr arm closes it.
+fn fwd(x) { return x.clone(); }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }

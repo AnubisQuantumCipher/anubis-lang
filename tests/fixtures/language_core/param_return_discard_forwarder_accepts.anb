@@ -1,0 +1,4 @@
+// EXPECT: PASS
+// Accept-bias: a helper that does NOT return its secret param does not make the caller leak.
+fn fwd(x) { return 0; }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }

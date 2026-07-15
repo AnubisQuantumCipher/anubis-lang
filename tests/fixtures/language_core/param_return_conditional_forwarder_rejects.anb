@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// A secret param assigned to a local inside a branch and returned after — the branch-union (replacing
+// the flow snapshot/restore) closes this previously-missed leak.
+fn fwd(x, c) { let r = 0; if c { r = x; } return r; }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"), true)); }

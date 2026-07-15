@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// param_return_taint soundness: a secret param stored into a buffer element (a non-Var assign target)
+// and returned reaches the caller's egress — was silently missed (assign_target_root weak-union closes it).
+fn fwd(k) { let buf = [0, 0]; buf[0] = k; return buf; }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }

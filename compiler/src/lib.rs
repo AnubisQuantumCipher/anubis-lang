@@ -5066,6 +5066,49 @@ fn main() uses(net.send) { leak(input()); }"#,
         assert!(!err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "taint must not fire exfiltration: {err}");
     }
 
+    // ── Phase-2: param_return_taint soundness — forwarder helpers that return a secret param ───────
+
+    #[test]
+    fn param_return_summary_catches_forwarder_leaks() {
+        // A secret param that reaches a helper's RETURN through a construct the summary used to drop
+        // (non-Var assign target, conditional local->return, a method/CallExpr, a destructuring let)
+        // is now caught: send(fwd(secret_source())) is exfiltration. Each helper is called at its exact
+        // arity and the specific confidentiality diagnostic is asserted.
+        let cases = [
+            // (helper body, exact call)
+            (r#"fn fwd(k) { let buf = [0, 0]; buf[0] = k; return buf; }"#, r#"fwd(secret_source("k"))"#),
+            (r#"fn fwd(x, c) { let r = 0; if c { r = x; } return r; }"#, r#"fwd(secret_source("k"), true)"#),
+            (r#"fn fwd(x) { return x.clone(); }"#, r#"fwd(secret_source("k"))"#),
+            (r#"fn fwd(x) { let [a, b] = [x, 0]; return a; }"#, r#"fwd(secret_source("k"))"#),
+            (r#"fn fwd(x) { return x; }"#, r#"fwd(secret_source("k"))"#), // control: passthrough
+        ];
+        for (body, call) in cases {
+            let src = format!("{body}\nfn main() uses(net.send) {{ send(\"h\", 80, {call}); }}");
+            let err = tc_ok(&src).expect_err(&format!("forwarder leak not caught for body: {body}"));
+            assert!(
+                err.contains("ANUBIS_SECRET_EXFILTRATION"),
+                "body {body}: expected ANUBIS_SECRET_EXFILTRATION, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_callexpr_launder_is_caught() {
+        // The intra-procedural twin: `s.clone()` (a CallExpr on a secret) egressed is exfiltration —
+        // the direct expr_secret_source now has a CallExpr arm mirroring the summary walker.
+        let err = tc_ok(r#"fn main() uses(net.send) { let s = secret_source("k"); send("h", 80, s.clone()); }"#)
+            .expect_err("a method-call launder of a secret must be caught");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+    }
+
+    #[test]
+    fn param_return_summary_accept_bias() {
+        // A helper that does NOT return its secret param accepts (no over-summarization of a discard).
+        tc_ok(r#"fn fwd(x) { return 0; }
+fn main() uses(net.send) { send("h", 80, fwd(secret_source("k"))); }"#)
+            .expect("a param-discarding helper does not make its caller leak");
+    }
+
     // ── Phase-2: the secret<T> qualifier — auto-label a value secret without secret_source() ───────
 
     #[test]
