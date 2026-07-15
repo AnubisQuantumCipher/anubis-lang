@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH
+// Same for a CALL returning `Option<T>`: `lookup()?` on `Option<u64>` unwraps to `u64`, so annotating
+// the result `string` is a lie — caught via the same InferEnv let-init fallback (`try_unwrap_ok` peels
+// `Option<u64>` to `u64`).
+fn lookup() -> Option<u64> {
+    return Some(5);
+}
+fn consume() -> Option<u64> {
+    let x: string = lookup()?;
+    return Some(0);
+}
+fn main() { }

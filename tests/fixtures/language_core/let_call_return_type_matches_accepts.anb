@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// The matching case accepts: `let x: u64 = produce()` where `produce -> u64`. Guards the InferEnv
+// let-init fallback against over-rejection — a call whose return matches the annotation is clean.
+fn produce() -> u64 {
+    return 5;
+}
+fn main() {
+    let x: u64 = produce();
+}

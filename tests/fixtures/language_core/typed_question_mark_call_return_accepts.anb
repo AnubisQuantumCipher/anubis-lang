@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// The correctly-typed unwrap of a CALL return accepts: `produce()?` on `Result<u64, E>` is `u64`,
+// so `let x: u64` is exact. Confirms the new let-init InferEnv fallback stays accept-biased when the
+// annotation matches the callee's success payload.
+fn produce() -> Result<u64, u64> {
+    return Ok(5);
+}
+fn consume() -> Result<u64, u64> {
+    let x: u64 = produce()?;
+    return Ok(x);
+}
+fn main() { }

@@ -212,7 +212,6 @@ pub(crate) fn is_generic(t: &str) -> bool {
     !t.is_empty() && t.len() <= 2 && t.chars().all(|c| c.is_ascii_uppercase())
 }
 
-/// The inner type of a `tainted<T>` annotation, if any.
 /// The success (`Ok`/`Some`) inner type of an `Option<T>`/`Result<T, E>` annotation — what the `?`
 /// operator unwraps to. Returns `None` for any other type, so a `?` on an unknown/non-Result value
 /// leaves the result untyped (dynamic) rather than mis-typed.
@@ -235,6 +234,7 @@ pub(crate) fn try_unwrap_ok(ty: &str) -> Option<String> {
     Some(inner.trim().to_string())
 }
 
+/// The inner type of a `tainted<T>` annotation, if any.
 pub(crate) fn tainted_inner(ty: &str) -> Option<String> {
     let t = ty.trim();
     let lower = t.to_ascii_lowercase();
@@ -585,9 +585,24 @@ pub(crate) fn synth(ictx: &mut InferCtx, env: &InferEnv, expr: &Expr) -> Ty {
                 _ => Ty::Any,
             }
         }
-        // Everything else — `CallExpr` (first-class closure call), `Try` (typed-`?` is a later
-        // workstream), `Lambda`, `StructLiteral`, `UnifiedBuffer`, `Assume`/`Assert`, `IfLet`, … —
-        // is left dynamic. Accept.
+        // Typed-`?`: the `?` operator unwraps the operand's `Result<T, E>` / `Option<T>` to its
+        // success payload `T`, which is the value the enclosing expression binds. Synthesize the
+        // operand, take its annotation (a container instantiation resolves to `Ty::Generic("Result<…>")`
+        // whose annotation still begins with the container name — see `synth_container_kind`), and peel
+        // the first top-level type argument via `try_unwrap_ok`. An operand `?` cannot pin to a
+        // container (a call to an unknown fn, `Any`, a non-container type) yields `None` → `Ty::Any`,
+        // the accept direction. This is what lets `let x: WrongT = f()?` be caught the same way
+        // `let x: WrongT = f()` already was.
+        Expr::Try(inner) => {
+            let inner_ty = synth(ictx, env, inner);
+            let ann = ictx.resolve(&inner_ty).to_annotation();
+            match try_unwrap_ok(&ann) {
+                Some(ok) => Ty::parse(&ok),
+                None => Ty::Any,
+            }
+        }
+        // Everything else — `CallExpr` (first-class closure call), `Lambda`, `StructLiteral`,
+        // `UnifiedBuffer`, `Assume`/`Assert`, `IfLet`, … — is left dynamic. Accept.
         _ => Ty::Any,
     }
 }
@@ -1204,6 +1219,32 @@ mod tests {
             synth_container_kind(&env, &Expr::Call { callee: "who".into(), args: vec![] }),
             None
         );
+    }
+
+    #[test]
+    fn typed_question_mark_unwraps_the_call_return_and_catches_the_mismatch() {
+        let vars = BTreeMap::new();
+        let mut fns = BTreeMap::new();
+        fns.insert("rres".to_string(), "Result<u32, string>".to_string());
+        fns.insert("ropt".to_string(), "Option<u32>".to_string());
+        fns.insert("rbare".to_string(), "u32".to_string());
+        fns.insert("rblank".to_string(), String::new());
+        let structs = BTreeMap::new();
+        let env = empty_env(&vars, &fns, &structs);
+        let try_of = |callee: &str| Expr::Try(Box::new(Expr::Call { callee: callee.into(), args: vec![] }));
+        // `let x: string = rres()?` — the `?` unwraps `Result<u32, string>` to its Ok type `u32`,
+        // which does NOT flow where `string` is expected. Before the Try arm the operator resolved to
+        // `Any` (accept) and this leak of a wrong-typed unwrap was invisible.
+        assert_eq!(check_mismatch(&env, &try_of("rres"), "string"), Some("u32".into()));
+        assert_eq!(check_mismatch(&env, &try_of("ropt"), "string"), Some("u32".into()));
+        // The matching annotation accepts: `let x: u32 = rres()?` is exactly the Ok type.
+        assert_eq!(check_mismatch(&env, &try_of("rres"), "u32"), None);
+        assert_eq!(check_mismatch(&env, &try_of("ropt"), "u32"), None);
+        // Accept-bias preserved on the operands `?` cannot pin: a `?` on a non-container return
+        // (`u32`), a blank-return call, and an unknown call all resolve toward accept (None).
+        assert_eq!(check_mismatch(&env, &try_of("rbare"), "string"), None);
+        assert_eq!(check_mismatch(&env, &try_of("rblank"), "string"), None);
+        assert_eq!(check_mismatch(&env, &try_of("who"), "string"), None);
     }
 
     // --- Frozen reference implementations: verbatim copies of the former `middle/mod.rs` free

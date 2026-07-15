@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH
+// Typed `?` on a CALL return: `produce()?` unwraps `Result<u64, E>` to its Ok type `u64`, so
+// annotating the bound value `string` is a type lie. Catching a call return (vs a variable) needs the
+// InferEnv path — it carries fn return types — which the let-init check now falls back to for
+// `Call`/`Index`/`FieldAccess`/`?`-on-one, mirroring the return- and argument-position checks. The
+// scope-only walker used for `?` on a variable returns `None` for every call and could not see this.
+fn produce() -> Result<u64, u64> {
+    return Ok(5);
+}
+fn consume() -> Result<u64, u64> {
+    let x: string = produce()?;
+    return Ok(0);
+}
+fn main() { }

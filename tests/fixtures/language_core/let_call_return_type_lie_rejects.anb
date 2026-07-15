@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH
+// A plain CALL return bound to a mismatched annotation — `let x: string = produce()` where
+// `produce -> u64`. The flat scope-only inference returns `None` for every call, so this type lie
+// slipped through the let-init check even though `return produce()` in a `-> string` fn was already
+// caught. The InferEnv let-init fallback closes the asymmetry.
+fn produce() -> u64 {
+    return 5;
+}
+fn main() {
+    let x: string = produce();
+}

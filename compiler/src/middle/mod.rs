@@ -1573,6 +1573,24 @@ fn analyze_stmts(
                                 span: Some((span.start, span.end)),
                             });
                         }
+                    } else if matches!(
+                        init,
+                        Expr::Call { .. } | Expr::Index { .. } | Expr::FieldAccess { .. } | Expr::Try(_)
+                    ) {
+                        // A `Call`/`Index`/`FieldAccess` return — and a `?` on one — is invisible to the
+                        // flat `infer_expr_type_scoped` above (it returns `None` for all of them), so
+                        // `let x: string = produce()` and `let x: string = produce()?` slipped through
+                        // even though the callee's declared return type contradicts the annotation. Fall
+                        // back to the InferEnv path (it carries `fn_ret_types`), exactly mirroring the
+                        // return-position (`ANUBIS_RETURN_TYPE_MISMATCH`) and argument-position checks.
+                        // Accept-biased: an unknown callee / `Any` / assignable type yields `None`.
+                        if let Some(got) = check_mismatch_scoped(init, t, scope, ctx) {
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                message: format!("type mismatch: expected `{}`, got `{}`", t, got),
+                                span: Some((span.start, span.end)),
+                            });
+                        }
                     }
                 }
                 // A+ walk init for call-site types + match exhaustiveness.
