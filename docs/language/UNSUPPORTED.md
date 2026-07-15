@@ -173,9 +173,23 @@ through indexing/field access.
     helper that wraps its arg in one before returning, is not tracked. Fixing `expr_param_return_flow`
     improves BOTH labels — a high-leverage follow-up slice, kept separate because it changes taint-side
     behavior and needs its own corpus re-validation.
-  - **No confidentiality param→egress-sink dual**: the integrity side has `param_sinks` +
-    `ANUBIS_INTERPROC_SINK` (`log(tainted)` when `fn log(x){sink(x)}`); the confidentiality side has no
-    twin yet, so `leak(secret)` with `fn leak(x){ send(x) }` is not caught. A clean sibling slice.
+  - **Confidentiality param→egress-sink dual is REAL (Phase-2, `3d94861`).** The interprocedural twin
+    of `ANUBIS_SECRET_EXFILTRATION`, exactly as `ANUBIS_INTERPROC_SINK` is the twin of the direct
+    tainted-sink check. `compute_param_egress` (a monotone fixpoint sharing the `param_sinks` value-flow
+    walk, parameterized by the leaf-sink predicate — `is_egress_sink` here vs `is_sink` for integrity)
+    summarizes which formals reach a net/shell EGRESS; a SECRET argument in such a position is
+    `ANUBIS_INTERPROC_EXFILTRATION` at the call boundary, so `leak(secret_source())` with
+    `fn leak(x){ send(x) }` (or `shell(x)`, or a transitive `a→b→send`) is caught. EGRESS-only, so a
+    secret into a LOCAL write is not flagged; a declassified arg releases; a discard helper accepts; a
+    TAINT arg fires the integrity `ANUBIS_INTERPROC_SINK` instead (orthogonal labels). Validated by a
+    full-corpus verdict-diff (shadow-diff is blind to the enforcing emit). Residual: the summary reuses
+    `expr_param_flow`, which is not `param_return`-aware, so a secret flowing ONLY into a discarding
+    forwarding-call is over-flagged — exact parity with the pre-existing `param_sinks` over-approximation,
+    corpus-inert; tightening it (make `expr_param_flow` consult `param_return_taint`) is a separate change
+    that would improve BOTH labels. Fixtures: `secret_into_egressing_helper_rejects`,
+    `secret_into_shell_helper_rejects`, `secret_into_egress_transitive_rejects`,
+    `secret_egress_declassified_arg_accepts`, `secret_into_local_write_param_accepts`,
+    `secret_into_discard_helper_accepts`.
   - **No `secret<T>` qualifier**: `getenv`/param secrets are not auto-labelled (a surface-syntax
     decision, mirroring `tainted<T>`).
   - **Presence-level declassify hatch** (pre-existing): any one well-formed declassify in an agent body
