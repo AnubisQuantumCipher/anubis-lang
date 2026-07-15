@@ -1,0 +1,2097 @@
+// =============================================================================
+//
+//   ████████╗██╗  ██╗ ██████╗ ████████╗██╗  ██╗
+//   ╚══██╔══╝██║  ██║██╔═══██╗╚══██╔══╝██║  ██║
+//      ██║   ███████║██║   ██║   ██║   ███████║
+//      ██║   ██╔══██║██║   ██║   ██║   ██╔══██║
+//      ██║   ██║  ██║╚██████╔╝   ██║   ██║  ██║
+//      ╚═╝   ╚═╝  ╚═╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝
+//
+//   T H O T H  —  the sealed meta-machine
+//   A language inside Anubis that typechecks, optimizes, compiles, runs,
+//   cross-checks, and commits a Merkle root of its own work.
+//
+// =============================================================================
+//
+// WHAT THIS IS (read this twice)
+// ------------------------------
+// One Anubis source file implements an entire verified pipeline for a
+// typed functional language ("Mini-ML"), then commits a Merkle root of its
+// own work and CHECKS that commitment:
+//
+//   source string
+//        │
+//        ▼
+//   [1] LEX          span-aware tokenizer
+//        │
+//        ▼
+//   [2] PARSE        Pratt / recursive-descent → recursive enum AST
+//        │
+//        ▼
+//   [3] INFER        Hindley–Milner Algorithm W
+//                    (unification + occurs-check + generalization)
+//        │
+//        ▼
+//   [4] OPTIMIZE     constant-fold + known β-reduction on the AST
+//        │
+//        ├──► [5a] INTERPRET(raw)   evaluate the ORIGINAL AST
+//        ├──► [5b] INTERPRET(opt)   evaluate the OPTIMIZED AST
+//        │                          (5a == 5b  ⇒  optimizer preserved meaning)
+//        └──► [5c] COMPILE          AST → stack ISA
+//                    │
+//                    ▼
+//               [5d] VM             fuel-bounded stack machine
+//                    │
+//                    ▼
+//   [6] AGREE        TRIPLE-path: interp(raw) == interp(opt) == vm(compile(opt)).
+//                    Any disagreement aborts (fail-closed).  The raw leg is what
+//                    makes the OPTIMIZER trustworthy — interp(opt) vs vm alone
+//                    would happily agree on a wrong answer after a miscompile,
+//                    since both consume the optimized tree.
+//        │
+//        ▼
+//   [7] SEAL         A real Merkle TREE (not a linear fold) over seven labeled
+//                    leaves: src · type · ast · opt · code · value · steps.
+//                    We then PROVE inclusion of each leaf against the root and
+//                    show that any 1-bit tamper breaks verification, and REPLAY
+//                    the whole pipeline to prove the root is deterministic.
+//                    Master seal = a Merkle root over the per-case roots.
+//
+//                    Honesty: fnv1a is the leaf/node hash — commitment material,
+//                    NOT cryptographic.  The *structure* (tree, inclusion path,
+//                    tamper detection, determinism) is real; swapping in SHA-256
+//                    would make it cryptographic without touching the tree logic.
+//
+// Mini-ML surface
+// ---------------
+//   n | true | false | x
+//   fun x -> e
+//   e e                          application (left-assoc)
+//   let x = e in e | let rec f = fun .. in e
+//   if e then e else e
+//   e + e | e - e | e * e | e / e | e % e
+//   e == e | e != e              structural equality (Int or Bool → Bool)
+//   e < e | e <= e | e > e | e >= e     ordering (Int → Bool)
+//   ( e )
+//
+// Types:  Int | Bool | α | τ₁ → τ₂     (let/let-rec polymorphism)
+//
+// Positive suite (17): arith, branch, poly-id, nested-let, higher-order twice,
+//   factorial, fibonacci, gcd, power, sum-to-n, ackermann, collatz, church
+//   encoding, const-fold β, polymorphic equality, bool-from-compare, and a
+//   recursive Bool-returning `even`.
+//
+// Negative suite (8), each rejected for the RIGHT reason:
+//   true+1, if-nonbool, unbound var, apply-a-number, `fun x -> x x`
+//   (occurs-check / infinite type), branch-arm mismatch, Int==Bool, and
+//   `let rec x = x + 1` (rec value must be a function).
+//
+// Anubis features exercised
+// -------------------------
+//   recursive enums, exhaustive match, Result/?, maps, mutation, recursion,
+//   string interpolation, closures, structs — and a genuinely self-checking,
+//   fail-closed, triple-path, Merkle-sealed meta-machine.
+//
+// Run:
+//   ./target/release/anubis run examples/thoth_sealed_meta_machine.anb
+//
+// =============================================================================
+
+// ─── Result helpers ─────────────────────────────────────────────────────────
+fn ok(v) { Ok(v) }
+fn err(m) { Err(m) }
+fn is_ok(r) {
+    match r { Ok(_v) => true, Err(_e) => false, _ => false }
+}
+fn unwrap_ok(r) {
+    match r { Ok(v) => v, Err(e) => { print("FATAL unwrap: ${e}"); 0 }, _ => 0 }
+}
+fn unwrap_err(r) {
+    match r { Err(e) => e, Ok(_v) => "not-err", _ => "?" }
+}
+
+// ─── String / hash utilities ────────────────────────────────────────────────
+fn fnv1a(s) {
+    // 32-bit FNV-1a over character ordinals (seal material, not crypto)
+    let mut h = 2166136261;
+    let n = len(s);
+    for i in 0..n {
+        h = h ^ ord(char_at(s, i));
+        h = (h * 16777619) % 4294967296;
+        if h < 0 { h = 0 - h; }
+    }
+    h
+}
+
+// ─── Merkle tree (real binary tree, not a linear fold) ──────────────────────
+// A genuine Merkle commitment: each seal is a labeled leaf, leaves are hashed
+// pairwise up a binary tree (odd node duplicates itself, Bitcoin-style) to a
+// single root.  We also produce and CHECK inclusion proofs and tamper-evidence
+// so "sealed" is a claim we can back, not decoration.
+//
+// Honesty note: fnv1a is seal/commitment material, NOT a cryptographic hash.
+// The *structure* (tree, inclusion path, tamper detection, determinism) is
+// real; the collision resistance is demo-grade.  Swapping fnv1a for SHA-256
+// would make it cryptographic without changing a line of the tree logic.
+fn merkle_leaf(tag, data) { fnv1a("${tag}::${data}") }
+fn merkle_node(l, r) { fnv1a("${l}|${r}") }
+
+// One pairing level: [h0,h1,h2,...] → [node(h0,h1), node(h2,h3), ...]
+fn merkle_level(hs) {
+    let n = len(hs);
+    let mut next = [];
+    let mut i = 0;
+    while i < n {
+        if i + 1 < n {
+            push(next, merkle_node(hs[i], hs[i + 1]));
+            i = i + 2;
+        } else {
+            push(next, merkle_node(hs[i], hs[i]));   // duplicate lone node
+            i = i + 1;
+        }
+    }
+    next
+}
+
+fn merkle_root(hs) {
+    if len(hs) == 0 { return 0; }
+    let mut cur = hs;
+    while len(cur) > 1 { cur = merkle_level(cur); }
+    cur[0]
+}
+
+// Inclusion (audit) path for the leaf at index idx: a list of
+// [sibling_hash, sibling_is_left] steps from leaf up to the root.
+fn merkle_path(hs, idx) {
+    let mut path = [];
+    let mut cur = hs;
+    let mut i = idx;
+    while len(cur) > 1 {
+        let n = len(cur);
+        let mut sib = 0;
+        let mut sib_is_left = 0;
+        if i % 2 == 0 {
+            if i + 1 < n { sib = cur[i + 1]; } else { sib = cur[i]; }
+            sib_is_left = 0;
+        } else {
+            sib = cur[i - 1];
+            sib_is_left = 1;
+        }
+        push(path, [sib, sib_is_left]);
+        cur = merkle_level(cur);
+        i = i / 2;
+    }
+    path
+}
+
+// Recompute the root from a leaf + its path; true iff it matches `root`.
+fn merkle_verify(leaf, path, root) {
+    let mut acc = leaf;
+    for j in 0..len(path) {
+        let step = path[j];
+        let sib = step[0];
+        if step[1] == 1 { acc = merkle_node(sib, acc); }
+        else { acc = merkle_node(acc, sib); }
+    }
+    acc == root
+}
+
+// ─── Tokens ─────────────────────────────────────────────────────────────────
+// Token = [kind, value, pos]
+// kind: num | id | kw | op | p | eof
+
+fn is_alpha(ch) {
+    let o = ord(ch);
+    (o >= ord("a") && o <= ord("z")) || (o >= ord("A") && o <= ord("Z")) || ch == "_"
+}
+fn is_digit(ch) {
+    let o = ord(ch);
+    o >= ord("0") && o <= ord("9")
+}
+fn is_alnum(ch) { is_alpha(ch) || is_digit(ch) }
+
+fn lex(src) {
+    let mut toks = [];
+    let mut i = 0;
+    let n = len(src);
+    while i < n {
+        let ch = char_at(src, i);
+        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" {
+            i = i + 1;
+        } else if ch == "/" && i + 1 < n && char_at(src, i + 1) == "/" {
+            i = i + 2;
+            while i < n && char_at(src, i) != "\n" { i = i + 1; }
+        } else if is_digit(ch) {
+            let start = i;
+            let mut j = i;
+            while j < n && is_digit(char_at(src, j)) { j = j + 1; }
+            push(toks, ["num", substr(src, start, j - start), start]);
+            i = j;
+        } else if is_alpha(ch) {
+            let start = i;
+            let mut j = i;
+            while j < n && is_alnum(char_at(src, j)) { j = j + 1; }
+            let w = substr(src, start, j - start);
+            if w == "fun" || w == "let" || w == "in" || w == "if" || w == "then"
+                || w == "else" || w == "true" || w == "false" || w == "rec" {
+                push(toks, ["kw", w, start]);
+            } else {
+                push(toks, ["id", w, start]);
+            }
+            i = j;
+        } else if ch == "-" && i + 1 < n && char_at(src, i + 1) == ">" {
+            push(toks, ["op", "->", i]); i = i + 2;
+        } else if ch == "=" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", "==", i]); i = i + 2;
+        } else if ch == "!" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", "!=", i]); i = i + 2;
+        } else if ch == "<" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", "<=", i]); i = i + 2;
+        } else if ch == ">" && i + 1 < n && char_at(src, i + 1) == "=" {
+            push(toks, ["op", ">=", i]); i = i + 2;
+        } else if ch == "+" || ch == "-" || ch == "*" || ch == "/" || ch == "%"
+            || ch == "<" || ch == ">" || ch == "=" || ch == "!" {
+            push(toks, ["op", ch, i]); i = i + 1;
+        } else if ch == "(" || ch == ")" {
+            push(toks, ["p", ch, i]); i = i + 1;
+        } else {
+            return err("lex: bad char '${ch}' at ${i}");
+        }
+    }
+    push(toks, ["eof", "", n]);
+    ok(toks)
+}
+
+// ─── Parser state: [toks, i] ────────────────────────────────────────────────
+fn p_peek(st) { st[0][st[1]] }
+fn p_at(st, kind, val) {
+    let t = p_peek(st);
+    t[0] == kind && t[1] == val
+}
+fn p_is(st, kind) { p_peek(st)[0] == kind }
+fn p_bump(st) { [st[0], st[1] + 1] }
+fn p_expect(st, kind, val) {
+    if p_at(st, kind, val) {
+        ok(p_bump(st))
+    } else {
+        let t = p_peek(st);
+        err("parse: expected ${kind}/${val} got ${t[0]}/${t[1]}@${t[2]}")
+    }
+}
+
+// ─── AST (recursive enums) ──────────────────────────────────────────────────
+enum Expr {
+    LitInt(int),
+    LitBool(int),                 // 0 | 1
+    Var(string),
+    Lam { param: string, body: Expr },
+    App { fun: Expr, arg: Expr },
+    Let { name: string, value: Expr, body: Expr },
+    LetRec { name: string, value: Expr, body: Expr },  // let rec f = fun x -> ... in e
+    If { cond: Expr, then_b: Expr, else_b: Expr },
+    Bin { op: string, left: Expr, right: Expr },
+    Unary { op: string, expr: Expr },
+}
+
+fn op_prec(op) {
+    if op == "||" { 1 }
+    else if op == "&&" { 2 }
+    else if op == "==" || op == "!=" { 3 }
+    else if op == "<" || op == "<=" || op == ">" || op == ">=" { 4 }
+    else if op == "+" || op == "-" { 5 }
+    else if op == "*" || op == "/" || op == "%" { 6 }
+    else { -1 }
+}
+
+fn parse_primary(st) {
+    let t = p_peek(st);
+    if t[0] == "num" {
+        st = p_bump(st);
+        ok([Expr::LitInt(parse_int(t[1])), st])
+    } else if t[0] == "kw" && t[1] == "true" {
+        st = p_bump(st);
+        ok([Expr::LitBool(1), st])
+    } else if t[0] == "kw" && t[1] == "false" {
+        st = p_bump(st);
+        ok([Expr::LitBool(0), st])
+    } else if t[0] == "id" {
+        st = p_bump(st);
+        ok([Expr::Var(t[1]), st])
+    } else if t[0] == "p" && t[1] == "(" {
+        st = p_bump(st);
+        let r = parse_expr(st)?;
+        st = p_expect(r[1], "p", ")")?;
+        ok([r[0], st])
+    } else if t[0] == "kw" && t[1] == "fun" {
+        st = p_bump(st);
+        if !p_is(st, "id") { return err("parse: fun needs param"); }
+        let param = p_peek(st)[1];
+        st = p_bump(st);
+        st = p_expect(st, "op", "->")?;
+        let r = parse_expr(st)?;
+        ok([Expr::Lam { param: param, body: r[0] }, r[1]])
+    } else if t[0] == "kw" && t[1] == "let" {
+        st = p_bump(st);
+        let is_rec = false;
+        if p_at(st, "kw", "rec") {
+            is_rec = true;
+            st = p_bump(st);
+        }
+        if !p_is(st, "id") { return err("parse: let needs name"); }
+        let name = p_peek(st)[1];
+        st = p_bump(st);
+        st = p_expect(st, "op", "=")?;
+        let rv = parse_expr(st)?;
+        st = p_expect(rv[1], "kw", "in")?;
+        let rb = parse_expr(st)?;
+        if is_rec {
+            ok([Expr::LetRec { name: name, value: rv[0], body: rb[0] }, rb[1]])
+        } else {
+            ok([Expr::Let { name: name, value: rv[0], body: rb[0] }, rb[1]])
+        }
+    } else if t[0] == "kw" && t[1] == "if" {
+        st = p_bump(st);
+        let rc = parse_expr(st)?;
+        st = p_expect(rc[1], "kw", "then")?;
+        let rt = parse_expr(st)?;
+        st = p_expect(rt[1], "kw", "else")?;
+        let re = parse_expr(st)?;
+        ok([Expr::If { cond: rc[0], then_b: rt[0], else_b: re[0] }, re[1]])
+    } else {
+        err("parse: unexpected ${t[0]}/${t[1]}@${t[2]}")
+    }
+}
+
+// Application: juxtaposition of primaries (left-assoc).  fun/let/if are
+// also primaries, so `f x y` and `fun x -> x 1` parse correctly.
+fn parse_app(st) {
+    let r = parse_primary(st)?;
+    let mut left = r[0];
+    st = r[1];
+    let mut cont = true;
+    while cont {
+        let t = p_peek(st);
+        // start of another primary?
+        if t[0] == "num" || t[0] == "id" || (t[0] == "kw" && (t[1] == "true" || t[1] == "false" || t[1] == "fun" || t[1] == "let" || t[1] == "if")) || (t[0] == "p" && t[1] == "(") {
+            let r2 = parse_primary(st)?;
+            left = Expr::App { fun: left, arg: r2[0] };
+            st = r2[1];
+        } else {
+            cont = false;
+        }
+    }
+    ok([left, st])
+}
+
+fn parse_unary(st) {
+    if p_at(st, "op", "-") || p_at(st, "op", "!") {
+        let op = p_peek(st)[1];
+        st = p_bump(st);
+        let r = parse_unary(st)?;
+        ok([Expr::Unary { op: op, expr: r[0] }, r[1]])
+    } else {
+        parse_app(st)
+    }
+}
+
+fn parse_binop_rhs(st, min_prec) {
+    let r = parse_unary(st)?;
+    let mut left = r[0];
+    st = r[1];
+    let mut cont = true;
+    while cont {
+        let t = p_peek(st);
+        if t[0] != "op" {
+            cont = false;
+        } else {
+            let prec = op_prec(t[1]);
+            if prec < min_prec {
+                cont = false;
+            } else {
+                let op = t[1];
+                st = p_bump(st);
+                let r2 = parse_binop_rhs(st, prec + 1)?;
+                left = Expr::Bin { op: op, left: left, right: r2[0] };
+                st = r2[1];
+            }
+        }
+    }
+    ok([left, st])
+}
+
+fn parse_expr(st) { parse_binop_rhs(st, 0) }
+
+fn parse(src) {
+    let toks = lex(src)?;
+    let st = [toks, 0];
+    let r = parse_expr(st)?;
+    if !p_is(r[1], "eof") {
+        let t = p_peek(r[1]);
+        return err("parse: trailing junk ${t[0]}/${t[1]}");
+    }
+    ok(r[0])
+}
+
+// ─── Pretty-print AST ───────────────────────────────────────────────────────
+fn pp(e) {
+    match e {
+        Expr::LitInt(n) => str(n),
+        Expr::LitBool(b) => if b == 1 { "true" } else { "false" },
+        Expr::Var(x) => x,
+        Expr::Lam { param: p, body: b } => "(fun ${p} -> ${pp(b)})",
+        Expr::App { fun: f, arg: a } => "(${pp(f)} ${pp(a)})",
+        Expr::Let { name: n, value: v, body: b } => "(let ${n} = ${pp(v)} in ${pp(b)})",
+        Expr::LetRec { name: n, value: v, body: b } => "(let rec ${n} = ${pp(v)} in ${pp(b)})",
+        Expr::If { cond: c, then_b: t, else_b: el } => "(if ${pp(c)} then ${pp(t)} else ${pp(el)})",
+        Expr::Bin { op: o, left: l, right: r } => "(${pp(l)} ${o} ${pp(r)})",
+        Expr::Unary { op: o, expr: x } => "(${o}${pp(x)})",
+        _ => "?",
+    }
+}
+
+// ─── Types & Hindley–Milner (Algorithm W) ───────────────────────────────────
+// Type encoding as tagged lists:
+//   ["Int"]  ["Bool"]  ["Var", id]  ["Arrow", t1, t2]
+// Type schemes: ["Scheme", [bound_ids...], mono_type]
+// Subst: map string(id) → type
+// Env: map name → scheme
+
+struct Infer {
+    next: int,          // fresh var counter
+    subst: map,         // string id → type
+    log: list,          // human-readable inference steps
+}
+
+fn ty_int() { ["Int"] }
+fn ty_bool() { ["Bool"] }
+fn ty_var(i) { ["Var", str(i)] }
+fn ty_arrow(a, b) { ["Arrow", a, b] }
+fn scheme(bounds, t) { ["Scheme", bounds, t] }
+fn mono_scheme(t) { ["Scheme", [], t] }
+
+fn ty_show(t) {
+    if t[0] == "Int" { "Int" }
+    else if t[0] == "Bool" { "Bool" }
+    else if t[0] == "Var" { "'${t[1]}" }
+    else if t[0] == "Arrow" { "(${ty_show(t[1])} → ${ty_show(t[2])})" }
+    else { "?" }
+}
+
+fn scheme_show(s) {
+    let bounds = s[1];
+    let t = s[2];
+    if len(bounds) == 0 {
+        ty_show(t)
+    } else {
+        let mut pref = "∀";
+        for i in 0..len(bounds) {
+            if i > 0 { pref = pref + ","; }
+            pref = pref + "'${bounds[i]}";
+        }
+        "${pref}. ${ty_show(t)}"
+    }
+}
+
+fn infer_new(i) {
+    Infer { next: 0, subst: {}, log: [] }
+}
+
+fn fresh(inf) {
+    let id = inf.next;
+    let inf2 = Infer {
+        next: id + 1,
+        subst: inf.subst,
+        log: inf.log,
+    };
+    [inf2, ty_var(id)]
+}
+
+fn log_step(inf, msg) {
+    let mut ls = inf.log;
+    push(ls, msg);
+    Infer { next: inf.next, subst: inf.subst, log: ls }
+}
+
+// Apply current substitution to a type
+fn apply(sub, t) {
+    if t[0] == "Int" || t[0] == "Bool" {
+        t
+    } else if t[0] == "Var" {
+        let id = t[1];
+        if has_key(sub, id) {
+            apply(sub, sub[id])
+        } else {
+            t
+        }
+    } else if t[0] == "Arrow" {
+        ty_arrow(apply(sub, t[1]), apply(sub, t[2]))
+    } else {
+        t
+    }
+}
+
+fn apply_scheme(sub, s) {
+    // do not substitute bound vars
+    let bounds = s[1];
+    let t = s[2];
+    // shadow bound vars out of subst
+    let mut sub2 = {};
+    for k in sub {
+        let bound = false;
+        for i in 0..len(bounds) {
+            if bounds[i] == k { bound = true; }
+        }
+        if !bound {
+            sub2[k] = sub[k];
+        }
+    }
+    scheme(bounds, apply(sub2, t))
+}
+
+fn apply_env(sub, env) {
+    let mut env2 = {};
+    for k in env {
+        env2[k] = apply_scheme(sub, env[k]);
+    }
+    env2
+}
+
+// Free type variables
+fn ftv_type(t) {
+    if t[0] == "Int" || t[0] == "Bool" {
+        []
+    } else if t[0] == "Var" {
+        [t[1]]
+    } else if t[0] == "Arrow" {
+        let a = ftv_type(t[1]);
+        let b = ftv_type(t[2]);
+        let mut out = a;
+        for i in 0..len(b) {
+            let v = b[i];
+            let found = false;
+            for j in 0..len(out) {
+                if out[j] == v { found = true; }
+            }
+            if !found { push(out, v); }
+        }
+        out
+    } else {
+        []
+    }
+}
+
+fn ftv_scheme(s) {
+    let bounds = s[1];
+    let free = ftv_type(s[2]);
+    let mut out = [];
+    for i in 0..len(free) {
+        let v = free[i];
+        let bound = false;
+        for j in 0..len(bounds) {
+            if bounds[j] == v { bound = true; }
+        }
+        if !bound { push(out, v); }
+    }
+    out
+}
+
+fn ftv_env(env) {
+    let mut out = [];
+    for k in env {
+        let fs = ftv_scheme(env[k]);
+        for i in 0..len(fs) {
+            let v = fs[i];
+            let found = false;
+            for j in 0..len(out) {
+                if out[j] == v { found = true; }
+            }
+            if !found { push(out, v); }
+        }
+    }
+    out
+}
+
+fn occurs(id, t) {
+    let free = ftv_type(t);
+    for i in 0..len(free) {
+        if free[i] == id { return true; }
+    }
+    false
+}
+
+fn compose(s2, s1) {
+    // s2 ∘ s1
+    let mut out = {};
+    for k in s1 {
+        out[k] = apply(s2, s1[k]);
+    }
+    for k in s2 {
+        if !has_key(out, k) {
+            out[k] = s2[k];
+        }
+    }
+    out
+}
+
+fn bind_var(id, t) {
+    if t[0] == "Var" && t[1] == id {
+        ok({})
+    } else if occurs(id, t) {
+        err("occurs-check: '${id}' in ${ty_show(t)}")
+    } else {
+        let mut s = {};
+        s[id] = t;
+        ok(s)
+    }
+}
+
+fn unify(t1, t2) {
+    if t1[0] == "Int" && t2[0] == "Int" {
+        ok({})
+    } else if t1[0] == "Bool" && t2[0] == "Bool" {
+        ok({})
+    } else if t1[0] == "Var" {
+        bind_var(t1[1], t2)
+    } else if t2[0] == "Var" {
+        bind_var(t2[1], t1)
+    } else if t1[0] == "Arrow" && t2[0] == "Arrow" {
+        let s1 = unify(t1[1], t2[1])?;
+        let s2 = unify(apply(s1, t1[2]), apply(s1, t2[2]))?;
+        ok(compose(s2, s1))
+    } else {
+        err("unify: ${ty_show(t1)}  confutes  ${ty_show(t2)}")
+    }
+}
+
+fn generalize(env, t) {
+    let env_free = ftv_env(env);
+    let t_free = ftv_type(t);
+    let mut bounds = [];
+    for i in 0..len(t_free) {
+        let v = t_free[i];
+        let in_env = false;
+        for j in 0..len(env_free) {
+            if env_free[j] == v { in_env = true; }
+        }
+        if !in_env { push(bounds, v); }
+    }
+    scheme(bounds, t)
+}
+
+fn instantiate(inf, s) {
+    let bounds = s[1];
+    let t = s[2];
+    let mut sub = {};
+    let mut inf2 = inf;
+    for i in 0..len(bounds) {
+        let fr = fresh(inf2);
+        inf2 = fr[0];
+        sub[bounds[i]] = fr[1];
+    }
+    [inf2, apply(sub, t)]
+}
+
+// Algorithm W: returns Ok([inf, type])
+fn infer(inf, env, e) {
+    match e {
+        Expr::LitInt(_n) => {
+            inf = log_step(inf, "⊢ ${pp(e)} : Int");
+            ok([inf, ty_int()])
+        },
+        Expr::LitBool(_b) => {
+            inf = log_step(inf, "⊢ ${pp(e)} : Bool");
+            ok([inf, ty_bool()])
+        },
+        Expr::Var(x) => {
+            if !has_key(env, x) {
+                return err("unbound variable '${x}'");
+            }
+            let inst = instantiate(inf, env[x]);
+            inf = inst[0];
+            let t = inst[1];
+            inf = log_step(inf, "⊢ ${x} : ${ty_show(t)}   (from ${scheme_show(env[x])})");
+            ok([inf, t])
+        },
+        Expr::Lam { param: p, body: b } => {
+            let fr = fresh(inf);
+            inf = fr[0];
+            let tv = fr[1];
+            let mut env2 = {};
+            for k in env { env2[k] = env[k]; }
+            env2[p] = mono_scheme(tv);
+            let r = infer(inf, env2, b)?;
+            inf = r[0];
+            let body_t = r[1];
+            let t = ty_arrow(apply(inf.subst, tv), apply(inf.subst, body_t));
+            inf = log_step(inf, "⊢ ${pp(e)} : ${ty_show(t)}");
+            ok([inf, t])
+        },
+        Expr::App { fun: f, arg: a } => {
+            let rf = infer(inf, env, f)?;
+            inf = rf[0];
+            let tf = rf[1];
+            let env1 = apply_env(inf.subst, env);
+            let ra = infer(inf, env1, a)?;
+            inf = ra[0];
+            let ta = ra[1];
+            let fr = fresh(inf);
+            inf = fr[0];
+            let tv = fr[1];
+            let s = unify(apply(inf.subst, tf), ty_arrow(apply(inf.subst, ta), tv))?;
+            inf = Infer {
+                next: inf.next,
+                subst: compose(s, inf.subst),
+                log: inf.log,
+            };
+            let t = apply(inf.subst, tv);
+            inf = log_step(inf, "⊢ ${pp(e)} : ${ty_show(t)}");
+            ok([inf, t])
+        },
+        Expr::Let { name: n, value: v, body: b } => {
+            let rv = infer(inf, env, v)?;
+            inf = rv[0];
+            let tv = rv[1];
+            let env1 = apply_env(inf.subst, env);
+            let sch = generalize(env1, apply(inf.subst, tv));
+            let mut env2 = {};
+            for k in env1 { env2[k] = env1[k]; }
+            env2[n] = sch;
+            inf = log_step(inf, "generalize ${n} : ${scheme_show(sch)}");
+            let rb = infer(inf, env2, b)?;
+            inf = rb[0];
+            let tb = rb[1];
+            inf = log_step(inf, "⊢ ${pp(e)} : ${ty_show(apply(inf.subst, tb))}");
+            ok([inf, tb])
+        },
+        Expr::LetRec { name: n, value: v, body: b } => {
+            // let rec n = v in b   — n is in scope in v, which MUST be a
+            // syntactic function.  Enforcing this at type time means a
+            // well-typed program never gets stuck in the evaluator on a
+            // `let rec x = x + 1` shape.
+            let v_is_lam = match v {
+                Expr::Lam { param: _p, body: _bb } => true,
+                _ => false,
+            };
+            if !v_is_lam {
+                return err("let rec '${n}' requires a function value");
+            }
+            let fr = fresh(inf);
+            inf = fr[0];
+            let tv = fr[1];
+            let mut env1 = {};
+            for k in env { env1[k] = env[k]; }
+            env1[n] = mono_scheme(tv);
+            let rv = infer(inf, env1, v)?;
+            inf = rv[0];
+            let t_v = rv[1];
+            let s = unify(apply(inf.subst, tv), apply(inf.subst, t_v))?;
+            inf = Infer {
+                next: inf.next,
+                subst: compose(s, inf.subst),
+                log: inf.log,
+            };
+            let env_g = apply_env(inf.subst, env);
+            let sch = generalize(env_g, apply(inf.subst, tv));
+            let mut env2 = {};
+            for k in env_g { env2[k] = env_g[k]; }
+            env2[n] = sch;
+            inf = log_step(inf, "let rec ${n} : ${scheme_show(sch)}");
+            let rb = infer(inf, env2, b)?;
+            inf = rb[0];
+            ok([inf, rb[1]])
+        },
+        Expr::If { cond: c, then_b: t, else_b: el } => {
+            let rc = infer(inf, env, c)?;
+            inf = rc[0];
+            let s1 = unify(apply(inf.subst, rc[1]), ty_bool())?;
+            inf = Infer { next: inf.next, subst: compose(s1, inf.subst), log: inf.log };
+            let env1 = apply_env(inf.subst, env);
+            let rt = infer(inf, env1, t)?;
+            inf = rt[0];
+            let env2 = apply_env(inf.subst, env);
+            let re = infer(inf, env2, el)?;
+            inf = re[0];
+            let s2 = unify(apply(inf.subst, rt[1]), apply(inf.subst, re[1]))?;
+            inf = Infer { next: inf.next, subst: compose(s2, inf.subst), log: inf.log };
+            let ty = apply(inf.subst, rt[1]);
+            inf = log_step(inf, "⊢ ${pp(e)} : ${ty_show(ty)}");
+            ok([inf, ty])
+        },
+        Expr::Bin { op: o, left: l, right: r } => {
+            let rl = infer(inf, env, l)?;
+            inf = rl[0];
+            let env1 = apply_env(inf.subst, env);
+            let rr = infer(inf, env1, r)?;
+            inf = rr[0];
+            let tl = apply(inf.subst, rl[1]);
+            let tr = apply(inf.subst, rr[1]);
+            let result_ty = ty_int();
+            if o == "+" || o == "-" || o == "*" || o == "/" || o == "%" {
+                let s1 = unify(tl, ty_int())?;
+                let s2 = unify(apply(s1, tr), ty_int())?;
+                inf = Infer { next: inf.next, subst: compose(s2, compose(s1, inf.subst)), log: inf.log };
+                let ty = ty_int();
+                inf = log_step(inf, "⊢ ${pp(e)} : Int");
+                ok([inf, ty])
+            } else if o == "==" || o == "!=" {
+                // Polymorphic (structural) equality: both sides must have the
+                // SAME type, whatever it is; result is Bool.  This is honest
+                // eqtype-style typing — `3 == 4`, `true == false`, and the
+                // polymorphic `fun a -> fun b -> a == b : 'x -> 'x -> Bool` all
+                // typecheck; `1 == true` is rejected because Int ≠ Bool.
+                let s = unify(tl, tr)?;
+                inf = Infer { next: inf.next, subst: compose(s, inf.subst), log: inf.log };
+                inf = log_step(inf, "⊢ ${pp(e)} : Bool");
+                ok([inf, ty_bool()])
+            } else if o == "<" || o == "<=" || o == ">" || o == ">=" {
+                // Ordering is Int-only (comparing Bools by `<` is nonsense).
+                let s1 = unify(tl, ty_int())?;
+                let s2 = unify(apply(s1, tr), ty_int())?;
+                inf = Infer { next: inf.next, subst: compose(s2, compose(s1, inf.subst)), log: inf.log };
+                inf = log_step(inf, "⊢ ${pp(e)} : Bool");
+                ok([inf, ty_bool()])
+            } else {
+                err("unknown binop ${o}")
+            }
+        },
+        Expr::Unary { op: o, expr: x } => {
+            let rx = infer(inf, env, x)?;
+            inf = rx[0];
+            if o == "-" {
+                let s = unify(apply(inf.subst, rx[1]), ty_int())?;
+                inf = Infer { next: inf.next, subst: compose(s, inf.subst), log: inf.log };
+                ok([inf, ty_int()])
+            } else if o == "!" {
+                let s = unify(apply(inf.subst, rx[1]), ty_bool())?;
+                inf = Infer { next: inf.next, subst: compose(s, inf.subst), log: inf.log };
+                ok([inf, ty_bool()])
+            } else {
+                err("unknown unary ${o}")
+            }
+        },
+        _ => err("infer: unhandled expr"),
+    }
+}
+
+fn typecheck(e) {
+    let inf = infer_new(0);
+    let env = {};
+    let r = infer(inf, env, e)?;
+    let inf2 = r[0];
+    let t = apply(inf2.subst, r[1]);
+    ok([t, inf2.log, inf2.subst])
+}
+
+// ─── AST optimizer (constant fold + known β) ────────────────────────────────
+fn is_value(e) {
+    match e {
+        Expr::LitInt(_n) => true,
+        Expr::LitBool(_b) => true,
+        Expr::Lam { param: _p, body: _b } => true,
+        _ => false,
+    }
+}
+
+fn bin_eval(op, a, b) {
+    if op == "+" { Some(a + b) }
+    else if op == "-" { Some(a - b) }
+    else if op == "*" { Some(a * b) }
+    else if op == "/" { if b == 0 { None } else { Some(a / b) } }
+    else if op == "%" { if b == 0 { None } else { Some(a % b) } }
+    else if op == "==" { Some(if a == b { 1 } else { 0 }) }
+    else if op == "!=" { Some(if a != b { 1 } else { 0 }) }
+    else if op == "<"  { Some(if a < b { 1 } else { 0 }) }
+    else if op == "<=" { Some(if a <= b { 1 } else { 0 }) }
+    else if op == ">"  { Some(if a > b { 1 } else { 0 }) }
+    else if op == ">=" { Some(if a >= b { 1 } else { 0 }) }
+    else { None }
+}
+
+fn subst_expr(e, name, val) {
+    // capture-avoiding-ish: only substitute free occurrences; stop at binders of name
+    match e {
+        Expr::LitInt(n) => Expr::LitInt(n),
+        Expr::LitBool(b) => Expr::LitBool(b),
+        Expr::Var(x) => if x == name { val } else { Expr::Var(x) },
+        Expr::Lam { param: p, body: b } => {
+            if p == name {
+                Expr::Lam { param: p, body: b }
+            } else {
+                Expr::Lam { param: p, body: subst_expr(b, name, val) }
+            }
+        },
+        Expr::App { fun: f, arg: a } =>
+            Expr::App { fun: subst_expr(f, name, val), arg: subst_expr(a, name, val) },
+        Expr::Let { name: n, value: v, body: b } => {
+            let v2 = subst_expr(v, name, val);
+            if n == name {
+                Expr::Let { name: n, value: v2, body: b }
+            } else {
+                Expr::Let { name: n, value: v2, body: subst_expr(b, name, val) }
+            }
+        },
+        Expr::LetRec { name: n, value: v, body: b } => {
+            if n == name {
+                Expr::LetRec { name: n, value: v, body: b }
+            } else {
+                Expr::LetRec {
+                    name: n,
+                    value: subst_expr(v, name, val),
+                    body: subst_expr(b, name, val),
+                }
+            }
+        },
+        Expr::If { cond: c, then_b: t, else_b: el } =>
+            Expr::If {
+                cond: subst_expr(c, name, val),
+                then_b: subst_expr(t, name, val),
+                else_b: subst_expr(el, name, val),
+            },
+        Expr::Bin { op: o, left: l, right: r } =>
+            Expr::Bin { op: o, left: subst_expr(l, name, val), right: subst_expr(r, name, val) },
+        Expr::Unary { op: o, expr: x } =>
+            Expr::Unary { op: o, expr: subst_expr(x, name, val) },
+        _ => e,
+    }
+}
+
+// Free variables of an expression — used to keep the optimizer SOUND.
+// subst_expr is not capture-avoiding, so we only ever inline / β-reduce a
+// value that is CLOSED (no free variables): a closed value cannot be captured
+// by an intervening binder, so substituting it can never change meaning.
+fn list_has(xs, v) {
+    for i in 0..len(xs) { if xs[i] == v { return true; } }
+    false
+}
+fn list_union(a, b) {
+    let mut out = a;
+    for i in 0..len(b) { if !list_has(out, b[i]) { push(out, b[i]); } }
+    out
+}
+fn list_remove(xs, v) {
+    let mut out = [];
+    for i in 0..len(xs) { if xs[i] != v { push(out, xs[i]); } }
+    out
+}
+fn expr_fv(e) {
+    match e {
+        Expr::LitInt(_n) => [],
+        Expr::LitBool(_b) => [],
+        Expr::Var(x) => [x],
+        Expr::Lam { param: p, body: b } => list_remove(expr_fv(b), p),
+        Expr::App { fun: f, arg: a } => list_union(expr_fv(f), expr_fv(a)),
+        Expr::Let { name: n, value: v, body: b } =>
+            list_union(expr_fv(v), list_remove(expr_fv(b), n)),
+        Expr::LetRec { name: n, value: v, body: b } =>
+            list_remove(list_union(expr_fv(v), expr_fv(b)), n),
+        Expr::If { cond: c, then_b: t, else_b: el } =>
+            list_union(list_union(expr_fv(c), expr_fv(t)), expr_fv(el)),
+        Expr::Bin { op: _o, left: l, right: r } => list_union(expr_fv(l), expr_fv(r)),
+        Expr::Unary { op: _o, expr: x } => expr_fv(x),
+        _ => [],
+    }
+}
+fn is_closed(e) { len(expr_fv(e)) == 0 }
+
+fn optimize(e) {
+    match e {
+        Expr::LitInt(n) => Expr::LitInt(n),
+        Expr::LitBool(b) => Expr::LitBool(b),
+        Expr::Var(x) => Expr::Var(x),
+        Expr::Lam { param: p, body: b } =>
+            Expr::Lam { param: p, body: optimize(b) },
+        Expr::App { fun: f, arg: a } => {
+            let f2 = optimize(f);
+            let a2 = optimize(a);
+            // β-reduce: (fun x -> body) v  when v is a CLOSED value (closed ⇒
+            // capture-free substitution ⇒ meaning-preserving).
+            match f2 {
+                Expr::Lam { param: p, body: b } => {
+                    if is_value(a2) && is_closed(a2) {
+                        optimize(subst_expr(b, p, a2))
+                    } else {
+                        Expr::App { fun: f2, arg: a2 }
+                    }
+                },
+                _ => Expr::App { fun: f2, arg: a2 },
+            }
+        },
+        Expr::Let { name: n, value: v, body: b } => {
+            let v2 = optimize(v);
+            // Inline only CLOSED values (see is_closed) so substitution can
+            // never capture; open lets are kept as-is.
+            if is_value(v2) && is_closed(v2) {
+                optimize(subst_expr(b, n, v2))
+            } else {
+                Expr::Let { name: n, value: v2, body: optimize(b) }
+            }
+        },
+        Expr::LetRec { name: n, value: v, body: b } =>
+            Expr::LetRec { name: n, value: optimize(v), body: optimize(b) },
+        Expr::If { cond: c, then_b: t, else_b: el } => {
+            let c2 = optimize(c);
+            match c2 {
+                Expr::LitBool(1) => optimize(t),
+                Expr::LitBool(0) => optimize(el),
+                _ => Expr::If { cond: c2, then_b: optimize(t), else_b: optimize(el) },
+            }
+        },
+        Expr::Bin { op: o, left: l, right: r } => {
+            let l2 = optimize(l);
+            let r2 = optimize(r);
+            match l2 {
+                Expr::LitInt(a) => {
+                    match r2 {
+                        Expr::LitInt(b) => {
+                            match bin_eval(o, a, b) {
+                                Some(v) => {
+                                    if o == "+" || o == "-" || o == "*" || o == "/" || o == "%" {
+                                        Expr::LitInt(v)
+                                    } else {
+                                        Expr::LitBool(v)
+                                    }
+                                },
+                                None => Expr::Bin { op: o, left: l2, right: r2 },
+                                _ => Expr::Bin { op: o, left: l2, right: r2 },
+                            }
+                        },
+                        _ => Expr::Bin { op: o, left: l2, right: r2 },
+                    }
+                },
+                Expr::LitBool(a) => {
+                    // fold constant Bool equality: true == false → false
+                    match r2 {
+                        Expr::LitBool(b) => {
+                            if o == "==" { Expr::LitBool(if a == b { 1 } else { 0 }) }
+                            else if o == "!=" { Expr::LitBool(if a != b { 1 } else { 0 }) }
+                            else { Expr::Bin { op: o, left: l2, right: r2 } }
+                        },
+                        _ => Expr::Bin { op: o, left: l2, right: r2 },
+                    }
+                },
+                _ => Expr::Bin { op: o, left: l2, right: r2 },
+            }
+        },
+        Expr::Unary { op: o, expr: x } => {
+            let x2 = optimize(x);
+            if o == "-" {
+                match x2 {
+                    Expr::LitInt(n) => Expr::LitInt(0 - n),
+                    _ => Expr::Unary { op: o, expr: x2 },
+                }
+            } else if o == "!" {
+                match x2 {
+                    Expr::LitBool(b) => Expr::LitBool(if b == 0 { 1 } else { 0 }),
+                    _ => Expr::Unary { op: o, expr: x2 },
+                }
+            } else {
+                Expr::Unary { op: o, expr: x2 }
+            }
+        },
+        _ => e,
+    }
+}
+
+// ─── Interpreter (closures as tagged lists) ─────────────────────────────────
+// Value = ["Int", n] | ["Bool", b] | ["Clo", param, body, env] | ["RecClo", name, param, body, env]
+
+fn v_int(n) { ["Int", n] }
+fn v_bool(b) { ["Bool", b] }
+fn v_show(v) {
+    if v[0] == "Int" { str(v[1]) }
+    else if v[0] == "Bool" { if v[1] == 1 { "true" } else { "false" } }
+    else if v[0] == "Clo" { "<fun ${v[1]}>" }
+    else if v[0] == "RecClo" { "<rec ${v[1]}>" }
+    else { "?" }
+}
+
+fn env_get(env, x) {
+    if has_key(env, x) { Some(env[x]) } else { None }
+}
+
+fn env_ext(env, x, v) {
+    let mut e2 = {};
+    for k in env { e2[k] = env[k]; }
+    e2[x] = v;
+    e2
+}
+
+fn eval_bin(op, lv, rv) {
+    // Structural equality works on Int==Int and Bool==Bool (matching the type
+    // rule).  Everything else is Int-only.
+    if op == "==" || op == "!=" {
+        if lv[0] != rv[0] {
+            return err("runtime: == on mismatched value kinds ${lv[0]}/${rv[0]}");
+        }
+        if lv[0] != "Int" && lv[0] != "Bool" {
+            return err("runtime: == on non-comparable ${lv[0]}");
+        }
+        let eq = if lv[1] == rv[1] { 1 } else { 0 };
+        if op == "==" { return ok(v_bool(eq)); }
+        return ok(v_bool(if eq == 1 { 0 } else { 1 }));
+    }
+    if lv[0] != "Int" || rv[0] != "Int" {
+        return err("runtime: binop on non-int");
+    }
+    let a = lv[1];
+    let b = rv[1];
+    if op == "+" { ok(v_int(a + b)) }
+    else if op == "-" { ok(v_int(a - b)) }
+    else if op == "*" { ok(v_int(a * b)) }
+    else if op == "/" {
+        if b == 0 { err("runtime: div0") } else { ok(v_int(a / b)) }
+    } else if op == "%" {
+        if b == 0 { err("runtime: mod0") } else { ok(v_int(a % b)) }
+    } else if op == "<"  { ok(v_bool(if a < b { 1 } else { 0 })) }
+    else if op == "<=" { ok(v_bool(if a <= b { 1 } else { 0 })) }
+    else if op == ">"  { ok(v_bool(if a > b { 1 } else { 0 })) }
+    else if op == ">=" { ok(v_bool(if a >= b { 1 } else { 0 })) }
+    else { err("runtime: bad op ${op}") }
+}
+
+fn interp(e, env) {
+    match e {
+        Expr::LitInt(n) => ok(v_int(n)),
+        Expr::LitBool(b) => ok(v_bool(b)),
+        Expr::Var(x) => {
+            match env_get(env, x) {
+                Some(v) => ok(v),
+                None => err("runtime: unbound ${x}"),
+                _ => err("runtime: unbound ${x}"),
+            }
+        },
+        Expr::Lam { param: p, body: b } => ok(["Clo", p, b, env]),
+        Expr::App { fun: f, arg: a } => {
+            let fv = interp(f, env)?;
+            let av = interp(a, env)?;
+            if fv[0] == "Clo" {
+                let p = fv[1];
+                let body = fv[2];
+                let cenv = fv[3];
+                interp(body, env_ext(cenv, p, av))
+            } else if fv[0] == "RecClo" {
+                // ["RecClo", name, param, body, env]
+                let name = fv[1];
+                let p = fv[2];
+                let body = fv[3];
+                let cenv = fv[4];
+                let env1 = env_ext(cenv, name, fv); // self
+                interp(body, env_ext(env1, p, av))
+            } else {
+                err("runtime: applying non-function ${v_show(fv)}")
+            }
+        },
+        Expr::Let { name: n, value: v, body: b } => {
+            let vv = interp(v, env)?;
+            interp(b, env_ext(env, n, vv))
+        },
+        Expr::LetRec { name: n, value: v, body: b } => {
+            // value must optimize/parse as a lambda
+            match v {
+                Expr::Lam { param: p, body: lb } => {
+                    let clo = ["RecClo", n, p, lb, env];
+                    interp(b, env_ext(env, n, clo))
+                },
+                _ => err("runtime: let rec requires lambda"),
+            }
+        },
+        Expr::If { cond: c, then_b: t, else_b: el } => {
+            let cv = interp(c, env)?;
+            if cv[0] != "Bool" { return err("runtime: if non-bool"); }
+            if cv[1] == 1 { interp(t, env) } else { interp(el, env) }
+        },
+        Expr::Bin { op: o, left: l, right: r } => {
+            let lv = interp(l, env)?;
+            let rv = interp(r, env)?;
+            eval_bin(o, lv, rv)
+        },
+        Expr::Unary { op: o, expr: x } => {
+            let xv = interp(x, env)?;
+            if o == "-" {
+                if xv[0] != "Int" { return err("runtime: unary- on non-int"); }
+                ok(v_int(0 - xv[1]))
+            } else if o == "!" {
+                if xv[0] != "Bool" { return err("runtime: ! on non-bool"); }
+                ok(v_bool(if xv[1] == 0 { 1 } else { 0 }))
+            } else {
+                err("runtime: bad unary")
+            }
+        },
+        _ => err("runtime: unhandled"),
+    }
+}
+
+// ─── Bytecode ISA + compiler + VM ───────────────────────────────────────────
+// Opcodes (list encoding):
+//   ["PUSH", n]  ["PUSHB", b]  ["LOAD", slot]  ["STORE", slot]
+//   ["ADD"] ["SUB"] ["MUL"] ["DIV"] ["MOD"]
+//   ["EQ"] ["NE"] ["LT"] ["LE"] ["GT"] ["GE"]
+//   ["NOT"] ["NEG"]
+//   ["JMP", tgt] ["JZ", tgt]
+//   ["MAKECLO", param_slot, body_addr, n_free, free_slots...]
+//   Actually keep it simpler: use an environment stack machine
+//
+// Simpler ISA for Mini-ML first-order + closures via heap objects:
+//   PUSH_INT n | PUSH_BOOL b | LOAD name | STORE name
+//   ADD SUB MUL DIV MOD CMP_op
+//   JMP z | JZ z | CALL | RET | HALT
+//   MAKE_CLO param body_label | MAKE_REC name param body_label
+//
+// Closures on stack: ["C", param, entry, envmap] / ["R", name, param, entry, envmap]
+// Env is a map name→value threaded as VM.env (dynamic scope for simplicity of compile —
+// we compile with static name loads from a linked env map on the VM).
+
+enum Op {
+    PushInt(int),
+    PushBool(int),
+    Load(string),
+    Store(string),
+    Pop,
+    Add, Sub, Mul, Div, Mod,
+    Eq, Ne, Lt, Le, Gt, Ge,
+    Neg, Not,
+    Jmp(int),
+    Jz(int),
+    // MakeClo(param, body_pc): pop nothing; push clo capturing current env
+    MakeClo(string, int),
+    MakeRec(string, string, int),  // name, param, body_pc
+    Call,
+    Ret,
+    Halt,
+}
+
+fn op_show(op) {
+    match op {
+        Op::PushInt(n) => "PUSH ${n}",
+        Op::PushBool(b) => "PUSHB ${b}",
+        Op::Load(x) => "LOAD ${x}",
+        Op::Store(x) => "STORE ${x}",
+        Op::Pop => "POP",
+        Op::Add => "ADD", Op::Sub => "SUB", Op::Mul => "MUL",
+        Op::Div => "DIV", Op::Mod => "MOD",
+        Op::Eq => "EQ", Op::Ne => "NE", Op::Lt => "LT",
+        Op::Le => "LE", Op::Gt => "GT", Op::Ge => "GE",
+        Op::Neg => "NEG", Op::Not => "NOT",
+        Op::Jmp(t) => "JMP ${t}",
+        Op::Jz(t) => "JZ ${t}",
+        Op::MakeClo(p, b) => "MAKECLO ${p}@${b}",
+        Op::MakeRec(n, p, b) => "MAKEREC ${n}/${p}@${b}",
+        Op::Call => "CALL",
+        Op::Ret => "RET",
+        Op::Halt => "HALT",
+        _ => "?",
+    }
+}
+
+// Compiler state: code list, growing
+fn emit(code, op) {
+    let mut c = code;
+    push(c, op);
+    c
+}
+fn here(code) { len(code) }
+fn patch(code, at, op) {
+    let mut c = code;
+    c[at] = op;
+    c
+}
+
+// Compiler with correct lambda layout (single source of truth — the earlier
+// draft `compile_expr` was removed: it emitted MAKECLO/JMP in the wrong order
+// and was never wired in).
+fn compile(e, code) {
+    match e {
+        Expr::LitInt(n) => emit(code, Op::PushInt(n)),
+        Expr::LitBool(b) => emit(code, Op::PushBool(b)),
+        Expr::Var(x) => emit(code, Op::Load(x)),
+        Expr::Unary { op: o, expr: x } => {
+            code = compile(x, code);
+            if o == "-" { emit(code, Op::Neg) } else { emit(code, Op::Not) }
+        },
+        Expr::Bin { op: o, left: l, right: r } => {
+            code = compile(l, code);
+            code = compile(r, code);
+            if o == "+" { emit(code, Op::Add) }
+            else if o == "-" { emit(code, Op::Sub) }
+            else if o == "*" { emit(code, Op::Mul) }
+            else if o == "/" { emit(code, Op::Div) }
+            else if o == "%" { emit(code, Op::Mod) }
+            else if o == "==" { emit(code, Op::Eq) }
+            else if o == "!=" { emit(code, Op::Ne) }
+            else if o == "<" { emit(code, Op::Lt) }
+            else if o == "<=" { emit(code, Op::Le) }
+            else if o == ">" { emit(code, Op::Gt) }
+            else if o == ">=" { emit(code, Op::Ge) }
+            else { code }
+        },
+        Expr::If { cond: c, then_b: t, else_b: el } => {
+            code = compile(c, code);
+            let jz_at = here(code);
+            code = emit(code, Op::Jz(0));
+            code = compile(t, code);
+            let jmp_at = here(code);
+            code = emit(code, Op::Jmp(0));
+            let else_pc = here(code);
+            code = patch(code, jz_at, Op::Jz(else_pc));
+            code = compile(el, code);
+            let after = here(code);
+            patch(code, jmp_at, Op::Jmp(after))
+        },
+        Expr::Let { name: n, value: v, body: b } => {
+            code = compile(v, code);
+            code = emit(code, Op::Store(n));
+            compile(b, code)
+        },
+        Expr::Lam { param: p, body: b } => {
+            // MAKECLO p body_pc ; JMP after ; body... ; RET ; after:
+            let make_at = here(code);
+            code = emit(code, Op::MakeClo(p, 0)); // patch body
+            let jmp_at = here(code);
+            code = emit(code, Op::Jmp(0));
+            let body_pc = here(code);
+            code = patch(code, make_at, Op::MakeClo(p, body_pc));
+            code = compile(b, code);
+            code = emit(code, Op::Ret);
+            let after = here(code);
+            patch(code, jmp_at, Op::Jmp(after))
+        },
+        Expr::LetRec { name: n, value: v, body: b } => {
+            match v {
+                Expr::Lam { param: p, body: lb } => {
+                    let make_at = here(code);
+                    code = emit(code, Op::MakeRec(n, p, 0));
+                    let jmp_at = here(code);
+                    code = emit(code, Op::Jmp(0));
+                    let body_pc = here(code);
+                    code = patch(code, make_at, Op::MakeRec(n, p, body_pc));
+                    code = compile(lb, code);
+                    code = emit(code, Op::Ret);
+                    let after = here(code);
+                    code = patch(code, jmp_at, Op::Jmp(after));
+                    // store the rec clo under n is done by MakeRec (pushes + we store)
+                    code = emit(code, Op::Store(n));
+                    compile(b, code)
+                },
+                _ => code,
+            }
+        },
+        Expr::App { fun: f, arg: a } => {
+            code = compile(f, code);
+            code = compile(a, code);
+            emit(code, Op::Call)
+        },
+        _ => code,
+    }
+}
+
+fn compile_program(e) {
+    let mut code = [];
+    code = compile(e, code);
+    code = emit(code, Op::Halt);
+    code
+}
+
+fn code_hash(code) {
+    let mut s = "";
+    for i in 0..len(code) {
+        s = s + op_show(code[i]) + ";";
+    }
+    fnv1a(s)
+}
+
+fn disassemble(code) {
+    for i in 0..len(code) {
+        print("    ${i}: ${op_show(code[i])}");
+    }
+}
+
+// VM
+struct VM {
+    code: list,
+    pc: int,
+    stack: list,
+    env: map,
+    frames: list,   // [pc, env, param_name_or_""]
+    fuel: int,
+    steps: int,
+}
+
+fn vm_push(vm, v) {
+    let mut st = vm.stack;
+    push(st, v);
+    VM { code: vm.code, pc: vm.pc, stack: st, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps }
+}
+fn vm_pop(vm) {
+    let st = vm.stack;
+    let n = len(st);
+    if n == 0 { return [vm, ["Int", 0]]; }
+    let v = st[n - 1];
+    let mut st2 = [];
+    for i in 0..(n - 1) { push(st2, st[i]); }
+    let vm2 = VM { code: vm.code, pc: vm.pc, stack: st2, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+    [vm2, v]
+}
+
+fn env_clone(env) {
+    let mut e2 = {};
+    for k in env { e2[k] = env[k]; }
+    e2
+}
+
+fn vm_run(code, fuel) {
+    let mut vm = VM {
+        code: code,
+        pc: 0,
+        stack: [],
+        env: {},
+        frames: [],
+        fuel: fuel,
+        steps: 0,
+    };
+    let mut cont = true;
+    while cont {
+        if vm.fuel <= 0 { return err("vm: out of fuel after ${vm.steps} steps"); }
+        if vm.pc < 0 || vm.pc >= len(vm.code) { return err("vm: pc out of range ${vm.pc}"); }
+        let op = vm.code[vm.pc];
+        vm = VM {
+            code: vm.code, pc: vm.pc, stack: vm.stack, env: vm.env,
+            frames: vm.frames, fuel: vm.fuel - 1, steps: vm.steps + 1,
+        };
+        match op {
+            Op::PushInt(n) => {
+                vm = vm_push(vm, v_int(n));
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::PushBool(b) => {
+                vm = vm_push(vm, v_bool(b));
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Load(x) => {
+                if !has_key(vm.env, x) { return err("vm: unbound ${x} at pc=${vm.pc}"); }
+                vm = vm_push(vm, vm.env[x]);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Store(x) => {
+                let r = vm_pop(vm);
+                vm = r[0];
+                let mut env = env_clone(vm.env);
+                env[x] = r[1];
+                // leave value on stack (let sequences)
+                vm = vm_push(vm, r[1]);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Pop => {
+                let r = vm_pop(vm);
+                vm = r[0];
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Add => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("+", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Sub => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("-", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Mul => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("*", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Div => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("/", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Mod => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("%", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Eq => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("==", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Ne => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("!=", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Lt => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("<", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Le => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin("<=", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Gt => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin(">", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Ge => {
+                let r2 = vm_pop(vm); vm = r2[0];
+                let r1 = vm_pop(vm); vm = r1[0];
+                let v = eval_bin(">=", r1[1], r2[1])?;
+                vm = vm_push(vm, v);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Neg => {
+                let r = vm_pop(vm); vm = r[0];
+                if r[1][0] != "Int" { return err("vm: NEG non-int"); }
+                vm = vm_push(vm, v_int(0 - r[1][1]));
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Not => {
+                let r = vm_pop(vm); vm = r[0];
+                if r[1][0] != "Bool" { return err("vm: NOT non-bool"); }
+                vm = vm_push(vm, v_bool(if r[1][1] == 0 { 1 } else { 0 }));
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Jmp(t) => {
+                vm = VM { code: vm.code, pc: t, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Jz(t) => {
+                let r = vm_pop(vm); vm = r[0];
+                if r[1][0] != "Bool" { return err("vm: JZ non-bool"); }
+                if r[1][1] == 0 {
+                    vm = VM { code: vm.code, pc: t, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+                } else {
+                    vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+                }
+            },
+            Op::MakeClo(p, body) => {
+                let clo = ["C", p, body, env_clone(vm.env)];
+                vm = vm_push(vm, clo);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::MakeRec(name, p, body) => {
+                let clo = ["R", name, p, body, env_clone(vm.env)];
+                vm = vm_push(vm, clo);
+                vm = VM { code: vm.code, pc: vm.pc + 1, stack: vm.stack, env: vm.env, frames: vm.frames, fuel: vm.fuel, steps: vm.steps };
+            },
+            Op::Call => {
+                // stack: ... clo arg
+                let ra = vm_pop(vm); vm = ra[0]; let arg = ra[1];
+                let rc = vm_pop(vm); vm = rc[0]; let clo = rc[1];
+                if clo[0] == "C" {
+                    let p = clo[1];
+                    let body = clo[2];
+                    let cenv = clo[3];
+                    let mut frames = vm.frames;
+                    push(frames, [vm.pc + 1, vm.env]);
+                    let mut env = env_clone(cenv);
+                    env[p] = arg;
+                    vm = VM { code: vm.code, pc: body, stack: vm.stack, env: env, frames: frames, fuel: vm.fuel, steps: vm.steps };
+                } else if clo[0] == "R" {
+                    let name = clo[1];
+                    let p = clo[2];
+                    let body = clo[3];
+                    let cenv = clo[4];
+                    let mut frames = vm.frames;
+                    push(frames, [vm.pc + 1, vm.env]);
+                    let mut env = env_clone(cenv);
+                    env[name] = clo;
+                    env[p] = arg;
+                    vm = VM { code: vm.code, pc: body, stack: vm.stack, env: env, frames: frames, fuel: vm.fuel, steps: vm.steps };
+                } else {
+                    return err("vm: CALL non-closure ${clo[0]}");
+                }
+            },
+            Op::Ret => {
+                if len(vm.frames) == 0 { return err("vm: RET with empty frames"); }
+                let fr = vm.frames[len(vm.frames) - 1];
+                let mut frames = [];
+                for i in 0..(len(vm.frames) - 1) { push(frames, vm.frames[i]); }
+                // top of stack is return value — keep it
+                vm = VM {
+                    code: vm.code, pc: fr[0], stack: vm.stack,
+                    env: fr[1], frames: frames, fuel: vm.fuel, steps: vm.steps,
+                };
+            },
+            Op::Halt => {
+                cont = false;
+            },
+            _ => { return err("vm: unknown op at ${vm.pc}"); },
+        }
+    }
+    if len(vm.stack) == 0 { return err("vm: empty stack at halt"); }
+    ok([vm.stack[len(vm.stack) - 1], vm.steps])
+}
+
+// ─── Pipeline orchestration ─────────────────────────────────────────────────
+struct PipelineResult {
+    name: string,
+    source: string,
+    ty: string,
+    ast: string,
+    opt_ast: string,
+    interp_val: string,
+    vm_val: string,
+    vm_steps: int,
+    code_len: int,
+    code_digest: int,
+    root: int,
+    infer_steps: int,
+    ok: int,            // 1 pass
+    detail: string,
+}
+
+// The seven sealed leaves that commit a pipeline run.  Order is load-bearing:
+// verifiers reconstruct this exact list from a PipelineResult.
+fn seal_leaves(src, ty, ast_str, opt_str, code_h, val_str, steps) {
+    [
+        merkle_leaf("src",   src),
+        merkle_leaf("type",  ty),
+        merkle_leaf("ast",   ast_str),
+        merkle_leaf("opt",   opt_str),
+        merkle_leaf("code",  str(code_h)),
+        merkle_leaf("value", val_str),
+        merkle_leaf("steps", str(steps)),
+    ]
+}
+
+// The per-case seal is now a Merkle ROOT over those leaves — a real tree, so a
+// single field can be proven in/against the root and any tamper is detectable.
+fn seal_root(src, ty, ast_str, opt_str, code_h, val_str, steps) {
+    merkle_root(seal_leaves(src, ty, ast_str, opt_str, code_h, val_str, steps))
+}
+
+// Human labels for the seven leaves (index-aligned with seal_leaves).
+fn leaf_label(i) {
+    if i == 0 { "src" } else if i == 1 { "type" } else if i == 2 { "ast" }
+    else if i == 3 { "opt" } else if i == 4 { "code" } else if i == 5 { "value" }
+    else if i == 6 { "steps" } else { "?" }
+}
+
+fn run_pipeline(name, src, fuel, verbose) {
+    print("");
+    print("┌─────────────────────────────────────────────────────────────┐");
+    print("│  CASE  ${name}");
+    print("└─────────────────────────────────────────────────────────────┘");
+    print("  source:  ${src}");
+
+    // 1–2 Lex + Parse
+    let pr = parse(src);
+    if !is_ok(pr) {
+        print("  ✗ PARSE  ${unwrap_err(pr)}");
+        return PipelineResult {
+            name: name, source: src, ty: "?", ast: "?", opt_ast: "?",
+            interp_val: "?", vm_val: "?", vm_steps: 0, code_len: 0,
+            code_digest: 0, root: 0, infer_steps: 0, ok: 0,
+            detail: unwrap_err(pr),
+        };
+    }
+    let ast = unwrap_ok(pr);
+    print("  ✓ PARSE  ${pp(ast)}");
+
+    // 3 Typecheck
+    let tr = typecheck(ast);
+    if !is_ok(tr) {
+        print("  ✗ INFER  ${unwrap_err(tr)}");
+        return PipelineResult {
+            name: name, source: src, ty: "?", ast: pp(ast), opt_ast: "?",
+            interp_val: "?", vm_val: "?", vm_steps: 0, code_len: 0,
+            code_digest: 0, root: 0, infer_steps: 0, ok: 0,
+            detail: unwrap_err(tr),
+        };
+    }
+    let tres = unwrap_ok(tr);
+    let ty = tres[0];
+    let log = tres[1];
+    print("  ✓ INFER  : ${ty_show(ty)}   (${len(log)} derivation steps)");
+    if verbose {
+        let show_n = len(log);
+        if show_n > 6 { show_n = 6; }
+        for i in 0..show_n {
+            print("      · ${log[i]}");
+        }
+        if len(log) > 6 { print("      · … ${len(log) - 6} more"); }
+    }
+
+    // 4 Optimize
+    let opt = optimize(ast);
+    print("  ✓ OPT    ${pp(opt)}");
+
+    // 5a Interpret — TWICE.  Once on the RAW parsed AST, once on the optimized
+    // AST.  interp(raw) == interp(opt) is what makes the optimizer trustworthy:
+    // the interp-vs-VM check alone would happily agree on a WRONG answer if the
+    // optimizer miscompiled, because both of those consume the optimized tree.
+    let ir_raw = interp(ast, {});
+    if !is_ok(ir_raw) {
+        print("  ✗ INTERP(raw) ${unwrap_err(ir_raw)}");
+        return PipelineResult {
+            name: name, source: src, ty: ty_show(ty), ast: pp(ast), opt_ast: pp(opt),
+            interp_val: "?", vm_val: "?", vm_steps: 0, code_len: 0,
+            code_digest: 0, root: 0, infer_steps: len(log), ok: 0,
+            detail: unwrap_err(ir_raw),
+        };
+    }
+    let iv_raw = unwrap_ok(ir_raw);
+
+    let ir = interp(opt, {});
+    if !is_ok(ir) {
+        print("  ✗ INTERP ${unwrap_err(ir)}");
+        return PipelineResult {
+            name: name, source: src, ty: ty_show(ty), ast: pp(ast), opt_ast: pp(opt),
+            interp_val: "?", vm_val: "?", vm_steps: 0, code_len: 0,
+            code_digest: 0, root: 0, infer_steps: len(log), ok: 0,
+            detail: unwrap_err(ir),
+        };
+    }
+    let iv = unwrap_ok(ir);
+
+    // Optimizer soundness: raw and optimized evaluations MUST match.
+    if v_show(iv_raw) != v_show(iv) {
+        print("  ✗ OPT-SOUND  raw=${v_show(iv_raw)}  opt=${v_show(iv)} — the optimizer changed the meaning!");
+        return PipelineResult {
+            name: name, source: src, ty: ty_show(ty), ast: pp(ast), opt_ast: pp(opt),
+            interp_val: v_show(iv), vm_val: "?", vm_steps: 0, code_len: 0,
+            code_digest: 0, root: 0, infer_steps: len(log), ok: 0,
+            detail: "optimizer unsound (interp-raw != interp-opt)",
+        };
+    }
+    print("  ✓ INTERP ${v_show(iv)}   (raw = opt: optimizer preserved meaning)");
+
+    // 5b Compile
+    let code = compile_program(opt);
+    let ch = code_hash(code);
+    print("  ✓ COMPILE ${len(code)} ops   digest=#${ch}");
+    if verbose {
+        disassemble(code);
+    }
+
+    // 5c VM
+    let vr = vm_run(code, fuel);
+    if !is_ok(vr) {
+        print("  ✗ VM     ${unwrap_err(vr)}");
+        return PipelineResult {
+            name: name, source: src, ty: ty_show(ty), ast: pp(ast), opt_ast: pp(opt),
+            interp_val: v_show(iv), vm_val: "?", vm_steps: 0, code_len: len(code),
+            code_digest: ch, root: 0, infer_steps: len(log), ok: 0,
+            detail: unwrap_err(vr),
+        };
+    }
+    let vres = unwrap_ok(vr);
+    let vv = vres[0];
+    let steps = vres[1];
+    print("  ✓ VM     ${v_show(vv)}   (${steps} steps)");
+
+    // 6 Triple-path agreement:  interp(raw) == interp(opt) == vm(compile(opt))
+    let agree = (v_show(iv_raw) == v_show(iv)) && (v_show(iv) == v_show(vv));
+    if !agree {
+        print("  ✗ AGREE  raw=${v_show(iv_raw)}  opt=${v_show(iv)}  vm=${v_show(vv)}");
+        return PipelineResult {
+            name: name, source: src, ty: ty_show(ty), ast: pp(ast), opt_ast: pp(opt),
+            interp_val: v_show(iv), vm_val: v_show(vv), vm_steps: steps,
+            code_len: len(code), code_digest: ch, root: 0,
+            infer_steps: len(log), ok: 0,
+            detail: "triple-path disagreement",
+        };
+    }
+    print("  ✓ AGREE  triple-path match (interp-raw = interp-opt = vm)");
+
+    // 7 Seal — Merkle root over the 7 committed leaves.
+    let root = seal_root(src, ty_show(ty), pp(ast), pp(opt), ch, v_show(iv), steps);
+    print("  ✓ SEAL   root=#${root}   (merkle root over 7 leaves)");
+
+    PipelineResult {
+        name: name,
+        source: src,
+        ty: ty_show(ty),
+        ast: pp(ast),
+        opt_ast: pp(opt),
+        interp_val: v_show(iv),
+        vm_val: v_show(vv),
+        vm_steps: steps,
+        code_len: len(code),
+        code_digest: ch,
+        root: root,
+        infer_steps: len(log),
+        ok: 1,
+        detail: "PASS",
+    }
+}
+
+// ─── Self-attestation helpers ───────────────────────────────────────────────
+fn str_contains(s, sub) {
+    let n = len(s);
+    let m = len(sub);
+    if m == 0 { return true; }
+    if m > n { return false; }
+    let mut i = 0;
+    while i + m <= n {
+        if substr(s, i, m) == sub { return true; }
+        i = i + 1;
+    }
+    false
+}
+
+// Independently re-run the WHOLE pipeline from source and return the seal root
+// (or -1 on any failure/disagreement).  Used as the determinism / replay gate:
+// running a second time must reproduce the identical Merkle root, proving the
+// seal is a pure function of the source with no hidden state.
+fn replay_root(src, fuel) {
+    let pr = parse(src);
+    if !is_ok(pr) { return -1; }
+    let ast = unwrap_ok(pr);
+    let tr = typecheck(ast);
+    if !is_ok(tr) { return -1; }
+    let tres = unwrap_ok(tr);
+    let ty = tres[0];
+    let opt = optimize(ast);
+    let ir_raw = interp(ast, {});
+    if !is_ok(ir_raw) { return -1; }
+    let iv_raw = unwrap_ok(ir_raw);
+    let ir = interp(opt, {});
+    if !is_ok(ir) { return -1; }
+    let iv = unwrap_ok(ir);
+    if v_show(iv_raw) != v_show(iv) { return -1; }
+    let code = compile_program(opt);
+    let ch = code_hash(code);
+    let vr = vm_run(code, fuel);
+    if !is_ok(vr) { return -1; }
+    let vres = unwrap_ok(vr);
+    let vv = vres[0];
+    let steps = vres[1];
+    if v_show(iv) != v_show(vv) { return -1; }
+    seal_root(src, ty_show(ty), pp(ast), pp(opt), ch, v_show(iv), steps)
+}
+
+// Reconstruct a passing case's seven leaves from its sealed result.
+fn leaves_of(r) {
+    seal_leaves(r.source, r.ty, r.ast, r.opt_ast, r.code_digest, r.interp_val, r.vm_steps)
+}
+
+// ─── Banner ─────────────────────────────────────────────────────────────────
+fn banner() {
+    print("");
+    print("  ╔══════════════════════════════════════════════════════════════╗");
+    print("  ║                                                              ║");
+    print("  ║   T H O T H   —   sealed meta-machine                        ║");
+    print("  ║   lex → parse → HM-infer → optimize → interp(raw) ─┐         ║");
+    print("  ║                             interp(opt) ─┤          │        ║");
+    print("  ║                         compile → vm ─→ AGREE(3) → MERKLE    ║");
+    print("  ║                                                              ║");
+    print("  ║   A typed language, inside Anubis, that triple-checks and    ║");
+    print("  ║   Merkle-seals its own work — then proves the seal.          ║");
+    print("  ╚══════════════════════════════════════════════════════════════╝");
+    print("");
+}
+
+fn main() {
+    banner();
+
+    // ── Positive suite: escalating complexity.  Each program must parse,
+    //    typecheck, evaluate IDENTICALLY on three paths (interp-raw,
+    //    interp-opt, VM), and seal.  Row = [name, source, fuel, verbose].
+    let cases = [
+        ["arith",             "1 + 2 * 3 + 4", 1000, 0],
+        ["branch",            "if 3 < 10 then 42 else 0", 1000, 0],
+        ["poly_id",           "let id = fun x -> x in id 7", 2000, 1],
+        ["nested_let",        "let a = 2 in let b = a + 3 in let c = b * 4 in c - 1", 2000, 0],
+        ["higher_order",      "let twice = fun f -> fun x -> f (f x) in let inc = fun n -> n + 1 in twice inc 10", 5000, 1],
+        ["factorial",         "let rec fact = fun n -> if n == 0 then 1 else n * fact (n - 1) in fact 6", 50000, 0],
+        ["fibonacci",         "let rec fib = fun n -> if n < 2 then n else fib (n - 1) + fib (n - 2) in fib 10", 500000, 0],
+        ["gcd",               "let rec gcd = fun a -> fun b -> if b == 0 then a else gcd b (a % b) in gcd 48 36", 20000, 0],
+        ["power",             "let rec pow = fun b -> fun e -> if e == 0 then 1 else b * pow b (e - 1) in pow 2 10", 20000, 0],
+        ["sum_to_n",          "let rec sum = fun n -> if n == 0 then 0 else n + sum (n - 1) in sum 100", 50000, 0],
+        ["ackermann",         "let rec ack = fun m -> fun n -> if m == 0 then n + 1 else if n == 0 then ack (m - 1) 1 else ack (m - 1) (ack m (n - 1)) in ack 2 3", 200000, 0],
+        ["collatz_steps",     "let rec col = fun n -> fun k -> if n == 1 then k else if n % 2 == 0 then col (n / 2) (k + 1) else col (3 * n + 1) (k + 1) in col 27 0", 200000, 0],
+        ["church_true_false", "let tru = fun a -> fun b -> a in let fls = fun a -> fun b -> b in let ite = fun c -> fun t -> fun e -> c t e in ite tru 11 22", 10000, 1],
+        ["constfold_beta",    "(fun x -> x * x) (3 + 4)", 2000, 1],
+        ["poly_eq",           "let eq = fun a -> fun b -> a == b in eq 7 7", 5000, 1],
+        ["bool_from_cmp",     "let x = 3 < 5 in x", 2000, 0],
+        ["even_rec",          "let rec even = fun n -> if n == 0 then true else if n == 1 then false else even (n - 2) in even 10", 20000, 0],
+    ];
+
+    let mut results = [];
+    let mut pass = 0;
+    let mut fail = 0;
+
+    for i in 0..len(cases) {
+        let c = cases[i];
+        let r = run_pipeline(c[0], c[1], c[2], c[3] == 1);
+        push(results, r);
+        if r.ok == 1 { pass = pass + 1; } else { fail = fail + 1; }
+    }
+
+    // ── Negative suite — must be REJECTED, and for the RIGHT reason.
+    //    Row = [name, source, expected_reason_substring].
+    print("");
+    print("┌─────────────────────────────────────────────────────────────┐");
+    print("│  NEGATIVE SUITE  (must be rejected — for the right reason)   │");
+    print("└─────────────────────────────────────────────────────────────┘");
+
+    let negatives = [
+        ["type_err_arith",  "true + 1",                   "confutes"],
+        ["type_err_if",     "if 1 then 2 else 3",         "confutes"],
+        ["unbound",         "fun x -> y",                 "unbound"],
+        ["app_non_fun",     "5 6",                        "confutes"],
+        ["occurs_check",    "fun x -> x x",               "occurs-check"],
+        ["branch_mismatch", "if true then 1 else false",  "confutes"],
+        ["eq_mixed_types",  "1 == true",                  "confutes"],
+        ["rec_not_fun",     "let rec x = x + 1 in x",      "requires a function"],
+    ];
+    let mut neg_pass = 0;
+    let mut reason_ok = 0;
+    for i in 0..len(negatives) {
+        let n = negatives[i];
+        let want = n[2];
+        let pr = parse(n[1]);
+        let mut msg = "";
+        let mut rejected = false;
+        let mut stage = "";
+        if !is_ok(pr) {
+            rejected = true; stage = "parse"; msg = unwrap_err(pr);
+        } else {
+            let tr = typecheck(unwrap_ok(pr));
+            if !is_ok(tr) { rejected = true; stage = "infer"; msg = unwrap_err(tr); }
+        }
+        if rejected {
+            neg_pass = neg_pass + 1;
+            if str_contains(msg, want) {
+                reason_ok = reason_ok + 1;
+                print("  ✓ REJECT ${n[0]}  (${stage})  ${msg}");
+            } else {
+                print("  ~ REJECT ${n[0]}  (${stage})  ${msg}   [wanted: ${want}]");
+            }
+        } else {
+            print("  ✗ ACCEPTED ${n[0]} — checker failed to bite!");
+            fail = fail + 1;
+        }
+    }
+
+    // ── Self-attestation: replay determinism + Merkle inclusion proofs ──────
+    print("");
+    print("┌─────────────────────────────────────────────────────────────┐");
+    print("│  SELF-ATTESTATION  (replay determinism · merkle proofs)     │");
+    print("└─────────────────────────────────────────────────────────────┘");
+    let mut replay_ok = 0;
+    let mut merkle_ok = 0;
+    let mut roots = [];
+    for i in 0..len(results) {
+        let r = results[i];
+        if r.ok == 1 {
+            let fuel = cases[i][2];
+            // (a) determinism: an independent second full run reproduces the seal
+            let rr = replay_root(r.source, fuel);
+            let det = rr == r.root;
+            if det { replay_ok = replay_ok + 1; }
+            // (b) merkle: leaves reconstruct the root, every leaf has a valid
+            //     inclusion proof, and every 1-bit tamper is detected.
+            let leaves = leaves_of(r);
+            let bind = merkle_root(leaves) == r.root;
+            let mut incl = 0;
+            let mut tamper = 0;
+            for j in 0..len(leaves) {
+                let path = merkle_path(leaves, j);
+                if merkle_verify(leaves[j], path, r.root) { incl = incl + 1; }
+                if !merkle_verify(leaves[j] + 1, path, r.root) { tamper = tamper + 1; }
+            }
+            let m_all = bind && incl == len(leaves) && tamper == len(leaves);
+            if m_all { merkle_ok = merkle_ok + 1; }
+            push(roots, r.root);
+            let dmark = if det { "OK" } else { "FAIL" };
+            let mmark = if m_all { "OK" } else { "FAIL" };
+            print("  ${r.name}");
+            print("      replay=${dmark} (root #${r.root} reproduced)   merkle=${mmark} (${incl}/${len(leaves)} proofs, ${tamper}/${len(leaves)} tampers caught)");
+        }
+    }
+
+    // ── Tangible inclusion proof: show a real audit path for one leaf ───────
+    print("");
+    print("  ── MERKLE INCLUSION PROOF (demonstration) ──");
+    let mut demo_i = 0;
+    for i in 0..len(results) {
+        if results[i].name == "factorial" { demo_i = i; }
+    }
+    let dr = results[demo_i];
+    let dleaves = leaves_of(dr);
+    let leaf_idx = 5;  // the "value" leaf
+    let dpath = merkle_path(dleaves, leaf_idx);
+    print("  case '${dr.name}', proving leaf[${leaf_idx}]='${leaf_label(leaf_idx)}' (${dr.interp_val}) is in root #${dr.root}");
+    print("    leaf hash            = ${dleaves[leaf_idx]}");
+    for j in 0..len(dpath) {
+        let step = dpath[j];
+        let side = if step[1] == 1 { "left " } else { "right" };
+        print("    sibling[${j}] (${side}) = ${step[0]}");
+    }
+    let good = merkle_verify(dleaves[leaf_idx], dpath, dr.root);
+    let bad = merkle_verify(dleaves[leaf_idx] + 1, dpath, dr.root);
+    print("    verify(true leaf)    -> ${good}   (recomputes the sealed root)");
+    print("    verify(tampered leaf)-> ${bad}   (any change breaks the seal)");
+
+    // Master seal: a Merkle root over the per-case roots (a tree of trees).
+    let master = merkle_root(roots);
+
+    // ── Grand seal ──────────────────────────────────────────────────────────
+    print("");
+    print("  ═══════════════════════════════════════════════════════════");
+    print("  THOTH SUITE");
+    print("    positive pass ........ ${pass} / ${len(cases)}");
+    print("    negative reject ...... ${neg_pass} / ${len(negatives)}");
+    print("    reject reason match .. ${reason_ok} / ${len(negatives)}");
+    print("    replay determinism ... ${replay_ok} / ${pass}");
+    print("    merkle self-check .... ${merkle_ok} / ${pass}");
+    print("    failures ............. ${fail}");
+    print("  ───────────────────────────────────────────────────────────");
+    print("  PER-CASE SEALS");
+    for i in 0..len(results) {
+        let r = results[i];
+        let mark = if r.ok == 1 { "PASS" } else { "FAIL" };
+        print("    [${mark}] ${r.name}");
+        print("           : ${r.ty}   = ${r.interp_val}   vm_steps=${r.vm_steps}   ops=${r.code_len}   root=#${r.root}");
+    }
+    print("  ───────────────────────────────────────────────────────────");
+    print("  SEAL LEDGER (json lines — reproducible, verifiable artifact)");
+    for i in 0..len(results) {
+        let r = results[i];
+        print("    {\"case\":\"${r.name}\",\"type\":\"${r.ty}\",\"value\":\"${r.interp_val}\",\"vm_steps\":${r.vm_steps},\"ops\":${r.code_len},\"code_digest\":${r.code_digest},\"merkle_root\":${r.root}}");
+    }
+    print("    {\"master_merkle_root\":${master},\"cases\":${pass},\"negatives\":${neg_pass}}");
+    print("  ───────────────────────────────────────────────────────────");
+    let all_ok = fail == 0
+        && pass == len(cases)
+        && neg_pass == len(negatives)
+        && reason_ok == len(negatives)
+        && replay_ok == pass
+        && merkle_ok == pass;
+    if all_ok {
+        print("  VERDICT ████ ALL SYSTEMS SEALED ████");
+        print("  MASTER_MERKLE_ROOT #${master}");
+        print("  (typed · triple-path agreed · replay-deterministic · merkle-proven)");
+        print("  The scribe is silent. The papyrus is sealed.");
+    } else {
+        print("  VERDICT ░░░░ SEAL BROKEN ░░░░");
+        print("  MASTER_MERKLE_ROOT #${master} (partial)");
+    }
+    print("  ═══════════════════════════════════════════════════════════");
+    print("");
+}
