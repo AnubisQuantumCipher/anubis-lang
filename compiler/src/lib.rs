@@ -4802,6 +4802,98 @@ fn main() uses(net.send) { send("h", 80, wrap(secret_source("k"))); }"#,
         .expect("a declassified secret inside a container is released");
     }
 
+    // ── Phase-2 SCOPE-AWARE control-flow value exprs: match/if/if-let/block walked soundly ───────
+
+    #[test]
+    fn taint_through_a_control_flow_value_is_caught() {
+        // If-expression branch: the tainted value is selected by a branch.
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); let f = true; let r = if f { t } else { 0 }; send("h", 80, r); }"#)
+            .expect_err("tainted value through an if-expression branch must be flagged");
+        // Block-local `let` passthrough: the binding chain inside the branch launders nothing.
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); let f = true; let r = if f { let v = t; v } else { 0 }; send("h", 80, r); }"#)
+            .expect_err("tainted value through a block-local let must be flagged");
+        // Tail-position match in a helper: the return summary walks control-flow tails now
+        // (the retired tail-`if`/`match` return-summary boundary).
+        tc_ok(r#"fn get_data() { let t = input(); match t { _ => t } }
+fn main() uses(net.send) { send("h", 80, get_data()); }"#)
+            .expect_err("a helper whose tail match returns taint must be flagged at the call");
+    }
+
+    #[test]
+    fn secret_through_a_control_flow_value_is_caught() {
+        // Match pattern destructure: `Some(inner) => inner` of a secret scrutinee carries.
+        let err = tc_lane(
+            r#"fn main() uses(net.send) { let s = Some(secret_source("k")); let i = match s { Some(inner) => inner, _ => 0 }; send("h", 80, i); }"#,
+            false,
+        )
+        .expect_err("secret destructured out of a match arm must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+        // If-let: the then-branch's pattern var inherits the scrutinee's secrecy.
+        tc_lane(
+            r#"fn main() uses(net.send) { let s = Some(secret_source("k")); let r = if let Some(v) = s { v } else { 0 }; send("h", 80, r); }"#,
+            false,
+        )
+        .expect_err("secret through an if-let pattern var must reject");
+        // Interprocedural: a passthrough helper built from a match summarizes {0}, so the secret
+        // is caught at the call boundary.
+        tc_lane(
+            r#"fn pick(x) { return match x { _ => x }; }
+fn main() uses(net.send) { send("h", 80, pick(secret_source("k"))); }"#,
+            false,
+        )
+        .expect_err("param destructured through a match arm must flow to the return summary");
+        // A block `Assign` SETS: `{ x = secret; x }` in a branch carries (the set half of the
+        // straight-line Assign discipline inside the block walker).
+        tc_lane(
+            r#"fn main() uses(net.send) { let x = 0; let f = true; let r = if f { x = secret_source("k"); x } else { 0 }; send("h", 80, r); }"#,
+            false,
+        )
+        .expect_err("assign-to-secret inside a value branch must reject");
+    }
+
+    #[test]
+    fn control_flow_value_shadow_and_reassign_precision_accepts() {
+        // THE shadowing regression this slice closes correctly: an arm's pattern var shadowing a
+        // same-named outer SECRET binding is the arm's own clean binding (the composite slice's
+        // first attempt shipped exactly this false positive; the adversarial review caught it).
+        tc_lane(
+            r#"fn main() uses(net.send) { let key = secret_source("k"); let sel = Some(1); let picked = match sel { Some(key) => key, _ => 0 }; send("h", 80, picked); }"#,
+            false,
+        )
+        .expect("a clean pattern var shadowing an outer secret must accept (no false positive)");
+        // Taint dual: a block-local `let x` shadowing an outer tainted `x` is clean.
+        tc_ok(r#"fn main() uses(net.send) { let x = input(); let f = true; let r = if f { let x = 7; x } else { 0 }; send("h", 80, r); }"#)
+            .expect("a clean block-local let shadowing an outer tainted binding must accept");
+        // The design-review blocker guard: straight-line reassign-to-clean INSIDE a value branch
+        // clears (the committed reassign-to-clean contract, now honored in value position).
+        tc_ok(r#"fn main() uses(net.send) { let x = input(); let f = true; let r = if f { x = 42; x } else { 99 }; send("h", 80, r); }"#)
+            .expect("reassign-to-clean inside a value branch must stay accepted");
+        // Declassify inside a branch releases (the hatch composes with control flow).
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("k"); let f = true; let p = if f { declassify(k, "p", "r") } else { 0 }; send("h", 80, p); }"#,
+            false,
+        )
+        .expect("a declassified secret inside a branch is released");
+        // Plain precision: a clean match value to a sink accepts.
+        tc_ok(r#"enum Choice { A, B }
+fn main() uses(net.send) { let c = Choice::A; let v = match c { Choice::A => 1, Choice::B => 2, _ => 0 }; send("h", 80, v); }"#)
+            .expect("a clean match value accepts");
+    }
+
+    #[test]
+    fn control_flow_walk_is_mirror_symmetric_across_labels() {
+        // The same destructure shape must be caught by BOTH walkers (review Lens-C guard: the
+        // taint pattern seeder must set `tainted` + `taint_source` TOGETHER — the `Var` arm gates
+        // on both — or the integrity side leaks one-sided while the secrecy side still catches).
+        tc_ok(r#"fn main() uses(net.send) { let s = Some(input()); let i = match s { Some(inner) => inner, _ => 0 }; send("h", 80, i); }"#)
+            .expect_err("taint side of the destructure mirror must be flagged");
+        tc_lane(
+            r#"fn main() uses(net.send) { let s = Some(secret_source("k")); let i = match s { Some(inner) => inner, _ => 0 }; send("h", 80, i); }"#,
+            false,
+        )
+        .expect_err("secret side of the destructure mirror must be flagged");
+    }
+
     // ── Phase-2 taint soundness: the reassignment fail-open (control-flow-merge dataflow) ────────
 
     #[test]

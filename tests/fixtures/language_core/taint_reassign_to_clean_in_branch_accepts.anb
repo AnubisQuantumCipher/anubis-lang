@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// The reassign-to-clean contract in VALUE position (design-review blocker guard): a tainted `x`
+// reassigned to a clean constant inside a value branch is genuinely clean at the branch's tail.
+// The block walker applies the same straight-line set/CLEAR Assign discipline as the main
+// analyzer; without it, this well-formed program would be a NEW false positive.
+fn main() uses(net.send) {
+    let x = input();
+    let flag = true;
+    let r = if flag { x = 42; x } else { 99 };
+    send("host", 80, r);
+}

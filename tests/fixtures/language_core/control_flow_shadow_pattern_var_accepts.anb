@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// THE shadowing regression guard (accept-bias): the arm's `key` is pattern-bound from a CLEAN
+// scrutinee and SHADOWS the outer secret `key` — the arm value is the arm's own clean binding.
+// A flat (non-scope-aware) walk would mis-resolve the arm's `key` to the outer secret and falsely
+// reject; the composite slice's first attempt shipped exactly this false positive.
+fn main() uses(net.send) {
+    let key = secret_source("api_key");
+    let sel = Some(1);
+    let picked = match sel { Some(key) => key, _ => 0 };
+    send("host", 80, picked);
+}

@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Precision (accept-bias): a match over a clean scrutinee producing clean arm values is genuinely
+// clean at the sink — the scope-aware walk adds no spurious label.
+enum Choice { A, B }
+fn main() uses(net.send) {
+    let c = Choice::A;
+    let v = match c { Choice::A => 1, Choice::B => 2, _ => 0 };
+    send("host", 80, v);
+}

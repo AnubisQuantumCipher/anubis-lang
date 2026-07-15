@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED
+// Scope-aware control-flow value walk, integrity side: an untrusted value passed THROUGH a
+// block-local `let` chain inside a value branch still reaches the sink — the block walker seeds
+// each block-local binding in order, so the passthrough no longer launders.
+fn main() uses(net.send) {
+    let t = input();
+    let flag = true;
+    let r = if flag { let v = t; v } else { 0 };
+    send("host", 80, r);
+}

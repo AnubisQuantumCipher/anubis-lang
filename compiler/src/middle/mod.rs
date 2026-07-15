@@ -1,6 +1,6 @@
 //! Middle: typed HIR, mode/effect checks, taint tracking, and Z3 obligations.
 
-use crate::frontend::{Expr, Item, Mode, Span, Stmt, AST};
+use crate::frontend::{Expr, Item, Mode, Pattern, Span, Stmt, AST};
 use crate::BuildMode;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -5730,14 +5730,86 @@ fn expr_taint_source(
             expr_taint_source(k, scope, tainting_fns, param_return_taint)
                 .or_else(|| expr_taint_source(v, scope, tainting_fns, param_return_taint))
         }),
-        // Control-flow value expressions (`match` / `if` / `if let` / block) are DELIBERATELY not
-        // walked here. These are flat walkers — a `Var` resolves by ambient-scope lookup with no
-        // lexical-scope tracking — so recursing into a branch/arm/tail that introduces a binding (a
-        // match/if-let pattern var, a block-local `let`) is unsound both ways: an inner binding that
-        // SHADOWS a same-named outer tainted one is mis-resolved to the outer (a false positive,
-        // violating accept-bias), and a value passed THROUGH the inner binding launders (a false
-        // negative). Handling them soundly requires a scope-aware walker — a named follow-up. The pure
-        // aggregates above introduce no bindings, so they are exact and safe.
+        // Control-flow value expressions (`match` / `if` / `if let` / block) — SCOPE-AWARE walk.
+        // Each arm/branch/block extends a CLONE of the ambient scope: inner bindings (pattern vars,
+        // block-local `let`s) SHADOW a same-named outer binding (no false positive — the exact
+        // defect that deferred this from the composite slice), and a value passed THROUGH an inner
+        // binding is tracked (no laundering). The clone is local to one arm/block — nothing leaks
+        // to a sibling arm or to code after the expression. Combine is may-carry (`or_else`): any
+        // branch carrying taint taints the whole value. The `if` condition and match guards are
+        // control, not value — ignored (explicit-flow model; implicit flows stay a named boundary).
+        // Pattern vars inherit the WHOLE scrutinee's label (whole-value granularity, matching the
+        // `Index`/`FieldAccess` arms above). A straight-line `Assign` to a Var inside a block is
+        // applied to the local clone with the same set/CLEAR discipline as the main analyzer's
+        // `Stmt::Assign` arm, so a reassign-to-clean before the tail stays accepted (the committed
+        // `taint_reassign_to_clean` contract, in value position) and a reassign-to-tainted is caught.
+        Expr::Block { stmts, tail } => {
+            let mut local = scope.clone();
+            for stmt in stmts {
+                match stmt {
+                    Stmt::Let { name, ty, init, .. } => seed_one_let(
+                        name,
+                        ty.as_deref(),
+                        init,
+                        &mut local,
+                        tainting_fns,
+                        param_return_taint,
+                    ),
+                    Stmt::LetPattern { pattern, init, .. } => {
+                        let label =
+                            expr_taint_source(init, &local, tainting_fns, param_return_taint);
+                        seed_taint_pattern(&mut local, pattern, &label);
+                    }
+                    Stmt::Assign {
+                        target: Expr::Var(name),
+                        value,
+                    } => {
+                        let label =
+                            expr_taint_source(value, &local, tainting_fns, param_return_taint);
+                        if let Some(b) = local.get_mut(name) {
+                            b.info.tainted = label.is_some();
+                            if label.is_some() {
+                                b.info.declassified = false;
+                            }
+                            b.info.taint_source = label;
+                        }
+                    }
+                    // Other statement kinds (nested statement control flow, non-Var assign
+                    // targets) do not feed the block's VALUE — named residual, unchanged from the
+                    // pre-slice opaque behavior.
+                    _ => {}
+                }
+            }
+            tail.as_ref()
+                .and_then(|t| expr_taint_source(t, &local, tainting_fns, param_return_taint))
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            let scrut = expr_taint_source(scrutinee, scope, tainting_fns, param_return_taint);
+            arms.iter().find_map(|arm| {
+                let mut local = scope.clone();
+                seed_taint_pattern(&mut local, &arm.pattern, &scrut);
+                expr_taint_source(&arm.body, &local, tainting_fns, param_return_taint)
+            })
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            let scrut = expr_taint_source(scrutinee, scope, tainting_fns, param_return_taint);
+            let mut local = scope.clone();
+            seed_taint_pattern(&mut local, pattern, &scrut);
+            expr_taint_source(then, &local, tainting_fns, param_return_taint)
+                .or_else(|| expr_taint_source(else_, scope, tainting_fns, param_return_taint))
+        }
+        Expr::If { then, else_, .. } => {
+            expr_taint_source(then, scope, tainting_fns, param_return_taint)
+                .or_else(|| expr_taint_source(else_, scope, tainting_fns, param_return_taint))
+        }
         // `expr?` unwraps Ok/Some to the inner value, which carries the same provenance (no binding).
         Expr::Try(inner) => expr_taint_source(inner, scope, tainting_fns, param_return_taint),
         _ => None,
@@ -5859,9 +5931,74 @@ fn expr_secret_source(
             expr_secret_source(k, scope, secret_fns, param_return_taint)
                 .or_else(|| expr_secret_source(v, scope, secret_fns, param_return_taint))
         }),
-        // Control-flow value exprs (match/if/if-let/block) deliberately not walked — see the same
-        // note on `expr_taint_source`: a flat walker cannot soundly recurse past a binding-introducing
-        // branch (shadowing false positive + passthrough false negative). Deferred to a scope-aware walk.
+        // Control-flow value exprs — SCOPE-AWARE walk, the exact confidentiality dual of the same
+        // arms on `expr_taint_source` (see the full note there): clone-per-arm/block, inner
+        // bindings shadow, pattern vars inherit the whole scrutinee's secrecy, straight-line block
+        // `Assign` applies the main analyzer's set/CLEAR discipline to the local clone.
+        Expr::Block { stmts, tail } => {
+            let mut local = scope.clone();
+            for stmt in stmts {
+                match stmt {
+                    Stmt::Let { name, ty, init, .. } => seed_one_let_secret(
+                        name,
+                        ty.as_deref(),
+                        init,
+                        &mut local,
+                        secret_fns,
+                        param_return_taint,
+                    ),
+                    Stmt::LetPattern { pattern, init, .. } => {
+                        let secret =
+                            expr_secret_source(init, &local, secret_fns, param_return_taint)
+                                .is_some();
+                        seed_secret_pattern(&mut local, pattern, secret);
+                    }
+                    Stmt::Assign {
+                        target: Expr::Var(name),
+                        value,
+                    } => {
+                        let secret =
+                            expr_secret_source(value, &local, secret_fns, param_return_taint)
+                                .is_some();
+                        if let Some(b) = local.get_mut(name) {
+                            b.secret = secret;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            tail.as_ref()
+                .and_then(|t| expr_secret_source(t, &local, secret_fns, param_return_taint))
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            let scrut =
+                expr_secret_source(scrutinee, scope, secret_fns, param_return_taint).is_some();
+            arms.iter().find_map(|arm| {
+                let mut local = scope.clone();
+                seed_secret_pattern(&mut local, &arm.pattern, scrut);
+                expr_secret_source(&arm.body, &local, secret_fns, param_return_taint)
+            })
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            let scrut =
+                expr_secret_source(scrutinee, scope, secret_fns, param_return_taint).is_some();
+            let mut local = scope.clone();
+            seed_secret_pattern(&mut local, pattern, scrut);
+            expr_secret_source(then, &local, secret_fns, param_return_taint)
+                .or_else(|| expr_secret_source(else_, scope, secret_fns, param_return_taint))
+        }
+        Expr::If { then, else_, .. } => {
+            expr_secret_source(then, scope, secret_fns, param_return_taint)
+                .or_else(|| expr_secret_source(else_, scope, secret_fns, param_return_taint))
+        }
         Expr::Try(inner) => expr_secret_source(inner, scope, secret_fns, param_return_taint),
         _ => None,
     }
@@ -5921,6 +6058,38 @@ fn seed_one_let(
             secret: false,
         },
     );
+}
+
+/// Seed every name a pattern binds into `scope` with the given TAINT label — the whole-scrutinee /
+/// whole-initializer label (conservative whole-value granularity, matching the `Index`/
+/// `FieldAccess` arms: destructuring a tainted aggregate taints every bound part). Inserting
+/// OVERWRITES an outer same-named binding — the pattern var SHADOWS it, which is the accept-bias
+/// half of the scope-aware walk. Sets `tainted` and `taint_source` TOGETHER: the `Var` arm gates on
+/// BOTH fields (`.filter(tainted)`), so a label written without the flag would be silently dropped
+/// (a one-sided false negative the design review caught before it shipped).
+fn seed_taint_pattern(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    pattern: &Pattern,
+    label: &Option<String>,
+) {
+    for n in pattern.bound_names() {
+        scope.insert(
+            n.clone(),
+            ScopeBinding {
+                info: BindingInfo {
+                    name: n,
+                    ty: None,
+                    mode: String::new(),
+                    tainted: label.is_some(),
+                    taint_source: label.clone(),
+                    declassified: false,
+                    span: None,
+                },
+                closure_arity: None,
+                secret: false,
+            },
+        );
+    }
 }
 
 /// Whether any value a function body can RETURN carries internal taint, given the summary so far —
@@ -6014,9 +6183,9 @@ fn body_returns_taint(
                 }) {
                     return true;
                 }
-                // Implicit tail return: a bare trailing expression in tail position. (An `if`/`match`
-                // tail expression is not tracked — `expr_taint_source` has no such arm — a documented
-                // boundary, so only a direct bare expr matters here.)
+                // Implicit tail return: a trailing expression in tail position. A control-flow
+                // tail (`if`/`match`/`if let`/block) is tracked too — `expr_taint_source` walks
+                // them scope-aware — so the old tail-`if`/`match` boundary is retired.
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
                         if !is_return_call(e)
@@ -6113,6 +6282,34 @@ fn seed_one_let_secret(
             secret,
         },
     );
+}
+
+/// Seed every name a pattern binds into `scope` with the given SECRECY flag — the confidentiality
+/// dual of `seed_taint_pattern` (single-field: the secret walker's `Var` arm gates only on
+/// `.secret`). Inserting overwrites an outer same-named binding (shadow).
+fn seed_secret_pattern(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    pattern: &Pattern,
+    secret: bool,
+) {
+    for n in pattern.bound_names() {
+        scope.insert(
+            n.clone(),
+            ScopeBinding {
+                info: BindingInfo {
+                    name: n,
+                    ty: None,
+                    mode: String::new(),
+                    tainted: false,
+                    taint_source: None,
+                    declassified: false,
+                    span: None,
+                },
+                closure_arity: None,
+                secret,
+            },
+        );
+    }
 }
 
 /// Whether any value a function body can RETURN carries a secret — the dual of `body_returns_taint`,
@@ -6321,8 +6518,63 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             acc.extend(expr_param_flow(v, flow));
             acc
         }),
-        // Control-flow value exprs (match/if/if-let/block) deliberately not walked — a flat walker
-        // cannot soundly recurse past a binding-introducing branch (see `expr_taint_source`).
+        // Control-flow value exprs — SCOPE-AWARE walk (see the full note on `expr_taint_source`).
+        // Set-walker semantics: UNION over arms/branches; pattern vars inherit the scrutinee's
+        // whole index set; a straight-line block `Assign` OVERWRITES the local clone's entry
+        // (sound straight-line, precise: `{ x = 42; x }` carries no params).
+        Expr::Block { stmts, tail } => {
+            let mut local = flow.clone();
+            for stmt in stmts {
+                match stmt {
+                    Stmt::Let { name, init, .. } => seed_param_flow_let(name, init, &mut local),
+                    Stmt::LetPattern { pattern, init, .. } => {
+                        let set = expr_param_flow(init, &local);
+                        seed_flow_pattern(&mut local, pattern, &set);
+                    }
+                    Stmt::Assign {
+                        target: Expr::Var(name),
+                        value,
+                    } => {
+                        let set = expr_param_flow(value, &local);
+                        local.insert(name.clone(), set);
+                    }
+                    _ => {}
+                }
+            }
+            tail.as_ref()
+                .map(|t| expr_param_flow(t, &local))
+                .unwrap_or_default()
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            let scrut = expr_param_flow(scrutinee, flow);
+            arms.iter().fold(BTreeSet::new(), |mut acc, arm| {
+                let mut local = flow.clone();
+                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                acc.extend(expr_param_flow(&arm.body, &local));
+                acc
+            })
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            let scrut = expr_param_flow(scrutinee, flow);
+            let mut local = flow.clone();
+            seed_flow_pattern(&mut local, pattern, &scrut);
+            let mut s = expr_param_flow(then, &local);
+            s.extend(expr_param_flow(else_, flow));
+            s
+        }
+        Expr::If { then, else_, .. } => {
+            let mut s = expr_param_flow(then, flow);
+            s.extend(expr_param_flow(else_, flow));
+            s
+        }
         Expr::Try(inner) => expr_param_flow(inner, flow),
         _ => BTreeSet::new(),
     }
@@ -6343,6 +6595,20 @@ fn seed_param_flow_let(name: &str, init: &Expr, flow: &mut BTreeMap<String, BTre
         flow.insert(name.to_string(), BTreeSet::new());
     } else {
         flow.insert(name.to_string(), expr_param_flow(init, flow));
+    }
+}
+
+/// Seed every name a pattern binds into a param-flow map with the given index set (whole-value:
+/// destructuring a param-carrying scrutinee gives every bound part the scrutinee's provenance).
+/// Inserting overwrites an outer same-named entry (shadow) — including a same-named formal
+/// parameter, which is exactly the lexical-scope semantics.
+fn seed_flow_pattern(
+    flow: &mut BTreeMap<String, BTreeSet<usize>>,
+    pattern: &Pattern,
+    set: &BTreeSet<usize>,
+) {
+    for n in pattern.bound_names() {
+        flow.insert(n, set.clone());
     }
 }
 
@@ -6602,8 +6868,67 @@ fn expr_param_return_flow(
                 acc
             })
         }
-        // Control-flow value exprs (match/if/if-let/block) deliberately not walked — a flat walker
-        // cannot soundly recurse past a binding-introducing branch (see `expr_taint_source`).
+        // Control-flow value exprs — SCOPE-AWARE walk (see the full note on `expr_taint_source`).
+        // Mirrors `expr_param_flow`'s arms but threads `known_param_return`, so block-local `let`
+        // seeding keeps the Call arm's summary precision (a full declassify init clears via this
+        // walker's own `Declassify` arm — no separate check needed). A pass-through helper
+        // `fn pick(x){ return match x { _ => x }; }` now correctly summarizes {0}.
+        Expr::Block { stmts, tail } => {
+            let mut local = flow.clone();
+            for stmt in stmts {
+                match stmt {
+                    Stmt::Let { name, init, .. } => {
+                        let set = expr_param_return_flow(init, &local, known_param_return);
+                        local.insert(name.clone(), set);
+                    }
+                    Stmt::LetPattern { pattern, init, .. } => {
+                        let set = expr_param_return_flow(init, &local, known_param_return);
+                        seed_flow_pattern(&mut local, pattern, &set);
+                    }
+                    Stmt::Assign {
+                        target: Expr::Var(name),
+                        value,
+                    } => {
+                        let set = expr_param_return_flow(value, &local, known_param_return);
+                        local.insert(name.clone(), set);
+                    }
+                    _ => {}
+                }
+            }
+            tail.as_ref()
+                .map(|t| expr_param_return_flow(t, &local, known_param_return))
+                .unwrap_or_default()
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
+            arms.iter().fold(BTreeSet::new(), |mut acc, arm| {
+                let mut local = flow.clone();
+                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                acc.extend(expr_param_return_flow(&arm.body, &local, known_param_return));
+                acc
+            })
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
+            let mut local = flow.clone();
+            seed_flow_pattern(&mut local, pattern, &scrut);
+            let mut s = expr_param_return_flow(then, &local, known_param_return);
+            s.extend(expr_param_return_flow(else_, flow, known_param_return));
+            s
+        }
+        Expr::If { then, else_, .. } => {
+            let mut s = expr_param_return_flow(then, flow, known_param_return);
+            s.extend(expr_param_return_flow(else_, flow, known_param_return));
+            s
+        }
         Expr::Try(inner) => expr_param_return_flow(inner, flow, known_param_return),
         _ => BTreeSet::new(),
     }

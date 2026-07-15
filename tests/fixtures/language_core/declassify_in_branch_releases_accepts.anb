@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// The declassify hatch composes with control flow: a well-formed declassify(value, policy, reason)
+// inside a value branch releases the secret before it reaches egress.
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let flag = true;
+    let p = if flag { declassify(k, "release-policy", "audited") } else { 0 };
+    send("host", 80, p);
+}
