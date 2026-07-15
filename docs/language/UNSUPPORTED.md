@@ -183,8 +183,8 @@ through indexing/field access.
     value. Interprocedural legs make it slightly easier to trip.
   - **Callee-name keyed**: method/closure-valued calls (`recv.m()`, `let f = get; f()`) are not
     resolved by the interprocedural summaries (same boundary as the taint side).
-  - **Tail if/match implicit return**: a secret returned via a bare tail `if`/`match` (no explicit
-    `return` on a direct source) is not summarized — identical to the taint return summary's boundary.
+  - ~~**Tail if/match implicit return**~~ **RETIRED (`fe44f35`)**: a secret/taint returned via a bare
+    tail `if`/`match`/`if let`/block is now summarized — the scope-aware walkers walk control-flow tails.
 - **COMPOSITE / aggregate flow is REAL (Phase-2, `a930e7e`) — on both labels, intra + interproc.** A
   tainted/secret value nested in a container literal no longer launders: the pure-aggregate arms
   (`ArrayLiteral`/`StructLiteral`/`EnumConstruct`/`MapLiteral`/`Try`) were added to all four flow
@@ -194,17 +194,38 @@ through indexing/field access.
   sub-expression carrying a label makes the aggregate carry it; a well-formed declassify inside a
   container still releases. Fixtures: `taint_in_container_to_sink`, `secret_in_container_to_egress`,
   `secret_container_passthrough_helper`, `clean_container_to_sink_accepts`.
-  **Named boundaries (adversarial-review-confirmed, deferred):**
-  - **Control-flow value expressions** (`match` / `if` / `if let` / block) are NOT walked. These are
-    flat walkers (a `Var` resolves by ambient-scope lookup, no lexical-scope tracking), so recursing
-    past a binding-introducing branch is unsound both ways — an inner binding (pattern var / block-local
-    `let`) shadowing a same-named outer tainted binding is mis-resolved to the outer (a false positive,
-    caught by the review before it shipped), and a value passed THROUGH the inner binding launders (a
-    false negative). Sound handling needs a **scope-aware flow walker** — a clean follow-up that would
-    also enable tracking block-local `let`s and pattern destructures. The pure aggregates introduce no
-    bindings, so they are exact.
-  - **Closure application** (`CallExpr`: `f(a)(b)`, `arr[i](x)`, `recv.m(x)`): a secret/tainted DIRECT
-    argument to a closure-valued callee is not walked (higher-order, same boundary as `Lambda`).
+  **Follow-on now landed:**
+  - **CONTROL-FLOW value expressions are REAL (Phase-2, `fe44f35`) — SCOPE-AWARE, on both labels,
+    intra + interproc.** All four flow walkers gained `Match`/`If`/`IfLet`/block arms that build a
+    LOCAL extended scope (clone the ambient scope/flow, seed the new bindings so they SHADOW outer
+    same-named ones, recurse into the value in the clone). This closes the composite follow-on both
+    ways: an inner binding (pattern var / block-local `let`) shadowing an outer tainted/secret binding
+    is the arm's own clean binding (no false positive — the exact defect the review reverted from the
+    composite slice), and a value passed THROUGH an inner binding is tracked (block-local `let`,
+    match/if-let pattern destructure of a secret/tainted scrutinee, if-expression branch — no false
+    negative). A straight-line `Assign` to a var inside a value block applies the main analyzer's
+    set/CLEAR discipline to the clone, so reassign-to-clean in a value branch stays accepted. Pattern
+    vars inherit the WHOLE scrutinee's label (whole-value granularity, matching `Index`/`FieldAccess`).
+    Interprocedurally, a param destructured through a match arm flows to the return summary
+    (`fn pick(x){ return match x { _ => x }; }` summarizes `{0}`). The old **tail `if`/`match` implicit
+    return** boundary (integrity AND secrecy) is retired — the return summaries feed the tail expr to
+    the now-scope-aware walkers. Design + landed code both adversarially reviewed (read-only). Fixtures:
+    `secret_match_destructure_to_egress`, `secret_if_branch_to_egress`,
+    `taint_block_let_passthrough_to_sink`, `secret_interproc_match_passthrough`,
+    `control_flow_shadow_pattern_var_accepts`, `taint_reassign_to_clean_in_branch_accepts`,
+    `clean_match_value_to_sink_accepts`, `declassify_in_branch_releases_accepts`.
+  **Named boundaries (adversarial-review-confirmed, still deferred):**
+  - **Sink/egress CALLS buried inside a control-flow value expr** (a `send(...)` in a non-tail block
+    statement, a match arm body, or a match guard) are still not enforced: the scope-aware walk labels
+    the branch/block's VALUE, but the effect/sink-detection passes (`analyze_expr_effect`,
+    `collect_param_sinks_in_expr`) do not descend into `Match`/`If`/`IfLet`/block. A clean follow-up.
+  - **Nested statement control-flow and non-`Var` assign targets inside a value block** are ignored for
+    the block's value (only `Let`/`LetPattern` and straight-line `Assign` to a `Var` are modeled).
+    Straight-line `Stmt::LetPattern` (outside a value block) still seeds no label — a pre-existing
+    fail-open now asymmetric with the stricter value-block destructure.
+  - **Closure application** (`CallExpr`: `f(a)(b)`, `arr[i](x)`, `recv.m(x)`) and the **`Lambda`
+    literal** body (captures/params unmodeled): a secret/tainted value through a closure is not walked
+    (higher-order — the last binding-introducing `Expr` shapes left at the catch-all).
 - **Interprocedural RETURN-taint is now modeled (Phase-3 slice 2).** A monotone fixpoint pre-pass
   (`compute_tainting_fns`, run before per-function analysis) marks each function whose return value
   carries INTERNAL taint — a `taint_source()`/`tainted<T>` local returned directly (through let-chains
