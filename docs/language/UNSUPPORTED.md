@@ -214,15 +214,39 @@ through indexing/field access.
     `taint_block_let_passthrough_to_sink`, `secret_interproc_match_passthrough`,
     `control_flow_shadow_pattern_var_accepts`, `taint_reassign_to_clean_in_branch_accepts`,
     `clean_match_value_to_sink_accepts`, `declassify_in_branch_releases_accepts`.
+  **Follow-on now landed:**
+  - **Sink/egress/capability CALLS buried inside a control-flow value expr are REAL (Phase-2,
+    `984ff80`) — SCOPE-AWARE, enforcing.** The two effect/sink-detection passes now descend into
+    `Match`/`If`/`IfLet`/block: `analyze_expr_effect` (the enforcing pass) gains scope-aware arms
+    (clone-per-arm/branch/block, `seed_effect_pattern`/`seed_effect_let` carrying BOTH labels so a
+    buried sink resolves the inner shadowed binding; conditions and match guards walked for effects),
+    and `collect_param_sinks_in_expr` (the param→sink summary) gains the mirrored arms so a param
+    reaching a sink through a match arm is summarized. This closes a Safe-mode **capability-laundering
+    bypass**: `if true { shell("id") }` / `if true { send(x) }` with no `uses(...)` clause was accepted
+    (the effect was never registered); it is now `ANUBIS_EFFECT_FORBIDDEN_IN_MODE`. Also enforced:
+    tainted-sink / secret-egress / `ANUBIS_INTERPROC_SINK` buried in an arm/branch/block. Accept-bias
+    holds — declassify-in-branch releases, a declared capability accepts, reassign-to-clean clears, a
+    pattern var shadowing an outer secret is the arm's own clean binding, a buried `read_file` stays
+    Safe-allowed. Validated by a full-corpus BEFORE/AFTER verdict-diff (139/66 unchanged, zero flips) —
+    the correct gate, because these enforcing diagnostics are invisible to the shadow-diff harness.
+    Design + landed code both adversarially reviewed. Fixtures: `buried_sink_in_if_branch_flagged`,
+    `buried_sink_in_match_arm_flagged`, `buried_secret_egress_in_block_flagged`,
+    `buried_capability_launder_forbidden`, `buried_shell_launder_forbidden`,
+    `buried_interproc_sink_through_match`, `buried_declassify_in_branch_accepts`,
+    `buried_reassign_clean_before_sink_accepts`, `buried_clean_call_with_capability_accepts`.
   **Named boundaries (adversarial-review-confirmed, still deferred):**
-  - **Sink/egress CALLS buried inside a control-flow value expr** (a `send(...)` in a non-tail block
-    statement, a match arm body, or a match guard) are still not enforced: the scope-aware walk labels
-    the branch/block's VALUE, but the effect/sink-detection passes (`analyze_expr_effect`,
-    `collect_param_sinks_in_expr`) do not descend into `Match`/`If`/`IfLet`/block. A clean follow-up.
-  - **Nested statement control-flow and non-`Var` assign targets inside a value block** are ignored for
-    the block's value (only `Let`/`LetPattern` and straight-line `Assign` to a `Var` are modeled).
-    Straight-line `Stmt::LetPattern` (outside a value block) still seeds no label — a pre-existing
-    fail-open now asymmetric with the stricter value-block destructure.
+  - **Calls buried in NON-control-flow compound exprs** are still not walked by `analyze_expr_effect`
+    (it recurses `Call` args, `== / !=` `Binary`, and the new control-flow arms only): a sink/privileged
+    call used as an aggregate element (`send([leak()])`), an index (`arr[sink()]`), a cast/unary
+    operand, a non-`==`/`!=` binary operand (`send(x) + 1`, and therefore a comparison-wrapped match
+    guard `_ if send(x) > 0`), or a `?`-operand is not enforced. A uniform-recursion follow-up.
+  - **Nested statement control-flow inside a value block** merges with snapshot/restore only (no
+    cross-body taint merge), so a loop-carried label escaping to the block tail is fail-open (matches
+    the value-walker's block handling); the param→sink summary's block arm does not recurse nested
+    control-flow statements (a monotone, fail-open under-approximation — never a false interproc
+    reject). Non-`Var` assign targets, `Assume`-inner, and research/exploit/spec blocks in a value
+    block are left to their existing handling. `check_expr_semantics` has no `IfLet` arm, so a call
+    buried in an `if let` gets its first arity/type check from the effect pass (a correct new reject).
   - **Closure application** (`CallExpr`: `f(a)(b)`, `arr[i](x)`, `recv.m(x)`) and the **`Lambda`
     literal** body (captures/params unmodeled): a secret/tainted value through a closure is not walked
     (higher-order — the last binding-introducing `Expr` shapes left at the catch-all).
