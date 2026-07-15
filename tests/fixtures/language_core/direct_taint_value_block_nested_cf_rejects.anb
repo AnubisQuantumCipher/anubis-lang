@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Integrity dual of direct_secret_value_block_nested_cf_rejects: untrusted input laundered through a
+// value-position nested-control-flow block into a network sink. Closed by walk_block_taint's branch merge.
+fn main(c: bool) uses(net.send) {
+    let out = if true {
+        let r = 0;
+        if c { r = input(); }
+        r
+    } else {
+        0
+    };
+    send("host", 80, out);
+}

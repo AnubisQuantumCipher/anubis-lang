@@ -5961,6 +5961,221 @@ fn declassify_source(
     }
 }
 
+/// Recursively thread a value-position block's STATEMENT flow into `local` for the INTEGRITY walker, at
+/// parity with the enforcing `analyze_stmts` control-flow-merge discipline so the two never disagree.
+/// Straight-line `let`/`Assign{Var}` set/CLEAR the label; nested control-flow (`if`/`while`/`while let`/
+/// `loop`/`for`) is MAY-merged via `merge_taint_over` over EXACTLY the oracle's path set — If: `[then,
+/// (else | snap)]` (a value cleared on BOTH branches is precisely cleared; a uniform base path would OR it
+/// back), loops: `[snap, body]` (snap = the zero-iteration path). A `for` loop var inherits the
+/// collection/range label (mirrors the oracle's For arm); a `hybrid` block is left UNMERGED (the oracle
+/// recurses+restores it, so merging here would be STRICTER than the enforcing pass → a spurious reject).
+/// Block-`let`s AND destructured pattern vars are seeded with their REAL span so `merge_taint_over`'s
+/// span-identity distinguishes a branch-nested SHADOW (a new binding — its label must not leak to the
+/// outer same-named binding) from a REASSIGNMENT (same span — its label carries). This closes the
+/// value-position nested-control-flow fail-open the former hand-rolled `_ => {}` left open. Non-`Var`
+/// assign, `match`/`if let`/`@research`/`@exploit` used as a STATEMENT, and cross-iteration loop carry
+/// stay named residuals — each SHARED with the enforcing pass, so ignoring them keeps parity (never
+/// stricter → no new false positive).
+fn walk_block_taint(
+    stmts: &[Stmt],
+    local: &mut BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let {
+                name, ty, init, span,
+            } => {
+                seed_one_let(name, ty.as_deref(), init, local, tainting_fns, param_return_taint);
+                if let Some(b) = local.get_mut(name) {
+                    b.info.span = Some((span.start, span.end));
+                }
+            }
+            Stmt::LetPattern { pattern, init, span } => {
+                let label = expr_taint_source(init, local, tainting_fns, param_return_taint);
+                seed_taint_pattern(local, pattern, &label);
+                for n in pattern.bound_names() {
+                    if let Some(b) = local.get_mut(&n) {
+                        b.info.span = Some((span.start, span.end));
+                    }
+                }
+            }
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                let label = expr_taint_source(value, local, tainting_fns, param_return_taint);
+                if let Some(b) = local.get_mut(name) {
+                    b.info.tainted = label.is_some();
+                    if label.is_some() {
+                        b.info.declassified = false;
+                    }
+                    b.info.taint_source = label;
+                }
+            }
+            Stmt::If { then, else_, .. } => {
+                let mut then_c = local.clone();
+                walk_block_taint(then, &mut then_c, tainting_fns, param_return_taint);
+                let else_c = if let Some(eb) = else_ {
+                    let mut c = local.clone();
+                    walk_block_taint(eb, &mut c, tainting_fns, param_return_taint);
+                    c
+                } else {
+                    local.clone()
+                };
+                merge_taint_over(local, &[&then_c, &else_c]);
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
+                let snap = local.clone();
+                let mut body_c = local.clone();
+                walk_block_taint(body, &mut body_c, tainting_fns, param_return_taint);
+                merge_taint_over(local, &[&snap, &body_c]);
+            }
+            Stmt::WhileLet { pattern, body, .. } => {
+                let snap = local.clone();
+                let mut body_c = local.clone();
+                // Oracle seeds `while let` pattern vars CLEAN (analyze_stmts WhileLet arm).
+                seed_taint_pattern(&mut body_c, pattern, &None);
+                walk_block_taint(body, &mut body_c, tainting_fns, param_return_taint);
+                merge_taint_over(local, &[&snap, &body_c]);
+            }
+            Stmt::For {
+                var, body, source, ..
+            } => {
+                let taint_src = match source {
+                    crate::frontend::ForSource::Range { start, .. } => {
+                        expr_taint_source(start, local, tainting_fns, param_return_taint)
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        expr_taint_source(expr, local, tainting_fns, param_return_taint)
+                    }
+                };
+                let snap = local.clone();
+                let mut body_c = local.clone();
+                body_c.insert(
+                    var.clone(),
+                    ScopeBinding {
+                        info: BindingInfo {
+                            name: var.clone(),
+                            ty: None,
+                            mode: String::new(),
+                            tainted: taint_src.is_some(),
+                            taint_source: taint_src,
+                            declassified: false,
+                            span: None,
+                        },
+                        closure_arity: None,
+                        secret: false,
+                    },
+                );
+                walk_block_taint(body, &mut body_c, tainting_fns, param_return_taint);
+                merge_taint_over(local, &[&snap, &body_c]);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Confidentiality dual of [`walk_block_taint`] — see its doc for the merge discipline and residuals.
+/// Tracks the `secret` bool; a `for` over a secret collection binds a secret element; `while let` pattern
+/// vars are seeded non-secret (oracle parity).
+fn walk_block_secret(
+    stmts: &[Stmt],
+    local: &mut BTreeMap<String, ScopeBinding>,
+    secret_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let {
+                name, ty, init, span,
+            } => {
+                seed_one_let_secret(name, ty.as_deref(), init, local, secret_fns, param_return_taint);
+                if let Some(b) = local.get_mut(name) {
+                    b.info.span = Some((span.start, span.end));
+                }
+            }
+            Stmt::LetPattern { pattern, init, span } => {
+                let secret = expr_secret_source(init, local, secret_fns, param_return_taint).is_some();
+                seed_secret_pattern(local, pattern, secret);
+                for n in pattern.bound_names() {
+                    if let Some(b) = local.get_mut(&n) {
+                        b.info.span = Some((span.start, span.end));
+                    }
+                }
+            }
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                let secret = expr_secret_source(value, local, secret_fns, param_return_taint).is_some();
+                if let Some(b) = local.get_mut(name) {
+                    b.secret = secret;
+                }
+            }
+            Stmt::If { then, else_, .. } => {
+                let mut then_c = local.clone();
+                walk_block_secret(then, &mut then_c, secret_fns, param_return_taint);
+                let else_c = if let Some(eb) = else_ {
+                    let mut c = local.clone();
+                    walk_block_secret(eb, &mut c, secret_fns, param_return_taint);
+                    c
+                } else {
+                    local.clone()
+                };
+                merge_taint_over(local, &[&then_c, &else_c]);
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
+                let snap = local.clone();
+                let mut body_c = local.clone();
+                walk_block_secret(body, &mut body_c, secret_fns, param_return_taint);
+                merge_taint_over(local, &[&snap, &body_c]);
+            }
+            Stmt::WhileLet { pattern, body, .. } => {
+                let snap = local.clone();
+                let mut body_c = local.clone();
+                seed_secret_pattern(&mut body_c, pattern, false);
+                walk_block_secret(body, &mut body_c, secret_fns, param_return_taint);
+                merge_taint_over(local, &[&snap, &body_c]);
+            }
+            Stmt::For {
+                var, body, source, ..
+            } => {
+                let secret_src = match source {
+                    crate::frontend::ForSource::Range { start, .. } => {
+                        expr_secret_source(start, local, secret_fns, param_return_taint).is_some()
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        expr_secret_source(expr, local, secret_fns, param_return_taint).is_some()
+                    }
+                };
+                let snap = local.clone();
+                let mut body_c = local.clone();
+                body_c.insert(
+                    var.clone(),
+                    ScopeBinding {
+                        info: BindingInfo {
+                            name: var.clone(),
+                            ty: None,
+                            mode: String::new(),
+                            tainted: false,
+                            taint_source: None,
+                            declassified: false,
+                            span: None,
+                        },
+                        closure_arity: None,
+                        secret: secret_src,
+                    },
+                );
+                walk_block_secret(body, &mut body_c, secret_fns, param_return_taint);
+                merge_taint_over(local, &[&snap, &body_c]);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The taint-source label of an expression, or `None` if clean.
 ///
 /// - `tainting_fns`: functions whose return carries INTERNAL taint (`sink(get_secret())`).
@@ -6076,43 +6291,14 @@ fn expr_taint_source(
         // applied to the local clone with the same set/CLEAR discipline as the main analyzer's
         // `Stmt::Assign` arm, so a reassign-to-clean before the tail stays accepted (the committed
         // `taint_reassign_to_clean` contract, in value position) and a reassign-to-tainted is caught.
+        // Value-position block: thread the block's statement flow through `walk_block_taint` (the
+        // scope-aware stmt walker, at parity with the enforcing `analyze_stmts` merge discipline), then
+        // read the tail's label in the block's post-statement scope. This closes the former `_ => {}`
+        // fail-open where nested control-flow inside the block (`{ let r=0; if c { r=x; } r }`) was
+        // dropped and a laundered value read clean.
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
-            for stmt in stmts {
-                match stmt {
-                    Stmt::Let { name, ty, init, .. } => seed_one_let(
-                        name,
-                        ty.as_deref(),
-                        init,
-                        &mut local,
-                        tainting_fns,
-                        param_return_taint,
-                    ),
-                    Stmt::LetPattern { pattern, init, .. } => {
-                        let label =
-                            expr_taint_source(init, &local, tainting_fns, param_return_taint);
-                        seed_taint_pattern(&mut local, pattern, &label);
-                    }
-                    Stmt::Assign {
-                        target: Expr::Var(name),
-                        value,
-                    } => {
-                        let label =
-                            expr_taint_source(value, &local, tainting_fns, param_return_taint);
-                        if let Some(b) = local.get_mut(name) {
-                            b.info.tainted = label.is_some();
-                            if label.is_some() {
-                                b.info.declassified = false;
-                            }
-                            b.info.taint_source = label;
-                        }
-                    }
-                    // Other statement kinds (nested statement control flow, non-Var assign
-                    // targets) do not feed the block's VALUE — named residual, unchanged from the
-                    // pre-slice opaque behavior.
-                    _ => {}
-                }
-            }
+            walk_block_taint(stmts, &mut local, tainting_fns, param_return_taint);
             tail.as_ref()
                 .and_then(|t| expr_taint_source(t, &local, tainting_fns, param_return_taint))
         }
@@ -6280,38 +6466,12 @@ fn expr_secret_source(
         // arms on `expr_taint_source` (see the full note there): clone-per-arm/block, inner
         // bindings shadow, pattern vars inherit the whole scrutinee's secrecy, straight-line block
         // `Assign` applies the main analyzer's set/CLEAR discipline to the local clone.
+        // Value-position block: confidentiality dual of the taint Block arm — thread through
+        // `walk_block_secret` then read the tail's secret label in the post-statement scope, closing the
+        // same value-position nested-control-flow fail-open on the confidentiality side.
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
-            for stmt in stmts {
-                match stmt {
-                    Stmt::Let { name, ty, init, .. } => seed_one_let_secret(
-                        name,
-                        ty.as_deref(),
-                        init,
-                        &mut local,
-                        secret_fns,
-                        param_return_taint,
-                    ),
-                    Stmt::LetPattern { pattern, init, .. } => {
-                        let secret =
-                            expr_secret_source(init, &local, secret_fns, param_return_taint)
-                                .is_some();
-                        seed_secret_pattern(&mut local, pattern, secret);
-                    }
-                    Stmt::Assign {
-                        target: Expr::Var(name),
-                        value,
-                    } => {
-                        let secret =
-                            expr_secret_source(value, &local, secret_fns, param_return_taint)
-                                .is_some();
-                        if let Some(b) = local.get_mut(name) {
-                            b.secret = secret;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            walk_block_secret(stmts, &mut local, secret_fns, param_return_taint);
             tail.as_ref()
                 .and_then(|t| expr_secret_source(t, &local, secret_fns, param_return_taint))
         }
