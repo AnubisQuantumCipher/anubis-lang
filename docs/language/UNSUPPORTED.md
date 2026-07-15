@@ -341,11 +341,23 @@ through indexing/field access.
   never defeats strong-overwrite). Corpus-inert (controlled back-to-back verdict-diff, 0 flips over 237
   committed `.anb`). **RESIDUALS (pre-existing, fail-open, unchanged):** loop-carried cross-iteration flow;
   a value-block-local `return` of a block-local binding (collected against the outer flow, so a
-  block-local carrier is unbound → `{}`); `Lambda` capture; `while let` pattern-var not seeded. **The twin
-  DIRECT walkers `expr_taint_source` / `expr_secret_source` carry the SAME `_ => {}` nested-control-flow
-  drop** (on the `Option<String>`/`bool` lattice) — a real fail-open (`send({ let r=clean; if c { r=secret; } r })`),
-  mitigated for the top-level-statement form by the enforcing pass but open in a value-position block;
-  DEFERRED to its own slice (different lattice, touches live checks).
+  block-local carrier is unbound → `{}`); `Lambda` capture; `while let` pattern-var not seeded.
+- **The twin taint/secret DIRECT-walker value-position nested-control-flow fail-open is CLOSED
+  (`d74c49b`, 2026-07-15).** `expr_taint_source` / `expr_secret_source`'s value-position Block arm formerly
+  dropped nested control-flow (`_ => {}`), so a secret/tainted value assigned to a local inside
+  control-flow nested in a value-position block, then yielded and sent, laundered undetected
+  (`send(if true { let r=0; if c { r=secret_source("k"); } r } else {0})` compiled — the direct sibling of
+  the `719915b` interproc gap). Two recursive per-walker stmt-walkers (`walk_block_taint`/
+  `walk_block_secret`) now thread the block's statement flow at EXACT PARITY with the enforcing
+  `analyze_stmts` control-flow-merge pass (If merges `[then, else|snap]`; loops `[snap, body]`;
+  `hybrid`/`@research`/`@exploit` left unmerged like the oracle; the `for` loop var inherits the
+  collection's label). Block-`let`s AND destructured pattern-bound vars are seeded with their REAL span so
+  `merge_taint_over`'s span-identity skips a branch-nested SHADOW (`{ let r=0; if c { let r=secret(); } r }`
+  stays clean) instead of leaking it. Because the walker mirrors the oracle exactly it can only reject what
+  the statement-position pass already rejects (no new over-rejection) — and it REMOVES a pre-existing false
+  positive (a value cleared on BOTH branches is now precisely cleared). Corpus-inert (0/240). **RESIDUALS
+  (SHARED with the enforcing oracle, not regressions):** a non-`Var` lvalue assign (`buf[0]=secret`); a
+  `match`/`if let` used as a STATEMENT inside the block; cross-iteration loop carry.
 - **Block-scoped shadowing is now respected by both the return-taint summary AND the intra-procedural
   sink check (Phase-3 slice B, 2026-07-11).** `analyze_stmts` snapshots/restores the lexical binding
   scope around `if`/`else`/loop/`@research`/`@exploit`/hybrid bodies the same way `body_returns_taint`
