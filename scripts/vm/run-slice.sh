@@ -84,7 +84,10 @@ command -v timeout >/dev/null || { echo "FATAL: GNU timeout missing in guest —
 cd "$HOME/anubis-lang"
 LOG="$HOME/battery.log"; : > "$LOG"
 run(){ name="$1"; shift; echo "===== $name =====" | tee -a "$LOG"; if "$@" >> "$LOG" 2>&1; then echo "EXIT=0 $name" | tee -a "$LOG"; else echo "EXIT=$? $name" | tee -a "$LOG"; fi; }
-run cargo-test cargo test -p anubis-compiler --lib
+# cargo-test emits the libtest JSON stream to `.ammit/cargo-test.json` so Ammit can weigh the
+# real test result as machine-produced evidence (agent self-reports are untrusted). stdout →
+# the report file, exit code preserved (no pipe), tail echoed to the battery log for the summary.
+run cargo-test bash -c 'mkdir -p .ammit; cargo test -p anubis-compiler --lib -- -Z unstable-options --format json 1>.ammit/cargo-test.json 2>.ammit/cargo-test.stderr.log; rc=$?; tail -2 .ammit/cargo-test.json; exit $rc'
 run clippy     cargo clippy -p anubis-compiler -- -D warnings
 run language   bash scripts/run_language_fixtures.sh
 run turing     bash scripts/run_turing_core_fixtures.sh
@@ -98,10 +101,18 @@ REMOTE
 
 echo "[5/6] collect results"
 ssh "${SSHOPTS[@]}" "${USER_}@${IP}" \
-  'grep -E "^===== |^EXIT=|test result:|Overall:|SELFHOST_GATE:|SELFHOST_DOGFOOD_GATE:|stdlib gate:|SHADOW_DIFF:|binary_fixpoint sha256" "$HOME/battery.log"'
+  'grep -E "^===== |^EXIT=|test result:|\"type\":\"suite\"|Overall:|SELFHOST_GATE:|SELFHOST_DOGFOOD_GATE:|stdlib gate:|SHADOW_DIFF:|binary_fixpoint sha256" "$HOME/battery.log"'
 VMFP=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep "binary_fixpoint sha256" "$HOME/battery.log" | grep -oE "[0-9a-f]{64}" | head -1' || true)
 NFAIL=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -cE "^EXIT=[1-9]" "$HOME/battery.log" || true')
 NFAIL=${NFAIL:-0}
+
+# Collect the Ammit cargo-test evidence (the real VM-produced libtest JSON) back to the host BEFORE
+# the clone is torn down — unconditional, since a failing run is itself evidence Ammit should weigh
+# (a contradicted test claim). `ammit weigh` on the host then ingests it.
+mkdir -p "$REPO/.ammit"
+scp "${SSHOPTS[@]}" "${USER_}@${IP}:anubis-lang/.ammit/cargo-test.json" "$REPO/.ammit/cargo-test.json" >/dev/null 2>&1 \
+  && echo "      collected .ammit/cargo-test.json (Ammit evidence)" \
+  || echo "      (no cargo-test.json to collect)"
 
 echo "[6/6] verdict"
 echo "      gate failures : $NFAIL"

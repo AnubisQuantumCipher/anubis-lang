@@ -185,6 +185,26 @@ through indexing/field access.
     resolved by the interprocedural summaries (same boundary as the taint side).
   - **Tail if/match implicit return**: a secret returned via a bare tail `if`/`match` (no explicit
     `return` on a direct source) is not summarized — identical to the taint return summary's boundary.
+- **COMPOSITE / aggregate flow is REAL (Phase-2, `a930e7e`) — on both labels, intra + interproc.** A
+  tainted/secret value nested in a container literal no longer launders: the pure-aggregate arms
+  (`ArrayLiteral`/`StructLiteral`/`EnumConstruct`/`MapLiteral`/`Try`) were added to all four flow
+  walkers — `expr_taint_source`, `expr_secret_source`, `expr_param_return_flow`, `expr_param_flow` —
+  so `sink([tainted])` / `send([secret])` / `send(Struct{f: secret})` are caught, and a pass-through
+  helper `fn wrap(x){ return [x]; }` summarizes `{0}` (caught across the call boundary). Any
+  sub-expression carrying a label makes the aggregate carry it; a well-formed declassify inside a
+  container still releases. Fixtures: `taint_in_container_to_sink`, `secret_in_container_to_egress`,
+  `secret_container_passthrough_helper`, `clean_container_to_sink_accepts`.
+  **Named boundaries (adversarial-review-confirmed, deferred):**
+  - **Control-flow value expressions** (`match` / `if` / `if let` / block) are NOT walked. These are
+    flat walkers (a `Var` resolves by ambient-scope lookup, no lexical-scope tracking), so recursing
+    past a binding-introducing branch is unsound both ways — an inner binding (pattern var / block-local
+    `let`) shadowing a same-named outer tainted binding is mis-resolved to the outer (a false positive,
+    caught by the review before it shipped), and a value passed THROUGH the inner binding launders (a
+    false negative). Sound handling needs a **scope-aware flow walker** — a clean follow-up that would
+    also enable tracking block-local `let`s and pattern destructures. The pure aggregates introduce no
+    bindings, so they are exact.
+  - **Closure application** (`CallExpr`: `f(a)(b)`, `arr[i](x)`, `recv.m(x)`): a secret/tainted DIRECT
+    argument to a closure-valued callee is not walked (higher-order, same boundary as `Lambda`).
 - **Interprocedural RETURN-taint is now modeled (Phase-3 slice 2).** A monotone fixpoint pre-pass
   (`compute_tainting_fns`, run before per-function analysis) marks each function whose return value
   carries INTERNAL taint — a `taint_source()`/`tainted<T>` local returned directly (through let-chains
