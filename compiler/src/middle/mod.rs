@@ -3506,7 +3506,11 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
             .parse::<f64>()
             .map(|v| v.is_finite() && !format!("{v:?}").contains(['e', 'E']))
             .unwrap_or(false),
-        Expr::Binary { op, lhs, rhs } if op == "+" || op == "-" || op == "*" => {
+        // `/` is included: runtime float division is TOTAL (no trap, unlike integer `/` — run.rs), and
+        // `fp.div RNE` is bit-exact to it including x/0 → ±inf/NaN, which the NaN-aware comparison
+        // encoding then handles. So the whole "prove divisor non-zero" machinery the QF_BV lane needs is
+        // unnecessary here. `%` is still excluded (Rust f64 `%` is fmod, not SMT fp.rem).
+        Expr::Binary { op, lhs, rhs } if op == "+" || op == "-" || op == "*" || op == "/" => {
             is_float_modelable(lhs, float_vars) && is_float_modelable(rhs, float_vars)
         }
         Expr::Unary { op, expr } if op == "-" => is_float_modelable(expr, float_vars),
@@ -3557,7 +3561,8 @@ fn float_expr_to_smt(e: &Expr) -> String {
             let f = match op.as_str() {
                 "+" => "fp.add",
                 "-" => "fp.sub",
-                _ => "fp.mul",
+                "*" => "fp.mul",
+                _ => "fp.div",
             };
             format!("({f} RNE {l} {r})")
         }

@@ -2719,10 +2719,11 @@ fn bad() {
             tc_ok("fn f() -> f64 ensures(result == 1.5) { return 1.5; }").is_ok(),
             "a true modelable float ensures should discharge under the QF_FP lane",
         );
-        // …but a NON-modelable float construct (division is outside the `+ - *` subset) stays fail-closed —
-        // the lane never fabricates a proof for what it cannot faithfully model.
-        let err = tc_ok("fn f(x: f64, y: f64) -> f64 ensures(result == x / y) { return x / y; }")
-            .expect_err("a non-modelable float `/` ensures must still reject");
+        // …but a NON-modelable float construct stays fail-closed — the lane never fabricates a proof for
+        // what it cannot faithfully model. `%` is excluded (Rust f64 `%` is fmod, not SMT fp.rem); `/`
+        // IS modelable now (fp.div is total + bit-exact), so it is no longer the opaque example.
+        let err = tc_ok("fn f(x: f64, y: f64) -> f64 ensures(result == x % y) { return x % y; }")
+            .expect_err("a non-modelable float `%` ensures must still reject");
         assert!(err.contains("ANUBIS_"), "got: {err}");
     }
 
@@ -2764,6 +2765,23 @@ fn bad() {
                 "fn f(x: f64) -> f64 requires(x <= 10.0) ensures(result < 999.0) { return x; }"
             ),
             "a contract violable at a NaN input must not be falsely certified",
+        );
+        // Float `/` is modelable (fp.div RNE is total + bit-exact). A BOUNDED division contract
+        // discharges: for 2 < x < 4, x/2 ∈ (1,2) < 2.
+        assert!(
+            discharged(
+                "fn f(x: f64) -> f64 requires(x > 2.0) requires(x < 4.0) ensures(result < 2.0) \
+                 { return x / 2.0; }"
+            ),
+            "a bounded true float division contract should discharge",
+        );
+        // …but an UNBOUNDED division 'monotonicity' correctly does NOT discharge — x may be +inf
+        // (admitted by `x > 0.0`), and inf/2 = inf is NOT < inf. fp.div matching the runtime catches it.
+        assert!(
+            !discharged(
+                "fn f(x: f64) -> f64 requires(x > 0.0) ensures(result < x) { return x / 2.0; }"
+            ),
+            "an unbounded float division contract must not falsely discharge (the inf edge)",
         );
     }
 

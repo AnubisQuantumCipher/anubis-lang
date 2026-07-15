@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Phase-3 QF_FP float `/`: division joins the modelable subset — `fp.div RNE` is bit-exact to the
+// runtime's TOTAL f64 division (x/0 → ±inf/NaN, no trap). For 2 < x < 4, x/2 ∈ (1,2), so result < 2.0
+// discharges. The bound also excludes the inf edge that makes an UNBOUNDED division contract correctly
+// UNPROVABLE (inf/2 = inf is not < inf) — see the unit test phase3_qf_fp_float_contract_lane.
+fn half_bounded(x: f64) -> f64
+    requires(x > 2.0)
+    requires(x < 4.0)
+    ensures(result < 2.0)
+{
+    return x / 2.0;
+}
+fn main() { print(half_bounded(3.0)); }
