@@ -492,12 +492,20 @@ Deepens the solver moat. Everything below is fail-closed and unit-tested (`cargo
   The `<=`/`>=` encoding matches the runtime's `partial_cmp().unwrap_or(Equal)` via a NaN disjunction (a
   bare `fp.leq` would falsely certify a contract violable at NaN). **Float `/` is also modelable now
   (`8171b5b`)** — `fp.div RNE` is total + bit-exact, so a bounded division contract discharges and an
-  unbounded one correctly rejects at the inf edge (inf/2 ≮ inf). Everything ELSE stays
-  `ANUBIS_FLOAT_CONTRACT_UNMODELED` / fail-closed: `%` (fmod ≠ fp.rem), casts, int/float mixing,
-  transcendentals, non-finite/scientific literals; and float `assert`/loop-invariants/`let`s + the
-  proptest float generator are immediate follow-ons. Tests: `phase3_qf_fp_float_contract_lane`,
+  unbounded one correctly rejects at the inf edge (inf/2 ≮ inf). A **body-position `assert` over the
+  same modelable subset is now discharged too (`33f4ba3`)** — inside a CONTRACTED function (only a
+  `requires`/`ensures` makes a float param solver-modelable; a plain function keeps param-opaque asserts,
+  identical to the integer lane), so a bounded float assert proves and an unprovable one becomes
+  `ANUBIS_ASSERTION_UNPROVEN`. The **proptest float differential generator is done (`038f12b`)**.
+  Everything ELSE stays `ANUBIS_FLOAT_CONTRACT_UNMODELED` / fail-closed: `%` (fmod ≠ fp.rem), casts,
+  int/float mixing, transcendentals, non-finite/scientific literals; float **loop-invariants** and
+  **`let`s** (both share the int `ctx.constraints` bit-vector fact context — a Float64 fact there would
+  sort-clash, so a float assert is intentionally kept out of it and not chained into a later obligation;
+  loop-inv/let need that resolved) are the remaining follow-ons. Tests: `phase3_qf_fp_float_contract_lane`
+  (incl. the float-assert assertions), `phase3_float_proptest_solver_matches_oracle`,
   `phase4_string_and_float_opaque_diagnostics`; fixtures `float_contract_monotonicity_accepts`,
-  `float_contract_false_ensures_rejects`, `float_contract_nan_requires_safety`.
+  `float_contract_false_ensures_rejects`, `float_contract_nan_requires_safety`,
+  `float_contract_division_bounded_accepts`, `float_assert_false_rejects`.
 
 ## NOW REAL (Phase-5 — Anubis-source standard library, 2026-07-12)
 
