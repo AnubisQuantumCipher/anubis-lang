@@ -4762,6 +4762,46 @@ fn main() { }"#;
         tc_lane(src, true).expect("a helper that declassifies its input is not a leg-2 channel");
     }
 
+    // ── Phase-2 COMPOSITE / aggregate flow: containers + control-flow value exprs carry the label ──
+
+    #[test]
+    fn taint_laundered_through_a_container_is_caught() {
+        // Array: a tainted element taints the container reaching the sink.
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); send("h", 80, [t]); }"#)
+            .expect_err("tainted array element reaching a sink must be flagged");
+        // Nested: an array of arrays still carries (the aggregate arms recurse to any depth).
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); send("h", 80, [[t]]); }"#)
+            .expect_err("tainted element nested in a container must be flagged");
+        // Precision (accept-bias): a container of clean values is genuinely clean.
+        tc_ok(r#"fn main() uses(net.send) { send("h", 80, [1, 2, 3]); }"#)
+            .expect("a clean container accepts");
+    }
+
+    #[test]
+    fn secret_laundered_through_a_container_is_caught() {
+        // Confidentiality dual: a secret in a container reaching egress.
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, [k]); }"#,
+            false,
+        )
+        .expect_err("secret array element reaching egress must reject");
+        // Interprocedural: a pass-through helper that WRAPS the arg in a container still carries it —
+        // the aggregate arms in the shared param_return_taint summary catch `fn wrap(x){ return [x]; }`.
+        let err = tc_lane(
+            r#"fn wrap(x) { return [x]; }
+fn main() uses(net.send) { send("h", 80, wrap(secret_source("k"))); }"#,
+            false,
+        )
+        .expect_err("secret wrapped-then-returned through a helper must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+        // The declassify hatch composes with containers: a declassified secret inside `[...]` is released.
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, [declassify(k, "p", "r")]); }"#,
+            false,
+        )
+        .expect("a declassified secret inside a container is released");
+    }
+
     // ── Phase-2 taint soundness: the reassignment fail-open (control-flow-merge dataflow) ────────
 
     #[test]

@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED
+// Composite laundering, integrity side: an untrusted value stashed in a container still reaches the
+// sink. Before the aggregate arms, `expr_taint_source([t])` fell through to `_ => None` and the array
+// laundered the taint past ANUBIS_TAINTED_SINK. Now any tainted element taints the container.
+fn main() uses(net.send) {
+    let t = input();
+    send("host", 80, [t]);
+}

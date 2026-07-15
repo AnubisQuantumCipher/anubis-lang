@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Precision (not just over-tainting): a container of CLEAN values reaching a sink accepts — the
+// aggregate arms propagate a label only when a sub-expression actually carries one, so a constant
+// array is genuinely clean.
+fn main() uses(net.send) {
+    send("host", 80, [1, 2, 3]);
+}

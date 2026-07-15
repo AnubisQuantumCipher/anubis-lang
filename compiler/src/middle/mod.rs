@@ -5712,6 +5712,34 @@ fn expr_taint_source(
         // secret. Without this arm, `sink(s as u64)` (and `return s as u64` interprocedurally)
         // laundered taint through the cast (adversary-found fail-open, both intra- and inter-procedural).
         Expr::Cast { expr, .. } => expr_taint_source(expr, scope, tainting_fns, param_return_taint),
+        // Composite value propagation: a container/aggregate carries taint if ANY sub-expression it is
+        // built from does. Without these, `sink([tainted])` / `sink(Struct{f: tainted})` /
+        // `sink(Enum::V(tainted))` / `sink({k: tainted})` laundered taint through the aggregate — an
+        // adversary-shaped bypass (the composite-laundering boundary the review confirmed, closed here
+        // symmetrically with the secrecy dual and the interprocedural param-flow summary).
+        Expr::ArrayLiteral { elements } => elements
+            .iter()
+            .find_map(|e| expr_taint_source(e, scope, tainting_fns, param_return_taint)),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .find_map(|(_, e)| expr_taint_source(e, scope, tainting_fns, param_return_taint)),
+        Expr::EnumConstruct { fields, .. } => fields
+            .iter()
+            .find_map(|e| expr_taint_source(e, scope, tainting_fns, param_return_taint)),
+        Expr::MapLiteral { entries, .. } => entries.iter().find_map(|(k, v)| {
+            expr_taint_source(k, scope, tainting_fns, param_return_taint)
+                .or_else(|| expr_taint_source(v, scope, tainting_fns, param_return_taint))
+        }),
+        // Control-flow value expressions (`match` / `if` / `if let` / block) are DELIBERATELY not
+        // walked here. These are flat walkers — a `Var` resolves by ambient-scope lookup with no
+        // lexical-scope tracking — so recursing into a branch/arm/tail that introduces a binding (a
+        // match/if-let pattern var, a block-local `let`) is unsound both ways: an inner binding that
+        // SHADOWS a same-named outer tainted one is mis-resolved to the outer (a false positive,
+        // violating accept-bias), and a value passed THROUGH the inner binding launders (a false
+        // negative). Handling them soundly requires a scope-aware walker — a named follow-up. The pure
+        // aggregates above introduce no bindings, so they are exact and safe.
+        // `expr?` unwraps Ok/Some to the inner value, which carries the same provenance (no binding).
+        Expr::Try(inner) => expr_taint_source(inner, scope, tainting_fns, param_return_taint),
         _ => None,
     }
 }
@@ -5816,6 +5844,25 @@ fn expr_secret_source(
                 expr_secret_source(inner, scope, secret_fns, param_return_taint)
             }
         }
+        // Composite / control-flow value propagation — the confidentiality dual of the same arms on
+        // `expr_taint_source`: a secret stashed in a container, or a branch of a match/if, carries.
+        Expr::ArrayLiteral { elements } => elements
+            .iter()
+            .find_map(|e| expr_secret_source(e, scope, secret_fns, param_return_taint)),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .find_map(|(_, e)| expr_secret_source(e, scope, secret_fns, param_return_taint)),
+        Expr::EnumConstruct { fields, .. } => fields
+            .iter()
+            .find_map(|e| expr_secret_source(e, scope, secret_fns, param_return_taint)),
+        Expr::MapLiteral { entries, .. } => entries.iter().find_map(|(k, v)| {
+            expr_secret_source(k, scope, secret_fns, param_return_taint)
+                .or_else(|| expr_secret_source(v, scope, secret_fns, param_return_taint))
+        }),
+        // Control-flow value exprs (match/if/if-let/block) deliberately not walked — see the same
+        // note on `expr_taint_source`: a flat walker cannot soundly recurse past a binding-introducing
+        // branch (shadowing false positive + passthrough false negative). Deferred to a scope-aware walk.
+        Expr::Try(inner) => expr_secret_source(inner, scope, secret_fns, param_return_taint),
         _ => None,
     }
 }
@@ -6252,6 +6299,31 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             s
         }
         Expr::FieldAccess { base, .. } => expr_param_flow(base, flow),
+        // Composite / control-flow param-flow (same arms as `expr_param_return_flow`): a param wrapped
+        // in a container or selected by a branch still flows, so `fn log(x){ sink([x]); }` marks
+        // param 0 as sinking and `log(tainted)` is caught at the call site.
+        Expr::ArrayLiteral { elements } => elements.iter().fold(BTreeSet::new(), |mut acc, e| {
+            acc.extend(expr_param_flow(e, flow));
+            acc
+        }),
+        Expr::StructLiteral { fields, .. } => {
+            fields.iter().fold(BTreeSet::new(), |mut acc, (_, e)| {
+                acc.extend(expr_param_flow(e, flow));
+                acc
+            })
+        }
+        Expr::EnumConstruct { fields, .. } => fields.iter().fold(BTreeSet::new(), |mut acc, e| {
+            acc.extend(expr_param_flow(e, flow));
+            acc
+        }),
+        Expr::MapLiteral { entries, .. } => entries.iter().fold(BTreeSet::new(), |mut acc, (k, v)| {
+            acc.extend(expr_param_flow(k, flow));
+            acc.extend(expr_param_flow(v, flow));
+            acc
+        }),
+        // Control-flow value exprs (match/if/if-let/block) deliberately not walked — a flat walker
+        // cannot soundly recurse past a binding-introducing branch (see `expr_taint_source`).
+        Expr::Try(inner) => expr_param_flow(inner, flow),
         _ => BTreeSet::new(),
     }
 }
@@ -6505,6 +6577,34 @@ fn expr_param_return_flow(
             s
         }
         Expr::FieldAccess { base, .. } => expr_param_return_flow(base, flow, known_param_return),
+        // Composite / control-flow param-flow (mirrors the same arms on `expr_taint_source`): a param
+        // wrapped in a container, or returned via a match/if branch, still flows to the return — so a
+        // pass-through helper `fn wrap(x){ return [x]; }` correctly summarizes {0}. Union over every
+        // sub-expression (a param reaching ANY element/branch reaches the aggregate value).
+        Expr::ArrayLiteral { elements } => elements.iter().fold(BTreeSet::new(), |mut acc, e| {
+            acc.extend(expr_param_return_flow(e, flow, known_param_return));
+            acc
+        }),
+        Expr::StructLiteral { fields, .. } => {
+            fields.iter().fold(BTreeSet::new(), |mut acc, (_, e)| {
+                acc.extend(expr_param_return_flow(e, flow, known_param_return));
+                acc
+            })
+        }
+        Expr::EnumConstruct { fields, .. } => fields.iter().fold(BTreeSet::new(), |mut acc, e| {
+            acc.extend(expr_param_return_flow(e, flow, known_param_return));
+            acc
+        }),
+        Expr::MapLiteral { entries, .. } => {
+            entries.iter().fold(BTreeSet::new(), |mut acc, (k, v)| {
+                acc.extend(expr_param_return_flow(k, flow, known_param_return));
+                acc.extend(expr_param_return_flow(v, flow, known_param_return));
+                acc
+            })
+        }
+        // Control-flow value exprs (match/if/if-let/block) deliberately not walked — a flat walker
+        // cannot soundly recurse past a binding-introducing branch (see `expr_taint_source`).
+        Expr::Try(inner) => expr_param_return_flow(inner, flow, known_param_return),
         _ => BTreeSet::new(),
     }
 }
