@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED
+// A sink buried in a match arm body is enforced (analyze_expr_effect now descends into match arms).
+fn main() uses(net.send) {
+    let t = input();
+    let c = 1;
+    match c { _ => send("h", 80, t) };
+}

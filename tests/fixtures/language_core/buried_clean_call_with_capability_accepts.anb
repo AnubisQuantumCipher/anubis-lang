@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Precision: a buried clean send whose enclosing function declares the capability accepts.
+fn main() uses(net.send) {
+    let f = true;
+    let r = if f { send("h", 80, "beacon") } else { 0 };
+}

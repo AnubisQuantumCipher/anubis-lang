@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// The param->sink SUMMARY now sees a param reaching a sink through a match arm: `log`'s param 0 is
+// summarized as a sink, so `log(input())` is caught at the call boundary.
+fn log(x) uses(net.send) {
+    let c = 1;
+    match c { _ => send("h", 80, x) };
+}
+fn main() uses(net.send) {
+    log(input());
+}

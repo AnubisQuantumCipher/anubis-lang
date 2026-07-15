@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED
+// Scope-aware effect descent: a tainted value sunk inside an if-expression branch is now enforced.
+// Before, analyze_expr_effect bottomed out at its catch-all for Expr::If and the buried send escaped.
+fn main() uses(net.send) {
+    let t = input();
+    let f = true;
+    let r = if f { send("h", 80, t) } else { 0 };
+}

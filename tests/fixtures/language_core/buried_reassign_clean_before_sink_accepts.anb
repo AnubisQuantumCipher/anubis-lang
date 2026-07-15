@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// The block-effect walker applies the same set/CLEAR reassignment discipline as the main analyzer:
+// a tainted var reassigned to a clean constant before a buried sink is genuinely clean.
+fn main() uses(net.send) {
+    let t = input();
+    let f = true;
+    let r = if f { t = 42; send("h", 80, t) } else { 0 };
+}

@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Capability laundering closed: a network send with NO uses(net.send), buried in an if branch, was
+// accepted (the effect was never registered). The scope-aware descent now registers it and the
+// Safe-mode capability gate rejects it.
+fn main() {
+    let f = true;
+    let r = if f { send("h", 80, "beacon") } else { 0 };
+}

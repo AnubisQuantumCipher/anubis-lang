@@ -2486,7 +2486,179 @@ fn analyze_expr_effect(
                 }
             }
         }
+        // Control-flow value expressions — SCOPE-AWARE effect descent. Before this, a sink/egress/
+        // privileged CALL buried in a match arm, an if/if-let branch, or a block statement fell to the
+        // catch-all below and was NOT enforced — a real capability-laundering bypass (`if true {
+        // shell("id") }` with no `uses(shell)` was accepted). Each arm/branch/block extends a CLONE of
+        // the ambient scope so a pattern var / block-local `let` SHADOWS an outer same-named binding
+        // (the sink check inside then resolves the inner clean binding, not the outer labelled one).
+        // The `if` condition and match guards ARE walked for effects (a sink in a guard/cond is a real
+        // effect) — unlike the value walkers, which ignore them because they are control, not value.
+        Expr::If { cond, then, else_, .. } => {
+            analyze_expr_effect(cond, mode, scope, effects, ctx);
+            analyze_expr_effect(then, mode, scope, effects, ctx);
+            analyze_expr_effect(else_, mode, scope, effects, ctx);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
+            let st = expr_taint_source(scrutinee, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+            let ss = expr_secret_source(scrutinee, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                .is_some();
+            for arm in arms {
+                let mut local = scope.clone();
+                seed_effect_pattern(&mut local, &arm.pattern, &st, ss);
+                if let Some(guard) = &arm.guard {
+                    analyze_expr_effect(guard, mode, &local, effects, ctx);
+                }
+                analyze_expr_effect(&arm.body, mode, &local, effects, ctx);
+            }
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
+            let st = expr_taint_source(scrutinee, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+            let ss = expr_secret_source(scrutinee, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                .is_some();
+            let mut local = scope.clone();
+            seed_effect_pattern(&mut local, pattern, &st, ss);
+            analyze_expr_effect(then, mode, &local, effects, ctx);
+            analyze_expr_effect(else_, mode, scope, effects, ctx);
+        }
+        Expr::Block { stmts, tail } => {
+            let mut local = scope.clone();
+            walk_block_effects(stmts, tail.as_deref(), mode, &mut local, effects, ctx);
+        }
         _ => {}
+    }
+}
+
+/// Walk the statements (and tail) of a value-position block for EFFECTS ONLY, scope-aware. A focused
+/// walker rather than a reuse of `analyze_stmts`, because `analyze_stmts` also re-runs the per-`let`
+/// SEMANTIC checks (unknown-var / raw-pointer / generic-arity / annotation type-mismatch) that
+/// `check_expr_semantics`/`check_block_exprs` already own for block-locals — reusing it would newly
+/// (double-)enforce those on block-local `let`s, out of this slice's scope. Here we only: seed each
+/// block-local binding (both labels, in `let`-then-analyze order matching the main analyzer) so a
+/// later/tail sink sees the right taint/secret, and hand each statement's effect-bearing
+/// sub-expressions back to `analyze_expr_effect`. Nested control-flow STATEMENTS recurse with
+/// snapshot/restore (no cross-body merge — a loop-carried label escaping to the block tail is a named
+/// fail-open residual, unchanged from the pre-slice opaque behavior). `Assume`-inner, non-`Var`
+/// assign LHS, and research/exploit/spec blocks (mode-elevated) are left to their existing handling.
+fn walk_block_effects(
+    stmts: &[Stmt],
+    tail: Option<&Expr>,
+    mode: Mode,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    effects: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let { name, ty, init, .. } => {
+                analyze_expr_effect(init, mode, scope, effects, ctx);
+                seed_effect_let(
+                    name,
+                    ty.as_deref(),
+                    init,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                );
+            }
+            Stmt::LetPattern { pattern, init, .. } => {
+                analyze_expr_effect(init, mode, scope, effects, ctx);
+                let t = expr_taint_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+                let s = expr_secret_source(init, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                    .is_some();
+                seed_effect_pattern(scope, pattern, &t, s);
+            }
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                analyze_expr_effect(value, mode, scope, effects, ctx);
+                let t = expr_taint_source(value, scope, &ctx.tainting_fns, &ctx.param_return_taint);
+                let s = expr_secret_source(value, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                    .is_some();
+                if let Some(b) = scope.get_mut(name) {
+                    b.info.tainted = t.is_some();
+                    if t.is_some() {
+                        b.info.declassified = false;
+                    }
+                    b.info.taint_source = t;
+                    b.secret = s;
+                }
+            }
+            Stmt::Assign { value, .. } => {
+                // Non-`Var` LHS: still walk the value for buried effects; the binding is untracked.
+                analyze_expr_effect(value, mode, scope, effects, ctx);
+            }
+            Stmt::ExprStmt(Expr::Assert(inner)) => {
+                analyze_expr_effect(inner, mode, scope, effects, ctx);
+            }
+            Stmt::ExprStmt(e) => analyze_expr_effect(e, mode, scope, effects, ctx),
+            Stmt::If { cond, then, else_ } => {
+                analyze_expr_effect(cond, mode, scope, effects, ctx);
+                let snap = scope.clone();
+                walk_block_effects(then, None, mode, scope, effects, ctx);
+                *scope = snap.clone();
+                if let Some(else_body) = else_ {
+                    walk_block_effects(else_body, None, mode, scope, effects, ctx);
+                }
+                *scope = snap;
+            }
+            Stmt::While { cond, body, .. } => {
+                analyze_expr_effect(cond, mode, scope, effects, ctx);
+                let snap = scope.clone();
+                walk_block_effects(body, None, mode, scope, effects, ctx);
+                *scope = snap;
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                analyze_expr_effect(expr, mode, scope, effects, ctx);
+                let snap = scope.clone();
+                walk_block_effects(body, None, mode, scope, effects, ctx);
+                *scope = snap;
+            }
+            Stmt::Loop { body, .. } => {
+                let snap = scope.clone();
+                walk_block_effects(body, None, mode, scope, effects, ctx);
+                *scope = snap;
+            }
+            Stmt::For {
+                source, body, ..
+            } => {
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        analyze_expr_effect(start, mode, scope, effects, ctx);
+                        analyze_expr_effect(end, mode, scope, effects, ctx);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        analyze_expr_effect(expr, mode, scope, effects, ctx)
+                    }
+                }
+                let snap = scope.clone();
+                walk_block_effects(body, None, mode, scope, effects, ctx);
+                *scope = snap;
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    let snap = scope.clone();
+                    walk_block_effects(b, None, mode, scope, effects, ctx);
+                    *scope = snap;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(t) = tail {
+        analyze_expr_effect(t, mode, scope, effects, ctx);
     }
 }
 
@@ -6092,6 +6264,82 @@ fn seed_taint_pattern(
     }
 }
 
+/// Seed ONE `let` binding carrying BOTH labels (integrity + confidentiality) into an effect-analysis
+/// scope. The single-label seeders (`seed_one_let` / `seed_one_let_secret`) each INSERT a whole
+/// ScopeBinding and zero the other label, so calling them in sequence clobbers the first — but the
+/// effect pass reads BOTH `info.tainted` (its sink check) and `.secret` (its egress check) off the
+/// same binding. This mirrors the authoritative combined seed inline in `analyze_stmts` (the `let`
+/// arm) minus the fn-symbol/taint-label/solver bookkeeping a value-block-local `let` never needs.
+/// A well-formed `declassify` initializer clears (via `declassify_source`), exactly as at a real let.
+fn seed_effect_let(
+    name: &str,
+    ty: Option<&str>,
+    init: &Expr,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+    secret_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+) {
+    let init_taint = expr_taint_source(init, scope, tainting_fns, param_return_taint);
+    let init_secret = expr_secret_source(init, scope, secret_fns, param_return_taint).is_some();
+    let declass = declassify_source(init, scope, tainting_fns, param_return_taint);
+    let explicit = is_tainted_type(ty);
+    let tainted = explicit || (init_taint.is_some() && declass.is_none());
+    let taint_source = if explicit {
+        Some(name.to_string())
+    } else if tainted {
+        init_taint
+    } else {
+        None
+    };
+    scope.insert(
+        name.to_string(),
+        ScopeBinding {
+            info: BindingInfo {
+                name: name.to_string(),
+                ty: ty.map(str::to_string),
+                mode: String::new(),
+                tainted,
+                taint_source,
+                declassified: declass.is_some(),
+                span: None,
+            },
+            closure_arity: None,
+            secret: init_secret,
+        },
+    );
+}
+
+/// Seed every name a pattern binds with BOTH the scrutinee's integrity AND confidentiality labels
+/// (whole-value granularity). The effect dual of `seed_taint_pattern`/`seed_secret_pattern`, written
+/// as one insert so a destructured pattern var carries both labels the effect pass reads. Sets
+/// `info.tainted` TOGETHER with `taint_source` (the taint `Var` arm gates on both).
+fn seed_effect_pattern(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    pattern: &Pattern,
+    taint: &Option<String>,
+    secret: bool,
+) {
+    for n in pattern.bound_names() {
+        scope.insert(
+            n.clone(),
+            ScopeBinding {
+                info: BindingInfo {
+                    name: n,
+                    ty: None,
+                    mode: String::new(),
+                    tainted: taint.is_some(),
+                    taint_source: taint.clone(),
+                    declassified: false,
+                    span: None,
+                },
+                closure_arity: None,
+                secret,
+            },
+        );
+    }
+}
+
 /// Whether any value a function body can RETURN carries internal taint, given the summary so far —
 /// respecting LEXICAL BLOCK SCOPE. A `let` inside an `if`/loop body shadows an outer same-named
 /// binding only within that block: the scope is snapshot/restored around every block, so a
@@ -6746,6 +6994,80 @@ fn collect_param_sinks_in_expr(
         Expr::Index { base, index } => {
             collect_param_sinks_in_expr(base, flow, known_param_sinks, found);
             collect_param_sinks_in_expr(index, flow, known_param_sinks, found);
+        }
+        // Control-flow value exprs — SCOPE-AWARE, the param->sink SUMMARY dual of the enforcing
+        // descent in `analyze_expr_effect`: a param that reaches a sink buried in a match arm / if
+        // branch / block is summarized, so `fn log(x){ match c { _ => sink(x) } }` marks param 0 and
+        // `log(tainted)` is caught at the call site. Pattern vars inherit the scrutinee's param set.
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            collect_param_sinks_in_expr(cond, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(then, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(else_, flow, known_param_sinks, found);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_param_sinks_in_expr(scrutinee, flow, known_param_sinks, found);
+            let scrut = expr_param_flow(scrutinee, flow);
+            for arm in arms {
+                let mut local = flow.clone();
+                seed_flow_pattern(&mut local, &arm.pattern, &scrut);
+                if let Some(guard) = &arm.guard {
+                    collect_param_sinks_in_expr(guard, &local, known_param_sinks, found);
+                }
+                collect_param_sinks_in_expr(&arm.body, &local, known_param_sinks, found);
+            }
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            collect_param_sinks_in_expr(scrutinee, flow, known_param_sinks, found);
+            let scrut = expr_param_flow(scrutinee, flow);
+            let mut local = flow.clone();
+            seed_flow_pattern(&mut local, pattern, &scrut);
+            collect_param_sinks_in_expr(then, &local, known_param_sinks, found);
+            collect_param_sinks_in_expr(else_, flow, known_param_sinks, found);
+        }
+        Expr::Block { stmts, tail } => {
+            let mut local = flow.clone();
+            for stmt in stmts {
+                match stmt {
+                    Stmt::Let { name, init, .. } => {
+                        collect_param_sinks_in_expr(init, &local, known_param_sinks, found);
+                        seed_param_flow_let(name, init, &mut local);
+                    }
+                    Stmt::LetPattern { pattern, init, .. } => {
+                        collect_param_sinks_in_expr(init, &local, known_param_sinks, found);
+                        let set = expr_param_flow(init, &local);
+                        seed_flow_pattern(&mut local, pattern, &set);
+                    }
+                    Stmt::Assign {
+                        target: Expr::Var(name),
+                        value,
+                    } => {
+                        collect_param_sinks_in_expr(value, &local, known_param_sinks, found);
+                        let set = expr_param_flow(value, &local);
+                        local.insert(name.clone(), set);
+                    }
+                    Stmt::ExprStmt(e) => {
+                        collect_param_sinks_in_expr(e, &local, known_param_sinks, found)
+                    }
+                    // Deep-nested control-flow STATEMENTS in a value block are covered for the
+                    // ENFORCING pass by walk_block_effects; here (a monotone, fail-open SUMMARY) the
+                    // common linear shapes suffice — a missed nested sink under-approximates the
+                    // param_sinks set (never a false interproc reject), a named residual.
+                    _ => {}
+                }
+            }
+            if let Some(t) = tail {
+                collect_param_sinks_in_expr(t, &local, known_param_sinks, found);
+            }
         }
         _ => {}
     }

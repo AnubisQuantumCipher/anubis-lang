@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Shell dual of the capability-laundering closure: a buried shell without uses(shell) is forbidden.
+fn main() {
+    let f = true;
+    let r = if f { shell("id") } else { 0 };
+}

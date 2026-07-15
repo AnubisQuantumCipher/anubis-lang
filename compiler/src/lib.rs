@@ -4880,6 +4880,80 @@ fn main() uses(net.send) { let c = Choice::A; let v = match c { Choice::A => 1, 
             .expect("a clean match value accepts");
     }
 
+    // ── Phase-2 buried-sink: sink/egress/capability CALLS inside control-flow value exprs enforced ──
+
+    #[test]
+    fn buried_sink_in_control_flow_is_enforced() {
+        // Taint sink buried in an if-expression branch.
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); let f = true; let r = if f { send("h", 80, t) } else { 0 }; }"#)
+            .expect_err("a tainted sink buried in an if branch must be flagged");
+        // Sink buried in a match arm body (statement-position match).
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); let c = 1; match c { _ => send("h", 80, t) }; }"#)
+            .expect_err("a tainted sink buried in a match arm must be flagged");
+        // Secret egress buried in a non-tail block statement.
+        let err = tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("x"); let f = true; let r = if f { let _z = send("h", 80, k); 0 } else { 0 }; }"#,
+            false,
+        )
+        .expect_err("a secret egress buried in a block statement must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+    }
+
+    #[test]
+    fn buried_privileged_call_is_a_capability_bypass_now_closed() {
+        // CAPABILITY LAUNDERING: a network send with NO uses(net.send), buried in an if branch, was
+        // accepted (the effect never registered). Now the descent registers it -> forbidden in Safe.
+        let err = tc_ok(r#"fn main() { let f = true; let r = if f { send("h", 80, "x") } else { 0 }; }"#)
+            .expect_err("a buried send without uses(net.send) must be forbidden in safe mode");
+        assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"), "got: {err}");
+        // Shell dual.
+        tc_ok(r#"fn main() { let f = true; let r = if f { shell("id") } else { 0 }; }"#)
+            .expect_err("a buried shell without uses(shell) must be forbidden in safe mode");
+        // A declared capability makes the buried clean call accept (precision).
+        tc_ok(r#"fn main() uses(net.send) { let f = true; let r = if f { send("h", 80, "beacon") } else { 0 }; }"#)
+            .expect("a buried clean send with the capability declared accepts");
+    }
+
+    #[test]
+    fn buried_sink_interproc_param_summary_sees_control_flow() {
+        // A helper whose param reaches a sink ONLY through a match arm now summarizes that param as a
+        // sink, so the call site fires ANUBIS_INTERPROC_SINK on a tainted argument.
+        let err = tc_ok(
+            r#"fn log(x) uses(net.send) { let c = 1; match c { _ => send("h", 80, x) }; }
+fn main() uses(net.send) { log(input()); }"#,
+        )
+        .expect_err("a param reaching a sink through a match arm must be summarized and caught");
+        assert!(err.contains("ANUBIS_INTERPROC_SINK"), "got: {err}");
+        // A helper that does NOT route its param to the sink stays clean (precision).
+        tc_ok(
+            r#"fn pick(x) { return match x { _ => 0 }; }
+fn main() uses(net.send) { send("h", 80, pick(input())); }"#,
+        )
+        .expect("a helper that discards its param through the match accepts");
+    }
+
+    #[test]
+    fn buried_sink_accept_bias_holds() {
+        // Declassify buried in a branch releases the secret before egress.
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("x"); let f = true; let r = if f { send("h", 80, declassify(k, "p", "r")) } else { 0 }; }"#,
+            false,
+        )
+        .expect("a declassified secret sunk inside a branch is released");
+        // Reassign-to-clean before a buried sink clears (the set/CLEAR block-walker discipline).
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); let f = true; let r = if f { t = 42; send("h", 80, t) } else { 0 }; }"#)
+            .expect("reassign-to-clean before a buried sink stays accepted");
+        // Shadowing: an arm pattern var over an outer secret, sunk, is the arm's own CLEAN binding.
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("x"); let sel = Some(1); let r = match sel { Some(k) => send("h", 80, k), _ => 0 }; }"#,
+            false,
+        )
+        .expect("a clean pattern var shadowing an outer secret, sunk in the arm, accepts");
+        // Buried read_file needs no capability (Safe-allowed by default).
+        tc_ok(r#"fn main() { let f = true; let r = if f { read_file("cfg") } else { 0 }; }"#)
+            .expect("a buried read_file is Safe-allowed and needs no capability");
+    }
+
     #[test]
     fn control_flow_walk_is_mirror_symmetric_across_labels() {
         // The same destructure shape must be caught by BOTH walkers (review Lens-C guard: the
