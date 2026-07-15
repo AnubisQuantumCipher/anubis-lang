@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// Precision gain from straight-line strong-overwrite: `fwd` binds the secret param to `r` then
+// UNCONDITIONALLY reassigns `r` to a clean constant before returning it — so `fwd` returns nothing
+// derived from the secret. A straight-line whole-`Var` reassignment strong-overwrites (the old flow is
+// dead), so `fwd` summarizes {} and the send accepts. Weak-union (the former body-driver behavior)
+// would have kept {0} and over-rejected a program that leaks nothing.
+fn fwd(x) {
+    let r = x;
+    r = 0;
+    return r;
+}
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }

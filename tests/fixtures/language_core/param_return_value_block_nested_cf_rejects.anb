@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// A secret param assigned to a local inside a branch NESTED in a value-position block (the body of an
+// if-branch), then yielded as the block's value and returned. Previously the value-position param-flow
+// walker's Block arm dropped nested control-flow (a `_ => {}` residual), so `fwd` summarized {} and this
+// interprocedural leak was MISSED. Unifying the value walker onto `body_param_returns` (the one stmt
+// walker, whose If arm may-unions the branch flow) closes it — `fwd` now summarizes {0}.
+fn fwd(x, c) {
+    return if true {
+        let r = 0;
+        if c { r = x; }
+        r
+    } else {
+        0
+    };
+}
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"), true)); }

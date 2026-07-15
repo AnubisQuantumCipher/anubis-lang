@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// The same value-position nested-control-flow shape carrying a CLEAN value accepts — guards the unified
+// walker against over-rejection (the block yields a constant, never the caller's data).
+fn fwd(c) {
+    return if true {
+        let r = 0;
+        if c { r = 7; }
+        r
+    } else {
+        0
+    };
+}
+fn main() uses(net.send) { send("host", 80, fwd(true)); }

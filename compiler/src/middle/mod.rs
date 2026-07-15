@@ -7417,45 +7417,19 @@ fn expr_param_return_flow(
                 acc
             })
         }
-        // Control-flow value exprs — SCOPE-AWARE walk (see the full note on `expr_taint_source`).
-        // Mirrors `expr_param_flow`'s arms but threads `known_param_return`, so block-local `let`
-        // seeding keeps the Call arm's summary precision (a full declassify init clears via this
-        // walker's own `Declassify` arm — no separate check needed). A pass-through helper
-        // `fn pick(x){ return match x { _ => x }; }` now correctly summarizes {0}.
+        // Value-position block: delegate the block's STATEMENT flow to `body_param_returns` — THE single
+        // stmt walker — so the value-position walker and the function-body walker share one implementation
+        // and cannot re-diverge. `discard` is a throwaway `found`: a value-position block does not
+        // accumulate returns (a `return` inside it is collected by the enclosing body walker's own
+        // `expr_returns`), and `tail = false` so no block statement is mis-read as an implicit return.
+        // This replaces a former hand-rolled loop whose `_ => {}` arm DROPPED nested control-flow (a
+        // value-position under-approximation — a missed leak: `send({ let r=0; if c { r=x; } r })` slipped
+        // through); the block now inherits the driver's branch may-union, so a param assigned only inside a
+        // nested branch reaches the tail. The tail is then evaluated in the block's post-statement `local`.
         Expr::Block { stmts, tail } => {
             let mut local = flow.clone();
-            for stmt in stmts {
-                match stmt {
-                    Stmt::Let { name, init, .. } => {
-                        let set = expr_param_return_flow(init, &local, known_param_return);
-                        local.insert(name.clone(), set);
-                    }
-                    Stmt::LetPattern { pattern, init, .. } => {
-                        let set = expr_param_return_flow(init, &local, known_param_return);
-                        seed_flow_pattern(&mut local, pattern, &set);
-                    }
-                    Stmt::Assign {
-                        target: Expr::Var(name),
-                        value,
-                    } => {
-                        let set = expr_param_return_flow(value, &local, known_param_return);
-                        local.insert(name.clone(), set);
-                    }
-                    // Non-`Var` assign target (`buf[0]=k`) — MAY-update the root binding (weak union,
-                    // mirroring body_param_returns; an overwrite would drop the value's other flow).
-                    Stmt::Assign { target, value } => {
-                        if let Some(root) = assign_target_root(target) {
-                            let set = expr_param_return_flow(value, &local, known_param_return);
-                            local.entry(root.to_string()).or_default().extend(set);
-                        }
-                    }
-                    // Nested control-flow inside a value-position block (`{ let r=0; if c { r=x; } r }`)
-                    // is a NAMED residual: this arm does not may-union the branch bodies into `local`,
-                    // so a param assigned only inside a nested branch here is not seen by the tail. The
-                    // function-body walker (body_param_returns) DOES handle the statement-level form.
-                    _ => {}
-                }
-            }
+            let mut discard = BTreeSet::new();
+            body_param_returns(stmts, &mut local, known_param_return, &mut discard, false);
             tail.as_ref()
                 .map(|t| expr_param_return_flow(t, &local, known_param_return))
                 .unwrap_or_default()
@@ -7619,9 +7593,26 @@ fn body_param_returns(
                     union_flow_into(flow, &bf);
                 }
             }
-            // A `Var` reassignment weak-unions (the summary never clears — conservative); a non-`Var`
-            // target (`buf[0]=k`, `obj.f=k`) is a MAY-update of the root binding, so weak-union into
-            // the root (overwriting would drop the param-flow the value already carries).
+            // A straight-line whole-`Var` reassignment STRONG-overwrites: `r = <value>` unconditionally
+            // replaces the entire binding, so `r`'s prior param-flow is dead and dropping it is EXACT
+            // (not an under-approximation) — the value the tail/return reads derives solely from the RHS.
+            // Soundness is confined to straight-line position BY CONSTRUCTION: a reassignment inside a
+            // branch/loop is recursed on a CLONE and then may-unioned back (the If/While/For/Loop/Hybrid
+            // arms above union the branch-post flow with the pre-branch flow), which demotes a conditional
+            // clear to a MAY — the pre-branch flow always survives. This is the precision the value-walker
+            // Block arm already had (fe44f35); lifting it into the one canonical stmt walker keeps the two
+            // walkers from re-diverging. Verified sound + monotone in the `compute_param_return_taint`
+            // fixpoint (add-only accumulation never defeats it: a clearing RHS is intrinsically small from
+            // iteration 1).
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                let set = expr_param_return_flow(value, flow, known_param_return);
+                flow.insert(name.clone(), set);
+            }
+            // A non-`Var` target (`buf[0]=k`, `obj.f=k`) is a MAY-update of the root binding, so weak-union
+            // into the root (overwriting would drop the param-flow the sibling elements already carry).
             Stmt::Assign { target, value } => {
                 if let Some(root) = assign_target_root(target) {
                     let rhs = expr_param_return_flow(value, flow, known_param_return);
