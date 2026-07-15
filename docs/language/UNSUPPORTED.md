@@ -484,10 +484,18 @@ Deepens the solver moat. Everything below is fail-closed and unit-tested (`cargo
 
 ### S — Strings / floats (opaque, precise diagnostics)
 
-- String contracts → **`ANUBIS_STRING_CONTRACT_UNMODELED`**.
-- Float contracts → **`ANUBIS_FLOAT_CONTRACT_UNMODELED`**.
-- Optional QF_S / QF_FP lanes remain **PLANNED** behind feature flags + the same fail-closed
-  discipline (not shipped). Tests: `phase4_string_and_float_opaque_diagnostics`.
+- String contracts → **`ANUBIS_STRING_CONTRACT_UNMODELED`** (QF_S lane still PLANNED).
+- **Float contracts: the QF_FP lane is REAL for the modelable subset (`c3960d5`, Phase 3).** An
+  `ensures`/`requires` that is a comparison (`== != < <= > >=`, `&& || !`) over `+ - *` (and unary `-`)
+  of finite f64 literals and float params now DISCHARGES in Z3 QF_FP Float64/RNE — e.g.
+  `fn sq_lt(x: f64) requires(0.0 < x) requires(x < 1.0) ensures(result < x) { return x*x; }` proves.
+  The `<=`/`>=` encoding matches the runtime's `partial_cmp().unwrap_or(Equal)` via a NaN disjunction (a
+  bare `fp.leq` would falsely certify a contract violable at NaN). Everything ELSE stays
+  `ANUBIS_FLOAT_CONTRACT_UNMODELED` / fail-closed: `/` `%`, casts, int/float mixing, transcendentals,
+  non-finite/scientific literals; and float `assert`/loop-invariants/`let`s + the proptest float
+  generator are immediate follow-ons. Tests: `phase3_qf_fp_float_contract_lane`,
+  `phase4_string_and_float_opaque_diagnostics`; fixtures `float_contract_monotonicity_accepts`,
+  `float_contract_false_ensures_rejects`, `float_contract_nan_requires_safety`.
 
 ## NOW REAL (Phase-5 — Anubis-source standard library, 2026-07-12)
 
