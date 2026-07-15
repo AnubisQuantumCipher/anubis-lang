@@ -52,10 +52,18 @@ VM-validated slice):
    through `compute_secret_fns`/`compute_tainting_fns` (do BOTH sides — same param-blindness). *(Both
    param→return AND the twin direct-walker nested-CF residuals are now closed — `719915b` + `d74c49b`. The
    accept-biasing `expr_param_flow` precision fix is now sound to build on top of the unified summary.)*
-3. **Make `expr_param_flow` `param_return`-aware** — the param→SINK / param→EGRESS summaries
-   (`compute_param_sinks`/`compute_param_egress`) over-flag a secret into a DISCARDING forwarding call
-   (param_sinks parity). Now sound to build on: the param→return summary is unified (`719915b`) + complete
-   for qualifier params (`11935e5`). *(Interproc `secret<T>`/`tainted<T>` param→return is DONE — `11935e5`.)*
+3. **Complete `param_return_taint`'s named residuals, THEN make `expr_param_flow` `param_return`-aware.**
+   The param→SINK/param→EGRESS summaries over-flag a secret into a DISCARDING forwarding call
+   (`send(ignore(x))` where `fn ignore(y){return 0}` rejects — a FALSE POSITIVE). The obvious fix — make
+   `expr_param_flow` consult `param_return_taint` — is **still NOT sound**: `expr_param_flow` currently
+   OVER-approximates (unions all arg flows), so param→egress catches every param→sink flow (fail-closed, no
+   false negatives); consulting `param_return` would reduce it to `param_return`'s completeness, and
+   `param_return` STILL under-approximates in its named residuals (loop-carried, value-block-local return,
+   Lambda, non-`Var`) — so the fix trades a SAFE over-rejection for UNSAFE false negatives (a leak through a
+   residual-path forwarder). For a fail-closed language the over-rejection is the correct direction. **Do
+   this ONLY after `param_return_taint` is complete** — close those residuals first (a loop-body fixpoint +
+   threading a `found` out-param into `expr_param_return_flow` for value-block-local returns). Qualifier
+   params ARE already complete (`11935e5`); the non-qualifier residuals are the blocker.
 4. **Broaden (arc dependency order):** Phase 3 solver lanes (QF_FP / QF_S, parallel-able), or finish
    the remaining Phase-1 residual (generic-bound capture + trait bound checking — a fixpoint-reseal
    parser change; typed `?` is now closed at both variable and call-return positions by `3536581`).
