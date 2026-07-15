@@ -255,7 +255,8 @@ struct SemanticContext {
     /// happening at all, not the value's flow) — matching the intra-procedural leg-2 which is also
     /// presence. Using `is_leg2_source` (not `is_io_taint_source`/`tainting_fns`) is exactly what
     /// keeps a file-reading helper out of leg 2 — the read_file/leg-2 conflation the design avoids.
-    /// Computed by `trifecta::compute_leg2_fns`; consumed only by the verified-lane trifecta scan.
+    /// Computed by `trifecta::compute_leg2_fns`; consumed by the trifecta scan (enforcing in the
+    /// verified lane, shadow-gated in Safe).
     leg2_fns: BTreeSet<String>,
     /// Phase-3 C5: verification lane (`--verified` / `@verified` / `#[verified]`). When set,
     /// capability effects require an explicit `uses(...)` declaration (fail-closed).
@@ -326,7 +327,8 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
     // even when the secret is minted in a helper) and the leg-2 EXPOSURE summary (so a helper wrapping
-    // `input()` counts as untrusted-input exposure in the verified-lane trifecta). Both are monotone,
+    // `input()` counts as untrusted-input exposure for the trifecta scan — enforcing in the verified
+    // lane, shadow-gated in Safe). Both are monotone,
     // emit nothing themselves, and — like the taint summaries — populated before per-function analysis.
     compute_secret_fns(&ast.items, &mut ctx);
     ctx.leg2_fns = trifecta::compute_leg2_fns(&ast.items);
@@ -1237,35 +1239,49 @@ fn analyze_function(
         }
     }
 
-    // Phase-2 FINAL slice: the LETHAL TRIFECTA as a verified-lane compile error. A function forms the
-    // trifecta when it holds all three lethal capabilities at once: leg 1 — accesses PRIVATE data
-    // (fs.read — a file was read — OR an explicit `secret_source(..)` confidentiality label); leg 2
-    // — is exposed to UNTRUSTED input from a channel DISTINCT from the read
-    // (input/recv/env/taint_source/tainted<T> param); leg 3 — COMMUNICATES externally (net.send OR
+    // Phase-2 FINAL slice: the LETHAL TRIFECTA as a compile error — now RUNNING in the Safe (default)
+    // lane, SHADOW-FIRST. A function forms the trifecta when it holds all three lethal capabilities at
+    // once: leg 1 — accesses PRIVATE data (fs.read — a file was read — OR an explicit `secret_source(..)`
+    // confidentiality label); leg 2 — is exposed to UNTRUSTED input from a channel DISTINCT from the
+    // read (input/recv/env/taint_source/tainted<T> param); leg 3 — COMMUNICATES externally (net.send OR
     // a shell-out: exec/system/shell/target_run).
     // An injection in the untrusted input can then steer the private read and the egress — the danger
     // the value-flow taint check (`ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`, Safe-mode) cannot see when
     // no value literally flows read→send (e.g. a constant beacon steered by control flow). This is a
     // COEXISTENCE check, not a flow check, so on a value-flow program it may co-fire with the
     // Safe-mode sink gate (both are true); its genuinely-new coverage is the no-flow coexistence.
-    // Legs 1/3 read off the CLOSED transitive effect row (open rows already rejected above), so a
-    // cap reached through any transitive callee counts. Leg 2 + the escape hatch (a WELL-FORMED
-    // `declassify(v, policy, reason)` — NOT the raw effect tag, which is pushed even for malformed
-    // ones) are body-scanned (middle/trifecta.rs). Checker-only, sidecar, verified-lane-only →
-    // fixpoint-safe (no committed program is `@verified`). ENFORCING (`emit(.., false)`), promoted
-    // on evidence: fires under shadow on the trifecta fixture, all accept-edges silent, corpus shadow
-    // diff UNEXPECTED=0 over 179 programs (the FAIL fixture the sole EXPECTED line), zero trifecta
-    // lines on `selfhost/src/anubis_sh.anb` and every stdlib module.
-    // Legs 1 and 2 are now INTERPROCEDURAL: leg 1 = `fs.read` (coarse proxy) OR a `secret_source(..)`
-    // label OR a call to a `secret_fns` helper (a helper that returns a secret); leg 2 = a direct
-    // `is_leg2_source`/`taint_source`/`tainted<T>` param OR a call to a `leg2_fns` helper (a helper
-    // that transitively sources untrusted input, presence-based — the `read_file`/leg-2 conflation is
-    // avoided because `leg2_fns` is built with `is_leg2_source`, which excludes file reads).
+    // LANE: fires in Safe (default) AND verified — NOT in Research/Exploit unless `@verified` (the
+    // dual-use lanes bypass, like the `mode == Mode::Safe` capability gates, plus the retained verified
+    // firing). It is ENFORCING in the verified lane and SHADOW-gated in Safe-unverified (`emit(.., !ctx.verified)`)
+    // — the move to a Safe-mode compile error lands shadow-first (operator directive): under normal
+    // `check` the Safe diagnostic is dropped (no reject → the default lane's verdicts are UNCHANGED),
+    // and under `ANUBIS_SHADOW_TYPES=1` it is logged so the corpus shadow diff can observe it before it
+    // is promoted to enforcing. Fixpoint-safe: checker-only sidecar (no HIR/MIR/projection mutation,
+    // only `ctx.emit`), so the self-host binary fixpoint is untouched regardless of lane — and no
+    // committed program forms an undeclassified 3-leg trifecta in a Safe or verified function (corpus
+    // shadow diff UNEXPECTED=0; zero trifecta lines on `selfhost/src/anubis_sh.anb` and every stdlib
+    // module — anubis_sh.anb has no egress leg at all).
+    // Legs 1/3 read off the transitive effect row. In VERIFIED, an open row was already rejected above
+    // (ANUBIS_EFFECT_OPEN_IN_VERIFIED), so the row is closed; in SAFE, open rows stay legal, so a cap
+    // reachable only through an unresolvable callee is absent from the row and leg detection
+    // UNDER-approximates — accept-biased (it can only fail to fire, never over-fire). Leg 2 + the escape
+    // hatch (a WELL-FORMED `declassify(v, policy, reason)` — NOT the raw effect tag, which is pushed even
+    // for malformed ones) are body-scanned (middle/trifecta.rs).
+    // Legs 1 and 2 are INTERPROCEDURAL: leg 1 = `fs.read` (coarse proxy) OR a `secret_source(..)` label
+    // OR a call to a `secret_fns` helper; leg 2 = a direct `is_leg2_source`/`taint_source`/`tainted<T>`
+    // param OR a call to a `leg2_fns` helper (transitively sources untrusted input, presence-based —
+    // the `read_file`/leg-2 conflation is avoided because `leg2_fns` is built with `is_leg2_source`,
+    // which excludes file reads).
     // Honest boundaries (deferred): a secret arriving via `getenv`/a param is not auto-labelled (no
-    // `secret<T>` qualifier yet); leg 3 = net.send or a shell-out (`sql` egress still deferred); the
-    // declassify hatch is coarse (function-level, not tied to the specific outbound value); leg 1/2
-    // helpers are keyed by callee NAME (method/closure-valued calls are a further increment).
-    if ctx.verified {
+    // `secret<T>` qualifier yet); leg 3 = net.send or a shell-out — `http_get`/`http_post` are NOT yet
+    // classified as a net.send effect (so an http constant-beacon exfil under-fires — a leg-3
+    // completeness residual alongside the deferred `sql` egress); the declassify hatch is coarse
+    // (function-level, not tied to the specific outbound value — so on a constant beacon a
+    // developer-attested `declassify` is the relief); leg-isolation only relieves when the
+    // untrusted-input path and the read+egress path share NO transitive caller (a lone `main` calling
+    // both RE-FORMS the trifecta — the diagnostic says so honestly); leg 1/2 helpers are keyed by
+    // callee NAME (method/closure-valued calls are a further increment).
+    if mode == Mode::Safe || ctx.verified {
         let (has_fs_read, has_net_send, has_shell) = {
             let row = ctx.fn_effect_rows.get(name);
             let held = |cap: &str| {
@@ -1296,15 +1312,23 @@ fn analyze_function(
             };
             if let (Some(leg1), Some(leg2)) = (leg1, legs.leg2_untrusted) {
                 if !legs.wellformed_declassify {
+                    // ENFORCING in the verified lane; SHADOW-gated in Safe (the default lane). The
+                    // move to a Safe-mode compile error lands shadow-first (`emit(.., !ctx.verified)`
+                    // → shadow when Safe-unverified): under normal `check` the Safe diagnostic is
+                    // dropped (no reject — default-lane behavior unchanged), and under
+                    // `ANUBIS_SHADOW_TYPES=1` it is logged to `shadow_diags` so the corpus shadow diff
+                    // can SEE it. Promote to Safe-enforcing (flip this to `false`) in a follow-up once
+                    // it has soaked against real programs. The verified lane is unchanged (enforcing).
+                    let shadow_gated = !ctx.verified;
                     ctx.emit(
                         SemanticDiagnostic {
                             code: Some("ANUBIS_LETHAL_TRIFECTA".into()),
                             message: format!(
-                                "verification lane: function `{name}` forms the lethal trifecta — it accesses private data (`{leg1}`), is exposed to untrusted input (`{leg2}`), and communicates externally (`{egress}`) with no declassify barrier. An injection in the untrusted input can steer the private read and exfiltrate it. Drop or isolate a leg (remove the external channel or the private-data access, or handle the untrusted input in a separate function), or interpose a well-formed `declassify(value, policy, reason)` on the outbound value."
+                                "function `{name}` forms the lethal trifecta — it accesses private data (`{leg1}`), is exposed to untrusted input (`{leg2}`), and communicates externally (`{egress}`) with no declassify barrier. An injection in the untrusted input can steer the private read and the egress even with no direct read→send data flow. Interpose a well-formed `declassify(value, policy, reason)` on the outbound value, or restructure so that no single function — and no common transitive caller — holds all three legs at once (drop the external channel or the private-data access, or keep the untrusted-input path and the private read+egress in functions that share no caller)."
                             ),
                             span: Some((span.start, span.end)),
                         },
-                        false,
+                        shadow_gated,
                     );
                 }
             }
@@ -6035,7 +6059,9 @@ const SECRET_SOURCE_NAME: &str = "secret_source";
 /// reaching one of THESE without declassify is exfiltration; a secret written to a LOCAL file
 /// (`write_file`/`memcpy`) is out of scope for this slice (a named boundary — local persistence is a
 /// weaker leak than network/shell egress, and folding it in would newly reject more corpus shapes).
-/// This is the same egress subset the lethal-trifecta leg-3 uses (`net.send` ∪ shell builtins).
+/// This is a SUPERSET of the lethal-trifecta leg-3 egress: leg-3 reads `net.send`/`shell` off the
+/// effect row (so `http_get`/`http_post`, present here, are NOT yet leg-3 — a named leg-3 residual),
+/// whereas this value-flow egress set includes them.
 fn is_egress_sink(callee: &str) -> bool {
     // Exact-match only (like `is_sink`) — a substring rule would false-positive on a user function
     // such as `compute_network_stats`. `net.send` builtins ∪ shell builtins = the leg-3 egress set.
@@ -6534,7 +6560,7 @@ fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
 // The exact confidentiality dual of the return-taint summary above: a monotone fixpoint marking each
 // function whose RETURN value carries a `secret_source(..)` secret — minted directly, through a
 // `let`-chain, or returned from another already-marked function. Consumed by `expr_secret_source`'s
-// `Call` arm (so `send(get_key())` fires) AND by the verified-lane trifecta's leg-1 (a helper that
+// `Call` arm (so `send(get_key())` fires) AND by the trifecta's leg-1 (a helper that
 // returns a secret IS private-data access). Whole-value + reassignment-insensitive + declassify-aware,
 // exactly mirroring the taint side, and MONOTONE (only grows) so it needs no control-flow-merge join.
 

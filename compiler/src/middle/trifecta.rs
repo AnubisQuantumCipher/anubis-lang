@@ -6,8 +6,9 @@
 //! literal value flows from the read to the send, which is exactly the case the value-flow taint
 //! check (`ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`) cannot see.
 //!
-//! Legs 1 (fs.read) and 3 (net.send) are read off the CLOSED transitive effect row in `mod.rs`
-//! (open rows are already rejected in verified mode). THIS module supplies the two body-scanned
+//! Legs 1 (fs.read) and 3 (net.send) are read off the transitive effect row in `mod.rs` (closed in
+//! the verified lane, where open rows were already rejected; in Safe an open row stays legal and leg
+//! detection under-approximates — accept-biased). THIS module supplies the two body-scanned
 //! signals: leg 2 (an untrusted source DISTINCT from the private file read — the attacker's steering
 //! channel must be a different channel than the data it steers) and the escape hatch (a WELL-FORMED
 //! `declassify(v, policy, reason)` present in the body). Presence scan only — no flow, no state.

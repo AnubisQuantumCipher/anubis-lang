@@ -4476,7 +4476,7 @@ fn main() { }"#;
     // so a whole-program `fn send(...)` is independently flagged by the older Safe/verified effect
     // gates — a pre-existing inconsistency out of this slice's scope.)
 
-    // ── Phase-2 final slice: the lethal trifecta as a verified-lane compile error ────────────────
+    // ── Phase-2: the lethal trifecta — a verified-lane compile error + a Safe-lane shadow check ──
 
     // A three-leg trifecta body with a CONSTANT egress arg: no value flows read→send, so the
     // Safe-mode value-flow taint check is silent and ANUBIS_LETHAL_TRIFECTA is the sole new error —
@@ -4493,11 +4493,16 @@ fn main() { }"#;
 fn main() { }"#;
 
     #[test]
-    fn lethal_trifecta_rejected_in_verified_accepted_in_default() {
+    fn lethal_trifecta_enforced_in_verified_shadowed_in_safe() {
+        // Verified lane: ENFORCING — the trifecta is a compile error.
         let err = tc_lane(TRIFECTA_BODY, true).expect_err("trifecta must reject under verified");
         assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
-        // Default lane never runs the check — the exact same body compiles.
-        tc_lane(TRIFECTA_BODY, false).expect("default lane does not run the trifecta check");
+        // Safe (default) lane: the check now RUNS but is SHADOW-gated (operator directive: land the
+        // move to a Safe-mode compile error shadow-first, promote to enforcing later). Under a normal
+        // check the exact same 3-leg body still COMPILES — its would-be diagnostic is diverted to the
+        // shadow log only under ANUBIS_SHADOW_TYPES=1 (for the corpus shadow diff), never to the
+        // enforcing gate — so default-lane verdicts are unchanged.
+        tc_lane(TRIFECTA_BODY, false).expect("safe lane shadow-gates the trifecta (no reject yet)");
     }
 
     #[test]
