@@ -328,6 +328,24 @@ through indexing/field access.
   Still NOT modeled interprocedurally: **higher-order / indirect calls** (`let f = get_secret; sink(f())`
   — the summary keys on the callee NAME; a function-valued variable is not resolved, same boundary as
   method calls via `CallExpr`).
+- **The two `param_return_taint` walkers are UNIFIED (`719915b`, 2026-07-15).** The summary was built by
+  two drifted walkers: `body_param_returns` (statements) and `expr_param_return_flow`'s hand-rolled Block
+  loop (value position). The Block loop's `_ => {}` DROPPED nested control-flow — a value-position
+  under-approximation / missed leak: a secret assigned inside a branch nested in a value-position block,
+  then yielded and forwarded through a helper, summarized `{}` and compiled. The Block arm now DELEGATES to
+  `body_param_returns` (THE one stmt walker), so the walkers cannot re-diverge and the block inherits the
+  driver's branch may-union — closing that leak. Simultaneously `body_param_returns`' straight-line
+  `Assign{Var}` became strong-overwrite (exact — the old flow is dead; confined to straight-line by the
+  clone+may-union branch arms), a precision gain that stops over-rejecting a reassign-to-clean forwarder.
+  Both deltas are monotone and survive the `compute_param_return_taint` fixpoint (add-only accumulation
+  never defeats strong-overwrite). Corpus-inert (controlled back-to-back verdict-diff, 0 flips over 237
+  committed `.anb`). **RESIDUALS (pre-existing, fail-open, unchanged):** loop-carried cross-iteration flow;
+  a value-block-local `return` of a block-local binding (collected against the outer flow, so a
+  block-local carrier is unbound → `{}`); `Lambda` capture; `while let` pattern-var not seeded. **The twin
+  DIRECT walkers `expr_taint_source` / `expr_secret_source` carry the SAME `_ => {}` nested-control-flow
+  drop** (on the `Option<String>`/`bool` lattice) — a real fail-open (`send({ let r=clean; if c { r=secret; } r })`),
+  mitigated for the top-level-statement form by the enforcing pass but open in a value-position block;
+  DEFERRED to its own slice (different lattice, touches live checks).
 - **Block-scoped shadowing is now respected by both the return-taint summary AND the intra-procedural
   sink check (Phase-3 slice B, 2026-07-11).** `analyze_stmts` snapshots/restores the lexical binding
   scope around `if`/`else`/loop/`@research`/`@exploit`/hybrid bodies the same way `body_returns_taint`
