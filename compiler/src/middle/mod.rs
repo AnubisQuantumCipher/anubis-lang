@@ -1896,6 +1896,23 @@ fn analyze_stmts(
                         assertion: smt,
                         vars: vars.into_iter().collect(),
                     });
+                } else if is_bool_modelable_float(expr, &ctx.solver_float_vars) {
+                    // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged too. Vars
+                    // come from the Expr (mangled). It is NOT pushed to `ctx.constraints` (the int
+                    // bit-vector fact context) — a float fact there would sort-clash with a later int
+                    // obligation; the cost is that a float assert is not chained into a later one (a
+                    // fail-closed residual). Every failure mode here is fail-closed: a missing or
+                    // sort-mismatched assumption only makes the check REJECT, never falsely certify.
+                    let smt = float_bool_to_smt(expr);
+                    let mut raw = BTreeSet::new();
+                    collect_expr_vars(expr, &mut raw);
+                    let vars: Vec<String> = raw.iter().map(|v| smt_var(v)).collect();
+                    ctx.solver_obligations.push(SolverObligation {
+                        name: format!("assert:{smt}"),
+                        assumptions: assumptions.clone(),
+                        assertion: smt,
+                        vars,
+                    });
                 }
                 effects.push("assert".into());
             }

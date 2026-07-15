@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// Phase-3 QF_FP: a float `assert` over the modelable subset is now DISCHARGED at compile time inside a
+// CONTRACTED function (a `requires`/`ensures` makes the float parameter solver-modelable — a plain,
+// contract-free function keeps its param-opaque semantics, identical to the integer lane, so its
+// asserts still defer to runtime with no regression). Here `assert(x > 4.0)` under `requires(x < 4.0)`
+// is disproved — the two are directly contradictory, so z3 finds the counterexample and the check
+// rejects instead of silently deferring the false assert to runtime as it did before.
+fn f(x: f64) requires(x < 4.0) {
+    assert(x > 4.0);
+}
+fn main() { f(3.0); }

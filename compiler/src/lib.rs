@@ -2783,6 +2783,24 @@ fn bad() {
             ),
             "an unbounded float division contract must not falsely discharge (the inf edge)",
         );
+        // Float `assert` (body position): a bounded assert discharges under its requires…
+        assert!(
+            discharged(
+                "fn f(x: f64) requires(x > 2.0) requires(x < 4.0) { assert(x < 4.0); }\n\
+                 fn main() { f(3.0); }"
+            ),
+            "a bounded float assert should discharge",
+        );
+        // …and a float assert that need not hold under its contract is disproved (not silently
+        // deferred). The function MUST declare a contract — a plain, contract-free function keeps its
+        // param-opaque semantics (identical to the integer lane), so `assert(x > 4.0)` there would
+        // correctly defer to runtime. Under `requires(x > 2.0)`, `x > 4.0` does not follow (x = 3).
+        assert!(
+            !discharged(
+                "fn f(x: f64) requires(x > 2.0) { assert(x > 4.0); }\nfn main() { f(3.0); }"
+            ),
+            "a false float assert must be disproved",
+        );
     }
 
     #[test]
