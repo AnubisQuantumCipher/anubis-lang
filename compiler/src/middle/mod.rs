@@ -6794,38 +6794,80 @@ fn body_returns_taint(
     false
 }
 
-/// Whether a function's return value carries internal taint (scope-aware; the function body is in
-/// tail position). Params-clean scope, so this isolates internal taint from arg-flow.
-fn fn_returns_taint(body: &[Stmt], tainting_fns: &BTreeSet<String>) -> bool {
-    let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
-    let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    body_returns_taint(body, &mut scope, tainting_fns, &empty, true)
+/// Seed a return-summary scope with a function's `tainted<T>` / `secret<T>` PARAMS. A qualifier-declared
+/// param is UNCONDITIONALLY tainted/secret (declared, not arg-derived), so a function that RETURNS such a
+/// param — or a value derived from it — is taint-/secret-returning regardless of the call argument. A
+/// PLAIN param is left clean here: its label is arg-flow, resolved at each call site via
+/// `param_return_taint`. This closes the interprocedural propagation gap the former empty-scope summary
+/// left open (`fn get(x: secret<u64>){ return x; }` was not secret-returning, so `send(get(5))` slipped
+/// through). Seeds BOTH labels so the one helper serves both the taint and secret summaries.
+fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<String, ScopeBinding>) {
+    for (name, ty) in params {
+        let tainted = is_tainted_type(Some(ty));
+        let secret = is_secret_type(Some(ty));
+        if tainted || secret {
+            scope.insert(
+                name.clone(),
+                ScopeBinding {
+                    info: BindingInfo {
+                        name: name.clone(),
+                        ty: Some(ty.clone()),
+                        mode: String::new(),
+                        tainted,
+                        taint_source: tainted.then(|| name.clone()),
+                        declassified: false,
+                        span: None,
+                    },
+                    closure_arity: None,
+                    secret,
+                },
+            );
+        }
+    }
 }
 
-/// Collect `(name, body)` for every free function (recursing into modules), keyed by the same flat/
-/// mangled name the call `callee` and `all_fns` use. Impl methods are excluded — they are reached
-/// only through `CallExpr` (receiver syntax), which the bare-name `Call` arm never matches.
-fn collect_fn_bodies<'a>(items: &'a [Item], out: &mut Vec<(String, &'a [Stmt])>) {
+/// Collect `(name, typed-params, body)` for every free function (recursing into modules), so a
+/// return-summary can honor a `secret<T>`/`tainted<T>` param qualifier via [`seed_qualifier_params`].
+#[allow(clippy::type_complexity)]
+fn collect_fn_typed_bodies<'a>(
+    items: &'a [Item],
+    out: &mut Vec<(String, &'a [(String, String)], &'a [Stmt])>,
+) {
     for item in items {
         match item {
-            Item::Fn { name, body, .. } => out.push((name.clone(), body.as_slice())),
-            Item::Module { items, .. } => collect_fn_bodies(items, out),
+            Item::Fn {
+                name, params, body, ..
+            } => out.push((name.clone(), params.as_slice(), body.as_slice())),
+            Item::Module { items, .. } => collect_fn_typed_bodies(items, out),
             _ => {}
         }
     }
 }
 
+fn fn_returns_taint(
+    params: &[(String, String)],
+    body: &[Stmt],
+    tainting_fns: &BTreeSet<String>,
+) -> bool {
+    let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
+    seed_qualifier_params(params, &mut scope);
+    let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    body_returns_taint(body, &mut scope, tainting_fns, &empty, true)
+}
+
+
 /// Populate `ctx.tainting_fns` by a monotone fixpoint: repeatedly mark any not-yet-marked function
 /// whose return carries taint under the current summary, until no function is added. Converges in at
 /// most one round per function because the set only grows. Run once, before per-function analysis, so
 /// every `Call` the analysis later sees consults a complete summary.
+#[allow(clippy::type_complexity)]
 fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
-    let mut fns: Vec<(String, &[Stmt])> = Vec::new();
-    collect_fn_bodies(items, &mut fns);
+    let mut fns: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
+    collect_fn_typed_bodies(items, &mut fns);
     loop {
         let mut newly: Vec<String> = Vec::new();
-        for (name, body) in &fns {
-            if !ctx.tainting_fns.contains(name) && fn_returns_taint(body, &ctx.tainting_fns) {
+        for (name, params, body) in &fns {
+            if !ctx.tainting_fns.contains(name) && fn_returns_taint(params, body, &ctx.tainting_fns) {
                 newly.push(name.clone());
             }
         }
@@ -6848,10 +6890,10 @@ fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
 /// `seed_one_let`). Secrecy originates from the initializer's value (`secret_source(..)`, a
 /// secret-returning callee, or a derivation of one) OR from a `secret<T>` annotation on the let —
 /// mirroring `seed_one_let`'s `is_tainted_type` term, so a locally-minted annotated secret that is
-/// returned makes the function secret-returning (`compute_secret_fns`). Params are never seeded here —
-/// a returned secret PARAMETER is arg-flow, handled at each call site via `param_return_taint`
-/// (isolating the secrecy a function produces INTERNALLY); interprocedural propagation of a
-/// `secret<T>` param to the return is the one named residual.
+/// returned makes the function secret-returning (`compute_secret_fns`). A returned PLAIN param is
+/// arg-flow, handled at each call site via `param_return_taint` (isolating the secrecy a function
+/// produces INTERNALLY); a returned `secret<T>` param is now seeded unconditionally secret by
+/// [`seed_qualifier_params`] in the return summary (that gap is closed).
 fn seed_one_let_secret(
     name: &str,
     ty: Option<&str>,
@@ -6997,23 +7039,31 @@ fn body_returns_secret(
     false
 }
 
-/// Whether a function's return value carries an internal secret (params-clean scope, tail position) —
-/// the dual of `fn_returns_taint`. Empty `param_return_taint` so this isolates INTERNAL secrecy; a
-/// returned secret PARAMETER is arg-flow, resolved at each call site.
-fn fn_returns_secret(body: &[Stmt], secret_fns: &BTreeSet<String>) -> bool {
+/// Whether a function's return value carries a secret (tail position) — the dual of `fn_returns_taint`.
+/// The scope is seeded with the function's `secret<T>` PARAMS ([`seed_qualifier_params`]) but NOT with
+/// plain params; a returned PLAIN param is arg-flow, resolved at each call site via `param_return_taint`
+/// (hence the empty `param_return_taint` here), whereas a returned `secret<T>` param is unconditionally
+/// secret-returning by declaration.
+fn fn_returns_secret(
+    params: &[(String, String)],
+    body: &[Stmt],
+    secret_fns: &BTreeSet<String>,
+) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
+    seed_qualifier_params(params, &mut scope);
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     body_returns_secret(body, &mut scope, secret_fns, &empty, true)
 }
 
 /// Populate `ctx.secret_fns` by a monotone fixpoint — the exact dual of `compute_tainting_fns`.
+#[allow(clippy::type_complexity)]
 fn compute_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
-    let mut fns: Vec<(String, &[Stmt])> = Vec::new();
-    collect_fn_bodies(items, &mut fns);
+    let mut fns: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
+    collect_fn_typed_bodies(items, &mut fns);
     loop {
         let mut newly: Vec<String> = Vec::new();
-        for (name, body) in &fns {
-            if !ctx.secret_fns.contains(name) && fn_returns_secret(body, &ctx.secret_fns) {
+        for (name, params, body) in &fns {
+            if !ctx.secret_fns.contains(name) && fn_returns_secret(params, body, &ctx.secret_fns) {
                 newly.push(name.clone());
             }
         }

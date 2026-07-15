@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Integrity dual: a helper returning its `tainted<u64>` param is unconditionally taint-returning, so its
+// result reaching a network sink is a tainted-sink violation. Closed via compute_tainting_fns.
+fn get(x: tainted<u64>) -> u64 { return x; }
+fn main() uses(net.send) { send("host", 80, get(5)); }
