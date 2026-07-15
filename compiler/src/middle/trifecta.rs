@@ -68,6 +68,13 @@ pub(crate) fn scan_legs(
             legs.leg2_untrusted
                 .get_or_insert_with(|| format!("tainted parameter `{pname}`"));
         }
+        // A `secret<T>` parameter is PRIVATE DATA arriving directly as an argument — leg 1 (the
+        // confidentiality dual of the `tainted<T>` → leg-2 signal above). Without this, a function
+        // holding a `secret<T>` param + a distinct untrusted-input channel + an egress would not form
+        // the no-flow lethal trifecta, even though a `secret_source(..)` value in the same shape does.
+        if super::is_secret_type(Some(pty)) {
+            legs.secret_present = true;
+        }
     }
     walk_stmts(body, &mut legs, &sc);
     legs
@@ -367,6 +374,14 @@ mod tests {
     fn tainted_param_is_leg2() {
         let legs = legs_of(r#"fn agent(q: tainted<string>) { let d = read_file("x"); }"#);
         assert!(legs.leg2_untrusted.as_deref().unwrap().contains("tainted parameter"));
+    }
+
+    #[test]
+    fn secret_param_is_leg1_confidentiality() {
+        // The confidentiality dual of tainted_param_is_leg2: a secret<T> param is leg-1 private data.
+        assert!(legs_of(r#"fn agent(k: secret<u64>) { let d = read_file("x"); }"#).secret_present);
+        // A param merely NAMED with "secret" (not the qualifier) is not leg-1.
+        assert!(!legs_of(r#"fn agent(secret_key: u64) { let d = read_file("x"); }"#).secret_present);
     }
 
     #[test]

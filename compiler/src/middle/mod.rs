@@ -1022,9 +1022,11 @@ fn analyze_function(
                 ScopeBinding {
                     info: info.clone(),
                     closure_arity: None,
-                    // Params default non-secret: a `secret<T>` param qualifier is a deferred boundary
-                    // (see ROADMAP leg-1); secrecy currently originates only at a `secret_source(..)` seed.
-                    secret: false,
+                    // A `secret<T>` param qualifier auto-labels the parameter as secret (the
+                    // confidentiality dual of the `tainted<T>` param seeded above), so a secret
+                    // arriving via a param needs no `secret_source(..)` call — an egress of it is
+                    // exfiltration. Retires the ROADMAP leg-1 "no secret<T> qualifier" boundary.
+                    secret: is_secret_type(Some(ty)),
                 },
             );
             // Parameters are in-scope for the whole body, so a `let s = param` must not
@@ -1273,8 +1275,11 @@ fn analyze_function(
     // param OR a call to a `leg2_fns` helper (transitively sources untrusted input, presence-based —
     // the `read_file`/leg-2 conflation is avoided because `leg2_fns` is built with `is_leg2_source`,
     // which excludes file reads).
-    // Honest boundaries (deferred): a secret arriving via `getenv`/a param is not auto-labelled (no
-    // `secret<T>` qualifier yet); leg 3 = net.send or a shell-out — `http_get`/`http_post` are NOT yet
+    // Honest boundaries (deferred): a `secret<T>` param IS now leg-1 private data (auto-labelled via
+    // the qualifier — see `scan_legs`), but an unannotated `getenv`/`env` value is deliberately NOT
+    // auto-secreted (env is untrusted INPUT, an integrity taint source — conflating it with secret
+    // OUTPUT would false-positive on non-secret config egressed to an egress-only sink); leg 3 =
+    // net.send or a shell-out — `http_get`/`http_post` are NOT yet
     // classified as a net.send effect (so an http constant-beacon exfil under-fires — a leg-3
     // completeness residual alongside the deferred `sql` egress); the declassify hatch is coarse
     // (function-level, not tied to the specific outbound value — so on a constant beacon a
@@ -1305,10 +1310,12 @@ fn analyze_function(
             // Leg 1 — private-data access — is `fs.read` (a file was read: coarse over-approximating
             // proxy) OR an explicit `secret_source(..)` confidentiality label (precise). The label
             // closes the gap that a secret held in memory — not from a file — was invisible to fs.read.
+            // `secret_present` is set by a `secret_source(..)` value OR a `secret<T>` param qualifier,
+            // so name it generically ("a secret value") rather than claiming a `secret_source` call.
             let leg1 = match (has_fs_read, legs.secret_present) {
-                (true, true) => Some("fs.read + a secret_source value"),
+                (true, true) => Some("fs.read + a secret value"),
                 (true, false) => Some("fs.read"),
-                (false, true) => Some("a secret_source value"),
+                (false, true) => Some("a secret value"),
                 (false, false) => None,
             };
             if let (Some(leg1), Some(leg2)) = (leg1, legs.leg2_untrusted) {
@@ -1582,6 +1589,10 @@ fn analyze_stmts(
                 }
 
                 let explicit_taint = is_tainted_type(ty.as_deref());
+                // A `secret<T>` let annotation auto-labels the binding as secret — the dual of
+                // `explicit_taint` — so `let k: secret<u64> = getenv("K")` is secret without a
+                // `secret_source(..)` wrapper.
+                let explicit_secret = is_secret_type(ty.as_deref());
                 let tainted = explicit_taint || (init_taint.is_some() && declass_source.is_none());
                 let taint_source = if explicit_taint {
                     Some(name.clone())
@@ -1615,7 +1626,7 @@ fn analyze_stmts(
                     ScopeBinding {
                         info: info.clone(),
                         closure_arity: ca,
-                        secret: init_secret.is_some(),
+                        secret: init_secret.is_some() || explicit_secret,
                     },
                 );
                 fn_symbols.push(info);
@@ -3755,6 +3766,13 @@ fn type_has_raw_pointer(ty: Option<&str>) -> bool {
 /// `TaintedRecord` would have been wrongly seeded as tainted).
 fn is_tainted_type(ty: Option<&str>) -> bool {
     ty.is_some_and(ty::is_tainted)
+}
+
+/// Whether a declared type annotation carries the `secret<T>` qualifier — the confidentiality dual of
+/// [`is_tainted_type`]. Delegates to the anchored `ty::is_secret` (`secret<`, not a bare `secret`
+/// substring) so a `secret_key` binding or a `SecretManager` struct is not mis-seeded as secret.
+fn is_secret_type(ty: Option<&str>) -> bool {
+    ty.is_some_and(ty::is_secret)
 }
 
 /// The expression a function returns at its tail: the last statement when it is `return X` or a bare
@@ -6407,6 +6425,9 @@ fn seed_effect_let(
     let init_secret = expr_secret_source(init, scope, secret_fns, param_return_taint).is_some();
     let declass = declassify_source(init, scope, tainting_fns, param_return_taint);
     let explicit = is_tainted_type(ty);
+    // A `secret<T>` annotation on a value-position block-local `let` auto-labels it secret, mirroring
+    // the statement-level let arm (keeps the two seeders byte-consistent for the qualifier).
+    let explicit_secret = is_secret_type(ty);
     let tainted = explicit || (init_taint.is_some() && declass.is_none());
     let taint_source = if explicit {
         Some(name.to_string())
@@ -6428,7 +6449,7 @@ fn seed_effect_let(
                 span: None,
             },
             closure_arity: None,
-            secret: init_secret,
+            secret: init_secret || explicit_secret,
         },
     );
 }
@@ -6624,10 +6645,13 @@ fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
 // exactly mirroring the taint side, and MONOTONE (only grows) so it needs no control-flow-merge join.
 
 /// Seed one `let` binding's SECRECY into `scope` for the return-secret walk (the dual of
-/// `seed_one_let`). There is no `secret<T>` qualifier this slice, so secrecy originates ONLY from the
-/// initializer's value (`secret_source(..)`, a secret-returning callee, or a derivation of one);
-/// params are never seeded here — a returned secret parameter is arg-flow, handled at each call site
-/// via `param_return_taint`, isolating the secrecy a function produces INTERNALLY.
+/// `seed_one_let`). Secrecy originates from the initializer's value (`secret_source(..)`, a
+/// secret-returning callee, or a derivation of one) OR from a `secret<T>` annotation on the let —
+/// mirroring `seed_one_let`'s `is_tainted_type` term, so a locally-minted annotated secret that is
+/// returned makes the function secret-returning (`compute_secret_fns`). Params are never seeded here —
+/// a returned secret PARAMETER is arg-flow, handled at each call site via `param_return_taint`
+/// (isolating the secrecy a function produces INTERNALLY); interprocedural propagation of a
+/// `secret<T>` param to the return is the one named residual.
 fn seed_one_let_secret(
     name: &str,
     ty: Option<&str>,
@@ -6636,7 +6660,8 @@ fn seed_one_let_secret(
     secret_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
 ) {
-    let secret = expr_secret_source(init, scope, secret_fns, param_return_taint).is_some();
+    let secret =
+        is_secret_type(ty) || expr_secret_source(init, scope, secret_fns, param_return_taint).is_some();
     scope.insert(
         name.to_string(),
         ScopeBinding {

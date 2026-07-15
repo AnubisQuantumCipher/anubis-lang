@@ -5066,6 +5066,52 @@ fn main() uses(net.send) { leak(input()); }"#,
         assert!(!err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "taint must not fire exfiltration: {err}");
     }
 
+    // ── Phase-2: the secret<T> qualifier — auto-label a value secret without secret_source() ───────
+
+    #[test]
+    fn secret_qualifier_param_and_let_are_labelled() {
+        // A secret<T> param that egresses is exfiltration — no secret_source() call needed.
+        let err = tc_ok(r#"fn f(x: secret<u64>) uses(net.send) { send("h", 80, x); }
+fn main() { }"#)
+            .expect_err("a secret<T> param egressed is exfiltration");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+        // A secret<T> let annotation, likewise.
+        tc_ok(r#"fn main() uses(net.send) { let k: secret<u64> = 42; send("h", 80, k); }"#)
+            .expect_err("a secret<T> let egressed is exfiltration");
+        // A declassify on the secret<T> value releases it (accept).
+        tc_ok(r#"fn f(x: secret<u64>) uses(net.send) { send("h", 80, declassify(x, "p", "r")); }
+fn main() { }"#)
+            .expect("a declassified secret<T> value is released");
+    }
+
+    #[test]
+    fn secret_qualifier_flows_through_block_and_return() {
+        // A secret<T> block-local let inside a value-position block (seed_effect_let mirror site).
+        tc_ok(r#"fn main() uses(net.send) { let r = if true { let k: secret<u64> = 5; send("h", 80, k); 0 } else { 0 }; }"#)
+            .expect_err("a secret<T> block-local let egressed is exfiltration");
+        // A locally-minted secret<T> that is RETURNED makes the fn secret-returning
+        // (seed_one_let_secret mirror site → compute_secret_fns), so an egress of its result is caught.
+        let err = tc_ok(r#"fn getk() -> u64 { let k: secret<u64> = 5; return k; }
+fn main() uses(net.send) { send("h", 80, getk()); }"#)
+            .expect_err("a returned secret<T> local flows interprocedurally to the egress");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+    }
+
+    #[test]
+    fn secret_qualifier_param_is_trifecta_leg1() {
+        // A secret<T> param is PRIVATE DATA (leg-1): with a distinct untrusted channel + an egress and
+        // NO value flow, it forms the lethal trifecta (the no-flow steering case) — the confidentiality
+        // dual of a tainted<T> param supplying leg-2. Corpus-safe (no committed program uses secret<T>).
+        let err = tc_ok(r#"fn agent(k: secret<u64>) uses(net.send) { let steer = input(); send("h", 80, "beacon"); }
+fn main() { }"#)
+            .expect_err("a secret<T> param + untrusted input + egress forms the lethal trifecta");
+        assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
+        // Two legs only (secret param + egress, no untrusted channel) accepts.
+        tc_ok(r#"fn agent(k: secret<u64>) uses(net.send) { send("h", 80, "beacon"); }
+fn main() { }"#)
+            .expect("secret param + egress with no untrusted channel is two legs");
+    }
+
     // ── Phase-2: effect-walk NON-control-flow compound exprs (buried-in-compound enforcement) ──────
 
     #[test]

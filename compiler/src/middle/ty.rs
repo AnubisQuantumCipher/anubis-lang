@@ -255,6 +255,23 @@ pub(crate) fn is_tainted(ty: &str) -> bool {
     ty.trim().to_ascii_lowercase().contains("tainted<")
 }
 
+/// Whether a declared type carries the `secret<T>` QUALIFIER — the confidentiality dual of
+/// [`is_tainted`]. A `secret<T>`-annotated param or `let` is treated as a secret value WITHOUT an
+/// explicit `secret_source(..)` seed, so `send(x)` on a `secret<T>` binding is exfiltration.
+///
+/// Anchored on `secret<` (not the bare word "secret") for the same reason [`is_tainted`] anchors on
+/// `tainted<`: a variable named `secret_key`, a `SecretManager` struct, or a `secret_source(..)` call
+/// is NOT a type qualifier and must not be flagged. This is a NEW sibling predicate — it is outside
+/// the frozen `ty_parity` oracle (which pins `compatible`/`normalize`, never the qualifier
+/// predicates), and `secret<T>` already type-checks via the generic-erasure path in [`compatible`],
+/// so no change to the frozen surface is needed. It inherits the same deliberately-accepted, safe
+/// (over-approximating) residual as [`is_tainted`]: a hypothetical future generic whose name ends in
+/// "...secret" immediately before its own bracket (`MySecret<T>`) would be over-flagged; no such type
+/// exists in the corpus, and over-flagging (forcing a `declassify`) is the safe direction.
+pub(crate) fn is_secret(ty: &str) -> bool {
+    ty.trim().to_ascii_lowercase().contains("secret<")
+}
+
 /// A+ compatibility: numeric widths interoperate; bool/string/enums do not cross. `tainted<T>` is
 /// a qualifier: clean `T` may flow into a tainted binding, and tainted flows are still policed by
 /// the separate taint analysis.
@@ -840,6 +857,35 @@ mod tests {
             "  tainted<u32>  ",
         ] {
             assert!(is_tainted(qualifier), "{qualifier} must be recognized");
+        }
+    }
+
+    #[test]
+    fn is_secret_recognizes_the_qualifier_and_rejects_substring_lookalikes() {
+        // The confidentiality dual of is_tainted: anchored on `secret<`, so an identifier or struct
+        // merely NAMED with the substring "secret" is not the qualifier.
+        for not_a_qualifier in [
+            "secret_key",
+            "SecretManager",
+            "TopSecretFlag",
+            "u64",
+            "",
+            "secret_source",
+        ] {
+            assert!(
+                !is_secret(not_a_qualifier),
+                "{not_a_qualifier} is not the secret<T> qualifier"
+            );
+        }
+        // Real qualifiers, case-insensitive, and nested inside an outer container.
+        for qualifier in [
+            "secret<u64>",
+            "Secret<U64>",
+            "secret<string>",
+            "list<secret<u32>>",
+            "  secret<u64>  ",
+        ] {
+            assert!(is_secret(qualifier), "{qualifier} must be recognized");
         }
     }
 
