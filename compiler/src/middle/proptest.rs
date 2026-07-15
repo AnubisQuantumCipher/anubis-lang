@@ -140,3 +140,84 @@ pub fn gen_symbolic_false_program() -> String {
      fn main() { print(f(7)); }\n"
         .into()
 }
+
+// ── Phase-3 QF_FP float differential generator ──────────────────────────────────────────────────
+// Same idea as the i64 generator, over IEEE-754 f64: the `ensures(result == <oracle>)` discharges ONLY
+// IF z3's QF_FP evaluation of the generated arithmetic equals the Rust f64 oracle — so a wrong op
+// mapping (e.g. `+` encoded as `fp.mul`) fails to discharge and the harness catches it, without any
+// dependence on runtime print formatting.
+
+/// Small finite float pool (kept away from `inf`/`NaN`; division uses non-zero positive divisors).
+pub const FLOAT_POOL: [f64; 8] = [0.0, 1.0, -1.0, 0.5, 2.0, 3.0, -2.5, 4.0];
+
+/// An Anubis float literal for a finite `v` (parenthesized `(0.0 - m)` for negatives — unambiguous in
+/// an `ensures`). `{:?}` gives the shortest round-tripping decimal, so the literal re-parses to `v`.
+fn flit(v: f64) -> String {
+    if v.is_sign_negative() && v != 0.0 {
+        format!("(0.0 - {:?})", -v)
+    } else {
+        format!("{v:?}")
+    }
+}
+
+/// Build a pure-literal f64 arithmetic string + its exact Rust f64 oracle (mirrors run.rs `+ - * /`).
+pub fn build_float_expr(rng: &mut Lcg, depth: u32) -> (String, f64) {
+    if depth == 0 || rng.below(3) == 0 {
+        let v = FLOAT_POOL[rng.below(FLOAT_POOL.len())];
+        return (flit(v), v);
+    }
+    match rng.below(4) {
+        0 => {
+            let (l, lv) = build_float_expr(rng, depth - 1);
+            let (r, rv) = build_float_expr(rng, depth - 1);
+            (format!("({l} + {r})"), lv + rv)
+        }
+        1 => {
+            let (l, lv) = build_float_expr(rng, depth - 1);
+            let (r, rv) = build_float_expr(rng, depth - 1);
+            (format!("({l} - {r})"), lv - rv)
+        }
+        2 => {
+            let (l, lv) = build_float_expr(rng, depth - 1);
+            let (r, rv) = build_float_expr(rng, depth - 1);
+            (format!("({l} * {r})"), lv * rv)
+        }
+        _ => {
+            let (l, lv) = build_float_expr(rng, depth - 1);
+            let d = [1.0f64, 2.0, 4.0, 0.5, 8.0][rng.below(5)];
+            (format!("({l} / {d:?})"), lv / d)
+        }
+    }
+}
+
+/// A TRUE float contract: `ensures(result == <oracle>)` over a random f64 arithmetic body. `None` when
+/// the arithmetic overflows to ±inf/NaN or needs scientific notation (the literal encoder rejects those,
+/// and the contract can only be built for a finite decimal-representable oracle).
+pub fn gen_true_float_contract_program(seed: u64, depth: u32) -> Option<(String, f64)> {
+    let mut rng = Lcg(seed);
+    let (e, v) = build_float_expr(&mut rng, depth);
+    if !v.is_finite() || format!("{v:?}").contains(['e', 'E']) {
+        return None;
+    }
+    let vl = flit(v);
+    Some((
+        format!("fn f() -> f64 ensures(result == {vl}) {{ return {e}; }}\nfn main() {{ print(f()); }}\n"),
+        v,
+    ))
+}
+
+/// A FALSE float contract: `ensures(result == <oracle + 1.0>)` — wrong unless `v + 1.0 == v` (a huge `v`
+/// where the `+1` rounds away, which the small pool avoids; skipped defensively). `None` on non-finite.
+pub fn gen_false_float_contract_program(seed: u64, depth: u32) -> Option<(String, f64)> {
+    let mut rng = Lcg(seed ^ 0x9e37_79b9_7f4a_7c15);
+    let (e, v) = build_float_expr(&mut rng, depth);
+    let wrong = v + 1.0;
+    if !v.is_finite() || !wrong.is_finite() || wrong == v || format!("{wrong:?}").contains(['e', 'E']) {
+        return None;
+    }
+    let wl = flit(wrong);
+    Some((
+        format!("fn f() -> f64 ensures(result == {wl}) {{ return {e}; }}\nfn main() {{ print(f()); }}\n"),
+        v,
+    ))
+}

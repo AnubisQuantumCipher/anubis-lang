@@ -2786,6 +2786,55 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_float_proptest_solver_matches_oracle() {
+        use middle::proptest;
+        // Differential net for the QF_FP float encoder: `ensures(result == <oracle>)` over a random f64
+        // arithmetic body discharges IFF z3's QF_FP evaluation equals the Rust f64 oracle — so a wrong op
+        // mapping (`+` as `fp.mul`, a rounding-mode slip, …) fails to discharge and the harness catches
+        // it. No runtime run needed: the discharge IS the solver↔oracle check, immune to print formatting.
+        let discharged = |src: &str| -> bool {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        let mut true_checked = 0;
+        let mut false_checked = 0;
+        for seed in 1u64..80 {
+            // P_discharge: a TRUE float-arithmetic contract discharges (z3 fp == Rust f64 oracle).
+            if let Some((src, _)) = proptest::gen_true_float_contract_program(seed, 3) {
+                true_checked += 1;
+                assert!(
+                    discharged(&src),
+                    "seed {seed} true float contract must discharge:\n{src}"
+                );
+            }
+            // P_disproof: a FALSE float contract (`result == oracle + 1`) is disproved, never certified.
+            if let Some((src, _)) = proptest::gen_false_float_contract_program(seed, 3) {
+                false_checked += 1;
+                let ir = typecheck(parse_source(&src).expect("parse"), frontend::Mode::Safe)
+                    .expect("false-contract program must typecheck");
+                assert!(
+                    SymbolicEngine::check_obligations(&ir)
+                        .iter()
+                        .any(|c| c.status == "FAIL"),
+                    "seed {seed} false float contract must FAIL:\n{src}"
+                );
+            }
+        }
+        assert!(
+            true_checked >= 10,
+            "expected >=10 finite true float contracts, got {true_checked}"
+        );
+        assert!(
+            false_checked >= 10,
+            "expected >=10 false float contracts, got {false_checked}"
+        );
+    }
+
+    #[test]
     fn phase5_stdlib_import_resolve_combine_and_run() {
         // Virtual std.*: no project std on disk; combine + run pure modules.
         use backends::run::compile_and_run_items;
