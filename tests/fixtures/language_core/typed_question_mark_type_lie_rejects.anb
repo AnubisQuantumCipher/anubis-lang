@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH
+// Typed `?` propagation: `r?` on `Result<u64, E>` unwraps to u64, so annotating the result `string`
+// is a type lie — now caught (infer_expr_type_scoped gained a Try arm via ty::try_unwrap_ok).
+fn g() -> Result<u64, u64> {
+    let r: Result<u64, u64> = Ok(5);
+    let x: string = r?;
+    return Ok(x);
+}
+fn main() { }

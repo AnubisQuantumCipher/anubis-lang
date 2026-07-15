@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Option<T> unwraps to T too: `o?` on Option<u64> is u64.
+fn g() -> Option<u64> {
+    let o: Option<u64> = Some(7);
+    let x: u64 = o?;
+    return Some(x);
+}
+fn main() { }

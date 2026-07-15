@@ -213,6 +213,28 @@ pub(crate) fn is_generic(t: &str) -> bool {
 }
 
 /// The inner type of a `tainted<T>` annotation, if any.
+/// The success (`Ok`/`Some`) inner type of an `Option<T>`/`Result<T, E>` annotation — what the `?`
+/// operator unwraps to. Returns `None` for any other type, so a `?` on an unknown/non-Result value
+/// leaves the result untyped (dynamic) rather than mis-typed.
+pub(crate) fn try_unwrap_ok(ty: &str) -> Option<String> {
+    let t = ty.trim();
+    let inner = t
+        .strip_prefix("Option<")
+        .or_else(|| t.strip_prefix("Result<"))
+        .and_then(|rest| rest.strip_suffix('>'))?;
+    // First top-level type argument (Result<T, E> -> T), respecting nested `<...>`.
+    let mut depth = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return Some(inner[..i].trim().to_string()),
+            _ => {}
+        }
+    }
+    Some(inner.trim().to_string())
+}
+
 pub(crate) fn tainted_inner(ty: &str) -> Option<String> {
     let t = ty.trim();
     let lower = t.to_ascii_lowercase();
@@ -774,6 +796,21 @@ fn count_top_level_type_args(inner: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn try_unwrap_ok_extracts_the_ok_type() {
+        assert_eq!(try_unwrap_ok("Option<u64>").as_deref(), Some("u64"));
+        assert_eq!(try_unwrap_ok("Result<u64, string>").as_deref(), Some("u64"));
+        // Nested generics in the Ok slot are preserved; the E slot is ignored.
+        assert_eq!(
+            try_unwrap_ok("Result<list<u32>, MyError>").as_deref(),
+            Some("list<u32>")
+        );
+        // Non-Option/Result annotations are not unwrapped (left dynamic).
+        assert_eq!(try_unwrap_ok("u64"), None);
+        assert_eq!(try_unwrap_ok("string"), None);
+        assert_eq!(try_unwrap_ok("Optional<u64>"), None);
+    }
 
     #[test]
     fn parse_to_annotation_round_trips_the_core_vocabulary() {

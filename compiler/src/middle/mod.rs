@@ -5099,6 +5099,10 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
             "*const unknown".into()
         }),
         Expr::Declassify { inner, .. } => infer_expr_type_scoped(inner, scope),
+        // Typed `?` propagation: `r?` unwraps `Option<T>`/`Result<T, E>` to its Ok/Some type `T`, so a
+        // `let x: WrongT = r?` mismatch is caught when `r`'s type is known. (Residual: `f()?` where the
+        // callee's return type is not inferable in this scope-only inferer — no fn-return table here.)
+        Expr::Try(inner) => infer_expr_type_scoped(inner, scope).and_then(|t| ty::try_unwrap_ok(&t)),
         Expr::TaintSource { .. } => Some("tainted<string>".into()),
         Expr::Literal(s) if s == "true" || s == "false" => Some("bool".into()),
         // Integer literal (i64, or a u64 bit-pattern for magnitudes above i64::MAX) → the

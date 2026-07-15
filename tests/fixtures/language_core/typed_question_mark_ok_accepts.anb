@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// The correctly-typed unwrap accepts: `r?` on Result<u64,u64> is u64.
+fn g() -> Result<u64, u64> {
+    let r: Result<u64, u64> = Ok(5);
+    let x: u64 = r?;
+    return Ok(x);
+}
+fn main() { }
