@@ -4666,6 +4666,102 @@ fn main() { }"#;
         assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
     }
 
+    // ── Phase-2 INTERPROCEDURAL: secret return summary + leg-2 exposure summary (twinned slice) ──
+
+    #[test]
+    fn secret_through_a_helper_reaches_egress_rejects() {
+        // The secret is minted inside a helper and returned; compute_secret_fns marks it, so the
+        // egress check fires even with no secret_source in `main` — the dual of the return-taint summary.
+        let err = tc_lane(
+            r#"fn get_key() { return secret_source("k"); }
+fn main() uses(net.send) { send("h", 80, get_key()); }"#,
+            false,
+        )
+        .expect_err("secret returned from a helper and egressed must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+        // Transitive: a helper that returns another secret-returning helper's value is also secret.
+        let err = tc_lane(
+            r#"fn a() { return secret_source("k"); }
+fn b() { return a(); }
+fn main() uses(net.send) { send("h", 80, b()); }"#,
+            false,
+        )
+        .expect_err("transitively-returned secret must reject");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+    }
+
+    #[test]
+    fn secret_egress_interproc_accept_edges_are_precise() {
+        // Discard-arg precision: `ignore` receives the secret but returns a constant, so the shared
+        // param_return_taint summary says no param reaches the return — no false positive at egress.
+        tc_lane(
+            r#"fn ignore(x) { return 0; }
+fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, ignore(k)); }"#,
+            false,
+        )
+        .expect("a secret discarded by a helper does not reach egress");
+        // A helper that neither mints nor forwards a secret is not marked, so its result egresses clean.
+        tc_lane(
+            r#"fn constant() { return 42; }
+fn main() uses(net.send) { send("h", 80, constant()); }"#,
+            false,
+        )
+        .expect("a non-secret helper result egresses clean");
+        // Pass-through IS carried (a true positive, not a false one): wrap returns its secret arg.
+        let err = tc_lane(
+            r#"fn wrap(x) { return x; }
+fn main() uses(net.send) { send("h", 80, wrap(secret_source("k"))); }"#,
+            false,
+        )
+        .expect_err("a pass-through helper forwards the secret to egress");
+        assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
+    }
+
+    #[test]
+    fn trifecta_legs_reached_through_helpers_reject() {
+        // Both leg 1 (secret via get_key -> secret_fns) and leg 2 (untrusted input via get_steer ->
+        // leg2_fns) are reached through helpers; net.send is leg 3; a constant beacon is sent (pure
+        // coexistence). The verified-lane trifecta now fires though neither leg is direct in `agent`.
+        let src = r#"fn get_key() { return secret_source("api_key"); }
+fn get_steer() { return input(); }
+@verified
+fn agent() uses(net.send) {
+    let sc = cap_acquire("net.send");
+    let key = get_key();
+    let steer = get_steer();
+    cap_use(sc);
+    send("host", 80, "beacon");
+}
+fn main() { }"#;
+        let err = tc_lane(src, true).expect_err("interprocedural trifecta legs must reject");
+        assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
+    }
+
+    // (The read_file/leg-2 conflation accept-guard is proven precisely at the module level in
+    // trifecta.rs — `compute_leg2_fns_marks_input_helper_transitively_but_never_a_file_reader`
+    // asserts a file-reading helper is NEVER put in leg2_fns — rather than end-to-end here, where a
+    // file-reading helper trips the orthogonal verified-lane capability checks it would need to
+    // satisfy, which would obscure the property under test.)
+
+    #[test]
+    fn trifecta_declassify_barrier_holds_across_a_helper_accepts() {
+        // Accept-bias: a helper that SANITIZES its untrusted read via a well-formed declassify is not
+        // a leg-2 exposer, so an agent with legs 1 (secret) + 3 (net.send) but only that sanitized
+        // helper as its "channel" has no distinct leg 2 → NOT a trifecta → accepts. (Before the fix,
+        // compute_leg2_fns descended past the declassify and falsely marked the helper leg-2.)
+        let src = r#"fn sanitize() { let s = declassify(input(), "policy", "reviewed"); return s; }
+@verified
+fn agent() uses(net.send) {
+    let sc = cap_acquire("net.send");
+    let key = secret_source("api_key");
+    let clean = sanitize();
+    cap_use(sc);
+    send("host", 80, "beacon");
+}
+fn main() { }"#;
+        tc_lane(src, true).expect("a helper that declassifies its input is not a leg-2 channel");
+    }
+
     // ── Phase-2 taint soundness: the reassignment fail-open (control-flow-merge dataflow) ────────
 
     #[test]

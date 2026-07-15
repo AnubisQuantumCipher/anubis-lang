@@ -230,8 +230,28 @@ struct SemanticContext {
     /// Interprocedural param→return summary (Phase-3 A2): for each function, the set of formal
     /// parameter indices that can flow to the return value without declassify. Monotone fixpoint.
     /// Combined at call sites with argument taint: `wrap` with `returns_taint_of_params={0}` makes
-    /// `wrap(tainted)` a taint source (even through further let/return chains).
+    /// `wrap(tainted)` a taint source (even through further let/return chains). Value-flow is
+    /// label-agnostic, so the SAME summary serves both labels: `expr_secret_source` consults it too
+    /// (a formal that flows to the return carries its argument's SECRECY exactly as it carries taint,
+    /// and the declassify clear is identical), which is what rules out the discard-arg false positive
+    /// on the confidentiality side (`send(ignore(secret))` with `fn ignore(x){0}` does not fire).
     param_return_taint: BTreeMap<String, BTreeSet<usize>>,
+    /// Interprocedural SECRET summary (Phase-2 leg-1, the confidentiality dual of `tainting_fns`):
+    /// functions whose RETURN value carries a `secret_source(..)` secret — minted directly, through
+    /// let-chains, or returned from another such function. Monotone fixpoint (`compute_secret_fns`).
+    /// `expr_secret_source`'s `Call` arm consults it so `send(get_key())` fires
+    /// `ANUBIS_SECRET_EXFILTRATION` even though the secret is minted inside a helper; the trifecta's
+    /// leg-1 consults it too (a helper returning a secret IS private-data access).
+    secret_fns: BTreeSet<String>,
+    /// Interprocedural leg-2 EXPOSURE summary (lethal trifecta): functions whose body transitively
+    /// CONTAINS an untrusted-input steering channel (`is_leg2_source` — input/recv/env/…, NEVER
+    /// read_file/open, which are leg 1). PRESENCE semantics, not return-flow: a helper that reads
+    /// `input()` and discards it still exposes its caller to steering (the injection risk is the read
+    /// happening at all, not the value's flow) — matching the intra-procedural leg-2 which is also
+    /// presence. Using `is_leg2_source` (not `is_io_taint_source`/`tainting_fns`) is exactly what
+    /// keeps a file-reading helper out of leg 2 — the read_file/leg-2 conflation the design avoids.
+    /// Computed by `trifecta::compute_leg2_fns`; consumed only by the verified-lane trifecta scan.
+    leg2_fns: BTreeSet<String>,
     /// Phase-3 C5: verification lane (`--verified` / `@verified` / `#[verified]`). When set,
     /// capability effects require an explicit `uses(...)` declaration (fail-closed).
     verified: bool,
@@ -298,6 +318,12 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     compute_tainting_fns(&ast.items, &mut ctx);
     compute_param_sinks(&ast.items, &mut ctx);
     compute_param_return_taint(&ast.items, &mut ctx);
+    // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
+    // even when the secret is minted in a helper) and the leg-2 EXPOSURE summary (so a helper wrapping
+    // `input()` counts as untrusted-input exposure in the verified-lane trifecta). Both are monotone,
+    // emit nothing themselves, and — like the taint summaries — populated before per-function analysis.
+    compute_secret_fns(&ast.items, &mut ctx);
+    ctx.leg2_fns = trifecta::compute_leg2_fns(&ast.items);
     // Pass 1.6 (Phase-2 slice 1): transitive effect rows — a pure monotone fixpoint over the call
     // graph (middle/effects.rs). Reads only the pass-1 tables (`all_fns`, declared `uses`); emits
     // nothing itself. Consumed by the transitive declared-vs-inferred effect check per function.
@@ -1224,12 +1250,15 @@ fn analyze_function(
     // on evidence: fires under shadow on the trifecta fixture, all accept-edges silent, corpus shadow
     // diff UNEXPECTED=0 over 179 programs (the FAIL fixture the sole EXPECTED line), zero trifecta
     // lines on `selfhost/src/anubis_sh.anb` and every stdlib module.
-    // Honest boundaries (deferred): leg 1 recognizes an explicit `secret_source(..)` label + the
-    // coarse `fs.read` proxy, but there is no confidentiality FLOW tracking yet (a secret value
-    // reaching a sink — the dual of the taint integrity check — is a further increment), and a
-    // secret arriving via `getenv`/a param is not auto-labelled; leg 2 intra-procedural + direct-
-    // source only; leg 3 = net.send or a shell-out (`sql` egress still deferred); the declassify
-    // hatch is coarse (function-level, not tied to the specific outbound value).
+    // Legs 1 and 2 are now INTERPROCEDURAL: leg 1 = `fs.read` (coarse proxy) OR a `secret_source(..)`
+    // label OR a call to a `secret_fns` helper (a helper that returns a secret); leg 2 = a direct
+    // `is_leg2_source`/`taint_source`/`tainted<T>` param OR a call to a `leg2_fns` helper (a helper
+    // that transitively sources untrusted input, presence-based — the `read_file`/leg-2 conflation is
+    // avoided because `leg2_fns` is built with `is_leg2_source`, which excludes file reads).
+    // Honest boundaries (deferred): a secret arriving via `getenv`/a param is not auto-labelled (no
+    // `secret<T>` qualifier yet); leg 3 = net.send or a shell-out (`sql` egress still deferred); the
+    // declassify hatch is coarse (function-level, not tied to the specific outbound value); leg 1/2
+    // helpers are keyed by callee NAME (method/closure-valued calls are a further increment).
     if ctx.verified {
         let (has_fs_read, has_net_send, has_shell) = {
             let row = ctx.fn_effect_rows.get(name);
@@ -1249,7 +1278,7 @@ fn analyze_function(
             (false, false) => None,
         };
         if let Some(egress) = egress {
-            let legs = trifecta::scan_legs(body, params);
+            let legs = trifecta::scan_legs(body, params, &ctx.secret_fns, &ctx.leg2_fns);
             // Leg 1 — private-data access — is `fs.read` (a file was read: coarse over-approximating
             // proxy) OR an explicit `secret_source(..)` confidentiality label (precise). The label
             // closes the gap that a secret held in memory — not from a file — was invisible to fs.read.
@@ -1484,7 +1513,8 @@ fn analyze_stmts(
                 // CONFIDENTIALITY seed (dual of `init_taint`): the secret label the initializer carries.
                 // `expr_secret_source`'s Declassify arm already clears a released value, so no separate
                 // declassify gate is needed here (unlike the taint side's `declass_source`).
-                let init_secret = expr_secret_source(init, scope);
+                let init_secret =
+                    expr_secret_source(init, scope, &ctx.secret_fns, &ctx.param_return_taint);
                 let declass_source =
                     declassify_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
                 // Effect inference must see calls in let-initializers (`let d = read_file(p)`),
@@ -1829,7 +1859,9 @@ fn analyze_stmts(
                 // clean/declassified. The branch/loop merge (`merge_taint_over`) refines it across
                 // control flow, exactly as for taint.
                 if let Expr::Var(name) = target {
-                    let value_secret = expr_secret_source(value, scope).is_some();
+                    let value_secret =
+                        expr_secret_source(value, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                            .is_some();
                     if let Some(b) = scope.get_mut(name) {
                         b.secret = value_secret;
                     }
@@ -2117,10 +2149,12 @@ fn analyze_stmts(
                 // Confidentiality dual: iterating a secret collection binds a secret element.
                 let secret_src = match source {
                     crate::frontend::ForSource::Range { start, .. } => {
-                        expr_secret_source(start, scope).is_some()
+                        expr_secret_source(start, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                            .is_some()
                     }
                     crate::frontend::ForSource::Collection { expr } => {
-                        expr_secret_source(expr, scope).is_some()
+                        expr_secret_source(expr, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                            .is_some()
                     }
                 };
                 // The loop variable is a fresh in-scope binding for the body's analysis. A range
@@ -2358,7 +2392,9 @@ fn analyze_expr_effect(
             // `is_sink` so it also covers egress builtins (`http_post`, `connect`) not in that set.
             if mode == Mode::Safe && is_egress_sink(callee) {
                 for arg in args {
-                    if let Some(source) = expr_secret_source(arg, scope) {
+                    if let Some(source) =
+                        expr_secret_source(arg, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                    {
                         ctx.emit(
                             SemanticDiagnostic {
                                 code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
@@ -5707,35 +5743,67 @@ fn is_egress_sink(callee: &str) -> bool {
     )
 }
 
-/// Confidentiality (secrecy) provenance — the DUAL of `expr_taint_source`. Returns a source label if
-/// `expr` carries PRIVATE data: a `secret_source(..)` seed, a binding whose `secret` flag is set, or a
-/// value structurally derived from either (binary / unary / index / field / cast / call-arg). A
-/// well-formed `declassify(x, policy, reason)` clears it — the sanctioned release hatch, identical to
-/// the taint side, so the Let/Assign seeding needs no separate declassify test. There is NO
-/// interprocedural secret summary this slice: a secret returned from a user function arrives
-/// unlabelled (a named boundary; the integrity side has `tainting_fns`, its dual is future work).
-fn expr_secret_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Option<String> {
+/// Confidentiality (secrecy) provenance — the DUAL of `expr_taint_source`, and structurally its exact
+/// mirror. Returns a source label if `expr` carries PRIVATE data: a `secret_source(..)` seed, a
+/// binding whose `secret` flag is set, the return of an interprocedural secret function (`secret_fns`,
+/// the dual of `tainting_fns`), or a value derived from any of these (binary / unary / index / field /
+/// cast / a call whose secret arguments reach its return). A well-formed `declassify(x, policy,
+/// reason)` clears it — the sanctioned release hatch, identical to the taint side, so Let/Assign
+/// seeding needs no separate declassify test.
+///
+/// The `Call` arm mirrors `expr_taint_source` precisely: for a KNOWN user callee summarized in
+/// `param_return_taint`, only the argument positions that VALUE-flow to the return carry the secret
+/// (value-flow is label-agnostic, so the SAME summary serves both labels — this is what rules out the
+/// discard-arg false positive: `send(ignore(secret))` with `fn ignore(x){ 0 }` does not fire); for a
+/// builtin / unsummarized callee, any secret argument is conservative (fail-closed-safe — a
+/// hash/encoding of a secret is not a release).
+fn expr_secret_source(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    secret_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+) -> Option<String> {
     match expr {
         Expr::Var(name) => scope.get(name).filter(|b| b.secret).map(|_| name.clone()),
         Expr::Call { callee, args } => {
             if callee == SECRET_SOURCE_NAME {
                 Some(SECRET_SOURCE_NAME.to_string())
+            } else if secret_fns.contains(callee) {
+                Some(format!("return value of `{callee}`"))
+            } else if let Some(rets) = param_return_taint.get(callee) {
+                // Known user function: only params the summary says reach the return carry secrecy.
+                rets.iter().find_map(|&i| {
+                    args.get(i)
+                        .and_then(|a| expr_secret_source(a, scope, secret_fns, param_return_taint))
+                })
             } else {
-                // A transform of a secret may still reveal it (a hash/encoding is not a release);
-                // declassify is the only sanctioned clear. Mirrors taint's conservative builtin arm.
-                args.iter().find_map(|a| expr_secret_source(a, scope))
+                // Builtin / not-yet-summarized: any secret argument is conservative.
+                args.iter()
+                    .find_map(|a| expr_secret_source(a, scope, secret_fns, param_return_taint))
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            expr_secret_source(lhs, scope).or_else(|| expr_secret_source(rhs, scope))
+            expr_secret_source(lhs, scope, secret_fns, param_return_taint)
+                .or_else(|| expr_secret_source(rhs, scope, secret_fns, param_return_taint))
         }
-        Expr::Unary { expr, .. } => expr_secret_source(expr, scope),
+        Expr::Unary { expr, .. } => expr_secret_source(expr, scope, secret_fns, param_return_taint),
         Expr::Index { base, index } => {
-            expr_secret_source(base, scope).or_else(|| expr_secret_source(index, scope))
+            expr_secret_source(base, scope, secret_fns, param_return_taint)
+                .or_else(|| expr_secret_source(index, scope, secret_fns, param_return_taint))
         }
-        Expr::FieldAccess { base, .. } => expr_secret_source(base, scope),
-        Expr::Cast { expr, .. } => expr_secret_source(expr, scope),
-        Expr::Assume(inner) | Expr::Assert(inner) => expr_secret_source(inner, scope),
+        Expr::FieldAccess { base, .. } => {
+            expr_secret_source(base, scope, secret_fns, param_return_taint)
+        }
+        Expr::Cast { expr, .. } => expr_secret_source(expr, scope, secret_fns, param_return_taint),
+        // Faithful mirror of `expr_taint_source`'s `Tainted` arm: unwrap the marker to keep tracking
+        // provenance (defensive — the parser does not currently emit `Expr::Tainted`, but the taint
+        // dual has this arm, so the confidentiality side keeps it symmetric).
+        Expr::Tainted { inner, .. } => {
+            expr_secret_source(inner, scope, secret_fns, param_return_taint)
+        }
+        Expr::Assume(inner) | Expr::Assert(inner) => {
+            expr_secret_source(inner, scope, secret_fns, param_return_taint)
+        }
         Expr::Declassify {
             inner,
             policy,
@@ -5745,7 +5813,7 @@ fn expr_secret_source(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Op
             if policy.is_some() && reason.is_some() {
                 None // released — dual of the taint declassify clear
             } else {
-                expr_secret_source(inner, scope)
+                expr_secret_source(inner, scope, secret_fns, param_return_taint)
             }
         }
         _ => None,
@@ -5801,8 +5869,8 @@ fn seed_one_let(
                 span: None,
             },
             closure_arity: None,
-            // This scope feeds the INTEGRITY return summary only; confidentiality has no
-            // interprocedural summary this slice (named boundary), so secrecy is not seeded here.
+            // This scope feeds the INTEGRITY return summary only; secrecy has its own parallel
+            // seeder (`seed_one_let_secret`, feeding `compute_secret_fns`), so it is not seeded here.
             secret: false,
         },
     );
@@ -5957,6 +6025,162 @@ fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
             break;
         }
         ctx.tainting_fns.extend(newly);
+    }
+}
+
+// ── Interprocedural return-SECRET summary (`ctx.secret_fns`) ──────────────────────────────────────
+// The exact confidentiality dual of the return-taint summary above: a monotone fixpoint marking each
+// function whose RETURN value carries a `secret_source(..)` secret — minted directly, through a
+// `let`-chain, or returned from another already-marked function. Consumed by `expr_secret_source`'s
+// `Call` arm (so `send(get_key())` fires) AND by the verified-lane trifecta's leg-1 (a helper that
+// returns a secret IS private-data access). Whole-value + reassignment-insensitive + declassify-aware,
+// exactly mirroring the taint side, and MONOTONE (only grows) so it needs no control-flow-merge join.
+
+/// Seed one `let` binding's SECRECY into `scope` for the return-secret walk (the dual of
+/// `seed_one_let`). There is no `secret<T>` qualifier this slice, so secrecy originates ONLY from the
+/// initializer's value (`secret_source(..)`, a secret-returning callee, or a derivation of one);
+/// params are never seeded here — a returned secret parameter is arg-flow, handled at each call site
+/// via `param_return_taint`, isolating the secrecy a function produces INTERNALLY.
+fn seed_one_let_secret(
+    name: &str,
+    ty: Option<&str>,
+    init: &Expr,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    secret_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+) {
+    let secret = expr_secret_source(init, scope, secret_fns, param_return_taint).is_some();
+    scope.insert(
+        name.to_string(),
+        ScopeBinding {
+            info: BindingInfo {
+                name: name.to_string(),
+                ty: ty.map(str::to_string),
+                mode: String::new(),
+                tainted: false,
+                taint_source: None,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            secret,
+        },
+    );
+}
+
+/// Whether any value a function body can RETURN carries a secret — the dual of `body_returns_taint`,
+/// same lexical-block-scope discipline (snapshot/restore around every block, so a block-local `let`
+/// shadow does not leak past its block and a `return` after the block sees the outer binding).
+fn body_returns_secret(
+    stmts: &[Stmt],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    secret_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    tail: bool,
+) -> bool {
+    let n = stmts.len();
+    for (i, stmt) in stmts.iter().enumerate() {
+        let stmt_is_tail = tail && i + 1 == n;
+        match stmt {
+            Stmt::Let { name, ty, init, .. } => {
+                let mut rets = Vec::new();
+                expr_returns(init, &mut rets);
+                if rets
+                    .iter()
+                    .any(|e| expr_secret_source(e, scope, secret_fns, param_return_taint).is_some())
+                {
+                    return true;
+                }
+                seed_one_let_secret(name, ty.as_deref(), init, scope, secret_fns, param_return_taint);
+            }
+            Stmt::If { then, else_, .. } => {
+                let saved = scope.clone();
+                if body_returns_secret(then, scope, secret_fns, param_return_taint, stmt_is_tail) {
+                    return true;
+                }
+                *scope = saved.clone();
+                if let Some(else_body) = else_ {
+                    if body_returns_secret(
+                        else_body,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        stmt_is_tail,
+                    ) {
+                        return true;
+                    }
+                }
+                *scope = saved;
+            }
+            Stmt::While { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => {
+                let saved = scope.clone();
+                if body_returns_secret(body, scope, secret_fns, param_return_taint, false) {
+                    return true;
+                }
+                *scope = saved;
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    let saved = scope.clone();
+                    if body_returns_secret(b, scope, secret_fns, param_return_taint, false) {
+                        return true;
+                    }
+                    *scope = saved;
+                }
+            }
+            _ => {
+                let mut rets = Vec::new();
+                collect_returns_in_stmt(stmt, &mut rets);
+                if rets
+                    .iter()
+                    .any(|e| expr_secret_source(e, scope, secret_fns, param_return_taint).is_some())
+                {
+                    return true;
+                }
+                if stmt_is_tail {
+                    if let Stmt::ExprStmt(e) = stmt {
+                        if !is_return_call(e)
+                            && expr_secret_source(e, scope, secret_fns, param_return_taint).is_some()
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Whether a function's return value carries an internal secret (params-clean scope, tail position) —
+/// the dual of `fn_returns_taint`. Empty `param_return_taint` so this isolates INTERNAL secrecy; a
+/// returned secret PARAMETER is arg-flow, resolved at each call site.
+fn fn_returns_secret(body: &[Stmt], secret_fns: &BTreeSet<String>) -> bool {
+    let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
+    let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    body_returns_secret(body, &mut scope, secret_fns, &empty, true)
+}
+
+/// Populate `ctx.secret_fns` by a monotone fixpoint — the exact dual of `compute_tainting_fns`.
+fn compute_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
+    let mut fns: Vec<(String, &[Stmt])> = Vec::new();
+    collect_fn_bodies(items, &mut fns);
+    loop {
+        let mut newly: Vec<String> = Vec::new();
+        for (name, body) in &fns {
+            if !ctx.secret_fns.contains(name) && fn_returns_secret(body, &ctx.secret_fns) {
+                newly.push(name.clone());
+            }
+        }
+        if newly.is_empty() {
+            break;
+        }
+        ctx.secret_fns.extend(newly);
     }
 }
 

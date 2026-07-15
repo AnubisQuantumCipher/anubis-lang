@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LETHAL_TRIFECTA
+// Interprocedural trifecta: BOTH the private-data leg (1) and the untrusted-steering leg (2) are
+// reached through helpers, invisible to the intra-procedural body scan. `get_key` returns a secret
+// (→ secret_fns → leg 1); `get_steer` sources input() (→ leg2_fns via compute_leg2_fns → leg 2);
+// net.send is leg 3. A constant beacon is sent (no value flow) so this is the pure COEXISTENCE case
+// the trifecta exists for — and it now fires even though neither leg appears directly in `agent`.
+fn get_key() { return secret_source("api_key"); }
+fn get_steer() { return input(); }
+@verified
+fn agent() uses(net.send) {
+    let sc = cap_acquire("net.send");
+    let key = get_key();
+    let steer = get_steer();
+    cap_use(sc);
+    send("host", 80, "beacon");
+}
+fn main() { }

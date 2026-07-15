@@ -36,18 +36,76 @@ pub(crate) struct TrifectaLegs {
     pub secret_present: bool,
 }
 
-/// Scan one function body + its parameters for the two body-side trifecta signals.
-pub(crate) fn scan_legs(body: &[Stmt], params: &[(String, String)]) -> TrifectaLegs {
+/// Interprocedural summaries consulted by the walk (both the confidentiality dual of `tainting_fns`
+/// and the leg-2 exposure summary). `scan_legs` is called with the real sets from `SemanticContext`;
+/// `compute_leg2_fns` fixpoint-builds the leg-2 set by calling the walk with an empty secret set and
+/// the leg-2 set accumulated so far.
+pub(crate) struct ScanCtx<'a> {
+    /// Functions whose return carries a `secret_source` secret — a call to one is leg-1 private data.
+    pub secret_fns: &'a std::collections::BTreeSet<String>,
+    /// Functions whose body exposes an untrusted steering channel — a call to one is leg 2.
+    pub leg2_fns: &'a std::collections::BTreeSet<String>,
+}
+
+/// Scan one function body + its parameters for the body-side trifecta signals. `secret_fns`/`leg2_fns`
+/// carry the interprocedural summaries so a secret or an untrusted-input exposure reached THROUGH a
+/// helper is detected (a call to a `secret_fns` member is leg 1; a call to a `leg2_fns` member is
+/// leg 2), not only a direct `secret_source`/`input` in this body.
+pub(crate) fn scan_legs(
+    body: &[Stmt],
+    params: &[(String, String)],
+    secret_fns: &std::collections::BTreeSet<String>,
+    leg2_fns: &std::collections::BTreeSet<String>,
+) -> TrifectaLegs {
+    let sc = ScanCtx { secret_fns, leg2_fns };
     let mut legs = TrifectaLegs::default();
     // A `tainted<T>` parameter is untrusted input arriving directly as an argument — a leg-2 channel.
+    // (This param-side signal is DELIBERATELY not part of `compute_leg2_fns`: a function that RECEIVES
+    // a tainted param does not itself SOURCE untrusted input for its caller — see that fixpoint.)
     for (pname, pty) in params {
         if super::is_tainted_type(Some(pty)) {
             legs.leg2_untrusted
                 .get_or_insert_with(|| format!("tainted parameter `{pname}`"));
         }
     }
-    walk_stmts(body, &mut legs);
+    walk_stmts(body, &mut legs, &sc);
     legs
+}
+
+/// Monotone fixpoint over the free functions: a function is leg-2-EXPOSING iff its body transitively
+/// SOURCES untrusted input — a direct `is_leg2_source` call / `taint_source(..)`, or a call to an
+/// already-marked leg-2 function. PRESENCE semantics (matching the intra-procedural leg-2): a helper
+/// that reads `input()` and discards it still exposes its caller to steering. Uses `is_leg2_source`
+/// (which excludes `read_file`/`open`), so a file-reading helper is never mis-marked as a steering
+/// channel — the read_file/leg-2 conflation the design avoids. Parameter-side taint is NOT considered
+/// here (receiving a tainted param does not make a function source untrusted input for its caller).
+pub(crate) fn compute_leg2_fns(items: &[crate::frontend::Item]) -> std::collections::BTreeSet<String> {
+    let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+    super::collect_fn_params_bodies(items, &mut fns);
+    let empty_secret = std::collections::BTreeSet::new();
+    let mut leg2: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    loop {
+        let mut newly: Vec<String> = Vec::new();
+        for (name, _params, body) in &fns {
+            if !leg2.contains(name) {
+                let sc = ScanCtx {
+                    secret_fns: &empty_secret,
+                    leg2_fns: &leg2,
+                };
+                // Body-only walk (no param check) — a returned/param-received taint is not a SOURCE.
+                let mut legs = TrifectaLegs::default();
+                walk_stmts(body, &mut legs, &sc);
+                if legs.leg2_untrusted.is_some() {
+                    newly.push(name.clone());
+                }
+            }
+        }
+        if newly.is_empty() {
+            break;
+        }
+        leg2.extend(newly);
+    }
+    leg2
 }
 
 /// Whether a bare-name call is an untrusted taint source OTHER than the private file read.
@@ -56,29 +114,29 @@ fn is_leg2_source(callee: &str) -> bool {
     super::is_io_taint_source(callee) && callee != "read_file" && callee != "open"
 }
 
-fn walk_stmts(stmts: &[Stmt], legs: &mut TrifectaLegs) {
+fn walk_stmts(stmts: &[Stmt], legs: &mut TrifectaLegs, sc: &ScanCtx) {
     for s in stmts {
-        walk_stmt(s, legs);
+        walk_stmt(s, legs, sc);
     }
 }
 
-fn walk_stmt(stmt: &Stmt, legs: &mut TrifectaLegs) {
+fn walk_stmt(stmt: &Stmt, legs: &mut TrifectaLegs, sc: &ScanCtx) {
     match stmt {
-        Stmt::Let { init, .. } => walk_expr(init, legs),
-        Stmt::LetPattern { init, .. } => walk_expr(init, legs),
+        Stmt::Let { init, .. } => walk_expr(init, legs, sc),
+        Stmt::LetPattern { init, .. } => walk_expr(init, legs, sc),
         Stmt::WhileLet { expr, body, .. } => {
-            walk_expr(expr, legs);
-            walk_stmts(body, legs);
+            walk_expr(expr, legs, sc);
+            walk_stmts(body, legs, sc);
         }
         Stmt::Assign { target, value } => {
-            walk_expr(target, legs);
-            walk_expr(value, legs);
+            walk_expr(target, legs, sc);
+            walk_expr(value, legs, sc);
         }
         Stmt::If { cond, then, else_ } => {
-            walk_expr(cond, legs);
-            walk_stmts(then, legs);
+            walk_expr(cond, legs, sc);
+            walk_stmts(then, legs, sc);
             if let Some(e) = else_ {
-                walk_stmts(e, legs);
+                walk_stmts(e, legs, sc);
             }
         }
         Stmt::While {
@@ -86,17 +144,17 @@ fn walk_stmt(stmt: &Stmt, legs: &mut TrifectaLegs) {
             body,
             invariant,
         } => {
-            walk_expr(cond, legs);
+            walk_expr(cond, legs, sc);
             for inv in invariant {
-                walk_expr(inv, legs);
+                walk_expr(inv, legs, sc);
             }
-            walk_stmts(body, legs);
+            walk_stmts(body, legs, sc);
         }
         Stmt::Loop { body, invariant } => {
             for inv in invariant {
-                walk_expr(inv, legs);
+                walk_expr(inv, legs, sc);
             }
-            walk_stmts(body, legs);
+            walk_stmts(body, legs, sc);
         }
         Stmt::For {
             source,
@@ -106,28 +164,30 @@ fn walk_stmt(stmt: &Stmt, legs: &mut TrifectaLegs) {
         } => {
             match source {
                 ForSource::Range { start, end } => {
-                    walk_expr(start, legs);
-                    walk_expr(end, legs);
+                    walk_expr(start, legs, sc);
+                    walk_expr(end, legs, sc);
                 }
-                ForSource::Collection { expr } => walk_expr(expr, legs),
+                ForSource::Collection { expr } => walk_expr(expr, legs, sc),
             }
             for inv in invariant {
-                walk_expr(inv, legs);
+                walk_expr(inv, legs, sc);
             }
-            walk_stmts(body, legs);
+            walk_stmts(body, legs, sc);
         }
-        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => walk_stmts(body, legs),
+        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+            walk_stmts(body, legs, sc)
+        }
         Stmt::HybridBlock { gpu, cpu, prove } => {
             for b in [gpu, cpu, prove].into_iter().flatten() {
-                walk_stmts(b, legs);
+                walk_stmts(b, legs, sc);
             }
         }
         Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
-        Stmt::ExprStmt(e) => walk_expr(e, legs),
+        Stmt::ExprStmt(e) => walk_expr(e, legs, sc),
     }
 }
 
-fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs) {
+fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs, sc: &ScanCtx) {
     match expr {
         Expr::Var(_)
         | Expr::Literal(_)
@@ -141,20 +201,27 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs) {
                 .get_or_insert_with(|| format!("taint_source(\"{label}\")"));
         }
         Expr::Call { callee, args } => {
-            if callee == SECRET_SOURCE {
+            // Leg 1 (private data): a direct `secret_source(..)` OR a call to a helper whose return
+            // carries a secret (interprocedural `secret_fns`).
+            if callee == SECRET_SOURCE || sc.secret_fns.contains(callee) {
                 legs.secret_present = true;
             }
+            // Leg 2 (untrusted steering): a direct steering source OR a call to a helper that
+            // transitively sources untrusted input (interprocedural `leg2_fns`).
             if is_leg2_source(callee) {
                 legs.leg2_untrusted.get_or_insert_with(|| callee.clone());
+            } else if sc.leg2_fns.contains(callee) {
+                legs.leg2_untrusted
+                    .get_or_insert_with(|| format!("{callee}() (exposes untrusted input)"));
             }
             for a in args {
-                walk_expr(a, legs);
+                walk_expr(a, legs, sc);
             }
         }
         Expr::CallExpr { callee, args } => {
-            walk_expr(callee, legs);
+            walk_expr(callee, legs, sc);
             for a in args {
-                walk_expr(a, legs);
+                walk_expr(a, legs, sc);
             }
         }
         Expr::Declassify {
@@ -168,53 +235,62 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs) {
             // even for malformed ones, so we must inspect the AST shape, not the tag).
             if policy.is_some() && reason.is_some() {
                 legs.wellformed_declassify = true;
+                // A well-formed declassify RELEASES its inner value: a sanitized untrusted read is
+                // NOT a leg-2 steering channel and a sanitized secret is NOT leg 1, so do not descend
+                // into `inner` for leg detection. This makes the barrier hold ACROSS a helper boundary
+                // — `compute_leg2_fns` must not mark `fn q(){ return declassify(input(),p,r); }` as a
+                // leg-2 exposer, which would falsely reject a valid agent that calls it (the
+                // over-rejection the implementation review confirmed). Intra-procedurally the outcome
+                // is unchanged: a well-formed declassify already suppressed the trifecta via the flag.
+            } else {
+                // A malformed declassify is not a release — keep scanning `inner` for legs.
+                walk_expr(inner, legs, sc);
             }
-            walk_expr(inner, legs);
         }
-        Expr::Tainted { inner, .. } => walk_expr(inner, legs),
-        Expr::Assume(inner) | Expr::Assert(inner) | Expr::Try(inner) => walk_expr(inner, legs),
-        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => walk_expr(expr, legs),
+        Expr::Tainted { inner, .. } => walk_expr(inner, legs, sc),
+        Expr::Assume(inner) | Expr::Assert(inner) | Expr::Try(inner) => walk_expr(inner, legs, sc),
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => walk_expr(expr, legs, sc),
         Expr::Binary { lhs, rhs, .. } => {
-            walk_expr(lhs, legs);
-            walk_expr(rhs, legs);
+            walk_expr(lhs, legs, sc);
+            walk_expr(rhs, legs, sc);
         }
         Expr::ArrayLiteral { elements } => {
             for e in elements {
-                walk_expr(e, legs);
+                walk_expr(e, legs, sc);
             }
         }
         Expr::Index { base, index } => {
-            walk_expr(base, legs);
-            walk_expr(index, legs);
+            walk_expr(base, legs, sc);
+            walk_expr(index, legs, sc);
         }
         Expr::StructLiteral { fields, .. } => {
             for (_, e) in fields {
-                walk_expr(e, legs);
+                walk_expr(e, legs, sc);
             }
         }
-        Expr::FieldAccess { base, .. } => walk_expr(base, legs),
+        Expr::FieldAccess { base, .. } => walk_expr(base, legs, sc),
         Expr::EnumConstruct { fields, .. } => {
             for e in fields {
-                walk_expr(e, legs);
+                walk_expr(e, legs, sc);
             }
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            walk_expr(scrutinee, legs);
+            walk_expr(scrutinee, legs, sc);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    walk_expr(g, legs);
+                    walk_expr(g, legs, sc);
                 }
-                walk_expr(&arm.body, legs);
+                walk_expr(&arm.body, legs, sc);
             }
         }
         Expr::If {
             cond, then, else_, ..
         } => {
-            walk_expr(cond, legs);
-            walk_expr(then, legs);
-            walk_expr(else_, legs);
+            walk_expr(cond, legs, sc);
+            walk_expr(then, legs, sc);
+            walk_expr(else_, legs, sc);
         }
         Expr::IfLet {
             scrutinee,
@@ -222,23 +298,23 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs) {
             else_,
             ..
         } => {
-            walk_expr(scrutinee, legs);
-            walk_expr(then, legs);
-            walk_expr(else_, legs);
+            walk_expr(scrutinee, legs, sc);
+            walk_expr(then, legs, sc);
+            walk_expr(else_, legs, sc);
         }
         Expr::MapLiteral { entries, .. } => {
             for (k, v) in entries {
-                walk_expr(k, legs);
-                walk_expr(v, legs);
+                walk_expr(k, legs, sc);
+                walk_expr(v, legs, sc);
             }
         }
         Expr::Block { stmts, tail } => {
-            walk_stmts(stmts, legs);
+            walk_stmts(stmts, legs, sc);
             if let Some(t) = tail {
-                walk_expr(t, legs);
+                walk_expr(t, legs, sc);
             }
         }
-        Expr::Lambda { body, .. } => walk_expr(body, legs),
+        Expr::Lambda { body, .. } => walk_expr(body, legs, sc),
     }
 }
 
@@ -246,8 +322,19 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs) {
 mod tests {
     use super::*;
     use crate::frontend;
+    use std::collections::BTreeSet;
 
+    /// Scan `agent` with no interprocedural summaries (intra-procedural legs only).
     fn legs_of(src: &str) -> TrifectaLegs {
+        legs_of_with(src, &BTreeSet::new(), &BTreeSet::new())
+    }
+
+    /// Scan `agent` with explicit `secret_fns` / `leg2_fns` summaries (interprocedural legs).
+    fn legs_of_with(
+        src: &str,
+        secret_fns: &BTreeSet<String>,
+        leg2_fns: &BTreeSet<String>,
+    ) -> TrifectaLegs {
         let ast = frontend::parse_source(src).expect("parse");
         for item in &ast.items {
             if let frontend::Item::Fn {
@@ -255,7 +342,7 @@ mod tests {
             } = item
             {
                 if name == "agent" {
-                    return scan_legs(body, params);
+                    return scan_legs(body, params, secret_fns, leg2_fns);
                 }
             }
         }
@@ -300,5 +387,48 @@ mod tests {
         let legs = legs_of(r#"fn agent(c: bool) { if c { let s = recv(); } else { let x = declassify(read_file("x"), "p", "r"); } }"#);
         assert_eq!(legs.leg2_untrusted.as_deref(), Some("recv"));
         assert!(legs.wellformed_declassify);
+    }
+
+    // ── Interprocedural legs: leg 1 via a secret helper, leg 2 via an input-exposing helper ──────
+
+    #[test]
+    fn interproc_leg2_a_helper_exposing_input_counts() {
+        // With `get_steer` in leg2_fns, calling it is leg 2 even though the agent body has no
+        // direct input(). Without the summary it is missed (accept-biased).
+        let leg2: BTreeSet<String> = ["get_steer".to_string()].into_iter().collect();
+        let src = r#"fn agent() { let s = get_steer(); send("h", 80, "b"); }"#;
+        assert!(legs_of_with(src, &BTreeSet::new(), &leg2).leg2_untrusted.is_some());
+        assert!(legs_of(src).leg2_untrusted.is_none()); // no summary => not seen
+    }
+
+    #[test]
+    fn interproc_leg1_a_helper_returning_a_secret_counts() {
+        let secret: BTreeSet<String> = ["get_key".to_string()].into_iter().collect();
+        let src = r#"fn agent() { let k = get_key(); send("h", 80, "b"); }"#;
+        assert!(legs_of_with(src, &secret, &BTreeSet::new()).secret_present);
+        assert!(!legs_of(src).secret_present); // no summary => not seen
+    }
+
+    #[test]
+    fn compute_leg2_fns_marks_input_helper_transitively_but_never_a_file_reader() {
+        let ast = frontend::parse_source(
+            r#"fn reads_input() { let s = input(); }
+fn wraps_it() { reads_input(); }
+fn reads_file() { let d = read_file("cfg"); }
+fn discards_input() { input(); let x = 1; }
+fn sanitizes_input() { let s = declassify(input(), "policy", "reviewed"); }"#,
+        )
+        .expect("parse");
+        let leg2 = compute_leg2_fns(&ast.items);
+        // A direct input source, and a transitive caller of it, are BOTH leg-2 exposers.
+        assert!(leg2.contains("reads_input"), "direct input source");
+        assert!(leg2.contains("wraps_it"), "transitive caller of a leg-2 fn");
+        // PRESENCE, not return-flow: a helper that reads input and discards it still exposes.
+        assert!(leg2.contains("discards_input"), "presence semantics");
+        // The read_file/leg-2 conflation the design avoids: a file reader is leg 1, NEVER leg 2.
+        assert!(!leg2.contains("reads_file"), "file read must not be a leg-2 steering channel");
+        // The declassify barrier holds across the helper boundary: a helper that SANITIZES its
+        // untrusted read is not a leg-2 exposer (the confirmed over-rejection, now closed).
+        assert!(!leg2.contains("sanitizes_input"), "a declassified read is not a leg-2 channel");
     }
 }
