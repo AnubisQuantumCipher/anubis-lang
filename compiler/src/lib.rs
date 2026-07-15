@@ -5066,6 +5066,49 @@ fn main() uses(net.send) { leak(input()); }"#,
         assert!(!err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "taint must not fire exfiltration: {err}");
     }
 
+    // ── Phase-2: effect-walk NON-control-flow compound exprs (buried-in-compound enforcement) ──────
+
+    #[test]
+    fn buried_call_in_compound_expr_is_enforced() {
+        // Capability laundering closed for the value-shape wrappers: a privileged call buried in a
+        // cast / aggregate / binary operand / index, with no `uses(...)`, is forbidden in Safe.
+        for src in [
+            r#"fn main() { let x = shell("id") as u64; }"#,
+            r#"fn main() { let x = [shell("id")]; }"#,
+            r#"fn main() { let x = send("h", 80, "beacon") + 1; }"#,
+            r#"fn main() { let arr = [1, 2, 3]; let x = arr[shell("id")]; }"#,
+            // Closure/method application ARGS are concrete call-site exprs, so a buried call there
+            // is walked (only the Lambda BODY stays opaque).
+            r#"fn id(f) { return f; } fn main() { let y = id(0)(shell("id")); }"#,
+        ] {
+            let err = tc_ok(src).expect_err("a privileged call buried in a compound expr must be forbidden");
+            assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"), "src={src} got: {err}");
+        }
+        // A tainted value sunk through a call buried in an aggregate is caught.
+        tc_ok(r#"fn main() uses(net.send) { let t = input(); let x = [send("h", 80, t)]; }"#)
+            .expect_err("a tainted sink buried in an aggregate must be flagged");
+    }
+
+    #[test]
+    fn buried_call_in_compound_expr_accept_bias() {
+        // The capability is declared → a buried privileged call accepts (precision).
+        tc_ok(r#"fn main() uses(shell) { let x = shell("id") as u64; }"#)
+            .expect("a buried privileged call with the capability declared accepts");
+        // read_file is Safe-allowed → a buried read_file needs no capability.
+        tc_ok(r#"fn main() { let x = [read_file("cfg")]; }"#)
+            .expect("a buried read_file is Safe-allowed");
+        // A declassify inside an aggregate releases the secret.
+        tc_lane(
+            r#"fn main() uses(net.send) { let k = secret_source("x"); send("h", 80, [declassify(k, "p", "r")]); }"#,
+            false,
+        )
+        .expect("a declassified secret in an aggregate is released");
+        // Clean compound expressions accept.
+        tc_ok(r#"struct W { f: u64 }
+fn main() { let w = W { f: 7 }; let arr = [1, 2, 3]; let y = arr[1]; }"#)
+            .expect("clean compound expressions accept");
+    }
+
     #[test]
     fn control_flow_walk_is_mirror_symmetric_across_labels() {
         // The same destructure shape must be caught by BOTH walkers (review Lens-C guard: the

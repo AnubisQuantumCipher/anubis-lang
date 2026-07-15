@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// read_file is Safe-allowed by default, so a buried read_file needs no capability.
+fn main() {
+    let x = [read_file("cfg")];
+}

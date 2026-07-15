@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// A privileged call buried in a closure/method APPLICATION argument (analyze_expr_effect now walks
+// CallExpr callee + args — the arg is a concrete call-site expr, unlike the deferred Lambda body).
+fn id(f) { return f; }
+fn main() {
+    let y = id(0)(shell("id"));
+}

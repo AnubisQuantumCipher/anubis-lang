@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Precision: a buried privileged call whose enclosing function declares the capability accepts.
+fn main() uses(shell) {
+    let x = shell("id") as u64;
+}

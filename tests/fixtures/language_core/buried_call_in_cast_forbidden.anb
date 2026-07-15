@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Effect-walk of non-control-flow compound exprs: a privileged call buried in a CAST, with no
+// uses(shell), was accepted (analyze_expr_effect did not recurse into cast operands). Now enforced.
+fn main() {
+    let x = shell("id") as u64;
+}

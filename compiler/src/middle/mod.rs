@@ -2547,6 +2547,10 @@ fn analyze_expr_effect(
                     });
                 }
             }
+            // A CALL buried in the declassified value carries its own effects (`declassify(shell("id"),
+            // …)` must still register the shell capability) — walk it unconditionally, independent of
+            // whether the inner value is tainted.
+            analyze_expr_effect(inner, mode, scope, effects, ctx);
         }
         // Control-flow value expressions — SCOPE-AWARE effect descent. Before this, a sink/egress/
         // privileged CALL buried in a match arm, an if/if-let branch, or a block statement fell to the
@@ -2596,6 +2600,61 @@ fn analyze_expr_effect(
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
             walk_block_effects(stmts, tail.as_deref(), mode, &mut local, effects, ctx);
+        }
+        // Non-control-flow COMPOUND expressions — recurse into every sub-expression so a sink/egress/
+        // privileged CALL buried in an aggregate, an index, a cast, a unary/binary operand, a field
+        // access, a `?`, a declassify operand, or a closure/method-application arg is enforced. These
+        // introduce no bindings, so (unlike the control-flow descent above) no scope handling is needed
+        // — plain recursion. Before this, `let x = shell("id") as u64;` / `let x = [shell("id")];` /
+        // `send("h",80,"x") + 1` / `arr[shell("id")]` / `obj.method(shell("id"))` laundered the buried
+        // call's effects (capability/sink/egress) past the catch-all below — the same bypass class the
+        // control-flow descent closed, for the value-shape wrappers. Only the `Lambda` literal BODY
+        // stays opaque — its effects are deferred to the application site, not the definition (a
+        // higher-order boundary; the closure-application callee/args ARE concrete call-site exprs and
+        // are walked via `CallExpr`).
+        Expr::CallExpr { callee, args } => {
+            analyze_expr_effect(callee, mode, scope, effects, ctx);
+            for arg in args {
+                analyze_expr_effect(arg, mode, scope, effects, ctx);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            analyze_expr_effect(lhs, mode, scope, effects, ctx);
+            analyze_expr_effect(rhs, mode, scope, effects, ctx);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
+            analyze_expr_effect(expr, mode, scope, effects, ctx);
+        }
+        Expr::Tainted { inner, .. } => analyze_expr_effect(inner, mode, scope, effects, ctx),
+        Expr::Assume(inner) | Expr::Assert(inner) => {
+            analyze_expr_effect(inner, mode, scope, effects, ctx);
+        }
+        Expr::FieldAccess { base, .. } => analyze_expr_effect(base, mode, scope, effects, ctx),
+        Expr::Index { base, index } => {
+            analyze_expr_effect(base, mode, scope, effects, ctx);
+            analyze_expr_effect(index, mode, scope, effects, ctx);
+        }
+        Expr::Try(inner) => analyze_expr_effect(inner, mode, scope, effects, ctx),
+        Expr::ArrayLiteral { elements } => {
+            for e in elements {
+                analyze_expr_effect(e, mode, scope, effects, ctx);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                analyze_expr_effect(e, mode, scope, effects, ctx);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for e in fields {
+                analyze_expr_effect(e, mode, scope, effects, ctx);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                analyze_expr_effect(k, mode, scope, effects, ctx);
+                analyze_expr_effect(v, mode, scope, effects, ctx);
+            }
         }
         _ => {}
     }

@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED
+// A tainted value sunk through a `send` buried in an array literal is now caught (the send call is
+// walked for effects inside the aggregate).
+fn main() uses(net.send) {
+    let t = input();
+    let x = [send("host", 80, t)];
+}

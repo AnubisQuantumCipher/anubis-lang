@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// A privileged call buried in an array literal, no uses(net.send) — the capability-laundering bypass
+// closed for aggregate wrappers.
+fn main() {
+    let x = [send("host", 80, "beacon")];
+}
