@@ -4954,6 +4954,88 @@ fn main() uses(net.send) { send("h", 80, pick(input())); }"#,
             .expect("a buried read_file is Safe-allowed and needs no capability");
     }
 
+    // ── Phase-2 confidentiality param→egress-sink dual (ANUBIS_INTERPROC_EXFILTRATION) ──────────
+
+    #[test]
+    fn secret_into_egressing_helper_param_is_caught() {
+        // A helper whose param reaches a network egress, called with a secret → caught at the boundary.
+        let err = tc_lane(
+            r#"fn leak(x) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { leak(secret_source("k")); }"#,
+            false,
+        )
+        .expect_err("secret into a param that reaches an egress must reject");
+        assert!(err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "got: {err}");
+        // Shell egress dual (shell ∈ is_egress_sink but ∉ is_sink — genuinely needs the egress summary).
+        let err = tc_lane(
+            r#"fn leak(x) uses(shell) { shell(x); }
+fn main() uses(shell) { leak(secret_source("k")); }"#,
+            false,
+        )
+        .expect_err("secret into a param that reaches a shell egress must reject");
+        assert!(err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "shell dual: got: {err}");
+        // Transitive: a → b → egress.
+        let err = tc_lane(
+            r#"fn b(y) uses(net.send) { send("h", 80, y); }
+fn a(x) uses(net.send) { b(x); }
+fn main() uses(net.send) { a(secret_source("k")); }"#,
+            false,
+        )
+        .expect_err("secret through a transitive egress chain must reject");
+        assert!(err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "transitive: got: {err}");
+        // The arg may itself be a secret-returning helper (consults secret_fns, like the direct check).
+        let err = tc_lane(
+            r#"fn get_key() { return secret_source("k"); }
+fn leak(x) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { leak(get_key()); }"#,
+            false,
+        )
+        .expect_err("a secret-returning helper passed into an egressing param must reject");
+        assert!(err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "secret-helper arg: got: {err}");
+    }
+
+    #[test]
+    fn secret_into_egressing_helper_accept_bias() {
+        // Declassified argument releases (expr_secret_source → None).
+        tc_lane(
+            r#"fn leak(x) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { leak(declassify(secret_source("k"), "p", "r")); }"#,
+            false,
+        )
+        .expect("a declassified secret into an egressing param is released");
+        // LOCAL write is NOT egress — a secret into a write_file helper must accept (egress-only scope).
+        tc_lane(
+            r#"fn store(x) uses(fs.write) { write_file("log", x); }
+fn main() uses(fs.write) { store(secret_source("k")); }"#,
+            false,
+        )
+        .expect("a secret into a LOCAL-write param is not exfiltration (egress-only)");
+        // Discard helper: the param does not reach the egress → not summarized.
+        tc_lane(
+            r#"fn ignore(x) uses(net.send) { send("h", 80, "literal"); }
+fn main() uses(net.send) { ignore(secret_source("k")); }"#,
+            false,
+        )
+        .expect("a param that never reaches the egress is not flagged");
+        // A clean (non-secret) argument to an egressing helper accepts.
+        tc_ok(r#"fn leak(x) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { leak("public"); }"#)
+            .expect("a non-secret argument to an egressing helper accepts");
+    }
+
+    #[test]
+    fn interproc_egress_and_sink_are_orthogonal_labels() {
+        // A TAINT source into an egressing helper fires the integrity interproc sink, NOT exfiltration
+        // (input() is taint-not-secret) — the two interprocedural checks are disjoint by label.
+        let err = tc_ok(
+            r#"fn leak(x) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { leak(input()); }"#,
+        )
+        .expect_err("taint into an egressing param fires the integrity interproc sink");
+        assert!(err.contains("ANUBIS_INTERPROC_SINK"), "got: {err}");
+        assert!(!err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "taint must not fire exfiltration: {err}");
+    }
+
     #[test]
     fn control_flow_walk_is_mirror_symmetric_across_labels() {
         // The same destructure shape must be caught by BOTH walkers (review Lens-C guard: the

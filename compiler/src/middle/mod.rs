@@ -227,6 +227,11 @@ struct SemanticContext {
     /// that another function's summary marks as sinking) without declassify. Monotone fixpoint.
     /// Call sites consult it: `log(tainted)` is `ANUBIS_INTERPROC_SINK` when `fn log(x){sink(x);}`.
     param_sinks: BTreeMap<String, BTreeSet<usize>>,
+    /// Interprocedural param→EGRESS summary — the confidentiality dual of `param_sinks`, built by the
+    /// same fixpoint with the `is_egress_sink` predicate (net/shell only, not local writes). Call
+    /// sites consult it: a SECRET argument into a summarized-egress param is `ANUBIS_INTERPROC_EXFILTRATION`
+    /// when `fn leak(x){ send(x); }`. Monotone fixpoint.
+    param_egress: BTreeMap<String, BTreeSet<usize>>,
     /// Interprocedural param→return summary (Phase-3 A2): for each function, the set of formal
     /// parameter indices that can flow to the return value without declassify. Monotone fixpoint.
     /// Combined at call sites with argument taint: `wrap` with `returns_taint_of_params={0}` makes
@@ -317,6 +322,7 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // per-function analysis so every `Call` the analysis sees can consult them.
     compute_tainting_fns(&ast.items, &mut ctx);
     compute_param_sinks(&ast.items, &mut ctx);
+    compute_param_egress(&ast.items, &mut ctx);
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
     // even when the secret is minted in a helper) and the leg-2 EXPOSURE summary (so a helper wrapping
@@ -2444,6 +2450,38 @@ fn analyze_expr_effect(
                                     ),
                                     span: None,
                                 });
+                            }
+                        }
+                    }
+                }
+            }
+            // CONFIDENTIALITY interprocedural egress — the DUAL of the ANUBIS_INTERPROC_SINK block
+            // above, and the interprocedural twin of the direct ANUBIS_SECRET_EXFILTRATION. A callee
+            // whose formal N flows to a network/shell EGRESS (per `ctx.param_egress`) makes a SECRET
+            // argument N an exfiltration at the call boundary — even though the actual `send(...)` is
+            // inside the callee, and even when no `secret_source` appears at the call site (the arg may
+            // itself be a secret-returning helper). Egress-only, so a secret into a LOCAL write is not
+            // flagged. A well-formed declassify releases (via `expr_secret_source` → None). Safe-mode.
+            if mode == Mode::Safe {
+                if let Some(egress_params) = ctx.param_egress.get(callee).cloned() {
+                    for i in egress_params {
+                        if let Some(arg) = args.get(i) {
+                            if let Some(source) = expr_secret_source(
+                                arg,
+                                scope,
+                                &ctx.secret_fns,
+                                &ctx.param_return_taint,
+                            ) {
+                                ctx.emit(
+                                    SemanticDiagnostic {
+                                        code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                                        message: format!(
+                                            "safe mode confidentiality violation: secret `{source}` flows into parameter {i} of `{callee}`, which reaches an egress without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program"
+                                        ),
+                                        span: None,
+                                    },
+                                    false,
+                                );
                             }
                         }
                     }
@@ -6865,6 +6903,7 @@ fn seed_flow_pattern(
 fn body_param_sinks(
     stmts: &[Stmt],
     flow: &mut BTreeMap<String, BTreeSet<usize>>,
+    sink_pred: fn(&str) -> bool,
     known_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
     found: &mut BTreeSet<usize>,
 ) {
@@ -6872,25 +6911,25 @@ fn body_param_sinks(
         match stmt {
             Stmt::Let { name, init, .. } => {
                 // A sink can hide inside the initializer (e.g. `let _ = sink(x)`).
-                collect_param_sinks_in_expr(init, flow, known_param_sinks, found);
+                collect_param_sinks_in_expr(init, flow, sink_pred, known_param_sinks, found);
                 seed_param_flow_let(name, init, flow);
             }
             Stmt::If {
                 then, else_, cond, ..
             } => {
-                collect_param_sinks_in_expr(cond, flow, known_param_sinks, found);
+                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, found);
                 let saved = flow.clone();
-                body_param_sinks(then, flow, known_param_sinks, found);
+                body_param_sinks(then, flow, sink_pred, known_param_sinks, found);
                 *flow = saved.clone();
                 if let Some(else_body) = else_ {
-                    body_param_sinks(else_body, flow, known_param_sinks, found);
+                    body_param_sinks(else_body, flow, sink_pred, known_param_sinks, found);
                 }
                 *flow = saved;
             }
             Stmt::While { body, cond, .. } => {
-                collect_param_sinks_in_expr(cond, flow, known_param_sinks, found);
+                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, found);
                 let saved = flow.clone();
-                body_param_sinks(body, flow, known_param_sinks, found);
+                body_param_sinks(body, flow, sink_pred, known_param_sinks, found);
                 *flow = saved;
             }
             Stmt::WhileLet { body, .. }
@@ -6898,7 +6937,7 @@ fn body_param_sinks(
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let saved = flow.clone();
-                body_param_sinks(body, flow, known_param_sinks, found);
+                body_param_sinks(body, flow, sink_pred, known_param_sinks, found);
                 *flow = saved;
             }
             Stmt::For {
@@ -6915,13 +6954,13 @@ fn body_param_sinks(
                     crate::frontend::ForSource::Collection { expr } => expr_param_flow(expr, flow),
                 };
                 flow.insert(var.clone(), src_flow);
-                body_param_sinks(body, flow, known_param_sinks, found);
+                body_param_sinks(body, flow, sink_pred, known_param_sinks, found);
                 *flow = saved;
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = flow.clone();
-                    body_param_sinks(b, flow, known_param_sinks, found);
+                    body_param_sinks(b, flow, sink_pred, known_param_sinks, found);
                     *flow = saved;
                 }
             }
@@ -6929,38 +6968,42 @@ fn body_param_sinks(
                 // Reassignment-insensitive for taint *clearing*, but we DO propagate param flow
                 // into an existing name when the RHS carries params (monotone add). Clearing is
                 // never performed — same discipline as the main taint analysis.
-                collect_param_sinks_in_expr(value, flow, known_param_sinks, found);
+                collect_param_sinks_in_expr(value, flow, sink_pred, known_param_sinks, found);
                 if let Expr::Var(name) = target {
                     let rhs = expr_param_flow(value, flow);
                     flow.entry(name.clone()).or_default().extend(rhs);
                 }
             }
             Stmt::ExprStmt(e) => {
-                collect_param_sinks_in_expr(e, flow, known_param_sinks, found);
+                collect_param_sinks_in_expr(e, flow, sink_pred, known_param_sinks, found);
             }
             _ => {
                 // Best-effort: scan any nested expressions in other stmt forms for sink calls.
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 for r in rets {
-                    collect_param_sinks_in_expr(&r, flow, known_param_sinks, found);
+                    collect_param_sinks_in_expr(&r, flow, sink_pred, known_param_sinks, found);
                 }
             }
         }
     }
 }
 
-/// If `expr` is (or contains) a sink of params, record those indices. Handles direct `is_sink`
-/// builtins and calls to functions whose param_sinks summary marks specific argument positions.
+/// If `expr` is (or contains) a sink of params, record those indices. `sink_pred` selects WHICH
+/// builtins count as a leaf sink — `is_sink` for the integrity param→sink summary, `is_egress_sink`
+/// for the confidentiality param→egress summary; the value-flow walk is otherwise identical, so both
+/// summaries share this one traversal. Also handles calls to user functions whose own summary
+/// (`known_param_sinks`, i.e. the map being computed) marks specific argument positions.
 fn collect_param_sinks_in_expr(
     expr: &Expr,
     flow: &BTreeMap<String, BTreeSet<usize>>,
+    sink_pred: fn(&str) -> bool,
     known_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
     found: &mut BTreeSet<usize>,
 ) {
     match expr {
         Expr::Call { callee, args } => {
-            if is_sink(callee) {
+            if sink_pred(callee) {
                 for arg in args {
                     found.extend(expr_param_flow(arg, flow));
                 }
@@ -6973,12 +7016,12 @@ fn collect_param_sinks_in_expr(
                 }
             }
             for arg in args {
-                collect_param_sinks_in_expr(arg, flow, known_param_sinks, found);
+                collect_param_sinks_in_expr(arg, flow, sink_pred, known_param_sinks, found);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            collect_param_sinks_in_expr(lhs, flow, known_param_sinks, found);
-            collect_param_sinks_in_expr(rhs, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(lhs, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(rhs, flow, sink_pred, known_param_sinks, found);
         }
         Expr::Unary { expr, .. }
         | Expr::Cast { expr, .. }
@@ -6986,14 +7029,14 @@ fn collect_param_sinks_in_expr(
         | Expr::Assume(expr)
         | Expr::Assert(expr)
         | Expr::FieldAccess { base: expr, .. } => {
-            collect_param_sinks_in_expr(expr, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(expr, flow, sink_pred, known_param_sinks, found);
         }
         Expr::Declassify { inner, .. } => {
-            collect_param_sinks_in_expr(inner, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(inner, flow, sink_pred, known_param_sinks, found);
         }
         Expr::Index { base, index } => {
-            collect_param_sinks_in_expr(base, flow, known_param_sinks, found);
-            collect_param_sinks_in_expr(index, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(base, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(index, flow, sink_pred, known_param_sinks, found);
         }
         // Control-flow value exprs — SCOPE-AWARE, the param->sink SUMMARY dual of the enforcing
         // descent in `analyze_expr_effect`: a param that reaches a sink buried in a match arm / if
@@ -7002,22 +7045,22 @@ fn collect_param_sinks_in_expr(
         Expr::If {
             cond, then, else_, ..
         } => {
-            collect_param_sinks_in_expr(cond, flow, known_param_sinks, found);
-            collect_param_sinks_in_expr(then, flow, known_param_sinks, found);
-            collect_param_sinks_in_expr(else_, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(then, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, found);
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            collect_param_sinks_in_expr(scrutinee, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, found);
             let scrut = expr_param_flow(scrutinee, flow);
             for arm in arms {
                 let mut local = flow.clone();
                 seed_flow_pattern(&mut local, &arm.pattern, &scrut);
                 if let Some(guard) = &arm.guard {
-                    collect_param_sinks_in_expr(guard, &local, known_param_sinks, found);
+                    collect_param_sinks_in_expr(guard, &local, sink_pred, known_param_sinks, found);
                 }
-                collect_param_sinks_in_expr(&arm.body, &local, known_param_sinks, found);
+                collect_param_sinks_in_expr(&arm.body, &local, sink_pred, known_param_sinks, found);
             }
         }
         Expr::IfLet {
@@ -7027,23 +7070,23 @@ fn collect_param_sinks_in_expr(
             else_,
             ..
         } => {
-            collect_param_sinks_in_expr(scrutinee, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, found);
             let scrut = expr_param_flow(scrutinee, flow);
             let mut local = flow.clone();
             seed_flow_pattern(&mut local, pattern, &scrut);
-            collect_param_sinks_in_expr(then, &local, known_param_sinks, found);
-            collect_param_sinks_in_expr(else_, flow, known_param_sinks, found);
+            collect_param_sinks_in_expr(then, &local, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, found);
         }
         Expr::Block { stmts, tail } => {
             let mut local = flow.clone();
             for stmt in stmts {
                 match stmt {
                     Stmt::Let { name, init, .. } => {
-                        collect_param_sinks_in_expr(init, &local, known_param_sinks, found);
+                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, found);
                         seed_param_flow_let(name, init, &mut local);
                     }
                     Stmt::LetPattern { pattern, init, .. } => {
-                        collect_param_sinks_in_expr(init, &local, known_param_sinks, found);
+                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, found);
                         let set = expr_param_flow(init, &local);
                         seed_flow_pattern(&mut local, pattern, &set);
                     }
@@ -7051,12 +7094,12 @@ fn collect_param_sinks_in_expr(
                         target: Expr::Var(name),
                         value,
                     } => {
-                        collect_param_sinks_in_expr(value, &local, known_param_sinks, found);
+                        collect_param_sinks_in_expr(value, &local, sink_pred, known_param_sinks, found);
                         let set = expr_param_flow(value, &local);
                         local.insert(name.clone(), set);
                     }
                     Stmt::ExprStmt(e) => {
-                        collect_param_sinks_in_expr(e, &local, known_param_sinks, found)
+                        collect_param_sinks_in_expr(e, &local, sink_pred, known_param_sinks, found)
                     }
                     // Deep-nested control-flow STATEMENTS in a value block are covered for the
                     // ENFORCING pass by walk_block_effects; here (a monotone, fail-open SUMMARY) the
@@ -7066,7 +7109,7 @@ fn collect_param_sinks_in_expr(
                 }
             }
             if let Some(t) = tail {
-                collect_param_sinks_in_expr(t, &local, known_param_sinks, found);
+                collect_param_sinks_in_expr(t, &local, sink_pred, known_param_sinks, found);
             }
         }
         _ => {}
@@ -7087,8 +7130,42 @@ fn compute_param_sinks(items: &[Item], ctx: &mut SemanticContext) {
                 flow.insert(p.clone(), BTreeSet::from([i]));
             }
             let mut found = BTreeSet::new();
-            body_param_sinks(body, &mut flow, &known, &mut found);
+            body_param_sinks(body, &mut flow, is_sink, &known, &mut found);
             let entry = ctx.param_sinks.entry(name.clone()).or_default();
+            for i in found {
+                if entry.insert(i) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Populate `ctx.param_egress` by the same monotone fixpoint as `compute_param_sinks`, but with the
+/// EGRESS predicate (`is_egress_sink`) — the confidentiality dual. Marks which formal parameters of
+/// each function flow into a network/shell EGRESS inside its body (directly or transitively). At a
+/// call site, a SECRET argument in one of those positions is `ANUBIS_INTERPROC_EXFILTRATION` — the
+/// interprocedural twin of the direct `ANUBIS_SECRET_EXFILTRATION`, exactly as `param_sinks` +
+/// `ANUBIS_INTERPROC_SINK` are the interprocedural twin of the direct tainted-sink check. Egress-only
+/// (not `is_sink`), so a secret flowing into a LOCAL write (`write_file`) is NOT exfiltration —
+/// matching the direct egress check's scope.
+fn compute_param_egress(items: &[Item], ctx: &mut SemanticContext) {
+    let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+    collect_fn_params_bodies(items, &mut fns);
+    loop {
+        let mut changed = false;
+        let known = ctx.param_egress.clone();
+        for (name, params, body) in &fns {
+            let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+            for (i, p) in params.iter().enumerate() {
+                flow.insert(p.clone(), BTreeSet::from([i]));
+            }
+            let mut found = BTreeSet::new();
+            body_param_sinks(body, &mut flow, is_egress_sink, &known, &mut found);
+            let entry = ctx.param_egress.entry(name.clone()).or_default();
             for i in found {
                 if entry.insert(i) {
                     changed = true;
