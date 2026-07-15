@@ -177,7 +177,10 @@ through indexing/field access.
   not hidden: **no interprocedural secret summary** (a secret returned from a helper arrives
   unlabelled — the dual of `compute_tainting_fns` is future work); **a `secret<T>`-annotated param/let
   IS now auto-labelled** (`e6fd51a`, the qualifier — but an unannotated `getenv`/`env` value is
-  deliberately NOT auto-secreted: env is untrusted input, not secret output); **local `fs.write` is not egress**
+  deliberately NOT auto-secreted: env is untrusted input, not secret output; and an interproc secret
+  summary now DOES exist — `8624882` for internally-minted secrets, `11935e5` for a `secret<T>`/
+  `tainted<T>` PARAM returned by a helper, so `send(get(5))` with `fn get(x: secret<u64>){ return x; }`
+  rejects); **local `fs.write` is not egress**
   (a secret written to a local file passes — pinned by `secret_local_write_accepts.anb`). Fixtures:
   `secret_exfiltration_send`/`_reassign`/`_shell`, `secret_declassified_egress_accepts`,
   `secret_local_write_accepts`, `secret_reassigned_clean_before_egress_accepts`; tests:
