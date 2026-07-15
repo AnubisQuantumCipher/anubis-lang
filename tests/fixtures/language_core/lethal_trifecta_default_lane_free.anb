@@ -1,9 +1,8 @@
 // EXPECT: PASS
-// Phase-2: the trifecta now RUNS in the Safe (default) lane, but SHADOW-gated (landed shadow-first) —
-// so it never rejects a default-lane program yet. This exact three-leg body ALSO carries a WELL-FORMED
-// declassify(read_file("notes"), ...) barrier, so it would accept even once the check is promoted to
-// Safe-enforcing (the declassify discharges the trifecta) and the Safe-mode value-flow taint check
-// stays quiet too. Accepts in both lanes.
+// Phase-2: the trifecta is now ENFORCING in the Safe (default) lane. This three-leg body accepts
+// because it carries a WELL-FORMED declassify(read_file("notes"), ...) barrier that discharges the
+// trifecta (and keeps the Safe-mode value-flow taint check quiet too) — the general relief valve.
+// Accepts in both the Safe and verified lanes.
 fn agent() uses(fs.read, net.send) {
     let steer = input();
     let secret = declassify(read_file("notes"), "hash-only", "safe");

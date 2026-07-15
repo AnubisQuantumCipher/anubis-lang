@@ -255,8 +255,8 @@ struct SemanticContext {
     /// happening at all, not the value's flow) — matching the intra-procedural leg-2 which is also
     /// presence. Using `is_leg2_source` (not `is_io_taint_source`/`tainting_fns`) is exactly what
     /// keeps a file-reading helper out of leg 2 — the read_file/leg-2 conflation the design avoids.
-    /// Computed by `trifecta::compute_leg2_fns`; consumed by the trifecta scan (enforcing in the
-    /// verified lane, shadow-gated in Safe).
+    /// Computed by `trifecta::compute_leg2_fns`; consumed by the trifecta scan (enforcing in the Safe
+    /// (default) and verified lanes).
     leg2_fns: BTreeSet<String>,
     /// Phase-3 C5: verification lane (`--verified` / `@verified` / `#[verified]`). When set,
     /// capability effects require an explicit `uses(...)` declaration (fail-closed).
@@ -327,8 +327,8 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
     // even when the secret is minted in a helper) and the leg-2 EXPOSURE summary (so a helper wrapping
-    // `input()` counts as untrusted-input exposure for the trifecta scan — enforcing in the verified
-    // lane, shadow-gated in Safe). Both are monotone,
+    // `input()` counts as untrusted-input exposure for the trifecta scan — enforcing in the Safe
+    // (default) and verified lanes). Both are monotone,
     // emit nothing themselves, and — like the taint summaries — populated before per-function analysis.
     compute_secret_fns(&ast.items, &mut ctx);
     ctx.leg2_fns = trifecta::compute_leg2_fns(&ast.items);
@@ -1239,8 +1239,9 @@ fn analyze_function(
         }
     }
 
-    // Phase-2 FINAL slice: the LETHAL TRIFECTA as a compile error — now RUNNING in the Safe (default)
-    // lane, SHADOW-FIRST. A function forms the trifecta when it holds all three lethal capabilities at
+    // Phase-2 FINAL slice: the LETHAL TRIFECTA as a compile error — ENFORCING in the Safe (default)
+    // lane (the Phase-2 differentiator). A function forms the trifecta when it holds all three lethal
+    // capabilities at
     // once: leg 1 — accesses PRIVATE data (fs.read — a file was read — OR an explicit `secret_source(..)`
     // confidentiality label); leg 2 — is exposed to UNTRUSTED input from a channel DISTINCT from the
     // read (input/recv/env/taint_source/tainted<T> param); leg 3 — COMMUNICATES externally (net.send OR
@@ -1252,11 +1253,11 @@ fn analyze_function(
     // Safe-mode sink gate (both are true); its genuinely-new coverage is the no-flow coexistence.
     // LANE: fires in Safe (default) AND verified — NOT in Research/Exploit unless `@verified` (the
     // dual-use lanes bypass, like the `mode == Mode::Safe` capability gates, plus the retained verified
-    // firing). It is ENFORCING in the verified lane and SHADOW-gated in Safe-unverified (`emit(.., !ctx.verified)`)
-    // — the move to a Safe-mode compile error lands shadow-first (operator directive): under normal
-    // `check` the Safe diagnostic is dropped (no reject → the default lane's verdicts are UNCHANGED),
-    // and under `ANUBIS_SHADOW_TYPES=1` it is logged so the corpus shadow diff can observe it before it
-    // is promoted to enforcing. Fixpoint-safe: checker-only sidecar (no HIR/MIR/projection mutation,
+    // firing). It is ENFORCING in both lanes (`emit(.., false)`) — this is the PROMOTION of the
+    // Safe-mode move, which landed shadow-first (`ec69ab6`, `emit(.., !ctx.verified)`) to soak: the
+    // shadow diff proved it fires on nothing committed (UNEXPECTED=0) and a full-corpus verdict-diff
+    // confirmed zero flips, so it is now a Safe-mode compile error. Fixpoint-safe: checker-only sidecar
+    // (no HIR/MIR/projection mutation,
     // only `ctx.emit`), so the self-host binary fixpoint is untouched regardless of lane — and no
     // committed program forms an undeclassified 3-leg trifecta in a Safe or verified function (corpus
     // shadow diff UNEXPECTED=0; zero trifecta lines on `selfhost/src/anubis_sh.anb` and every stdlib
@@ -1312,14 +1313,13 @@ fn analyze_function(
             };
             if let (Some(leg1), Some(leg2)) = (leg1, legs.leg2_untrusted) {
                 if !legs.wellformed_declassify {
-                    // ENFORCING in the verified lane; SHADOW-gated in Safe (the default lane). The
-                    // move to a Safe-mode compile error lands shadow-first (`emit(.., !ctx.verified)`
-                    // → shadow when Safe-unverified): under normal `check` the Safe diagnostic is
-                    // dropped (no reject — default-lane behavior unchanged), and under
-                    // `ANUBIS_SHADOW_TYPES=1` it is logged to `shadow_diags` so the corpus shadow diff
-                    // can SEE it. Promote to Safe-enforcing (flip this to `false`) in a follow-up once
-                    // it has soaked against real programs. The verified lane is unchanged (enforcing).
-                    let shadow_gated = !ctx.verified;
+                    // ENFORCING in BOTH the Safe (default) and verified lanes (`emit(.., false)`). This
+                    // is the PROMOTION of the Safe-mode move: the lethal trifecta is now a Safe-mode
+                    // compile error — the Phase-2 differentiator. It landed shadow-first (`ec69ab6`,
+                    // `emit(.., !ctx.verified)`) to soak; the shadow diff proved it fires on nothing
+                    // committed (UNEXPECTED=0), and a full-corpus verdict-diff confirmed zero flips, so
+                    // it is promoted to enforcing. Research/Exploit (unverified) still bypass (the gate
+                    // above excludes them) — the dual-use lanes.
                     ctx.emit(
                         SemanticDiagnostic {
                             code: Some("ANUBIS_LETHAL_TRIFECTA".into()),
@@ -1328,7 +1328,7 @@ fn analyze_function(
                             ),
                             span: Some((span.start, span.end)),
                         },
-                        shadow_gated,
+                        false,
                     );
                 }
             }

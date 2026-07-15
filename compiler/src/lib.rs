@@ -4476,7 +4476,7 @@ fn main() { }"#;
     // so a whole-program `fn send(...)` is independently flagged by the older Safe/verified effect
     // gates — a pre-existing inconsistency out of this slice's scope.)
 
-    // ── Phase-2: the lethal trifecta — a verified-lane compile error + a Safe-lane shadow check ──
+    // ── Phase-2: the lethal trifecta — a Safe (default) + verified lane compile error ────────────
 
     // A three-leg trifecta body with a CONSTANT egress arg: no value flows read→send, so the
     // Safe-mode value-flow taint check is silent and ANUBIS_LETHAL_TRIFECTA is the sole new error —
@@ -4493,16 +4493,41 @@ fn main() { }"#;
 fn main() { }"#;
 
     #[test]
-    fn lethal_trifecta_enforced_in_verified_shadowed_in_safe() {
-        // Verified lane: ENFORCING — the trifecta is a compile error.
-        let err = tc_lane(TRIFECTA_BODY, true).expect_err("trifecta must reject under verified");
-        assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
-        // Safe (default) lane: the check now RUNS but is SHADOW-gated (operator directive: land the
-        // move to a Safe-mode compile error shadow-first, promote to enforcing later). Under a normal
-        // check the exact same 3-leg body still COMPILES — its would-be diagnostic is diverted to the
-        // shadow log only under ANUBIS_SHADOW_TYPES=1 (for the corpus shadow diff), never to the
-        // enforcing gate — so default-lane verdicts are unchanged.
-        tc_lane(TRIFECTA_BODY, false).expect("safe lane shadow-gates the trifecta (no reject yet)");
+    fn lethal_trifecta_enforced_in_both_lanes() {
+        // PROMOTED to Safe-enforcing: the lethal trifecta is now a compile error in BOTH the Safe
+        // (default) lane and the verified lane (it landed shadow-first, then promoted once the shadow
+        // diff proved it fires on nothing committed). The undeclassified 3-leg body rejects with
+        // ANUBIS_LETHAL_TRIFECTA regardless of lane.
+        for verified in [true, false] {
+            let err = tc_lane(TRIFECTA_BODY, verified)
+                .expect_err("trifecta must reject in both lanes");
+            assert!(
+                err.contains("ANUBIS_LETHAL_TRIFECTA"),
+                "verified={verified} got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn lethal_trifecta_safe_lane_accept_bias() {
+        // Accept-bias guards proving the now-enforcing Safe lane does NOT over-reject: a 2-leg body
+        // (private read + egress, no distinct untrusted channel) and a well-formed-declassified 3-leg
+        // body both COMPILE in the Safe (default) lane — the exact shapes the arc's Phase-2
+        // definition-of-done requires to bound the coexistence check.
+        let two = r#"fn agent() uses(fs.read, net.send) {
+    let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
+    let secret = read_file("cfg"); cap_use(rc); cap_use(sc); send("host", 80, "ping");
+}
+fn main() { }"#;
+        tc_lane(two, false).expect("safe lane: two legs (no untrusted channel) accepts");
+        let declassified = r#"fn agent() uses(fs.read, net.send) {
+    let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
+    let steer = input(); let secret = read_file("notes");
+    let safe = declassify(secret, "hash-only", "reviewed");
+    cap_use(rc); cap_use(sc); send("host", 80, safe);
+}
+fn main() { }"#;
+        tc_lane(declassified, false).expect("safe lane: a well-formed declassify discharges the trifecta");
     }
 
     #[test]

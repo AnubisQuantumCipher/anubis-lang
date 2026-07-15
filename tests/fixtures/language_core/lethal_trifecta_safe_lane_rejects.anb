@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LETHAL_TRIFECTA
+// Phase-2 differentiator: the lethal trifecta is now a Safe (DEFAULT) lane compile error (promoted from
+// shadow-first). This undeclassified three-leg body — private read (fs.read) + a DISTINCT untrusted
+// channel (input) + a net egress — is NOT @verified, yet rejects under a normal `check`. Relief: a
+// well-formed declassify on the outbound value, or restructure so no function/common caller holds all three.
+fn agent() uses(fs.read, net.send) {
+    let steer = input();
+    let secret = read_file("notes");
+    send("host", 80, "beacon");
+}
+
+fn main() { }
