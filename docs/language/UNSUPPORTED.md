@@ -100,6 +100,34 @@ CPU-pinning child process.
   yield a float?), i.e. real interprocedural analysis (Phase 3), not declared types. Do not re-try
   the declared-type shortcut.
 
+## NOW REAL (typed `?` + call-return type-checking at LET bindings — Phase-1, 2026-07-15)
+
+- An annotated `let` whose initializer is a **call return** — or a **`?` on one** — is now
+  type-checked against the callee's declared return type: `let x: string = produce()` and
+  `let x: string = produce()?` (where `produce -> u64` / `-> Result<u64, E>`) are REAL
+  `ANUBIS_TYPE_MISMATCH` (`3536581`). Previously the let-init check used only the scope-only
+  `infer_expr_type_scoped`, which returns `None` for every call, so these type lies slipped through
+  even though the identical mismatch was already caught in **return** position (`return produce()` →
+  `ANUBIS_RETURN_TYPE_MISMATCH`) and **argument** position (`f(produce())` → `ANUBIS_TYPE_MISMATCH`).
+  Mechanism: an `Expr::Try` arm in `ty::synth` peels the Ok/Some payload via `ty::try_unwrap_ok`
+  (`Result<u32,E>`/`Option<u32>` → `u32`), and the let-init check falls back to
+  `check_mismatch_scoped` (the InferEnv path, which carries `fn_ret_types`) for
+  `Call`/`Index`/`FieldAccess`/`?`-on-one inits. Accept-biased throughout: an unknown callee, an
+  `Any`/generic/bare-type-parameter return, or an assignable type never fires.
+- **NOT a re-try of the reverted "declared-type shortcut" above.** That warning is about the float
+  *narrowing* solver lint, where a declared `-> f64` can return an int at runtime (int→float
+  widening), so narrowing on the declared type wrongly rejects a running program. This slice is the
+  general annotation-vs-declared-return **contract** check (`assignable`), the exact semantics the
+  return- and argument-position checks already shipped enforcing — it does not touch the float
+  narrowing lane. Verdict-diff: 0 flips across all 559 corpus `.anb`.
+- Fixtures: `typed_question_mark_call_return_type_lie_rejects` / `_accepts` / `call_option_rejects`,
+  `let_call_return_type_lie_rejects` / `_matches_accepts`. Unit:
+  `cargo test -p anubis-compiler typed_question_mark_unwraps_the_call_return`.
+- **RESIDUAL:** a `?` on a **variable** whose type is not a statically-annotated `Option`/`Result`
+  (e.g. a `?` on a call bound through an un-annotated `let`, or a deeper flow) still infers `None`
+  and is accepted — the scope-only inferer only pins a container it can see directly. The safe
+  direction (missed lint, never a false rejection).
+
 ## NOW REAL (taint as a structured qualifier + index/field propagation — Phase-3 slice, 2026-07-11)
 
 First step of Phase 3: taint recognition stops being a bare substring test and taint stops leaking
