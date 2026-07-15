@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// A FALSE float postcondition is DISPROVED, not silently accepted: for 0 < x < 1, x*x < x, so
+// `ensures(result > x)` is false — z3 finds a counterexample and the checker rejects it.
+fn sq_gt(x: f64) -> f64
+    requires(x > 0.0)
+    requires(x < 1.0)
+    ensures(result > x)
+{
+    return x * x;
+}
+fn main() { print(sq_gt(0.5)); }

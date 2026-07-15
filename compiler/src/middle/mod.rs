@@ -191,6 +191,10 @@ struct SemanticContext {
     /// which records a width for EVERY let — including string/bool/list bindings — and so cannot be
     /// used to decide whether an assertion is soundly modelable in QF_BV.
     solver_int_vars: BTreeSet<String>,
+    /// Variables modeled as IEEE-754 Float64 in the QF_FP solver lane (Phase 3): float params (and,
+    /// later, float `let`s). A symbol is EITHER an i64 bit-vector OR a Float64, never both — a mixed
+    /// int/float comparison stays fail-closed. Reset per function alongside `solver_int_vars`.
+    solver_float_vars: BTreeSet<String>,
     /// Variables given an EXPLICIT `: T` annotation. Only these have their reassignments
     /// type-checked (the user opted into the type); an inferred binding is dynamic and reassignable
     /// to any type, so enforcing type-stability on it would be a false positive.
@@ -910,6 +914,7 @@ fn analyze_function(
     // (which could hold a string/list/bool), or an integer predicate over the second would be "proved"
     // against the first's model. Reset per function. (Obligations/constraints accumulate globally.)
     ctx.solver_int_vars.clear();
+    ctx.solver_float_vars.clear();
     ctx.symbolic_widths.clear();
     // Authorize declared capabilities for Safe-mode I/O (Phase-3 C5 dual-mode crown).
     ctx.authorized_caps = declared_effects
@@ -1055,11 +1060,22 @@ fn analyze_function(
             if is_integer_ty(pty) {
                 ctx.solver_int_vars.insert(pname.clone());
                 ctx.symbolic_widths.insert(pname.clone(), 64);
+            } else if is_float_ty(pty) {
+                // Phase-3 QF_FP: a float param is now solver-modelable — declared IEEE-754 Float64, so a
+                // float `ensures`/`assert` over `+ - *` and comparisons can be discharged (previously it
+                // fell through to ANUBIS_FLOAT_CONTRACT_UNMODELED). Kept OUT of `solver_int_vars` so it is
+                // never mixed into an i64 bit-vector model.
+                ctx.solver_float_vars.insert(pname.clone());
             }
         }
         for req in requires {
             if is_bool_modelable(req, &ctx.solver_int_vars) {
                 assumptions.push(expr_to_smt(req, &ctx.symbolic_widths));
+            } else if is_bool_modelable_float(req, &ctx.solver_float_vars) {
+                // Phase-3 QF_FP: a float precondition becomes a float ASSUMPTION (the `<=`/`>=` NaN
+                // disjunction in float_bool_to_smt keeps a runtime-reachable NaN input IN the assumed
+                // set, matching run.rs — a bare fp.leq would wrongly exclude it and over-certify).
+                assumptions.push(float_bool_to_smt(req));
             }
         }
         // Mark parameters that a `requires` guard proves non-zero AS DIVISORS, so `x / v` / `x % v`
@@ -2879,7 +2895,13 @@ impl SymbolicEngine {
                     body.push_str(&format!("(assert {})\n", a));
                 }
                 body.push_str(&format!("(assert (not {}))\n", obl.assertion));
-                let logic = if smt_uses_arrays(&body, &vars) {
+                // Phase-3 QF_FP: a float obligation (its body carries `fp.`/`to_fp` from the float
+                // encoder) declares its symbols as Float64 and runs under QF_FP; int/array obligations
+                // are unchanged (a symbol is never both, so the choice is per-obligation).
+                let uses_floats = smt_uses_floats(&body);
+                let logic = if uses_floats {
+                    "QF_FP"
+                } else if smt_uses_arrays(&body, &vars) {
                     "QF_ABV"
                 } else {
                     "QF_BV"
@@ -2889,8 +2911,9 @@ impl SymbolicEngine {
                     if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
                         // Every integer variable is a 64-bit bit-vector: the runtime is i64 and
                         // type-annotation widths are inert, so a narrower declaration would be an
-                        // unsound abstraction. Sequence arrays use the `__arr` Array sort (A2).
-                        smt.push_str(&declare_smt_var(v));
+                        // unsound abstraction. Sequence arrays use the `__arr` Array sort (A2); float
+                        // vars are IEEE-754 Float64 (QF_FP).
+                        smt.push_str(&declare_smt_var_maybe_float(v, uses_floats));
                     }
                 }
                 smt.push_str(&body);
@@ -2956,7 +2979,10 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     for a in &obl.assumptions {
         body.push_str(&format!("(assert {})\n", a));
     }
-    let logic = if smt_uses_arrays(&body, &vars) {
+    let uses_floats = smt_uses_floats(&body);
+    let logic = if uses_floats {
+        "QF_FP"
+    } else if smt_uses_arrays(&body, &vars) {
         "QF_ABV"
     } else {
         "QF_BV"
@@ -2964,7 +2990,7 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     let mut smt = format!("(set-logic {logic})\n");
     for v in &vars {
         if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
-            smt.push_str(&declare_smt_var(v));
+            smt.push_str(&declare_smt_var_maybe_float(v, uses_floats));
         }
     }
     smt.push_str(&body);
@@ -3467,6 +3493,113 @@ fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
     }
 }
 
+/// Phase-3 QF_FP: is `e` a modelable FLOAT arithmetic term — a float var, a FINITE decimal-representable
+/// f64 literal, or `+ - *` (and unary `-`) over those? `/` `%`, casts, and non-finite / scientific-
+/// notation literals are excluded (fail-closed). Mirrors `is_int_modelable`, over `solver_float_vars`.
+fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Var(v) => float_vars.contains(v),
+        // A finite f64 literal that has a plain decimal form: `"NaN"`/`"inf"` both `.parse::<f64>()` OK in
+        // Rust (a non-finite literal would break the NaN/inf reasoning), and a very large/small value
+        // formats to scientific notation (`1e20`) which is NOT a valid SMT-LIB Real — reject both.
+        Expr::Literal(l) => l
+            .parse::<f64>()
+            .map(|v| v.is_finite() && !format!("{v:?}").contains(['e', 'E']))
+            .unwrap_or(false),
+        Expr::Binary { op, lhs, rhs } if op == "+" || op == "-" || op == "*" => {
+            is_float_modelable(lhs, float_vars) && is_float_modelable(rhs, float_vars)
+        }
+        Expr::Unary { op, expr } if op == "-" => is_float_modelable(expr, float_vars),
+        Expr::Declassify { inner, .. } => is_float_modelable(inner, float_vars),
+        _ => false,
+    }
+}
+
+/// Phase-3 QF_FP: is `e` a modelable FLOAT boolean formula — a comparison of two float-modelable terms,
+/// or `&& || !` over such. Kept SEPARATE from `is_bool_modelable` so the integer gate's signature and its
+/// call sites stay untouched; obligation builders try the int gate FIRST (so a pure-int formula never
+/// takes the float path), then this.
+fn is_bool_modelable_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Binary { op, lhs, rhs } => match op.as_str() {
+            "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+                is_float_modelable(lhs, float_vars) && is_float_modelable(rhs, float_vars)
+            }
+            "&&" | "||" => {
+                is_bool_modelable_float(lhs, float_vars) && is_bool_modelable_float(rhs, float_vars)
+            }
+            _ => false,
+        },
+        Expr::Unary { op, expr } => op == "!" && is_bool_modelable_float(expr, float_vars),
+        Expr::Declassify { inner, .. } => is_bool_modelable_float(inner, float_vars),
+        _ => false,
+    }
+}
+
+/// Phase-3 QF_FP: encode a float ARITHMETIC term to SMT Float64 `(_ FloatingPoint 11 53)`. Invoked ONLY
+/// on `is_float_modelable` exprs, so every reachable case is total. `+ - *` use round-to-nearest-even
+/// (RNE), matching the runtime's native f64 ops (run.rs anubis_add/sub/mul); a finite literal is a Real
+/// lifted via `to_fp RNE`, with SMT Real negation `(- …)` for a negative value.
+fn float_expr_to_smt(e: &Expr) -> String {
+    match e {
+        Expr::Var(v) => smt_var(v),
+        Expr::Literal(l) => {
+            let v: f64 = l.parse().unwrap_or(0.0);
+            if v.is_sign_negative() {
+                format!("((_ to_fp 11 53) RNE (- {:?}))", -v)
+            } else {
+                format!("((_ to_fp 11 53) RNE {v:?})")
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            let l = float_expr_to_smt(lhs);
+            let r = float_expr_to_smt(rhs);
+            let f = match op.as_str() {
+                "+" => "fp.add",
+                "-" => "fp.sub",
+                _ => "fp.mul",
+            };
+            format!("({f} RNE {l} {r})")
+        }
+        Expr::Unary { expr, .. } => format!("(fp.neg {})", float_expr_to_smt(expr)),
+        Expr::Declassify { inner, .. } => float_expr_to_smt(inner),
+        _ => "((_ to_fp 11 53) RNE 0.0)".to_string(),
+    }
+}
+
+/// Phase-3 QF_FP: encode a float BOOLEAN formula to SMT. `<`→fp.lt, `>`→fp.gt, `==`→fp.eq, `!=`→(not
+/// fp.eq) already agree with the runtime at NaN. But `<=`/`>=` do NOT: the runtime cmp is
+/// `partial_cmp().unwrap_or(Equal)` (run.rs), so `NaN <= c` / `NaN >= c` are TRUE at runtime while IEEE
+/// fp.leq/geq(NaN,·) are FALSE — and a bare fp.leq on the ASSUMPTION side would exclude a runtime-reachable
+/// NaN input and FALSELY certify a contract the runtime violates. So `<=`/`>=` add the NaN disjunction to
+/// match run.rs exactly. (The soundness fix the design workflow flagged.)
+fn float_bool_to_smt(e: &Expr) -> String {
+    match e {
+        Expr::Binary { op, lhs, rhs } => {
+            if op == "&&" || op == "||" {
+                let l = float_bool_to_smt(lhs);
+                let r = float_bool_to_smt(rhs);
+                let o = if op == "&&" { "and" } else { "or" };
+                return format!("({o} {l} {r})");
+            }
+            let l = float_expr_to_smt(lhs);
+            let r = float_expr_to_smt(rhs);
+            match op.as_str() {
+                "==" => format!("(fp.eq {l} {r})"),
+                "!=" => format!("(not (fp.eq {l} {r}))"),
+                "<" => format!("(fp.lt {l} {r})"),
+                ">" => format!("(fp.gt {l} {r})"),
+                "<=" => format!("(or (fp.leq {l} {r}) (fp.isNaN {l}) (fp.isNaN {r}))"),
+                ">=" => format!("(or (fp.geq {l} {r}) (fp.isNaN {l}) (fp.isNaN {r}))"),
+                _ => "true".to_string(),
+            }
+        }
+        Expr::Unary { op, expr } if op == "!" => format!("(not {})", float_bool_to_smt(expr)),
+        Expr::Declassify { inner, .. } => float_bool_to_smt(inner),
+        _ => "true".to_string(),
+    }
+}
+
 fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String> {
     match e {
         Expr::Var(v) if widths.contains_key(v) => Some(smt_var(v)),
@@ -3727,6 +3860,23 @@ fn declare_smt_var(v: &str) -> String {
     }
 }
 
+/// Declare a symbol as IEEE-754 Float64 for the QF_FP lane, else fall back to the integer/array
+/// declaration. A float obligation is all-float (int/float mixing is never modelable), so every
+/// non-literal symbol in it is Float64.
+fn declare_smt_var_maybe_float(v: &str, is_float: bool) -> String {
+    if is_float {
+        format!("(declare-const {v} (_ FloatingPoint 11 53))\n")
+    } else {
+        declare_smt_var(v)
+    }
+}
+
+/// Whether an obligation's SMT body is a QF_FP (float) query — detected by the float operators the float
+/// encoder emits (`fp.` / `to_fp`), mirroring how `smt_uses_arrays` detects the array sort from the body.
+fn smt_uses_floats(smt_body: &str) -> bool {
+    smt_body.contains("fp.") || smt_body.contains("to_fp")
+}
+
 fn smt_uses_arrays(smt_body: &str, vars: &BTreeSet<String>) -> bool {
     smt_body.contains("(select ")
         || smt_body.contains("(store ")
@@ -3951,6 +4101,27 @@ fn push_ensures_obligations(
                 assumptions: assumptions.to_vec(),
                 assertion: smt,
                 vars: vars.into_iter().collect(),
+            });
+        } else if is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
+            // Phase-3 QF_FP: a float postcondition over the modelable subset (`+ - *`, comparisons) is
+            // DISCHARGED via the float encoder instead of being rejected as unmodeled. Vars come from the
+            // Expr (not the SMT string), so the float operator tokens are never mistaken for symbols. (The
+            // float assumptions are already float-encoded strings; a float `requires` var absent from the
+            // postcondition is a fail-closed residual — z3 sees an undeclared symbol and the obligation
+            // fails rather than over-certifies.)
+            let smt = float_bool_to_smt(&concrete);
+            // The SMT body uses the mangled symbol `smt_var(v)` (= `anb_v`), so the declaration set must
+            // carry the MANGLED names — collect the raw Expr vars, then map through `smt_var` (the int
+            // path gets this for free by scraping the already-mangled SMT string; the float path collects
+            // from the Expr to dodge the `fp.`/`RNE`/`to_fp` operator-token trap, so it must mangle here).
+            let mut raw = BTreeSet::new();
+            collect_expr_vars(&concrete, &mut raw);
+            let vars: Vec<String> = raw.iter().map(|v| smt_var(v)).collect();
+            ctx.solver_obligations.push(SolverObligation {
+                name: format!("ensures:{smt}"),
+                assumptions: assumptions.to_vec(),
+                assertion: smt,
+                vars,
             });
         } else {
             // A postcondition the solver cannot faithfully model. Contracts are NOT runtime-enforced,
@@ -5265,6 +5436,10 @@ fn is_numeric_ty(ty: &str) -> bool {
 
 fn is_integer_ty(ty: &str) -> bool {
     ty::is_integer(ty)
+}
+
+fn is_float_ty(ty: &str) -> bool {
+    ty::is_float(ty)
 }
 
 fn cast_preserves_i64(ty: &str) -> bool {

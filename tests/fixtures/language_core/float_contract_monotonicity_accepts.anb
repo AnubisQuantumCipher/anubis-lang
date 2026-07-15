@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Phase-3 QF_FP: a TRUE float postcondition over `+ - *` and comparisons now DISCHARGES (was rejected as
+// ANUBIS_FLOAT_CONTRACT_UNMODELED). For 0 < x < 1, x*x < x — z3 proves it in QF_FP Float64/RNE.
+fn sq_lt(x: f64) -> f64
+    requires(x > 0.0)
+    requires(x < 1.0)
+    ensures(result < x)
+{
+    return x * x;
+}
+fn main() { print(sq_lt(0.5)); }

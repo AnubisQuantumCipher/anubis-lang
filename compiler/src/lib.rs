@@ -2705,18 +2705,65 @@ fn bad() {
 
     #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
-        // S: strings/floats stay opaque with precise codes (no silent cert).
+        // S: strings stay opaque with a precise code (no silent cert).
         let err = tc_ok(r#"fn f() -> string ensures(result == "ok") { return "ok"; }"#)
             .expect_err("string ensures must reject");
         assert!(
             err.contains("ANUBIS_STRING_CONTRACT_UNMODELED"),
             "got: {err}"
         );
-        let err = tc_ok("fn f() -> f64 ensures(result == 1.5) { return 1.5; }")
-            .expect_err("float ensures must reject");
+        // F (Phase-3 QF_FP): a MODELABLE float contract — a comparison over `+ - *` of finite floats —
+        // now DISCHARGES instead of staying opaque. `result == 1.5` for `return 1.5` is a true contract
+        // the QF_FP Float64 lane proves. (Floats are no longer blanket-rejected.)
         assert!(
-            err.contains("ANUBIS_FLOAT_CONTRACT_UNMODELED"),
-            "got: {err}"
+            tc_ok("fn f() -> f64 ensures(result == 1.5) { return 1.5; }").is_ok(),
+            "a true modelable float ensures should discharge under the QF_FP lane",
+        );
+        // …but a NON-modelable float construct (division is outside the `+ - *` subset) stays fail-closed —
+        // the lane never fabricates a proof for what it cannot faithfully model.
+        let err = tc_ok("fn f(x: f64, y: f64) -> f64 ensures(result == x / y) { return x / y; }")
+            .expect_err("a non-modelable float `/` ensures must still reject");
+        assert!(err.contains("ANUBIS_"), "got: {err}");
+    }
+
+    #[test]
+    fn phase3_qf_fp_float_contract_lane() {
+        // Runs the SOLVER (not just typecheck): discharged iff typecheck OK AND no obligation FAILs —
+        // the same helper the integer solver tests use, so a disproved float ensures counts as not
+        // discharged.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
+        // A TRUE float postcondition over `+ - *` discharges via the QF_FP Float64/RNE lane: for
+        // 0 < x < 1, x*x < x (z3 proves it UNSAT).
+        assert!(
+            discharged(
+                "fn sq_lt(x: f64) -> f64 requires(x > 0.0) requires(x < 1.0) ensures(result < x) \
+                 { return x * x; }"
+            ),
+            "a true float monotonicity contract should discharge",
+        );
+        // A FALSE float postcondition is DISPROVED (z3 counterexample), never silently accepted.
+        assert!(
+            !discharged(
+                "fn sq_gt(x: f64) -> f64 requires(x > 0.0) requires(x < 1.0) ensures(result > x) \
+                 { return x * x; }"
+            ),
+            "a false float ensures must be disproved",
+        );
+        // SOUNDNESS GUARD (the NaN fix): the runtime `<=` is partial_cmp().unwrap_or(Equal), so
+        // `NaN <= 10.0` is TRUE at runtime — f(NaN) is admitted by the requires yet `NaN < 999.0` is
+        // FALSE. The `<=` NaN-disjunction keeps NaN in the assumed set, so this violable contract is
+        // NOT certified. A bare `fp.leq` encoding would falsely prove it.
+        assert!(
+            !discharged(
+                "fn f(x: f64) -> f64 requires(x <= 10.0) ensures(result < 999.0) { return x; }"
+            ),
+            "a contract violable at a NaN input must not be falsely certified",
         );
     }
 

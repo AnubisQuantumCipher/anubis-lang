@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// SOUNDNESS GUARD (the load-bearing NaN fix). The runtime cmp is partial_cmp().unwrap_or(Equal), so
+// `NaN <= 10.0` is TRUE at runtime — thus f(NaN) is ADMITTED by the requires yet `NaN < 999.0` is FALSE,
+// so the contract is violable and MUST be rejected. A bare fp.leq encoding would EXCLUDE NaN and falsely
+// certify this; the NaN-disjunction in float_bool_to_smt keeps NaN in the assumed set and rejects it.
+fn f(x: f64) -> f64
+    requires(x <= 10.0)
+    ensures(result < 999.0)
+{
+    return x;
+}
+fn main() { print(f(3.0)); }
