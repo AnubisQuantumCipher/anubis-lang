@@ -2334,6 +2334,9 @@ fn analyze_stmts(
                 // As with `Stmt::Let`, a destructuring initializer can hide an embedded write to an
                 // outer variable; invalidate its stale solver fact.
                 invalidate_embedded_writes(ctx, assumptions, init);
+                // The initializer is evaluated UNCONDITIONALLY (like a plain `let`), so discharge a
+                // contracted call in it (`let [p, q] = [g(a), 0];`).
+                discharge_calls_in_expr(ctx, assumptions, init);
                 // #69: SEED taint/secret from the initializer. Before this the arm labelled nothing
                 // (not even inserting the bound names into `scope`), so a destructured secret/tainted
                 // source laundered: `let [a,b] = [secret_source("k"),0]; send(a)` and the direct-source
@@ -2559,8 +2562,11 @@ fn analyze_stmts(
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
                 // A contracted call in ASSIGN-value position (`y = g(x);`, `y = h(g(x));`) — discharge its
-                // precondition under the pre-assignment assumptions (with any branch guard in scope).
+                // precondition under the pre-assignment assumptions (with any branch guard in scope). The
+                // TARGET place-expression is also evaluated (`arr[g(i)] = x;` computes the index/base), so
+                // discharge calls in it too.
                 discharge_calls_in_expr(ctx, assumptions, value);
+                discharge_calls_in_expr(ctx, assumptions, target);
                 let value_taint =
                     expr_taint_source_m(value, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
                 if let (Some(source), Expr::Var(name)) = (&value_taint, target) {
@@ -2742,6 +2748,10 @@ fn analyze_stmts(
                 // is not covered by the branch sweep below (which only sees `then`/`else`), so invalidate
                 // it before snapshotting. No-op for an ordinary condition with no assignment.
                 invalidate_embedded_writes(ctx, assumptions, cond);
+                // The condition is evaluated UNCONDITIONALLY (before either branch), so a contracted call
+                // in it (`if g(a) > 0 { … }`) must have its precondition discharged — under the pre-branch
+                // assumptions (the guard is not yet in scope for its own condition).
+                discharge_calls_in_expr(ctx, assumptions, cond);
                 // A branch may not execute, so a fact it asserts (e.g. `x = 5`) must not leak out as
                 // unconditional. Analyze each branch under the pre-`if` assumptions (the branches are
                 // ALTERNATIVES — reset between them so `then`'s facts don't leak into `else`), then
@@ -2803,6 +2813,11 @@ fn analyze_stmts(
                 // Invalidate any write embedded in the loop condition (see the `if` handler); no-op for
                 // an ordinary condition.
                 invalidate_embedded_writes(ctx, assumptions, cond);
+                // The loop condition is evaluated at least once (unconditionally on entry), so discharge a
+                // contracted call in it (`while g(a) > 0 { … }`). A loop-carried variable in the condition
+                // is havoced below (→ unmodeled → skipped, the documented loop residual); a non-loop-var
+                // call still discharges under the pre-loop assumptions.
+                discharge_calls_in_expr(ctx, assumptions, cond);
                 effects.push("loop".into());
                 // B3: verify loop invariants (base case + preservation) BEFORE the body drops the
                 // loop-carried variables, so the base case sees their pre-loop state.
@@ -2850,6 +2865,9 @@ fn analyze_stmts(
                 effects.push("loop".into());
                 // Invalidate any write embedded in the `while let` scrutinee (see the `if` handler).
                 invalidate_embedded_writes(ctx, assumptions, expr);
+                // The scrutinee is evaluated at least once (unconditionally on entry) — discharge a
+                // contracted call in it (`while let Ok(v) = g(a) { … }`).
+                discharge_calls_in_expr(ctx, assumptions, expr);
                 // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
                 let snap_scope = scope.clone();
                 for n in pattern.bound_names() {
@@ -2953,6 +2971,17 @@ fn analyze_stmts(
                     }
                     crate::frontend::ForSource::Collection { expr } => {
                         invalidate_embedded_writes(ctx, assumptions, expr);
+                    }
+                }
+                // The range/collection header is evaluated UNCONDITIONALLY to establish the iteration, so a
+                // contracted call in it (`for i in 0..g(a) { … }`) must have its precondition discharged.
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        discharge_calls_in_expr(ctx, assumptions, start);
+                        discharge_calls_in_expr(ctx, assumptions, end);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        discharge_calls_in_expr(ctx, assumptions, expr);
                     }
                 }
                 let taint_src = match source {

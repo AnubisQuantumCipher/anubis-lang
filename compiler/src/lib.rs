@@ -6166,6 +6166,52 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn contracted_calls_in_statement_header_positions_discharge() {
+        // The completeness-critic hunt found a class of UNCONDITIONALLY-executed statement sub-expressions
+        // that the per-arm wiring of the nested-call walker had missed — a call there was fail-open. Each
+        // must now be discharged: an `if`/`while` condition, a `for` range/collection header, a `let`
+        // destructuring initializer, an assignment TARGET place-expression, a `while let` scrutinee.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // if-condition
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if g(a) > 100 { print(1); } } fn main() { c(0 - 5); }"#),
+            "a violable call in an `if` CONDITION must reject"
+        );
+        // while-condition
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { while g(a) > 100 { } } fn main() { c(0 - 5); }"#),
+            "a violable call in a `while` CONDITION must reject"
+        );
+        // for-range header
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let mut s = 0; for i in 0..g(a) { s = s + i; } print(s); } fn main() { c(0 - 5); }"#),
+            "a violable call in a `for` RANGE header must reject"
+        );
+        // let-pattern (destructuring) initializer
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let [p, q] = [g(a), 0]; print(p + q); } fn main() { c(0 - 5); }"#),
+            "a violable call in a destructuring `let` INITIALIZER must reject"
+        );
+        // assign TARGET place-expression
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let mut arr = [0, 0, 0]; arr[g(a)] = 5; print(arr[0]); } fn main() { c(0 - 5); }"#),
+            "a violable call in an ASSIGN TARGET place-expression must reject"
+        );
+        // ── no over-rejection: a guard/premise-provable header call still passes ──
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0) { if g(a) > 100 { print(1); } } fn main() { c(5); }"#),
+            "a header call whose precondition the caller premise proves (a>0) must still be accepted"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
         // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
         // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string
