@@ -5328,7 +5328,64 @@ fn collect_expr_vars(e: &Expr, out: &mut BTreeSet<String>) {
             collect_expr_vars(index, out);
         }
         Expr::FieldAccess { base, .. } => collect_expr_vars(base, out),
-        _ => {}
+        // A bare ARRAY LITERAL carries variables that `is_int_modelable` models: `[x][0]` == x and
+        // `len([x])` are int-modelable, so a param reassigned in the body but referenced through such a
+        // literal MUST be collected or the ensures anti-launder guard misses it (`ensures(result==[x][0])
+        // { x = 0-42; ... }` was certified then trapped at runtime). This was the residual after the
+        // Index/FieldAccess arms landed — an `Index` over an `[x]` base dead-ended here.
+        Expr::ArrayLiteral { elements } => {
+            for e in elements {
+                collect_expr_vars(e, out);
+            }
+        }
+        // The remaining value-carrying container/wrapper shapes. None are in the modelable set TODAY, but
+        // this walker's two consumers (the ensures anti-launder guard and the call-site `closed`-depth
+        // gate) both OVER-APPROXIMATE safely (a collected-but-irrelevant var only makes them more
+        // conservative — fail-closed), and leaving a `_ => {}` default is exactly the catch-all that let
+        // `Index`/`ArrayLiteral` slip twice. Enumerate them so a future modelable-form addition cannot
+        // silently re-break the coupling. (Statement-bearing shapes — Block/If/Match/IfLet/Lambda — are
+        // never modelable value positions and carry their own scopes, so they are intentionally omitted.)
+        Expr::CallExpr { callee, args } => {
+            collect_expr_vars(callee, out);
+            for a in args {
+                collect_expr_vars(a, out);
+            }
+        }
+        Expr::Tainted { inner, .. } | Expr::Try(inner) => collect_expr_vars(inner, out),
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                collect_expr_vars(v, out);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for f in fields {
+                collect_expr_vars(f, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_expr_vars(k, out);
+                collect_expr_vars(v, out);
+            }
+        }
+        // EXHAUSTIVE on purpose (no `_` default): a catch-all is exactly what let `Index` then
+        // `ArrayLiteral` slip through the modelable-coupling twice. Every remaining variant carries no
+        // modelable free variable — a literal/symbolic leaf, or a statement-bearing shape
+        // (`Match`/`If`/`Block`/`Lambda`/`IfLet`) that `is_*_modelable` never admits, so it cannot appear
+        // in a discharged predicate. If a future variant CAN carry one, the compiler now forces a decision
+        // here rather than silently under-approximating.
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Match { .. }
+        | Expr::If { .. }
+        | Expr::Block { .. }
+        | Expr::Lambda { .. }
+        | Expr::IfLet { .. }
+        | Expr::Other(_) => {}
     }
 }
 

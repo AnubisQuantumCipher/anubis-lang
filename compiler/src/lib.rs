@@ -1480,6 +1480,14 @@ fn main() {
         // is still CHECKED against the reassigned value, not silently skipped. Here `x = 0; return x;`
         // makes `result > x` become `0 > 0`, which is false and must be REJECTED.
         assert!(!discharged("fn f(x: u32) -> u32 requires(x > 0) requires(x < 100) ensures(result > x) { x = 0; return x; }"), "C: reassigned-param ensures is checked at the return value (0 > 0 is false)");
+        // C2 — the SAME anti-launder guard must fire when the reassigned param is referenced through a
+        // modelable ARRAY-LITERAL index (`[x][0]` == x) or `len([x])`, not just as a bare `Var`. Before
+        // collect_expr_vars gained an ArrayLiteral arm it dead-ended in the `[x]` literal and missed `x`,
+        // so `ensures(result == [x][0]) { x = 0-42; return x; }` was CERTIFIED — the caller then assumed
+        // the false `z == 9` and its `assert` trapped at runtime (hunt-confirmed false accept).
+        assert!(!discharged("fn g(x: i64) -> i64 requires(x > 0) ensures(result == [x][0]) { x = 0 - 42; return x; }"), "C2: reassigned param inside [x][0] must fire the anti-launder guard");
+        assert!(!discharged("fn g(x: i64) -> i64 requires(x > 0) ensures(result == [0, x][1]) { x = 0 - 7; return x; }"), "C2: reassigned param inside a multi-element array literal index");
+        assert!(!discharged("fn g(x: i64) -> i64 requires(x > 0) ensures(result == len([x])) { x = 0 - 1; return x; }"), "C2: reassigned param inside len([x]) must fire the guard");
         // D — a float param modeled as an i64 bit-vector: `dbl(0.5)` runs to 1.0.
         assert!(!discharged("fn dbl(x: f64) -> f64 requires(x > 0) requires(x < 10) ensures(result != 1) { return x + x; }"), "D: float param must not be modeled as i64");
         // D2 — a float LITERAL bound to a variable (`let x = 0.5`) was typed `u32` and modeled as an
