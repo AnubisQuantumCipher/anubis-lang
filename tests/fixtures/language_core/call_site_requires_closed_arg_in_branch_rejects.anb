@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: requires@
+// A CLOSED precondition — no free variable after substituting a constant argument — is decided
+// absolutely by the solver, independent of any branch path condition. So a definitely-violating
+// constant call inside an `if` (`g(0 - 5)` against `requires(x > 0)`) is discharged and REJECTED at
+// ANY depth, with no over-rejection risk. Before the closed-arg-discharge slice this was fail-open
+// (the statement-position discharge was gated to unconditional depth, so it slipped through in a branch
+// and trapped only at runtime). A VARIABLE-arg branch call whose provability depends on the guard stays
+// deferred — only closed preconditions discharge in a branch.
+fn g(x: i64) requires(x > 0) { assert(x > 0); }
+fn caller(b: bool) { if b { g(0 - 5); } }
+fn main() { caller(true); }

@@ -5923,18 +5923,37 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             accepts(r#"fn g(x: u32) requires(x > 0) { } fn main() { g(5); }"#),
             "an int requires satisfied in statement position must be accepted"
         );
-        // ── NO over-rejection of a BRANCH-GUARDED call (the new float/string + statement-position
-        //    discharge is gated to UNCONDITIONAL depth; inside an `if` the path condition is not in
-        //    scope, so an unconditional discharge there would over-reject a legitimately guarded call).
-        // A string statement-position call guarded by its own precondition must still be accepted:
+        // ── CLOSED (constant-arg) preconditions discharge at ANY depth, incl. inside a branch. A
+        //    predicate with no free variable (`(0-5) > 0`, `"b" == "a"`, `2.0 == 1.0`) is decided
+        //    ABSOLUTELY by the solver — its verdict does not depend on the branch path condition — so
+        //    discharging it inside an `if` catches a definitely-violating call with ZERO over-rejection
+        //    risk. These were fail-open (gated off) before this slice.
+        assert!(
+            !accepts(r#"fn g(x: i64) requires(x > 0) { assert(x > 0); } fn caller(b: bool) { if b { g(0 - 5); } } fn main() { caller(true); }"#),
+            "a CLOSED int violating call in a branch must reject (constant obligation, context-free)"
+        );
+        assert!(
+            !accepts(r#"fn g(s: string) requires(s == "a") { assert(s == "a"); } fn caller(b: bool) { if b { g("b"); } } fn main() { caller(true); }"#),
+            "a CLOSED string violating call in a branch must reject"
+        );
+        assert!(
+            !accepts(r#"fn g(x: f64) -> f64 requires(x == 1.0) { assert(x == 1.0); return x; } fn caller(b: bool) { if b { let y = g(2.0); print(y); } } fn main() { caller(true); }"#),
+            "a CLOSED float violating call in a branch must reject"
+        );
+        // ── NO over-rejection: a VARIABLE-arg branch call whose precondition depends on the (out-of-scope)
+        //    branch guard stays GATED (only closed preconditions discharge in a branch). A satisfying
+        //    closed call in a branch is discharged and accepted; a variable-arg guarded call is deferred.
         assert!(
             accepts(r#"fn g(s: string) requires(s == "a") { } fn caller(x: string) { if x == "a" { g(x); } } fn main() { caller("a"); }"#),
-            "a branch-guarded string call in statement position must NOT be over-rejected"
+            "a branch-guarded VARIABLE-arg string call stays gated (deferred), not over-rejected"
         );
-        // A statement-position call guarded by an unmodeled boolean is likewise not discharged in-branch:
         assert!(
             accepts(r#"fn g(x: u32) requires(x > 0) { } fn caller(b: bool) { if b { g(5); } } fn main() { caller(true); }"#),
-            "a branch-nested statement-position call must not be discharged where the guard is out of scope"
+            "a CLOSED satisfying int call in a branch is discharged and accepted"
+        );
+        assert!(
+            accepts(r#"fn g(x: i64) requires(x > 0) { } fn caller(a: i64) requires(a > -100) { if a > 0 { g(a); } } fn main() { caller(5); }"#),
+            "a branch-guarded VARIABLE-arg int call stays gated (guard out of scope) — no over-rejection"
         );
     }
 

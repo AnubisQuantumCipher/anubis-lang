@@ -1656,22 +1656,24 @@ fn merge_taint_over(
 /// mangled assertion vars). Callers with no contract, or an arity mismatch (handled elsewhere), are a
 /// vacuous `true` — no obligation.
 ///
-/// `unconditional` gates the NEW lanes. The INT lane is ALWAYS discharged (preserving the pre-existing
-/// Let-initializer int contract, which fired at every depth including inside branches — removing it there
-/// would turn a caught branch violation into a false accept). The float and string lanes are discharged
-/// ONLY when the call is UNCONDITIONALLY executed (a top-level Let/Assign initializer or bare ExprStmt).
-/// Inside an `if`/`match` branch the path condition (`if a > 0 { … }`) is not in `assumptions`, so an
-/// unconditional float/string discharge would OVER-REJECT a guard-protected call; deferring them there
-/// leaves a fail-OPEN residual (the call stays unchecked = the pre-slice behavior for those lanes, so it
-/// is a no-regression tradeoff, NOT a soundness gain — an in-branch violating call still statically
-/// passes and traps only at runtime). SOUND-DISCHARGE under a path condition is the follow-up that CLOSES
-/// this residual (push the guard as a scoped assumption).
+/// Depth gating. A CLOSED precondition — no free variable after arg substitution (`(0-5) > 0`,
+/// `"b" == "a"`, `2.0 == 1.0`) — is decided ABSOLUTELY by the solver, independent of any branch path
+/// condition, so it discharges at ANY depth in every lane with zero over-rejection risk. For a
+/// VARIABLE-referencing precondition, branch context matters: `int_at_all_depths` (true only at the
+/// Let-initializer) preserves the pre-existing int contract that fired at every depth — removing it there
+/// would turn a caught branch violation into a false accept; `unconditional` (the direct function-body
+/// list) enables the newer float/string lanes and the ExprStmt/Assign int lane. Inside an `if`/`match`
+/// branch the guard (`if a > 0 { … }`) is not in `assumptions`, so an unconditional VARIABLE-arg discharge
+/// there would OVER-REJECT a guard-protected call; those stay deferred (fail-OPEN residual — a variable-arg
+/// in-branch violating call still statically passes). SOUND-DISCHARGE of the variable-arg branch case needs
+/// the guard pushed as a scoped assumption — the follow-up that closes the remaining residual.
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
     callee: &str,
     args: &[Expr],
     unconditional: bool,
+    int_at_all_depths: bool,
 ) -> bool {
     let Some((pnames, creq, _cens)) = ctx.fn_contracts.get(callee).cloned() else {
         return true;
@@ -1684,7 +1686,24 @@ fn discharge_call_requires(
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
-        if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+        // A CLOSED precondition — one with no free variable, e.g. `(0-5) > 0` / `"b" == "a"` / `2.0 == 1.0`
+        // after substituting a literal/constant arg — is decided ABSOLUTELY by the solver: its verdict
+        // does not depend on any assumption or branch path condition. So it may be discharged at ANY depth
+        // with ZERO over-rejection risk (a definitely-violating call in a branch is a real defect, and a
+        // satisfying one always passes). This closes the literal-arg-in-a-branch false accepts without the
+        // path-condition machinery a VARIABLE-arg branch call needs. The `unconditional`/`int_at_all_depths`
+        // gates apply only to variable-referencing preconditions, where branch context matters.
+        let closed = {
+            let mut vs = BTreeSet::new();
+            collect_expr_vars(&concrete, &mut vs);
+            vs.is_empty()
+        };
+        // INT discharges when: this is the Let-initializer position (pre-existing all-depths contract), OR
+        // the call is unconditionally executed, OR the predicate is closed. FLOAT/STRING (the newer lanes)
+        // discharge only when unconditional OR closed (never a bare variable-arg inside a branch).
+        let int_ok = int_at_all_depths || unconditional || closed;
+        let new_lane_ok = unconditional || closed;
+        if int_ok && is_bool_modelable(&concrete, &ctx.solver_int_vars) {
             let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
             let int_asm: Vec<String> = assumptions
                 .iter()
@@ -1706,7 +1725,7 @@ fn discharge_call_requires(
                 vars: vars.into_iter().collect(),
                 strings: false,
             });
-        } else if unconditional && is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
+        } else if new_lane_ok && is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
             // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
             let smt = float_bool_to_smt(&concrete);
             let float_asm: Vec<String> = assumptions
@@ -1729,7 +1748,7 @@ fn discharge_call_requires(
                 vars: vars.into_iter().collect(),
                 strings: false,
             });
-        } else if unconditional && is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
+        } else if new_lane_ok && is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
             // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
             // a quoteless var-var body still routes to QF_S. The shared `string_expr_to_smt` under
             // `string_bool_to_smt` carries the load-bearing backslash escape.
@@ -2102,9 +2121,17 @@ fn analyze_stmts(
                 // it) and ASSUME its postcondition with `result` bound to this variable, so a later
                 // assertion can rely on it. This is how one function's `ensures` satisfies the next.
                 if let Expr::Call { callee, args } = init {
-                    // ASSERT each precondition in its lane (int always; float/string when unconditional).
-                    let all_requires_checkable =
-                        discharge_call_requires(ctx, assumptions, callee, args, unconditional);
+                    // ASSERT each precondition in its lane. Let-init keeps the pre-existing INT-at-all-depths
+                    // contract; float/string + any variable-arg lane are still depth-gated (a closed
+                    // precondition discharges regardless).
+                    let all_requires_checkable = discharge_call_requires(
+                        ctx,
+                        assumptions,
+                        callee,
+                        args,
+                        unconditional,
+                        /* int_at_all_depths */ true,
+                    );
                     if let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
                         if pnames.len() == args.len() {
                             let mut sub: BTreeMap<String, Expr> =
@@ -2369,27 +2396,23 @@ fn analyze_stmts(
                 invalidate_embedded_writes(ctx, assumptions, expr);
                 // A CONTRACTED call in statement position (`g(x);` — no binding) must still discharge the
                 // callee's precondition: the caller is obligated to prove `requires` exactly as at a
-                // Let-initializer. Without this, a call made purely for effect was never held to any
-                // precondition, in ANY lane (hunt-confirmed false accept). Gated to `unconditional` depth:
-                // this position emitted NOTHING before this slice, so inside a branch (no path condition
-                // in scope) discharging would over-reject a guard-protected call — deferred as a fail-OPEN
-                // residual (HEAD-equal for this position; a no-regression tradeoff, not a soundness gain).
-                // `return <expr>` parses as `Call{"return", ..}` — no contract, so it no-ops regardless.
-                if unconditional {
-                    if let Expr::Call { callee, args } = expr {
-                        discharge_call_requires(ctx, assumptions, callee, args, true);
-                    }
+                // Let-initializer. This position emitted NOTHING before the call-site slice, so a VARIABLE-arg
+                // discharge inside a branch (no path condition in scope) would over-reject a guard-protected
+                // call — those stay depth-gated (`unconditional`). A CLOSED (constant-arg) precondition,
+                // however, is context-free and discharges at any depth (`int_at_all_depths=false` keeps the
+                // int lane gated for variable args here too). `return <expr>` parses as `Call{"return", ..}`
+                // — no contract, so it no-ops regardless.
+                if let Expr::Call { callee, args } = expr {
+                    discharge_call_requires(ctx, assumptions, callee, args, unconditional, false);
                 }
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
                 // A contracted call in ASSIGN-value position (`y = g(x);`) — discharge its precondition
-                // under the pre-assignment assumptions, same as a Let-init. Gated to `unconditional` depth
-                // (this position emitted nothing before this slice; a branch has no path condition).
-                if unconditional {
-                    if let Expr::Call { callee, args } = value {
-                        discharge_call_requires(ctx, assumptions, callee, args, true);
-                    }
+                // under the pre-assignment assumptions, same as a Let-init. Variable-arg discharge stays
+                // depth-gated (`unconditional`); a CLOSED precondition discharges at any depth.
+                if let Expr::Call { callee, args } = value {
+                    discharge_call_requires(ctx, assumptions, callee, args, unconditional, false);
                 }
                 let value_taint =
                     expr_taint_source_m(value, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
@@ -5285,16 +5308,26 @@ fn collect_expr_vars(e: &Expr, out: &mut BTreeSet<String>) {
         Expr::Declassify { inner, .. } | Expr::Assume(inner) | Expr::Assert(inner) => {
             collect_expr_vars(inner, out)
         }
-        // Must descend into the abs/min/max builtin Call: this set drives the "ensures references a
-        // reassigned/shadowed parameter" fail-closed check, and MISSING a variable (under-approx) is
-        // unsound — it would let `ensures(result == abs(x)) { x = 0-5; ... }` be certified against the
-        // mutated `x` while a caller assumes the entry value. Over-approx (collecting too many) only
-        // makes that check more conservative. Same modelable-form coupling as `substitute_vars`.
+        // Must descend into the abs/min/max/len builtin Call AND into a bounded-seq Index / a
+        // FieldAccess base: this set drives the "ensures references a reassigned/shadowed parameter"
+        // fail-closed check, and MISSING a variable (under-approx) is unsound — it would let
+        // `ensures(result == abs(x)) { x = 0-5; ... }` (or `ensures(result == arr[0]) { arr = …; }`)
+        // be certified against the mutated binding while a caller assumes the entry value. It ALSO
+        // drives the call-site `closed`-precondition depth gate (`discharge_call_requires`): missing
+        // `arr` in `arr[0]` there mis-classifies a bounded-seq index as a constant and discharges it in
+        // a branch without the guard, over-rejecting a safe program. Over-approx (collecting too many)
+        // only makes both checks more conservative. MUST stay coupled with the modelable set
+        // `is_int_modelable` admits (`Expr::Index` over a seq var / array literal) and `substitute_vars`.
         Expr::Call { args, .. } => {
             for a in args {
                 collect_expr_vars(a, out);
             }
         }
+        Expr::Index { base, index } => {
+            collect_expr_vars(base, out);
+            collect_expr_vars(index, out);
+        }
+        Expr::FieldAccess { base, .. } => collect_expr_vars(base, out),
         _ => {}
     }
 }
