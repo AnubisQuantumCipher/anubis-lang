@@ -1675,13 +1675,19 @@ fn merge_taint_over(
 /// condition (`push_branch_path_condition`) into `assumptions` before the branch is analyzed, so an
 /// obligation built inside `if a > 0 { g(a) }` sees `a > 0` and a guard-provable precondition proves while
 /// a guard-unrelated violating one (`if bb { g(a) }`, `a` unconstrained by `bb`) yields a counterexample.
-/// Every MODELABLE precondition is discharged; a precondition the solver cannot model, or cannot prove
-/// from the caller's premises + path condition, defers/rejects and NEVER falsely discharges (fail-closed).
-/// A CLOSED (ground) precondition is just the degenerate case with no free variable. (Earlier revisions
-/// depth-gated this because branches lacked their guard; the path-condition machinery made the gate
-/// obsolete.) KNOWN CONSERVATIVE BOUNDARY: when a modeled arg is guarded by a NON-modelable condition
-/// (`if is_pos(a) { g(a) }`), the guard pushes nothing, so the discharge fires unguarded and REJECTS even
-/// though the opaque guard may guarantee the precondition at runtime — sound (fail-closed), incomplete.
+/// A MODELABLE precondition that cannot be PROVEN from the caller's premises + path condition rejects
+/// (fail-closed) and NEVER falsely discharges. Two directions must be named precisely: a precondition
+/// whose argument the solver cannot MODEL at all (an unmodeled var — a bare param of a contract-less
+/// caller, a var whose model was dropped by reassignment/loop-havoc) emits NO obligation and thus defers
+/// to runtime — that is fail-OPEN in the accept-biased default mode (the runtime `assert`/trap is the only
+/// backstop), NOT fail-closed. A modeled-but-unprovable precondition is the fail-closed one. A CLOSED
+/// (ground) precondition is the degenerate case with no free variable. (Earlier revisions depth-gated
+/// this because branches lacked their guard; the path-condition machinery made the gate obsolete.) KNOWN
+/// CONSERVATIVE BOUNDARY: a modeled arg under a NON-modelable guard (`if is_pos(a) { g(a) }`) pushes no
+/// path condition, so the discharge fires unguarded and REJECTS though the opaque guard may hold at
+/// runtime — sound (fail-closed), incomplete. RESIDUAL: this fires only on a DIRECT `Expr::Call` at a
+/// statement position; a call NESTED in an argument / binary operand / `return`-arg (`h(g(x))`,
+/// `print(g(x))`, `return g(x)`) or inside a `match`-arm / `if`-expression is NOT discharged (fail-open).
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -1777,6 +1783,79 @@ fn discharge_call_requires(
         }
     }
     all_requires_checkable
+}
+
+/// Discharge the precondition of every contracted call reachable through UNCONDITIONALLY-EXECUTED
+/// sub-expressions of `expr`, under the current `assumptions`. `discharge_call_requires` alone fires only
+/// on a DIRECT `Expr::Call` at a statement position, so a call NESTED in an argument / operand / cast /
+/// `return`-arg (`h(g(x))`, `print(g(x))`, `g(x) + 0`, `return g(x)`) went unchecked — a reachable
+/// fail-open (the callee's `requires` is assumed in its body yet nothing proved it at the call). This walk
+/// closes that: it recurses ONLY through positions that are evaluated whenever `expr` is
+/// (function arguments are evaluated before the call; both operands of an arithmetic/comparison binary;
+/// unary/cast/index/field/array/struct/map/enum children; a `?`/assert/assume/declassify inner). It
+/// deliberately does NOT descend into CONDITIONALLY-executed positions — the RHS of a short-circuiting
+/// `&&`/`||` (the generated Rust short-circuits, run.rs:3027), or an `if`/`match`/`if let`/block/lambda
+/// body — because a call there runs only on some paths, so an unconditional discharge would over-reject;
+/// those remain the documented conditional-position residual. Every call found is discharged with the
+/// SAME `assumptions` in scope (including any branch path condition), so it is as sound as a direct call.
+fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &[String], expr: &Expr) {
+    match expr {
+        Expr::Call { callee, args } => {
+            discharge_call_requires(ctx, assumptions, callee, args);
+            for a in args {
+                discharge_calls_in_expr(ctx, assumptions, a);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            discharge_calls_in_expr(ctx, assumptions, callee);
+            for a in args {
+                discharge_calls_in_expr(ctx, assumptions, a);
+            }
+        }
+        // Short-circuiting `&&`/`||` evaluate the RHS only when the LHS does not decide the result — a
+        // CONDITIONAL position; recurse the LHS (always evaluated) but not the RHS. Every other binary
+        // operator evaluates both operands unconditionally.
+        Expr::Binary { op, lhs, rhs } => {
+            discharge_calls_in_expr(ctx, assumptions, lhs);
+            if op != "&&" && op != "||" {
+                discharge_calls_in_expr(ctx, assumptions, rhs);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
+            discharge_calls_in_expr(ctx, assumptions, expr)
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            discharge_calls_in_expr(ctx, assumptions, inner)
+        }
+        Expr::Assume(inner) | Expr::Assert(inner) | Expr::Try(inner) => {
+            discharge_calls_in_expr(ctx, assumptions, inner)
+        }
+        Expr::Index { base, index } => {
+            discharge_calls_in_expr(ctx, assumptions, base);
+            discharge_calls_in_expr(ctx, assumptions, index);
+        }
+        Expr::FieldAccess { base, .. } => discharge_calls_in_expr(ctx, assumptions, base),
+        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+            for e in elements {
+                discharge_calls_in_expr(ctx, assumptions, e);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                discharge_calls_in_expr(ctx, assumptions, v);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                discharge_calls_in_expr(ctx, assumptions, k);
+                discharge_calls_in_expr(ctx, assumptions, v);
+            }
+        }
+        // CONDITIONAL / deferred positions (a call here runs on only some paths, or not in this frame):
+        // `if`/`match`/`if let` branches, block/lambda bodies. Leaves (Var/Literal/Symbolic/…) hold no
+        // call. Left undischarged — the documented conditional-position residual.
+        _ => {}
+    }
 }
 
 /// Push a branch guard into the solver `assumptions` (and the scoped `ctx.active_branch_guards` stack) as
@@ -2144,6 +2223,13 @@ fn analyze_stmts(
                 // overflow-free facts that the i64 runtime violates). The value is modeled as an
                 // unconstrained i64.
 
+                // A non-call initializer (`let z = g(x) + 1;`, `let z = arr[g(i)];`) can still contain
+                // contracted calls in unconditional positions — discharge them. The top-level Call case is
+                // handled by the B2 block below (which also binds the ensures), so it's excluded here to
+                // avoid a double obligation.
+                if !matches!(init, Expr::Call { .. }) {
+                    discharge_calls_in_expr(ctx, assumptions, init);
+                }
                 // B2 composition: when the initializer calls a CONTRACTED function, specialize the
                 // callee's contract to this call — ASSERT its precondition (the caller must satisfy
                 // it) and ASSUME its postcondition with `result` bound to this variable, so a later
@@ -2153,6 +2239,11 @@ fn analyze_stmts(
                     // condition, so a variable-arg call in a branch discharges soundly).
                     let all_requires_checkable =
                         discharge_call_requires(ctx, assumptions, callee, args);
+                    // Nested calls in the ARGUMENTS (`let z = f(g(x));`) are unconditionally evaluated —
+                    // discharge them too; the top-level call is handled directly above (no double-count).
+                    for a in args {
+                        discharge_calls_in_expr(ctx, assumptions, a);
+                    }
                     if let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
                         if pnames.len() == args.len() {
                             let mut sub: BTreeMap<String, Expr> =
@@ -2295,6 +2386,9 @@ fn analyze_stmts(
                 }
             }
             Stmt::ExprStmt(Expr::Assume(expr)) => {
+                // A contracted call inside the assumed expression (`assume(g(x) == 0)`) is evaluated —
+                // discharge its precondition (unconditional positions of `expr`).
+                discharge_calls_in_expr(ctx, assumptions, expr);
                 // Only ASSUME what the solver can model SOUNDLY (mirrors the assert handler below). An
                 // unmodelable assumption — e.g. `assume((x as u8) == 0)`, whose truncating cast has no
                 // sound i64 identity — would otherwise be lowered as if `x == 0` and let the solver
@@ -2312,6 +2406,9 @@ fn analyze_stmts(
             Stmt::ExprStmt(Expr::Assert(expr)) => {
                 // Walk the assertion expression for effect/taint/crypto-misuse (RWC Ch3: HMAC == tag).
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
+                // A contracted call inside the asserted expression (`assert(g(x) > 0)`) is evaluated —
+                // discharge its precondition (unconditional positions of `expr`).
+                discharge_calls_in_expr(ctx, assumptions, expr);
                 // Only discharge an assertion the solver can soundly model in QF_BV (a boolean
                 // formula over integer-modelable terms). A bare bool var, a string comparison, or
                 // any other value is left to the runtime `assert` — the checker must not fabricate
@@ -2416,21 +2513,18 @@ fn analyze_stmts(
                 // written variables' stale solver facts here — else a later obligation is discharged
                 // against the pre-write value.
                 invalidate_embedded_writes(ctx, assumptions, expr);
-                // A CONTRACTED call in statement position (`g(x);` — no binding) discharges the callee's
-                // precondition, at any depth: inside a branch the guard is in scope as a path condition, so
-                // a guard-provable call proves and a guard-unrelated violating one is caught. `return <expr>`
-                // parses as `Call{"return", ..}` — no contract, so it no-ops regardless.
-                if let Expr::Call { callee, args } = expr {
-                    discharge_call_requires(ctx, assumptions, callee, args);
-                }
+                // Discharge the precondition of every contracted call in an UNCONDITIONALLY-executed
+                // position of the statement expression — the direct `g(x);`, and a call nested in an
+                // argument / operand / `return`-arg (`print(g(x))`, `h(g(x))`, `return g(x)`). Inside a
+                // branch the guard is in scope as a path condition. `return <expr>` parses as
+                // `Call{"return", ..}` (no contract → no-op), and the walk then reaches `g(x)` in its arg.
+                discharge_calls_in_expr(ctx, assumptions, expr);
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
-                // A contracted call in ASSIGN-value position (`y = g(x);`) — discharge its precondition
-                // under the pre-assignment assumptions (with any branch guard in scope), same as a Let-init.
-                if let Expr::Call { callee, args } = value {
-                    discharge_call_requires(ctx, assumptions, callee, args);
-                }
+                // A contracted call in ASSIGN-value position (`y = g(x);`, `y = h(g(x));`) — discharge its
+                // precondition under the pre-assignment assumptions (with any branch guard in scope).
+                discharge_calls_in_expr(ctx, assumptions, value);
                 let value_taint =
                     expr_taint_source_m(value, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
                 if let (Some(source), Expr::Var(name)) = (&value_taint, target) {

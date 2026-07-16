@@ -6072,6 +6072,54 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn nested_contracted_calls_in_unconditional_positions_discharge() {
+        // A contracted call NESTED in an unconditionally-evaluated sub-expression (an argument, a binary
+        // operand, a `return`-arg, an assert/assign value) must have its precondition discharged — it was
+        // fail-open (only a DIRECT statement-position call was checked), so a violable nested call
+        // certified a runtime-trapping requires.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // ── violable nested call ⇒ REJECT (each position) ──
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn h(y: i64) -> i64 { return y; } fn c(a: i64) requires(a > 0 - 100) { let z = h(g(a)); print(z); } fn main() { c(0 - 5); }"#),
+            "arg-nested h(g(a)) with violable g must reject"
+        );
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { print(g(a)); } fn main() { c(0 - 5); }"#),
+            "print(g(a)) (builtin arg) with violable g must reject"
+        );
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { return g(a) + 1; } fn main() { print(c(0 - 5)); }"#),
+            "binary-operand g(a)+1 in a return with violable g must reject"
+        );
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { return g(a); } fn main() { print(c(0 - 5)); }"#),
+            "return g(a) parsed as a return-Call over g(a) with violable g must reject"
+        );
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { assert(g(a) == a); } fn main() { c(0 - 5); }"#),
+            "assert(g(a) == a) with violable g must reject"
+        );
+        // ── guard-provable nested call ⇒ still ACCEPT (no over-rejection) ──
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn h(y: i64) -> i64 { return y; } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { let z = h(g(a)); print(z); } } fn main() { c(5); }"#),
+            "arg-nested h(g(a)) under a proving guard (a>0) must be accepted"
+        );
+        // ── the SHORT-CIRCUIT boundary: a call in `&&`/`||` rhs is conditional ⇒ stays deferred (accept),
+        //    NOT over-rejected (its precondition is not proven, but the position is skipped) ──
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b && (g(a) > 0); print(z); } fn main() { c(0 - 5, false); }"#),
+            "a call in the RHS of `&&` (short-circuit, conditional) must NOT be over-rejected (deferred)"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
         // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
         // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string
