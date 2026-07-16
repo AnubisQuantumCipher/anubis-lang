@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH
+// TYPE false-accept (order-dependent float→int narrowing): `2 + 1.5` is a FLOAT at runtime
+// (`anubis_add` returns Float when EITHER operand is float), so narrowing it into a `u32` slot is a lossy
+// float→int coercion that must be rejected. Before the fix, arithmetic type inference was LHS-first
+// (`lt.or(rt)`), so `2 + 1.5` inferred `u32` (the left literal) and passed — while the mirror
+// `1.5 + 2` was correctly rejected. The fix infers f64 when EITHER operand is float (a union), making the
+// rule symmetric. (Integer arithmetic into u32, and this float result into an f64 slot, both still accept.)
+fn main() {
+    let x: u32 = 2 + 1.5;
+    print(x);
+}

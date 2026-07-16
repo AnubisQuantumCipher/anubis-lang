@@ -5693,6 +5693,13 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
                     Some("string".into())
                 } else if lt.as_deref() == Some("list") || rt.as_deref() == Some("list") {
                     Some("list".into())
+                } else if lt.as_deref().is_some_and(is_float_ty)
+                    || rt.as_deref().is_some_and(is_float_ty)
+                {
+                    // `anubis_add` returns `Float` when EITHER operand is float, so `2 + 1.5` is f64 —
+                    // NOT the lhs's u32. Inferring lhs-first let a float RHS narrow into an integer slot
+                    // (`let x: u32 = 2 + 1.5` was accepted while `1.5 + 2` was correctly rejected).
+                    Some("f64".into())
                 } else {
                     lt.or(rt)
                 }
@@ -5704,9 +5711,17 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
                 // narrowing rule reject a program that runs and yields an integer.
                 Some("u32".into())
             } else {
-                // Arithmetic (`- * / %`): float iff an operand is float (anubis_sub/mul/div/mod),
-                // so propagating the operand type is faithful to the runtime.
-                infer_expr_type_scoped(lhs, scope).or_else(|| infer_expr_type_scoped(rhs, scope))
+                // Arithmetic (`- * / %`): float iff EITHER operand is float (anubis_sub/mul/div/mod
+                // return `Float` on any float operand), so infer f64 when either side is float — a UNION,
+                // not lhs-first, which dropped a float RHS and let `2 - 1.5` / `2 * 1.5` narrow into an
+                // integer slot. Otherwise propagate the (integer) operand type.
+                let lt = infer_expr_type_scoped(lhs, scope);
+                let rt = infer_expr_type_scoped(rhs, scope);
+                if lt.as_deref().is_some_and(is_float_ty) || rt.as_deref().is_some_and(is_float_ty) {
+                    Some("f64".into())
+                } else {
+                    lt.or(rt)
+                }
             }
         }
         Expr::ArrayLiteral { .. } => Some("list".into()),

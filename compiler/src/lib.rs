@@ -405,6 +405,29 @@ mod tests {
     }
 
     #[test]
+    fn float_narrowing_arithmetic_is_symmetric_over_operand_order() {
+        // `anubis_add/sub/mul/div/mod` return Float on ANY float operand, so a float on EITHER side of a
+        // `+ - * / %` makes the result a float; narrowing it into an integer slot must reject regardless
+        // of operand order (the LHS-first inference accepted `2 + 1.5` while rejecting `1.5 + 2`).
+        for src in [
+            "fn main() { let x: u32 = 2 + 1.5; print(x); }",
+            "fn main() { let x: u32 = 1.5 + 2; print(x); }",
+            "fn main() { let x: u32 = 2 - 1.5; print(x); }",
+            "fn main() { let x: u32 = 2 * 1.5; print(x); }",
+            "fn main() { let x: u32 = 3 / 1.5; print(x); }",
+        ] {
+            let err = tc_ok(src).expect_err("a float-arithmetic result must not narrow into u32");
+            assert!(err.contains("ANUBIS_TYPE_MISMATCH"), "{src} — got: {err}");
+        }
+        // Controls that MUST still accept: pure-integer arithmetic, and the float result into a float slot.
+        tc_ok("fn main() { let x: u32 = 2 + 3; print(x); }").expect("integer arithmetic still narrows");
+        tc_ok("fn main() { let x: f64 = 2 + 1.5; print(x); }").expect("float result into f64 accepts");
+        // Bitwise/shift stay INTEGER even with a float operand (anubis_band/shl as_i64) — must accept.
+        tc_ok("fn main() { let avg = (4.0 + 6.0) / 2.0; let b: u32 = avg & 7; print(b); }")
+            .expect("bitwise on a float operand is integer and still narrows");
+    }
+
+    #[test]
     fn narrowing_rule_does_not_reject_running_programs_adversary_regressions() {
         // Regressions for false positives found by the `assignable-adversary` workflow: expressions
         // the RUNTIME makes integer must not be inferred float and wrongly rejected. Each of these
