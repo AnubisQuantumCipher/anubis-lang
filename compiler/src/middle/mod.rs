@@ -374,13 +374,32 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // Pass 1.5: interprocedural taint summaries (return-taint + param→sink), computed before
     // per-function analysis so every `Call` the analysis sees can consult them.
     compute_tainting_fns(&ast.items, &mut ctx);
-    compute_param_sinks(&ast.items, &mut ctx);
-    compute_param_egress(&ast.items, &mut ctx);
-    // Impl-method twins (must run AFTER the free-fn summaries so their transitive `known` is at
-    // fixpoint): close `m.deliver(secret)` / `r.go(tainted)` laundering through a method that
-    // sinks/egresses. Keyed by bare method name, `self` at index 0. Consulted only in the CallExpr arm.
-    compute_method_param_sinks(&ast.items, &mut ctx);
-    compute_method_param_egress(&ast.items, &mut ctx);
+    // Interprocedural param→sink and param→egress summaries for free fns AND impl methods, in ONE
+    // COMBINED joint fixpoint each (#68): a free fn can sink/egress a param THROUGH a method
+    // (`fn f(m,x){ m.snd(x) }`) and a method through another method (`fn ship(self,p){ self.deliver(p) }`),
+    // so the free-fn and method maps are mutually recursive and must converge together (the former staged
+    // passes, with the method map frozen after the free-fn map, structurally missed both directions).
+    // Keyed by bare method name, `self` at index 0; consulted at the enforcing Call / CallExpr arms.
+    {
+        let mut free_fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+        collect_fn_params_bodies(&ast.items, &mut free_fns);
+        let mut impl_methods: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+        collect_impl_method_params_bodies(&ast.items, &mut impl_methods);
+        compute_sink_summaries_joint(
+            &free_fns,
+            &impl_methods,
+            is_sink,
+            &mut ctx.param_sinks,
+            &mut ctx.method_param_sinks,
+        );
+        compute_sink_summaries_joint(
+            &free_fns,
+            &impl_methods,
+            is_egress_sink,
+            &mut ctx.param_egress,
+            &mut ctx.method_param_egress,
+        );
+    }
     // Impl-method RETURN-taint summary (#67): a method whose return carries internally-minted taint —
     // `let t = r.tag(); sink(t)` / `sink(r.tag())`. Must run AFTER compute_tainting_fns (frozen free-fn
     // set); method→method chaining stays the #68 residual.
@@ -2961,17 +2980,19 @@ fn analyze_expr_effect(
             // impls) with the SELF-OFFSET: summary index 0 is the receiver (`base`), index p≥1 is call
             // arg p-1 (matching the runtime `call_args = [receiver, …args]`).
             //
-            // SOUNDNESS BOUNDARY (fail-open residuals — no false rejects; documented + queued). This
-            // block is exact for ONE-HOP argument laundering with a DIRECTLY-supplied secret/tainted
-            // value (and a secret receiver, via index 0). It is BLIND to:
-            //   • a secret/taint that ORIGINATES FROM a method return (`let k = v.key(); send(h,p,k)`):
-            //     no impl method ever enters `secret_fns`/`tainting_fns`/`param_return_taint` (their
-            //     collectors skip `Item::Impl`), so a getter's return carries no label — the
-            //     highest-reachability gap; needs a method return-summary + source-walker `CallExpr` arm.
-            //   • any sink/egress reached THROUGH a method call on the flow path, free-fn→method or
-            //     method→method (`fn f(m,x){ m.snd(x) }`; `fn ship(self,p){ self.deliver(p) }`): the
-            //     summary walkers `collect_param_sinks_in_expr` / `expr_param_flow` have no
-            //     `Expr::CallExpr` arm, so a method call truncates an interprocedural flow path to ∅.
+            // SOUNDNESS BOUNDARY. This block catches ONE-HOP argument laundering with a directly-supplied
+            // labelled value (and a secret receiver, via index 0). Two former residuals are now CLOSED:
+            // a secret/taint ORIGINATING from a method return (`let k = v.key(); send(h,p,k)`) by #67
+            // (`method_secret_fns`/`method_tainting_fns` + the source-walker `_m` `CallExpr` arm), and
+            // ARGUMENT laundering THROUGH a method (`fn f(m,x){ m.snd(x) }`, `fn ship(self,p){
+            // self.deliver(p) }`) by #68 (the joint free-fn↔method `param_sinks`/`param_egress` fixpoint +
+            // the `collect_param_sinks_in_expr`/`expr_param_flow` `CallExpr` arms). REMAINING fail-open
+            // residuals (no false rejects): a secret MINTED by a method return then RETURN-chained through
+            // another method (`fn alias(self){ return self.key() }`, pinned by
+            // method_return_chain_residual_accepts.anb — the summaries consult only the frozen free-fn
+            // return sets); a sink/egress inside a lambda body (#65); and a sink buried in non-linear
+            // control-flow inside a method's value-position block (inherited from the summary walker's
+            // linear block handling).
             if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
                 // Resolve a method-summary parameter index to its call-site expression under the
                 // self-offset: index 0 is the receiver (`base`), index p≥1 is call arg p-1. Inlined
@@ -8253,6 +8274,21 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             s
         }
         Expr::Try(inner) => expr_param_flow(inner, flow),
+        // #68 value-carry through a method/closure application (`m.wrap(x)`, `f(a)(b)`): before this
+        // arm the result carried NO params (fell to `_ => empty`), truncating provenance so
+        // `sink(m.wrap(x))` / `let y = m.wrap(x); sink(y)` lost `x`. Conservative union of the callee
+        // expr (incl. a method receiver) and every arg — the exact mirror of the bare `Expr::Call` arm
+        // and `expr_param_return_flow`'s CallExpr arm. This over-approximates a method that DISCARDS an
+        // arg (the receiver + discarded arg still count) — fail-closed (only enlarges the param→sink
+        // summary, never a false interproc reject beyond the free-fn `Call` arm's identical behavior),
+        // and corpus-inert (no committed sink/egress takes a method-call argument).
+        Expr::CallExpr { callee, args } => {
+            let mut s = expr_param_flow(callee, flow);
+            for a in args {
+                s.extend(expr_param_flow(a, flow));
+            }
+            s
+        }
         _ => BTreeSet::new(),
     }
 }
@@ -8296,31 +8332,32 @@ fn body_param_sinks(
     flow: &mut BTreeMap<String, BTreeSet<usize>>,
     sink_pred: fn(&str) -> bool,
     known_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
+    known_method_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
     found: &mut BTreeSet<usize>,
 ) {
     for stmt in stmts {
         match stmt {
             Stmt::Let { name, init, .. } => {
                 // A sink can hide inside the initializer (e.g. `let _ = sink(x)`).
-                collect_param_sinks_in_expr(init, flow, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(init, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 seed_param_flow_let(name, init, flow);
             }
             Stmt::If {
                 then, else_, cond, ..
             } => {
-                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 let saved = flow.clone();
-                body_param_sinks(then, flow, sink_pred, known_param_sinks, found);
+                body_param_sinks(then, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 *flow = saved.clone();
                 if let Some(else_body) = else_ {
-                    body_param_sinks(else_body, flow, sink_pred, known_param_sinks, found);
+                    body_param_sinks(else_body, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 }
                 *flow = saved;
             }
             Stmt::While { body, cond, .. } => {
-                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 let saved = flow.clone();
-                body_param_sinks(body, flow, sink_pred, known_param_sinks, found);
+                body_param_sinks(body, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 *flow = saved;
             }
             Stmt::WhileLet { body, .. }
@@ -8328,7 +8365,7 @@ fn body_param_sinks(
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let saved = flow.clone();
-                body_param_sinks(body, flow, sink_pred, known_param_sinks, found);
+                body_param_sinks(body, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 *flow = saved;
             }
             Stmt::For {
@@ -8345,13 +8382,13 @@ fn body_param_sinks(
                     crate::frontend::ForSource::Collection { expr } => expr_param_flow(expr, flow),
                 };
                 flow.insert(var.clone(), src_flow);
-                body_param_sinks(body, flow, sink_pred, known_param_sinks, found);
+                body_param_sinks(body, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 *flow = saved;
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = flow.clone();
-                    body_param_sinks(b, flow, sink_pred, known_param_sinks, found);
+                    body_param_sinks(b, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                     *flow = saved;
                 }
             }
@@ -8359,21 +8396,21 @@ fn body_param_sinks(
                 // Reassignment-insensitive for taint *clearing*, but we DO propagate param flow
                 // into an existing name when the RHS carries params (monotone add). Clearing is
                 // never performed — same discipline as the main taint analysis.
-                collect_param_sinks_in_expr(value, flow, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(value, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 if let Expr::Var(name) = target {
                     let rhs = expr_param_flow(value, flow);
                     flow.entry(name.clone()).or_default().extend(rhs);
                 }
             }
             Stmt::ExprStmt(e) => {
-                collect_param_sinks_in_expr(e, flow, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(e, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
             }
             _ => {
                 // Best-effort: scan any nested expressions in other stmt forms for sink calls.
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 for r in rets {
-                    collect_param_sinks_in_expr(&r, flow, sink_pred, known_param_sinks, found);
+                    collect_param_sinks_in_expr(&r, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 }
             }
         }
@@ -8390,6 +8427,7 @@ fn collect_param_sinks_in_expr(
     flow: &BTreeMap<String, BTreeSet<usize>>,
     sink_pred: fn(&str) -> bool,
     known_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
+    known_method_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
     found: &mut BTreeSet<usize>,
 ) {
     match expr {
@@ -8407,12 +8445,12 @@ fn collect_param_sinks_in_expr(
                 }
             }
             for arg in args {
-                collect_param_sinks_in_expr(arg, flow, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(arg, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            collect_param_sinks_in_expr(lhs, flow, sink_pred, known_param_sinks, found);
-            collect_param_sinks_in_expr(rhs, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(lhs, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(rhs, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
         }
         Expr::Unary { expr, .. }
         | Expr::Cast { expr, .. }
@@ -8420,14 +8458,14 @@ fn collect_param_sinks_in_expr(
         | Expr::Assume(expr)
         | Expr::Assert(expr)
         | Expr::FieldAccess { base: expr, .. } => {
-            collect_param_sinks_in_expr(expr, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(expr, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
         }
         Expr::Declassify { inner, .. } => {
-            collect_param_sinks_in_expr(inner, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(inner, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
         }
         Expr::Index { base, index } => {
-            collect_param_sinks_in_expr(base, flow, sink_pred, known_param_sinks, found);
-            collect_param_sinks_in_expr(index, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(base, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(index, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
         }
         // Control-flow value exprs — SCOPE-AWARE, the param->sink SUMMARY dual of the enforcing
         // descent in `analyze_expr_effect`: a param that reaches a sink buried in a match arm / if
@@ -8436,22 +8474,22 @@ fn collect_param_sinks_in_expr(
         Expr::If {
             cond, then, else_, ..
         } => {
-            collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, found);
-            collect_param_sinks_in_expr(then, flow, sink_pred, known_param_sinks, found);
-            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(then, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
             let scrut = expr_param_flow(scrutinee, flow);
             for arm in arms {
                 let mut local = flow.clone();
                 seed_flow_pattern(&mut local, &arm.pattern, &scrut);
                 if let Some(guard) = &arm.guard {
-                    collect_param_sinks_in_expr(guard, &local, sink_pred, known_param_sinks, found);
+                    collect_param_sinks_in_expr(guard, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 }
-                collect_param_sinks_in_expr(&arm.body, &local, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(&arm.body, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
             }
         }
         Expr::IfLet {
@@ -8461,23 +8499,23 @@ fn collect_param_sinks_in_expr(
             else_,
             ..
         } => {
-            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
             let scrut = expr_param_flow(scrutinee, flow);
             let mut local = flow.clone();
             seed_flow_pattern(&mut local, pattern, &scrut);
-            collect_param_sinks_in_expr(then, &local, sink_pred, known_param_sinks, found);
-            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, found);
+            collect_param_sinks_in_expr(then, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
         }
         Expr::Block { stmts, tail } => {
             let mut local = flow.clone();
             for stmt in stmts {
                 match stmt {
                     Stmt::Let { name, init, .. } => {
-                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, found);
+                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
                         seed_param_flow_let(name, init, &mut local);
                     }
                     Stmt::LetPattern { pattern, init, .. } => {
-                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, found);
+                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
                         let set = expr_param_flow(init, &local);
                         seed_flow_pattern(&mut local, pattern, &set);
                     }
@@ -8485,12 +8523,12 @@ fn collect_param_sinks_in_expr(
                         target: Expr::Var(name),
                         value,
                     } => {
-                        collect_param_sinks_in_expr(value, &local, sink_pred, known_param_sinks, found);
+                        collect_param_sinks_in_expr(value, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
                         let set = expr_param_flow(value, &local);
                         local.insert(name.clone(), set);
                     }
                     Stmt::ExprStmt(e) => {
-                        collect_param_sinks_in_expr(e, &local, sink_pred, known_param_sinks, found)
+                        collect_param_sinks_in_expr(e, &local, sink_pred, known_param_sinks, known_method_param_sinks, found)
                     }
                     // Deep-nested control-flow STATEMENTS in a value block are covered for the
                     // ENFORCING pass by walk_block_effects; here (a monotone, fail-open SUMMARY) the
@@ -8500,126 +8538,93 @@ fn collect_param_sinks_in_expr(
                 }
             }
             if let Some(t) = tail {
-                collect_param_sinks_in_expr(t, &local, sink_pred, known_param_sinks, found);
+                collect_param_sinks_in_expr(t, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            }
+        }
+        // #68 free-fn→method / method→method sink/egress laundering. A method call `recv.name(a,b)`
+        // parses as `CallExpr{ callee: FieldAccess{ base, field }, args }`; before this arm it fell to
+        // `_ => {}` and dropped the flow entirely, so `fn f(m,x){ m.snd(x) }` never marked its param.
+        // Consult the method summary (`known_method_param_sinks`, keyed by bare method name — the joint
+        // fixpoint keeps it mutually transitive with the free-fn map) with the #64 SELF-OFFSET: summary
+        // index 0 → receiver `base`, p≥1 → arg p-1. Then recurse callee + args so a bare sink buried in
+        // a method-call argument/receiver is still found.
+        Expr::CallExpr { callee, args } => {
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                if let Some(sink_params) = known_method_param_sinks.get(field) {
+                    for &i in sink_params {
+                        let target: Option<&Expr> = if i == 0 {
+                            Some(base.as_ref())
+                        } else {
+                            args.get(i - 1)
+                        };
+                        if let Some(t) = target {
+                            found.extend(expr_param_flow(t, flow));
+                        }
+                    }
+                }
+            }
+            collect_param_sinks_in_expr(callee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            for arg in args {
+                collect_param_sinks_in_expr(arg, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
             }
         }
         _ => {}
     }
 }
 
-/// Populate `ctx.param_sinks` by a monotone fixpoint over free functions.
-fn compute_param_sinks(items: &[Item], ctx: &mut SemanticContext) {
-    let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
-    collect_fn_params_bodies(items, &mut fns);
+/// Compute the interprocedural param→sink (or param→egress, per `sink_pred`) summaries for free
+/// functions AND impl methods in ONE COMBINED add-only fixpoint (#68). A free fn can sink a param
+/// THROUGH a method (`fn f(m,x){ m.snd(x) }`) and a method can sink THROUGH another method
+/// (`fn ship(self,p){ self.deliver(p) }`), so the free-fn map and the method map are MUTUALLY RECURSIVE
+/// (they compose: free→method→free→…) — no staged order with one frozen before the other can express
+/// that cycle, which is why the former four staged passes (`compute_param_sinks`/`_egress` +
+/// `compute_method_param_*`) structurally missed both #68 directions. Each iteration snapshots BOTH maps,
+/// re-walks every free-fn and method body (`body_param_sinks` now consults both maps; its `CallExpr` arm
+/// applies the #64 self-offset at method-call sites), and accumulates growth into both maps until neither
+/// grows. Monotone (union-only) over the PRODUCT of two finite lattices (names × index-sets ⊆ {0..arity})
+/// → strictly ascends a finite lattice → terminates at the least joint fixpoint. `free_map`/`method_map`
+/// are distinct ctx fields so the two `&mut` borrows split at the call site; `is_sink` and `is_egress_sink`
+/// are independent runs of this one driver. Run before per-function analysis so the interproc call-site
+/// checks (both the free-fn `Expr::Call` arms and the impl-method `Expr::CallExpr` arms in
+/// `analyze_expr_effect`) see complete summaries.
+#[allow(clippy::type_complexity)]
+fn compute_sink_summaries_joint(
+    fns: &[(String, Vec<String>, &[Stmt])],
+    methods: &[(String, Vec<String>, &[Stmt])],
+    sink_pred: fn(&str) -> bool,
+    free_map: &mut BTreeMap<String, BTreeSet<usize>>,
+    method_map: &mut BTreeMap<String, BTreeSet<usize>>,
+) {
     loop {
         let mut changed = false;
-        // Snapshot so we can consult a stable summary while updating.
-        let known = ctx.param_sinks.clone();
-        for (name, params, body) in &fns {
+        // Snapshot BOTH maps so a mid-iteration read-after-write can't defeat the monotone growth.
+        let known_free = free_map.clone();
+        let known_method = method_map.clone();
+        for (name, params, body) in fns {
+            // Free fn: parameter i is at flow index i (no receiver).
             let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
             for (i, p) in params.iter().enumerate() {
                 flow.insert(p.clone(), BTreeSet::from([i]));
             }
             let mut found = BTreeSet::new();
-            body_param_sinks(body, &mut flow, is_sink, &known, &mut found);
-            let entry = ctx.param_sinks.entry(name.clone()).or_default();
+            body_param_sinks(body, &mut flow, sink_pred, &known_free, &known_method, &mut found);
+            let entry = free_map.entry(name.clone()).or_default();
             for i in found {
                 if entry.insert(i) {
                     changed = true;
                 }
             }
         }
-        if !changed {
-            break;
-        }
-    }
-}
-
-/// Populate `ctx.param_egress` by the same monotone fixpoint as `compute_param_sinks`, but with the
-/// EGRESS predicate (`is_egress_sink`) — the confidentiality dual. Marks which formal parameters of
-/// each function flow into a network/shell EGRESS inside its body (directly or transitively). At a
-/// call site, a SECRET argument in one of those positions is `ANUBIS_INTERPROC_EXFILTRATION` — the
-/// interprocedural twin of the direct `ANUBIS_SECRET_EXFILTRATION`, exactly as `param_sinks` +
-/// `ANUBIS_INTERPROC_SINK` are the interprocedural twin of the direct tainted-sink check. Egress-only
-/// (not `is_sink`), so a secret flowing into a LOCAL write (`write_file`) is NOT exfiltration —
-/// matching the direct egress check's scope.
-fn compute_param_egress(items: &[Item], ctx: &mut SemanticContext) {
-    let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
-    collect_fn_params_bodies(items, &mut fns);
-    loop {
-        let mut changed = false;
-        let known = ctx.param_egress.clone();
-        for (name, params, body) in &fns {
+        for (name, params, body) in methods {
+            // Impl method: `self` is params[0], so summary index p≥1 ↔ call arg p-1 (the self-offset the
+            // CallExpr arms apply). Keyed by bare name → UNIONED across impls (fail-closed, the #64 posture).
             let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
             for (i, p) in params.iter().enumerate() {
                 flow.insert(p.clone(), BTreeSet::from([i]));
             }
             let mut found = BTreeSet::new();
-            body_param_sinks(body, &mut flow, is_egress_sink, &known, &mut found);
-            let entry = ctx.param_egress.entry(name.clone()).or_default();
-            for i in found {
-                if entry.insert(i) {
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-}
-
-/// Populate `ctx.method_param_sinks` — the impl-method twin of `compute_param_sinks`. Same monotone
-/// fixpoint and same `body_param_sinks` walker, but the function list comes from
-/// `collect_impl_method_params_bodies` (methods keyed by BARE name, `self` at index 0) and the summary
-/// is UNIONED across every impl declaring the name. For the transitive `known` we consult
-/// `ctx.param_sinks` (free-fn summaries) so a method body that calls a free fn that sinks is covered —
-/// method→method transitivity through a `CallExpr` inside a body is a documented residual
-/// (`body_param_sinks` recognizes only bare `Expr::Call`), so it is not consulted here. Must run AFTER
-/// `compute_param_sinks` so the free-fn summaries are already at fixpoint.
-fn compute_method_param_sinks(items: &[Item], ctx: &mut SemanticContext) {
-    let mut methods: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
-    collect_impl_method_params_bodies(items, &mut methods);
-    loop {
-        let mut changed = false;
-        let known = ctx.param_sinks.clone();
-        for (name, params, body) in &methods {
-            let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-            for (i, p) in params.iter().enumerate() {
-                flow.insert(p.clone(), BTreeSet::from([i]));
-            }
-            let mut found = BTreeSet::new();
-            body_param_sinks(body, &mut flow, is_sink, &known, &mut found);
-            let entry = ctx.method_param_sinks.entry(name.clone()).or_default();
-            for i in found {
-                if entry.insert(i) {
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-}
-
-/// Populate `ctx.method_param_egress` — the impl-method twin of `compute_param_egress` (EGRESS
-/// predicate `is_egress_sink`). Same fixpoint as `compute_method_param_sinks`, sourced from the impl
-/// method collector, transitive `known` from `ctx.param_egress`. Must run AFTER `compute_param_egress`.
-fn compute_method_param_egress(items: &[Item], ctx: &mut SemanticContext) {
-    let mut methods: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
-    collect_impl_method_params_bodies(items, &mut methods);
-    loop {
-        let mut changed = false;
-        let known = ctx.param_egress.clone();
-        for (name, params, body) in &methods {
-            let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-            for (i, p) in params.iter().enumerate() {
-                flow.insert(p.clone(), BTreeSet::from([i]));
-            }
-            let mut found = BTreeSet::new();
-            body_param_sinks(body, &mut flow, is_egress_sink, &known, &mut found);
-            let entry = ctx.method_param_egress.entry(name.clone()).or_default();
+            body_param_sinks(body, &mut flow, sink_pred, &known_free, &known_method, &mut found);
+            let entry = method_map.entry(name.clone()).or_default();
             for i in found {
                 if entry.insert(i) {
                     changed = true;

@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Precision guard (#68): a method that DISCARDS its arg (`ignore` returns a constant) is not summarized
+// as sinking/egressing that param, so a free fn forwarding a secret into it — as a statement whose
+// result is discarded — is accepted. method_param_sinks/egress[ignore] stay empty.
+struct Store { id: u32 }
+impl Store {
+    fn ignore(self, x) { return 5; }
+}
+fn drop_it(m, x) { m.ignore(x); }
+fn main() uses(net.send) {
+    let m = Store { id: 1 };
+    drop_it(m, secret_source("k"));
+}

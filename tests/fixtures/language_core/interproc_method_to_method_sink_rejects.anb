@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// #68 method→method SINK: `go` forwards its param to another method `run` that sinks it. Only the joint
+// fixpoint can express this — go's summary depends on run's METHOD summary (the old staged order froze
+// the method map). method_param_sinks[go] grows to {1}, so `m.go(input())` is caught.
+struct Runner { id: u32 }
+impl Runner {
+    fn run(self, cmd) uses(net.send) { send("h", 80, cmd); }
+    fn go(self, p) { self.run(p); }
+}
+fn main() uses(net.send) {
+    let m = Runner { id: 1 };
+    m.go(input());
+}

@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// #68 value-carry through a method RETURN into a sink: `wrap` merely returns its arg; `leak` sinks
+// `w.wrap(x)`. The expr_param_flow CallExpr value-carry arm now propagates x's provenance through the
+// method call, so leak's param 1 is summarized as sinking and `leak(w, input())` is caught. (`wrap`
+// need not itself be a sink — this closes the truncation-to-∅ gap in the value walker.)
+struct Wrapper { id: u32 }
+impl Wrapper {
+    fn wrap(self, v) { return v; }
+}
+fn leak(w, x) uses(net.send) { send("h", 80, w.wrap(x)); }
+fn main() uses(net.send) {
+    let w = Wrapper { id: 1 };
+    leak(w, input());
+}

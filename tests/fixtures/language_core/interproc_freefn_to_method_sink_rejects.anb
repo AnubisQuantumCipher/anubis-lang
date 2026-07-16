@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// #68 free-fn→method SINK: a FREE function `fwd` passes its param through a method `run` that sinks it.
+// The joint free-fn↔method fixpoint summarizes fwd's param 1 as sinking (via method_param_sinks[run]
+// consulted by the new collect_param_sinks_in_expr CallExpr arm), so `fwd(r, input())` is caught.
+struct Runner { id: u32 }
+impl Runner {
+    fn run(self, cmd) uses(net.send) { send("h", 80, cmd); }
+}
+fn fwd(r, cmd) { r.run(cmd); }
+fn main() uses(net.send) {
+    let r = Runner { id: 1 };
+    fwd(r, input());
+}
