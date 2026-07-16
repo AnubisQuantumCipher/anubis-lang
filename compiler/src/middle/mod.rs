@@ -2875,6 +2875,42 @@ fn analyze_expr_effect(
             for arg in args {
                 analyze_expr_effect(arg, mode, scope, effects, ctx);
             }
+            // #65: a HIGHER-ORDER builtin (`map`/`each`/`times`/…) APPLIES its inline closure argument
+            // internally (the apply is inside the `anubis_*` runtime fn — there is NO source-level
+            // application node), so a sink/egress/privileged call in the lambda body is otherwise never
+            // enforced: `each([1], |x| send(h,p,secret))` fires NOTHING. Re-enter the body here so the
+            // Safe capability gate, the tainted-sink check, and the secret-exfiltration check run — under
+            // a CLONE of the ambient scope so a captured secret/tainted binding is seen, with the lambda
+            // params inserted as fresh unlabelled bindings (a param SHADOWS a same-named captured var).
+            // The generic `args` walk above hit the `Expr::Lambda` catch-all (opaque), so this is the
+            // only visit of the body — no double-emit. Guarded to fire ONLY when `callee` resolves to the
+            // real builtin (not a local binding and not a user fn — which is analyzed on its own).
+            if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
+                for &i in effects::higher_order_closure_args(callee) {
+                    if let Some(Expr::Lambda { params, body }) = args.get(i) {
+                        let mut local = scope.clone();
+                        for p in params {
+                            local.insert(
+                                p.clone(),
+                                ScopeBinding {
+                                    info: BindingInfo {
+                                        name: p.clone(),
+                                        ty: None,
+                                        mode: String::new(),
+                                        tainted: false,
+                                        taint_source: None,
+                                        declassified: false,
+                                        span: None,
+                                    },
+                                    closure_arity: None,
+                                    secret: false,
+                                },
+                            );
+                        }
+                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                    }
+                }
+            }
         }
         Expr::Declassify {
             inner,

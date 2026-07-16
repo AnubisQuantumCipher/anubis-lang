@@ -5711,6 +5711,63 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn higher_order_closure_args_recognizer_covers_the_closure_applying_builtins() {
+        use crate::middle::effects::higher_order_closure_args as h;
+        // list/map HOFs + times/sort_by/… apply the closure at index 1.
+        for b in [
+            "map", "filter", "each", "find", "any", "all", "count", "sort_by", "flat_map",
+            "take_while", "drop_while", "position", "min_by", "max_by", "partition", "map_values",
+            "reduce", "times",
+        ] {
+            assert_eq!(h(b), &[1usize], "{b} should apply its closure at index 1");
+        }
+        assert_eq!(h("apply"), &[0usize]);
+        assert_eq!(h("call"), &[0usize]);
+        assert_eq!(h("compose"), &[0usize, 1usize]);
+        // a non-HO builtin / user name recognizes nothing (no over-descent).
+        assert!(h("print").is_empty());
+        assert!(h("len").is_empty());
+        assert!(h("some_user_fn").is_empty());
+    }
+
+    #[test]
+    fn closure_hidden_egress_is_caught_at_higher_order_builtins() {
+        // #65: a sink/egress/privileged call inside a lambda APPLIED by a higher-order builtin
+        // (each/map/times/apply/…) is now charged — it was invisible before (defeating the trifecta +
+        // the Safe net.send gate).
+        // (capability) a shell hidden in each's lambda without uses(shell).
+        let sh = tc_ok(r#"fn agent() { each([1], |x| shell("id")); }"#)
+            .expect_err("a shell in a HO-applied lambda without uses(shell) must be forbidden");
+        assert!(sh.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"), "got: {sh}");
+        // (blocker: times) a shell hidden in times' lambda.
+        tc_ok(r#"fn agent() { times(3, |i| shell("id")); }"#)
+            .expect_err("times is a closure-applying builtin — a shell in its lambda must be forbidden");
+        // (confidentiality) a captured secret sent inside a HO-applied lambda (cap declared → only exfil).
+        let sec = tc_ok(
+            r#"fn agent() uses(net.send) { let k = secret_source("api"); each([1], |x| send("h", 80, k)); }"#,
+        )
+        .expect_err("a captured secret egressed inside a HO-applied lambda must be flagged");
+        assert!(sec.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {sec}");
+        // (apply, index 0) a shell in apply's index-0 closure.
+        tc_ok(r#"fn agent() { apply(|x| shell("id"), [1]); }"#)
+            .expect_err("apply applies its closure at index 0 — a shell there must be forbidden");
+        // (precision) a pure lambda charges nothing → accepts.
+        tc_ok(r#"fn f() { let s = map([1,2,3], |x| x + 1); let t = filter(s, |y| y > 0); }"#)
+            .expect("a pure HO-applied lambda must not be flagged");
+        // (precision) a defined-but-uncalled closure literal is opaque → accepts.
+        tc_ok(r#"fn f() { let g = |x| send("a", 80, x); print(1); }"#)
+            .expect("a closure literal that is never applied must not be flagged");
+        // (precision) the capability declared → accepts.
+        tc_ok(r#"fn f() uses(net.send) { each([1], |x| send("h", 80, x)); }"#)
+            .expect("a HO-applied lambda whose effect is declared must be accepted");
+        // (precision) a well-formed declassify in the lambda releases the captured secret.
+        tc_ok(
+            r#"fn agent() uses(net.send) { let k = secret_source("api"); each([1], |x| send("h", 80, declassify(k, "p", "r"))); }"#,
+        )
+        .expect("a declassified captured secret in a HO-applied lambda releases");
+    }
+
+    #[test]
     fn impl_method_return_secret_or_taint_is_caught_at_egress() {
         // #67: an impl method whose RETURN carries an internally-minted secret/taint (the getter/
         // accessor exfil `let k = v.key(); send(k)` / `send(v.key())`) launders past even the DIRECT

@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// #65: a shell buried in a lambda applied by a higher-order builtin (each) — without uses(shell) — is
+// now caught. Before, the closure body was never charged, so this compiled GREEN.
+fn agent() {
+    each([1], |x| shell("id"));
+}

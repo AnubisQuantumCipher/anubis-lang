@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// #65 blocker-fix: `times` is a closure-applying builtin (anubis_times, closure idx 1) that the first
+// recognizer draft OMITTED — a complete bypass. Now in the set; this rejects.
+fn agent() {
+    times(3, |i| shell("id"));
+}

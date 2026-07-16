@@ -66,6 +66,33 @@ pub(crate) fn builtin_effect_of(callee: &str) -> Option<&'static str> {
     None
 }
 
+/// The argument positions at which a HIGHER-ORDER builtin receives a closure it APPLIES internally
+/// (#65). Because the application happens inside the `anubis_*` runtime fn, there is no source-level
+/// application node, so an inline `|x| send(..)` at one of these indices would otherwise be charged
+/// NOTHING — defeating the trifecta + the Safe net.send gate. The checker descends into such inline
+/// lambdas to charge their body's effects (effects.rs) and run the taint/secret/capability checks
+/// (mod.rs `analyze_expr_effect`). Kept in lock-step with the closure-applying arms of
+/// `backends::run::emit_builtin_call` (map/each/… all `fixed(anubis_*, .., N)` whose runtime body
+/// calls `f.call_closure`). A unit test asserts the expected index set (it is a change-detector on
+/// THIS set, not a structural diff against run.rs) — so when adding a closure-applying builtin to
+/// run.rs, add it here in lock-step: a missing name under-fires (fail-open, safe) but SILENTLY. The
+/// recognizer is consulted ONLY when the callee resolves to the actual builtin (the
+/// `effects.rs` if/else chain and the mod.rs `!all_fns` guard exclude a user fn / local of the same
+/// name), so a user-defined `fn apply`/`fn compose` is analyzed on its own row, never over-charged.
+pub(crate) fn higher_order_closure_args(callee: &str) -> &'static [usize] {
+    match callee {
+        // list/map HOFs + `times`/`sort_by`/… — closure at index 1 (data first, closure second).
+        "map" | "filter" | "each" | "find" | "any" | "all" | "count" | "sort_by" | "flat_map"
+        | "take_while" | "drop_while" | "position" | "min_by" | "max_by" | "partition"
+        | "map_values" | "reduce" | "times" => &[1],
+        // `apply(f, args)` / `call(f, …)` — closure at index 0.
+        "apply" | "call" => &[0],
+        // `compose(f, g)` — BOTH indices are closures.
+        "compose" => &[0, 1],
+        _ => &[],
+    }
+}
+
 /// Whether a normalized effect name is one of the six gated capability ids (custom `uses(...)`
 /// tags pass through `normalize_effect_name` unchanged and are analysis-only — never row members,
 /// exactly as `capability_effect` excludes them from the enforcing check's `caps_used`).
@@ -250,6 +277,22 @@ fn walk_expr(expr: &Expr, cx: &WalkCtx, scope: &mut Scope, row: &mut EffectRow) 
             } else if crate::backends::run::is_builtin_name(callee) {
                 // A known builtin with no capability classification (`print`, `len`, `push`, …):
                 // effect-free by the same registry the unknown-call check trusts — row stays closed.
+                // BUT a HIGHER-ORDER builtin (`map`/`each`/`times`/…) APPLIES its closure argument
+                // internally, so that inline lambda's body effects belong to THIS function's row (#65).
+                // Reached only when `callee` is neither a local binding (line above) nor a user fn (the
+                // `all_fns` branch above), so this fires solely for the real builtin — a user `fn map`
+                // keeps its own computed row. The generic args walk already visited (and skipped, at the
+                // `Expr::Lambda` arm) this lambda, so walking the body here charges it exactly once.
+                for &i in higher_order_closure_args(callee) {
+                    if let Some(Expr::Lambda { params, body }) = args.get(i) {
+                        scope.push();
+                        for p in params {
+                            scope.bind(p);
+                        }
+                        walk_expr(body, cx, scope, row);
+                        scope.pop();
+                    }
+                }
             } else {
                 // Unknown bare name — nothing resolvable to charge, so the tail is open.
                 row.open = true;

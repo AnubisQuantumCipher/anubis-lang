@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// #65: a net.send hidden in a map-lambda without uses(net.send) — the Safe net.send gate now fires.
+fn agent() {
+    map([1], |x| send("h", 80, x));
+}

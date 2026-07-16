@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Precision guard mirroring the committed corpus shapes (anvil |f| f.rule_id, aegis |op| op.tag()): a
+// lambda doing only field access / arithmetic / param-forwarding charges nothing.
+fn f(rules) {
+    let ids = map(rules, |r| r.id);
+    let g = sort_by(rules, |p| 0 - p);
+}

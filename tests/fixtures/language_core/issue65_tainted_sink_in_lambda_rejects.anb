@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// #65 integrity: a tainted param captured into a HO-applied lambda and sent — the tainted-sink check
+// now sees it.
+fn agent(q: tainted<string>) uses(net.send) {
+    each([1], |x| send("h", 80, q));
+}

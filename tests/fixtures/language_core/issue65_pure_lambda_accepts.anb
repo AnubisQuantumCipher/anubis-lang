@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Precision guard: a pure lambda (arithmetic/comparison, no effects) charges nothing — accepts.
+fn f() {
+    let s = map([1, 2, 3], |x| x + 1);
+    let t = filter(s, |y| y > 0);
+}

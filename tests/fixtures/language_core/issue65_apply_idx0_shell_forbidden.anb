@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// #65: `apply(f, args)` applies its closure at index 0 (not 1) — the self-offset variant. A shell in
+// the applied closure is caught.
+fn agent() {
+    apply(|x| shell("id"), [1]);
+}

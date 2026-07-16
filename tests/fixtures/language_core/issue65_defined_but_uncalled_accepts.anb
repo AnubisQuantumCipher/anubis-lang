@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Precision guard: a closure LITERAL that is defined but NOT at a higher-order-applied position is left
+// opaque (never descended), so an effectful body that is never called does not over-reject.
+fn f() {
+    let g = |x| send("a", 80, x);
+    print(1);
+}

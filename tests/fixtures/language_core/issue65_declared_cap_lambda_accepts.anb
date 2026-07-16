@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Precision guard: the capability IS declared (uses(net.send)) and there is no secret/tainted/untrusted
+// leg, so a send in a HO-applied lambda is accepted (no forbidden-effect, no exfil, no trifecta).
+fn f() uses(net.send) {
+    each([1], |x| send("h", 80, x));
+}

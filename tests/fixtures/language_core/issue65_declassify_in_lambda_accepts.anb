@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Precision guard: a well-formed declassify inside the HO-applied lambda releases the captured secret,
+// so the egress is accepted.
+fn agent() uses(net.send) {
+    let k = secret_source("api");
+    each([1], |x| send("h", 80, declassify(k, "release-policy", "audited")));
+}
