@@ -5738,6 +5738,47 @@ fn main() uses(net.send) { let v = Vault { id: 1 }; send("h", 80, v.alias()); }"
     }
 
     #[test]
+    fn top_level_destructuring_let_seeds_taint_and_secret() {
+        // #69: the main-analyzer `Stmt::LetPattern` arm seeded NOTHING (not even inserting the bound
+        // names into scope), so a destructured secret/tainted source laundered to egress. Now each bound
+        // name is seeded with the initializer's whole-value label.
+        // (confidentiality) direct secret source destructured → SECRET_EXFILTRATION.
+        let sec = tc_ok(
+            r#"fn main() uses(net.send) { let [a, b] = [secret_source("k"), 0]; send("h", 80, a); }"#,
+        )
+        .expect_err("a destructured secret source, then egressed, must be flagged");
+        assert!(sec.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {sec}");
+        // (integrity) direct tainted source destructured → TAINTED_SINK.
+        let taint = tc_ok(r#"fn main() { let [a, b] = [input(), 0]; sink(a); }"#)
+            .expect_err("a destructured tainted source, then sunk, must be flagged");
+        assert!(
+            taint.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {taint}"
+        );
+        // (#67 interaction) a method-return secret destructured is caught too (closes the asymmetry).
+        tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn key(self) { return secret_source("k"); } }
+fn main() uses(net.send) { let v = Vault { id: 1 }; let [a, b] = [v.key(), 0]; send("h", 80, a); }"#,
+        )
+        .expect_err("a destructured method-return secret must be flagged");
+        // (precision) a clean destructure still accepts.
+        tc_ok(r#"fn main() uses(net.send) { let [a, b] = [1, 2]; send("h", 80, a); }"#)
+            .expect("a clean destructure must not be flagged");
+        // (precision) a well-formed declassify of the destructured init releases it.
+        tc_ok(
+            r#"fn main() uses(net.send) { let [a, b] = declassify([secret_source("k"), 0], "p", "r"); send("h", 80, a); }"#,
+        )
+        .expect("a declassified destructure releases");
+        // (precision — span-patch) a statement-position destructure SHADOW must not leak the shadow's
+        // secret onto the clean outer binding (merge_taint_over span-identity relies on the patched span).
+        tc_ok(
+            r#"fn main(c: bool) uses(net.send) { let [r, s] = [0, 1]; if c { let [r, s] = [secret_source("k"), 1]; } send("h", 80, r); }"#,
+        )
+        .expect("a statement-position destructure shadow must not over-reject the clean outer binding");
+    }
+
+    #[test]
     fn taint_reassignment_to_clean_clears_precisely() {
         // Reassign a tainted var to a clean constant → genuinely clean (precision, not over-taint).
         tc_ok(r#"fn main() uses(net.send) { let x = input(); x = 42; send("h", 80, x); }"#)

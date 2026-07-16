@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Precision guard: a well-formed declassify of the destructured initializer releases it, so the bound
+// names are clean and the send is accepted.
+fn main() uses(net.send) {
+    let [a, b] = declassify([secret_source("api_key"), 0], "release-policy", "audited");
+    send("host", 80, a);
+}

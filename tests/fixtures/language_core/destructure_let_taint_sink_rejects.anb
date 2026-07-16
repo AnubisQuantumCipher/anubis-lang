@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// #69 integrity dual: a top-level destructuring `let` binding a tainted source (`input()`) then sinks a
+// bound name. Same pre-existing seeding hole as the secret side.
+fn main() {
+    let [a, b] = [input(), 0];
+    sink(a);
+}

@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Precision guard: a clean destructuring `let` (no secret/tainted source) still accepts — the seeding
+// only labels bound names when the initializer actually carries a label.
+fn main() uses(net.send) {
+    let [a, b] = [1, 2];
+    send("host", 80, a);
+}

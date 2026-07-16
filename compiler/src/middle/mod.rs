@@ -1951,7 +1951,7 @@ fn analyze_stmts(
                     }
                 }
             }
-            Stmt::LetPattern { pattern, init, .. } => {
+            Stmt::LetPattern { pattern, init, span } => {
                 // Destructuring binding: register each bound name so later statements don't
                 // flag it as unknown. (No type annotation, so no raw-pointer/type-mismatch check.)
                 for n in pattern.bound_names() {
@@ -1960,6 +1960,53 @@ fn analyze_stmts(
                 // As with `Stmt::Let`, a destructuring initializer can hide an embedded write to an
                 // outer variable; invalidate its stale solver fact.
                 invalidate_embedded_writes(ctx, assumptions, init);
+                // #69: SEED taint/secret from the initializer. Before this the arm labelled nothing
+                // (not even inserting the bound names into `scope`), so a destructured secret/tainted
+                // source laundered: `let [a,b] = [secret_source("k"),0]; send(a)` and the direct-source
+                // `let [a,b] = [input(),0]; sink(a)` COMPILED — `a` was absent from scope and read clean
+                // at egress. Compute the initializer's WHOLE-VALUE label once (conservative whole-value
+                // granularity, matching seed_taint_pattern / the value-block walker's LetPattern arm) and
+                // seed EVERY bound name with it. A well-formed declassify releases (taint cleared here;
+                // secret cleared by the walker's own Declassify arm → None). Whole-value over-approx: a
+                // clean sibling of a labelled destructure is conservatively labelled too (fail-closed).
+                let taint = {
+                    let it = expr_taint_source_m(
+                        init,
+                        scope,
+                        &ctx.tainting_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_tainting_fns,
+                    );
+                    let declassified =
+                        declassify_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint)
+                            .is_some();
+                    if declassified {
+                        None
+                    } else {
+                        it
+                    }
+                };
+                let secret = expr_secret_source_m(
+                    init,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                )
+                .is_some();
+                seed_effect_pattern(scope, pattern, &taint, secret);
+                // Patch each bound name's span to the real `let`-pattern span. `seed_effect_pattern`
+                // inserts `span: None`, but `merge_taint_over` disambiguates a branch SHADOW from a
+                // reassignment by span identity — so without a real, distinct span a statement-position
+                // destructure shadow (`let [r,s]=[0,1]; if c { let [r,s]=[secret_source(),1]; } send(r)`)
+                // would collide `None == None` with its outer binding and leak the shadow's label onto the
+                // provably-clean outer `r` (a false positive). This mirrors the single-`let` arm and the
+                // value-block walker's LetPattern arms, which patch the span for exactly this reason.
+                for n in pattern.bound_names() {
+                    if let Some(b) = scope.get_mut(&n) {
+                        b.info.span = Some((span.start, span.end));
+                    }
+                }
             }
             Stmt::ResearchBlock { body, .. } => {
                 ctx.has_research = true;

@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Precision guard (#69 span-patch): a STATEMENT-position destructure SHADOW. The inner `let [r,s] =
+// [secret_source(),1]` inside `if c` shadows the outer clean destructured `r`; after the if, the outer
+// `r` (= 0) is what egresses. The span-patch on LetPattern-bound names lets `merge_taint_over`
+// distinguish the shadow from the outer by span identity, so the shadow's secret does NOT leak onto the
+// provably-clean outer binding. Without the patch this would falsely reject (both spans `None`).
+fn main(c: bool) uses(net.send) {
+    let [r, s] = [0, 1];
+    if c {
+        let [r, s] = [secret_source("api_key"), 1];
+    }
+    send("host", 80, r);
+}
