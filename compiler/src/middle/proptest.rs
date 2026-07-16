@@ -221,3 +221,66 @@ pub fn gen_false_float_contract_program(seed: u64, depth: u32) -> Option<(String
         v,
     ))
 }
+
+// ── Phase-3 QF_S string differential generator ──────────────────────────────────────────────────
+// String `==` is EXACT structural equality both at runtime (AnubisValue::Str(Rc<String>) PartialEq) and
+// in SMT QF_S `(= a b)`, so the differential property is INJECTIVITY of the encoder: any two
+// runtime-DISTINCT strings must stay distinct in z3, and any string must equal itself. The pool is
+// deliberately loaded with the encoder's real risk surface — a literal backslash, a doubled `"`, and a
+// `\u{..}`-shaped literal that z3's Unicode-strings theory would re-decode if the backslash escape were
+// dropped (the exact false-accept the review caught). A FALSE contract over a distinct pair therefore
+// FAILS iff the encoder is injective; a collapsing encoder (unescaped `\u`) would wrongly discharge it
+// and the harness catches it — no runtime run needed.
+
+/// RUNTIME strings (as Rust `&str`, i.e. AFTER the Anubis lexer decodes escapes). All DISTINCT.
+/// `"\\u{41}"` is the 6-char runtime string `\`,`u`,`{`,`4`,`1`,`}` — it collides with `"A"` iff the
+/// SMT encoder fails to escape the backslash. Printable only (no raw control chars): the encoder's
+/// modelable domain is exact for these; control-char handling is a documented residual.
+pub const STRING_POOL: [&str; 15] = [
+    "", "a", "b", "A", "B", "ok", "OK", "closed",
+    "\\",        // one backslash
+    "\\u{41}",   // 6 chars: \ u { 4 1 }  — collision-bait vs "A"
+    "\\u{42}",   // 6 chars — collision-bait vs "B"
+    "\\n",       // 2 chars: \ n  — vs a real newline (excluded) / distinct from "n"
+    "\"",        // one double-quote
+    "a\"b",      // embedded quote
+    "x\\y",      // embedded backslash
+];
+
+/// Encode a runtime string into an Anubis SOURCE literal so the lexer reconstructs it EXACTLY: escape
+/// `\` → `\\` and `"` → `\"` (the lexer's `lex_escape` inverts both). No `\u`/`\x`/`\n` is emitted, so
+/// the runtime StrLiteral equals the input byte-for-byte.
+pub fn anubis_str_literal(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// A TRUE string contract: `return "s"; ensures(result == "s")` — the same literal both sides, so the
+/// QF_S obligation is `(= enc(s) enc(s))` and MUST discharge (reflexivity), whatever `s` contains.
+pub fn gen_true_string_contract_program(seed: u64) -> (String, &'static str) {
+    let mut rng = Lcg(seed);
+    let s = STRING_POOL[rng.below(STRING_POOL.len())];
+    let lit = anubis_str_literal(s);
+    let src = format!(
+        "fn f() -> string ensures(result == {lit}) {{ return {lit}; }}\nfn main() {{ print(f()); }}\n"
+    );
+    (src, s)
+}
+
+/// A FALSE string contract: `return "a"; ensures(result == "b")` for a DISTINCT pair `a != b`. It MUST
+/// be disproved (FAIL). The index arithmetic guarantees `j != i` over the all-distinct pool, so the
+/// runtime strings genuinely differ; a non-injective encoder (e.g. an unescaped `\u{..}`) would make z3
+/// see them equal and wrongly discharge — which the harness flags.
+pub fn gen_false_string_contract_program(seed: u64) -> (String, &'static str, &'static str) {
+    let mut rng = Lcg(seed ^ 0x9e37_79b9_7f4a_7c15);
+    let n = STRING_POOL.len();
+    let i = rng.below(n);
+    let j = (i + 1 + rng.below(n - 1)) % n; // always distinct from i for n >= 2
+    let a = STRING_POOL[i];
+    let b = STRING_POOL[j];
+    let ret = anubis_str_literal(a);
+    let ens = anubis_str_literal(b);
+    let src = format!(
+        "fn f() -> string ensures(result == {ens}) {{ return {ret}; }}\nfn main() {{ print(f()); }}\n"
+    );
+    (src, a, b)
+}

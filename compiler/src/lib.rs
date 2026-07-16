@@ -3120,6 +3120,57 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_string_proptest_solver_matches_oracle() {
+        use middle::proptest;
+        // Differential net for the QF_S string encoder: string `==` is EXACT structural equality both at
+        // runtime and in QF_S, so the property is the encoder's INJECTIVITY. A TRUE contract (`result ==
+        // "s"` for `return "s"`) must discharge (reflexivity); a FALSE contract over a runtime-DISTINCT
+        // pair must FAIL. The pool is loaded with the encoder's risk surface — a backslash, a `"`, and a
+        // `\u{..}`-shaped literal — so a non-injective encoding (e.g. an unescaped `\u{..}` z3 re-decodes)
+        // would let a false contract discharge and this harness catches it. No runtime run needed.
+        let discharged = |src: &str| -> bool {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        let mut true_checked = 0;
+        let mut false_checked = 0;
+        for seed in 1u64..80 {
+            // P_discharge: a TRUE string contract (same literal both sides) discharges.
+            let (tsrc, _) = proptest::gen_true_string_contract_program(seed);
+            true_checked += 1;
+            assert!(
+                discharged(&tsrc),
+                "seed {seed} true string contract must discharge:\n{tsrc}"
+            );
+            // P_disproof (INJECTIVITY): a FALSE string contract over a distinct pair must FAIL — never
+            // certified. This is the automated guard against the `\u`-decode false-accept class.
+            let (fsrc, a, b) = proptest::gen_false_string_contract_program(seed);
+            assert_ne!(a, b, "false generator must pick distinct runtime strings");
+            false_checked += 1;
+            let ir = typecheck(parse_source(&fsrc).expect("parse"), frontend::Mode::Safe)
+                .expect("false-contract program must typecheck");
+            assert!(
+                SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .any(|c| c.status == "FAIL"),
+                "seed {seed} false string contract (return {a:?} ensures {b:?}) must FAIL:\n{fsrc}"
+            );
+        }
+        assert!(
+            true_checked >= 20,
+            "expected >=20 true string contracts, got {true_checked}"
+        );
+        assert!(
+            false_checked >= 20,
+            "expected >=20 false string contracts, got {false_checked}"
+        );
+    }
+
+    #[test]
     fn phase5_stdlib_import_resolve_combine_and_run() {
         // Virtual std.*: no project std on disk; combine + run pure modules.
         use backends::run::compile_and_run_items;
