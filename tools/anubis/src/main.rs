@@ -2730,6 +2730,28 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 };
                 std::fs::write(methods_dir.join("guest/src/main.rs"), &guest_src)?;
 
+                // Honesty warning (proof-scaling boundary, docs/language/PROOF_SCALING.md): the ENTIRE
+                // program — every collected function reachable from main() — is lowered into the zkVM
+                // guest. Anubis does NOT slice the proof branch, so prover time and memory track total
+                // program size, not the size of the proven computation. Warn on a large lowering so an
+                // enormous workload is not a silent surprise. (This does not reduce cost — the dynamic,
+                // whole-program guest is an architectural boundary, not a bug.)
+                let guest_fn_count = ast
+                    .items
+                    .iter()
+                    .filter(|it| matches!(it, Item::Fn { .. }))
+                    .count();
+                if guest_src.len() > 262_144 || guest_fn_count > 256 {
+                    eprintln!(
+                        "warning: lowering a large program to the zkVM guest ({} functions, {} KB of \
+                         guest source). The WHOLE program becomes proving work — Anubis does not slice \
+                         the proof branch, so prover cost tracks total program size, not the size of the \
+                         proven computation. See docs/language/PROOF_SCALING.md.",
+                        guest_fn_count,
+                        guest_src.len() / 1024
+                    );
+                }
+
                 println!(
                     "Building risc0 methods (risc0-build will compute real ImageID from ELF)..."
                 );
