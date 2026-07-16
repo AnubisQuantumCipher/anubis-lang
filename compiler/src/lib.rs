@@ -5966,6 +5966,60 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn branch_guard_is_a_scoped_path_condition() {
+        // A branch guard is a TRUE fact inside the branch, so it is pushed as a scoped assumption. This
+        // closes the int-Let-init branch OVER-REJECTION (an int Let-init call discharges at all depths,
+        // so `if a > 0 { let y = g(a); }` was rejected because the guard `a > 0`, which proves g's
+        // `requires(x > 0)`, was not in scope). The guard is EXEMPT from the vacuity check: a provably-DEAD
+        // branch (`requires(x>0) { if x<0 { … } }` — guard contradicts the precondition) is legitimately
+        // unreachable and must pass, NOT trip the "contradictory assumptions" vacuity FAIL.
+        let accepts = |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // Guard PROVES the callee precondition ⇒ no more over-rejection at the int Let-init position.
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { let y = g(a); print(y); } } fn main() { c(5); }"#),
+            "a guard that proves the callee requires must NOT over-reject an int Let-init branch call"
+        );
+        // A guard weaker than the requires still rejects (sound, not a blanket accept).
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 10) { return x; } fn c(a: i64) requires(a > 0 - 100) { if a > 5 { let y = g(a); print(y); } } fn main() { c(20); }"#),
+            "a guard (a>5) weaker than the requires (x>10) must still reject the int Let-init branch call"
+        );
+        // The else branch gets the NEGATED guard.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if a < 0 - 200 { let z = 0; print(z); } else { let y = g(a); print(y); } } fn main() { c(5); }"#),
+            "the else branch's negated guard must not spuriously prove the callee requires"
+        );
+        // REGRESSION GUARD (the review's blocker): a DEAD branch whose guard contradicts the precondition
+        // is unreachable — its assert must PASS vacuously, NOT be flipped to a vacuity FAIL by the pushed
+        // guard making {requires ∧ guard} unsatisfiable.
+        assert!(
+            accepts(r#"fn f(x: i64) requires(x > 0) { if x < 0 { assert(x == x); } } fn main() { f(5); }"#),
+            "a dead branch (guard contradicts the precondition) must pass vacuously, not fail the vacuity check"
+        );
+        // A guard var reassigned in the branch drops the stale guard fact (no false accept).
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { a = 0 - 5; let y = g(a); print(y); } } fn main() { c(5); }"#),
+            "a guard variable reassigned in the branch must drop the stale guard (reject, no false accept)"
+        );
+        // The vacuity exclusion is by MULTISET, not value: a genuine `requires`/`assume` contradiction must
+        // STILL fire even when a premise shares an SMT string with an in-scope guard (`if x>0` == `x>0`).
+        assert!(
+            !accepts(r#"fn f(x: i64) -> i64 requires(x > 0) requires(x < 0) ensures(result > 999) { if x > 0 { return x; } return x; } fn main() { print(f(5)); }"#),
+            "contradictory requires must still fire vacuous even when a guard equals one requires' SMT string"
+        );
+        assert!(
+            !accepts(r#"fn f(x: i64) requires(x > 0) { if x > 0 { assume(x < 0); assert(x > 999); } } fn main() { f(5); }"#),
+            "an assume/requires contradiction inside a guarded (live) branch must still fire vacuous"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
         // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
         // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string

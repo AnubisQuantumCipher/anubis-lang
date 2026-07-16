@@ -70,6 +70,15 @@ pub struct SolverObligation {
     /// keeps older serialized data (which lacks the field) deserializable.
     #[serde(default)]
     pub strings: bool,
+    /// Branch path-condition assumptions active when this obligation was built (a subset of
+    /// `assumptions`). A branch guard (`if a > 0 { … }`) is pushed as a scoped assumption so a
+    /// guard-provable call discharges, but it is NOT a contract premise: the VACUITY check
+    /// (`assumptions_satisfiable`, which flips a contract PASS→FAIL when the premises are
+    /// self-contradictory) must EXCLUDE these — otherwise a provably-DEAD branch (guard contradicts the
+    /// precondition, `{x>0} ∧ {x<0}`) is legitimately unreachable yet spuriously fails vacuous. Discharge
+    /// still uses the full `assumptions` (guards included). `#[serde(default)]` for old-data compat.
+    #[serde(default)]
+    pub guard_assumptions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -206,6 +215,13 @@ struct SemanticContext {
     /// so a string obligation is all-`String` and never sort-clashes. Reset per function alongside the
     /// other solver var sets.
     solver_string_vars: BTreeSet<String>,
+    /// The branch path conditions currently in scope (a stack, innermost last): each `if`/`else` pushes
+    /// its (possibly negated) guard here in parallel with `assumptions`, and pops it when the branch ends.
+    /// An obligation built inside a branch records this set in `SolverObligation.guard_assumptions` so the
+    /// VACUITY check can exclude guards (a dead branch must not fail vacuous). Kept in sync with the
+    /// guard facts pushed to `assumptions`, but NOT with the frame sweep's reassignment drops — a stale
+    /// entry here is harmless (it just won't match a dropped `assumptions` fact). Reset per function.
+    active_branch_guards: Vec<String>,
     /// Every variable REASSIGNED anywhere in the current function body (`collect_assigned_roots` over
     /// the whole body, incl. writes embedded in a `match`-arm / `if`-expression / block). Phase-3 QF_FP
     /// `let` chaining is admitted ONLY for a float `let` whose name is NOT in this set: a never-reassigned
@@ -1013,6 +1029,7 @@ fn analyze_function(
     ctx.solver_int_vars.clear();
     ctx.solver_float_vars.clear();
     ctx.solver_string_vars.clear();
+    ctx.active_branch_guards.clear();
     ctx.symbolic_widths.clear();
     // Authorize declared capabilities for Safe-mode I/O (Phase-3 C5 dual-mode crown).
     ctx.authorized_caps = declared_effects
@@ -1724,6 +1741,7 @@ fn discharge_call_requires(
                 assertion: smt,
                 vars: vars.into_iter().collect(),
                 strings: false,
+                guard_assumptions: ctx.active_branch_guards.clone(),
             });
         } else if new_lane_ok && is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
             // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
@@ -1747,6 +1765,7 @@ fn discharge_call_requires(
                 assertion: smt,
                 vars: vars.into_iter().collect(),
                 strings: false,
+                guard_assumptions: ctx.active_branch_guards.clone(),
             });
         } else if new_lane_ok && is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
             // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
@@ -1772,12 +1791,49 @@ fn discharge_call_requires(
                 assertion: smt,
                 vars: vars.into_iter().collect(),
                 strings: true,
+                guard_assumptions: ctx.active_branch_guards.clone(),
             });
         } else {
             all_requires_checkable = false;
         }
     }
     all_requires_checkable
+}
+
+/// Push a branch guard into the solver `assumptions` (and the scoped `ctx.active_branch_guards` stack) as
+/// a SCOPED path condition. Inside `if cond { … }` the guard is a TRUE fact — the branch is taken iff
+/// `cond` is runtime-true — so a guard-provable call/assert inside discharges (e.g. `if a > 0 { let y =
+/// g(a); }` where g `requires(x > 0)`, previously over-rejected). The `else` branch pushes the NEGATION
+/// (`negate = true`): the runtime else is taken iff `cond` is false. Each lane reuses its exact contract
+/// encoder — `float_bool_to_smt` already models the runtime `if`-comparison branch-taken semantics (both
+/// use `partial_cmp().unwrap_or(Equal)`, run.rs `anubis_value_cmp`), so the negation is the sound
+/// complement. A non-modelable guard pushes nothing. The fact is dual-tracked: in `assumptions` (so
+/// discharge sees it, and the frame sweep drops it on reassignment of a mentioned variable) and in
+/// `ctx.active_branch_guards` (so the obligation records it in `guard_assumptions` and the VACUITY check
+/// can exclude it — a dead branch whose guard contradicts the precondition is unreachable, not vacuous).
+/// The caller scopes both: snapshot/restore `assumptions` and `active_branch_guards` around the branches.
+fn push_branch_path_condition(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    cond: &Expr,
+    negate: bool,
+) {
+    let smt = if is_bool_modelable(cond, &ctx.solver_int_vars) {
+        expr_to_smt(cond, &ctx.symbolic_widths)
+    } else if is_bool_modelable_float(cond, &ctx.solver_float_vars) {
+        float_bool_to_smt(cond)
+    } else if is_bool_modelable_string(cond, &ctx.solver_string_vars) {
+        string_bool_to_smt(cond)
+    } else {
+        return;
+    };
+    let fact = if negate {
+        format!("(not {smt})")
+    } else {
+        smt
+    };
+    assumptions.push(fact.clone());
+    ctx.active_branch_guards.push(fact);
 }
 
 // Threads the full intraprocedural analysis state (scope, symbols, effects, solver assumptions, ctx) plus
@@ -2324,6 +2380,7 @@ fn analyze_stmts(
                         assertion: smt,
                         vars: vars.into_iter().collect(),
                         strings: false,
+                        guard_assumptions: ctx.active_branch_guards.clone(),
                     });
                 } else if is_bool_modelable_float(expr, &ctx.solver_float_vars) {
                     // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged in QF_FP.
@@ -2353,6 +2410,7 @@ fn analyze_stmts(
                         assertion: smt,
                         vars: vars.into_iter().collect(),
                         strings: false,
+                        guard_assumptions: ctx.active_branch_guards.clone(),
                     });
                 } else if is_bool_modelable_string(expr, &ctx.solver_string_vars) {
                     // Phase-3 QF_S: a string-equality `assert` is discharged in QF_S. The shared
@@ -2378,6 +2436,7 @@ fn analyze_stmts(
                         assertion: smt,
                         vars: vars.into_iter().collect(),
                         strings: true,
+                        guard_assumptions: ctx.active_branch_guards.clone(),
                     });
                 }
                 // A write embedded in the asserted expression escapes the statement sweep; invalidate it
@@ -2606,12 +2665,18 @@ fn analyze_stmts(
                 // outer clean `x` was overwritten by the inner tainted binding. Solver assumptions
                 // stay on their own snapshot path below; this only restores BindingInfo scope.
                 let snapshot = assumptions.clone();
+                let guard_snapshot = ctx.active_branch_guards.clone();
                 let snap_scope = scope.clone();
+                // The guard holds inside `then` — push it as a scoped path condition.
+                push_branch_path_condition(ctx, assumptions, cond, false);
                 analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx, false);
                 let then_scope = scope.clone();
                 let else_scope = if let Some(else_body) = else_ {
                     *assumptions = snapshot.clone();
+                    ctx.active_branch_guards = guard_snapshot.clone();
                     restore_block_scope(scope, &snap_scope);
+                    // The negated guard holds inside `else`.
+                    push_branch_path_condition(ctx, assumptions, cond, true);
                     analyze_stmts(
                         else_body,
                         mode,
@@ -2634,6 +2699,8 @@ fn analyze_stmts(
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
                 let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
+                // Path conditions are scoped to the branches: restore the pre-`if` guard stack.
+                ctx.active_branch_guards = guard_snapshot;
             }
             Stmt::While {
                 cond,
@@ -3742,7 +3809,20 @@ const Z3_ARGS: [&str; 4] = ["-in", "-smt2", "-t:10000", "-T:20"];
 fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     let vars: BTreeSet<String> = obl.vars.iter().cloned().collect();
     let mut body = String::new();
+    // The vacuity check asks "are the CONTRACT PREMISES self-contradictory?" — a branch PATH CONDITION is
+    // not a premise, so EXCLUDE it. Otherwise a provably-DEAD branch (guard contradicts the precondition,
+    // `{x>0} ∧ {x<0}`) — which is legitimately unreachable — would be reported unsatisfiable and its
+    // obligation spuriously flipped to a "vacuous proof" FAIL. Exclude by MULTISET, not value: remove ONE
+    // assumption per guard entry, so a genuine `requires(C)` that lowers to the SAME SMT string as an
+    // in-scope guard `if C` keeps its own copy in the vacuity test (else a real requires-contradiction —
+    // `requires(x>0) requires(x<0) { if x>0 { … } }` — would be masked because one `x>0` string doubles as
+    // the guard). Discharge still uses the full assumptions (guards included).
+    let mut remaining_guards: Vec<&String> = obl.guard_assumptions.iter().collect();
     for a in &obl.assumptions {
+        if let Some(pos) = remaining_guards.iter().position(|g| *g == a) {
+            remaining_guards.remove(pos);
+            continue;
+        }
         body.push_str(&format!("(assert {})\n", a));
     }
     // Same per-obligation QF_S routing as check_obligations: the `strings` tag covers a quoteless
@@ -5109,6 +5189,7 @@ fn push_ensures_obligations(
                 assertion: smt,
                 vars: vars.into_iter().collect(),
                 strings: false,
+                guard_assumptions: ctx.active_branch_guards.clone(),
             });
         } else if is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
             // Phase-3 QF_FP: a float postcondition over the modelable subset (`+ - * /`, comparisons) is
@@ -5137,6 +5218,7 @@ fn push_ensures_obligations(
                 assertion: smt,
                 vars: vars.into_iter().collect(),
                 strings: false,
+                guard_assumptions: ctx.active_branch_guards.clone(),
             });
         } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
             // Phase-3 QF_S: a string-equality postcondition is DISCHARGED via the string encoder, with
@@ -5162,6 +5244,7 @@ fn push_ensures_obligations(
                 assertion: smt,
                 vars: vars.into_iter().collect(),
                 strings: true,
+                guard_assumptions: ctx.active_branch_guards.clone(),
             });
         } else {
             // A postcondition the solver cannot faithfully model. Contracts are NOT runtime-enforced,
@@ -6078,6 +6161,7 @@ fn verify_while_invariants(
             assertion,
             vars: vars.into_iter().collect(),
             strings: false,
+            guard_assumptions: ctx.active_branch_guards.clone(),
         });
     };
 
