@@ -292,6 +292,18 @@ struct SemanticContext {
     /// Registered in pass 1. Drives `ANUBIS_GENERIC_CONFLICT`: at a call, a type parameter used in two
     /// argument positions is unified across them, and two incompatible concrete arguments clash.
     fn_generics: BTreeMap<String, Vec<String>>,
+    /// Phase-1 trait bounds: function name → its bounded generics (`fn f<T: Ord + Eq>` →
+    /// `[("T", ["Ord","Eq"])]`). Registered in pass 1 from `Item::Fn.generic_bounds`. Drives
+    /// `ANUBIS_TRAIT_BOUND_UNSATISFIED`: at a call, a generic bound to a KNOWN user type whose trait is
+    /// declared in-program and has no matching `impl` is rejected. Checker-only.
+    fn_bounds: BTreeMap<String, Vec<(String, Vec<String>)>>,
+    /// Every `(trait_name, type_name)` with an `impl Trait for Type` in this program — the trait-bound
+    /// satisfaction registry, sourced from `ast.trait_env.impls`. `(("Ord","Blob"))` present ⇒ `Blob`
+    /// satisfies `Ord`.
+    trait_impls: BTreeSet<(String, String)>,
+    /// Trait names DECLARED in this program (`ast.trait_env.traits`). A bound naming a trait NOT here is
+    /// foreign/std — we cannot enumerate its impls, so it is accepted (fail-closed toward accept).
+    declared_traits: BTreeSet<String>,
     /// User struct/enum name → its declared generic-parameter arity (`struct Pair<A, B>` → 2).
     /// Registered in pass 1. Drives `ANUBIS_GENERIC_ARITY`: an instantiation `Pair<u32>` in an
     /// annotation supplies the wrong number of type arguments. Built-in containers (`Result`/`Option`/
@@ -330,6 +342,15 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // `resolve_traits` erased it. Analysis-only: emits (shadow-gated) diagnostics and reads no
     // desugaring output, so it cannot move the fixpoint.
     check_trait_env(&ast.trait_env, &mut ctx);
+    // Phase-1 trait-bound registry (same read-only trait_env): which (trait, type) pairs have an impl,
+    // and which traits this program declares — consumed by `bound_unsatisfied_scoped` at call sites.
+    for imp in &ast.trait_env.impls {
+        ctx.trait_impls
+            .insert((imp.trait_name.clone(), imp.type_name.clone()));
+    }
+    for tname in ast.trait_env.traits.keys() {
+        ctx.declared_traits.insert(tname.clone());
+    }
     // Pass 1.5: interprocedural taint summaries (return-taint + param→sink), computed before
     // per-function analysis so every `Call` the analysis sees can consult them.
     compute_tainting_fns(&ast.items, &mut ctx);
@@ -449,6 +470,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 ret,
                 effects,
                 generics,
+                generic_bounds,
                 ..
             } => {
                 // Flat function namespace: a redefinition is an error.
@@ -467,6 +489,9 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     .insert(name.clone(), ret.clone().unwrap_or_default());
                 if !generics.is_empty() {
                     ctx.fn_generics.insert(name.clone(), generics.clone());
+                }
+                if !generic_bounds.is_empty() {
+                    ctx.fn_bounds.insert(name.clone(), generic_bounds.clone());
                 }
                 if !effects.is_empty() {
                     ctx.fn_declared_effects
@@ -5912,6 +5937,61 @@ fn generic_conflict_scoped(
     ty::generic_call_conflict(&env, generics, params, args)
 }
 
+/// Phase-1 trait-bound check at a call site: for each generic of `callee` that declares a bound, if the
+/// argument pins it to a KNOWN concrete type that is a USER nominal type (struct/enum) whose required
+/// trait is DECLARED in this program and has NO matching `impl`, return `(generic, concrete, trait)` for
+/// `ANUBIS_TRAIT_BOUND_UNSATISFIED`. Accept-biased on EVERY axis (the four gates below), so an unknown
+/// concrete type, a built-in primitive, or a foreign trait never falsely rejects a valid program.
+fn bound_unsatisfied_scoped(
+    callee: &str,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<(String, String, String)> {
+    let bounds = ctx.fn_bounds.get(callee)?;
+    let generics = ctx.fn_generics.get(callee)?;
+    let params = ctx.fn_params.get(callee)?;
+    let vars = scope_vars(scope);
+    let env = ty::InferEnv {
+        vars: &vars,
+        fns: &ctx.fn_ret_types,
+        structs: &ctx.struct_fields,
+    };
+    let bindings = ty::generic_call_bindings(&env, generics, params, args);
+    for (g, traits) in bounds {
+        // (1) The generic must be pinned to a KNOWN concrete type at this call (else accept — a
+        // return-only/nested/unpinnable generic contributes no binding).
+        let concrete = match bindings.get(g) {
+            Some(c) => c,
+            None => continue,
+        };
+        // (3) Only a USER nominal type is checked: a declared struct (ALL structs are in `struct_fields`,
+        // unlike `type_generics` which holds only GENERIC types) or a user-declared enum (`enum_variants`
+        // minus the two built-in `Option`/`Result`). A built-in primitive (u32/i64/f64/bool/string/char/…)
+        // is in NEITHER, so it is accepted unconditionally — a primitive never appears as `impl Ord for
+        // u32` in source, and demanding one would invert the language's accept-bias. Strip any generic
+        // args (`Pair<u32>` → `Pair`).
+        let base = concrete.split('<').next().unwrap_or(concrete).trim();
+        let is_user_type = ctx.struct_fields.contains_key(base)
+            || (ctx.enum_variants.contains_key(base) && base != "Option" && base != "Result");
+        if !is_user_type {
+            continue;
+        }
+        for tr in traits {
+            // (2) A trait this program does not DECLARE is foreign/std — its impl set is not enumerable,
+            // so accept (mirrors check_trait_env's "a trait we cannot see is not checked").
+            if !ctx.declared_traits.contains(tr) {
+                continue;
+            }
+            // (4) The type is KNOWN and the trait is enumerable, yet no `impl trait for base` exists.
+            if !ctx.trait_impls.contains(&(tr.clone(), base.to_string())) {
+                return Some((g.clone(), base.to_string(), tr.clone()));
+            }
+        }
+    }
+    None
+}
+
 /// Trait coherence + missing-required-method, over the [`TraitEnv`] captured before `resolve_traits`
 /// erased it. Both are STRUCTURAL (no type inference): they read only trait declarations and impl
 /// blocks. Fail-closed toward accept — an `impl` of a trait NOT declared in this program is skipped
@@ -6077,6 +6157,27 @@ fn check_expr_semantics(
                         message: format!(
                             "generic parameter `{param}` of `{callee}` is used as both `{first}` and \
                              `{second}` at the same call",
+                        ),
+                        span: None,
+                    },
+                    false,
+                );
+            }
+            // Phase-1 trait bound (ENFORCING): a generic bound to a KNOWN user type (struct/enum) whose
+            // required trait is declared in-program and has no `impl` is rejected. Accept-biased on all
+            // four gates in `bound_unsatisfied_scoped` (an unknown/unpinnable type, a built-in primitive,
+            // or a foreign trait all accept), so no valid program falsely rejects. Corpus-inert: no
+            // committed program declares a bounded generic, so the shadow diff was UNEXPECTED=0 and the
+            // verdict-diff is 0-flip. The self-host schema ignores `generic_bounds`, so the fixpoint is
+            // unmoved (checker-only field, absorbed by `..` in `project_item`).
+            if let Some((generic, concrete, tr)) = bound_unsatisfied_scoped(callee, args, scope, ctx) {
+                ctx.emit(
+                    SemanticDiagnostic {
+                        code: Some("ANUBIS_TRAIT_BOUND_UNSATISFIED".into()),
+                        message: format!(
+                            "generic parameter `{generic}` of `{callee}` is bound to `{concrete}`, which \
+                             does not implement the required trait `{tr}` (no `impl {tr} for {concrete}` \
+                             in this program)",
                         ),
                         span: None,
                     },

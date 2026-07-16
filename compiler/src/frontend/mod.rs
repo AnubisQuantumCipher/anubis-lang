@@ -239,6 +239,14 @@ pub enum Item {
         /// like `effects` above. Checker-only (monomorphization is type-arg substitution in the
         /// middle-end); the runtime erases types, so codegen and the self-host schema ignore it.
         generics: Vec<String>,
+        /// Phase-1 trait bounds: for each generic that declares a bound (`fn f<T: Ord + Eq>` →
+        /// `[("T", ["Ord", "Eq"])]`), the parameter name and its required trait names. Previously the
+        /// `: Bound` was parsed then discarded. NEW, defaulted to `vec![]` (a generic with no bound has
+        /// no entry), so every existing `Item::Fn { .. }` destructure and construction stays valid,
+        /// exactly like `generics`/`effects`. CHECKER-ONLY: it drives `ANUBIS_TRAIT_BOUND_UNSATISFIED`
+        /// at call sites; the runtime erases types, so codegen and the self-host schema
+        /// (`selfhost_schema::project_item`) IGNORE it — it must NOT be projected, or the fixpoint moves.
+        generic_bounds: Vec<(String, Vec<String>)>,
         /// B2 contracts: `requires(P)` preconditions and `ensures(Q)` postconditions declared after
         /// the signature. Each is a boolean expression; `ensures` may reference `result` (the return
         /// value). Empty when the function declares no contracts.
@@ -1992,7 +2000,7 @@ impl Parser {
     fn parse_struct(&mut self) -> Option<Item> {
         let start = self.expect_keyword("struct")?.span;
         let (name, _) = self.expect_ident("expected struct name")?;
-        let generics = self.parse_generic_params();
+        let (generics, _) = self.parse_generic_params();
         self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after struct name");
         let mut fields = vec![];
@@ -2348,7 +2356,7 @@ impl Parser {
     fn parse_enum(&mut self) -> Option<Item> {
         let start = self.expect_keyword("enum")?.span;
         let (name, _) = self.expect_ident("expected enum name")?;
-        let generics = self.parse_generic_params();
+        let (generics, _) = self.parse_generic_params();
         self.skip_where_clause();
         let _ = self.expect_token(Token::LBrace, "expected `{` after enum name");
         let mut variants = vec![];
@@ -2654,18 +2662,27 @@ impl Parser {
     /// byte-for-byte identical, so no existing program's parse shifts; only the (previously thrown
     /// away) leading identifier of each top-level parameter is now returned. Returns `vec![]` when no
     /// `<...>` is present. The runtime is dynamically typed, so these names are checker-only.
-    fn parse_generic_params(&mut self) -> Vec<String> {
+    /// Parse `<T, U: Bound, V: A + B>` — returning the parameter NAMES and, separately, the inline
+    /// trait bounds keyed by name (a param with no bound has no entry). Token consumption is
+    /// BYTE-IDENTICAL to the former name-only scan (every token the old else-branch bumped is still
+    /// bumped) — bounds are now READ rather than discarded, so no parse shifts and the fixpoint is
+    /// unaffected. The `Lt`/`Gt`/`Shr` depth counter keeps a generic bound (`T: Into<u32>`) from leaking
+    /// `u32` as a new param name; a bound that is itself generic contributes only its BASE trait name
+    /// (`Into` from `Into<u32>` — the `<u32>` is skipped at depth ≥ 2). The `where T: Bound` form is
+    /// still dropped by `skip_where_clause` (a documented residual — inline bounds are the common form).
+    fn parse_generic_params(&mut self) -> (Vec<String>, Vec<(String, Vec<String>)>) {
         let mut names = Vec::new();
+        let mut bounds: Vec<(String, Vec<String>)> = Vec::new();
         if !self.check_token(&Token::Lt) {
-            return names;
+            return (names, bounds);
         }
         self.bump();
         let mut depth = 1i32;
         // At the start of the list and immediately after a top-level comma, the next identifier is a
-        // parameter *name* (`T` in `T: Bound`); everything else at any depth is a bound / argument and
-        // is discarded. This mirrors the depth accounting of the former skip so token consumption is
-        // unchanged.
+        // parameter *name* (`T` in `T: Bound`). A depth-1 `:` opens the bound list for the last name;
+        // depth-1 idents after it are bound trait names (joined by `+`), until a top-level `,` or `>`.
         let mut expect_name = true;
+        let mut in_bound = false;
         while depth > 0 && !self.at_eof() {
             if self.check_token(&Token::Lt) {
                 depth += 1;
@@ -2678,18 +2695,33 @@ impl Parser {
                 self.bump();
             } else if depth == 1 && self.check_token(&Token::Comma) {
                 expect_name = true;
+                in_bound = false;
+                self.bump();
+            } else if depth == 1 && expect_name {
+                if let Token::Ident(s) = &self.current().token {
+                    names.push(s.clone());
+                    bounds.push((s.clone(), Vec::new()));
+                }
+                expect_name = false;
+                self.bump();
+            } else if depth == 1 && self.check_token(&Token::Colon) {
+                in_bound = true;
+                self.bump();
+            } else if depth == 1 && in_bound {
+                // A bound trait name (captured) or a `+` separator (bumped, not an ident).
+                if let Token::Ident(s) = &self.current().token {
+                    if let Some(last) = bounds.last_mut() {
+                        last.1.push(s.clone());
+                    }
+                }
                 self.bump();
             } else {
-                if depth == 1 && expect_name {
-                    if let Token::Ident(s) = &self.current().token {
-                        names.push(s.clone());
-                    }
-                    expect_name = false;
-                }
                 self.bump();
             }
         }
-        names
+        // Keep only the parameters that actually declared a bound (`<T>` alone carries no entry).
+        bounds.retain(|(_, bs)| !bs.is_empty());
+        (names, bounds)
     }
 
     /// Consume a `where T: Bound, ...` clause (up to the body `{` or `;`), ignoring it.
@@ -2740,7 +2772,7 @@ impl Parser {
     fn parse_fn(&mut self, pre_attrs: Vec<Attribute>, visibility: Visibility) -> Option<Item> {
         let start = self.expect_keyword("fn")?.span;
         let (name, _) = self.expect_ident("expected function name")?;
-        let generics = self.parse_generic_params(); // `fn foo<T>(...)`
+        let (generics, generic_bounds) = self.parse_generic_params(); // `fn foo<T: Bound>(...)`
         let params = self.parse_params();
         // Optional return type: `-> Type` (lexed as Minus Gt then the type). Captured in the AST
         // for tooling/typecheck even though the runtime is dynamically typed.
@@ -2872,6 +2904,7 @@ impl Parser {
             intent: None,
             ret,
             generics,
+            generic_bounds,
             requires,
             ensures,
             effects,

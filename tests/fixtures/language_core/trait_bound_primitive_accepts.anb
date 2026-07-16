@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// Phase-1 trait bound ACCEPT-BIAS guard: a built-in primitive (here `u32`, inferred for the integer
+// literals) bound by `T: Comparable` is ACCEPTED, not rejected — a primitive never appears as an
+// explicit `impl Comparable for u32` in source, and demanding one would invert the language's
+// accept-bias (and over-reject ordinary code). The bound is enforced only for KNOWN user nominal types.
+trait Comparable {
+    fn cmp(self, other) -> i64;
+}
+fn choose<T: Comparable>(a: T, b: T) -> T {
+    a
+}
+fn main() {
+    let r = choose(1, 2);
+    print(r);
+}

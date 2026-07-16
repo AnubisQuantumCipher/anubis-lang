@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TRAIT_BOUND_UNSATISFIED
+// Phase-1 trait BOUND enforcement (the last Phase-1 residual — the parser used to parse `T: Comparable`
+// then DISCARD the bound). `choose` requires its type parameter to implement `Comparable`, but `Blob`
+// has no `impl Comparable for Blob` in this program, so the call is rejected. Fail-closed only when the
+// type is KNOWN (a user struct/enum), the trait is declared in-program, and no impl exists — a built-in
+// primitive or an unpinnable argument is accepted (see trait_bound_primitive_accepts.anb).
+trait Comparable {
+    fn cmp(self, other) -> i64;
+}
+struct Blob { x: u32 }
+fn choose<T: Comparable>(a: T, b: T) -> T {
+    a
+}
+fn main() {
+    let r = choose(Blob { x: 1 }, Blob { x: 2 });
+    print(r.x);
+}

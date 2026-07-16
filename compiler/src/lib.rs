@@ -2258,6 +2258,56 @@ fn main() {
     }
 
     #[test]
+    fn trait_bound_enforced_and_accept_biased() {
+        // Phase-1 trait BOUND enforcement (the parser used to discard `T: Bound`). A generic bound to a
+        // KNOWN user type whose required trait has no `impl` is rejected; every accept-bias axis holds.
+        let base = "trait Comparable { fn cmp(self, other) -> i64; }\nstruct Blob { x: u32 }\n";
+        // (reject) Blob lacks `impl Comparable` — direct struct-literal args.
+        let err = tc_ok(&format!(
+            "{base}fn choose<T: Comparable>(a: T, b: T) -> T {{ a }}\n\
+             fn main() {{ let r = choose(Blob {{ x: 1 }}, Blob {{ x: 2 }}); print(r.x); }}"
+        ))
+        .expect_err("an unsatisfied trait bound on a known user type must be rejected");
+        assert!(
+            err.contains("ANUBIS_TRAIT_BOUND_UNSATISFIED"),
+            "unsatisfied bound — got: {err}"
+        );
+        // (reject) same via annotated-variable args (the type is pinned by the annotation, not synth).
+        let err = tc_ok(&format!(
+            "{base}fn choose<T: Comparable>(a: T, b: T) -> T {{ a }}\n\
+             fn main() {{ let p: Blob = Blob {{ x: 1 }}; let q: Blob = Blob {{ x: 2 }}; \
+             let r = choose(p, q); print(r.x); }}"
+        ))
+        .expect_err("annotated-var args must also drive the bound check");
+        assert!(err.contains("ANUBIS_TRAIT_BOUND_UNSATISFIED"), "got: {err}");
+        // (accept) with the impl, the bound is satisfied.
+        assert!(
+            tc_ok(&format!(
+                "{base}impl Comparable for Blob {{ fn cmp(self, other) -> i64 {{ 0 }} }}\n\
+                 fn choose<T: Comparable>(a: T, b: T) -> T {{ a }}\n\
+                 fn main() {{ let r = choose(Blob {{ x: 1 }}, Blob {{ x: 2 }}); print(r.x); }}"
+            ))
+            .is_ok(),
+            "a satisfied trait bound must be accepted"
+        );
+        // (accept-bias) a BUILT-IN primitive under the bound is accepted (never demand `impl … for u32`).
+        assert!(
+            tc_ok("trait Comparable { fn cmp(self, other) -> i64; }\n\
+                   fn choose<T: Comparable>(a: T, b: T) -> T { a }\n\
+                   fn main() { let r = choose(1, 2); print(r); }")
+            .is_ok(),
+            "a primitive argument under a trait bound must be accepted (accept-bias)"
+        );
+        // (accept-bias) an UNBOUNDED generic never fires (parser records no bound).
+        assert!(
+            tc_ok("struct Blob { x: u32 }\nfn id<T>(a: T) -> T { a }\n\
+                   fn main() { let r = id(Blob { x: 1 }); print(r.x); }")
+            .is_ok(),
+            "an unbounded generic must not trigger the bound check"
+        );
+    }
+
+    #[test]
     fn solver_closes_control_flow_false_accepts() {
         // Three false accepts an adversarial soundness hunt found (2026-07-15), each a static proof of a
         // runtime-violable contract; all must now REJECT fail-closed.

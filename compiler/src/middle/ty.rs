@@ -764,6 +764,42 @@ pub(crate) fn generic_call_conflict(
     None
 }
 
+/// The concrete type each generic parameter is bound to at a call, for trait-bound checking
+/// (`ANUBIS_TRAIT_BOUND_UNSATISFIED`). Mirrors `generic_call_conflict`'s monomorphization: a generic
+/// whose bare type parameter is a declared argument position takes that argument's SYNTHESIZED concrete
+/// type via `synth_concrete` — which is `None` for `Any`/`Var`/`Generic`, so an argument the checker
+/// cannot pin contributes NO binding and the bound check therefore accepts it (never a false reject).
+/// The FIRST concrete binding wins (a later incompatible one is an `ANUBIS_GENERIC_CONFLICT`, reported
+/// separately). A generic used only in return/nested (`list<T>`) position gets no binding here. Returns
+/// generic-name → concrete type annotation.
+pub(crate) fn generic_call_bindings(
+    env: &InferEnv,
+    generics: &[String],
+    params: &[String],
+    args: &[Expr],
+) -> BTreeMap<String, String> {
+    let gset: std::collections::BTreeSet<&str> = generics.iter().map(|s| s.as_str()).collect();
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (param_ty, arg) in params.iter().zip(args.iter()) {
+        let pt = param_ty.trim();
+        if gset.contains(pt) {
+            // Resolve the argument's concrete type. `synth` leaves a struct/enum LITERAL dynamic
+            // (`Ty::Any`, ty.rs:604-606), so read the nominal name directly from those two forms before
+            // falling back to the inferencer (which pins a typed variable or a declared-return call). An
+            // argument the checker still cannot pin contributes NO binding → the bound is accepted.
+            let concrete = match arg {
+                Expr::StructLiteral { name, .. } => Some(name.clone()),
+                Expr::EnumConstruct { enum_name, .. } => Some(enum_name.clone()),
+                _ => synth_concrete(env, arg),
+            };
+            if let Some(concrete) = concrete {
+                out.entry(pt.to_string()).or_insert(concrete);
+            }
+        }
+    }
+    out
+}
+
 /// Arity check for a generic-type instantiation in a type annotation: if `annotation` names a user
 /// generic type `Base<…>` (present in `type_generics` with a declared parameter count) whose supplied
 /// type-argument count differs, return `(base, declared, given)` for `ANUBIS_GENERIC_ARITY`. Returns

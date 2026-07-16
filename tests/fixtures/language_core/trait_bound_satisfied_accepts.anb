@@ -1,0 +1,17 @@
+// EXPECT: PASS
+// Phase-1 trait bound SATISFIED: the same program as trait_bound_unsatisfied_rejects.anb but with the
+// `impl Comparable for Blob`, so `Blob` satisfies the `T: Comparable` bound and the call is accepted.
+trait Comparable {
+    fn cmp(self, other) -> i64;
+}
+struct Blob { x: u32 }
+impl Comparable for Blob {
+    fn cmp(self, other) -> i64 { 0 }
+}
+fn choose<T: Comparable>(a: T, b: T) -> T {
+    a
+}
+fn main() {
+    let r = choose(Blob { x: 1 }, Blob { x: 2 });
+    print(r.x);
+}
