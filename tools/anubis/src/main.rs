@@ -2613,6 +2613,17 @@ fn main() -> Result<()> {
                 .map_err(|e| anyhow!("{}", e))?;
             println!("lowered artifact: {}", artifact);
 
+            // PCA honesty invariant: `prove` fails closed. It returns Err unless a FRESH receipt was
+            // generated AND cryptographically verified — a lowering/build/prove/verify failure must not
+            // masquerade as a successful proof. Only the risc0 backend produces a verifiable receipt, so
+            // any other backend can never satisfy this. This flag is set true ONLY on the verified-receipt
+            // path below; all failure evidence is still written first, then the Err is returned at the end.
+            let mut fresh_receipt_verified = false;
+            let mut prove_outcome_detail = format!(
+                "backend '{}' does not generate a verifiable ZK receipt (only --backend risc0 does)",
+                backend
+            );
+
             if is_risc0 {
                 // === TASK 1/2/4 hardening + Gate 11 lane: real derived ImageID + real receipt + explicit lane control ===
                 // --lane cpu  → R0_DISABLE_METAL=1 (CPU comparison lane, observed "cpu")
@@ -2800,6 +2811,11 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     guest_elf_path.as_deref(),
                     Some(&proof_input_path),
                 );
+                // `fresh_receipt_generated` is set only when the child both PROVED and cryptographically
+                // VERIFIED the receipt (receipt_obj.verify(image_id_digest)? gates child_success), so it is
+                // exactly the "fresh receipt generated AND verified" success condition the arm requires.
+                fresh_receipt_verified = proof_outcome.fresh_receipt_generated;
+                prove_outcome_detail = proof_outcome.detail.clone();
 
                 let run_stamp = chrono::Utc::now().to_rfc3339();
                 // Gate 11: derive lane_observed mechanically from env + logs (never host assumption)
@@ -2971,8 +2987,22 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 println!("evidence bundle: {}", bundle.dir.display());
                 println!("verdict: {}", bundle.manifest.verdict);
             }
-            println!("prove complete");
-            Ok(())
+            // All failure evidence (risc0 sidecars, receipt/verify markers, metadata, flat copies, and
+            // the optional evidence bundle) has now been written. Fail closed: report success ONLY when a
+            // fresh receipt was generated and verified; otherwise return Err so a failed proof cannot be
+            // mistaken for a real one (the gate scripts' `if ! anubis prove …` checks rely on this).
+            if fresh_receipt_verified {
+                println!("prove complete");
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "ANUBIS_PROVE_NO_VERIFIED_RECEIPT: prove did not produce a fresh, verified ZK \
+                     receipt — failing closed. All available failure evidence was written under {}. \
+                     detail: {}",
+                    out.display(),
+                    prove_outcome_detail
+                ))
+            }
         }
         Commands::Risc0ProveChild {
             elf,
