@@ -5769,13 +5769,15 @@ impl Vault { fn label(self) { return 7; } }
 fn main() uses(net.send) { let v = Vault { id: 1 }; send("h", 80, v.label()); }"#,
         )
         .expect("a non-secret method return must not be flagged");
-        // (#68 boundary) method→method RETURN chaining stays a documented fail-open residual → accepts.
-        tc_ok(
+        // (#70) method→method RETURN chaining is now CLOSED by the combined method-return fixpoint:
+        // `alias` returns `self.key()` where `key` mints a secret → alias is secret-returning → caught.
+        let chain = tc_ok(
             r#"struct Vault { id: u32 }
 impl Vault { fn key(self) { return secret_source("k"); } fn alias(self) { return self.key(); } }
 fn main() uses(net.send) { let v = Vault { id: 1 }; send("h", 80, v.alias()); }"#,
         )
-        .expect("method→method return chaining is the #68 residual (accepts by design)");
+        .expect_err("method→method return chaining must now be flagged (#70)");
+        assert!(chain.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {chain}");
     }
 
     #[test]

@@ -259,8 +259,10 @@ struct SemanticContext {
     /// return of an already-marked FREE function) — the impl-method twin of `secret_fns`/`tainting_fns`.
     /// Consulted ONLY in the `Expr::CallExpr` (method-call) arm of `expr_secret_source_m`/
     /// `expr_taint_source_m`, so `let k = v.key(); send(h,p,k)` and `send(h,p,v.key())` (getter/accessor
-    /// exfil) are caught. Method→method / free-fn→method RETURN chaining stays the separate #68 residual
-    /// (the summary consults only the FROZEN free-fn sets, never itself).
+    /// exfil) are caught. Method→method RETURN chaining (`fn alias(self){ return self.key() }`) is now
+    /// also caught (#70): `compute_method_{secret,tainting}_fns` are COMBINED fixpoints that consult the
+    /// GROWING method set (not only the frozen free-fn set), so a method returning another method's
+    /// minted secret chains.
     method_secret_fns: BTreeSet<String>,
     method_tainting_fns: BTreeSet<String>,
     /// Interprocedural param→return summary (Phase-3 A2): for each function, the set of formal
@@ -2986,13 +2988,12 @@ fn analyze_expr_effect(
             // (`method_secret_fns`/`method_tainting_fns` + the source-walker `_m` `CallExpr` arm), and
             // ARGUMENT laundering THROUGH a method (`fn f(m,x){ m.snd(x) }`, `fn ship(self,p){
             // self.deliver(p) }`) by #68 (the joint free-fn↔method `param_sinks`/`param_egress` fixpoint +
-            // the `collect_param_sinks_in_expr`/`expr_param_flow` `CallExpr` arms). REMAINING fail-open
-            // residuals (no false rejects): a secret MINTED by a method return then RETURN-chained through
-            // another method (`fn alias(self){ return self.key() }`, pinned by
-            // method_return_chain_residual_accepts.anb — the summaries consult only the frozen free-fn
-            // return sets); a sink/egress inside a lambda body (#65); and a sink buried in non-linear
-            // control-flow inside a method's value-position block (inherited from the summary walker's
-            // linear block handling).
+            // the `collect_param_sinks_in_expr`/`expr_param_flow` `CallExpr` arms). A third — method-RETURN
+            // CHAINING (`fn alias(self){ return self.key() }` where `key` mints a secret) — is now CLOSED
+            // too by #70 (`compute_method_{secret,tainting}_fns` combined fixpoints consulting the growing
+            // method set). REMAINING fail-open residuals (no false rejects): a sink/egress inside a lambda
+            // body (#65); and a sink buried in non-linear control-flow inside a method's value-position
+            // block (inherited from the summary walker's linear block handling).
             if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
                 // Resolve a method-summary parameter index to its call-site expression under the
                 // self-offset: index 0 is the receiver (`base`), index p≥1 is call arg p-1. Inlined
@@ -7284,23 +7285,12 @@ fn is_egress_sink(callee: &str) -> bool {
 /// builtin / unsummarized callee, any secret argument is conservative (fail-closed-safe — a
 /// hash/encoding of a secret is not a release).
 ///
-/// The 4-arg [`expr_secret_source`] wrapper below passes an EMPTY method-return set (pre-#67 behavior);
-/// only enforcing egress and enforcing let/seed sites call this `_m` form with `ctx.method_secret_fns`.
-fn expr_secret_source(
-    expr: &Expr,
-    scope: &BTreeMap<String, ScopeBinding>,
-    secret_fns: &BTreeSet<String>,
-    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
-) -> Option<String> {
-    expr_secret_source_m(
-        expr,
-        scope,
-        secret_fns,
-        param_return_taint,
-        &BTreeSet::new(),
-    )
-}
-
+/// Method-aware form: `method_secret_fns` are impl methods whose RETURN carries a minted secret (#67);
+/// the `CallExpr` arm recognizes `v.key()` when `key` is in the set. A caller with no method awareness
+/// (e.g. the free-fn return-summary computation, which must stay byte-identical to keep the self-host
+/// fixpoint) passes an empty set. (The former 4-arg `expr_secret_source` wrapper was removed once #70
+/// routed the last summary caller through `_m` with an empty set — the taint side keeps its wrapper
+/// because condition/declassify-trace reads still use it.)
 fn expr_secret_source_m(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -7628,6 +7618,7 @@ fn body_returns_taint(
     scope: &mut BTreeMap<String, ScopeBinding>,
     tainting_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_tainting_fns: &BTreeSet<String>,
     tail: bool,
 ) -> bool {
     let n = stmts.len();
@@ -7639,11 +7630,12 @@ fn body_returns_taint(
                 let mut rets = Vec::new();
                 expr_returns(init, &mut rets);
                 if rets.iter().any(|e| {
-                    expr_taint_source(e, scope, tainting_fns, param_return_taint).is_some()
+                    expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns).is_some()
                 }) {
                     return true;
                 }
-                // Summary caller (body_returns_taint): NO method-return awareness (#68 residual).
+                // #70: thread the method-return taint set (non-empty for the METHOD summary) so a
+                // `let t = self.tag(); return t` chain is method-aware; the FREE-fn summary passes empty.
                 seed_one_let(
                     name,
                     ty.as_deref(),
@@ -7651,13 +7643,13 @@ fn body_returns_taint(
                     scope,
                     tainting_fns,
                     param_return_taint,
-                    &BTreeSet::new(),
+                    method_tainting_fns,
                 );
             }
             Stmt::If { then, else_, .. } => {
                 // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
                 let saved = scope.clone();
-                if body_returns_taint(then, scope, tainting_fns, param_return_taint, stmt_is_tail) {
+                if body_returns_taint(then, scope, tainting_fns, param_return_taint, method_tainting_fns, stmt_is_tail) {
                     return true;
                 }
                 *scope = saved.clone();
@@ -7667,6 +7659,7 @@ fn body_returns_taint(
                         scope,
                         tainting_fns,
                         param_return_taint,
+                        method_tainting_fns,
                         stmt_is_tail,
                     ) {
                         return true;
@@ -7683,7 +7676,7 @@ fn body_returns_taint(
                 // A loop/research body is never the function's implicit return value (tail = false);
                 // only an explicit `return` inside it counts. Its `let`s are block-scoped.
                 let saved = scope.clone();
-                if body_returns_taint(body, scope, tainting_fns, param_return_taint, false) {
+                if body_returns_taint(body, scope, tainting_fns, param_return_taint, method_tainting_fns, false) {
                     return true;
                 }
                 *scope = saved;
@@ -7691,7 +7684,7 @@ fn body_returns_taint(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = scope.clone();
-                    if body_returns_taint(b, scope, tainting_fns, param_return_taint, false) {
+                    if body_returns_taint(b, scope, tainting_fns, param_return_taint, method_tainting_fns, false) {
                         return true;
                     }
                     *scope = saved;
@@ -7703,7 +7696,7 @@ fn body_returns_taint(
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 if rets.iter().any(|e| {
-                    expr_taint_source(e, scope, tainting_fns, param_return_taint).is_some()
+                    expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns).is_some()
                 }) {
                     return true;
                 }
@@ -7713,7 +7706,7 @@ fn body_returns_taint(
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
                         if !is_return_call(e)
-                            && expr_taint_source(e, scope, tainting_fns, param_return_taint)
+                            && expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns)
                                 .is_some()
                         {
                             return true;
@@ -7808,11 +7801,12 @@ fn fn_returns_taint(
     params: &[(String, String)],
     body: &[Stmt],
     tainting_fns: &BTreeSet<String>,
+    method_tainting_fns: &BTreeSet<String>,
 ) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    body_returns_taint(body, &mut scope, tainting_fns, &empty, true)
+    body_returns_taint(body, &mut scope, tainting_fns, &empty, method_tainting_fns, true)
 }
 
 
@@ -7827,7 +7821,9 @@ fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
     loop {
         let mut newly: Vec<String> = Vec::new();
         for (name, params, body) in &fns {
-            if !ctx.tainting_fns.contains(name) && fn_returns_taint(params, body, &ctx.tainting_fns) {
+            if !ctx.tainting_fns.contains(name)
+                && fn_returns_taint(params, body, &ctx.tainting_fns, &BTreeSet::new())
+            {
                 newly.push(name.clone());
             }
         }
@@ -7919,6 +7915,7 @@ fn body_returns_secret(
     scope: &mut BTreeMap<String, ScopeBinding>,
     secret_fns: &BTreeSet<String>,
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_secret_fns: &BTreeSet<String>,
     tail: bool,
 ) -> bool {
     let n = stmts.len();
@@ -7930,12 +7927,12 @@ fn body_returns_secret(
                 expr_returns(init, &mut rets);
                 if rets
                     .iter()
-                    .any(|e| expr_secret_source(e, scope, secret_fns, param_return_taint).is_some())
+                    .any(|e| expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns).is_some())
                 {
                     return true;
                 }
-                // Summary caller (body_returns_secret): NO method-return awareness (method→method
-                // return chaining is the #68 residual), so pass an empty method set.
+                // #70: thread the (possibly non-empty for the METHOD summary) method-return set so a
+                // `let k = self.key(); return k` chain is method-aware; the FREE-fn summary passes empty.
                 seed_one_let_secret(
                     name,
                     ty.as_deref(),
@@ -7943,12 +7940,12 @@ fn body_returns_secret(
                     scope,
                     secret_fns,
                     param_return_taint,
-                    &BTreeSet::new(),
+                    method_secret_fns,
                 );
             }
             Stmt::If { then, else_, .. } => {
                 let saved = scope.clone();
-                if body_returns_secret(then, scope, secret_fns, param_return_taint, stmt_is_tail) {
+                if body_returns_secret(then, scope, secret_fns, param_return_taint, method_secret_fns, stmt_is_tail) {
                     return true;
                 }
                 *scope = saved.clone();
@@ -7958,6 +7955,7 @@ fn body_returns_secret(
                         scope,
                         secret_fns,
                         param_return_taint,
+                        method_secret_fns,
                         stmt_is_tail,
                     ) {
                         return true;
@@ -7972,7 +7970,7 @@ fn body_returns_secret(
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let saved = scope.clone();
-                if body_returns_secret(body, scope, secret_fns, param_return_taint, false) {
+                if body_returns_secret(body, scope, secret_fns, param_return_taint, method_secret_fns, false) {
                     return true;
                 }
                 *scope = saved;
@@ -7980,7 +7978,7 @@ fn body_returns_secret(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = scope.clone();
-                    if body_returns_secret(b, scope, secret_fns, param_return_taint, false) {
+                    if body_returns_secret(b, scope, secret_fns, param_return_taint, method_secret_fns, false) {
                         return true;
                     }
                     *scope = saved;
@@ -7991,14 +7989,14 @@ fn body_returns_secret(
                 collect_returns_in_stmt(stmt, &mut rets);
                 if rets
                     .iter()
-                    .any(|e| expr_secret_source(e, scope, secret_fns, param_return_taint).is_some())
+                    .any(|e| expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns).is_some())
                 {
                     return true;
                 }
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
                         if !is_return_call(e)
-                            && expr_secret_source(e, scope, secret_fns, param_return_taint).is_some()
+                            && expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns).is_some()
                         {
                             return true;
                         }
@@ -8019,11 +8017,12 @@ fn fn_returns_secret(
     params: &[(String, String)],
     body: &[Stmt],
     secret_fns: &BTreeSet<String>,
+    method_secret_fns: &BTreeSet<String>,
 ) -> bool {
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    body_returns_secret(body, &mut scope, secret_fns, &empty, true)
+    body_returns_secret(body, &mut scope, secret_fns, &empty, method_secret_fns, true)
 }
 
 /// Populate `ctx.secret_fns` by a monotone fixpoint — the exact dual of `compute_tainting_fns`.
@@ -8034,7 +8033,9 @@ fn compute_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
     loop {
         let mut newly: Vec<String> = Vec::new();
         for (name, params, body) in &fns {
-            if !ctx.secret_fns.contains(name) && fn_returns_secret(params, body, &ctx.secret_fns) {
+            if !ctx.secret_fns.contains(name)
+                && fn_returns_secret(params, body, &ctx.secret_fns, &BTreeSet::new())
+            {
                 newly.push(name.clone());
             }
         }
@@ -8046,22 +8047,24 @@ fn compute_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
 }
 
 /// Populate `ctx.method_secret_fns` — the impl-method twin of `compute_secret_fns`. A method is
-/// return-secret iff `fn_returns_secret` holds over its body (self@0), reusing the SAME body walker.
-/// The `secret_fns` known-set passed to `fn_returns_secret` is the FROZEN free-fn set (`ctx.secret_fns`,
-/// already at fixpoint — this MUST run after `compute_secret_fns`), NOT `ctx.method_secret_fns`, so a
-/// method that returns another METHOD's result is NOT chained (that is the #68 residual); a method that
-/// returns a FREE secret-returning helper IS caught. UNION across impls is automatic (same bare-name key).
-/// Monotone in name only — a method's return-secret status is a fixed function of its body under the
-/// frozen free-fn set, so one pass suffices, but the fixpoint form mirrors compute_secret_fns for parity.
+/// return-secret iff `fn_returns_secret` holds over its body (self@0), reusing the SAME body walker,
+/// which now consults BOTH the FROZEN free-fn set (`ctx.secret_fns`, at fixpoint — this runs after
+/// `compute_secret_fns`) AND the GROWING method set (snapshotted each round). This is a COMBINED
+/// fixpoint (#70): `fn alias(self){ return self.key() }` where `key` mints a secret is caught in round 2
+/// (round 1 marks `key`; round 2, with `key` now in the snapshot, the body walk's `CallExpr` arm sees
+/// `self.key()` as secret-returning → `alias` marked). Monotone (add-only over a finite name lattice) →
+/// terminates. UNION across impls is automatic (same bare-name key).
 #[allow(clippy::type_complexity)]
 fn compute_method_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
     let mut methods: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
     collect_impl_method_typed_bodies(items, &mut methods);
     loop {
         let mut newly: Vec<String> = Vec::new();
+        // Snapshot the growing method set so a method returning another method's secret chains.
+        let known_method = ctx.method_secret_fns.clone();
         for (name, params, body) in &methods {
             if !ctx.method_secret_fns.contains(name)
-                && fn_returns_secret(params, body, &ctx.secret_fns)
+                && fn_returns_secret(params, body, &ctx.secret_fns, &known_method)
             {
                 newly.push(name.clone());
             }
@@ -8073,17 +8076,20 @@ fn compute_method_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
     }
 }
 
-/// Populate `ctx.method_tainting_fns` — the integrity dual of `compute_method_secret_fns`, reusing
-/// `fn_returns_taint` and the FROZEN `ctx.tainting_fns`. Must run after `compute_tainting_fns`.
+/// Populate `ctx.method_tainting_fns` — the integrity dual of `compute_method_secret_fns` (#70 combined
+/// fixpoint): consults the frozen `ctx.tainting_fns` AND the growing method set (snapshotted per round),
+/// so `fn relay(self){ return self.tag() }` where `tag` returns `input()` is chained. Runs after
+/// `compute_tainting_fns`.
 #[allow(clippy::type_complexity)]
 fn compute_method_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
     let mut methods: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
     collect_impl_method_typed_bodies(items, &mut methods);
     loop {
         let mut newly: Vec<String> = Vec::new();
+        let known_method = ctx.method_tainting_fns.clone();
         for (name, params, body) in &methods {
             if !ctx.method_tainting_fns.contains(name)
-                && fn_returns_taint(params, body, &ctx.tainting_fns)
+                && fn_returns_taint(params, body, &ctx.tainting_fns, &known_method)
             {
                 newly.push(name.clone());
             }

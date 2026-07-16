@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// Precision guard (#70): a method returning the result of a NON-secret method stays clean. Neither
+// `plain` nor `wrap` mints a secret, so neither enters method_secret_fns and the send is accepted.
+struct Vault { id: u32 }
+impl Vault {
+    fn plain(self) { return 7; }
+    fn wrap(self) { return self.plain(); }
+}
+fn main() uses(net.send) {
+    let v = Vault { id: 1 };
+    send("host", 80, v.wrap());
+}

@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// #70 integrity dual: `relay` returns the result of `tag` which returns input(). The combined
+// method-return taint fixpoint chains it, so `sink(r.relay())` is caught.
+struct Reader { id: u32 }
+impl Reader {
+    fn tag(self) { return input(); }
+    fn relay(self) { return self.tag(); }
+}
+fn main() {
+    let r = Reader { id: 1 };
+    sink(r.relay());
+}
