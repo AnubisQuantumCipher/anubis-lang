@@ -88,6 +88,11 @@ run(){ name="$1"; shift; echo "===== $name =====" | tee -a "$LOG"; if "$@" >> "$
 # real test result as machine-produced evidence (agent self-reports are untrusted). stdout →
 # the report file, exit code preserved (no pipe), tail echoed to the battery log for the summary.
 run cargo-test bash -c 'mkdir -p .ammit; cargo test -p anubis-compiler --lib -- -Z unstable-options --format json 1>.ammit/cargo-test.json 2>.ammit/cargo-test.stderr.log; rc=$?; tail -2 .ammit/cargo-test.json; exit $rc'
+# tool-test APPENDS the anubis TOOL crate's stream (unit + the 3 native fail-closed integration
+# tests — no risc0/Metal dependency) into the SAME evidence file: Ammit's cargo_test adapter sums
+# per-binary suite events, so the proof-runtime matrix rows can cite their REAL test names
+# (anbp_blob_roundtrip_header, journal_named_fields_decode, …) instead of staying unverifiable.
+run tool-test bash -c 'cargo test -p anubis -- -Z unstable-options --format json 1>>.ammit/cargo-test.json 2>>.ammit/cargo-test.stderr.log; rc=$?; tail -2 .ammit/cargo-test.json; exit $rc'
 run clippy     cargo clippy -p anubis-compiler -- -D warnings
 run language   bash scripts/run_language_fixtures.sh
 run turing     bash scripts/run_turing_core_fixtures.sh
