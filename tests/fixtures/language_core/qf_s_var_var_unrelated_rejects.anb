@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// Phase-3 QF_S var-var string equality (disprove side): a var-var ensures with NO relating requires is
+// DISPROVED, not spuriously discharged. `result` = the returned `s`, and `s`/`t` are unrelated string
+// params, so `ensures(result == t)` (i.e. `s == t`) has a counterexample (s != t) → the obligation FAILs
+// → rejected. This is the sound-both-ways dual of the identity case.
+fn pick(s: string, t: string) -> string
+    ensures(result == t)
+{
+    return s;
+}
+fn main() { print(pick("a", "b")); }

@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Phase-3 QF_S var-var string equality: a true IDENTITY contract with no string literal now discharges.
+// `result` substitutes to the returned `s`, so `ensures(result == s)` is `s == s` — proved in QF_S via
+// the obligation's `strings` sort tag (theory selection can't key on a `"`, since a var-var body has
+// none). Runtime `String==String` and SMT `(= a b)` are both exact structural equality → sound.
+fn echo(s: string) -> string
+    ensures(result == s)
+{
+    return s;
+}
+fn main() { print(echo("hi")); }

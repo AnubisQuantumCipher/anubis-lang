@@ -64,6 +64,12 @@ pub struct SolverObligation {
     pub assumptions: Vec<String>,
     pub assertion: String,
     pub vars: Vec<String>,
+    /// Per-obligation QF_S sort tag. Theory selection normally sniffs a `"` in the SMT body to route to
+    /// QF_S, but a VAR-vs-VAR string equality (`(= anb_s anb_t)`) carries no literal, so the string
+    /// obligation builders set this true to force QF_S + String var declarations. `#[serde(default)]`
+    /// keeps older serialized data (which lacks the field) deserializable.
+    #[serde(default)]
+    pub strings: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1997,6 +2003,7 @@ fn analyze_stmts(
                                         assumptions: int_asm,
                                         assertion: smt,
                                         vars: vars.into_iter().collect(),
+                                        strings: false,
                                     });
                                 } else {
                                     all_requires_checkable = false;
@@ -2187,6 +2194,7 @@ fn analyze_stmts(
                         assumptions: int_asm,
                         assertion: smt,
                         vars: vars.into_iter().collect(),
+                        strings: false,
                     });
                 } else if is_bool_modelable_float(expr, &ctx.solver_float_vars) {
                     // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged in QF_FP.
@@ -2215,6 +2223,7 @@ fn analyze_stmts(
                         assumptions: float_asm,
                         assertion: smt,
                         vars: vars.into_iter().collect(),
+                        strings: false,
                     });
                 } else if is_bool_modelable_string(expr, &ctx.solver_string_vars) {
                     // Phase-3 QF_S: a string-equality `assert` is discharged in QF_S. The shared
@@ -2239,6 +2248,7 @@ fn analyze_stmts(
                         assumptions: str_asm,
                         assertion: smt,
                         vars: vars.into_iter().collect(),
+                        strings: true,
                     });
                 }
                 // A write embedded in the asserted expression escapes the statement sweep; invalidate it
@@ -3496,7 +3506,10 @@ impl SymbolicEngine {
                 // Per-obligation theory (a symbol is never two sorts, so this is per-obligation): QF_S if
                 // the body carries an SMT string literal (`"`, only the string encoder emits it), else
                 // QF_FP for a float obligation (`fp.`/`to_fp`), else QF_ABV for the array sort, else QF_BV.
-                let uses_strings = smt_uses_strings(&body);
+                // A var-vs-var string obligation carries no `"`, so the body sniff cannot route it — the
+                // builder's explicit `strings` sort tag forces QF_S (a symbol is never two sorts, so this
+                // stays per-obligation and cannot mis-sort an int/float body).
+                let uses_strings = obl.strings || smt_uses_strings(&body);
                 let uses_floats = smt_uses_floats(&body);
                 let logic = if uses_strings {
                     "QF_S"
@@ -3585,7 +3598,9 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     for a in &obl.assumptions {
         body.push_str(&format!("(assert {})\n", a));
     }
-    let uses_strings = smt_uses_strings(&body);
+    // Same per-obligation QF_S routing as check_obligations: the `strings` tag covers a quoteless
+    // var-vs-var string body the `"`-sniff would otherwise miss.
+    let uses_strings = obl.strings || smt_uses_strings(&body);
     let uses_floats = smt_uses_floats(&body);
     let logic = if uses_strings {
         "QF_S"
@@ -4301,10 +4316,10 @@ fn float_bool_to_smt(e: &Expr) -> String {
 // instead of the blanket ANUBIS_STRING_CONTRACT_UNMODELED fall-through. SOUND BOTH WAYS by construction:
 // the runtime `==` on strings is exact structural equality (run.rs `AnubisValue::Str(a) == Str(b)`), and
 // SMT QF_S `(= a b)` is exact structural equality — there is NO NaN-like partial-order edge case (unlike
-// QF_FP's `<=`/`>=`), so no disjunction correction is needed. MVP scope: a comparison with AT LEAST ONE
-// string LITERAL side (so the SMT body carries a `"`, which the query builder uses to select QF_S). A
-// var-vs-var string equality (`s == t`), `str.len`, and concatenation are DEFERRED residuals (fail-closed
-// → they stay unmodeled and defer to runtime, never a false accept).
+// QF_FP's `<=`/`>=`), so no disjunction correction is needed. Scope: an `==`/`!=` between two
+// string-modelable terms — literal-anchored OR var-vs-var (`s == t`; the obligation's `strings` sort tag
+// routes a quoteless var-var body to QF_S, since the `"`-sniff cannot). `str.len` and concatenation are
+// DEFERRED residuals (fail-closed → they stay unmodeled and defer to runtime, never a false accept).
 
 /// Is `e` a modelable STRING term — a string var (in `string_vars`) or a string literal.
 fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
@@ -4321,17 +4336,18 @@ fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
     }
 }
 
-/// Is `e` a modelable STRING boolean formula — `==`/`!=` between two string-modelable terms WHERE AT
-/// LEAST ONE IS A LITERAL (the literal guarantees a `"` in the SMT so the QF_S query is detected; a
-/// var-vs-var comparison is the deferred residual), or `&& || !` over such. Tried AFTER the int/float
-/// gates so a numeric formula never takes this path.
+/// Is `e` a modelable STRING boolean formula — `==`/`!=` between two string-modelable terms (a string
+/// param/let var in `string_vars`, or a printable-ASCII StrLiteral), or `&& || !` over such. VAR-vs-VAR
+/// equality is now included (it was the deferred residual): both runtime `String==String` and SMT
+/// `(= a b)` are exact structural equality, so a var-var comparison is sound and strictly simpler than the
+/// literal case. The obligation is tagged `strings: true` at its push site so theory selection routes it
+/// to QF_S even though a quoteless var-var body carries no `"`. Tried AFTER the int/float gates (which
+/// require int/float membership) so a numeric formula never takes this path.
 fn is_bool_modelable_string(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Binary { op, lhs, rhs } => match op.as_str() {
             "==" | "!=" => {
-                is_string_modelable(lhs, string_vars)
-                    && is_string_modelable(rhs, string_vars)
-                    && (matches!(**lhs, Expr::StrLiteral(_)) || matches!(**rhs, Expr::StrLiteral(_)))
+                is_string_modelable(lhs, string_vars) && is_string_modelable(rhs, string_vars)
             }
             "&&" | "||" => {
                 is_bool_modelable_string(lhs, string_vars)
@@ -4391,8 +4407,9 @@ fn string_bool_to_smt(e: &Expr) -> String {
 }
 
 /// Whether an obligation body is a QF_S (string) query — detected by an SMT string literal (`"`), which
-/// ONLY the string encoder emits (int/float encoders never produce `"`). Sound: `"` in the body ⟺ a
-/// modeled string obligation (a var-vs-var string equality is excluded by the modelability gate).
+/// ONLY the string encoder emits (int/float encoders never produce `"`). A quoteless VAR-vs-VAR string
+/// obligation is invisible to this sniff — its push site tags the obligation `strings: true`, and both
+/// theory-selection sites OR the tag in (`obl.strings || smt_uses_strings(..)`).
 fn smt_uses_strings(smt_body: &str) -> bool {
     smt_body.contains('"')
 }
@@ -4944,6 +4961,7 @@ fn push_ensures_obligations(
                 assumptions: int_asm,
                 assertion: smt,
                 vars: vars.into_iter().collect(),
+                strings: false,
             });
         } else if is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
             // Phase-3 QF_FP: a float postcondition over the modelable subset (`+ - * /`, comparisons) is
@@ -4971,6 +4989,7 @@ fn push_ensures_obligations(
                 assumptions: float_asm,
                 assertion: smt,
                 vars: vars.into_iter().collect(),
+                strings: false,
             });
         } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
             // Phase-3 QF_S: a string-equality postcondition is DISCHARGED via the string encoder, with
@@ -4995,6 +5014,7 @@ fn push_ensures_obligations(
                 assumptions: str_asm,
                 assertion: smt,
                 vars: vars.into_iter().collect(),
+                strings: true,
             });
         } else {
             // A postcondition the solver cannot faithfully model. Contracts are NOT runtime-enforced,
@@ -5843,6 +5863,7 @@ fn verify_while_invariants(
             assumptions: asm,
             assertion,
             vars: vars.into_iter().collect(),
+            strings: false,
         });
     };
 

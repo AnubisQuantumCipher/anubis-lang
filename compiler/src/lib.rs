@@ -2906,17 +2906,13 @@ fn bad() {
             tc_ok(r#"fn f() -> string ensures(result == "ok") { return "ok"; }"#).is_ok(),
             "a true modelable string ensures should discharge under the QF_S lane",
         );
-        // …but a string comparison the QF_S MVP does NOT model — a var-vs-var equality with no string
-        // literal — stays fail-closed (never a fabricated proof). The MVP defers var-var equality because
-        // theory selection keys on a `"` in the SMT body (a literal side); with no literal the
-        // precise-cause scanner finds no string marker, so it is rejected via the GENERAL
-        // ANUBIS_CONTRACT_UNPROVABLE path. (ANUBIS_STRING_CONTRACT_UNMODELED still surfaces for a
-        // literal-bearing but non-`==`/`!=` string position — ordering/concat.)
-        let err = tc_ok(r#"fn f(s: string) -> string ensures(result == s) { return s; }"#)
-            .expect_err("a var-var string ensures (no literal) must stay unmodeled");
+        // …and a VAR-vs-VAR string equality now DISCHARGES too (the literal-anchor requirement was
+        // dropped: runtime `String==String` and SMT `(= a b)` are exact structural equality, and the
+        // obligation carries a `strings` sort tag so QF_S routes even without a `"` in the body). `result`
+        // substitutes to the returned `s`, so this is `s == s`. See phase3_qf_s_var_var_string_equality.
         assert!(
-            err.contains("ANUBIS_CONTRACT_UNPROVABLE"),
-            "got: {err}"
+            tc_ok(r#"fn f(s: string) -> string ensures(result == s) { return s; }"#).is_ok(),
+            "a var-var string identity ensures must now discharge (QF_S var-var lane)"
         );
         // F (Phase-3 QF_FP): a MODELABLE float contract — a comparison over `+ - *` of finite floats —
         // now DISCHARGES instead of staying opaque. `result == 1.5` for `return 1.5` is a true contract
@@ -5828,6 +5824,42 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             r#"fn agent() uses(net.send) { let k = secret_source("api"); each([1], |x| send("h", 80, declassify(k, "p", "r"))); }"#,
         )
         .expect("a declassified captured secret in a HO-applied lambda releases");
+    }
+
+    #[test]
+    fn phase3_qf_s_var_var_string_equality() {
+        // Phase-3 QF_S: a VAR-vs-VAR string equality (no literal anchor) now discharges/disproves in QF_S
+        // too — closing the spurious rejection of a true identity contract. Sound: runtime String==String
+        // and SMT `(= a b)` are BOTH exact structural equality. Theory selection can no longer key on a
+        // `"` in the body (a var-var obligation has none), so the obligation carries an explicit `strings`
+        // sort tag that forces QF_S + String declarations.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // A TRUE identity ensures discharges: result substitutes to the returned `s`, so `s == s`.
+        assert!(
+            discharged(r#"fn f(s: string) -> string ensures(result == s) { return s; }"#),
+            "var-var identity ensures(result == s) for `return s` must discharge"
+        );
+        // A var-var ensures proven THROUGH a var-var requires: assume `s == t`, prove `result(=s) == t`.
+        assert!(
+            discharged(r#"fn f(s: string, t: string) -> string requires(s == t) ensures(result == t) { return s; }"#),
+            "requires(s==t) ⇒ ensures(result==t) for `return s` must discharge"
+        );
+        // `!=` var-var: assume `s != t`, prove `result(=s) != t`.
+        assert!(
+            discharged(r#"fn f(s: string, t: string) -> string requires(s != t) ensures(result != t) { return s; }"#),
+            "requires(s!=t) ⇒ ensures(result!=t) must discharge"
+        );
+        // A var-var ensures with NO relating requires is DISPROVED (s and t unrelated → can't prove s==t).
+        assert!(
+            !discharged(r#"fn f(s: string, t: string) -> string ensures(result == t) { return s; }"#),
+            "an unconstrained var-var ensures(result==t) must be disproved, not spuriously discharged"
+        );
     }
 
     #[test]
