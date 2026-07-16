@@ -6111,11 +6111,57 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn h(y: i64) -> i64 { return y; } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { let z = h(g(a)); print(z); } } fn main() { c(5); }"#),
             "arg-nested h(g(a)) under a proving guard (a>0) must be accepted"
         );
-        // ── the SHORT-CIRCUIT boundary: a call in `&&`/`||` rhs is conditional ⇒ stays deferred (accept),
-        //    NOT over-rejected (its precondition is not proven, but the position is skipped) ──
+        // ── the SHORT-CIRCUIT rhs is now discharged UNDER its guard (the LHS): a violable call in `&&` rhs
+        //    whose guard does not establish the precondition is CAUGHT; a guard-provable one still passes ──
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b && (g(a) > 0); print(z); } fn main() { c(0 - 5, false); }"#),
-            "a call in the RHS of `&&` (short-circuit, conditional) must NOT be over-rejected (deferred)"
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b && (g(a) > 0); print(z); } fn main() { c(0 - 5, true); }"#),
+            "a violable call in `&&` rhs (guard `b` doesn't constrain `a`) must now reject"
+        );
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let z = (a > 0) && (g(a) > 0); print(z); } fn main() { c(5); }"#),
+            "a `&&` rhs call proven by the LHS guard (`a>0 && g(a)`) must be accepted"
+        );
+    }
+
+    #[test]
+    fn conditional_position_nested_calls_discharge_under_path_conditions() {
+        // C2: a contracted call in an `if`-EXPRESSION branch or a short-circuit `&&`/`||` rhs is discharged
+        // under the branch/short-circuit PATH CONDITION (pushed as a scoped premise), so a guard-provable
+        // one passes and a guard-unrelated violating one is caught — previously these were fail-open.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // ── if-EXPRESSION branches: guard-unrelated violable ⇒ REJECT; guard-proving ⇒ ACCEPT ──
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) -> i64 requires(a > 0 - 100) { let z = if b { g(a) } else { 0 }; return z; } fn main() { print(c(0 - 5, true)); }"#),
+            "if-expr THEN branch call, guard `b` unrelated to `a` ⇒ violable ⇒ reject"
+        );
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = if a > 0 { g(a) } else { 0 }; return z; } fn main() { print(c(5)); }"#),
+            "if-expr THEN branch call under a proving guard (`if a>0`) ⇒ accept"
+        );
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = if a <= 0 { 0 } else { g(a) }; return z; } fn main() { print(c(5)); }"#),
+            "if-expr ELSE branch call under the negated guard (`else` ⇒ a>0) ⇒ accept"
+        );
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = if a > 0 { 0 } else { g(a) }; return z; } fn main() { print(c(0 - 5)); }"#),
+            "if-expr ELSE branch call where the negated guard (a<=0) contradicts the precondition ⇒ reject"
+        );
+        // ── || rhs runs under the negated LHS ──
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b || (g(a) > 0); print(z); } fn main() { c(0 - 5, false); }"#),
+            "a violable call in `||` rhs (guard `!b` doesn't constrain `a`) must reject"
+        );
+        // ── match SCRUTINEE is unconditional ⇒ a violable call there is caught ──
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match g(a) { 0 => 0, _ => 1 }; return z; } fn main() { print(c(0 - 5)); }"#),
+            "a violable call in the match scrutinee (unconditional) must reject"
         );
     }
 

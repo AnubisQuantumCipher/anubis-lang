@@ -1785,20 +1785,22 @@ fn discharge_call_requires(
     all_requires_checkable
 }
 
-/// Discharge the precondition of every contracted call reachable through UNCONDITIONALLY-EXECUTED
-/// sub-expressions of `expr`, under the current `assumptions`. `discharge_call_requires` alone fires only
-/// on a DIRECT `Expr::Call` at a statement position, so a call NESTED in an argument / operand / cast /
-/// `return`-arg (`h(g(x))`, `print(g(x))`, `g(x) + 0`, `return g(x)`) went unchecked — a reachable
-/// fail-open (the callee's `requires` is assumed in its body yet nothing proved it at the call). This walk
-/// closes that: it recurses ONLY through positions that are evaluated whenever `expr` is
-/// (function arguments are evaluated before the call; both operands of an arithmetic/comparison binary;
-/// unary/cast/index/field/array/struct/map/enum children; a `?`/assert/assume/declassify inner). It
-/// deliberately does NOT descend into CONDITIONALLY-executed positions — the RHS of a short-circuiting
-/// `&&`/`||` (the generated Rust short-circuits, run.rs:3027), or an `if`/`match`/`if let`/block/lambda
-/// body — because a call there runs only on some paths, so an unconditional discharge would over-reject;
-/// those remain the documented conditional-position residual. Every call found is discharged with the
-/// SAME `assumptions` in scope (including any branch path condition), so it is as sound as a direct call.
-fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &[String], expr: &Expr) {
+/// Discharge the precondition of every contracted call reachable in `expr`, under the correct path
+/// condition. `discharge_call_requires` alone fires only on a DIRECT `Expr::Call` at a statement position,
+/// so a call NESTED in an argument / operand / cast / `return`-arg (`h(g(x))`, `print(g(x))`, `g(x) + 0`,
+/// `return g(x)`) went unchecked — a reachable fail-open (the callee's `requires` is assumed in its body
+/// yet nothing proved it at the call). This walk closes that. It recurses two ways:
+/// - UNCONDITIONAL positions (evaluated whenever `expr` is) are recursed under the current `assumptions`:
+///   call args, non-`&&`/`||` binary operands, unary/cast/index/field/array/struct/map/enum children, a
+///   `?`/assert/assume/declassify inner, a `match` scrutinee.
+/// - CONDITIONALLY-executed positions are recursed under their SCOPED PATH CONDITION (pushed via
+///   `push_branch_path_condition`, then restored): the RHS of a short-circuiting `&&`/`||` runs under the
+///   LHS (`a && rhs` iff `a`; `a || rhs` iff `!a`), and an `if`-EXPRESSION's branches run under `cond`/
+///   `!cond` — so a call there proves exactly when the guard establishes its precondition and is caught
+///   otherwise. STILL DEFERRED (the remaining residual): `match`-ARM bodies (pattern-implied facts are not
+///   yet modeled), and `if let`/block/lambda bodies. Every discharged call is as sound as a direct call —
+///   the same `assumptions` (including the pushed path condition) are in scope.
+fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, expr: &Expr) {
     match expr {
         Expr::Call { callee, args } => {
             discharge_call_requires(ctx, assumptions, callee, args);
@@ -1812,15 +1814,50 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &[String], ex
                 discharge_calls_in_expr(ctx, assumptions, a);
             }
         }
-        // Short-circuiting `&&`/`||` evaluate the RHS only when the LHS does not decide the result — a
-        // CONDITIONAL position; recurse the LHS (always evaluated) but not the RHS. Every other binary
-        // operator evaluates both operands unconditionally.
+        // `&&`/`||` short-circuit (run.rs:3027): the RHS runs only when the LHS does not decide — a
+        // CONDITIONAL position. Recurse the LHS unconditionally; for the RHS, push the LHS as a SCOPED
+        // path condition (`a && rhs` runs the rhs iff `a`; `a || rhs` iff `!a`) so a call there discharges
+        // under exactly the condition that guards it — then restore. Every other binary operator evaluates
+        // both operands unconditionally.
         Expr::Binary { op, lhs, rhs } => {
             discharge_calls_in_expr(ctx, assumptions, lhs);
-            if op != "&&" && op != "||" {
+            if op == "&&" || op == "||" {
+                let snap = assumptions.len();
+                let snap_g = ctx.active_branch_guards.len();
+                push_branch_path_condition(ctx, assumptions, lhs, op == "||");
+                discharge_calls_in_expr(ctx, assumptions, rhs);
+                assumptions.truncate(snap);
+                ctx.active_branch_guards.truncate(snap_g);
+            } else {
                 discharge_calls_in_expr(ctx, assumptions, rhs);
             }
         }
+        // An `if`-EXPRESSION (`let z = if c { g(x) } else { h(y) };`): the condition is unconditional; each
+        // branch runs under the (negated) condition — push it as a scoped path condition, exactly like the
+        // `Stmt::If` handler, so a guard-provable branch call proves and a guard-unrelated one is caught.
+        // A block-bodied branch (`{ let t = …; g(t) }`) recurses into a `Block` which is left deferred (its
+        // statements need full analysis, not just call discharge), so only simple-expression branches are
+        // reached here — no intra-branch reassignment can stale the pushed condition.
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            discharge_calls_in_expr(ctx, assumptions, cond);
+            let snap = assumptions.len();
+            let snap_g = ctx.active_branch_guards.len();
+            push_branch_path_condition(ctx, assumptions, cond, false);
+            discharge_calls_in_expr(ctx, assumptions, then);
+            assumptions.truncate(snap);
+            ctx.active_branch_guards.truncate(snap_g);
+            push_branch_path_condition(ctx, assumptions, cond, true);
+            discharge_calls_in_expr(ctx, assumptions, else_);
+            assumptions.truncate(snap);
+            ctx.active_branch_guards.truncate(snap_g);
+        }
+        // A `match` scrutinee is unconditionally evaluated — recurse it. The ARM bodies run only on a
+        // pattern match, whose implied facts (a matched enum variant / bound sub-values) are not yet
+        // modeled as a path condition, so they stay the documented conditional residual (an unconditional
+        // discharge there would over-reject).
+        Expr::Match { scrutinee, .. } => discharge_calls_in_expr(ctx, assumptions, scrutinee),
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
             discharge_calls_in_expr(ctx, assumptions, expr)
         }
@@ -1851,9 +1888,8 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &[String], ex
                 discharge_calls_in_expr(ctx, assumptions, v);
             }
         }
-        // CONDITIONAL / deferred positions (a call here runs on only some paths, or not in this frame):
-        // `if`/`match`/`if let` branches, block/lambda bodies. Leaves (Var/Literal/Symbolic/…) hold no
-        // call. Left undischarged — the documented conditional-position residual.
+        // Remaining CONDITIONAL / deferred positions: `match`-ARM bodies (handled above via scrutinee-only),
+        // `if let` branches, block/lambda bodies. Leaves (Var/Literal/Symbolic/…) hold no call. Undischarged.
         _ => {}
     }
 }
