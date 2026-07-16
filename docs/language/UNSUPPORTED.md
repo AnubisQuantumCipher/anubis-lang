@@ -497,15 +497,26 @@ Deepens the solver moat. Everything below is fail-closed and unit-tested (`cargo
   `requires`/`ensures` makes a float param solver-modelable; a plain function keeps param-opaque asserts,
   identical to the integer lane), so a bounded float assert proves and an unprovable one becomes
   `ANUBIS_ASSERTION_UNPROVEN`. The **proptest float differential generator is done (`038f12b`)**.
-  Everything ELSE stays `ANUBIS_FLOAT_CONTRACT_UNMODELED` / fail-closed: `%` (fmod ≠ fp.rem), casts,
-  int/float mixing, transcendentals, non-finite/scientific literals; float **loop-invariants** and
-  **`let`s** (both share the int `ctx.constraints` bit-vector fact context — a Float64 fact there would
-  sort-clash, so a float assert is intentionally kept out of it and not chained into a later obligation;
-  loop-inv/let need that resolved) are the remaining follow-ons. Tests: `phase3_qf_fp_float_contract_lane`
-  (incl. the float-assert assertions), `phase3_float_proptest_solver_matches_oracle`,
+  **Float `let` CHAINING is REAL for never-reassigned bindings (`06eb6c1`)** — a genuinely-float `let`
+  (float-modelable, not int-modelable) whose variable is never reassigned anywhere in the function
+  becomes a Float64 defining-fact, so `let y = x * 2.0; ... ensures(result < 4.0)` and depth-2 chains
+  (`let a = x * 2.0; let y = a * a;`) discharge. Facts ride the shared assumptions channel and
+  `fact_is_float` sort-partitions them per obligation (an integer QF_BV obligation never sees a float
+  fact and vice versa). A REASSIGNED float `let` is deliberately NOT modeled (fail-closed,
+  `ANUBIS_FLOAT_CONTRACT_UNMODELED`): the statement-level frame sweep cannot see a write embedded in a
+  `match`-arm/`if`-expression, so admitting one would let a stale fact certify a violable contract —
+  the `reassigned_roots` gate (whole-body `collect_assigned_roots`, embedded writes included) makes the
+  leak impossible by construction. That embedded-write sweep gap ALSO pre-exists in the INTEGER lane
+  (an int `let` + `match`-arm reassign over-certifies today) — tracked as its own follow-up soundness
+  slice. Everything ELSE stays `ANUBIS_FLOAT_CONTRACT_UNMODELED` / fail-closed: `%` (fmod ≠ fp.rem),
+  casts, int/float mixing, transcendentals, non-finite/scientific literals, float loop-invariants
+  (int-only lane today). Tests: `phase3_qf_fp_float_contract_lane` (contracts, asserts, let-chains +
+  both false-accept guards), `phase3_float_proptest_solver_matches_oracle`,
   `phase4_string_and_float_opaque_diagnostics`; fixtures `float_contract_monotonicity_accepts`,
   `float_contract_false_ensures_rejects`, `float_contract_nan_requires_safety`,
-  `float_contract_division_bounded_accepts`, `float_assert_false_rejects`.
+  `float_contract_division_bounded_accepts`, `float_assert_false_rejects`,
+  `float_let_chain_accepts`, `float_let_of_let_accepts`, `float_let_frame_leak_rejects`,
+  `float_let_match_reassign_rejects`.
 
 ## NOW REAL (Phase-5 — Anubis-source standard library, 2026-07-12)
 
