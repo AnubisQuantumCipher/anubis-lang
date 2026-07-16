@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Phase-3 QF_S string-let chaining: a never-reassigned string `let` becomes a String defining fact,
+// so the postcondition proves through a depth-2 alias chain (t = s = "ok").
+fn f() -> string
+    ensures(result == "ok")
+{
+    let s = "ok";
+    let t = s;
+    return t;
+}
+fn main() { print(f()); }

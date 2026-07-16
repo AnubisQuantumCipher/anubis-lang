@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// Phase-3 QF_S string-let chaining: a REASSIGNED string let stays UNMODELED — the same
+// `reassigned_roots` fail-closed gate as the float lane (a write embedded in a match-arm /
+// if-expression escapes the statement-level frame sweep, so only never-reassigned lets carry a
+// fact). The postcondition is true at runtime (`s` ends as "b") but the solver cannot certify it,
+// so the contract is rejected rather than unsoundly assumed.
+fn f() -> string
+    ensures(result == "b")
+{
+    let s = "a";
+    s = "b";
+    return s;
+}
+fn main() { print(f()); }

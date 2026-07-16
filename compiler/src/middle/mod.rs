@@ -1821,6 +1821,10 @@ fn analyze_stmts(
                 // Phase-3 QF_FP: a shadowing `let` also drops the old binding's FLOAT modelability; its
                 // stale float defining-fact is dropped by the sort-agnostic assumptions.retain below.
                 ctx.solver_float_vars.remove(name);
+                // Phase-3 QF_S: same parity for a shadowed STRING binding — drop its modelability so a
+                // string predicate over the NEW binding is never proved against the shadowed string's
+                // fact (which the sort-agnostic retain below also evicts).
+                ctx.solver_string_vars.remove(name);
                 {
                     // Also drop stale array/len symbols for a shadowed sequence binding.
                     let mangled = smt_var(name);
@@ -1832,7 +1836,22 @@ fn analyze_stmts(
                         !vs.contains(&mangled) && !vs.contains(&arr) && !vs.contains(&len)
                     });
                 }
-                ctx.symbolic_widths.insert(name.clone(), w);
+                // Phase-3 QF_S: a genuinely-string `let` must be kept OUT of `symbolic_widths` — string
+                // PARAMS are excluded from the width map for exactly this reason: `expr_to_smt_value`
+                // gates a Var on width membership, so a width entry would let it build a BIT-VECTOR fact
+                // over a String-sorted symbol. `+` is runtime string concat, so `let u = s + s` would
+                // otherwise push `(= anb_u (bvadd anb_s anb_s))`, which `fact_is_string` then routes into
+                // a QF_S obligation → bvadd on String sorts → z3 error → fail-closed over-rejection of an
+                // unrelated valid string contract. REMOVE (not merely skip) so a stale width from a
+                // shadowed integer binding of the same name is evicted too. (Concat itself stays a
+                // deferred fail-closed residual — `is_string_modelable` has no Binary arm.)
+                let genuinely_string = !is_int_modelable(init, &ctx.solver_int_vars)
+                    && is_string_modelable(init, &ctx.solver_string_vars);
+                if genuinely_string {
+                    ctx.symbolic_widths.remove(name);
+                } else {
+                    ctx.symbolic_widths.insert(name.clone(), w);
+                }
 
                 // Track whether this binding is genuinely integer-modelable for the solver: a
                 // `symbolic()` source, or an integer-arithmetic init over already-modelable vars.
@@ -1886,8 +1905,9 @@ fn analyze_stmts(
                 // Symbolic sources remain unconstrained until assume()/assert() shape them.
                 // (Array literals are handled above via select/len facts — do not also bind the
                 // list name as a BitVec, which would be an unsound sort. A genuinely-float let is handled
-                // by the QF_FP branch below, never as a bit-vector.)
-                if !matches!(init, Expr::ArrayLiteral { .. }) && !genuinely_float {
+                // by the QF_FP branch below, never as a bit-vector; a genuinely-string let by the QF_S
+                // branch — the three lanes are mutually exclusive by construction.)
+                if !matches!(init, Expr::ArrayLiteral { .. }) && !genuinely_float && !genuinely_string {
                     if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
                         let def_smt = format!("(= {} {})", smt_var(name), init_smt);
                         ctx.symbolic_defs.push(def_smt.clone());
@@ -1911,6 +1931,23 @@ fn analyze_stmts(
                 if genuinely_float && !ctx.reassigned_roots.contains(name) {
                     ctx.solver_float_vars.insert(name.clone());
                     assumptions.push(format!("(= {} {})", smt_var(name), float_expr_to_smt(init)));
+                }
+                // Phase-3 QF_S: a genuinely-string `let` that is NEVER REASSIGNED becomes a String
+                // DEFINING FACT in the same `assumptions` channel, so a later string `ensures`/`assert`
+                // chains on it (`let s = "ok"; return s;` proves `ensures(result == "ok")`, incl. depth-2
+                // alias chains `let t = s`). The exact mirror of the float branch above: the same
+                // `reassigned_roots` gate is the soundness boundary (a write embedded in a `match`-arm /
+                // `if`-expression escapes the statement-level frame sweep, so only never-reassigned lets
+                // may carry an unconditional fact — no leak is possible by construction); riding
+                // `assumptions` means the var-name-based frame sweeps drop the fact when the binding is
+                // written under a `Stmt::If`/`While` scope; `fact_is_string` sort-partitions it out of
+                // every integer obligation. The shared `string_expr_to_smt` encoder carries the
+                // LOAD-BEARING backslash escape (every `\` → `\u{5c}`), so a `\u{..}`-shaped literal
+                // cannot be re-decoded by z3 into a false accept. NOT pushed to
+                // ctx.constraints/symbolic_defs (kept byte-identical for the self-host projection).
+                if genuinely_string && !ctx.reassigned_roots.contains(name) {
+                    ctx.solver_string_vars.insert(name.clone());
+                    assumptions.push(format!("(= {} {})", smt_var(name), string_expr_to_smt(init)));
                 }
                 // A `let` INITIALIZER can hide a write to an OUTER variable in an `if`/`match`/block
                 // expression (`let z = if c { y = 100; 0 } else { 0 };`). That write escapes the

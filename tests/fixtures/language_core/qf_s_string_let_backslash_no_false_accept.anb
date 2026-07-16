@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// Phase-3 QF_S regression guard THROUGH THE LET FACT: the source literal `"\\u{41}"` decodes (in the
+// Anubis lexer) to the 6-char runtime string `\u{41}`, which is NOT the 1-char `A`. The let-fact
+// encoder must reuse the backslash-escaped string_expr_to_smt (`\` → `\u{5c}`) — an unescaped fact
+// `(= anb_s "\u{41}")` would be re-decoded by z3's Unicode-strings theory to `A` and FALSELY prove
+// this contract. Correct behavior: DISPROVED → rejected.
+fn f() -> string
+    ensures(result == "A")
+{
+    let s = "\\u{41}";
+    return s;
+}
+fn main() { print(f()); }

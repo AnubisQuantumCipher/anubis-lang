@@ -5835,6 +5835,93 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn phase3_qf_s_string_let_chaining() {
+        // Phase-3 QF_S: a genuinely-string, NEVER-REASSIGNED `let` becomes a String defining fact in
+        // the shared sort-partitioned assumptions channel (the exact mirror of the float-let slice
+        // 06eb6c1), so string contracts chain through local bindings.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
+        // A string-literal let flows into the postcondition via result→return-expr substitution.
+        assert!(
+            discharged(r#"fn f() -> string ensures(result == "ok") { let s = "ok"; return s; }"#),
+            "a string-literal let must chain into a true ensures"
+        );
+        // Depth-2 alias chain: t = s = "ok".
+        assert!(
+            discharged(
+                r#"fn f() -> string ensures(result == "ok") { let s = "ok"; let t = s; return t; }"#
+            ),
+            "a depth-2 string let alias chain must discharge"
+        );
+        // Chain from a contracted param through a let into a body assert.
+        assert!(
+            discharged(r#"fn f(s: string) requires(s == "go") { let t = s; assert(t == "go"); }"#),
+            "a param-aliasing let must carry the requires fact into an assert"
+        );
+        // A FALSE let-backed ensures is DISPROVED (not modeled away).
+        assert!(
+            !discharged(r#"fn f() -> string ensures(result == "bad") { let s = "ok"; return s; }"#),
+            "a false string-let ensures must be disproved"
+        );
+        // Backslash guard THROUGH THE LET FACT: the 6-char runtime string `\u{41}` (source `"\\u{41}"`)
+        // must not be re-decoded by z3 into the 1-char "A" — the let-fact encoder must reuse the
+        // escaped string_expr_to_smt, not a hand-rolled quote-only encoding.
+        assert!(
+            !discharged(
+                r#"fn f() -> string ensures(result == "A") { let s = "\\u{41}"; return s; }"#
+            ),
+            "a backslash-u literal must not false-accept through a let fact"
+        );
+        // A REASSIGNED string let stays unmodeled — fail-closed, same reassigned_roots gate as floats.
+        assert!(
+            !discharged(
+                r#"fn f() -> string ensures(result == "b") { let s = "a"; s = "b"; return s; }"#
+            ),
+            "a reassigned string let must stay unmodeled (fail-closed)"
+        );
+        // EMBEDDED reassignment (write inside an if-expression/branch) — the exact soundness vector the
+        // float lane's reassigned_roots gate closes (21f441a): `collect_assigned_roots` captures the
+        // embedded write BEFORE analyze_stmts, so `s` is never modeled and the FALSE (when c) ensures
+        // cannot be proved. Runtime: c ⇒ s="b" so `result == "a"` is violable → must NOT discharge.
+        assert!(
+            !discharged(
+                r#"fn f(c: bool) -> string ensures(result == "a") { let s = "a"; if c { s = "b"; } return s; }"#
+            ),
+            "a string let reassigned in a branch must stay unmodeled (reassigned_roots gate)"
+        );
+        // SHADOW: a same-name re-let must not let the OLD binding's fact prove a contract over the NEW
+        // one. `let s = "a"; let s = "b"` → the second `s` shadows; the postcondition is about the new s.
+        assert!(
+            discharged(
+                r#"fn f() -> string ensures(result == "b") { let s = "a"; let s = "b"; return s; }"#
+            ),
+            "a re-let (shadow) must model the NEW binding's value"
+        );
+        // CROSS-SORT SHADOW (guards `solver_string_vars.remove` on re-let): a string let shadowed by an
+        // INT let of the same name must clear the string membership — otherwise `fact_is_string` would
+        // misclassify the new binding's int def-fact `(= anb_s (_ bv3 64))` as a string fact and DROP it
+        // from the QF_BV obligation, leaving `anb_s` free → a spurious FALSE REJECT of `assert(s == 3)`.
+        assert!(
+            discharged(r#"fn f() { let s = "a"; let s = 3; assert(s == 3); }"#),
+            "a string→int re-let must clear string membership so the int fact is not sort-dropped"
+        );
+        // String concat (`+` is runtime concat) is a DEFERRED residual — must stay unmodeled, and in
+        // particular must never inject a bit-vector fact over String-sorted symbols (the
+        // symbolic_widths eviction guards this).
+        assert!(
+            !discharged(
+                r#"fn f() -> string ensures(result == "aa") { let s = "a"; let u = s + s; return u; }"#
+            ),
+            "string concat must stay unmodeled (deferred residual)"
+        );
+    }
+
+    #[test]
     fn impl_method_return_secret_or_taint_is_caught_at_egress() {
         // #67: an impl method whose RETURN carries an internally-minted secret/taint (the getter/
         // accessor exfil `let k = v.key(); send(k)` / `send(v.key())`) launders past even the DIRECT

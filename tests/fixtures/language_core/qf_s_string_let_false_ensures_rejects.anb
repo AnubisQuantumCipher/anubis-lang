@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// Phase-3 QF_S string-let chaining: a FALSE postcondition over a string let is DISPROVED (not
+// modeled away) — `result == s == "ok"` contradicts `ensures(result == "bad")`.
+fn f() -> string
+    ensures(result == "bad")
+{
+    let s = "ok";
+    return s;
+}
+fn main() { print(f()); }
