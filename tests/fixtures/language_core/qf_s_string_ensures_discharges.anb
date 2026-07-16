@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Phase-3 QF_S: a string-equality postcondition discharges. `result` substitutes to the returned `s`,
+// so `ensures(result == "open")` under `requires(s == "open")` is proven in QF_S.
+fn label(s: string) -> string
+    requires(s == "open")
+    ensures(result == "open")
+{
+    return s;
+}
+fn main() { print(label("open")); }

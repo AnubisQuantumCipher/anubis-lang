@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// Phase-3 QF_S: a FALSE string assert is disproved. Under `requires(s == "open")`, `assert(s == "closed")`
+// has a counterexample → rejected.
+fn check(s: string) requires(s == "open") {
+    assert(s == "closed");
+}
+fn main() { check("open"); }

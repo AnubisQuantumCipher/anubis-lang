@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Phase-3 QF_S: a string-equality `assert` now DISCHARGES in Z3 QF_S (was the blanket
+// ANUBIS_STRING_CONTRACT_UNMODELED fall-through). `requires(s == "open")` assumes it; the assert is the
+// same fact → proven. Sound both ways (runtime string `==` and SMT `(= ..)` are both exact equality).
+fn check(s: string) requires(s == "open") {
+    assert(s == "open");
+}
+fn main() { check("open"); }

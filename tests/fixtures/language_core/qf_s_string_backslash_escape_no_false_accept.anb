@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// Phase-3 QF_S regression (solver false-accept guard). z3's Unicode-strings theory decodes `\u{XXXX}`
+// INSIDE an emitted string literal. Anubis's lexer already decoded the source `\\u{41}` to the 6-char
+// runtime string `\u{41}` (one backslash + `u{41}`), which is NOT equal to the 1-char `A`. If the SMT
+// encoder failed to escape the backslash, it would emit `"\u{41}"` and z3 would re-decode it to `A`,
+// collapsing two runtime-DISTINCT literals and FALSELY proving `ensures(result == "A")`. The
+// backslash-escaping fix (every `\` → `\u{5c}`) keeps them distinct, so this contract is correctly
+// DISPROVED and REJECTED. (Confirmed at the z3 layer: unescaped `(= s "\u{41}") (= s "A")` is `sat`;
+// escaped `(= s "\u{5c}u{41}") (= s "A")` is `unsat`.)
+fn label(s: string) -> string
+    requires(s == "\\u{41}")
+    ensures(result == "A")
+{
+    return s;
+}
+fn main() { print(label("\\u{41}")); }

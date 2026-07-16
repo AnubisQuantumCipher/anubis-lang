@@ -195,6 +195,11 @@ struct SemanticContext {
     /// later, float `let`s). A symbol is EITHER an i64 bit-vector OR a Float64, never both — a mixed
     /// int/float comparison stays fail-closed. Reset per function alongside `solver_int_vars`.
     solver_float_vars: BTreeSet<String>,
+    /// Variables modeled as SMT `String` in the QF_S solver lane (Phase 3): `string` params. A symbol is
+    /// never both a String and an i64 bit-vector / Float64 (the modelability gates are mutually exclusive),
+    /// so a string obligation is all-`String` and never sort-clashes. Reset per function alongside the
+    /// other solver var sets.
+    solver_string_vars: BTreeSet<String>,
     /// Every variable REASSIGNED anywhere in the current function body (`collect_assigned_roots` over
     /// the whole body, incl. writes embedded in a `match`-arm / `if`-expression / block). Phase-3 QF_FP
     /// `let` chaining is admitted ONLY for a float `let` whose name is NOT in this set: a never-reassigned
@@ -1001,6 +1006,7 @@ fn analyze_function(
     // against the first's model. Reset per function. (Obligations/constraints accumulate globally.)
     ctx.solver_int_vars.clear();
     ctx.solver_float_vars.clear();
+    ctx.solver_string_vars.clear();
     ctx.symbolic_widths.clear();
     // Authorize declared capabilities for Safe-mode I/O (Phase-3 C5 dual-mode crown).
     ctx.authorized_caps = declared_effects
@@ -1152,6 +1158,10 @@ fn analyze_function(
                 // fell through to ANUBIS_FLOAT_CONTRACT_UNMODELED). Kept OUT of `solver_int_vars` so it is
                 // never mixed into an i64 bit-vector model.
                 ctx.solver_float_vars.insert(pname.clone());
+            } else if pty == "string" {
+                // Phase-3 QF_S: a `string` param is a QF_S `String` symbol, so a string-equality
+                // `ensures`/`requires`/`assert` discharges (previously ANUBIS_STRING_CONTRACT_UNMODELED).
+                ctx.solver_string_vars.insert(pname.clone());
             }
         }
         for req in requires {
@@ -1162,6 +1172,9 @@ fn analyze_function(
                 // disjunction in float_bool_to_smt keeps a runtime-reachable NaN input IN the assumed
                 // set, matching run.rs — a bare fp.leq would wrongly exclude it and over-certify).
                 assumptions.push(float_bool_to_smt(req));
+            } else if is_bool_modelable_string(req, &ctx.solver_string_vars) {
+                // Phase-3 QF_S: a string-equality precondition becomes a string ASSUMPTION.
+                assumptions.push(string_bool_to_smt(req));
             }
         }
         // Mark parameters that a `requires` guard proves non-zero AS DIVISORS, so `x / v` / `x % v`
@@ -1924,14 +1937,27 @@ fn analyze_stmts(
                                 let concrete = substitute_vars(req, &sub);
                                 if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
                                     let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+                                    // Sort-partition this integer (QF_BV) precondition obligation: drop
+                                    // float/string facts before scraping vars or attaching assumptions,
+                                    // else a `fp.`/`to_fp` or `String`-declared symbol from an enclosing
+                                    // float/string contract would flip the query's logic and mis-declare
+                                    // these i64 symbols. Mirrors the assert/ensures/loop-invariant sites.
+                                    let int_asm: Vec<String> = assumptions
+                                        .iter()
+                                        .filter(|a| {
+                                            !fact_is_float(a, &ctx.solver_float_vars)
+                                                && !fact_is_string(a, &ctx.solver_string_vars)
+                                        })
+                                        .cloned()
+                                        .collect();
                                     let mut vars = BTreeSet::new();
                                     collect_vars_from_smt(&smt, &mut vars);
-                                    for a in assumptions.iter() {
+                                    for a in int_asm.iter() {
                                         collect_vars_from_smt(a, &mut vars);
                                     }
                                     ctx.solver_obligations.push(SolverObligation {
                                         name: format!("requires@{callee}:{smt}"),
-                                        assumptions: assumptions.clone(),
+                                        assumptions: int_asm,
                                         assertion: smt,
                                         vars: vars.into_iter().collect(),
                                     });
@@ -2100,7 +2126,10 @@ fn analyze_stmts(
                     // float vars in scope `fact_is_float` is always false, so this is `assumptions.clone()`.
                     let int_asm: Vec<String> = assumptions
                         .iter()
-                        .filter(|a| !fact_is_float(a, &ctx.solver_float_vars))
+                        .filter(|a| {
+                    !fact_is_float(a, &ctx.solver_float_vars)
+                        && !fact_is_string(a, &ctx.solver_string_vars)
+                })
                         .cloned()
                         .collect();
                     let mut vars = BTreeSet::new();
@@ -2139,6 +2168,30 @@ fn analyze_stmts(
                     ctx.solver_obligations.push(SolverObligation {
                         name: format!("assert:{smt}"),
                         assumptions: float_asm,
+                        assertion: smt,
+                        vars: vars.into_iter().collect(),
+                    });
+                } else if is_bool_modelable_string(expr, &ctx.solver_string_vars) {
+                    // Phase-3 QF_S: a string-equality `assert` is discharged in QF_S. The shared
+                    // `assumptions` channel is sort-partitioned to STRING facts (a string `requires`), so
+                    // the body is all-`String` and never sort-clashes with a bit-vector/float fact.
+                    let smt = string_bool_to_smt(expr);
+                    let str_asm: Vec<String> = assumptions
+                        .iter()
+                        .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                        .cloned()
+                        .collect();
+                    let mut raw = BTreeSet::new();
+                    collect_expr_vars(expr, &mut raw);
+                    let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+                    for a in &str_asm {
+                        let mut avs = BTreeSet::new();
+                        collect_vars_from_smt(a, &mut avs);
+                        vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                    }
+                    ctx.solver_obligations.push(SolverObligation {
+                        name: format!("assert:{smt}"),
+                        assumptions: str_asm,
                         assertion: smt,
                         vars: vars.into_iter().collect(),
                     });
@@ -3363,11 +3416,14 @@ impl SymbolicEngine {
                     body.push_str(&format!("(assert {})\n", a));
                 }
                 body.push_str(&format!("(assert (not {}))\n", obl.assertion));
-                // Phase-3 QF_FP: a float obligation (its body carries `fp.`/`to_fp` from the float
-                // encoder) declares its symbols as Float64 and runs under QF_FP; int/array obligations
-                // are unchanged (a symbol is never both, so the choice is per-obligation).
+                // Per-obligation theory (a symbol is never two sorts, so this is per-obligation): QF_S if
+                // the body carries an SMT string literal (`"`, only the string encoder emits it), else
+                // QF_FP for a float obligation (`fp.`/`to_fp`), else QF_ABV for the array sort, else QF_BV.
+                let uses_strings = smt_uses_strings(&body);
                 let uses_floats = smt_uses_floats(&body);
-                let logic = if uses_floats {
+                let logic = if uses_strings {
+                    "QF_S"
+                } else if uses_floats {
                     "QF_FP"
                 } else if smt_uses_arrays(&body, &vars) {
                     "QF_ABV"
@@ -3380,8 +3436,8 @@ impl SymbolicEngine {
                         // Every integer variable is a 64-bit bit-vector: the runtime is i64 and
                         // type-annotation widths are inert, so a narrower declaration would be an
                         // unsound abstraction. Sequence arrays use the `__arr` Array sort (A2); float
-                        // vars are IEEE-754 Float64 (QF_FP).
-                        smt.push_str(&declare_smt_var_maybe_float(v, uses_floats));
+                        // vars are IEEE-754 Float64 (QF_FP); string vars are `String` (QF_S).
+                        smt.push_str(&declare_smt_var_maybe_float(v, uses_strings, uses_floats));
                     }
                 }
                 smt.push_str(&body);
@@ -3452,8 +3508,11 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     for a in &obl.assumptions {
         body.push_str(&format!("(assert {})\n", a));
     }
+    let uses_strings = smt_uses_strings(&body);
     let uses_floats = smt_uses_floats(&body);
-    let logic = if uses_floats {
+    let logic = if uses_strings {
+        "QF_S"
+    } else if uses_floats {
         "QF_FP"
     } else if smt_uses_arrays(&body, &vars) {
         "QF_ABV"
@@ -3463,7 +3522,7 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     let mut smt = format!("(set-logic {logic})\n");
     for v in &vars {
         if !v.starts_with("bv") && v != "_" && !v.chars().all(|c| c.is_ascii_digit()) {
-            smt.push_str(&declare_smt_var_maybe_float(v, uses_floats));
+            smt.push_str(&declare_smt_var_maybe_float(v, uses_strings, uses_floats));
         }
     }
     smt.push_str(&body);
@@ -4078,6 +4137,115 @@ fn float_bool_to_smt(e: &Expr) -> String {
     }
 }
 
+// ── Phase-3 QF_S (string) contract lane ──────────────────────────────────────────────────────────
+// The confidentiality/physics-orthogonal third solver lane: an `ensures`/`requires`/`assert` that is a
+// STRING EQUALITY (`s == "literal"`, `!=`, `&& || !`) over a `string` param discharges in Z3 QF_S,
+// instead of the blanket ANUBIS_STRING_CONTRACT_UNMODELED fall-through. SOUND BOTH WAYS by construction:
+// the runtime `==` on strings is exact structural equality (run.rs `AnubisValue::Str(a) == Str(b)`), and
+// SMT QF_S `(= a b)` is exact structural equality — there is NO NaN-like partial-order edge case (unlike
+// QF_FP's `<=`/`>=`), so no disjunction correction is needed. MVP scope: a comparison with AT LEAST ONE
+// string LITERAL side (so the SMT body carries a `"`, which the query builder uses to select QF_S). A
+// var-vs-var string equality (`s == t`), `str.len`, and concatenation are DEFERRED residuals (fail-closed
+// → they stay unmodeled and defer to runtime, never a false accept).
+
+/// Is `e` a modelable STRING term — a string var (in `string_vars`) or a string literal.
+fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Var(v) => string_vars.contains(v),
+        Expr::StrLiteral(_) => true,
+        Expr::Declassify { inner, .. } => is_string_modelable(inner, string_vars),
+        _ => false,
+    }
+}
+
+/// Is `e` a modelable STRING boolean formula — `==`/`!=` between two string-modelable terms WHERE AT
+/// LEAST ONE IS A LITERAL (the literal guarantees a `"` in the SMT so the QF_S query is detected; a
+/// var-vs-var comparison is the deferred residual), or `&& || !` over such. Tried AFTER the int/float
+/// gates so a numeric formula never takes this path.
+fn is_bool_modelable_string(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Binary { op, lhs, rhs } => match op.as_str() {
+            "==" | "!=" => {
+                is_string_modelable(lhs, string_vars)
+                    && is_string_modelable(rhs, string_vars)
+                    && (matches!(**lhs, Expr::StrLiteral(_)) || matches!(**rhs, Expr::StrLiteral(_)))
+            }
+            "&&" | "||" => {
+                is_bool_modelable_string(lhs, string_vars)
+                    && is_bool_modelable_string(rhs, string_vars)
+            }
+            _ => false,
+        },
+        Expr::Unary { op, expr } => op == "!" && is_bool_modelable_string(expr, string_vars),
+        Expr::Declassify { inner, .. } => is_bool_modelable_string(inner, string_vars),
+        _ => false,
+    }
+}
+
+/// Encode a string term to SMT-LIB: a var → its mangled symbol; a literal → a quoted SMT string with `"`
+/// doubled per SMT-LIB. Invoked ONLY on `is_string_modelable` exprs, so every reachable case is total.
+fn string_expr_to_smt(e: &Expr) -> String {
+    match e {
+        Expr::Var(v) => smt_var(v),
+        // Escape BACKSLASH before doubling `"`. SMT-LIB doubles `"`, but z3's Unicode-strings theory
+        // ALSO decodes `\u{XXXX}`/`\uXXXX` inside a literal — so a runtime string containing a literal
+        // `\u{41}` would be re-decoded by z3 to `A`, collapsing two runtime-DISTINCT literals to one SMT
+        // value and letting a false contract prove (the soundness hole the review caught). Rewriting every
+        // backslash to `\u{5c}` restores it to a single backslash under z3's decoder AND stays injective
+        // even if z3 does not decode at all (distinct runtime strings → distinct SMT literals either way),
+        // so no `\u`-shaped substring can survive to be mis-decoded.
+        Expr::StrLiteral(s) => {
+            let escaped = s.replace('\\', "\\u{5c}").replace('"', "\"\"");
+            format!("\"{escaped}\"")
+        }
+        Expr::Declassify { inner, .. } => string_expr_to_smt(inner),
+        _ => "\"\"".to_string(),
+    }
+}
+
+/// Encode a string boolean formula. `==` → `(= a b)`, `!=` → `(not (= a b))`, `&& || !` → and/or/not.
+fn string_bool_to_smt(e: &Expr) -> String {
+    match e {
+        Expr::Binary { op, lhs, rhs } => {
+            if op == "&&" || op == "||" {
+                let l = string_bool_to_smt(lhs);
+                let r = string_bool_to_smt(rhs);
+                let o = if op == "&&" { "and" } else { "or" };
+                return format!("({o} {l} {r})");
+            }
+            let l = string_expr_to_smt(lhs);
+            let r = string_expr_to_smt(rhs);
+            if op == "!=" {
+                format!("(not (= {l} {r}))")
+            } else {
+                format!("(= {l} {r})")
+            }
+        }
+        Expr::Unary { expr, .. } => format!("(not {})", string_bool_to_smt(expr)),
+        Expr::Declassify { inner, .. } => string_bool_to_smt(inner),
+        _ => "true".to_string(),
+    }
+}
+
+/// Whether an obligation body is a QF_S (string) query — detected by an SMT string literal (`"`), which
+/// ONLY the string encoder emits (int/float encoders never produce `"`). Sound: `"` in the body ⟺ a
+/// modeled string obligation (a var-vs-var string equality is excluded by the modelability gate).
+fn smt_uses_strings(smt_body: &str) -> bool {
+    smt_body.contains('"')
+}
+
+/// Whether a fact in the shared `assumptions` channel is a STRING fact — it mentions a currently
+/// string-modelable variable (mangled `anb_v`). Membership (not a `"` sniff) so the int/float obligation
+/// filters can drop a string fact rather than pull a `String`-sorted symbol into a QF_BV/QF_FP body.
+fn fact_is_string(smt: &str, string_vars: &BTreeSet<String>) -> bool {
+    if string_vars.is_empty() {
+        return false;
+    }
+    let mut vs = BTreeSet::new();
+    collect_vars_from_smt(smt, &mut vs);
+    string_vars.iter().any(|v| vs.contains(&smt_var(v)))
+}
+
 fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String> {
     match e {
         Expr::Var(v) if widths.contains_key(v) => Some(smt_var(v)),
@@ -4338,11 +4506,14 @@ fn declare_smt_var(v: &str) -> String {
     }
 }
 
-/// Declare a symbol as IEEE-754 Float64 for the QF_FP lane, else fall back to the integer/array
-/// declaration. A float obligation is all-float (int/float mixing is never modelable), so every
-/// non-literal symbol in it is Float64.
-fn declare_smt_var_maybe_float(v: &str, is_float: bool) -> String {
-    if is_float {
+/// Declare a symbol for the per-obligation theory: `String` for QF_S, IEEE-754 Float64 for QF_FP, else
+/// the integer/array declaration for QF_BV/QF_ABV. A modeled obligation is single-sort (the modelability
+/// gates are mutually exclusive — a symbol is never both), so every non-literal symbol takes the same
+/// sort as the obligation's theory.
+fn declare_smt_var_maybe_float(v: &str, is_string: bool, is_float: bool) -> String {
+    if is_string {
+        format!("(declare-const {v} String)\n")
+    } else if is_float {
         format!("(declare-const {v} (_ FloatingPoint 11 53))\n")
     } else {
         declare_smt_var(v)
@@ -4594,7 +4765,10 @@ fn push_ensures_obligations(
             // (no float vars in scope ⇒ `fact_is_float` always false ⇒ identical to `assumptions.to_vec()`).
             let int_asm: Vec<String> = assumptions
                 .iter()
-                .filter(|a| !fact_is_float(a, &ctx.solver_float_vars))
+                .filter(|a| {
+                    !fact_is_float(a, &ctx.solver_float_vars)
+                        && !fact_is_string(a, &ctx.solver_string_vars)
+                })
                 .cloned()
                 .collect();
             let mut vars = BTreeSet::new();
@@ -4632,6 +4806,30 @@ fn push_ensures_obligations(
             ctx.solver_obligations.push(SolverObligation {
                 name: format!("ensures:{smt}"),
                 assumptions: float_asm,
+                assertion: smt,
+                vars: vars.into_iter().collect(),
+            });
+        } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
+            // Phase-3 QF_S: a string-equality postcondition is DISCHARGED via the string encoder, with
+            // the shared `assumptions` channel sort-partitioned to STRING facts (a string `requires`), so
+            // `requires(s == "open") ensures(s == "open")` proves. All-`String` body, no sort clash.
+            let smt = string_bool_to_smt(&concrete);
+            let str_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                .cloned()
+                .collect();
+            let mut raw = BTreeSet::new();
+            collect_expr_vars(&concrete, &mut raw);
+            let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+            for a in &str_asm {
+                let mut avs = BTreeSet::new();
+                collect_vars_from_smt(a, &mut avs);
+                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+            }
+            ctx.solver_obligations.push(SolverObligation {
+                name: format!("ensures:{smt}"),
+                assumptions: str_asm,
                 assertion: smt,
                 vars: vars.into_iter().collect(),
             });
@@ -5413,13 +5611,17 @@ fn verify_while_invariants(
     body: &[Stmt],
     outer_assumptions: &[String],
 ) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
-    // Phase-3 QF_FP: loop invariants are an INTEGER-only lane (the cond/invariant modelability gates
-    // below reject non-integer formulas). A float `requires`/`let` fact from an enclosing float contract
-    // must therefore be dropped from the outer assumptions, or it would flip an integer base-case/step
-    // obligation to QF_FP and mis-declare its i64 symbols. Corpus-inert (no float contract has a loop).
+    // Phase-3 QF_FP/QF_S: loop invariants are an INTEGER-only lane (the cond/invariant modelability gates
+    // below reject non-integer formulas). A float `requires`/`let` fact from an enclosing float contract —
+    // OR a string `requires` fact from an enclosing string contract — must therefore be dropped from the
+    // outer assumptions, or it would flip an integer base-case/step obligation to QF_FP/QF_S and
+    // mis-declare its i64 symbols. Corpus-inert (no float/string contract has a loop).
     let outer_assumptions: Vec<String> = outer_assumptions
         .iter()
-        .filter(|a| !fact_is_float(a, &ctx.solver_float_vars))
+        .filter(|a| {
+            !fact_is_float(a, &ctx.solver_float_vars)
+                && !fact_is_string(a, &ctx.solver_string_vars)
+        })
         .cloned()
         .collect();
     let outer_assumptions: &[String] = &outer_assumptions;

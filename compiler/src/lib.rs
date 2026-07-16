@@ -2899,11 +2899,23 @@ fn bad() {
 
     #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
-        // S: strings stay opaque with a precise code (no silent cert).
-        let err = tc_ok(r#"fn f() -> string ensures(result == "ok") { return "ok"; }"#)
-            .expect_err("string ensures must reject");
+        // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
+        // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,
+        // proved in QF_S. (Strings are no longer blanket-rejected.)
         assert!(
-            err.contains("ANUBIS_STRING_CONTRACT_UNMODELED"),
+            tc_ok(r#"fn f() -> string ensures(result == "ok") { return "ok"; }"#).is_ok(),
+            "a true modelable string ensures should discharge under the QF_S lane",
+        );
+        // …but a string comparison the QF_S MVP does NOT model — a var-vs-var equality with no string
+        // literal — stays fail-closed (never a fabricated proof). The MVP defers var-var equality because
+        // theory selection keys on a `"` in the SMT body (a literal side); with no literal the
+        // precise-cause scanner finds no string marker, so it is rejected via the GENERAL
+        // ANUBIS_CONTRACT_UNPROVABLE path. (ANUBIS_STRING_CONTRACT_UNMODELED still surfaces for a
+        // literal-bearing but non-`==`/`!=` string position — ordering/concat.)
+        let err = tc_ok(r#"fn f(s: string) -> string ensures(result == s) { return s; }"#)
+            .expect_err("a var-var string ensures (no literal) must stay unmodeled");
+        assert!(
+            err.contains("ANUBIS_CONTRACT_UNPROVABLE"),
             "got: {err}"
         );
         // F (Phase-3 QF_FP): a MODELABLE float contract — a comparison over `+ - *` of finite floats —
@@ -5765,6 +5777,61 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             r#"fn agent() uses(net.send) { let k = secret_source("api"); each([1], |x| send("h", 80, declassify(k, "p", "r"))); }"#,
         )
         .expect("a declassified captured secret in a HO-applied lambda releases");
+    }
+
+    #[test]
+    fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
+        // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
+        // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string
+        // `==` and SMT `(= a b)` are both exact structural equality (no NaN-like edge case).
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
+        // TRUE string postcondition discharges (result substitutes to the returned param).
+        assert!(
+            discharged(
+                r#"fn label(s: string) -> string requires(s == "open") ensures(result == "open") { return s; }"#
+            ),
+            "requires(s==\"open\") ⇒ ensures(result==\"open\") must discharge"
+        );
+        // TRUE string assert discharges under the precondition.
+        assert!(
+            discharged(r#"fn check(s: string) requires(s == "open") { assert(s == "open"); }"#),
+            "assert(s==\"open\") under requires(s==\"open\") must discharge"
+        );
+        // FALSE string postcondition is DISPROVED (not modeled-away): result==s=="open" contradicts "closed".
+        assert!(
+            !discharged(
+                r#"fn label(s: string) -> string requires(s == "open") ensures(result == "closed") { return s; }"#
+            ),
+            "a false string ensures must be disproved, not silently accepted"
+        );
+        // FALSE string assert is disproved.
+        assert!(
+            !discharged(r#"fn check(s: string) requires(s == "open") { assert(s == "closed"); }"#),
+            "a false string assert must be disproved"
+        );
+        // Without the precondition, the postcondition is NOT valid (s unconstrained) → not discharged.
+        assert!(
+            !discharged(r#"fn label(s: string) -> string ensures(result == "open") { return s; }"#),
+            "an unconstrained string ensures must not be spuriously discharged"
+        );
+        // SOLVER FALSE-ACCEPT GUARD (backslash escaping). Anubis's lexer decodes the source `\\u{41}` to
+        // the 6-char runtime string `\u{41}`, which is NOT equal to the 1-char `A`. z3's Unicode-strings
+        // theory decodes `\u{XXXX}` inside a literal, so an encoder that did not escape the backslash would
+        // emit `"\u{41}"`, z3 would re-decode it to `A`, and the false `ensures(result == "A")` would be
+        // spuriously PROVED. The fix (every `\` → `\u{5c}`) keeps the two runtime-distinct literals distinct
+        // in QF_S, so this must be DISPROVED (not discharged).
+        assert!(
+            !discharged(
+                r#"fn label(s: string) -> string requires(s == "\\u{41}") ensures(result == "A") { return s; }"#
+            ),
+            "a backslash-u literal must not be re-decoded by z3 into a false-accept"
+        );
     }
 
     #[test]

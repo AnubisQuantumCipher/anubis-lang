@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// Phase-3 QF_S: a FALSE string postcondition is disproved (not modeled-away). `result == s == "open"`,
+// so `ensures(result == "closed")` has a counterexample → rejected.
+fn label(s: string) -> string
+    requires(s == "open")
+    ensures(result == "closed")
+{
+    return s;
+}
+fn main() { print(label("open")); }
