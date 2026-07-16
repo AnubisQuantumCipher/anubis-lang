@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Precision guard for the impl-method egress check: the same egressing method as
+// secret_into_egressing_method_rejects.anb, but called with a CLEAN (literal) argument. The
+// method's parameter IS summarized as egressing, yet no secret flows into it, so `expr_secret_source`
+// returns None and nothing is emitted — the check must not fire on non-secret arguments.
+struct Mailer { host: u32 }
+impl Mailer {
+    fn deliver(self, msg) uses(net.send) { send("host", 80, msg); }
+}
+fn main() uses(net.send) {
+    let m = Mailer { host: 1 };
+    m.deliver("public-status");
+}

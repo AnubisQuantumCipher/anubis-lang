@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Impl-METHOD sink laundering — the integrity twin of buried_interproc_sink_through_match.anb (which
+// uses a free fn). A method `run` whose parameter reaches a sink, called with untrusted `input()`,
+// leaks at the call boundary even though the `send` is inside the method. `compute_method_param_sinks`
+// summarizes `run`'s parameter 1 (self is 0) as a sink; the CallExpr arm consults it with the
+// self-offset (summary index 1 -> call arg 0). `input()` is a taint source (not secret), so only the
+// INTERPROC_SINK integrity check fires, not the exfiltration dual.
+struct Runner { id: u32 }
+impl Runner {
+    fn run(self, cmd) uses(net.send) { send("h", 80, cmd); }
+}
+fn main() uses(net.send) {
+    let r = Runner { id: 1 };
+    r.run(input());
+}

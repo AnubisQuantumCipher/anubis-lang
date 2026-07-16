@@ -5628,6 +5628,48 @@ fn main() { let w = W { f: 7 }; let arr = [1, 2, 3]; let y = arr[1]; }"#)
     }
 
     #[test]
+    fn impl_method_argument_does_not_launder_taint_or_secret() {
+        // A method call `recv.m(arg)` parses as `Expr::CallExpr` (callee is a FieldAccess), so the
+        // interprocedural sink/egress checks — which lived only in the bare `Expr::Call` arm — never ran
+        // on method arguments: `m.deliver(secret)` / `r.run(input())` laundered through a method that
+        // sends. `compute_method_param_{sinks,egress}` now summarize impl methods (self at index 0), and
+        // the CallExpr arm consults them with the self-offset (summary index p≥1 ↔ call arg p-1).
+        // (confidentiality) secret into a method that egresses it → INTERPROC_EXFILTRATION.
+        let sec = tc_ok(
+            r#"struct Mailer { host: u32 }
+impl Mailer { fn deliver(self, msg) uses(net.send) { send("h", 80, msg); } }
+fn main() uses(net.send) { let m = Mailer { host: 1 }; m.deliver(secret_source("k")); }"#,
+        )
+        .expect_err("secret into an egressing method must be flagged");
+        assert!(
+            sec.contains("ANUBIS_INTERPROC_EXFILTRATION"),
+            "got: {sec}"
+        );
+        // (integrity) tainted input into a method that sinks it → INTERPROC_SINK.
+        let taint = tc_ok(
+            r#"struct Runner { id: u32 }
+impl Runner { fn run(self, cmd) uses(net.send) { send("h", 80, cmd); } }
+fn main() uses(net.send) { let r = Runner { id: 1 }; r.run(input()); }"#,
+        )
+        .expect_err("tainted input into a sinking method must be flagged");
+        assert!(taint.contains("ANUBIS_INTERPROC_SINK"), "got: {taint}");
+        // (precision) a CLEAN argument to the same egressing method still accepts (no false positive).
+        tc_ok(
+            r#"struct Mailer { host: u32 }
+impl Mailer { fn deliver(self, msg) uses(net.send) { send("h", 80, msg); } }
+fn main() uses(net.send) { let m = Mailer { host: 1 }; m.deliver("public"); }"#,
+        )
+        .expect("a clean argument to an egressing method must not be flagged");
+        // (precision) a secret into a method that neither sinks nor egresses it still accepts.
+        tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn store(self, x) { let held = x; } }
+fn main() { let v = Vault { id: 1 }; v.store(secret_source("k")); }"#,
+        )
+        .expect("a secret merely bound inside a non-leaking method must not be flagged");
+    }
+
+    #[test]
     fn taint_reassignment_to_clean_clears_precisely() {
         // Reassign a tainted var to a clean constant → genuinely clean (precision, not over-taint).
         tc_ok(r#"fn main() uses(net.send) { let x = input(); x = 42; send("h", 80, x); }"#)

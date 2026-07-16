@@ -243,6 +243,15 @@ struct SemanticContext {
     /// sites consult it: a SECRET argument into a summarized-egress param is `ANUBIS_INTERPROC_EXFILTRATION`
     /// when `fn leak(x){ send(x); }`. Monotone fixpoint.
     param_egress: BTreeMap<String, BTreeSet<usize>>,
+    /// Interprocedural param→sink / param→egress summaries for IMPL METHODS, keyed by BARE method name
+    /// and UNIONED across every impl that declares that name (receiver static type is generally
+    /// unrecoverable, so bare-name + union is the fail-closed choice). SEPARATE from `param_sinks`/
+    /// `param_egress` because a method's parameter space keeps `self` at index 0 (a free fn's index 0 is
+    /// its first arg) and bare names collide with free fns. Consulted ONLY in the `Expr::CallExpr`
+    /// (method-call) arm, with the self-offset: summary index 0 ↔ the receiver, index p≥1 ↔ call arg
+    /// p-1. Closes `m.deliver(secret)` / `r.go(tainted)` laundering through a method that egresses/sinks.
+    method_param_sinks: BTreeMap<String, BTreeSet<usize>>,
+    method_param_egress: BTreeMap<String, BTreeSet<usize>>,
     /// Interprocedural param→return summary (Phase-3 A2): for each function, the set of formal
     /// parameter indices that can flow to the return value without declassify. Monotone fixpoint.
     /// Combined at call sites with argument taint: `wrap` with `returns_taint_of_params={0}` makes
@@ -356,6 +365,11 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     compute_tainting_fns(&ast.items, &mut ctx);
     compute_param_sinks(&ast.items, &mut ctx);
     compute_param_egress(&ast.items, &mut ctx);
+    // Impl-method twins (must run AFTER the free-fn summaries so their transitive `known` is at
+    // fixpoint): close `m.deliver(secret)` / `r.go(tainted)` laundering through a method that
+    // sinks/egresses. Keyed by bare method name, `self` at index 0. Consulted only in the CallExpr arm.
+    compute_method_param_sinks(&ast.items, &mut ctx);
+    compute_method_param_egress(&ast.items, &mut ctx);
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
     // even when the secret is minted in a helper) and the leg-2 EXPOSURE summary (so a helper wrapping
@@ -2870,6 +2884,102 @@ fn analyze_expr_effect(
         // higher-order boundary; the closure-application callee/args ARE concrete call-site exprs and
         // are walked via `CallExpr`).
         Expr::CallExpr { callee, args } => {
+            // Interprocedural METHOD sink/egress — the impl-method twin of the two blocks in the bare
+            // `Expr::Call` arm above. A method call `recv.name(a, b)` parses as `CallExpr { callee:
+            // FieldAccess{ base: recv, field: name }, args: [a, b] }`; the sink/egress laundering checks
+            // only ran on bare `Expr::Call`, so `m.deliver(secret)` / `r.go(tainted)` — a method that
+            // sends/execs its argument — bypassed them entirely. We consult the method summaries
+            // (`method_param_sinks` / `method_param_egress`, keyed by bare method name, unioned across
+            // impls) with the SELF-OFFSET: summary index 0 is the receiver (`base`), index p≥1 is call
+            // arg p-1 (matching the runtime `call_args = [receiver, …args]`).
+            //
+            // SOUNDNESS BOUNDARY (fail-open residuals — no false rejects; documented + queued). This
+            // block is exact for ONE-HOP argument laundering with a DIRECTLY-supplied secret/tainted
+            // value (and a secret receiver, via index 0). It is BLIND to:
+            //   • a secret/taint that ORIGINATES FROM a method return (`let k = v.key(); send(h,p,k)`):
+            //     no impl method ever enters `secret_fns`/`tainting_fns`/`param_return_taint` (their
+            //     collectors skip `Item::Impl`), so a getter's return carries no label — the
+            //     highest-reachability gap; needs a method return-summary + source-walker `CallExpr` arm.
+            //   • any sink/egress reached THROUGH a method call on the flow path, free-fn→method or
+            //     method→method (`fn f(m,x){ m.snd(x) }`; `fn ship(self,p){ self.deliver(p) }`): the
+            //     summary walkers `collect_param_sinks_in_expr` / `expr_param_flow` have no
+            //     `Expr::CallExpr` arm, so a method call truncates an interprocedural flow path to ∅.
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                // Resolve a method-summary parameter index to its call-site expression under the
+                // self-offset: index 0 is the receiver (`base`), index p≥1 is call arg p-1. Inlined
+                // (rather than a closure) to sidestep closure return-lifetime elision on the `&Expr`.
+                // INTEGRITY: a tainted value in a summarized-sink method parameter is INTERPROC_SINK.
+                if let Some(sink_params) = ctx.method_param_sinks.get(field).cloned() {
+                    for i in sink_params {
+                        let arg_opt: Option<&Expr> = if i == 0 {
+                            Some(base.as_ref())
+                        } else {
+                            args.get(i - 1)
+                        };
+                        if let Some(arg) = arg_opt {
+                            if let Some(source) = expr_taint_source(
+                                arg,
+                                scope,
+                                &ctx.tainting_fns,
+                                &ctx.param_return_taint,
+                            ) {
+                                let declassified = expr_is_declassified(arg, scope);
+                                ctx.taint_traces.push(TaintTrace {
+                                    source: source.clone(),
+                                    sink: Some(format!("{}(param {})", field, i)),
+                                    steps: vec![format!(
+                                        "{} -> call method `{}` param {} -> sink",
+                                        source, field, i
+                                    )],
+                                    declassified,
+                                });
+                                if mode == Mode::Safe && !declassified {
+                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                        code: Some("ANUBIS_INTERPROC_SINK".into()),
+                                        message: format!(
+                                            "safe mode tainted flow from `{}` into parameter {} of method `{}`, which reaches a sink without declassify",
+                                            source, i, field
+                                        ),
+                                        span: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                // CONFIDENTIALITY: a secret value in a summarized-egress method parameter is
+                // INTERPROC_EXFILTRATION — the dual, Safe-mode-gated exactly like the free-fn block.
+                if mode == Mode::Safe {
+                    if let Some(egress_params) = ctx.method_param_egress.get(field).cloned() {
+                        for i in egress_params {
+                            let arg_opt: Option<&Expr> = if i == 0 {
+                                Some(base.as_ref())
+                            } else {
+                                args.get(i - 1)
+                            };
+                            if let Some(arg) = arg_opt {
+                                if let Some(source) = expr_secret_source(
+                                    arg,
+                                    scope,
+                                    &ctx.secret_fns,
+                                    &ctx.param_return_taint,
+                                ) {
+                                    ctx.emit(
+                                        SemanticDiagnostic {
+                                            code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                                            message: format!(
+                                                "safe mode confidentiality violation: secret `{source}` flows into parameter {i} of method `{field}`, which reaches an egress without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program"
+                                            ),
+                                            span: None,
+                                        },
+                                        false,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             analyze_expr_effect(callee, mode, scope, effects, ctx);
             for arg in args {
                 analyze_expr_effect(arg, mode, scope, effects, ctx);
@@ -7758,6 +7868,37 @@ pub(crate) fn collect_fn_params_bodies<'a>(
     }
 }
 
+/// Like `collect_fn_params_bodies` but for IMPL METHODS: each `impl … { fn m(self, …) {…} }` method is
+/// an `Item::Fn` inside `Item::Impl`. Collects `(bare method name, param names INCLUDING self, body)`,
+/// keyed by bare name (so same-named methods across impls share a key and their summaries UNION —
+/// fail-closed). `self` is kept at parameter index 0, matching the runtime dispatch (run.rs builds
+/// `call_args = [receiver, …]`), so a summary index p≥1 corresponds to call arg p-1.
+fn collect_impl_method_params_bodies<'a>(
+    items: &'a [Item],
+    out: &mut Vec<(String, Vec<String>, &'a [Stmt])>,
+) {
+    for item in items {
+        match item {
+            Item::Impl { methods, .. } => {
+                for m in methods {
+                    if let Item::Fn {
+                        name, params, body, ..
+                    } = m
+                    {
+                        out.push((
+                            name.clone(),
+                            params.iter().map(|(n, _)| n.clone()).collect(),
+                            body.as_slice(),
+                        ));
+                    }
+                }
+            }
+            Item::Module { items, .. } => collect_impl_method_params_bodies(items, out),
+            _ => {}
+        }
+    }
+}
+
 /// Parameter indices that flow through `expr` under the current param-flow scope. Declassify clears;
 /// calls pass through argument taint (and, for known sink-params of the callee, only those positions
 /// matter at the *call site* — here we only need "which params are in this value").
@@ -8183,6 +8324,69 @@ fn compute_param_egress(items: &[Item], ctx: &mut SemanticContext) {
             let mut found = BTreeSet::new();
             body_param_sinks(body, &mut flow, is_egress_sink, &known, &mut found);
             let entry = ctx.param_egress.entry(name.clone()).or_default();
+            for i in found {
+                if entry.insert(i) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Populate `ctx.method_param_sinks` — the impl-method twin of `compute_param_sinks`. Same monotone
+/// fixpoint and same `body_param_sinks` walker, but the function list comes from
+/// `collect_impl_method_params_bodies` (methods keyed by BARE name, `self` at index 0) and the summary
+/// is UNIONED across every impl declaring the name. For the transitive `known` we consult
+/// `ctx.param_sinks` (free-fn summaries) so a method body that calls a free fn that sinks is covered —
+/// method→method transitivity through a `CallExpr` inside a body is a documented residual
+/// (`body_param_sinks` recognizes only bare `Expr::Call`), so it is not consulted here. Must run AFTER
+/// `compute_param_sinks` so the free-fn summaries are already at fixpoint.
+fn compute_method_param_sinks(items: &[Item], ctx: &mut SemanticContext) {
+    let mut methods: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+    collect_impl_method_params_bodies(items, &mut methods);
+    loop {
+        let mut changed = false;
+        let known = ctx.param_sinks.clone();
+        for (name, params, body) in &methods {
+            let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+            for (i, p) in params.iter().enumerate() {
+                flow.insert(p.clone(), BTreeSet::from([i]));
+            }
+            let mut found = BTreeSet::new();
+            body_param_sinks(body, &mut flow, is_sink, &known, &mut found);
+            let entry = ctx.method_param_sinks.entry(name.clone()).or_default();
+            for i in found {
+                if entry.insert(i) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Populate `ctx.method_param_egress` — the impl-method twin of `compute_param_egress` (EGRESS
+/// predicate `is_egress_sink`). Same fixpoint as `compute_method_param_sinks`, sourced from the impl
+/// method collector, transitive `known` from `ctx.param_egress`. Must run AFTER `compute_param_egress`.
+fn compute_method_param_egress(items: &[Item], ctx: &mut SemanticContext) {
+    let mut methods: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+    collect_impl_method_params_bodies(items, &mut methods);
+    loop {
+        let mut changed = false;
+        let known = ctx.param_egress.clone();
+        for (name, params, body) in &methods {
+            let mut flow: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+            for (i, p) in params.iter().enumerate() {
+                flow.insert(p.clone(), BTreeSet::from([i]));
+            }
+            let mut found = BTreeSet::new();
+            body_param_sinks(body, &mut flow, is_egress_sink, &known, &mut found);
+            let entry = ctx.method_param_egress.entry(name.clone()).or_default();
             for i in found {
                 if entry.insert(i) {
                     changed = true;
