@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// QF_S solver false-accept guard (adversarial hunt, 2026-07-16). A destructuring `let [s] = ["B"]`
+// SHADOWS the modeled string let `s = "A"`, but must not leave its stale `(= anb_s "A")` fact behind to
+// certify the postcondition. At runtime f() returns "B", so `ensures(result == "A")` is FALSE. Before the
+// fix the checker discharged it against the stale fact (a solver false-accept); now the shadow clears the
+// fact, the ensures is unmodeled, and the contract is correctly REJECTED (ANUBIS_STRING_CONTRACT_UNMODELED).
+fn f() -> string
+    ensures(result == "A")
+{
+    let s = "A";
+    let [s] = ["B"];
+    return s;
+}
+fn main() { print(f()); }

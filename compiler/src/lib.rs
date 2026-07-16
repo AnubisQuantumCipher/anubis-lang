@@ -5886,6 +5886,106 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn qfs_binding_shadow_and_control_char_false_accepts_closed() {
+        // Three QF_S solver FALSE-ACCEPTS an adversarial hunt found (2026-07-16), each a binding form that
+        // shadows a name without dropping the prior binding's solver fact, OR a control-char literal z3
+        // mishandles. All were confirmed live on HEAD (real PASS obligations proving runtime-false asserts)
+        // and are closed here. A false-accept is the worst failure for a proof-carrying language.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // The precise false-accept for an ASSERT is a solver PASS obligation that PROVES it (an unmodeled
+        // assert produces `solver:no-obligations` and defers to runtime — sound). So: is a real assert
+        // obligation discharged?
+        let proves_an_assert = |src: &str| -> bool {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .any(|c| c.status == "PASS" && c.name.starts_with("assert:")),
+                Err(_) => false,
+            }
+        };
+
+        // C1 — LetPattern (`let [s] = [..]`) shadows a modeled string binding without clearing its fact.
+        // The ensures is a CONTRACT → must be REJECTED (not discharged against the stale fact).
+        assert!(
+            !discharged(r#"fn f() -> string ensures(result == "A") { let s = "A"; let [s] = ["B"]; return s; }"#),
+            "C1a: a LetPattern shadow of a string let must not discharge a stale-fact ensures"
+        );
+        assert!(
+            !discharged(r#"fn f(s: string) -> string requires(s == "A") ensures(result == "A") { let [s] = ["B"]; return s; }"#),
+            "C1b: a LetPattern shadow of a string param must not discharge a stale-fact ensures"
+        );
+
+        // C2 — a `for` loop VARIABLE shadows a modeled string binding; a body assert over it must NOT be
+        // solver-proved (it becomes unmodeled → runtime-enforced).
+        assert!(
+            !proves_an_assert(r#"fn f() { let s = "a"; for s in ["b", "c"] { assert(s == "a"); } }"#),
+            "C2a: a for-var shadowing a string let must not let the body assert be proved"
+        );
+        assert!(
+            !proves_an_assert(r#"fn f(s: string) requires(s == "a") { for s in ["b", "c"] { assert(s == "a"); } }"#),
+            "C2b: a for-var shadowing a string param must not let the body assert be proved"
+        );
+
+        // C2' — a `while let` pattern binder shadows a modeled string binding; its analyze_stmts'd body
+        // assert must NOT be proved either (same fix as `for`).
+        assert!(
+            !proves_an_assert(r#"fn f() { let s = "a"; while let Some(s) = Some("b") { assert(s == "a"); } }"#),
+            "C2': a while-let binder shadowing a string let must not let the body assert be proved"
+        );
+        // if-let / match-arm branch bodies are expressions (NOT solver-analyzed for asserts), so a
+        // shadowed assert there is never PROVEN (defers to runtime). Lock that in against a future change
+        // that would analyze those branches without a shadow-clear.
+        assert!(
+            !proves_an_assert(r#"fn f() { let s = "a"; if let Some(s) = Some("b") { assert(s == "a"); } }"#),
+            "if-let branch assert over a shadowed binder must not be proved"
+        );
+        assert!(
+            !proves_an_assert(r#"fn f() { let s = "a"; match Some("b") { Some(s) => { assert(s == "a"); } _ => {} } }"#),
+            "match-arm assert over a shadowed binder must not be proved"
+        );
+
+        // C3 — a control character (NUL) in a string literal: z3 truncates "A\0B" to "A", so the false
+        // assert was PROVED. The literal is now non-modelable → the assert is unmodeled (deferred).
+        assert!(
+            !proves_an_assert("fn f(s: string) requires(s == \"A\") { assert(s == \"A\\u{0}B\"); }"),
+            "C3: a NUL/control-char literal must not be modeled (z3 truncates it into a false proof)"
+        );
+
+        // ── Positive controls: the fixes must NOT spuriously reject valid programs. ──
+        // A `for` over a DIFFERENT variable leaves the contracted binding's fact intact → still discharges.
+        assert!(
+            discharged(r#"fn f() -> string ensures(result == "a") { let s = "a"; for x in ["b"] { } return s; }"#),
+            "a for-loop over a different var must not invalidate the outer string let"
+        );
+        // COMPLETENESS (review-caught over-reject): a for/while-let loop var shadow is BODY-SCOPED, so the
+        // outer binding is restored after the loop and a post-loop contract over it MUST still discharge —
+        // for the binding itself AND a transitive dependent, in both the string and integer lanes.
+        assert!(
+            discharged(r#"fn f() -> string ensures(result == "a") { let s = "a"; for s in ["b"] { } return s; }"#),
+            "a for-var shadowing a string binding must be RESTORED after the loop (post-loop ensures holds)"
+        );
+        assert!(
+            discharged(r#"fn f() -> u32 ensures(result == 5) { let n = 5; let y = n; for n in [1, 2, 3] { } return y; }"#),
+            "a transitive dependent of a for-shadowed int binding must keep its constraint after the loop"
+        );
+        assert!(
+            discharged(r#"fn f() -> u32 ensures(result == 7) { let n = 7; for n in [1, 2, 3] { } return n; }"#),
+            "an int for-var shadow must be restored after the loop"
+        );
+        // A genuinely-TRUE printable-ASCII assert is still solver-proved (the modelable domain is unchanged).
+        assert!(
+            proves_an_assert(r#"fn f(s: string) requires(s == "a") { assert(s == "a"); }"#),
+            "a true printable-ASCII string assert must still be proved"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_let_chaining() {
         // Phase-3 QF_S: a genuinely-string, NEVER-REASSIGNED `let` becomes a String defining fact in
         // the shared sort-partitioned assumptions channel (the exact mirror of the float-let slice

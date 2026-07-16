@@ -2041,6 +2041,14 @@ fn analyze_stmts(
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
                 }
+                // Solver soundness: this destructuring REBINDS (shadows) each bound name, so drop the
+                // prior binding's stale solver fact/membership — exactly as `Stmt::Let` does on a shadow.
+                // Without this a leftover `(= anb_s "A")` from an outer `let s = "A"` certifies a contract
+                // over the NEW `s` (hunt-found false-accept `let s="A"; let [s]=["B"]; ensures(result=="A")`
+                // returns "B" yet PASSED). The new binder is left unmodeled (fail-closed).
+                for n in pattern.bound_names() {
+                    invalidate_binding_facts(ctx, assumptions, &n);
+                }
                 // As with `Stmt::Let`, a destructuring initializer can hide an embedded write to an
                 // outer variable; invalidate its stale solver fact.
                 invalidate_embedded_writes(ctx, assumptions, init);
@@ -2553,7 +2561,24 @@ fn analyze_stmts(
                     );
                     ctx.known_bindings.insert(n);
                 }
+                // Solver soundness: a `while let` pattern binder SHADOWS any outer binding of the same name
+                // inside the loop body — drop the outer binding's stale fact/membership (same class as the
+                // `for`/LetPattern fix; without it `let s="a"; while let Some(s)=opt() { assert(s=="a") }`
+                // could discharge a body assertion the runtime violates). Body-scoped like `for`: snapshot
+                // BEFORE invalidation (drop_written_after_scope restores the outer facts) and restore each
+                // binder's membership after, so a post-loop contract over the outer binding still discharges.
+                let saved_models: Vec<(String, BindingMembership)> = pattern
+                    .bound_names()
+                    .into_iter()
+                    .map(|n| {
+                        let m = capture_binding_membership(ctx, &n);
+                        (n, m)
+                    })
+                    .collect();
                 let snapshot = assumptions.clone();
+                for (n, _) in &saved_models {
+                    invalidate_binding_facts(ctx, assumptions, n);
+                }
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
@@ -2562,6 +2587,9 @@ fn analyze_stmts(
                 // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
                 merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
+                for (n, m) in saved_models {
+                    restore_binding_membership(ctx, &n, m);
+                }
             }
             Stmt::Loop { body, invariant } => {
                 effects.push("loop".into());
@@ -2663,7 +2691,18 @@ fn analyze_stmts(
                     },
                 );
                 ctx.known_bindings.insert(var.clone());
+                // Solver soundness: the loop VARIABLE shadows any outer binding of the same name inside
+                // the body, so drop the outer binding's stale fact/membership before analyzing it. Without
+                // this, `let s="a"; for s in [...] { assert(s=="a") }` (and the string-param variant with a
+                // `requires(s=="a")` fact) discharges a body assertion the runtime violates on iteration 1
+                // (hunt-found false-accept). But the shadow is BODY-SCOPED: `snapshot` is taken BEFORE the
+                // invalidation so drop_written_after_scope (which resets `assumptions` to it) restores the
+                // outer facts — INCLUDING transitive dependents like `(= anb_y anb_n)` — after the loop, and
+                // `restore_binding_membership` restores the modelability the invalidation cleared. So a
+                // post-loop contract over the outer binding still discharges (review caught the over-reject).
+                let saved_var_model = capture_binding_membership(ctx, var);
                 let snapshot = assumptions.clone();
+                invalidate_binding_facts(ctx, assumptions, var);
                 havoc_loop_written(ctx, assumptions, body);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
@@ -2672,6 +2711,7 @@ fn analyze_stmts(
                 // to a tainted value survives (may-taint), closing the loop reassignment fail-open.
                 merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
+                restore_binding_membership(ctx, var, saved_var_model);
             }
             Stmt::Break | Stmt::Continue => {}
             Stmt::SpecBlock { .. } => effects.push("spec".into()),
@@ -3882,6 +3922,87 @@ fn clear_binding_modelability(int_vars: &mut BTreeSet<String>, name: &str) {
     int_vars.retain(|m| !m.starts_with(&prefix));
 }
 
+/// Drop ALL solver state for a name that a binding form REBINDS or SHADOWS — a destructuring `let [..]`
+/// binder or a `for`/`while let` loop variable: its modelability in every lane (int/float/string), its
+/// symbolic width, and every assumption fact mentioning its mangled symbol / seq array / seq length. A
+/// stale fact from the PRIOR binding of the same name would otherwise certify a contract over the NEW
+/// (differently-valued) binding — a solver FALSE-ACCEPT (hunt-found: `let s="A"; let [s]=["B"];
+/// ensures(result=="A")` and `let s="a"; for s in [...] { assert(s=="a") }`). This mirrors the
+/// shadow-clear the plain `Stmt::Let` arm already performs; the plain-`let` path additionally re-models
+/// the new value, whereas these binder forms leave the new binding unmodeled (fail-closed).
+fn invalidate_binding_facts(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, name: &str) {
+    clear_binding_modelability(&mut ctx.solver_int_vars, name);
+    ctx.solver_float_vars.remove(name);
+    ctx.solver_string_vars.remove(name);
+    ctx.symbolic_widths.remove(name);
+    let mangled = smt_var(name);
+    let arr = seq_arr_smt(name);
+    let len = seq_len_smt(name);
+    assumptions.retain(|a| {
+        let mut vs = BTreeSet::new();
+        collect_vars_from_smt(a, &mut vs);
+        !vs.contains(&mangled) && !vs.contains(&arr) && !vs.contains(&len)
+    });
+}
+
+/// Membership-only snapshot of a name's solver modelability (NOT its assumption facts — those ride the
+/// `assumptions` snapshot the loop already restores via drop_written_after_scope). Used to restore a
+/// `for`/`while let` loop variable's OUTER binding after the loop: that shadow is BODY-SCOPED, so after
+/// the loop the outer binding is back in scope with its unchanged value and must regain its model,
+/// otherwise a post-loop contract over it (or over a transitive dependent) is spuriously rejected. A
+/// plain `let` / `LetPattern` shadow is PERMANENT and needs no restore.
+struct BindingMembership {
+    int: bool,
+    nzdiv: bool,
+    seq: bool,
+    seqlen: Vec<String>,
+    float: bool,
+    string: bool,
+    width: Option<u32>,
+}
+
+fn capture_binding_membership(ctx: &SemanticContext, name: &str) -> BindingMembership {
+    let seqlen_prefix = format!("\u{1}seqlen:{name}:");
+    BindingMembership {
+        int: ctx.solver_int_vars.contains(name),
+        nzdiv: ctx.solver_int_vars.contains(&nzdiv_mark(name)),
+        seq: ctx.solver_int_vars.contains(&seq_mark(name)),
+        seqlen: ctx
+            .solver_int_vars
+            .iter()
+            .filter(|m| m.starts_with(&seqlen_prefix))
+            .cloned()
+            .collect(),
+        float: ctx.solver_float_vars.contains(name),
+        string: ctx.solver_string_vars.contains(name),
+        width: ctx.symbolic_widths.get(name).copied(),
+    }
+}
+
+fn restore_binding_membership(ctx: &mut SemanticContext, name: &str, m: BindingMembership) {
+    if m.int {
+        ctx.solver_int_vars.insert(name.to_string());
+    }
+    if m.nzdiv {
+        ctx.solver_int_vars.insert(nzdiv_mark(name));
+    }
+    if m.seq {
+        ctx.solver_int_vars.insert(seq_mark(name));
+    }
+    for s in m.seqlen {
+        ctx.solver_int_vars.insert(s);
+    }
+    if m.float {
+        ctx.solver_float_vars.insert(name.to_string());
+    }
+    if m.string {
+        ctx.solver_string_vars.insert(name.to_string());
+    }
+    if let Some(w) = m.width {
+        ctx.symbolic_widths.insert(name.to_string(), w);
+    }
+}
+
 fn as_nonneg_int_lit(e: &Expr) -> Option<u64> {
     match e {
         Expr::Literal(l) => l.parse::<i64>().ok().filter(|&n| n >= 0).map(|n| n as u64),
@@ -4189,7 +4310,12 @@ fn float_bool_to_smt(e: &Expr) -> String {
 fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Var(v) => string_vars.contains(v),
-        Expr::StrLiteral(_) => true,
+        // A StrLiteral is modelable ONLY over the printable-ASCII domain the QF_S encoder round-trips
+        // EXACTLY. A control character is NOT fail-closed as once assumed: z3 TRUNCATES a raw-NUL literal
+        // — `(assert (= s "A\0B")) (assert (= s "A"))` is `sat`, collapsing two runtime-distinct strings
+        // into a false discharge (hunt-found false-accept). Non-ASCII is excluded too (z3's UTF-8 handling
+        // is unvalidated here). Both fall through to fail-closed (deferred to runtime), never a wrong proof.
+        Expr::StrLiteral(s) => s.chars().all(|c| c == ' ' || c.is_ascii_graphic()),
         Expr::Declassify { inner, .. } => is_string_modelable(inner, string_vars),
         _ => false,
     }
