@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LOOP_INVARIANT_UNVERIFIABLE
+// SOUNDNESS: a `break` in EXPRESSION position (`let sink = break;` — parsed Expr::Call{callee:"break"})
+// escapes the loop, but the loop-invariant escape check `stmt_escapes_loop` only recognised statement-form
+// break/continue and a bare `return`. So the engine verified the invariant `x <= 10` inductively (base +
+// preservation), assumed `x <= 10 && !(x < 10)` ⇒ `x == 10` after the loop, and statically DISCHARGED
+// `assert(x == 10)` — but the `break` exits on the first iteration with `x == 0`, so the runtime assert
+// panics (or, wrapped in an `ensures`, is never re-checked at all). Now `expr_escapes_loop` detects the
+// embedded break and the invariant is (correctly) unverifiable, so the check fails closed.
+fn main() {
+    let mut x = 0;
+    while x < 10 invariant(x <= 10) {
+        let sink = break;
+        x = x + 1;
+    }
+    assert(x == 10);
+}

@@ -2238,6 +2238,60 @@ fn main() {
     }
 
     #[test]
+    fn solver_closes_control_flow_false_accepts() {
+        // Three false accepts an adversarial soundness hunt found (2026-07-15), each a static proof of a
+        // runtime-violable contract; all must now REJECT fail-closed.
+
+        // (1) An EARLY return over a REASSIGNED parameter is discharged against the frozen call-entry
+        // precondition — `g(5)` returns -100, so `ensures(result > 0)` is false at runtime.
+        let err = tc_ok(
+            "fn g(x: i64) -> i64 requires(x > 0) ensures(result > 0) \
+             { x = 0 - 100; if x < 0 { return x; } return 1; }\n\
+             fn h() -> i64 ensures(result > 0) { let z = g(5); return z; }\n\
+             fn main() { print(h()); }",
+        )
+        .expect_err("early return over a reassigned parameter must not launder a false postcondition");
+        assert!(
+            err.contains("ANUBIS_CONTRACT_UNPROVABLE"),
+            "early-return reassigned-param — got: {err}"
+        );
+        // CONTROL: an early return of a parameter that is NOT reassigned is still provable from `requires`.
+        assert!(
+            tc_ok(
+                "fn g2(x: i64) -> i64 requires(x > 0) ensures(result > 0) \
+                 { if x > 0 { return x; } return 1; }\nfn main() { print(g2(5)); }"
+            )
+            .is_ok(),
+            "an early return of an UNmodified parameter must still be accepted"
+        );
+
+        // (2) A `break` embedded in a `let` initializer escapes the loop; the invariant engine must not
+        // verify a post-loop invariant against a body the break skips.
+        let err = tc_ok(
+            "fn main() { let mut x = 0; while x < 10 invariant(x <= 10) \
+             { let sink = break; x = x + 1; } assert(x == 10); }",
+        )
+        .expect_err("a break in a let-initializer must make the loop invariant unverifiable");
+        assert!(
+            err.contains("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE"),
+            "break-in-let escape — got: {err}"
+        );
+
+        // (3) A write embedded in a `for`-loop range source escapes the frame sweep; `leakfor(0)` returns
+        // 100, so `ensures(result == 2)` is violable.
+        let err = tc_ok(
+            "fn leakfor(c: i64) -> i64 ensures(result == 2) \
+             { let y = 2; for i in 0..(match c { 0 => { y = 100; 1 } _ => { 1 } }) { } return y; }\n\
+             fn main() { let r = leakfor(0); }",
+        )
+        .expect_err("a write in a for-loop source must invalidate the stale fact");
+        assert!(
+            err.contains("ANUBIS_CONTRACT_UNPROVABLE"),
+            "for-source embedded write — got: {err}"
+        );
+    }
+
+    #[test]
     fn b3_loop_invariants_verify_inductively() {
         // B3: a `while` invariant is verified by the Hoare rule (holds on entry AND is preserved by
         // each iteration), then may be assumed after the loop — readmitting a loop-carried variable

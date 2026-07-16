@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CONTRACT_UNPROVABLE
+// SOUNDNESS: a write embedded in a `for`-loop SOURCE (here the range END expression) mutates an outer
+// variable but escaped the frame sweep — the `Stmt::For` arm swept only the body, never the source. So
+// `y`'s `let y = 2` fact survived into the `ensures`, WRONGLY proving `result == 2`; but evaluating the
+// range end runs `{ y = 100; 1 }` inline, so `leakfor(0)` returns 100 at runtime. This was the documented
+// un-wired residual of the integer embedded-write fix (21f441a): `invalidate_embedded_writes` is now
+// wired into the for-source too, so the stale fact is dropped and the check fails closed.
+fn leakfor(c: i64) -> i64
+    ensures(result == 2)
+{
+    let y = 2;
+    for i in 0..(match c { 0 => { y = 100; 1 } _ => { 1 } }) { }
+    return y;
+}
+fn main() { let r = leakfor(0); }

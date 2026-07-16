@@ -1423,6 +1423,34 @@ fn analyze_function(
                 collect_returns_in_stmt(s, &mut early);
             }
         }
+        // SOUNDNESS: an EARLY return is discharged against `precondition_assumptions` — the FROZEN
+        // call-entry state (the tail return, by contrast, uses the live body `assumptions` that reflect
+        // reassignments). If the returned expression depends on a parameter REASSIGNED in the body, that
+        // frozen precondition still asserts the `requires` over the parameter's ENTRY value, so
+        // `requires(x > 0) { x = 0 - 100; if x < 0 { return x; } }` "proves" `result > 0` from the entry
+        // `x > 0` while the runtime returns -100 — a false certification laundered through composition. The
+        // anti-launder guard above catches a param NAMED in the `ensures` TEXT; this catches one flowing
+        // through the RETURN EXPRESSION. Fail closed (there is no `old()`; return a local instead).
+        let mutated_params: BTreeSet<String> =
+            param_names.intersection(&rebound).cloned().collect();
+        if !mutated_params.is_empty() {
+            for r in &early {
+                let mut rv = BTreeSet::new();
+                collect_expr_vars(r, &mut rv);
+                if let Some(p) = rv.intersection(&mutated_params).next() {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_CONTRACT_UNPROVABLE".into()),
+                        message: format!(
+                            "cannot verify a postcondition at an early `return` whose value depends on \
+                             parameter `{p}`: it is reassigned in the body, but an early return is \
+                             discharged against the call-entry precondition (there is no `old()`). \
+                             Return a local computed after the reassignment instead."
+                        ),
+                        span: Some((span.start, span.end)),
+                    });
+                }
+            }
+        }
         for r in &early {
             push_ensures_obligations(ctx, ensures, r, &precondition_assumptions, span);
         }
@@ -2334,6 +2362,19 @@ fn analyze_stmts(
                             .into(),
                         span: None,
                     });
+                }
+                // Wire the embedded-write sweep (like the 9 other statement sites): a write hidden in the
+                // for-loop SOURCE — a range bound (`0..(match c { 0 => { y = 100; 1 } _ => 1 })`) or the
+                // collection expression — mutates an outer variable but escapes the body frame sweep, so
+                // invalidate its stale solver fact here before analyzing the body.
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        invalidate_embedded_writes(ctx, assumptions, start);
+                        invalidate_embedded_writes(ctx, assumptions, end);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        invalidate_embedded_writes(ctx, assumptions, expr);
+                    }
                 }
                 let taint_src = match source {
                     crate::frontend::ForSource::Range { start, .. } => {
@@ -4882,10 +4923,65 @@ fn havoc_loop_written(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, 
 /// NESTED loop targets the inner loop (so it does not) — only a `return` inside a nested loop escapes
 /// further. Any such escape makes the per-iteration transition (and the post-loop `¬cond` assumption)
 /// unsound, because the loop can exit while its condition is still true.
+/// True when an EXPRESSION contains a `break`/`continue`/`return` that escapes the enclosing loop — a
+/// control-flow call embedded in a value position the statement scan misses (`let s = break;`,
+/// `x = if c { break; 0 } else { 0 };`, `for i in 0..(match c { _ => { return 0; } }) {}`). In
+/// expression position break/continue/return are `Expr::Call{callee: "break"|"continue"|"return"}`
+/// (frontend/mod.rs:3508-3515). Conservative — over-detection only makes the loop-invariant engine
+/// fall back to runtime enforcement (fail-closed). Does not descend into a lambda body (its
+/// break/continue targets a different scope).
+fn expr_escapes_loop(e: &Expr) -> bool {
+    match e {
+        Expr::Call { callee, args } => {
+            callee == "break"
+                || callee == "continue"
+                || callee == "return"
+                || args.iter().any(expr_escapes_loop)
+        }
+        Expr::CallExpr { callee, args } => {
+            expr_escapes_loop(callee) || args.iter().any(expr_escapes_loop)
+        }
+        Expr::Block { stmts, tail } => {
+            stmts.iter().any(stmt_escapes_loop)
+                || tail.as_deref().is_some_and(expr_escapes_loop)
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => expr_escapes_loop(cond) || expr_escapes_loop(then) || expr_escapes_loop(else_),
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => expr_escapes_loop(scrutinee) || expr_escapes_loop(then) || expr_escapes_loop(else_),
+        Expr::Match { scrutinee, arms, .. } => {
+            expr_escapes_loop(scrutinee)
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(expr_escapes_loop) || expr_escapes_loop(&a.body)
+                })
+        }
+        Expr::Binary { lhs, rhs, .. } => expr_escapes_loop(lhs) || expr_escapes_loop(rhs),
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => expr_escapes_loop(expr),
+        Expr::Try(inner) | Expr::Assume(inner) | Expr::Assert(inner) => expr_escapes_loop(inner),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_escapes_loop(inner),
+        Expr::ArrayLiteral { elements } => elements.iter().any(expr_escapes_loop),
+        Expr::EnumConstruct { fields, .. } => fields.iter().any(expr_escapes_loop),
+        Expr::Index { base, index } => expr_escapes_loop(base) || expr_escapes_loop(index),
+        Expr::FieldAccess { base, .. } => expr_escapes_loop(base),
+        _ => false,
+    }
+}
+
 fn stmt_escapes_loop(s: &Stmt) -> bool {
     match s {
         Stmt::Break | Stmt::Continue => true,
         Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => true,
+        // A break/continue/return EMBEDDED in an expression position (a `let`/assign initializer or a
+        // value statement) escapes just as much as a bare one — the loop can exit while its condition is
+        // still true, so the per-iteration transition and post-loop `¬cond` assumption would be unsound.
+        Stmt::ExprStmt(e) => expr_escapes_loop(e),
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => expr_escapes_loop(init),
+        Stmt::Assign { value, .. } => expr_escapes_loop(value),
         Stmt::If { then, else_, .. } => {
             then.iter().any(stmt_escapes_loop)
                 || else_

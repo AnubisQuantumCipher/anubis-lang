@@ -1,0 +1,24 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CONTRACT_UNPROVABLE
+// SOUNDNESS: an EARLY `return` is discharged against the FROZEN call-entry precondition, so a parameter
+// REASSIGNED before it launders a false postcondition. `g` reassigns `x` to -100 then returns it early;
+// the entry `requires(x > 0)` still holds for the entry value, so `ensures(result > 0)` was WRONGLY
+// proven — but `g(5)` returns -100 at runtime, and (contracts being compile-time only) nothing catches
+// it. Worse, `h` composes on `g`'s false postcondition (`z = g(5)` assumed `> 0`). Now the early return
+// over a reassigned parameter is rejected (ANUBIS_CONTRACT_UNPROVABLE) — return a local computed after
+// the reassignment instead. (The tail return is sound; only the early return used the stale entry state.)
+fn g(x: i64) -> i64
+    requires(x > 0)
+    ensures(result > 0)
+{
+    x = 0 - 100;
+    if x < 0 { return x; }
+    return 1;
+}
+fn h() -> i64
+    ensures(result > 0)
+{
+    let z = g(5);
+    return z;
+}
+fn main() { print(h()); }
