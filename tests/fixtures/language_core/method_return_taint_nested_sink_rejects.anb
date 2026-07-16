@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// #67 integrity dual (nested form): the tainted method return sinks directly. Routed direct-sink check
+// calls the method-aware walker; its CallExpr arm fires on `r.tag()`.
+struct Reader { id: u32 }
+impl Reader {
+    fn tag(self) { return input(); }
+}
+fn main() {
+    let r = Reader { id: 1 };
+    sink(r.tag());
+}

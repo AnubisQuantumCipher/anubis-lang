@@ -5670,6 +5670,74 @@ fn main() { let v = Vault { id: 1 }; v.store(secret_source("k")); }"#,
     }
 
     #[test]
+    fn impl_method_return_secret_or_taint_is_caught_at_egress() {
+        // #67: an impl method whose RETURN carries an internally-minted secret/taint (the getter/
+        // accessor exfil `let k = v.key(); send(k)` / `send(v.key())`) launders past even the DIRECT
+        // egress/sink check unless the method-return summary labels the value. `compute_method_secret_fns`/
+        // `compute_method_tainting_fns` mark such methods; the `Expr::CallExpr` arm of the method-aware
+        // walkers fires on `v.key()` — for the bind, nested, AND value-block-local forms.
+        // (confidentiality) bind form → SECRET_EXFILTRATION.
+        let sec_bind = tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn key(self) { return secret_source("k"); } }
+fn main() uses(net.send) { let v = Vault { id: 1 }; let k = v.key(); send("h", 80, k); }"#,
+        )
+        .expect_err("a secret method return, bound then egressed, must be flagged");
+        assert!(
+            sec_bind.contains("ANUBIS_SECRET_EXFILTRATION"),
+            "got: {sec_bind}"
+        );
+        // (confidentiality) nested form → SECRET_EXFILTRATION.
+        tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn key(self) { return secret_source("k"); } }
+fn main() uses(net.send) { let v = Vault { id: 1 }; send("h", 80, v.key()); }"#,
+        )
+        .expect_err("a secret method return, egressed directly, must be flagged");
+        // (confidentiality) value-block-local form (the design-review blocker) → SECRET_EXFILTRATION.
+        // `Expr::Block` only occurs as an if/match/lambda body (no standalone `{…}` value expression),
+        // so the block-local binding lives in an if-branch; this exercises the walk_block_secret threading.
+        tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn key(self) { return secret_source("k"); } }
+fn main() uses(net.send) { let v = Vault { id: 1 }; let k = if true { let inner = v.key(); inner } else { 0 }; send("h", 80, k); }"#,
+        )
+        .expect_err("a secret method return laundered through a value block must be flagged");
+        // (integrity) tainted method return → TAINTED_SINK.
+        let taint = tc_ok(
+            r#"struct Reader { id: u32 }
+impl Reader { fn tag(self) { return input(); } }
+fn main() { let r = Reader { id: 1 }; sink(r.tag()); }"#,
+        )
+        .expect_err("a tainted method return, sunk, must be flagged");
+        assert!(
+            taint.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {taint}"
+        );
+        // (precision) a declassified secret method return releases → accepts.
+        tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn key(self) { return secret_source("k"); } }
+fn main() uses(net.send) { let v = Vault { id: 1 }; send("h", 80, declassify(v.key(), "p", "r")); }"#,
+        )
+        .expect("a well-formed declassify of a secret method return releases it");
+        // (precision) a method that returns no secret is not flagged.
+        tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn label(self) { return 7; } }
+fn main() uses(net.send) { let v = Vault { id: 1 }; send("h", 80, v.label()); }"#,
+        )
+        .expect("a non-secret method return must not be flagged");
+        // (#68 boundary) method→method RETURN chaining stays a documented fail-open residual → accepts.
+        tc_ok(
+            r#"struct Vault { id: u32 }
+impl Vault { fn key(self) { return secret_source("k"); } fn alias(self) { return self.key(); } }
+fn main() uses(net.send) { let v = Vault { id: 1 }; send("h", 80, v.alias()); }"#,
+        )
+        .expect("method→method return chaining is the #68 residual (accepts by design)");
+    }
+
+    #[test]
     fn taint_reassignment_to_clean_clears_precisely() {
         // Reassign a tainted var to a clean constant → genuinely clean (precision, not over-taint).
         tc_ok(r#"fn main() uses(net.send) { let x = input(); x = 42; send("h", 80, x); }"#)

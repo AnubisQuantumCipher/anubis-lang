@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// #67 integrity dual (bind form): an impl method whose RETURN carries internally-minted taint (`tag`
+// returns input()). `compute_method_tainting_fns` marks `tag`; the routed stmt-let seed labels `t`
+// tainted; `sink(t)` rejects.
+struct Reader { id: u32 }
+impl Reader {
+    fn tag(self) { return input(); }
+}
+fn main() {
+    let r = Reader { id: 1 };
+    let t = r.tag();
+    sink(t);
+}

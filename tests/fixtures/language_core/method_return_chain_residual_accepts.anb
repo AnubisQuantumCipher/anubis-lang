@@ -1,0 +1,14 @@
+// EXPECT: PASS
+// Documents the #68 fail-open residual boundary (method→method RETURN chaining): `alias` returns the
+// result of another method `key` (a CallExpr in its body). The return-summary consults only the frozen
+// FREE-fn set, never itself, so `alias` is NOT marked secret-returning and this compiles. Pinned as an
+// intentional boundary; closing it is task #68.
+struct Vault { id: u32 }
+impl Vault {
+    fn key(self) { return secret_source("api_key"); }
+    fn alias(self) { return self.key(); }
+}
+fn main() uses(net.send) {
+    let v = Vault { id: 1 };
+    send("host", 80, v.alias());
+}
