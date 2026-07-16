@@ -6020,6 +6020,58 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn variable_arg_call_in_a_branch_discharges_under_the_path_condition() {
+        // SLICE 2 (the payoff of the path-condition machinery): a MODELABLE variable-arg contracted call
+        // inside a branch is now discharged at any depth — the branch guard is in scope (a scoped premise),
+        // so a guard-provable call passes and a guard-unrelated violating call is CAUGHT. Before, such calls
+        // were depth-gated (deferred) → fail-open: `if bb { g(a); }` certified a runtime-trapping precondition.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // ── the closed false accept: a modelable variable arg in a GUARD-UNRELATED branch, violable ──
+        assert!(
+            !accepts(r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64, bb: bool) requires(a > 0 - 100) { if bb { g(a); } } fn main() { c(0 - 50, true); }"#),
+            "int: a violable variable-arg call in a guard-unrelated branch (ExprStmt) must reject"
+        );
+        assert!(
+            !accepts(r#"fn g(x: f64) requires(x > 1.0) { } fn c(a: f64, bb: bool) requires(a > 0.0 - 100.0) { if bb { g(a); } } fn main() { c(0.5, true); }"#),
+            "float: a violable variable-arg call in a guard-unrelated branch must reject"
+        );
+        assert!(
+            !accepts(r#"fn g(s: string) requires(s == "open") { } fn c(t: string, bb: bool) requires(t == "shut") { if bb { g(t); } } fn main() { c("shut", true); }"#),
+            "string: a violable variable-arg call in a guard-unrelated branch must reject"
+        );
+        // Assign-value position too.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, bb: bool) requires(a > 0 - 100) { let mut y = 1; if bb { y = g(a); } print(y); } fn main() { c(0 - 50, true); }"#),
+            "int: a violable variable-arg call in assign-value position in a branch must reject"
+        );
+        // ── no over-rejection: the guard PROVES the precondition ⇒ still accepts ──
+        assert!(
+            accepts(r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { g(a); } } fn main() { c(5); }"#),
+            "int: a guard that proves the precondition (`if a>0`) must keep the call accepted"
+        );
+        assert!(
+            accepts(r#"fn g(x: f64) requires(x > 1.0) { } fn c(a: f64) requires(a > 0.0 - 100.0) { if a > 2.0 { g(a); } } fn main() { c(5.0); }"#),
+            "float: a guard that proves the precondition (`if a>2.0`) must keep the call accepted"
+        );
+        assert!(
+            accepts(r#"fn g(s: string) requires(s == "open") { } fn c(t: string) requires(t == "open") { if t == "open" { g(t); } } fn main() { c("open"); }"#),
+            "string: a guard that proves the precondition must keep the call accepted"
+        );
+        // The else branch carries the NEGATED guard: `if a<=0 {} else { g(a) }` ⇒ a>0 in else ⇒ accepts.
+        assert!(
+            accepts(r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64) requires(a > 0 - 100) { if a <= 0 { } else { g(a); } } fn main() { c(5); }"#),
+            "int: the negated guard in the else branch (`else` ⇒ a>0) must prove the precondition"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
         // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
         // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string

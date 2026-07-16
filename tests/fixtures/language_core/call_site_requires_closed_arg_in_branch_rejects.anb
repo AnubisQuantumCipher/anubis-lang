@@ -5,8 +5,8 @@
 // constant call inside an `if` (`g(0 - 5)` against `requires(x > 0)`) is discharged and REJECTED at
 // ANY depth, with no over-rejection risk. Before the closed-arg-discharge slice this was fail-open
 // (the statement-position discharge was gated to unconditional depth, so it slipped through in a branch
-// and trapped only at runtime). A VARIABLE-arg branch call whose provability depends on the guard stays
-// deferred — only closed preconditions discharge in a branch.
+// and trapped only at runtime). (A VARIABLE-arg branch call is now ALSO discharged — under the branch
+// guard pushed as a scoped path condition — so this fixture is the constant-arg case of that surface.)
 fn g(x: i64) requires(x > 0) { assert(x > 0); }
 fn caller(b: bool) { if b { g(0 - 5); } }
 fn main() { caller(true); }

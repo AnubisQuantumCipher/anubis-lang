@@ -1233,8 +1233,6 @@ fn analyze_function(
         &mut effects,
         &mut assumptions,
         ctx,
-        // Function-body statements are unconditionally executed (branch/loop recursion passes false).
-        true,
     );
 
     // Phase-2 slice 2/3: capability-token LINEARITY + effect AUTHORIZATION. `check_linearity`
@@ -1673,24 +1671,22 @@ fn merge_taint_over(
 /// mangled assertion vars). Callers with no contract, or an arity mismatch (handled elsewhere), are a
 /// vacuous `true` — no obligation.
 ///
-/// Depth gating. A CLOSED precondition — no free variable after arg substitution (`(0-5) > 0`,
-/// `"b" == "a"`, `2.0 == 1.0`) — is decided ABSOLUTELY by the solver, independent of any branch path
-/// condition, so it discharges at ANY depth in every lane with zero over-rejection risk. For a
-/// VARIABLE-referencing precondition, branch context matters: `int_at_all_depths` (true only at the
-/// Let-initializer) preserves the pre-existing int contract that fired at every depth — removing it there
-/// would turn a caught branch violation into a false accept; `unconditional` (the direct function-body
-/// list) enables the newer float/string lanes and the ExprStmt/Assign int lane. Inside an `if`/`match`
-/// branch the guard (`if a > 0 { … }`) is not in `assumptions`, so an unconditional VARIABLE-arg discharge
-/// there would OVER-REJECT a guard-protected call; those stay deferred (fail-OPEN residual — a variable-arg
-/// in-branch violating call still statically passes). SOUND-DISCHARGE of the variable-arg branch case needs
-/// the guard pushed as a scoped assumption — the follow-up that closes the remaining residual.
+/// Discharges at ANY depth / position. This is sound because a branch guard is pushed as a SCOPED path
+/// condition (`push_branch_path_condition`) into `assumptions` before the branch is analyzed, so an
+/// obligation built inside `if a > 0 { g(a) }` sees `a > 0` and a guard-provable precondition proves while
+/// a guard-unrelated violating one (`if bb { g(a) }`, `a` unconstrained by `bb`) yields a counterexample.
+/// Every MODELABLE precondition is discharged; a precondition the solver cannot model, or cannot prove
+/// from the caller's premises + path condition, defers/rejects and NEVER falsely discharges (fail-closed).
+/// A CLOSED (ground) precondition is just the degenerate case with no free variable. (Earlier revisions
+/// depth-gated this because branches lacked their guard; the path-condition machinery made the gate
+/// obsolete.) KNOWN CONSERVATIVE BOUNDARY: when a modeled arg is guarded by a NON-modelable condition
+/// (`if is_pos(a) { g(a) }`), the guard pushes nothing, so the discharge fires unguarded and REJECTS even
+/// though the opaque guard may guarantee the precondition at runtime — sound (fail-closed), incomplete.
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
     callee: &str,
     args: &[Expr],
-    unconditional: bool,
-    int_at_all_depths: bool,
 ) -> bool {
     let Some((pnames, creq, _cens)) = ctx.fn_contracts.get(callee).cloned() else {
         return true;
@@ -1703,24 +1699,7 @@ fn discharge_call_requires(
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
-        // A CLOSED precondition — one with no free variable, e.g. `(0-5) > 0` / `"b" == "a"` / `2.0 == 1.0`
-        // after substituting a literal/constant arg — is decided ABSOLUTELY by the solver: its verdict
-        // does not depend on any assumption or branch path condition. So it may be discharged at ANY depth
-        // with ZERO over-rejection risk (a definitely-violating call in a branch is a real defect, and a
-        // satisfying one always passes). This closes the literal-arg-in-a-branch false accepts without the
-        // path-condition machinery a VARIABLE-arg branch call needs. The `unconditional`/`int_at_all_depths`
-        // gates apply only to variable-referencing preconditions, where branch context matters.
-        let closed = {
-            let mut vs = BTreeSet::new();
-            collect_expr_vars(&concrete, &mut vs);
-            vs.is_empty()
-        };
-        // INT discharges when: this is the Let-initializer position (pre-existing all-depths contract), OR
-        // the call is unconditionally executed, OR the predicate is closed. FLOAT/STRING (the newer lanes)
-        // discharge only when unconditional OR closed (never a bare variable-arg inside a branch).
-        let int_ok = int_at_all_depths || unconditional || closed;
-        let new_lane_ok = unconditional || closed;
-        if int_ok && is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+        if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
             let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
             let int_asm: Vec<String> = assumptions
                 .iter()
@@ -1743,7 +1722,7 @@ fn discharge_call_requires(
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if new_lane_ok && is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
+        } else if is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
             // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
             let smt = float_bool_to_smt(&concrete);
             let float_asm: Vec<String> = assumptions
@@ -1767,7 +1746,7 @@ fn discharge_call_requires(
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if new_lane_ok && is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
+        } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
             // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
             // a quoteless var-var body still routes to QF_S. The shared `string_expr_to_smt` under
             // `string_bool_to_smt` carries the load-bearing backslash escape.
@@ -1836,9 +1815,8 @@ fn push_branch_path_condition(
     ctx.active_branch_guards.push(fact);
 }
 
-// Threads the full intraprocedural analysis state (scope, symbols, effects, solver assumptions, ctx) plus
-// the `unconditional` depth flag; bundling into a struct would obscure the borrow pattern for no gain.
-#[allow(clippy::too_many_arguments)]
+// Threads the full intraprocedural analysis state (scope, symbols, effects, solver assumptions, ctx);
+// bundling into a struct would obscure the borrow pattern for no gain.
 fn analyze_stmts(
     stmts: &[Stmt],
     mode: Mode,
@@ -1847,12 +1825,6 @@ fn analyze_stmts(
     effects: &mut Vec<String>,
     assumptions: &mut Vec<String>,
     ctx: &mut SemanticContext,
-    // `true` only for the direct function-body statement list; every recursive descent into an
-    // `if`/`match`/loop/block body passes `false`. Call-site precondition discharge uses this to keep the
-    // NEW float/string lanes at UNCONDITIONAL depth only (a branch has no path condition in scope, so an
-    // unconditional discharge there would over-reject a guard-protected call). The pre-existing INT
-    // Let-init discharge is depth-independent and unaffected. See `discharge_call_requires`.
-    unconditional: bool,
 ) {
     for stmt in stmts {
         match stmt {
@@ -2177,17 +2149,10 @@ fn analyze_stmts(
                 // it) and ASSUME its postcondition with `result` bound to this variable, so a later
                 // assertion can rely on it. This is how one function's `ensures` satisfies the next.
                 if let Expr::Call { callee, args } = init {
-                    // ASSERT each precondition in its lane. Let-init keeps the pre-existing INT-at-all-depths
-                    // contract; float/string + any variable-arg lane are still depth-gated (a closed
-                    // precondition discharges regardless).
-                    let all_requires_checkable = discharge_call_requires(
-                        ctx,
-                        assumptions,
-                        callee,
-                        args,
-                        unconditional,
-                        /* int_at_all_depths */ true,
-                    );
+                    // ASSERT each precondition in its lane (the guard, if any, is in scope as a path
+                    // condition, so a variable-arg call in a branch discharges soundly).
+                    let all_requires_checkable =
+                        discharge_call_requires(ctx, assumptions, callee, args);
                     if let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
                         if pnames.len() == args.len() {
                             let mut sub: BTreeMap<String, Expr> =
@@ -2302,8 +2267,7 @@ fn analyze_stmts(
                     fn_symbols,
                     effects,
                     assumptions,
-                    ctx,
-                    false,
+                    ctx
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -2318,8 +2282,7 @@ fn analyze_stmts(
                     fn_symbols,
                     effects,
                     assumptions,
-                    ctx,
-                    false,
+                    ctx
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -2327,7 +2290,7 @@ fn analyze_stmts(
                 effects.push("hybrid".into());
                 for block in [gpu, cpu, prove].into_iter().flatten() {
                     let snap_scope = scope.clone();
-                    analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx, false);
+                    analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx);
                     restore_block_scope(scope, &snap_scope);
                 }
             }
@@ -2453,25 +2416,20 @@ fn analyze_stmts(
                 // written variables' stale solver facts here — else a later obligation is discharged
                 // against the pre-write value.
                 invalidate_embedded_writes(ctx, assumptions, expr);
-                // A CONTRACTED call in statement position (`g(x);` — no binding) must still discharge the
-                // callee's precondition: the caller is obligated to prove `requires` exactly as at a
-                // Let-initializer. This position emitted NOTHING before the call-site slice, so a VARIABLE-arg
-                // discharge inside a branch (no path condition in scope) would over-reject a guard-protected
-                // call — those stay depth-gated (`unconditional`). A CLOSED (constant-arg) precondition,
-                // however, is context-free and discharges at any depth (`int_at_all_depths=false` keeps the
-                // int lane gated for variable args here too). `return <expr>` parses as `Call{"return", ..}`
-                // — no contract, so it no-ops regardless.
+                // A CONTRACTED call in statement position (`g(x);` — no binding) discharges the callee's
+                // precondition, at any depth: inside a branch the guard is in scope as a path condition, so
+                // a guard-provable call proves and a guard-unrelated violating one is caught. `return <expr>`
+                // parses as `Call{"return", ..}` — no contract, so it no-ops regardless.
                 if let Expr::Call { callee, args } = expr {
-                    discharge_call_requires(ctx, assumptions, callee, args, unconditional, false);
+                    discharge_call_requires(ctx, assumptions, callee, args);
                 }
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
                 // A contracted call in ASSIGN-value position (`y = g(x);`) — discharge its precondition
-                // under the pre-assignment assumptions, same as a Let-init. Variable-arg discharge stays
-                // depth-gated (`unconditional`); a CLOSED precondition discharges at any depth.
+                // under the pre-assignment assumptions (with any branch guard in scope), same as a Let-init.
                 if let Expr::Call { callee, args } = value {
-                    discharge_call_requires(ctx, assumptions, callee, args, unconditional, false);
+                    discharge_call_requires(ctx, assumptions, callee, args);
                 }
                 let value_taint =
                     expr_taint_source_m(value, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
@@ -2669,7 +2627,7 @@ fn analyze_stmts(
                 let snap_scope = scope.clone();
                 // The guard holds inside `then` — push it as a scoped path condition.
                 push_branch_path_condition(ctx, assumptions, cond, false);
-                analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx, false);
+                analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let then_scope = scope.clone();
                 let else_scope = if let Some(else_body) = else_ {
                     *assumptions = snapshot.clone();
@@ -2684,8 +2642,7 @@ fn analyze_stmts(
                         fn_symbols,
                         effects,
                         assumptions,
-                        ctx,
-                        false,
+                        ctx
                     );
                     scope.clone()
                 } else {
@@ -2732,7 +2689,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -2804,7 +2761,7 @@ fn analyze_stmts(
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -2830,7 +2787,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -2928,7 +2885,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 invalidate_binding_facts(ctx, assumptions, var);
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
