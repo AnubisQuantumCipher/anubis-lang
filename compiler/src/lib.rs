@@ -5863,6 +5863,82 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn call_site_requires_discharged_across_all_lanes_and_positions() {
+        // SOUNDNESS (hunt-confirmed false accepts): a callee's `requires` is ASSUMED inside its body
+        // (seeding its `assert`/`ensures` discharge), so the CALLER must be forced to prove it at the
+        // call site — else a violating call certifies a runtime-trapping assert / a false ensures.
+        // Before this slice only INT preconditions at a Let-initializer call site emitted a `requires@`
+        // obligation; string/float preconditions, and calls in STATEMENT/Assign position, emitted none.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // ── caller CANNOT prove the precondition ⇒ MUST reject ─────────────────────────────────────
+        // string literal arg violates a literal requires
+        assert!(
+            !accepts(r#"fn g(s: string) -> string requires(s == "a") { return s; } fn main() { let r = g("b"); print(r); }"#),
+            "string requires violated by a literal arg must reject at the call site"
+        );
+        // var-var string requires (the case this session's var-var slice widened): unprovable ⇒ reject
+        assert!(
+            !accepts(r#"fn h(s: string, t: string) -> string requires(s == t) ensures(result == t) { return s; } fn main() { let o = h("alpha", "beta"); print(o); }"#),
+            "var-var string requires the caller cannot prove must reject at the call site"
+        );
+        // float requires violated
+        assert!(
+            !accepts(r#"fn f(x: f64) -> f64 requires(x == 1.0) { return x; } fn main() { let r = f(2.0); print(r); }"#),
+            "float requires violated by a literal arg must reject at the call site"
+        );
+        // int requires in STATEMENT position (bare ExprStmt call — no Let binding)
+        assert!(
+            !accepts(r#"fn g(x: u32) requires(x > 0) { } fn main() { g(0); }"#),
+            "int requires in statement position must reject (statement-position call was unchecked)"
+        );
+        // int requires in ASSIGN-value position
+        assert!(
+            !accepts(r#"fn g(x: u32) -> u32 requires(x > 0) { return x; } fn main() { let mut y = 5; y = g(0); print(y); }"#),
+            "int requires in assign-value position must reject"
+        );
+        // ── caller CAN prove the precondition ⇒ MUST still accept (no over-rejection) ───────────────
+        // satisfying literal
+        assert!(
+            accepts(r#"fn g(s: string) -> string requires(s == "a") { return s; } fn main() { let r = g("a"); print(r); }"#),
+            "a string requires satisfied by a matching literal must still be accepted"
+        );
+        // caller establishes the precondition via its own requires (var-var chained)
+        assert!(
+            accepts(r#"fn h(s: string, t: string) -> string requires(s == t) ensures(result == t) { return s; } fn caller(a: string, b: string) -> string requires(a == b) { return h(a, b); } fn main() { print(caller("x", "x")); }"#),
+            "a caller that establishes the var-var precondition via its own requires must be accepted"
+        );
+        // satisfying float + int
+        assert!(
+            accepts(r#"fn f(x: f64) -> f64 requires(x == 1.0) { return x; } fn main() { let r = f(1.0); print(r); }"#),
+            "a float requires satisfied by a matching literal must be accepted"
+        );
+        assert!(
+            accepts(r#"fn g(x: u32) requires(x > 0) { } fn main() { g(5); }"#),
+            "an int requires satisfied in statement position must be accepted"
+        );
+        // ── NO over-rejection of a BRANCH-GUARDED call (the new float/string + statement-position
+        //    discharge is gated to UNCONDITIONAL depth; inside an `if` the path condition is not in
+        //    scope, so an unconditional discharge there would over-reject a legitimately guarded call).
+        // A string statement-position call guarded by its own precondition must still be accepted:
+        assert!(
+            accepts(r#"fn g(s: string) requires(s == "a") { } fn caller(x: string) { if x == "a" { g(x); } } fn main() { caller("a"); }"#),
+            "a branch-guarded string call in statement position must NOT be over-rejected"
+        );
+        // A statement-position call guarded by an unmodeled boolean is likewise not discharged in-branch:
+        assert!(
+            accepts(r#"fn g(x: u32) requires(x > 0) { } fn caller(b: bool) { if b { g(5); } } fn main() { caller(true); }"#),
+            "a branch-nested statement-position call must not be discharged where the guard is out of scope"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
         // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
         // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string

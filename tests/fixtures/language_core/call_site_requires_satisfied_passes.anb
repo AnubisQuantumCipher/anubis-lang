@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Call-site precondition composition: a callee's `requires` is ASSUMED inside its body, so the caller
+// must prove it at the call site. Here the argument literal "a" satisfies `requires(s == "a")`, so the
+// obligation discharges and the program is accepted — the sound counterpart to the violated fixture.
+fn g(s: string) -> string
+    requires(s == "a")
+{
+    return s;
+}
+fn main() { let r = g("a"); print(r); }

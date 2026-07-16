@@ -1216,6 +1216,8 @@ fn analyze_function(
         &mut effects,
         &mut assumptions,
         ctx,
+        // Function-body statements are unconditionally executed (branch/loop recursion passes false).
+        true,
     );
 
     // Phase-2 slice 2/3: capability-token LINEARITY + effect AUTHORIZATION. `check_linearity`
@@ -1638,6 +1640,130 @@ fn merge_taint_over(
     }
 }
 
+/// Discharge a contracted call's PRECONDITIONS at the call site: for each `requires`, substitute the
+/// actual arguments and push a `requires@{callee}` obligation the CALLER must prove — in whichever
+/// solver lane (int QF_BV / float QF_FP / string QF_S) the substituted predicate is modelable. Returns
+/// whether EVERY precondition was checkable; an unmodelable-arg precondition is skipped (returns false),
+/// which the Let-position caller uses to gate assuming the callee's `ensures` (assuming a postcondition
+/// whose precondition was NOT discharged would be an unsound false proof).
+///
+/// This is the call-site half of B2 composition. It closes a hunt-confirmed FALSE-ACCEPT class: a
+/// callee's `requires` is ASSUMED inside its body (seeding its `assert`/`ensures` discharge), so without
+/// a matching call-site obligation a violating call certified a runtime-trapping `assert` / a false
+/// `ensures`. Before this, only INT preconditions at a Let-initializer emitted an obligation; string and
+/// float preconditions (once those lanes became modelable) and calls in STATEMENT/Assign position
+/// emitted none. Each lane mirrors its sibling ensures-site encoding (sort-partitioned assumptions,
+/// mangled assertion vars). Callers with no contract, or an arity mismatch (handled elsewhere), are a
+/// vacuous `true` — no obligation.
+///
+/// `unconditional` gates the NEW lanes. The INT lane is ALWAYS discharged (preserving the pre-existing
+/// Let-initializer int contract, which fired at every depth including inside branches — removing it there
+/// would turn a caught branch violation into a false accept). The float and string lanes are discharged
+/// ONLY when the call is UNCONDITIONALLY executed (a top-level Let/Assign initializer or bare ExprStmt).
+/// Inside an `if`/`match` branch the path condition (`if a > 0 { … }`) is not in `assumptions`, so an
+/// unconditional float/string discharge would OVER-REJECT a guard-protected call; deferring them there
+/// leaves a fail-OPEN residual (the call stays unchecked = the pre-slice behavior for those lanes, so it
+/// is a no-regression tradeoff, NOT a soundness gain — an in-branch violating call still statically
+/// passes and traps only at runtime). SOUND-DISCHARGE under a path condition is the follow-up that CLOSES
+/// this residual (push the guard as a scoped assumption).
+fn discharge_call_requires(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    callee: &str,
+    args: &[Expr],
+    unconditional: bool,
+) -> bool {
+    let Some((pnames, creq, _cens)) = ctx.fn_contracts.get(callee).cloned() else {
+        return true;
+    };
+    if pnames.len() != args.len() {
+        return true;
+    }
+    let sub: BTreeMap<String, Expr> =
+        pnames.iter().cloned().zip(args.iter().cloned()).collect();
+    let mut all_requires_checkable = true;
+    for req in &creq {
+        let concrete = substitute_vars(req, &sub);
+        if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+            let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+            let int_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| {
+                    !fact_is_float(a, &ctx.solver_float_vars)
+                        && !fact_is_string(a, &ctx.solver_string_vars)
+                })
+                .cloned()
+                .collect();
+            let mut vars = BTreeSet::new();
+            collect_vars_from_smt(&smt, &mut vars);
+            for a in int_asm.iter() {
+                collect_vars_from_smt(a, &mut vars);
+            }
+            ctx.solver_obligations.push(SolverObligation {
+                name: format!("requires@{callee}:{smt}"),
+                assumptions: int_asm,
+                assertion: smt,
+                vars: vars.into_iter().collect(),
+                strings: false,
+            });
+        } else if unconditional && is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
+            // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
+            let smt = float_bool_to_smt(&concrete);
+            let float_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
+                .cloned()
+                .collect();
+            let mut raw = BTreeSet::new();
+            collect_expr_vars(&concrete, &mut raw);
+            let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+            for a in &float_asm {
+                let mut avs = BTreeSet::new();
+                collect_vars_from_smt(a, &mut avs);
+                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+            }
+            ctx.solver_obligations.push(SolverObligation {
+                name: format!("requires@{callee}:{smt}"),
+                assumptions: float_asm,
+                assertion: smt,
+                vars: vars.into_iter().collect(),
+                strings: false,
+            });
+        } else if unconditional && is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
+            // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
+            // a quoteless var-var body still routes to QF_S. The shared `string_expr_to_smt` under
+            // `string_bool_to_smt` carries the load-bearing backslash escape.
+            let smt = string_bool_to_smt(&concrete);
+            let str_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                .cloned()
+                .collect();
+            let mut raw = BTreeSet::new();
+            collect_expr_vars(&concrete, &mut raw);
+            let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+            for a in &str_asm {
+                let mut avs = BTreeSet::new();
+                collect_vars_from_smt(a, &mut avs);
+                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+            }
+            ctx.solver_obligations.push(SolverObligation {
+                name: format!("requires@{callee}:{smt}"),
+                assumptions: str_asm,
+                assertion: smt,
+                vars: vars.into_iter().collect(),
+                strings: true,
+            });
+        } else {
+            all_requires_checkable = false;
+        }
+    }
+    all_requires_checkable
+}
+
+// Threads the full intraprocedural analysis state (scope, symbols, effects, solver assumptions, ctx) plus
+// the `unconditional` depth flag; bundling into a struct would obscure the borrow pattern for no gain.
+#[allow(clippy::too_many_arguments)]
 fn analyze_stmts(
     stmts: &[Stmt],
     mode: Mode,
@@ -1646,6 +1772,12 @@ fn analyze_stmts(
     effects: &mut Vec<String>,
     assumptions: &mut Vec<String>,
     ctx: &mut SemanticContext,
+    // `true` only for the direct function-body statement list; every recursive descent into an
+    // `if`/`match`/loop/block body passes `false`. Call-site precondition discharge uses this to keep the
+    // NEW float/string lanes at UNCONDITIONAL depth only (a branch has no path condition in scope, so an
+    // unconditional discharge there would over-reject a guard-protected call). The pre-existing INT
+    // Let-init discharge is depth-independent and unaffected. See `discharge_call_requires`.
+    unconditional: bool,
 ) {
     for stmt in stmts {
         match stmt {
@@ -1970,45 +2102,13 @@ fn analyze_stmts(
                 // it) and ASSUME its postcondition with `result` bound to this variable, so a later
                 // assertion can rely on it. This is how one function's `ensures` satisfies the next.
                 if let Expr::Call { callee, args } = init {
-                    if let Some((pnames, creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
+                    // ASSERT each precondition in its lane (int always; float/string when unconditional).
+                    let all_requires_checkable =
+                        discharge_call_requires(ctx, assumptions, callee, args, unconditional);
+                    if let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
                         if pnames.len() == args.len() {
                             let mut sub: BTreeMap<String, Expr> =
                                 pnames.iter().cloned().zip(args.iter().cloned()).collect();
-                            // ASSERT each precondition; note whether ALL were checkable.
-                            let mut all_requires_checkable = true;
-                            for req in &creq {
-                                let concrete = substitute_vars(req, &sub);
-                                if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
-                                    let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
-                                    // Sort-partition this integer (QF_BV) precondition obligation: drop
-                                    // float/string facts before scraping vars or attaching assumptions,
-                                    // else a `fp.`/`to_fp` or `String`-declared symbol from an enclosing
-                                    // float/string contract would flip the query's logic and mis-declare
-                                    // these i64 symbols. Mirrors the assert/ensures/loop-invariant sites.
-                                    let int_asm: Vec<String> = assumptions
-                                        .iter()
-                                        .filter(|a| {
-                                            !fact_is_float(a, &ctx.solver_float_vars)
-                                                && !fact_is_string(a, &ctx.solver_string_vars)
-                                        })
-                                        .cloned()
-                                        .collect();
-                                    let mut vars = BTreeSet::new();
-                                    collect_vars_from_smt(&smt, &mut vars);
-                                    for a in int_asm.iter() {
-                                        collect_vars_from_smt(a, &mut vars);
-                                    }
-                                    ctx.solver_obligations.push(SolverObligation {
-                                        name: format!("requires@{callee}:{smt}"),
-                                        assumptions: int_asm,
-                                        assertion: smt,
-                                        vars: vars.into_iter().collect(),
-                                        strings: false,
-                                    });
-                                } else {
-                                    all_requires_checkable = false;
-                                }
-                            }
                             // ASSUME the postcondition ONLY when every precondition was verifiable:
                             // the ensures holds only under the precondition, so assuming it when a
                             // `requires` was SKIPPED (a dynamic/unmodelable argument) would be an
@@ -2120,6 +2220,7 @@ fn analyze_stmts(
                     effects,
                     assumptions,
                     ctx,
+                    false,
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -2135,6 +2236,7 @@ fn analyze_stmts(
                     effects,
                     assumptions,
                     ctx,
+                    false,
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -2142,7 +2244,7 @@ fn analyze_stmts(
                 effects.push("hybrid".into());
                 for block in [gpu, cpu, prove].into_iter().flatten() {
                     let snap_scope = scope.clone();
-                    analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx);
+                    analyze_stmts(block, mode, scope, fn_symbols, effects, assumptions, ctx, false);
                     restore_block_scope(scope, &snap_scope);
                 }
             }
@@ -2265,9 +2367,30 @@ fn analyze_stmts(
                 // written variables' stale solver facts here — else a later obligation is discharged
                 // against the pre-write value.
                 invalidate_embedded_writes(ctx, assumptions, expr);
+                // A CONTRACTED call in statement position (`g(x);` — no binding) must still discharge the
+                // callee's precondition: the caller is obligated to prove `requires` exactly as at a
+                // Let-initializer. Without this, a call made purely for effect was never held to any
+                // precondition, in ANY lane (hunt-confirmed false accept). Gated to `unconditional` depth:
+                // this position emitted NOTHING before this slice, so inside a branch (no path condition
+                // in scope) discharging would over-reject a guard-protected call — deferred as a fail-OPEN
+                // residual (HEAD-equal for this position; a no-regression tradeoff, not a soundness gain).
+                // `return <expr>` parses as `Call{"return", ..}` — no contract, so it no-ops regardless.
+                if unconditional {
+                    if let Expr::Call { callee, args } = expr {
+                        discharge_call_requires(ctx, assumptions, callee, args, true);
+                    }
+                }
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
+                // A contracted call in ASSIGN-value position (`y = g(x);`) — discharge its precondition
+                // under the pre-assignment assumptions, same as a Let-init. Gated to `unconditional` depth
+                // (this position emitted nothing before this slice; a branch has no path condition).
+                if unconditional {
+                    if let Expr::Call { callee, args } = value {
+                        discharge_call_requires(ctx, assumptions, callee, args, true);
+                    }
+                }
                 let value_taint =
                     expr_taint_source_m(value, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
                 if let (Some(source), Expr::Var(name)) = (&value_taint, target) {
@@ -2461,7 +2584,7 @@ fn analyze_stmts(
                 // stay on their own snapshot path below; this only restores BindingInfo scope.
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
-                analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(then, mode, scope, fn_symbols, effects, assumptions, ctx, false);
                 let then_scope = scope.clone();
                 let else_scope = if let Some(else_body) = else_ {
                     *assumptions = snapshot.clone();
@@ -2474,6 +2597,7 @@ fn analyze_stmts(
                         effects,
                         assumptions,
                         ctx,
+                        false,
                     );
                     scope.clone()
                 } else {
@@ -2518,7 +2642,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -2590,7 +2714,7 @@ fn analyze_stmts(
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -2616,7 +2740,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment
@@ -2714,7 +2838,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 invalidate_binding_facts(ctx, assumptions, var);
                 havoc_loop_written(ctx, assumptions, body);
-                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
+                analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx, false);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
                 // Taint merge: the loop may run (body_scope) or not (snap_scope); a body reassignment

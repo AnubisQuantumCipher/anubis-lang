@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: requires@
+// Call-site precondition composition (soundness): the callee ASSUMES `requires(s == "a")` when proving
+// its own body, so a caller passing "b" — which violates it — must be REJECTED, not silently certified.
+// Before the call-site requires-discharge slice this passed `check` yet the callee's proof rested on a
+// false assumption (a hunt-confirmed false accept). The `requires@g` obligation now fails closed.
+fn g(s: string) -> string
+    requires(s == "a")
+{
+    assert(s == "a");
+    return s;
+}
+fn main() { let r = g("b"); print(r); }
