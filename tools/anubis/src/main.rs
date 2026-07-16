@@ -5946,6 +5946,50 @@ fn main() {
     }
 
     #[test]
+    fn parse_image_id_words_rejects_malformed_and_placeholder_ids() {
+        // Hostile inputs to the ImageID parser (the receipt binds to this ID — a lax parse would let a
+        // placeholder/garbage ID masquerade as a real one). Every malformed form must fail closed.
+        assert!(parse_image_id_words("").is_err(), "empty");
+        assert!(parse_image_id_words("   ").is_err(), "whitespace-only");
+        assert!(parse_image_id_words("ANUBIS_ID_FRESH_RISC0").is_err(), "placeholder token");
+        assert!(parse_image_id_words("PENDING_REAL_ID").is_err(), "placeholder token");
+        assert!(parse_image_id_words("NO_REAL_ID_DERIVED").is_err(), "placeholder token");
+        assert!(parse_image_id_words("1 2 3 FRESH 5 6 7 8").is_err(), "contains FRESH");
+        assert!(parse_image_id_words("1 2 3 PENDING 5 6 7 8").is_err(), "contains PENDING");
+        assert!(parse_image_id_words("1 2 3 4 5 6 7").is_err(), "7 words (too few)");
+        assert!(parse_image_id_words("1 2 3 4 5 6 7 8 9").is_err(), "9 words (too many)");
+        assert!(parse_image_id_words("1 2 3").is_err(), "3 words");
+        // A letter between digits is a silent SEPARATOR (split on non-digit) → a dropped word → wrong
+        // count → Err. Documents that garbage cannot sneak through as a short-but-valid ID.
+        assert!(parse_image_id_words("1 2 x 4 5 6 7 8").is_err(), "letter drops a word");
+        // A u32 overflow fails closed.
+        assert!(parse_image_id_words("99999999999 2 3 4 5 6 7 8").is_err(), "u32 overflow");
+        // Exactly 8 valid u32 words parse.
+        assert_eq!(
+            parse_image_id_words("1 2 3 4 5 6 7 8").expect("8 valid words"),
+            [1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert!(
+            parse_image_id_words("3388148633 1 2 3 4 5 6 7").is_ok(),
+            "a real large-u32 ID parses"
+        );
+    }
+
+    #[test]
+    fn image_id_is_placeholder_truth_table() {
+        assert!(image_id_is_placeholder(""));
+        assert!(image_id_is_placeholder("   "));
+        assert!(image_id_is_placeholder("ANUBIS_ID_FRESH_RISC0"));
+        assert!(image_id_is_placeholder("PENDING_REAL_ID"));
+        assert!(image_id_is_placeholder("NO_REAL_ID_DERIVED"));
+        assert!(image_id_is_placeholder("anything FRESH anything"));
+        assert!(image_id_is_placeholder("x PENDING y"));
+        // A real 8-word ID is NOT a placeholder.
+        assert!(!image_id_is_placeholder("1 2 3 4 5 6 7 8"));
+        assert!(!image_id_is_placeholder("3388148633 1 2 3 4 5 6 7"));
+    }
+
+    #[test]
     fn risc0_lane_cpu_sets_disable_metal() {
         // Simulate the decision: --lane cpu must result in R0_DISABLE_METAL presence for the attempt
         let lane = "cpu".to_string();
