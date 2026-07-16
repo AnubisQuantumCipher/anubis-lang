@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_FLOAT_CONTRACT_UNMODELED
+// Phase-3 QF_FP float `let` SOUNDNESS GUARD (the false-accept this slice must NOT open). `y` is 0.0 on
+// entry and only becomes `x * x` when `c` is true, so when `c` is false `y` stays 0.0 and the
+// postcondition `result > 100.0` is FALSE. A naive `let`-chaining that kept the `y = 0.0` fact would
+// "prove" the contract, and one that leaked the conditional `y = x * x` fact would prove it the other
+// way — either is a real false accept. Because `y` is REASSIGNED in the function, the `reassigned_roots`
+// gate refuses to model it at all, so `y` is unconstrained and z3 correctly refuses to prove the
+// postcondition. Fail-closed. (Independently, `y`'s write is inside a `Stmt::If`, which the frame sweep
+// also visits — but the gate is what makes even an embedded/`match` write sound; see
+// float_let_match_reassign_rejects.anb.)
+fn f(x: f64, c: bool) -> f64
+    requires(x > 20.0)
+    ensures(result > 100.0)
+{
+    let y = 0.0;
+    if c { y = x * x; }
+    return y;
+}
+fn main() { let r = f(30.0, true); }

@@ -1,0 +1,16 @@
+// EXPECT: PASS
+// Phase-3 QF_FP float `let` CHAINING: a float-modelable `let` becomes a Float64 defining-fact so a later
+// float `ensures` can prove through it. Before this slice `y` was never solver-modeled, so the (valid)
+// postcondition `result > 2.0 && result < 4.0` was rejected as ANUBIS_FLOAT_CONTRACT_UNMODELED. Now
+// `let y = x * 2.0` records `(= anb_y (fp.mul RNE anb_x 2.0))`; for 1 < x < 2, y = 2x is in (2, 4), so z3
+// discharges both postconditions in QF_FP Float64/RNE.
+fn scale(x: f64) -> f64
+    requires(x > 1.0)
+    requires(x < 2.0)
+    ensures(result > 2.0)
+    ensures(result < 4.0)
+{
+    let y = x * 2.0;
+    return y;
+}
+fn main() { let r = scale(1.5); }

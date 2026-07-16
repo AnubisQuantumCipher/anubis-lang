@@ -1,0 +1,17 @@
+// EXPECT: PASS
+// Phase-3 QF_FP float `let` CHAINING (depth 2) + Lens-2 over-reject guard. `a = x * 2.0` then `y = a * a`
+// — both never reassigned, so both chain. `y = (2x)^2 >= 0` for every f64 x (and for x = NaN the runtime
+// `NaN >= 0.0` is true via partial_cmp().unwrap_or(Equal), which the `>=` NaN-disjunction models), so the
+// postcondition is valid and z3 discharges it in QF_FP. The guard: `y`'s initializer `a * a` multiplies a
+// FLOAT let `a` (which sits in `symbolic_widths` like every let name), so without the `!genuinely_float`
+// gate on the integer defining-fact push, a spurious `(= anb_y (bvmul anb_a anb_a))` bit-vector fact would
+// be injected; `fact_is_float` keeps it in the QF_FP obligation (both vars float) and a `bvmul` on Float64
+// sorts is a z3 error → the contract would be (wrongly) rejected. The gate keeps the two lanes disjoint.
+fn sq(x: f64) -> f64
+    ensures(result >= 0.0)
+{
+    let a = x * 2.0;
+    let y = a * a;
+    return y;
+}
+fn main() { let r = sq(3.0); }

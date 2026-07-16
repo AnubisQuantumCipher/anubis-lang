@@ -2801,6 +2801,67 @@ fn bad() {
             ),
             "a false float assert must be disproved",
         );
+
+        // Float `let` CHAINING: a float-modelable `let` becomes a Float64 defining-fact so a later float
+        // `ensures`/`assert` proves through it. `let y = x * 2.0` with 1 < x < 2 gives y in (2, 4).
+        assert!(
+            discharged(
+                "fn scale(x: f64) -> f64 requires(x > 1.0) requires(x < 2.0) \
+                 ensures(result > 2.0) ensures(result < 4.0) { let y = x * 2.0; return y; }\n\
+                 fn main() { let r = scale(1.5); }"
+            ),
+            "a float let should chain into a later ensures",
+        );
+        // A chained `let` used by a later float `assert` in the body. Multiplication by 2.0 is EXACT in
+        // IEEE-754 (an exponent bump, no rounding), so 1 < x < 2 gives 2 < y < 4 with no round-to-even
+        // edge — unlike `x + 1.0` where x = 3.0 + 2^-51 rounds to exactly 4.0, which the float lane
+        // (correctly) refuses to prove `> 4.0` for. The bit-exact model is the point.
+        assert!(
+            discharged(
+                "fn g(x: f64) requires(x > 1.0) requires(x < 2.0) { let y = x * 2.0; assert(y > 2.0); }\n\
+                 fn main() { g(1.5); }"
+            ),
+            "a float let should chain into a later assert",
+        );
+        // Float LET of a float LET (chaining depth 2): `a = x*2` then `y = a*a`. `y >= 0` for every f64
+        // (incl. NaN via the `>=` NaN-disjunction). Guards the Lens-2 defect: the integer defining-fact
+        // push must be gated off for a genuinely-float let, else `(= anb_y (bvmul anb_a anb_a))` is
+        // injected and poisons the QF_FP obligation (bvmul on Float64) → spurious reject.
+        assert!(
+            discharged(
+                "fn sq(x: f64) -> f64 ensures(result >= 0.0) { let a = x * 2.0; let y = a * a; return y; }\n\
+                 fn main() { let r = sq(3.0); }"
+            ),
+            "a float let of a float let must chain (no spurious bit-vector fact)",
+        );
+        // SOUNDNESS (Lens-1 false-accept guard): a float `let` whose variable is REASSIGNED inside a
+        // `match`-arm is NOT chained — the statement-level frame sweep never visits an embedded write, so
+        // admitting it would leak the stale `y = 2.0` fact and certify `result == 2.0` while the arm sets
+        // `y = 100.0` at runtime. The `reassigned_roots` gate refuses to model any reassigned float let,
+        // so `result` is unmodeled and the check rejects fail-closed (ANUBIS_FLOAT_CONTRACT_UNMODELED, a
+        // typecheck-surfaced diagnostic — NOT a solver FAIL, so `tc_ok(...).expect_err` is the right probe,
+        // not `discharged`, which only sees obligations).
+        let err = tc_ok(
+            "fn leak(c: i64) -> f64 ensures(result == 2.0) \
+             { let y = 2.0; match c { 0 => { y = 100.0; } _ => {} } return y; }\n\
+             fn main() { let r = leak(0); }",
+        )
+        .expect_err("a float let reassigned in a match arm must not certify a violable contract");
+        assert!(
+            err.contains("ANUBIS_FLOAT_CONTRACT_UNMODELED"),
+            "match-arm reassign leak guard — got: {err}"
+        );
+        // SOUNDNESS: a variable reassigned anywhere (even straight-line) is not chained (fail-closed):
+        // `y` ends at 100.0, so `result < 50.0` must NOT be certified against the stale `y = 0.0`.
+        let err = tc_ok(
+            "fn h() -> f64 ensures(result < 50.0) { let y = 0.0; y = 100.0; return y; }\n\
+             fn main() { let r = h(); }",
+        )
+        .expect_err("a reassigned float let must not be chained");
+        assert!(
+            err.contains("ANUBIS_FLOAT_CONTRACT_UNMODELED"),
+            "reassigned float let guard — got: {err}"
+        );
     }
 
     #[test]

@@ -195,6 +195,13 @@ struct SemanticContext {
     /// later, float `let`s). A symbol is EITHER an i64 bit-vector OR a Float64, never both — a mixed
     /// int/float comparison stays fail-closed. Reset per function alongside `solver_int_vars`.
     solver_float_vars: BTreeSet<String>,
+    /// Every variable REASSIGNED anywhere in the current function body (`collect_assigned_roots` over
+    /// the whole body, incl. writes embedded in a `match`-arm / `if`-expression / block). Phase-3 QF_FP
+    /// `let` chaining is admitted ONLY for a float `let` whose name is NOT in this set: a never-reassigned
+    /// variable's defining-fact is valid under every control-flow path, so it cannot leak past a write the
+    /// statement-level frame sweep (which only visits `Stmt::If/While/…` bodies, not embedded expression
+    /// writes) would miss. Reset + repopulated per function.
+    reassigned_roots: BTreeSet<String>,
     /// Variables given an EXPLICIT `: T` annotation. Only these have their reassignments
     /// type-checked (the user opted into the type); an inferred binding is dynamic and reassignable
     /// to any type, so enforcing type-stability on it would be a false positive.
@@ -1097,6 +1104,12 @@ fn analyze_function(
     // added below (lets, composition) only dominate the tail return.
     let precondition_assumptions = assumptions.clone();
 
+    // Phase-3 QF_FP: record every variable reassigned ANYWHERE in this body (incl. writes embedded in a
+    // `match`-arm / `if`-expression / block the statement-level frame sweep does not visit). A float
+    // `let` is chained only when its name is NOT here, so its defining-fact cannot leak past such a write.
+    ctx.reassigned_roots.clear();
+    collect_assigned_roots(body, &mut ctx.reassigned_roots);
+
     analyze_stmts(
         body,
         mode,
@@ -1685,6 +1698,9 @@ fn analyze_stmts(
                 // binding (which may hold a string/list/bool) is not "proved" against the shadowed
                 // integer's model (e.g. `let v = 0; let v = "hi"; assert(v + 0 == v)`).
                 clear_binding_modelability(&mut ctx.solver_int_vars, name);
+                // Phase-3 QF_FP: a shadowing `let` also drops the old binding's FLOAT modelability; its
+                // stale float defining-fact is dropped by the sort-agnostic assumptions.retain below.
+                ctx.solver_float_vars.remove(name);
                 {
                     // Also drop stale array/len symbols for a shadowed sequence binding.
                     let mangled = smt_var(name);
@@ -1734,17 +1750,47 @@ fn analyze_stmts(
                     }
                 }
 
-                // For solver faithfulness: concrete lets become path assumptions.
+                // A `let` is EITHER an integer/bit-vector binding OR a Float64 one, never both. A bare
+                // numeric literal (`let x = 5`) is int-modelable AND parses as a finite f64, so the
+                // integer lane must claim it (its runtime value is `Int`, and int→float widening is
+                // runtime-inert). "Genuinely float" = float-modelable but NOT int-modelable — a float
+                // param/let arithmetic or a decimal literal. Computing it once keeps the two lanes
+                // disjoint: without the `!genuinely_float` gate on the integer push below, a float
+                // `let y = a * a` (with float `a` in `symbolic_widths`) would inject a spurious
+                // `(= anb_y (bvmul anb_a anb_a))` that `fact_is_float` then keeps in the QF_FP obligation
+                // (both vars float) → a `bvmul` on Float64 sorts → z3 error → fail-closed over-rejection.
+                let genuinely_float = !is_int_modelable(init, &ctx.solver_int_vars)
+                    && is_float_modelable(init, &ctx.solver_float_vars);
+
+                // For solver faithfulness: concrete integer lets become path assumptions.
                 // Symbolic sources remain unconstrained until assume()/assert() shape them.
                 // (Array literals are handled above via select/len facts — do not also bind the
-                // list name as a BitVec, which would be an unsound sort.)
-                if !matches!(init, Expr::ArrayLiteral { .. }) {
+                // list name as a BitVec, which would be an unsound sort. A genuinely-float let is handled
+                // by the QF_FP branch below, never as a bit-vector.)
+                if !matches!(init, Expr::ArrayLiteral { .. }) && !genuinely_float {
                     if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
                         let def_smt = format!("(= {} {})", smt_var(name), init_smt);
                         ctx.symbolic_defs.push(def_smt.clone());
                         ctx.constraints.push(format!("(assert {})", def_smt));
                         assumptions.push(def_smt); // so it is included in subsequent obligations
                     }
+                }
+                // Phase-3 QF_FP: a genuinely-float `let` that is NEVER REASSIGNED becomes a Float64
+                // DEFINING FACT in the SAME `assumptions` channel, so a later float `ensures`/`assert`
+                // chains on it (`let y = x * 2.0; ensures(result < 4.0)`). Riding `assumptions` means the
+                // existing var-name-based frame sweep (drop_written_after_scope / havoc_loop_written) drops
+                // it when `y` is written under a `Stmt::If`/`While`/… scope. The `reassigned_roots` gate is
+                // the SOUNDNESS boundary: the statement-level sweep does NOT visit a write EMBEDDED in a
+                // `match`-arm / `if`-expression / block (those are analyzed as expressions, not restatemented
+                // via analyze_stmts), so a fact for a variable reassigned in such a position could leak
+                // unconditionally and certify a violable contract. Admitting only never-reassigned lets makes
+                // the defining-fact valid on every path — no leak is possible. `fact_is_float` sort-partitions
+                // the fact out of every integer obligation; STRUCTURAL `=` (not fp.eq, which is IEEE
+                // NaN≠NaN); NOT pushed to ctx.constraints/symbolic_defs (kept byte-identical for the
+                // self-host projection).
+                if genuinely_float && !ctx.reassigned_roots.contains(name) {
+                    ctx.solver_float_vars.insert(name.clone());
+                    assumptions.push(format!("(= {} {})", smt_var(name), float_expr_to_smt(init)));
                 }
                 // NOTE: a symbolic input's `u8`/`u32` type annotation is NOT turned into a
                 // [0, 2^w-1] range assumption — the annotation is runtime-inert, so assuming a range
@@ -1885,33 +1931,53 @@ fn analyze_stmts(
                 if is_bool_modelable(expr, &ctx.solver_int_vars) {
                     let smt = expr_to_smt(expr, &ctx.symbolic_widths);
                     ctx.constraints.push(format!("(assert {})", smt));
+                    // Sort-partition: an integer (QF_BV) obligation assumes only integer facts. Dropping
+                    // any float fact keeps a `fp.`/`to_fp` token out of the body (which would flip the
+                    // query to QF_FP and mis-declare these i64 symbols as Float64). Corpus-inert: with no
+                    // float vars in scope `fact_is_float` is always false, so this is `assumptions.clone()`.
+                    let int_asm: Vec<String> = assumptions
+                        .iter()
+                        .filter(|a| !fact_is_float(a, &ctx.solver_float_vars))
+                        .cloned()
+                        .collect();
                     let mut vars = BTreeSet::new();
                     collect_vars_from_smt(&smt, &mut vars);
-                    for assumption in assumptions.iter() {
+                    for assumption in &int_asm {
                         collect_vars_from_smt(assumption, &mut vars);
                     }
                     ctx.solver_obligations.push(SolverObligation {
                         name: format!("assert:{}", smt),
-                        assumptions: assumptions.clone(),
+                        assumptions: int_asm,
                         assertion: smt,
                         vars: vars.into_iter().collect(),
                     });
                 } else if is_bool_modelable_float(expr, &ctx.solver_float_vars) {
-                    // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged too. Vars
-                    // come from the Expr (mangled). It is NOT pushed to `ctx.constraints` (the int
-                    // bit-vector fact context) — a float fact there would sort-clash with a later int
-                    // obligation; the cost is that a float assert is not chained into a later one (a
-                    // fail-closed residual). Every failure mode here is fail-closed: a missing or
-                    // sort-mismatched assumption only makes the check REJECT, never falsely certify.
+                    // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged in QF_FP.
+                    // The shared `assumptions` channel is sort-partitioned — this obligation assumes only
+                    // FLOAT facts (float `requires`, float `let`/reassignment defining-facts), so its body
+                    // is all-Float64 and never sort-clashes with an integer bit-vector fact. Assertion
+                    // vars come from the Expr (mangled); each consumed float fact's vars are scraped too
+                    // (anb_-prefixed only, so the `fp.`/`RNE`/`to_fp` operator tokens are not mistaken for
+                    // symbols) and declared, so a chained `let y = x * 2.0` fact is fully constrained.
                     let smt = float_bool_to_smt(expr);
+                    let float_asm: Vec<String> = assumptions
+                        .iter()
+                        .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
+                        .cloned()
+                        .collect();
                     let mut raw = BTreeSet::new();
                     collect_expr_vars(expr, &mut raw);
-                    let vars: Vec<String> = raw.iter().map(|v| smt_var(v)).collect();
+                    let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+                    for a in &float_asm {
+                        let mut avs = BTreeSet::new();
+                        collect_vars_from_smt(a, &mut avs);
+                        vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                    }
                     ctx.solver_obligations.push(SolverObligation {
                         name: format!("assert:{smt}"),
-                        assumptions: assumptions.clone(),
+                        assumptions: float_asm,
                         assertion: smt,
-                        vars,
+                        vars: vars.into_iter().collect(),
                     });
                 }
                 effects.push("assert".into());
@@ -1993,6 +2059,14 @@ fn analyze_stmts(
                         ctx.constraints.push(format!("(assert {})", def));
                         assumptions.push(def);
                     }
+                    // NOTE (Phase-3 QF_FP): a float reassignment deliberately does NOT re-establish a
+                    // float fact. Float `let` chaining is admitted ONLY for a variable that is never
+                    // reassigned anywhere in the function (the `reassigned_roots` gate at the `let` seed),
+                    // so a reassigned float variable carries no float model at all and its assertions fall
+                    // to the runtime — fail-closed. Soundly tracking a reassigned float across embedded
+                    // control flow (a `match`-arm / `if`-expression write the statement sweep does not
+                    // visit) is the shared frame-sweep gap tracked as a follow-up; until it is closed,
+                    // re-establishing here would reintroduce the leak the reassigned-roots gate prevents.
                     // Re-bind a bounded sequence when reassigned from a modelable array literal.
                     if matches!(target, Expr::Var(_)) {
                         if let Expr::ArrayLiteral { elements } = value {
@@ -3899,6 +3973,26 @@ fn smt_uses_floats(smt_body: &str) -> bool {
     smt_body.contains("fp.") || smt_body.contains("to_fp")
 }
 
+/// Whether a fact/assumption in the shared `assumptions` channel is a FLOAT fact — it mentions at least
+/// one currently float-modelable variable (the mangled `anb_v` for some `v` in `solver_float_vars`).
+///
+/// Used to sort-partition `assumptions` at every obligation build (Phase-3 QF_FP `let` chaining): a
+/// float (QF_FP) obligation assumes only float facts and an integer (QF_BV) obligation assumes only
+/// integer facts. This is sound because a fact never mixes sorts — `is_int_modelable` /
+/// `is_float_modelable` each reject a mixed expression, and a symbol is EITHER an i64 bit-vector OR a
+/// Float64, never both. Membership (not an `fp.`/`to_fp` substring sniff) is the robust test: a plain
+/// float copy `let y = x` encodes as `(= anb_y anb_x)` with no float operator token, which a substring
+/// sniff would misclassify as integer. `collect_vars_from_smt` over-scrapes the `fp.`/`RNE`/`to_fp`
+/// operator tokens, but those are never `anb_`-mangled so they never equal an `smt_var(v)` — harmless.
+fn fact_is_float(smt: &str, float_vars: &BTreeSet<String>) -> bool {
+    if float_vars.is_empty() {
+        return false;
+    }
+    let mut vs = BTreeSet::new();
+    collect_vars_from_smt(smt, &mut vs);
+    float_vars.iter().any(|v| vs.contains(&smt_var(v)))
+}
+
 fn smt_uses_arrays(smt_body: &str, vars: &BTreeSet<String>) -> bool {
     smt_body.contains("(select ")
         || smt_body.contains("(store ")
@@ -4113,37 +4207,51 @@ fn push_ensures_obligations(
         let concrete = substitute_result(ens, ret_expr);
         if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
             let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+            // Sort-partition (mirror the assert handler): an integer postcondition assumes only integer
+            // facts, so a float `requires`/`let` fact cannot flip this obligation to QF_FP. Corpus-inert
+            // (no float vars in scope ⇒ `fact_is_float` always false ⇒ identical to `assumptions.to_vec()`).
+            let int_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| !fact_is_float(a, &ctx.solver_float_vars))
+                .cloned()
+                .collect();
             let mut vars = BTreeSet::new();
             collect_vars_from_smt(&smt, &mut vars);
-            for a in assumptions {
+            for a in &int_asm {
                 collect_vars_from_smt(a, &mut vars);
             }
             ctx.solver_obligations.push(SolverObligation {
                 name: format!("ensures:{smt}"),
-                assumptions: assumptions.to_vec(),
+                assumptions: int_asm,
                 assertion: smt,
                 vars: vars.into_iter().collect(),
             });
         } else if is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
-            // Phase-3 QF_FP: a float postcondition over the modelable subset (`+ - *`, comparisons) is
-            // DISCHARGED via the float encoder instead of being rejected as unmodeled. Vars come from the
-            // Expr (not the SMT string), so the float operator tokens are never mistaken for symbols. (The
-            // float assumptions are already float-encoded strings; a float `requires` var absent from the
-            // postcondition is a fail-closed residual — z3 sees an undeclared symbol and the obligation
-            // fails rather than over-certifies.)
+            // Phase-3 QF_FP: a float postcondition over the modelable subset (`+ - * /`, comparisons) is
+            // DISCHARGED via the float encoder. The shared `assumptions` channel is sort-partitioned to
+            // FLOAT facts only (float `requires` + float `let`/reassignment defining-facts), so a chained
+            // `let y = x * 2.0; ensures(result < 4.0)` proves. Assertion vars come from the Expr (mangled,
+            // dodging the `fp.`/`RNE`/`to_fp` operator-token trap); each consumed float fact's vars are
+            // scraped too (anb_-prefixed only) and declared, so every QF_FP symbol is constrained.
             let smt = float_bool_to_smt(&concrete);
-            // The SMT body uses the mangled symbol `smt_var(v)` (= `anb_v`), so the declaration set must
-            // carry the MANGLED names — collect the raw Expr vars, then map through `smt_var` (the int
-            // path gets this for free by scraping the already-mangled SMT string; the float path collects
-            // from the Expr to dodge the `fp.`/`RNE`/`to_fp` operator-token trap, so it must mangle here).
+            let float_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
+                .cloned()
+                .collect();
             let mut raw = BTreeSet::new();
             collect_expr_vars(&concrete, &mut raw);
-            let vars: Vec<String> = raw.iter().map(|v| smt_var(v)).collect();
+            let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+            for a in &float_asm {
+                let mut avs = BTreeSet::new();
+                collect_vars_from_smt(a, &mut avs);
+                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+            }
             ctx.solver_obligations.push(SolverObligation {
                 name: format!("ensures:{smt}"),
-                assumptions: assumptions.to_vec(),
+                assumptions: float_asm,
                 assertion: smt,
-                vars,
+                vars: vars.into_iter().collect(),
             });
         } else {
             // A postcondition the solver cannot faithfully model. Contracts are NOT runtime-enforced,
@@ -4840,6 +4948,16 @@ fn verify_while_invariants(
     body: &[Stmt],
     outer_assumptions: &[String],
 ) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
+    // Phase-3 QF_FP: loop invariants are an INTEGER-only lane (the cond/invariant modelability gates
+    // below reject non-integer formulas). A float `requires`/`let` fact from an enclosing float contract
+    // must therefore be dropped from the outer assumptions, or it would flip an integer base-case/step
+    // obligation to QF_FP and mis-declare its i64 symbols. Corpus-inert (no float contract has a loop).
+    let outer_assumptions: Vec<String> = outer_assumptions
+        .iter()
+        .filter(|a| !fact_is_float(a, &ctx.solver_float_vars))
+        .cloned()
+        .collect();
+    let outer_assumptions: &[String] = &outer_assumptions;
     let reject = |ctx: &mut SemanticContext, why: &str| {
         ctx.diagnostics.push(SemanticDiagnostic {
             code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
