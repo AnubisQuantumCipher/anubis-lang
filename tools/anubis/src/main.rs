@@ -2585,7 +2585,14 @@ fn main() -> Result<()> {
                 evidence
             );
             let src = std::fs::read_to_string(&input)?;
-            let ast = parse_source(&src).map_err(|e| anyhow!("parse: {}", e))?;
+            // Resolve imports / project modules the SAME way `run` does, so a proof program can `import`
+            // shared modules (the shared-module design). A single file with no imports/deps short-circuits
+            // to the identical single-file AST (load_program_items early-returns), so existing single-file
+            // proofs are byte-for-byte unchanged; an imported module that cannot be lowered into the zkVM
+            // guest still fails closed at lower_program_to_guest (ANUBIS_UNSUPPORTED_GUEST_LOWERING) as
+            // before. NOTE: for a multi-module program, `src` (the entry file) is used below for the
+            // optional evidence bundle's claim re-derivation, so that bundle remains entry-scoped.
+            let (ast, _ws) = load_program_items(&input, &src)?;
             let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
             let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
             let tainted = TaintPass::apply(typed.clone());
