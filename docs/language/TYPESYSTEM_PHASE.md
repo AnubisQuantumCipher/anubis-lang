@@ -56,12 +56,26 @@ the originating brief was partly stale.
 | Shadow-mode harness | **DONE** (prior slice) | `SemanticContext::emit` + `shadow`/`shadow_diags` + `scripts/run_shadow_diff.sh` |
 | Bidirectional inference core | **DONE** (this slice) | `middle/ty.rs` union-find `synth`/`check`/`unify`; `Call`/`Index`/`FieldAccess` synthesized; arm-join enforcing |
 | `emit` shadow-gating correctness | **FIXED** (this slice) | `emit` no longer routes shadow-gated diags to the Err-gate with shadow off (was a latent inversion in dead code) |
-| Captured generics | open (after this slice) | `skip_generic_params` discards (`frontend:2533`) |
-| Real traits | open (after this slice) | no `collect_trait_env` sidecar yet |
-| Typed `?` | open (after this slice) | `ANUBIS_TRY_OUTSIDE_RESULT` exists; `ANUBIS_TRY_TYPE_MISMATCH` missing |
+| Typed `?` | **DONE** (`d540d9b`) | `ANUBIS_TRY_TYPE_MISMATCH` @ `mod.rs:5013`, checked against the enclosing `Result`; skips on `Any` |
+| Captured generics | **DONE** (`898cc3e`) | `parse_generic_params` captures onto defaulted `generics` field; `ANUBIS_GENERIC_CONFLICT` + `ANUBIS_GENERIC_ARITY` enforcing |
+| Real traits | **DONE** (`fa88628`) | `collect_trait_env` sidecar on `AST`; `ANUBIS_TRAIT_OVERLAP` + `ANUBIS_TRAIT_MISSING_METHOD` enforcing; desugar byte-identical, fixpoint `c640badd` held |
 
-The brief's premise ("a float is aliased to u32"; "`Ty` is scaffolding the checker doesn't consume")
-is stale: `Ty` is already load-bearing via `ty::assignable`, and floats are first-class.
+**Phase complete in Rust.** The brief's premise ("a float is aliased to u32"; "`Ty` is scaffolding
+the checker doesn't consume") was stale: `Ty` is already load-bearing via `ty::assignable`, and floats
+are first-class.
+
+### Traits (WS4) — COMPLETE
+`ANUBIS_TRAIT_BOUND_UNSATISFIED` is **landed** (`2704226`, Phase 1 → 100%). `parse_generic_params` now
+CAPTURES inline `<T: A + B>` bounds (byte-identical token consumption — no parse shift) into a
+checker-only `Item::Fn.generic_bounds`; at a call, a generic bound to a KNOWN user nominal type whose
+required trait is declared in-program and has no `impl` is rejected. Accept-biased (a primitive,
+unpinnable type, or foreign trait accepts). The FIXPOINT was UNMOVED — `generic_bounds` is not projected
+by `selfhost_schema::project_item`, exactly like the structural trait checks (overlap, missing-method).
+All three trait checks are now complete and enforcing.
+
+### Next phase
+The Anubis-language **port** of `Ty`, the unifier, and the checker (the core was kept dependency-light
+— plain maps, no closures/trait objects — precisely to make that port mechanical) — Phase 4.
 
 ## Invariants (green after every commit)
 
