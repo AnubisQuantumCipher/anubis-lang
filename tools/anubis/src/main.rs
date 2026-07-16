@@ -233,6 +233,15 @@ enum Commands {
         #[arg(long)]
         verified: bool,
 
+        /// Proof inputs as a JSON object — the SAME format `prove --input-json` takes, e.g. '{"n":5}'.
+        /// So a program that both runs natively AND proves uses ONE input format for both commands.
+        #[arg(long)]
+        input_json: Option<String>,
+
+        /// Proof inputs from a JSON file (the same format as `prove --input-file`).
+        #[arg(long)]
+        input_file: Option<PathBuf>,
+
         /// Program arguments passed after `--`.
         #[arg(last = true)]
         args: Vec<String>,
@@ -3427,6 +3436,8 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             json,
             allow_research,
             verified,
+            input_json,
+            input_file,
             args,
         } => {
             let src = std::fs::read_to_string(&input)?;
@@ -3437,7 +3448,17 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 typecheck_ex(ast, mode, true)
                     .map_err(|e| anyhow!("verified check failed: {}", e))?;
             }
-            let outcome = run_anubis_source(&input, &src, &out, allow_research, &args)?;
+            // Proof-input ergonomics: resolve the SAME JSON surface `prove` accepts (--input-json /
+            // --input-file) through the identical canonicalizing path, then hand it to the run child as
+            // the native ANUBIS_PROOF_INPUTS env — so a program that both runs and proves has ONE input
+            // format that agrees by construction. No flag ⇒ None ⇒ existing behavior (unset env).
+            let proof_env = {
+                let pin =
+                    proof_input::resolve_proof_inputs(input_json.as_deref(), input_file.as_deref())?;
+                proof_inputs_env_string(&pin.values)?
+            };
+            let outcome =
+                run_anubis_source(&input, &src, &out, allow_research, &args, proof_env.as_deref())?;
             if evidence {
                 write_run_evidence(&out, &outcome)?;
             }
@@ -4364,7 +4385,7 @@ fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
     for f in &files {
         let src = std::fs::read_to_string(f)?;
         let (expect_pass, error_contains) = parse_test_directives(&src);
-        let result = run_anubis_source(f, &src, &out_dir, true, &[]);
+        let result = run_anubis_source(f, &src, &out_dir, true, &[], None);
         let (actual_pass, err_text) = match &result {
             Ok(o) if o.status_success => (true, String::new()),
             Ok(o) => (false, o.stderr.clone()),
@@ -4406,12 +4427,40 @@ fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
     })
 }
 
+/// Serialize resolved proof-input values into the native `ANUBIS_PROOF_INPUTS=k=v,k2=v2` env format the
+/// generated run stub parses (split on `,` then `=`). Rejects a key containing `,` or `=` so the encoding
+/// stays unambiguous. Returns `None` when there are no inputs (env var left unset — existing behavior).
+fn proof_inputs_env_string(
+    values: &std::collections::BTreeMap<String, i64>,
+) -> Result<Option<String>> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    for k in values.keys() {
+        if k.contains(',') || k.contains('=') {
+            return Err(anyhow!(
+                "proof input key {:?} contains ',' or '=', which the native ANUBIS_PROOF_INPUTS \
+                 encoding cannot represent unambiguously",
+                k
+            ));
+        }
+    }
+    Ok(Some(
+        values
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    ))
+}
+
 fn run_anubis_source(
     input: &Path,
     source: &str,
     out: &Path,
     allow_research: bool,
     args: &[String],
+    proof_inputs_env: Option<&str>,
 ) -> Result<RunOutcome> {
     // Multi-file + Phase-6 deps: resolve/lock/proof-check then combine into one program.
     let (ast, _ws) = load_program_items(input, source)?;
@@ -4506,6 +4555,11 @@ fn run_anubis_source(
     let timeout = resolved_run_timeout();
     let mut cmd = std::process::Command::new(&work_exe);
     cmd.args(args).stdin(std::process::Stdio::inherit());
+    // Unified proof-input surface: forward the resolved values as the native ANUBIS_PROOF_INPUTS env
+    // so `run` and `prove` consume the identical --input-json/--input-file format.
+    if let Some(env_str) = proof_inputs_env {
+        cmd.env("ANUBIS_PROOF_INPUTS", env_str);
+    }
     let capped = run_child_capped(cmd, timeout).map_err(|e| anyhow!("run spawn failed: {}", e))?;
     if capped.timed_out {
         let _ = std::fs::remove_dir_all(&work);
@@ -5575,8 +5629,12 @@ mod tests {
                 json,
                 allow_research,
                 verified,
+                input_json,
+                input_file,
                 args,
             } => {
+                assert!(input_json.is_none());
+                assert!(input_file.is_none());
                 assert_eq!(input, PathBuf::from("examples/hello_normal.anb"));
                 assert_eq!(out, PathBuf::from("out/run-test"));
                 assert!(evidence);
@@ -5667,7 +5725,7 @@ fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let outcome = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[])
+        let outcome = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
             .expect("safe program should run");
         assert!(outcome.status_success);
         assert_eq!(outcome.stdout.trim(), "Hello, Sicarii");
@@ -5694,7 +5752,7 @@ fn main() {
         std::fs::write(&main, main_src).unwrap();
 
         let out = tempfile::tempdir().expect("out");
-        let outcome = run_anubis_source(&main, main_src, out.path(), false, &[])
+        let outcome = run_anubis_source(&main, main_src, out.path(), false, &[], None)
             .expect("multi-file program should run");
         assert!(outcome.status_success, "stderr: {}", outcome.stderr);
         assert_eq!(outcome.stdout.trim(), "5 25");
@@ -5713,7 +5771,7 @@ fn main() {
         let entry = modules_fixture("enum_vs_mod/main.anb");
         let src = std::fs::read_to_string(&entry).unwrap();
         let out = tempfile::tempdir().unwrap();
-        let outcome = run_anubis_source(&entry, &src, out.path(), false, &[])
+        let outcome = run_anubis_source(&entry, &src, out.path(), false, &[], None)
             .expect("enum_vs_mod fixture should run");
         assert_eq!(outcome.stdout.trim(), "rect area = 12");
     }
@@ -5723,7 +5781,7 @@ fn main() {
         let entry = modules_fixture("cycle/a.anb");
         let src = std::fs::read_to_string(&entry).unwrap();
         let out = tempfile::tempdir().unwrap();
-        let err = run_anubis_source(&entry, &src, out.path(), false, &[])
+        let err = run_anubis_source(&entry, &src, out.path(), false, &[], None)
             .expect_err("cyclic imports must fail closed");
         assert!(
             err.to_string().contains("ANUBIS_IMPORT_CYCLE"),
@@ -5783,7 +5841,7 @@ fn main() {
         let main_src = "import lib;\nfn main() { print(lib::secret()); }";
         std::fs::write(&main, main_src).unwrap();
         let out = tempfile::tempdir().expect("out");
-        let err = run_anubis_source(&main, main_src, out.path(), false, &[])
+        let err = run_anubis_source(&main, main_src, out.path(), false, &[], None)
             .expect_err("calling a private fn across modules must fail closed");
         assert!(
             err.to_string().contains("ANUBIS_PRIVATE_ITEM"),
@@ -5798,7 +5856,7 @@ fn main() {
         let main_src = "import nope;\nfn main() { print(nope::f()); }";
         std::fs::write(&main, main_src).unwrap();
         let out = tempfile::tempdir().expect("out");
-        let err = run_anubis_source(&main, main_src, out.path(), false, &[])
+        let err = run_anubis_source(&main, main_src, out.path(), false, &[], None)
             .expect_err("missing module must fail closed");
         assert!(
             err.to_string().contains("ANUBIS_IMPORT_UNRESOLVED"),
@@ -5819,7 +5877,7 @@ fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let outcome = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[])
+        let outcome = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
             .expect("safe arithmetic program should run");
         assert!(outcome.status_success);
         assert_eq!(outcome.stdout.trim(), "big");
@@ -5833,7 +5891,7 @@ research fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let err = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[])
+        let err = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
             .expect_err("research run should require explicit allow");
         assert!(err
             .to_string()
@@ -5849,7 +5907,7 @@ fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let err = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[])
+        let err = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
             .expect_err("unsupported safe lowering should fail closed");
         assert!(err
             .to_string()
