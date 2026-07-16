@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CONTRACT_UNPROVABLE
+// SOUNDNESS (integer solver lane): a variable REASSIGNED inside a `match` arm keeps a stale defining
+// fact, because the statement-level frame sweep (drop_written_after_scope) only visits `Stmt::If`/`While`
+// /… bodies — a write embedded in a `match`-arm / `if`-expression is analyzed as an EXPRESSION and never
+// reaches the reassignment invalidation. Before `invalidate_embedded_writes`, `y`'s `let y = 2` fact
+// survived past the match and z3 "proved" `result == 2` — but `leaki(0)` returns 100 at runtime, so the
+// contract is violable and the check WRONGLY passed. Now the embedded write is invalidated: `y` is
+// unmodeled, the postcondition cannot be proven, and the check fails closed (ANUBIS_CONTRACT_UNPROVABLE).
+fn leaki(c: i64) -> i64
+    ensures(result == 2)
+{
+    let y = 2;
+    match c { 0 => { y = 100; } _ => {} }
+    return y;
+}
+fn main() { let r = leaki(0); }

@@ -1792,6 +1792,10 @@ fn analyze_stmts(
                     ctx.solver_float_vars.insert(name.clone());
                     assumptions.push(format!("(= {} {})", smt_var(name), float_expr_to_smt(init)));
                 }
+                // A `let` INITIALIZER can hide a write to an OUTER variable in an `if`/`match`/block
+                // expression (`let z = if c { y = 100; 0 } else { 0 };`). That write escapes the
+                // statement-level frame sweep, so invalidate the written variables' stale facts here.
+                invalidate_embedded_writes(ctx, assumptions, init);
                 // NOTE: a symbolic input's `u8`/`u32` type annotation is NOT turned into a
                 // [0, 2^w-1] range assumption — the annotation is runtime-inert, so assuming a range
                 // the runtime does not enforce would be unsound (it would let the solver "prove"
@@ -1861,12 +1865,15 @@ fn analyze_stmts(
                     }
                 }
             }
-            Stmt::LetPattern { pattern, .. } => {
+            Stmt::LetPattern { pattern, init, .. } => {
                 // Destructuring binding: register each bound name so later statements don't
                 // flag it as unknown. (No type annotation, so no raw-pointer/type-mismatch check.)
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
                 }
+                // As with `Stmt::Let`, a destructuring initializer can hide an embedded write to an
+                // outer variable; invalidate its stale solver fact.
+                invalidate_embedded_writes(ctx, assumptions, init);
             }
             Stmt::ResearchBlock { body, .. } => {
                 ctx.has_research = true;
@@ -1918,6 +1925,8 @@ fn analyze_stmts(
                     assumptions.push(smt.clone());
                     ctx.constraints.push(format!("(assert {})", smt));
                 }
+                // A write embedded in the assumed expression escapes the statement sweep; invalidate it.
+                invalidate_embedded_writes(ctx, assumptions, expr);
                 effects.push("assume".into());
             }
             Stmt::ExprStmt(Expr::Assert(expr)) => {
@@ -1980,11 +1989,20 @@ fn analyze_stmts(
                         vars: vars.into_iter().collect(),
                     });
                 }
+                // A write embedded in the asserted expression escapes the statement sweep; invalidate it
+                // AFTER building this obligation (the obligation is over the pre-write value).
+                invalidate_embedded_writes(ctx, assumptions, expr);
                 effects.push("assert".into());
             }
             Stmt::ExprStmt(expr) => {
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 check_expr_semantics(expr, scope, ctx);
+                // A bare `match`/`if`-expression statement (or a `return <expr>` — parsed as
+                // `ExprStmt(Call{"return", …})`) can hide a write to an outer variable in an arm/branch
+                // body. That write is invisible to the statement-level frame sweep, so invalidate the
+                // written variables' stale solver facts here — else a later obligation is discharged
+                // against the pre-write value.
+                invalidate_embedded_writes(ctx, assumptions, expr);
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
@@ -2090,6 +2108,10 @@ fn analyze_stmts(
                     }
                 }
                 check_expr_semantics(value, scope, ctx);
+                // The RHS itself can hide a write to a DIFFERENT outer variable in an `if`/`match`/block
+                // expression (`x = if c { y = 100; 0 } else { 0 };`); invalidate that variable's fact too
+                // (the reassignment of `target` was handled above).
+                invalidate_embedded_writes(ctx, assumptions, value);
                 // Reassignment changes what a closure-valued binding holds: recompute its arity
                 // (or clear it) so a later direct call checks the current value, not a stale one.
                 if let Expr::Var(name) = target {
@@ -2137,6 +2159,10 @@ fn analyze_stmts(
                 {
                     effects.push("tainted-branch".into());
                 }
+                // A write embedded in the CONDITION expression (`if (match c { 0 => { y = 5; true } … })`)
+                // is not covered by the branch sweep below (which only sees `then`/`else`), so invalidate
+                // it before snapshotting. No-op for an ordinary condition with no assignment.
+                invalidate_embedded_writes(ctx, assumptions, cond);
                 // A branch may not execute, so a fact it asserts (e.g. `x = 5`) must not leak out as
                 // unconditional. Analyze each branch under the pre-`if` assumptions (the branches are
                 // ALTERNATIVES — reset between them so `then`'s facts don't leak into `else`), then
@@ -2187,6 +2213,9 @@ fn analyze_stmts(
                 {
                     effects.push("tainted-branch".into());
                 }
+                // Invalidate any write embedded in the loop condition (see the `if` handler); no-op for
+                // an ordinary condition.
+                invalidate_embedded_writes(ctx, assumptions, cond);
                 effects.push("loop".into());
                 // B3: verify loop invariants (base case + preservation) BEFORE the body drops the
                 // loop-carried variables, so the base case sees their pre-loop state.
@@ -2232,6 +2261,8 @@ fn analyze_stmts(
             } => {
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 effects.push("loop".into());
+                // Invalidate any write embedded in the `while let` scrutinee (see the `if` handler).
+                invalidate_embedded_writes(ctx, assumptions, expr);
                 // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
                 let snap_scope = scope.clone();
                 for n in pattern.bound_names() {
@@ -4790,6 +4821,34 @@ fn drop_written_after_scope(
     });
     for v in &written {
         clear_binding_modelability(&mut ctx.solver_int_vars, v);
+    }
+}
+
+/// Invalidate the solver model of every variable WRITTEN inside an expression — an assignment embedded in
+/// a `match`-arm body, an `if`-expression branch, or an expression-position block (`let z = if c { y = 5;
+/// 0 } else { 0 };`, or a bare `match c { 0 => { y = 5; } _ => {} }` statement). The statement-level frame
+/// sweep (`drop_written_after_scope` / `havoc_loop_written`) is invoked ONLY by the `Stmt::If`/`While`/…
+/// arms, so a write hidden inside an EXPRESSION escapes it: `Stmt::ExprStmt`/`Stmt::Let` only run
+/// `analyze_expr_effect` + `check_expr_semantics`, which never touch the `assumptions` channel. Without
+/// this, the variable's pre-write `let`/reassignment fact survives unconditionally and a later
+/// `ensures`/`assert` is discharged against a value the runtime has moved past — a false proof the checker
+/// then certifies. Mirror the straight-line reassignment invalidation (clear modelability — INT and float
+/// — and drop the stale fact) but do NOT re-establish: the write is path-dependent (it fires on only one
+/// arm/branch), so no unconditional fact can replace the dropped one. The variable falls to the runtime.
+fn invalidate_embedded_writes(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, expr: &Expr) {
+    let mut written = BTreeSet::new();
+    expr_assigned_roots(expr, &mut written);
+    for root in &written {
+        clear_binding_modelability(&mut ctx.solver_int_vars, root);
+        ctx.solver_float_vars.remove(root);
+        let mangled = smt_var(root);
+        let arr = seq_arr_smt(root);
+        let len = seq_len_smt(root);
+        assumptions.retain(|a| {
+            let mut vs = BTreeSet::new();
+            collect_vars_from_smt(a, &mut vs);
+            !vs.contains(&mangled) && !vs.contains(&arr) && !vs.contains(&len)
+        });
     }
 }
 

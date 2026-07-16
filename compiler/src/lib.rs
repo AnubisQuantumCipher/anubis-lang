@@ -2191,6 +2191,53 @@ fn main() {
     }
 
     #[test]
+    fn solver_invalidates_embedded_control_flow_writes() {
+        // SOUNDNESS: a write EMBEDDED in a `match`-arm / `if`-expression / block escapes the
+        // statement-level frame sweep (which only visits Stmt::If/While/... bodies), so the reassigned
+        // variable's stale `let`/reassignment fact must be invalidated at the enclosing statement — else a
+        // later `ensures` is discharged against a value the runtime has moved past. `leaki(0)` returns 100,
+        // so `ensures(result == 2)` is violable and must be REJECTED (ANUBIS_CONTRACT_UNPROVABLE — the
+        // written var becomes unmodeled, a typecheck-surfaced diagnostic).
+        let err = tc_ok(
+            "fn leaki(c: i64) -> i64 ensures(result == 2) \
+             { let y = 2; match c { 0 => { y = 100; } _ => {} } return y; }\n\
+             fn main() { let r = leaki(0); }",
+        )
+        .expect_err("a match-arm reassignment must not certify a violable contract");
+        assert!(
+            err.contains("ANUBIS_CONTRACT_UNPROVABLE"),
+            "match-arm embedded-write leak — got: {err}"
+        );
+        // Same leak via a value-position `if`-expression used as a `let` initializer.
+        let err = tc_ok(
+            "fn leak2(c: i64) -> i64 ensures(result == 2) \
+             { let y = 2; let z = if c == 0 { y = 100; 0 } else { 0 }; return y; }\n\
+             fn main() { let r = leak2(0); }",
+        )
+        .expect_err("an if-initializer embedded write must not certify a violable contract");
+        assert!(
+            err.contains("ANUBIS_CONTRACT_UNPROVABLE"),
+            "if-initializer embedded-write leak — got: {err}"
+        );
+        // A STRAIGHT-LINE reassignment is still soundly re-established (the `i = 0;` reset pattern is
+        // handled by the Stmt::Assign arm, NOT invalidated) — this valid contract still discharges.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
+        assert!(
+            discharged(
+                "fn f() -> i64 ensures(result == 0) { let mut y = 5; y = 0; return y; }\n\
+                 fn main() { let r = f(); }"
+            ),
+            "a straight-line reassignment must still re-establish and discharge"
+        );
+    }
+
+    #[test]
     fn b3_loop_invariants_verify_inductively() {
         // B3: a `while` invariant is verified by the Hoare rule (holds on entry AND is preserved by
         // each iteration), then may be assumed after the loop — readmitting a loop-carried variable

@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CONTRACT_UNPROVABLE
+// SOUNDNESS (integer solver lane): the same embedded-write leak via a value-position `if`-expression used
+// as a `let` initializer. The `if c == 0 { y = 100; 0 }` branch reassigns the outer `y`, but that write is
+// inside an expression (the `let z = …` initializer), so it escapes the statement-level frame sweep.
+// Before `invalidate_embedded_writes` the stale `y = 2` fact certified `result == 2` while `leak2(0)`
+// returns 100. Now the initializer's embedded write is invalidated and the check fails closed.
+fn leak2(c: i64) -> i64
+    ensures(result == 2)
+{
+    let y = 2;
+    let z = if c == 0 { y = 100; 0 } else { 0 };
+    return y;
+}
+fn main() { let r = leak2(0); }
