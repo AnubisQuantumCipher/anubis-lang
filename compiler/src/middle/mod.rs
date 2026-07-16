@@ -2082,6 +2082,18 @@ fn analyze_stmts(
                             b.info.declassified = false;
                         }
                     }
+                } else if let (Some(src), Some(root)) = (&value_taint, assign_target_root(target)) {
+                    // A non-`Var` place-assignment (`buf[0] = k`, `obj.f = k`) is a MAY-update of the ROOT
+                    // container binding: with whole-binding taint granularity, writing a tainted value
+                    // into ANY element/field taints the container (SET-only — never CLEAR, since the
+                    // other elements may still be clean). Without this, `buf[0] = input(); sink(buf[0])`
+                    // laundered the taint (the read walker reads `buf`'s whole-binding flag as clean).
+                    // Mirrors `body_param_returns`' non-`Var` MAY-update of the root.
+                    if let Some(b) = scope.get_mut(root) {
+                        b.info.tainted = true;
+                        b.info.taint_source = Some(src.clone());
+                        b.info.declassified = false;
+                    }
                 }
                 // Flow-sensitive CONFIDENTIALITY (dual of the taint propagation above): a reassignment
                 // carries the RHS's secret label — SET when the RHS is a secret, CLEAR when it is
@@ -2093,6 +2105,18 @@ fn analyze_stmts(
                             .is_some();
                     if let Some(b) = scope.get_mut(name) {
                         b.secret = value_secret;
+                    }
+                } else if let Some(root) = assign_target_root(target) {
+                    // Confidentiality dual: a non-`Var` place-assignment of a SECRET value MAY-labels the
+                    // root container secret (set-only), so egressing the container is caught. Without it,
+                    // `a[0] = k; send(host, port, a)` laundered the secret past ANUBIS_SECRET_EXFILTRATION.
+                    let value_secret =
+                        expr_secret_source(value, scope, &ctx.secret_fns, &ctx.param_return_taint)
+                            .is_some();
+                    if value_secret {
+                        if let Some(b) = scope.get_mut(root) {
+                            b.secret = true;
+                        }
                     }
                 }
                 // A reassigned binding can no longer be modeled from its initial `let` value: the
@@ -6606,6 +6630,21 @@ fn walk_block_taint(
                     b.info.taint_source = label;
                 }
             }
+            Stmt::Assign { target, value } => {
+                // Value-position dual of the statement-level place-assignment fix: a non-`Var` target
+                // (`buf[0] = k` inside a value block) MAY-taints the root container binding (set-only).
+                if let Some(root) = assign_target_root(target) {
+                    if let Some(src) =
+                        expr_taint_source(value, local, tainting_fns, param_return_taint)
+                    {
+                        if let Some(b) = local.get_mut(root) {
+                            b.info.tainted = true;
+                            b.info.taint_source = Some(src);
+                            b.info.declassified = false;
+                        }
+                    }
+                }
+            }
             Stmt::If { then, else_, .. } => {
                 let mut then_c = local.clone();
                 walk_block_taint(then, &mut then_c, tainting_fns, param_return_taint);
@@ -6704,6 +6743,17 @@ fn walk_block_secret(
                 let secret = expr_secret_source(value, local, secret_fns, param_return_taint).is_some();
                 if let Some(b) = local.get_mut(name) {
                     b.secret = secret;
+                }
+            }
+            Stmt::Assign { target, value } => {
+                // Value-position dual: a non-`Var` place-assignment of a secret MAY-labels the root
+                // container secret (set-only).
+                if let Some(root) = assign_target_root(target) {
+                    if expr_secret_source(value, local, secret_fns, param_return_taint).is_some() {
+                        if let Some(b) = local.get_mut(root) {
+                            b.secret = true;
+                        }
+                    }
                 }
             }
             Stmt::If { then, else_, .. } => {

@@ -5589,6 +5589,22 @@ fn main() { let w = W { f: 7 }; let arr = [1, 2, 3]; let y = arr[1]; }"#)
     }
 
     #[test]
+    fn container_place_assignment_does_not_launder_taint_or_secret() {
+        // A non-`Var` place-assignment (`buf[0] = k`, `obj.f = k`) MAY-updates the ROOT container binding
+        // (set-only, whole-binding granularity). Before the fix an untrusted/secret value written into an
+        // element launders past the sink/egress check because the container stayed clean.
+        // (integrity) tainted input stored into an array element, then read into a sink.
+        tc_ok(r#"fn main() { let u = input(); let buf = ["ok","ok"]; buf[0] = u; sink(buf[0]); }"#)
+            .expect_err("tainted array-element write then sink must be flagged");
+        // (confidentiality) secret stored into an element, then the container egressed.
+        tc_ok(r#"fn main() uses(net.send) { let k: secret<u64> = 42424242; let a = [0,0]; a[0] = k; send("h", 80, a); }"#)
+            .expect_err("secret array-element write then egress must be flagged");
+        // (precision — set-only) a CLEAN value into a container element still accepts (no over-taint).
+        tc_ok(r#"fn main() { let buf = ["ok","ok"]; buf[0] = "still ok"; sink(buf[0]); }"#)
+            .expect("a clean element write must not over-taint the container");
+    }
+
+    #[test]
     fn taint_reassignment_to_clean_clears_precisely() {
         // Reassign a tainted var to a clean constant → genuinely clean (precision, not over-taint).
         tc_ok(r#"fn main() uses(net.send) { let x = input(); x = 42; send("h", 80, x); }"#)

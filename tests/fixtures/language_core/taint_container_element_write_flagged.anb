@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// INTEGRITY missed-leak (place-assignment laundering): an untrusted value stored into an ARRAY ELEMENT
+// via a non-`Var` assignment target (`buf[0] = u`) must taint the whole container binding — with
+// whole-binding granularity, a later read `sink(buf[0])` reaches an egress sink carrying the untrusted
+// input. Before the fix the flow-sensitive taint update was gated on `Expr::Var` targets only, so the
+// container `buf` stayed clean and the sink check never fired (the value really does reach the sink at
+// runtime). The fix MAY-taints the assignment root (set-only) for a non-`Var` place, mirroring the
+// interprocedural summary walker. (A clean container to a sink still accepts — the union is set-only.)
+fn main() {
+    let u = input();
+    let buf = ["ok", "ok"];
+    buf[0] = u;
+    sink(buf[0]);
+}
