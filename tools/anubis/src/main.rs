@@ -2964,6 +2964,10 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 );
             }
 
+            // When --evidence is set, the bundle's manifest verdict (PASS/FAIL) also gates the exit:
+            // exit 0 must mean BOTH the proof and the evidence passed. Captured here, fed into the
+            // decision below. `None` = no bundle requested (the evidence gate is then vacuous).
+            let mut evidence_bundle_verdict: Option<String> = None;
             if evidence {
                 let logs = vec![format!(
                     "prove input: {} backend: {}",
@@ -2986,21 +2990,32 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 .map_err(|e| anyhow!("{}", e))?;
                 println!("evidence bundle: {}", bundle.dir.display());
                 println!("verdict: {}", bundle.manifest.verdict);
+                evidence_bundle_verdict = Some(bundle.manifest.verdict.clone());
             }
             // All failure evidence (risc0 sidecars, receipt/verify markers, metadata, flat copies, and
-            // the optional evidence bundle) has now been written. Fail closed: report success ONLY when a
-            // fresh receipt was generated and verified; otherwise return Err so a failed proof cannot be
-            // mistaken for a real one (the gate scripts' `if ! anubis prove …` checks rely on this).
-            if fresh_receipt_verified {
+            // the optional evidence bundle) has now been written. Fail closed with the STRONGEST invariant:
+            // exit 0 ONLY when a fresh receipt was generated AND verified, AND — if an evidence bundle was
+            // built — its manifest verdict is PASS. Either leg failing returns Err with a distinct code so
+            // a failed proof, or a passing proof with a FAILing evidence bundle, cannot be mistaken for a
+            // real one (the gate scripts' `if ! anubis prove …` checks rely on this).
+            if prove_exit_ok(fresh_receipt_verified, evidence_bundle_verdict.as_deref()) {
                 println!("prove complete");
                 Ok(())
-            } else {
+            } else if !fresh_receipt_verified {
                 Err(anyhow!(
                     "ANUBIS_PROVE_NO_VERIFIED_RECEIPT: prove did not produce a fresh, verified ZK \
                      receipt — failing closed. All available failure evidence was written under {}. \
                      detail: {}",
                     out.display(),
                     prove_outcome_detail
+                ))
+            } else {
+                Err(anyhow!(
+                    "ANUBIS_PROVE_EVIDENCE_BUNDLE_FAILED: a fresh receipt was generated and verified, but \
+                     the evidence bundle manifest verdict is {} (expected PASS) — failing closed so exit 0 \
+                     means BOTH the proof and the evidence passed. The bundle was written under {}.",
+                    evidence_bundle_verdict.as_deref().unwrap_or("FAIL"),
+                    out.display()
                 ))
             }
         }
@@ -4860,6 +4875,14 @@ fn prove_uses_full_hybrid(backend: &str) -> bool {
     backend == "risc0"
 }
 
+/// Final `prove` exit decision (pure, unit-testable). Exit 0 (Ok) ONLY when a fresh receipt was
+/// generated AND verified, AND — if an evidence bundle was built (`evidence_verdict = Some(v)`) — its
+/// manifest verdict is exactly "PASS". `None` means no bundle was requested, so the evidence gate is
+/// vacuously satisfied. Any non-"PASS" verdict (incl. "FAIL" or an unexpected value) fails closed.
+fn prove_exit_ok(fresh_receipt_verified: bool, evidence_verdict: Option<&str>) -> bool {
+    fresh_receipt_verified && matches!(evidence_verdict, None | Some("PASS"))
+}
+
 fn image_id_is_placeholder(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.is_empty()
@@ -5901,6 +5924,25 @@ fn main() {
         let outcome = classify_risc0_proof_result(true, false, true, true);
         assert_eq!(outcome.verify_status, "failed");
         assert!(!outcome.fresh_receipt_generated);
+    }
+
+    #[test]
+    fn prove_exit_ok_requires_both_proof_and_evidence() {
+        // Strongest invariant: `prove` exits 0 ONLY when the proof verified AND (if an evidence bundle
+        // was built) its manifest verdict is PASS.
+        // Verified receipt, no bundle requested → Ok (evidence gate vacuous).
+        assert!(prove_exit_ok(true, None));
+        // Verified receipt + evidence bundle PASS → Ok.
+        assert!(prove_exit_ok(true, Some("PASS")));
+        // Verified receipt but evidence bundle FAIL → REJECT (the hardening this test locks in).
+        assert!(!prove_exit_ok(true, Some("FAIL")));
+        // Any non-PASS verdict (unexpected value) also fails closed — never silently accepted.
+        assert!(!prove_exit_ok(true, Some("PARTIAL")));
+        assert!(!prove_exit_ok(true, Some("")));
+        // No fresh verified receipt → REJECT regardless of a passing evidence bundle (the original defect).
+        assert!(!prove_exit_ok(false, Some("PASS")));
+        assert!(!prove_exit_ok(false, None));
+        assert!(!prove_exit_ok(false, Some("FAIL")));
     }
 
     #[test]
