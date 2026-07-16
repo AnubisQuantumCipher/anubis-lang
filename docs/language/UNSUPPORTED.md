@@ -506,9 +506,12 @@ Deepens the solver moat. Everything below is fail-closed and unit-tested (`cargo
   `ANUBIS_FLOAT_CONTRACT_UNMODELED`): the statement-level frame sweep cannot see a write embedded in a
   `match`-arm/`if`-expression, so admitting one would let a stale fact certify a violable contract —
   the `reassigned_roots` gate (whole-body `collect_assigned_roots`, embedded writes included) makes the
-  leak impossible by construction. That embedded-write sweep gap ALSO pre-exists in the INTEGER lane
-  (an int `let` + `match`-arm reassign over-certifies today) — tracked as its own follow-up soundness
-  slice. Everything ELSE stays `ANUBIS_FLOAT_CONTRACT_UNMODELED` / fail-closed: `%` (fmod ≠ fp.rem),
+  leak impossible by construction. That embedded-write sweep gap ALSO existed in the INTEGER lane (an int
+  `let` + `match`-arm reassign over-certified) and is now CLOSED at its source by
+  `invalidate_embedded_writes` (`21f441a`) — a variable written inside a `match`-arm/`if`-expression has
+  its stale solver fact invalidated at the enclosing statement, so `ensures(result == 2)` over a
+  match-reassigned `y` fails closed (`ANUBIS_CONTRACT_UNPROVABLE`) instead of being falsely proven.
+  Everything ELSE stays `ANUBIS_FLOAT_CONTRACT_UNMODELED` / fail-closed: `%` (fmod ≠ fp.rem),
   casts, int/float mixing, transcendentals, non-finite/scientific literals, float loop-invariants
   (int-only lane today). Tests: `phase3_qf_fp_float_contract_lane` (contracts, asserts, let-chains +
   both false-accept guards), `phase3_float_proptest_solver_matches_oracle`,
