@@ -3024,6 +3024,22 @@ impl TaintPass {
     }
 }
 
+/// Whether an obligation whose solver verdict is `unknown` (UNDECIDED within the z3 time budget — not
+/// disproved, no counterexample) must fail closed. Every proof-carrying contract obligation qualifies:
+/// an `ensures`, a `requires@` call-site precondition, an `assert`, AND BOTH loop-invariant obligations —
+/// the base case AND the preservation STEP. The step is deliberately excluded from the separate VACUITY
+/// check (a loop whose invariant implies `¬cond` legitimately never iterates, so a vacuous step is fine),
+/// but an UNDECIDED step is still not a proof: admitting the invariant's post-loop fact on a timed-out
+/// preservation step would certify a possibly-false invariant — a fail-open gap the vacuity exclusion
+/// must NOT extend to the undecided-verdict handling.
+pub(crate) fn obligation_undecided_is_unsound(name: &str) -> bool {
+    name.starts_with("ensures:")
+        || name.starts_with("requires@")
+        || name.starts_with("loop-invariant-base:")
+        || name.starts_with("loop-invariant-step:")
+        || name.starts_with("assert:")
+}
+
 pub struct SymbolicEngine;
 impl SymbolicEngine {
     /// Returns usable SMT-LIB path constraints (ready for Z3 or other solver).
@@ -3111,7 +3127,12 @@ impl SymbolicEngine {
                 // proof-carrying gate fails closed on it rather than accept an unverified postcondition.
                 // It was not disproved (no counterexample), only undecided within budget — say so, and
                 // clear any model. This branch became reachable once queries got a time budget.
-                if check.status == "UNKNOWN" && is_contract {
+                // NOTE the predicate is BROADER than the vacuity `is_contract` above: a loop-invariant
+                // PRESERVATION step is (correctly) NOT vacuity-checked, but an UNDECIDED step is still not
+                // a proof — an `unknown` preservation must fail closed exactly like an `ensures`, else a
+                // timed-out step silently admits a possibly-false invariant whose post-loop fact then
+                // certifies a false postcondition (a fail-OPEN gap the step's vacuity exclusion left open).
+                if check.status == "UNKNOWN" && obligation_undecided_is_unsound(&obl.name) {
                     check.status = "FAIL".into();
                     check.detail = "solver could not decide this contract within its time budget (z3 \
                          returned `unknown`, typically a hard symbolic division/remainder); failing \
