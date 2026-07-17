@@ -234,6 +234,11 @@ struct SemanticContext {
     /// scalar shadow-clear does not evict, so a shadowed struct binding could leave a stale field fact —
     /// registration of struct-let field facts is skipped for a shadowed base (fail-open). Reset per fn.
     shadowed_lets: BTreeSet<String>,
+    /// The subset of the modeled string-predicate builtins {`contains`,`starts_with`,`ends_with`} that a
+    /// TOP-LEVEL user fn (`all_fns`) OR a LOCAL binding (param / `let`) in the current function SHADOWS.
+    /// The runtime resolves a call local > user-fn > builtin, so a shadowed name must NOT be z3-modeled as
+    /// the string predicate (it would mis-certify a diverging user definition). Reset + repopulated per fn.
+    shadowed_string_preds: BTreeSet<String>,
     /// Variables given an EXPLICIT `: T` annotation. Only these have their reassignments
     /// type-checked (the user opted into the type); an inferred binding is dynamic and reassignable
     /// to any type, so enforcing type-stability on it would be a false positive.
@@ -1292,6 +1297,22 @@ fn analyze_function(
     collect_assigned_roots(body, &mut ctx.reassigned_roots);
     ctx.shadowed_lets.clear();
     collect_shadowed_lets(body, &mut ctx.shadowed_lets);
+    // Precompute which of the modeled string-predicate builtins are SHADOWED in this function (by a
+    // top-level user fn or a local param/let of the same name) — the runtime would call the shadow, so the
+    // predicate lane must decline to model it. Only the three names matter, so this is a ≤3-element set.
+    ctx.shadowed_string_preds.clear();
+    {
+        let mut locals = BTreeSet::new();
+        for (pn, _) in params {
+            locals.insert(pn.clone());
+        }
+        collect_let_bound(body, &mut locals);
+        for name in ["contains", "starts_with", "ends_with"] {
+            if ctx.all_fns.contains(name) || locals.contains(name) {
+                ctx.shadowed_string_preds.insert(name.to_string());
+            }
+        }
+    }
 
     analyze_stmts(
         body,
@@ -1841,7 +1862,7 @@ fn discharge_call_requires(
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if is_bool_modelable_string(clause, &ctx.solver_string_vars) {
+        } else if is_bool_modelable_string(clause, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
             // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
             // a quoteless var-var body still routes to QF_S. The shared `string_expr_to_smt` under
             // `string_bool_to_smt` carries the load-bearing backslash escape.
@@ -1871,10 +1892,12 @@ fn discharge_call_requires(
             // Phase-3 str.len: discharge a string-LENGTH precondition at the call site (`h("ab")` against
             // `requires(len(s) >= 3)` → `(str.len "ab") = 2 < 3` → caught). COVERAGE-GATED: a referenced
             // string var with no seeded String-lane fact would make z3 disprove via the spurious `s = ""`
-            // (the caller's justification is real but unseedable) — skip instead (fail-open, pre-lane).
+            // (the caller's justification is real but unseedable) — skip instead (fail-open, pre-lane). A
+            // predicate fact (str.contains/prefixof/suffixof) is excluded — it does not tightly bound length
+            // (see is_predicate_fact), so it must not spuriously "cover" this strlen obligation.
             let str_asm: Vec<String> = assumptions
                 .iter()
-                .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                .filter(|a| fact_is_string(a, &ctx.solver_string_vars) && !is_predicate_fact(a))
                 .cloned()
                 .collect();
             if strlen_vars_covered(clause, &str_asm, &ctx.solver_string_vars) {
@@ -2370,7 +2393,7 @@ fn push_branch_path_condition(
         expr_to_smt(cond, &ctx.symbolic_widths)
     } else if is_bool_modelable_float(cond, &ctx.solver_float_vars) {
         float_bool_to_smt(cond)
-    } else if is_bool_modelable_string(cond, &ctx.solver_string_vars) {
+    } else if is_bool_modelable_string(cond, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
         string_bool_to_smt(cond)
     } else if is_bool_modelable_strlen(cond, &ctx.solver_string_vars) {
         // Phase-3 str.len: a string-LENGTH branch guard (`if len(s) >= 3 { … }`) is a scoped path condition.
@@ -3036,8 +3059,8 @@ fn analyze_stmts(
                         strings: false,
                         guard_assumptions: ctx.active_branch_guards.clone(),
                     });
-                } else if is_bool_modelable_string(expr, &ctx.solver_string_vars) {
-                    // Phase-3 QF_S: a string-equality `assert` is discharged in QF_S. The shared
+                } else if is_bool_modelable_string(expr, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
+                    // Phase-3 QF_S: a string-equality/predicate `assert` is discharged in QF_S. The shared
                     // `assumptions` channel is sort-partitioned to STRING facts (a string `requires`), so
                     // the body is all-`String` and never sort-clashes with a bit-vector/float fact.
                     let smt = string_bool_to_smt(expr);
@@ -3046,31 +3069,47 @@ fn analyze_stmts(
                         .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
                         .cloned()
                         .collect();
-                    let mut raw = BTreeSet::new();
-                    collect_expr_vars(expr, &mut raw);
-                    let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
-                    for a in &str_asm {
-                        let mut avs = BTreeSet::new();
-                        collect_vars_from_smt(a, &mut avs);
-                        vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                    // COVERAGE-GATE a PURE-predicate assert (`contains`/`starts_with`/`ends_with`, no `==`):
+                    // it is a WEAKER consequence than an equality pin, so with an UNSEEDABLE justification (a
+                    // non-ASCII `requires(s == "café")` seeds nothing) the obligation would carry zero facts →
+                    // z3's spurious `s = ""` counterexample → over-rejection of a program that runs clean
+                    // (`starts_with("café","ca")` is true). Uncovered → skip (fail-open, the pre-lane stance).
+                    // Equality is intentionally NOT gated (is_pure_string_predicate is false for it): an ASCII
+                    // equality assert under an unseeable pin is genuinely runtime-false, so its reject is
+                    // correct — gating it would fail-open a false accept.
+                    if is_pure_string_predicate(expr)
+                        && !strlen_vars_covered(expr, &str_asm, &ctx.solver_string_vars)
+                    {
+                        // stranded pure-predicate obligation — fail-open, exactly as before this lane.
+                    } else {
+                        let mut raw = BTreeSet::new();
+                        collect_expr_vars(expr, &mut raw);
+                        let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+                        for a in &str_asm {
+                            let mut avs = BTreeSet::new();
+                            collect_vars_from_smt(a, &mut avs);
+                            vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                        }
+                        ctx.solver_obligations.push(SolverObligation {
+                            name: format!("assert:{smt}"),
+                            assumptions: str_asm,
+                            assertion: smt,
+                            vars: vars.into_iter().collect(),
+                            strings: true,
+                            guard_assumptions: ctx.active_branch_guards.clone(),
+                        });
                     }
-                    ctx.solver_obligations.push(SolverObligation {
-                        name: format!("assert:{smt}"),
-                        assumptions: str_asm,
-                        assertion: smt,
-                        vars: vars.into_iter().collect(),
-                        strings: true,
-                        guard_assumptions: ctx.active_branch_guards.clone(),
-                    });
                 } else if is_bool_modelable_strlen(expr, &ctx.solver_string_vars) {
                     // Phase-3 str.len: a string-LENGTH body `assert` (`assert(len(s) >= 1)`) discharges in
                     // QF_S. COVERAGE-GATED (see strlen_vars_covered): with an unseedable justification
                     // (`requires(s == "é")` / `requires(len(s) >= n)`) the obligation would carry zero
                     // facts → spurious `s = ""` rejection of a valid program. Uncovered → skip (fail-open;
-                    // the assert is runtime-enforced, exactly the pre-lane stance for unmodeled asserts).
+                    // the assert is runtime-enforced, exactly the pre-lane stance for unmodeled asserts). A
+                    // predicate fact (str.contains/prefixof/suffixof) is excluded — it does not tightly bound
+                    // length, so it must not spuriously "cover" this strlen obligation (see is_predicate_fact).
                     let str_asm: Vec<String> = assumptions
                         .iter()
-                        .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                        .filter(|a| fact_is_string(a, &ctx.solver_string_vars) && !is_predicate_fact(a))
                         .cloned()
                         .collect();
                     if strlen_vars_covered(expr, &str_asm, &ctx.solver_string_vars) {
@@ -5284,20 +5323,49 @@ fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
 /// literal case. The obligation is tagged `strings: true` at its push site so theory selection routes it
 /// to QF_S even though a quoteless var-var body carries no `"`. Tried AFTER the int/float gates (which
 /// require int/float membership) so a numeric formula never takes this path.
-fn is_bool_modelable_string(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+fn is_bool_modelable_string(
+    e: &Expr,
+    string_vars: &BTreeSet<String>,
+    shadowed_builtins: &BTreeSet<String>,
+) -> bool {
     match e {
         Expr::Binary { op, lhs, rhs } => match op.as_str() {
             "==" | "!=" => {
                 is_string_modelable(lhs, string_vars) && is_string_modelable(rhs, string_vars)
             }
             "&&" | "||" => {
-                is_bool_modelable_string(lhs, string_vars)
-                    && is_bool_modelable_string(rhs, string_vars)
+                is_bool_modelable_string(lhs, string_vars, shadowed_builtins)
+                    && is_bool_modelable_string(rhs, string_vars, shadowed_builtins)
             }
             _ => false,
         },
-        Expr::Unary { op, expr } => op == "!" && is_bool_modelable_string(expr, string_vars),
-        Expr::Declassify { inner, .. } => is_bool_modelable_string(inner, string_vars),
+        Expr::Unary { op, expr } => {
+            op == "!" && is_bool_modelable_string(expr, string_vars, shadowed_builtins)
+        }
+        // Phase-3 QF_S string PREDICATES: `contains(s,sub)`/`starts_with(s,p)`/`ends_with(s,p)` are boolean
+        // string formulas (runtime Rust `str::contains`/`starts_with`/`ends_with`), modeled as z3
+        // `str.contains`/`str.prefixof`/`str.suffixof`. Both args must be string-modelable — a non-ASCII
+        // literal arg fails the is_string_modelable gate → the whole predicate declines (fail-open), never a
+        // byte-wise mis-model. A string VAR arg is abstract (z3 reasons soundly). Exactly matches over the
+        // printable-ASCII domain, as validated at the z3 layer. The `!shadowed_builtins.contains(callee)`
+        // guard is the builtin-shadow soundness boundary (the #12 class): the runtime resolves a call in the
+        // order LOCAL binding (param / `let`) > top-level user fn > builtin (run.rs), so if the user DEFINES
+        // `fn starts_with` OR binds a LOCAL `let contains = …`/`fn f(contains, …)` of that name, the runtime
+        // calls THEIRS (which may diverge from the builtin) — modeling it as the z3 predicate would
+        // mis-certify (a review-confirmed false accept). `shadowed_builtins` is precomputed per function as
+        // exactly the subset of the three names shadowed by all_fns ∪ params ∪ let-bound names, so a shadowed
+        // predicate declines (fail-open, as pre-lane). (Unlike len/abs/min/max, which carry NO such guard —
+        // a separate #12 slice — so this lane is strictly the safer one.)
+        Expr::Call { callee, args } => {
+            matches!(callee.as_str(), "contains" | "starts_with" | "ends_with")
+                && args.len() == 2
+                && !shadowed_builtins.contains(callee)
+                && is_string_modelable(&args[0], string_vars)
+                && is_string_modelable(&args[1], string_vars)
+        }
+        Expr::Declassify { inner, .. } => {
+            is_bool_modelable_string(inner, string_vars, shadowed_builtins)
+        }
         _ => false,
     }
 }
@@ -5353,6 +5421,21 @@ fn string_bool_to_smt(e: &Expr) -> String {
             }
         }
         Expr::Unary { expr, .. } => format!("(not {})", string_bool_to_smt(expr)),
+        // Phase-3 QF_S string predicates (gated by is_bool_modelable_string's Call arm — callee is one of
+        // the three, both args string-modelable). `starts_with(s,p)` / `ends_with(s,p)` swap args for z3's
+        // `(str.prefixof p s)` / `(str.suffixof p s)`; `contains(s,sub)` → `(str.contains s sub)`.
+        Expr::Call { callee, args }
+            if args.len() == 2
+                && matches!(callee.as_str(), "contains" | "starts_with" | "ends_with") =>
+        {
+            let a0 = string_expr_to_smt(&args[0]);
+            let a1 = string_expr_to_smt(&args[1]);
+            match callee.as_str() {
+                "starts_with" => format!("(str.prefixof {a1} {a0})"),
+                "ends_with" => format!("(str.suffixof {a1} {a0})"),
+                _ => format!("(str.contains {a0} {a1})"),
+            }
+        }
         Expr::Declassify { inner, .. } => string_bool_to_smt(inner),
         _ => "true".to_string(),
     }
@@ -5460,6 +5543,39 @@ fn strlen_bool_to_smt(e: &Expr, string_vars: &BTreeSet<String>) -> String {
 /// modeled. NOT applied to the `ensures` site: that site fails CLOSED when unmodeled (pre-lane rejected
 /// every strlen ensures), and its tautology case (`ensures(len(result) >= len(s))` over `return s`)
 /// legitimately proves with no assumptions — gating it would regress a completeness gain.
+/// True when a seeded SMT fact is a string PREDICATE fact (`str.contains`/`str.prefixof`/`str.suffixof`).
+/// Such a fact mentions its string var but does NOT tightly constrain its LENGTH (`contains(s,"f")` only
+/// implies `len(s) >= 1`), so it must be EXCLUDED from a str.len obligation's assumptions + coverage: a
+/// predicate fact would otherwise "cover" a strlen var (defeating the strlen coverage gate) yet leave the
+/// obligation stranded against a tighter bound whose real justification is unseeable (a non-ASCII
+/// `requires`) → over-rejection. Excluding predicate facts keeps the strlen lane behaving exactly as it did
+/// before the predicate lane existed. (Predicate facts still cover PREDICATE obligations — that gate does
+/// not filter them.)
+fn is_predicate_fact(a: &str) -> bool {
+    a.contains("str.contains") || a.contains("str.prefixof") || a.contains("str.suffixof")
+}
+
+/// True when `e` is built PURELY from string predicates (`contains`/`starts_with`/`ends_with`) and boolean
+/// combinators (`&&`/`||`/`!`) — no `==`/`!=`. A pure predicate is a WEAKER consequence than an equality
+/// pin, so an uncovered one (an unseeable justification like a non-ASCII `requires`) must fail-OPEN rather
+/// than strand against a free var and over-reject; an equality assert under the same uncovered pin is
+/// genuinely runtime-false, so it stays fail-CLOSED. A MIXED `s == "hi" && starts_with(s, "h")` is NOT pure
+/// (the `==` sub → false), so it keeps the equality lane's unconditional (fail-closed) behavior — gating it
+/// would fail-open the equality part into a false accept.
+fn is_pure_string_predicate(e: &Expr) -> bool {
+    match e {
+        Expr::Call { callee, args } => {
+            args.len() == 2 && matches!(callee.as_str(), "contains" | "starts_with" | "ends_with")
+        }
+        Expr::Binary { op, lhs, rhs } if op == "&&" || op == "||" => {
+            is_pure_string_predicate(lhs) && is_pure_string_predicate(rhs)
+        }
+        Expr::Unary { op, expr } if op == "!" => is_pure_string_predicate(expr),
+        Expr::Declassify { inner, .. } => is_pure_string_predicate(inner),
+        _ => false,
+    }
+}
+
 fn strlen_vars_covered(
     concrete: &Expr,
     str_asm: &[String],
@@ -5499,7 +5615,7 @@ fn seed_requires_fact(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, 
         // Phase-3 QF_FP: the `<=`/`>=` NaN disjunction in float_bool_to_smt keeps a runtime-reachable NaN
         // input IN the assumed set, matching run.rs — a bare fp.leq would wrongly exclude it and over-certify.
         assumptions.push(float_bool_to_smt(req));
-    } else if is_bool_modelable_string(req, &ctx.solver_string_vars) {
+    } else if is_bool_modelable_string(req, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
         assumptions.push(string_bool_to_smt(req));
     } else if is_bool_modelable_strlen(req, &ctx.solver_string_vars) {
         assumptions.push(strlen_bool_to_smt(req, &ctx.solver_string_vars));
@@ -6155,7 +6271,7 @@ fn push_ensures_obligations(
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
+        } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
             // Phase-3 QF_S: a string-equality postcondition is DISCHARGED via the string encoder, with
             // the shared `assumptions` channel sort-partitioned to STRING facts (a string `requires`), so
             // `requires(s == "open") ensures(s == "open")` proves. All-`String` body, no sort clash.

@@ -7012,6 +7012,98 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn phase3_qf_s_string_predicates_discharge_or_disprove() {
+        // Phase-3 QF_S string PREDICATES: `contains(s,sub)` / `starts_with(s,p)` / `ends_with(s,p)` now
+        // DISCHARGE in Z3 QF_S (`str.contains` / `str.prefixof` / `str.suffixof`) instead of fail-opening.
+        // Runtime is Rust `str::contains`/`starts_with`/`ends_with` = z3 exactly over printable-ASCII. Before
+        // this slice, `requires(s=="hello") { assert(starts_with(s,"xy")) }` was ACCEPTED while it traps.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // the confirmed false accept: a FALSE predicate under a pinning requires must REJECT.
+        assert!(
+            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(starts_with(s, "xy")); } fn main() { f("hello"); }"#),
+            "a false starts_with under a pinning requires must reject"
+        );
+        // the TRUE duals must ACCEPT (proven, not merely fail-open).
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(starts_with(s, "he")); } fn main() { f("hello"); }"#),
+            "a true starts_with proves"
+        );
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(ends_with(s, "lo")); } fn main() { f("hello"); }"#),
+            "a true ends_with proves"
+        );
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(contains(s, "ell")); } fn main() { f("hello"); }"#),
+            "a true contains proves"
+        );
+        // FALSE contains / ends_with reject.
+        assert!(
+            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(contains(s, "zzz")); } fn main() { f("hello"); }"#)
+                && !accepts(r#"fn f(s: string) requires(s == "hello") { assert(ends_with(s, "he")); } fn main() { f("hello"); }"#),
+            "a false contains / ends_with is disproved"
+        );
+        // ABSTRACT-VAR reasoning is sound: starts_with(s,"ab") ⊨ contains(s,"a").
+        assert!(
+            accepts(r#"fn f(s: string) requires(starts_with(s, "ab")) { assert(contains(s, "a")); } fn main() { f("abc"); }"#),
+            "abstract: a starts_with premise entails a contains conclusion"
+        );
+        // NEGATION composes: `!contains` under a pinning requires.
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(!contains(s, "z")); } fn main() { f("hello"); }"#)
+                && !accepts(r#"fn f(s: string) requires(s == "hello") { assert(!contains(s, "ell")); } fn main() { f("hello"); }"#),
+            "predicate negation composes (¬contains true when absent, disproved when present)"
+        );
+        // SOUNDNESS gate: a NON-ASCII literal arg declines (fail-open) — z3 byte-vs-char, same as the rest
+        // of the string lane. `contains(s, "é")` stays unmodeled → a false assert over it fail-opens.
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hi") { assert(starts_with(s, "aé")); } fn main() { f("hi"); }"#),
+            "a non-ASCII predicate literal arg fail-opens (no byte-wise mis-model)"
+        );
+        // BUILTIN-SHADOW guard (the #12 class): if the user DEFINES `fn starts_with`/`contains`, the runtime
+        // calls THEIRS (which may diverge from the builtin), so the predicate must NOT be z3-modeled — it
+        // stays fail-open exactly as pre-lane. Without the `!all_fns.contains(callee)` guard, modeling a
+        // user `fn contains` that always returns true against a `str.contains` that is false would
+        // OVER-REJECT a valid program. Here the user fn makes the assert TRUE at runtime (clean), so the
+        // guard must keep it ACCEPT (fail-open), never reject.
+        assert!(
+            accepts(r#"fn contains(a: string, b: string) -> bool { return true; } fn f(s: string) requires(s == "hello") { assert(contains(s, "zzz")); } fn main() { f("hello"); }"#),
+            "a user-shadowed predicate is NOT builtin-modeled (fail-open) — no over-rejection of a valid user-fn program"
+        );
+        // LOCAL-shadow guard (review-confirmed: the runtime resolves local > user-fn > builtin, so a
+        // `let contains = …` closure or a param named `contains` shadows the builtin too — `all_fns` alone
+        // MISSED this). A local `let contains` returning true makes `assert(contains(s,"zzz"))` TRUE at
+        // runtime (clean); the predicate must decline (fail-open ACCEPT), never builtin-model + over-reject.
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { let contains = |a, b| true; assert(contains(s, "zzz")); } fn main() { f("hello"); }"#),
+            "a LOCAL (let-closure) shadow of a predicate builtin declines to model (fail-open) — the all_fns-only guard missed this"
+        );
+        // OVER-REJECTION guard 1 (review lens-2): a PURE-predicate assert whose justification is UNSEEDABLE
+        // (a non-ASCII `requires(s == "café")` seeds nothing) must fail-OPEN, not strand against a free var
+        // → over-reject. `starts_with("café","ca")` is true at runtime, so the program is VALID — must
+        // ACCEPT. (Equality is NOT gated: `is_pure_string_predicate` is false for it.)
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "café") { assert(starts_with(s, "ca")); } fn main() { f("café"); }"#),
+            "a pure-predicate assert with an unseedable (non-ASCII) justification fail-opens — no stranded over-rejection"
+        );
+        // OVER-REJECTION guard 2 (review lens-2, the strlen interaction): a `requires(contains(s, …))` seeds
+        // a str.contains fact that MENTIONS s but does not tightly bound len(s); it must NOT spuriously
+        // "cover" a `len(s) >= N` strlen obligation whose real justification is the unseeable non-ASCII pin.
+        // `len("café") = 4 >= 3` at runtime → VALID → must ACCEPT (the predicate fact is excluded from the
+        // strlen coverage, keeping the strlen lane as it was before the predicate lane existed).
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "café") requires(contains(s, "f")) { assert(len(s) >= 3); } fn main() { f("café"); }"#),
+            "a str.contains fact must not spuriously cover a strlen obligation → no interaction over-rejection"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_let_chaining() {
         // Phase-3 QF_S: a genuinely-string, NEVER-REASSIGNED `let` becomes a String defining fact in
         // the shared sort-partitioned assumptions channel (the exact mirror of the float-let slice
