@@ -1678,6 +1678,20 @@ fn merge_taint_over(
 /// runtime — sound (fail-closed), incomplete. RESIDUAL: this fires only on a DIRECT `Expr::Call` at a
 /// statement position; a call NESTED in an argument / binary operand / `return`-arg (`h(g(x))`,
 /// `print(g(x))`, `return g(x)`) or inside a `match`-arm / `if`-expression is NOT discharged (fail-open).
+/// Flatten a top-level `&&` conjunction into its leaf conjuncts (`A && (B && C)` → `[A, B, C]`), so each
+/// can discharge in its own lane. A non-`&&` expr yields itself. Used by discharge_call_requires so a
+/// MIXED-lane conjunction (`s == "ok" && len(s) >= 2`) is not left unmodelable-as-a-whole (fail-open).
+fn flatten_and_exprs(e: &Expr) -> Vec<&Expr> {
+    match e {
+        Expr::Binary { op, lhs, rhs } if op == "&&" => {
+            let mut v = flatten_and_exprs(lhs);
+            v.extend(flatten_and_exprs(rhs));
+            v
+        }
+        _ => vec![e],
+    }
+}
+
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -1695,8 +1709,15 @@ fn discharge_call_requires(
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
-        if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
-            let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+        // Decompose a top-level `&&`: a MIXED-lane conjunction (`s == "ok" && len(s) >= 2`) is neither
+        // fully string-eq nor fully strlen modelable, so tested atomically it matched NO lane → skipped
+        // (fail-open — a call `gs("no")` certified a runtime-trapping precondition). `A && B` at a call
+        // site requires the caller to prove BOTH, so each conjunct discharges in its OWN lane (mirrors
+        // seed_requires_fact). Homogeneous `&&` is unchanged (two obligations vs one conjunction — same
+        // verdict); an unmodelable conjunct still sets all_requires_checkable=false.
+        for clause in flatten_and_exprs(&concrete) {
+        if is_bool_modelable(clause, &ctx.solver_int_vars) {
+            let smt = expr_to_smt(clause, &ctx.symbolic_widths);
             let int_asm: Vec<String> = assumptions
                 .iter()
                 .filter(|a| {
@@ -1718,16 +1739,16 @@ fn discharge_call_requires(
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if is_bool_modelable_float(&concrete, &ctx.solver_float_vars) {
+        } else if is_bool_modelable_float(clause, &ctx.solver_float_vars) {
             // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
-            let smt = float_bool_to_smt(&concrete);
+            let smt = float_bool_to_smt(clause);
             let float_asm: Vec<String> = assumptions
                 .iter()
                 .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
                 .cloned()
                 .collect();
             let mut raw = BTreeSet::new();
-            collect_expr_vars(&concrete, &mut raw);
+            collect_expr_vars(clause, &mut raw);
             let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
             for a in &float_asm {
                 let mut avs = BTreeSet::new();
@@ -1742,18 +1763,18 @@ fn discharge_call_requires(
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars) {
+        } else if is_bool_modelable_string(clause, &ctx.solver_string_vars) {
             // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
             // a quoteless var-var body still routes to QF_S. The shared `string_expr_to_smt` under
             // `string_bool_to_smt` carries the load-bearing backslash escape.
-            let smt = string_bool_to_smt(&concrete);
+            let smt = string_bool_to_smt(clause);
             let str_asm: Vec<String> = assumptions
                 .iter()
                 .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
                 .cloned()
                 .collect();
             let mut raw = BTreeSet::new();
-            collect_expr_vars(&concrete, &mut raw);
+            collect_expr_vars(clause, &mut raw);
             let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
             for a in &str_asm {
                 let mut avs = BTreeSet::new();
@@ -1768,7 +1789,7 @@ fn discharge_call_requires(
                 strings: true,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if is_bool_modelable_strlen(&concrete, &ctx.solver_string_vars) {
+        } else if is_bool_modelable_strlen(clause, &ctx.solver_string_vars) {
             // Phase-3 str.len: discharge a string-LENGTH precondition at the call site (`h("ab")` against
             // `requires(len(s) >= 3)` → `(str.len "ab") = 2 < 3` → caught). COVERAGE-GATED: a referenced
             // string var with no seeded String-lane fact would make z3 disprove via the spurious `s = ""`
@@ -1778,10 +1799,10 @@ fn discharge_call_requires(
                 .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
                 .cloned()
                 .collect();
-            if strlen_vars_covered(&concrete, &str_asm, &ctx.solver_string_vars) {
-                let smt = strlen_bool_to_smt(&concrete, &ctx.solver_string_vars);
+            if strlen_vars_covered(clause, &str_asm, &ctx.solver_string_vars) {
+                let smt = strlen_bool_to_smt(clause, &ctx.solver_string_vars);
                 let mut raw = BTreeSet::new();
-                collect_expr_vars(&concrete, &mut raw);
+                collect_expr_vars(clause, &mut raw);
                 let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
                 for a in &str_asm {
                     let mut avs = BTreeSet::new();
@@ -1801,6 +1822,7 @@ fn discharge_call_requires(
             }
         } else {
             all_requires_checkable = false;
+        }
         }
     }
     all_requires_checkable

@@ -5871,6 +5871,48 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn mixed_lane_conjunction_requires_decomposes() {
+        // A callee `requires` that is a top-level `&&` MIXING solver lanes (a string-equality conjunct AND
+        // a string-length conjunct) is neither fully modelable as one formula, so tested atomically it
+        // matched NO lane and was SKIPPED (fail-open — a violating call certified a runtime-trapping
+        // precondition). `A && B` at a call site requires proving BOTH, so each conjunct discharges in its
+        // own lane. Homogeneous `&&` is unchanged (equivalent two-obligation split).
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // mixed string-eq && strlen, violated → must REJECT (was fail-open accept).
+        assert!(
+            !accepts(r#"fn gs(s: string) -> i64 requires(s == "ok" && len(s) >= 2) { assert(s == "ok"); return 1; } fn f() -> i64 { let z = gs("no"); return z; } fn main() { print(f()); }"#),
+            "a mixed string-eq && strlen requires must decompose and catch the violation"
+        );
+        // …satisfied → must ACCEPT.
+        assert!(
+            accepts(r#"fn gs(s: string) -> i64 requires(s == "ok" && len(s) >= 2) { assert(s == "ok"); return 1; } fn f() -> i64 { let z = gs("ok"); return z; } fn main() { print(f()); }"#),
+            "a mixed requires whose both conjuncts hold must accept"
+        );
+        // only the STRLEN conjunct violated (equality holds) → still REJECT (each conjunct is checked).
+        assert!(
+            !accepts(r#"fn gs(s: string) -> i64 requires(s == "okay" && len(s) >= 10) { return 1; } fn f() -> i64 { let z = gs("okay"); return z; } fn main() { print(f()); }"#),
+            "a mixed requires rejects when the length conjunct fails though the equality holds"
+        );
+        // mixed int && string, violated string → REJECT; homogeneous int && unchanged (violated → REJECT).
+        assert!(
+            !accepts(r#"fn g(x: i64, s: string) -> i64 requires(x > 0 && s == "ok") { assert(s == "ok"); return x; } fn f() -> i64 { let z = g(5, "no"); return z; } fn main() { print(f()); }"#),
+            "a mixed int && string requires catches the string violation"
+        );
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0 && x < 10) { return 100 / x; } fn f() -> i64 { let z = g(50); return z; } fn main() { print(f()); }"#)
+                && accepts(r#"fn g(x: i64) -> i64 requires(x > 0 && x < 10) { return 100 / x; } fn f() -> i64 { let z = g(5); return z; } fn main() { print(f()); }"#),
+            "a homogeneous int && requires is unchanged (violated rejects, satisfied accepts)"
+        );
+    }
+
+    #[test]
     fn call_site_requires_discharged_across_all_lanes_and_positions() {
         // SOUNDNESS (hunt-confirmed false accepts): a callee's `requires` is ASSUMED inside its body
         // (seeding its `assert`/`ensures` discharge), so the CALLER must be forced to prove it at the
