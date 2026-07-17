@@ -6498,6 +6498,103 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn struct_param_field_contracts_discharge_or_disprove() {
+        // A struct-PARAM field `p.field` is now a modeled term IN CONTRACTS: when a `requires` constrains
+        // it, the field gets a canonical per-(base,field) SMT symbol in its declared lane, so an
+        // `assert`/`ensures` over the SAME field is proven or DISPROVED instead of fail-opening. Before
+        // this slice, `requires(p.a == "x") { assert(p.a == "z") }` was ACCEPTED (the field access was
+        // unmodeled → the string assert fail-opened) while `g(P{a:"x"})` traps at runtime — a false accept
+        // the adversarial hunt (probe P5) confirmed. The coverage gate is folded into registration: only a
+        // field MENTIONED in a `requires` is registered, so an unseeded field stays fail-open (no
+        // over-rejection of the corpus).
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // CASE 1 (the confirmed false accept): a FALSE string field assert under a seeding requires must
+        // REJECT. Runtime g(P{a:"x"}) → p.a == "x", so assert(p.a == "z") traps.
+        assert!(
+            !accepts(r#"struct P { a: string } fn g(p: P) requires(p.a == "x") { assert(p.a == "z"); } fn main() { g(P{a: "x"}); }"#),
+            "a false string field assert under a seeding requires must reject"
+        );
+        // CASE 2: the TRUE dual (assert the SEEDED value) must ACCEPT — no over-rejection.
+        assert!(
+            accepts(r#"struct P { a: string } fn g(p: P) requires(p.a == "x") { assert(p.a == "x"); } fn main() { g(P{a: "x"}); }"#),
+            "a true string field assert under the seeding requires must accept"
+        );
+        // CASE 3: the INT lane — a FALSE int field assert under a seeding requires must REJECT.
+        assert!(
+            !accepts(r#"struct P { n: i64 } fn g(p: P) requires(p.n == 5) { assert(p.n == 6); } fn main() { g(P{n: 5}); }"#),
+            "a false int field assert under a seeding requires must reject"
+        );
+        // CASE 4: the TRUE int dual accepts.
+        assert!(
+            accepts(r#"struct P { n: i64 } fn g(p: P) requires(p.n == 5) { assert(p.n == 5); } fn main() { g(P{n: 5}); }"#),
+            "a true int field assert under the seeding requires must accept"
+        );
+        // CASE 5 (COVERAGE / corpus safety): a field NOT mentioned in any requires stays UNMODELED, so an
+        // assert over it fail-opens (ACCEPTS) exactly as before — the seeding requires on p.a must not
+        // register p.b. This preserves the pre-slice behavior and prevents free-var over-rejection.
+        assert!(
+            accepts(r#"struct P { a: string, b: string } fn g(p: P) requires(p.a == "x") { assert(p.b == "z"); } fn main() { g(P{a: "x", b: "z"}); }"#),
+            "an unseeded field (not in any requires) stays fail-open — must accept"
+        );
+        // CASE 6 (ENSURES): a field-referencing postcondition is DISPROVED when false. `result`
+        // substitutes to the returned field; ensures(result == "z") contradicts requires(p.a == "x").
+        assert!(
+            !accepts(r#"struct P { a: string } fn g(p: P) -> string requires(p.a == "x") ensures(result == "z") { return p.a; } fn main() { let r = g(P{a: "x"}); }"#),
+            "a false field-referencing ensures must reject"
+        );
+        // CASE 7 (COVERAGE PRUNE — the LESSON-12 stranded-obligation trap): a field MENTIONED in a
+        // `requires` whose clause is UNSEEDABLE (a non-ASCII literal here; a user-predicate call is the
+        // other shape) is registered then PRUNED, because no fact for it landed in the assumptions. It must
+        // revert to fail-open (ACCEPT) — NOT strand the ASCII assert against a free var and over-reject. A
+        // registration-without-prune would spuriously REJECT this valid-per-the-checker program.
+        assert!(
+            accepts(r#"struct P { a: string } fn g(p: P) requires(p.a == "aé") { assert(p.a == "zz"); } fn main() { g(P{a: "aé"}); }"#),
+            "a field whose requires clause is unseeded (non-ASCII literal) must be pruned back to fail-open"
+        );
+        assert!(
+            accepts(r#"struct P { a: string } fn pred(s: string) -> bool { return true; } fn g(p: P) requires(pred(p.a)) { assert(p.a == "zz"); } fn main() { g(P{a: "qq"}); }"#),
+            "a field constrained only by a non-modelable user-predicate requires must be pruned to fail-open"
+        );
+        // CASE 8 (LET-SHADOW soundness — a review-confirmed false proof): a `let p = P{n:99}` shadows the
+        // struct param, so at runtime `p.n` reads 99, not the call-entry 5. The entry `requires(p.n == 5)`
+        // seed must NOT survive to prove `assert(p.n == 5)`. The registration gate excludes a base that is
+        // reassigned OR SHADOWED (collect_assigned_roots + collect_let_bound), so the field is unregistered
+        // → the assert fail-opens rather than being falsely proved. Must REJECT is WRONG here — the correct
+        // outcome is fail-open ACCEPT (unmodeled), matching every other unmodeled assert; the KEY property
+        // is that it is NOT a false PROOF (before the fix, assert(p.n==5) was PROVED while assert(p.n==99)
+        // was REJECTED — the tell-tale of a stale-fact proof). We assert the discriminator directly.
+        assert!(
+            accepts(r#"struct P { n: i64 } fn g(p: P) -> i64 requires(p.n == 5) { let p = P { n: 99 }; assert(p.n == 99); return 0; } fn main() { let r = g(P { n: 5 }); }"#),
+            "a let-shadow's TRUE assert(p.n==99) must not be rejected by a surviving stale entry fact"
+        );
+        assert!(
+            accepts(r#"struct P { n: i64 } fn g(p: P) -> i64 requires(p.n == 5) { let p = P { n: 99 }; assert(p.n == 5); return 0; } fn main() { let r = g(P { n: 5 }); }"#),
+            "a let-shadow leaves the field unmodeled (fail-open) — it must NOT be a false PROOF of a stale fact; before the collect_let_bound fix this was a false accept via a live entry seed"
+        );
+        // CASE 9 (INTENDED consistency with scalar params — NOT a regression to "fix"): a NON-PINNING
+        // requires (`p.n > 3`) registers+seeds the field but does not fix its value, so a stronger
+        // `assert(p.n == 10)` is modeled-and-UNPROVABLE (p.n = 4 is a counterexample) → REJECT, fail-closed
+        // modular verification. This is EXACTLY how a scalar param already behaves; the assertions pin BOTH
+        // to reject so the two surfaces stay consistent. A future change that makes the field fail-OPEN here
+        // (to "un-regress" the accept) would reintroduce unsound modular reasoning and diverge from scalars.
+        assert!(
+            !accepts(r#"fn g(n: i64) -> i64 requires(n > 3) { assert(n == 10); return 0; } fn main() { let r = g(10); }"#),
+            "sanity: a scalar non-pinning requires + stronger assert already rejects (fail-closed modular)"
+        );
+        assert!(
+            !accepts(r#"struct P { n: i64 } fn g(p: P) -> i64 requires(p.n > 3) { assert(p.n == 10); return 0; } fn main() { let r = g(P { n: 10 }); }"#),
+            "a struct field must match the scalar: a non-pinning requires + stronger assert rejects (modular)"
+        );
+    }
+
+    #[test]
     fn match_whole_value_binding_aliases_the_scrutinee() {
         // A whole-value match binding `match S { name => body }` binds name = S for that arm, so a call
         // over `name` in the body must be discharged against S's facts — NOT a shadowed OUTER var of the

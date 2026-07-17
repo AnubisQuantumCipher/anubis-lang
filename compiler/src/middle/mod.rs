@@ -1187,9 +1187,80 @@ fn analyze_function(
                 ctx.solver_string_vars.insert(pname.clone());
             }
         }
+        // Struct-PARAM field modeling: for each field of a struct parameter that a `requires` mentions,
+        // register a canonical per-(base, field) symbol in the field's declared lane, so a later
+        // assert/ensures over the SAME field is proven or DISPROVED instead of fail-opening (the P5
+        // adversarial-hunt false accept). Skipped when the base param is reassigned OR SHADOWED anywhere in
+        // the body — a `let p = P{..}` shadow (or a match/if-let arm re-binding `p`) leaves the entry
+        // `requires` seed for the field stale, and an assert over `p.field` would then be proved against the
+        // call-entry value while the runtime reads the shadowed one (a review-confirmed false proof). Both
+        // `collect_assigned_roots` (assignments, incl. field writes `p.n = ..` rooted to `p`) AND
+        // `collect_let_bound` (let/pattern shadows) are needed — exactly as the nzdiv-divisor gate below and
+        // the ensures anti-launder guard do; the mangled symbol does not carry the base name as a token the
+        // reassignment invalidation could drop, so this gate is the sole guard. Declining is fail-open.
+        let mut registered_field_syms: Vec<String> = Vec::new();
+        {
+            let mut base_reassigned = BTreeSet::new();
+            collect_assigned_roots(body, &mut base_reassigned);
+            collect_let_bound(body, &mut base_reassigned);
+            let param_ty: BTreeMap<&str, &str> =
+                params.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+            let mut field_accesses = Vec::new();
+            for req in requires {
+                collect_field_accesses(req, &mut field_accesses);
+            }
+            for (base, field) in field_accesses {
+                if base_reassigned.contains(&base) {
+                    continue;
+                }
+                let Some(pty) = param_ty.get(base.as_str()) else {
+                    continue;
+                };
+                let Some(fields) = ctx.struct_fields.get(*pty) else {
+                    continue;
+                };
+                let Some(fty) = fields.get(&field) else {
+                    continue;
+                };
+                let sym = mangle_field(&base, &field);
+                if is_integer_ty(fty) {
+                    ctx.solver_int_vars.insert(sym.clone());
+                    ctx.symbolic_widths.insert(sym.clone(), 64);
+                } else if is_float_ty(fty) {
+                    ctx.solver_float_vars.insert(sym.clone());
+                } else if fty.as_str() == "string" {
+                    ctx.solver_string_vars.insert(sym.clone());
+                } else {
+                    continue;
+                }
+                registered_field_syms.push(sym);
+            }
+        }
         for req in requires {
             seed_requires_fact(ctx, &mut assumptions, req);
         }
+        // COVERAGE PRUNE (LESSON 12 — the "stranded obligation" trap): a field mentioned in a `requires`
+        // is registered ABOVE, but the clause may be UNSEEDABLE (a non-ASCII literal, a user-predicate
+        // call, …) so `seed_requires_fact` pushed no constraining fact for it. A registered-but-unseeded
+        // field would strand a later assert/ensures over it against a FREE solver var → z3 finds a spurious
+        // counterexample → over-rejection of a valid program the pre-slice code fail-opened. So un-register
+        // any field symbol NO assumption references: it reverts to unmodeled (fail-open), exactly as
+        // before. Only fields whose fact actually landed in the shared `assumptions` channel stay modeled.
+        registered_field_syms.retain(|sym| {
+            let smt_name = smt_var(sym);
+            let seeded = assumptions.iter().any(|a| {
+                let mut vs = BTreeSet::new();
+                collect_vars_from_smt(a, &mut vs);
+                vs.contains(&smt_name)
+            });
+            if !seeded {
+                ctx.solver_int_vars.remove(sym);
+                ctx.solver_float_vars.remove(sym);
+                ctx.solver_string_vars.remove(sym);
+                ctx.symbolic_widths.remove(sym);
+            }
+            seeded
+        });
         // Mark parameters that a `requires` guard proves non-zero AS DIVISORS, so `x / v` / `x % v`
         // become modelable. Sound only if the guarantee holds at the division: require the parameter
         // to be a modeled integer AND never reassigned or shadowed in the body (else the entry guard
@@ -4937,6 +5008,11 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
                 fields.iter().any(|(n, _)| n == field)
                     && fields.iter().all(|(_, v)| is_int_modelable(v, int_vars))
             }
+            // A field read `p.field` off a struct VAR is modelable IFF that (base, field) has a
+            // registered symbol — i.e. `p` is a struct param whose integer field `field` is constrained
+            // by a `requires` (see the has_contract registration). An unregistered field is unmodeled
+            // (fail-open), so this can only strengthen checking, never over-reject an unseeded field.
+            Expr::Var(v) => int_vars.contains(&mangle_field(v, field)),
             _ => false,
         },
         // A bare array literal is a sequence value, not an integer — not int-modelable.
@@ -4989,6 +5065,11 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
         }
         Expr::Unary { op, expr } if op == "-" => is_float_modelable(expr, float_vars),
         Expr::Declassify { inner, .. } => is_float_modelable(inner, float_vars),
+        // A float field `p.field` off a struct VAR — modelable IFF registered (a struct param's float
+        // field constrained by a `requires`). Mirrors the int/string field arms.
+        Expr::FieldAccess { base, field, .. } => {
+            matches!(base.as_ref(), Expr::Var(v) if float_vars.contains(&mangle_field(v, field)))
+        }
         _ => false,
     }
 }
@@ -5041,6 +5122,12 @@ fn float_expr_to_smt(e: &Expr) -> String {
             format!("({f} RNE {l} {r})")
         }
         Expr::Unary { expr, .. } => format!("(fp.neg {})", float_expr_to_smt(expr)),
+        Expr::FieldAccess { base, field, .. } => match base.as_ref() {
+            // A registered struct-param float field → its canonical mangled symbol (gated by
+            // is_float_modelable's FieldAccess arm, so an unregistered field never reaches here).
+            Expr::Var(v) => smt_var(&mangle_field(v, field)),
+            _ => "((_ to_fp 11 53) RNE 0.0)".to_string(),
+        },
         Expr::Declassify { inner, .. } => float_expr_to_smt(inner),
         _ => "((_ to_fp 11 53) RNE 0.0)".to_string(),
     }
@@ -5107,6 +5194,11 @@ fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
         Expr::Binary { op, lhs, rhs } if op == "+" => {
             is_string_modelable(lhs, string_vars) && is_string_modelable(rhs, string_vars)
         }
+        // A string field `p.field` off a struct VAR — modelable IFF registered (a struct param's string
+        // field constrained by a `requires`). Mirrors the int/float field arms.
+        Expr::FieldAccess { base, field, .. } => {
+            matches!(base.as_ref(), Expr::Var(v) if string_vars.contains(&mangle_field(v, field)))
+        }
         Expr::Declassify { inner, .. } => is_string_modelable(inner, string_vars),
         _ => false,
     }
@@ -5158,6 +5250,12 @@ fn string_expr_to_smt(e: &Expr) -> String {
         Expr::Binary { op, lhs, rhs } if op == "+" => {
             format!("(str.++ {} {})", string_expr_to_smt(lhs), string_expr_to_smt(rhs))
         }
+        Expr::FieldAccess { base, field, .. } => match base.as_ref() {
+            // A registered struct-param string field → its canonical mangled symbol (gated by
+            // is_string_modelable's FieldAccess arm, so an unregistered field never reaches here).
+            Expr::Var(v) => smt_var(&mangle_field(v, field)),
+            _ => "\"\"".to_string(),
+        },
         Expr::Declassify { inner, .. } => string_expr_to_smt(inner),
         _ => "\"\"".to_string(),
     }
@@ -5420,6 +5518,12 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
                 }
                 Some(expr_to_smt(e, widths))
             }
+            // A registered struct-param integer field → its canonical symbol (present in `widths` with
+            // width 64 when registered; an unregistered field declines, so the anti-launder value check
+            // stays fail-open on it).
+            Expr::Var(v) if widths.contains_key(&mangle_field(v, field)) => {
+                Some(smt_var(&mangle_field(v, field)))
+            }
             _ => None,
         },
         Expr::Cast { expr, ty } => {
@@ -5566,6 +5670,11 @@ fn expr_to_smt_with_width(
                 .find(|(n, _)| n == field)
                 .map(|(_, v)| expr_to_smt_with_width(v, widths, expected_width))
                 .unwrap_or_else(|| "(_ bv0 64)".into()),
+            // A registered struct-param integer field → its canonical symbol (only reached for a
+            // registered field, since is_int_modelable gates the obligation upstream).
+            Expr::Var(v) if widths.contains_key(&mangle_field(v, field)) => {
+                smt_var(&mangle_field(v, field))
+            }
             _ => "(_ bv0 64)".into(),
         },
         Expr::TaintSource { label } => format!("taint_source_{}", label.replace("\"", "")),
@@ -6156,6 +6265,61 @@ fn divisor_is_proven_nonzero(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
 
 /// Collect the variable names referenced by an expression (for deciding which loop-carried
 /// variables an invariant / condition constrains).
+/// Collect every single-level struct-field access `base.field` (base a plain `Var`) reachable in a
+/// contract predicate, so the has_contract registration can give each field a solver symbol. Direction
+/// of failure is SAFE: UNDER-collection just leaves a field unmodeled (fail-open — it can only decline to
+/// check, never over-prove), so a `_ => {}` catch-all here cannot cause a false accept. A nested `p.a.b`
+/// yields `(p, a)` via the base recursion (its type is a struct → not registered as a scalar), never
+/// `(p.a, b)`. Traverses the shapes a `requires` predicate can carry.
+fn collect_field_accesses(e: &Expr, out: &mut Vec<(String, String)>) {
+    match e {
+        Expr::FieldAccess { base, field, .. } => {
+            if let Expr::Var(v) = base.as_ref() {
+                out.push((v.clone(), field.clone()));
+            }
+            collect_field_accesses(base, out);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_field_accesses(lhs, out);
+            collect_field_accesses(rhs, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => collect_field_accesses(expr, out),
+        Expr::Declassify { inner, .. }
+        | Expr::Assume(inner)
+        | Expr::Assert(inner)
+        | Expr::Tainted { inner, .. }
+        | Expr::Try(inner) => collect_field_accesses(inner, out),
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_field_accesses(a, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_field_accesses(callee, out);
+            for a in args {
+                collect_field_accesses(a, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_field_accesses(base, out);
+            collect_field_accesses(index, out);
+        }
+        Expr::ArrayLiteral { elements } => {
+            for el in elements {
+                collect_field_accesses(el, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                collect_field_accesses(v, out);
+            }
+        }
+        // Remaining shapes carry no additional field access relevant to registration; under-collection is
+        // fail-open-safe (see the doc comment), so no exhaustive enumeration is required here.
+        _ => {}
+    }
+}
+
 fn collect_expr_vars(e: &Expr, out: &mut BTreeSet<String>) {
     match e {
         Expr::Var(v) => {
@@ -7535,6 +7699,25 @@ fn cast_preserves_i64(ty: &str) -> bool {
 /// into SMT goes through here so declaration, emission, and collection agree.
 fn smt_var(name: &str) -> String {
     format!("anb_{}", name)
+}
+
+/// Canonical solver-var name for a struct-PARAM field access `base.field` (used when a `requires`
+/// constrains the field of a struct parameter, so an `assert`/`ensures` over the SAME field is checked
+/// rather than fail-opened). The name is:
+///   * DIGIT-LED (`base.len()` prefixes it) — a user identifier can never start with a digit, so after
+///     `smt_var` prepends `anb_` the result cannot collide with any real `anb_<uservar>`;
+///   * LENGTH-PREFIXED on the base — distinct `(base, field)` pairs map to distinct symbols even when a
+///     name contains `_` (base=`p_a` field=`b` → `3fld_p_a_b`; base=`p` field=`a_b` → `1fld_p_a_b`);
+///   * TOKEN-SAFE (`[0-9A-Za-z_]` only) — `collect_vars_from_smt` tokenizes it as ONE symbol.
+///   * SENTINEL-SAFE — a fixed `_e` terminator means the symbol can never END in the `__arr` suffix that
+///     `smt_uses_arrays` treats as a sequence-Array marker, even for a field literally named `_arr`
+///     (which would otherwise route the obligation to Array-sort logic → z3 sort error → fail-open). The
+///     terminator keeps injectivity: the field is exactly the chars between the base and the final `_e`.
+///
+/// Only single-level `Var.field` gets a symbol; a nested `p.a.b` (base is itself a FieldAccess) stays
+/// unmodeled (fail-open), as does any base that is not a registered struct-param field.
+fn mangle_field(base: &str, field: &str) -> String {
+    format!("{}fld_{}_{}_e", base.len(), base, field)
 }
 
 /// Directional assignability for binding contexts (let-init, assignment to an annotated variable,
