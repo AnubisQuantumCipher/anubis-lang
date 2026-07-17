@@ -3712,14 +3712,80 @@ fn analyze_stmts(
                         augmented.extend(invariant.iter().cloned());
                         verify_while_invariants(ctx, &cond, &augmented, &body2, &outer)
                     }
+                } else if let crate::frontend::ForSource::Collection { expr } = source {
+                    // Phase-3: `for x in a invariant(P) { body }` over a BOUNDED modeled seq `a` desugars to
+                    // the INDEX form `for i in 0..len(a) { let x = a[i]; body }` (fresh index `i`) and reuses
+                    // verify_while_invariants — the element read `a[i]` is the symbolic-index array read
+                    // (in-bounds via the `0..len(a)` range + the auto `i >= 0`), and an ACCUMULATOR invariant
+                    // is verified inductively. Composes the for-range + array-read lanes. Only a seq VAR
+                    // (bounded, literal-init) is admitted; an unbounded/param collection or an inline literal
+                    // keeps the honest rejection. An invariant that references the ELEMENT `x` fails closed:
+                    // `x` is the loop-local `let x = a[i]`, so if it is tracked, extract_loop_transition's
+                    // shadow-of-a-modeled-var check rejects the loop — only invariants over OUTER variables
+                    // verify. The seq `a` is de-modeled by the frame machinery if the body mutates it.
+                    if let Expr::Var(seqname) = expr {
+                        if is_seq_var(seqname, &ctx.solver_int_vars) {
+                            let idx = format!(
+                                "{}colidx",
+                                MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            );
+                            let cond = Expr::Binary {
+                                op: "<".into(),
+                                lhs: Box::new(Expr::Var(idx.clone())),
+                                rhs: Box::new(Expr::Call {
+                                    callee: "len".into(),
+                                    args: vec![Expr::Var(seqname.clone())],
+                                }),
+                            };
+                            let mut body2 = vec![Stmt::Let {
+                                name: var.clone(),
+                                ty: None,
+                                init: Expr::Index {
+                                    base: Box::new(Expr::Var(seqname.clone())),
+                                    index: Box::new(Expr::Var(idx.clone())),
+                                },
+                                span: crate::frontend::Span::default(),
+                            }];
+                            body2.extend(body.iter().cloned());
+                            body2.push(Stmt::Assign {
+                                target: Expr::Var(idx.clone()),
+                                value: Expr::Binary {
+                                    op: "+".into(),
+                                    lhs: Box::new(Expr::Var(idx.clone())),
+                                    rhs: Box::new(Expr::Literal("1".into())),
+                                },
+                            });
+                            let mut outer = assumptions.clone();
+                            outer.push(format!("(= {} (_ bv0 64))", smt_var(&idx)));
+                            let mut augmented = vec![Expr::Binary {
+                                op: ">=".into(),
+                                lhs: Box::new(Expr::Var(idx.clone())),
+                                rhs: Box::new(Expr::Literal("0".into())),
+                            }];
+                            augmented.extend(invariant.iter().cloned());
+                            verify_while_invariants(ctx, &cond, &augmented, &body2, &outer)
+                        } else {
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+                                message: "a `for` invariant over a collection is verified only for a \
+                                     BOUNDED modeled sequence (a `let`-bound array literal); an \
+                                     unbounded/parameter collection keeps the honest rejection"
+                                    .into(),
+                                span: None,
+                            });
+                            None
+                        }
+                    } else {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+                            message: "a `for` invariant over a collection is verified only for a bounded \
+                                 sequence VARIABLE; bind the collection to a `let` first"
+                                .into(),
+                            span: None,
+                        });
+                        None
+                    }
                 } else {
-                    ctx.diagnostics.push(SemanticDiagnostic {
-                        code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
-                        message: "a `for` invariant is verified only over an integer RANGE \
-                             (`for i in a..b`), not a collection; rewrite as a counted range loop"
-                            .into(),
-                        span: None,
-                    });
                     None
                 };
                 // Wire the embedded-write sweep (like the 9 other statement sites): a write hidden in the
@@ -3824,7 +3890,10 @@ fn analyze_stmts(
                 if let Some((post, _written, readmit)) = for_admit {
                     let is_float = post.iter().any(|a| smt_uses_floats(a));
                     for v in &readmit {
-                        if v == var {
+                        // Exclude the loop var (loop-scoped) and any SEQ var (a collection loop tracks its
+                        // sequence via `len(a)`, but re-adding the seq's plain name as a scalar int would be
+                        // a mis-model; its seq facts/marks are untouched and its length fact already carries).
+                        if v == var || is_seq_var(v, &ctx.solver_int_vars) {
                             continue;
                         }
                         if is_float {
@@ -7665,6 +7734,17 @@ fn extract_loop_transition<F: Fn(&Expr, &BTreeSet<String>) -> bool>(
             Stmt::Let { name, init, .. } => {
                 if !expr_is_simple(init) || model_vars.contains(name) {
                     return None;
+                }
+                // Propagate the loop-local binding into the transition so a later in-body use of `name`
+                // resolves to its value (`let x = a[i]; last = x` → last ↦ a[i]) — a `let` value is EXACT,
+                // so this is sound and strictly more precise (before, the binding was neutral and a later
+                // use of `name` fell to the runtime). Substitute the current transition into the init first
+                // (chained lets); if the value is not modelable, drop the name so its later use is unmodeled.
+                let concrete = substitute_vars(init, &sub);
+                if term_modelable(&concrete, model_vars) {
+                    sub.insert(name.clone(), concrete);
+                } else {
+                    sub.remove(name);
                 }
             }
             Stmt::LetPattern { pattern, init, .. } => {

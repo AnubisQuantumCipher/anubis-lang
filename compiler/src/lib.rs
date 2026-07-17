@@ -2775,6 +2775,55 @@ fn main() {
     }
 
     #[test]
+    fn phase3_collection_for_loop_invariants() {
+        // Phase-3 (task #29): a `for x in a invariant(P) { body }` over a BOUNDED modeled seq VAR verifies by
+        // desugaring to the index form `for i in 0..len(a) { let x = a[i]; body }` — reusing the for-range +
+        // symbolic-index array read lanes, with a loop-body `let` now PROPAGATED into the transition
+        // (`let x = a[i]; last = x` → `last ↦ a[i]`). Accumulator invariants over OUTER variables verify;
+        // an invariant referencing the element `x` fails closed (x is loop-local). `discharged` is false
+        // when rejected.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
+
+        // THE DEMONSTRATION (red baseline — a collection `for` invariant was rejected outright): a scan of a
+        // seq var, propagating each element into an accumulator with a bounded invariant, PROVES.
+        assert!(
+            discharged("fn f() { let a = [1, 1, 1]; let mut last = 5; for x in a invariant(last == 5 || last == 1) { last = x; } assert(last == 5 || last == 1); } fn main() { f(); }"),
+            "a bounded seq-var collection scan into an accumulator proves (let-propagation + array read)"
+        );
+        // A cell violating the invariant is disproved (a[1] == 9 breaks last ∈ {5,1}).
+        assert!(
+            !discharged("fn f() { let a = [1, 9, 1]; let mut last = 5; for x in a invariant(last == 5 || last == 1) { last = x; } } fn main() { f(); }"),
+            "a cell violating the collection-scan invariant is disproved"
+        );
+        // SOUNDNESS: an invariant referencing the ELEMENT `x` fails closed (x is a loop-local `let x = a[i]`).
+        assert!(
+            !discharged("fn f() { let a = [0, 0, 5]; for x in a invariant(x == 0) { } } fn main() { f(); }"),
+            "a collection invariant referencing the element x is fail-closed"
+        );
+        // An UNBOUNDED/parameter collection keeps the honest rejection (no modeled length/cells).
+        assert!(
+            !discharged("fn f(xs: list) -> u32 ensures(result >= 0) { let mut s = 0; for x in xs invariant(s >= 0) { s = s + 1; } return s; } fn main() { let r = f([1, 2]); }"),
+            "an unbounded/param collection `for` invariant is rejected"
+        );
+        // REGRESSION — loop-body `let` PROPAGATION is sound in a `while` loop too: an element read via a
+        // body `let` into an accumulator proves, and a cell violating it is disproved.
+        assert!(
+            discharged("fn f() { let a = [2, 2, 2]; let mut v = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(v == 0 || v == 2) { let y = a[i]; v = y; i = i + 1; } } fn main() { f(); }"),
+            "a while-loop body `let y = a[i]; v = y` propagates (let-propagation is sound)"
+        );
+        assert!(
+            !discharged("fn f() { let a = [2, 9, 2]; let mut v = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(v == 0 || v == 2) { let y = a[i]; v = y; i = i + 1; } } fn main() { f(); }"),
+            "a false while-loop body-let element invariant is disproved"
+        );
+    }
+
+    #[test]
     fn solver_does_not_disprove_loop_carried_assertions() {
         // A binding mutated after its `let` (here, accumulated in a loop) cannot be modeled from
         // its initial value; the checker must not disprove a TRUE post-loop assertion against the
