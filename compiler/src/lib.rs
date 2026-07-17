@@ -6285,6 +6285,51 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn struct_literal_field_access_models_the_field_value() {
+        // `P{v: e}.f` is value-equal to the named field's expr — the struct analog of the modeled
+        // `[a, b][0]` bounded-array read. Leaving it unmodeled let `g(P{v: 0}.v)` certify against
+        // `requires(x > 0)` (check ACCEPTED, run trapped DIV_BY_ZERO — a hunt-confirmed false accept).
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // the confirmed false accept: field value 0 violates g's requires(x > 0) → must REJECT.
+        assert!(
+            !accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{v: 0}.v); return z; } fn main() { print(f()); }"#),
+            "a struct-literal field access with value 0 against requires x gt 0 must reject"
+        );
+        // the safe dual → must ACCEPT (no over-rejection).
+        assert!(
+            accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{v: 5}.v); return z; } fn main() { print(f()); }"#),
+            "a struct-literal field access with value 5 satisfies the requires — must accept"
+        );
+        // multi-field: the NAMED field is selected, not the first (`.b` = 0 violates).
+        assert!(
+            !accepts(r#"struct P { a: i64, b: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{a: 1, b: 0}.b); return z; } fn main() { print(f()); }"#),
+            "the NAMED field b = 0 is selected, not the first — must reject"
+        );
+        // substitute_vars COUPLING (the LESSON-4 class): a contract MENTIONING a struct-literal field
+        // access over a param must substitute the arg into the field value — `requires(P{v: x}.v > 0)`
+        // with arg 5 proves, with arg -5 is caught. Without the substitute_vars StructLiteral/FieldAccess
+        // arms the callee param name would survive and re-bind (a precondition bypass).
+        assert!(
+            accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(P{v: x}.v > 0) { return x; } fn f() -> i64 { let z = g(5); return z; } fn main() { print(f()); }"#)
+                && !accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(P{v: x}.v > 0) { return x; } fn f() -> i64 { let z = g(0 - 5); return z; } fn main() { print(f()); }"#),
+            "a struct-literal contract must substitute the call arg into the field value"
+        );
+        // the VIA-LET form stays fail-open (documented residual — a struct VAR's fields need their own
+        // per-field symbols + invalidation, a separate feature). Must still accept (not made worse).
+        assert!(
+            accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let p = P{v: 0}; let z = g(p.v); return z; } fn main() { print(f()); }"#),
+            "a field access on a struct VAR stays fail-open (documented residual)"
+        );
+    }
+
+    #[test]
     fn match_whole_value_binding_aliases_the_scrutinee() {
         // A whole-value match binding `match S { name => body }` binds name = S for that arm, so a call
         // over `name` in the body must be discharged against S's facts — NOT a shadowed OUTER var of the

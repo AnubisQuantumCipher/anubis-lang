@@ -4826,6 +4826,21 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
             }
             _ => false,
         },
+        // A struct-LITERAL field read `P{v: e, ..}.v` is value-equal to the named field's expr — the
+        // struct analog of the modeled `[a, b][0]` above (leaving it unmodeled let `g(P{v: 0}.v)` certify
+        // against `requires(x > 0)`, a hunt-confirmed false accept). Mirroring the array rule, ALL field
+        // values must be int-modelable and the accessed name must exist (a missing field is a type error
+        // upstream; here it just declines fail-closed). A field access on a struct VAR stays unmodeled —
+        // per-field facts need their own symbols + reassignment invalidation (a documented residual).
+        // NOTE the walker coupling (see substitute_vars): every shape admitted here MUST be substituted
+        // and var-collected — FieldAccess/StructLiteral arms exist in substitute_vars/collect_expr_vars.
+        Expr::FieldAccess { base, field, .. } => match base.as_ref() {
+            Expr::StructLiteral { fields, .. } => {
+                fields.iter().any(|(n, _)| n == field)
+                    && fields.iter().all(|(_, v)| is_int_modelable(v, int_vars))
+            }
+            _ => false,
+        },
         // A bare array literal is a sequence value, not an integer — not int-modelable.
         _ => false,
     }
@@ -5281,6 +5296,22 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
                 _ => None,
             }
         }
+        // A struct-literal field read: the accessed field must EXIST (symmetry with is_int_modelable —
+        // without it a missing-field access would mint an inert-but-wrong `== 0` fact) and every field
+        // value must itself encode (mirrors the array-literal rule above); the encoding unfolds to the
+        // named field's value (see expr_to_smt_with_width).
+        Expr::FieldAccess { base, field, .. } => match base.as_ref() {
+            Expr::StructLiteral { fields, .. } => {
+                if !fields.iter().any(|(n, _)| n == field) {
+                    return None;
+                }
+                for (_, v) in fields {
+                    expr_to_smt_value(v, widths)?;
+                }
+                Some(expr_to_smt(e, widths))
+            }
+            _ => None,
+        },
         Expr::Cast { expr, ty } => {
             // A TRUNCATING cast (`x as u8`) has NO sound integer value fact — modeling it as the
             // identity recorded a false `y == x` that a loop invariant could later force-model and
@@ -5415,6 +5446,16 @@ fn expr_to_smt_with_width(
                 let idx = expr_to_smt_with_width(index, widths, Some(64));
                 format!("(select {acc} {idx})")
             }
+            _ => "(_ bv0 64)".into(),
+        },
+        // A struct-literal field read unfolds to the NAMED field's value expr (value-equal at runtime;
+        // gated by is_int_modelable, which requires the field to exist and all values int-modelable).
+        Expr::FieldAccess { base, field, .. } => match base.as_ref() {
+            Expr::StructLiteral { fields, .. } => fields
+                .iter()
+                .find(|(n, _)| n == field)
+                .map(|(_, v)| expr_to_smt_with_width(v, widths, expected_width))
+                .unwrap_or_else(|| "(_ bv0 64)".into()),
             _ => "(_ bv0 64)".into(),
         },
         Expr::TaintSource { label } => format!("taint_source_{}", label.replace("\"", "")),
@@ -5702,6 +5743,23 @@ fn substitute_vars(e: &Expr, map: &BTreeMap<String, Expr>) -> Expr {
         },
         Expr::ArrayLiteral { elements } => Expr::ArrayLiteral {
             elements: elements.iter().map(|a| substitute_vars(a, map)).collect(),
+        },
+        // Struct-literal field reads joined the modelable set (`P{v: x}.v` — see is_int_modelable), so
+        // BOTH forms must substitute: a cloned-unsubstituted callee-param name inside a now-modelable
+        // contract would re-bind to the caller's scope (the precondition-bypass class this comment block
+        // warns about).
+        Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
+            base: Box::new(substitute_vars(base, map)),
+            field: field.clone(),
+            span: *span,
+        },
+        Expr::StructLiteral { name, fields, span } => Expr::StructLiteral {
+            name: name.clone(),
+            fields: fields
+                .iter()
+                .map(|(n, v)| (n.clone(), Box::new(substitute_vars(v, map))))
+                .collect(),
+            span: *span,
         },
         Expr::Declassify {
             inner,
