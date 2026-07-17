@@ -5062,14 +5062,70 @@ fn as_nonneg_int_lit(e: &Expr) -> Option<u64> {
     }
 }
 
-/// Index proven in-range for a fixed-length modeled sequence (non-negative constant only).
-/// Negative indices exist at runtime (`anubis_norm_index`) but are NOT modeled — contracts that
-/// need them stay fail-closed via `ANUBIS_INDEX_MAYBE_OOB`.
+/// Sentinel marking that a SYMBOLIC index variable `idx` is proven in-bounds `0 <= idx < len(seq)` for a
+/// bounded seq `seq` — a `\u{1}`-prefixed token riding the `int_vars` set (never emitted to SMT; the
+/// zero-threading gate pattern, like `seq_mark`/`shadow_builtin_mark`). It is inserted ONLY by
+/// `verify_while_invariants` for a loop whose guard is `idx < len(seq)` (upper bound) with an invariant
+/// entailing `idx >= 0` (lower bound), where no RAW invariant reads `seq[idx]` — so the read is confined to
+/// the loop BODY, whose obligations assume the guard, and z3 only ever considers in-bounds `idx`.
+fn inbounds_mark(seq: &str, idx: &str) -> String {
+    format!("\u{1}inbounds:{seq}:{idx}")
+}
+
+/// Index proven in-range for a fixed-length modeled sequence. A NON-NEGATIVE CONSTANT `< len` is proven
+/// unconditionally (the fixed length is known statically). A SYMBOLIC index VARIABLE is proven ONLY when an
+/// `inbounds_mark(seq, idx)` sentinel is present (see `verify_while_invariants` — a loop that bounds `idx`
+/// against `len(seq)`); z3 then evaluates `(select seq__arr idx)` only over the in-bounds `idx` the loop's
+/// guard admits, so the read aliases a real seeded cell. Negative indices exist at runtime
+/// (`anubis_norm_index`) but are NOT modeled — contracts that need them stay fail-closed via
+/// `ANUBIS_INDEX_MAYBE_OOB`.
 fn index_bounds_proven(seq: &str, index: &Expr, int_vars: &BTreeSet<String>) -> bool {
     match seq_fixed_len(seq, int_vars) {
-        Some(n) => as_nonneg_int_lit(index).is_some_and(|i| i < n),
+        // A NON-NEGATIVE CONSTANT below the static length, OR a SYMBOLIC index variable carrying the
+        // `inbounds_mark` sentinel (the loop machinery proved `0 <= idx < len(seq)` from the guard +
+        // an invariant). The mark IS the in-bounds proof, so no further arithmetic check is needed here.
+        Some(n) => {
+            as_nonneg_int_lit(index).is_some_and(|i| i < n)
+                || matches!(index, Expr::Var(iv) if int_vars.contains(&inbounds_mark(seq, iv)))
+        }
         None => false,
     }
+}
+
+/// A single invariant clause that DIRECTLY entails `v >= 0`: `v >= k` (k>=0), `v > k` (k>=-1), and the
+/// mirrors `k <= v` (k>=0), `k < v` (k>=-1). Conservative — a form that does not bound `v` below by 0
+/// (`v >= -1`, `v > -2`, `v != 5`) returns false, so the lower bound stays unproven and the symbolic-index
+/// read fails closed. Mirrors `requires_nonzero_var`'s literal-comparison shape.
+fn expr_implies_nonneg(inv: &Expr, v: &str) -> bool {
+    let Expr::Binary { op, lhs, rhs } = inv else {
+        return false;
+    };
+    let is_v = |e: &Expr| matches!(e, Expr::Var(x) if x == v);
+    let as_lit = |e: &Expr| -> Option<i64> {
+        match e {
+            Expr::Literal(l) => l.parse::<i64>().ok(),
+            _ => None,
+        }
+    };
+    if is_v(lhs) {
+        if let Some(k) = as_lit(rhs) {
+            return match op.as_str() {
+                ">=" => k >= 0, // v >= k, k >= 0  ⟹  v >= 0
+                ">" => k >= -1, // v > k, k >= -1  ⟹  v >= 0
+                _ => false,
+            };
+        }
+    }
+    if is_v(rhs) {
+        if let Some(k) = as_lit(lhs) {
+            return match op.as_str() {
+                "<=" => k >= 0, // k <= v, k >= 0  ⟹  v >= 0
+                "<" => k >= -1, // k < v, k >= -1  ⟹  v >= 0
+                _ => false,
+            };
+        }
+    }
+    false
 }
 
 fn seq_arr_smt(name: &str) -> String {
@@ -7206,9 +7262,25 @@ fn expr_assigned_roots(e: &Expr, out: &mut BTreeSet<String>) {
             }
         }
         Expr::Lambda { body, .. } => expr_assigned_roots(body, out),
-        Expr::Call { args, .. }
-        | Expr::ArrayLiteral { elements: args }
-        | Expr::EnumConstruct { fields: args, .. } => {
+        Expr::Call { callee, args } => {
+            // A length-MUTATING builtin (push/pop/insert/remove) writes its RECEIVER seq in place, growing
+            // or shrinking the runtime array. Treat the receiver's root as an assigned root so every frame
+            // sweep (invalidate_embedded_writes / havoc_loop_written / drop_written_after_scope, plus the
+            // loop transition's `written` set) DE-MODELS the seq — dropping its now-STALE length + per-cell
+            // facts (fail-closed) exactly as an element write `a[i]=v` already does. Without this,
+            // `push(a,v)` leaves `len(a)` and the cell facts frozen at the literal count, so a later
+            // `len(a)` (a loop bound / the symbolic-index guard) or a cell read certifies a contract the
+            // grown array violates — a hunt-confirmed false accept.
+            if matches!(callee.as_str(), "push" | "pop" | "insert" | "remove") {
+                if let Some(root) = args.first().and_then(assign_target_root) {
+                    out.insert(root.to_string());
+                }
+            }
+            for x in args {
+                expr_assigned_roots(x, out);
+            }
+        }
+        Expr::ArrayLiteral { elements: args } | Expr::EnumConstruct { fields: args, .. } => {
             for x in args {
                 expr_assigned_roots(x, out);
             }
@@ -7584,6 +7656,78 @@ fn verify_while_invariants(
     for v in &tracked {
         model_vars.insert(v.clone());
         ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+    }
+
+    // A loop body that MUTATES a modeled sequence cannot be verified against the seq's PRE-LOOP model. The
+    // frame de-model (havoc_loop_written / drop_written_after_scope) runs AFTER this verifier, so during
+    // verification the seq still carries its STALE seed length + per-cell facts, while the runtime array
+    // changes every iteration — the base case, the straight-line transition, and the preservation frame all
+    // read the frozen model. A LENGTH-MUTATING call push/pop/insert/remove is recorded as an assigned root by
+    // expr_assigned_roots, and an element write `a[i]=v` roots to `a` too, so `collect_assigned_roots` names
+    // every mutated seq. If any mutated root is a modeled seq, REJECT (fail-closed): the loop's invariant
+    // falls to the runtime. (Hunt-confirmed false accept: `while i<len(b) invariant(x==a[0]) {
+    // insert(a,0,99); x=a[0]; i=i+1 }` — guard on an unmutated `b` so the loop terminates — proved
+    // `x==<stale a[0]>` while the runtime `insert` shifts the cell.)
+    {
+        let mut body_written = BTreeSet::new();
+        collect_assigned_roots(body, &mut body_written);
+        if body_written
+            .iter()
+            .any(|v| is_seq_var(v, &ctx.solver_int_vars))
+        {
+            reject(
+                ctx,
+                "the loop body mutates a modeled sequence, so its pre-loop length/cells are stale",
+            );
+            return None;
+        }
+    }
+
+    // Phase-4 A2 — SYMBOLIC-INDEX ARRAY READ in the loop body. When the guard is exactly `i < len(xs)`
+    // (xs a bounded modeled seq, giving the UPPER bound) and an invariant entails `i >= 0` (the LOWER
+    // bound), a body read `xs[i]` with the symbolic counter `i` is admitted via an `inbounds_mark(xs, i)`
+    // sentinel on the LOCAL model_vars. SOUNDNESS: the mark lets is_int_modelable emit `(select xs__arr i)`,
+    // and every obligation that reads it (the transition + the preservation STEP) carries the guard
+    // `i < len(xs)` AND the `i >= 0` invariant in its assumptions, so z3 only considers in-bounds `i` — the
+    // select then aliases one of the seeded cells of the literal-initialized seq. The read must be confined
+    // to the loop BODY: a RAW invariant reading `xs[i]` is REJECTED (its base-case obligation does not
+    // assume the guard, so a symbolic index there could be out-of-bounds), so we require no raw invariant
+    // (nor the cond) to `xs[..]`-index. Reads only — no element write (writes still de-model, fail-closed),
+    // no forall, no set-logic change (QF_ABV ground select). Not proven → the existing literal-only gate
+    // keeps ANUBIS_INDEX_MAYBE_OOB (fail-closed, exactly as before).
+    if let Expr::Binary { op, lhs, rhs } = cond {
+        if op == "<" {
+            if let (Expr::Var(iv), Expr::Call { callee, args }) = (lhs.as_ref(), rhs.as_ref()) {
+                if callee == "len" && args.len() == 1 {
+                    if let Expr::Var(xs) = &args[0] {
+                        if is_seq_var(xs, &model_vars)
+                            && invariants.iter().any(|inv| expr_implies_nonneg(inv, iv))
+                        {
+                            // Base-case safety, COMPLETE by construction: the mark enables ONLY a symbolic
+                            // read `xs[iv]` (see index_bounds_proven). If adding it CHANGES whether any RAW
+                            // invariant — or the cond — is modelable, that formula reads `xs[iv]`, and its
+                            // base-case obligation (which does NOT assume the guard) would model an unguarded,
+                            // possibly out-of-bounds read → DECLINE. Testing the modelability DELTA (rather
+                            // than a hand-rolled AST walker) is airtight: `is_bool_modelable` itself descends
+                            // through every form — a `Cast`, `FieldAccess`, or arbitrarily nested read cannot
+                            // hide from it — so no raw `xs[iv]` read can slip into the base case.
+                            let mark = inbounds_mark(xs, iv);
+                            let mut probed = model_vars.clone();
+                            probed.insert(mark.clone());
+                            let raw_reads_xs = is_bool_modelable(cond, &probed)
+                                != is_bool_modelable(cond, &model_vars)
+                                || invariants.iter().any(|inv| {
+                                    is_bool_modelable(inv, &probed)
+                                        != is_bool_modelable(inv, &model_vars)
+                                });
+                            if !raw_reads_xs {
+                                model_vars.insert(mark);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // The condition and every invariant must be modelable, else induction is impossible.

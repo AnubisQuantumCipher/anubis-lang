@@ -3002,6 +3002,150 @@ fn bad() {
     }
 
     #[test]
+    fn phase4_symbolic_index_array_read_in_loop() {
+        // Phase-4 A2 (task #26): a SYMBOLIC-INDEX array READ `a[i]` in a loop BODY now discharges when the
+        // loop guard is `i < len(a)` (upper bound) and an invariant entails `i >= 0` (lower bound) — the
+        // in-bounds proof that admits `(select a__arr i)` in QF_ABV. Reads only (writes still de-model,
+        // fail-closed); no forall, no set-logic change; z3's ground array+BV reasoning discharges the
+        // symbolic select over the bounded index. This is the READ half of "bounded-array symbolic-index
+        // loop invariants"; the quantified array-WRITE-fill half stays deferred.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+
+        // THE DEMONSTRATION (red baseline on HEAD — a symbolic-index read fail-closed as INDEX_MAYBE_OOB): a
+        // non-accumulating body read `flag = a[i]` (cells all 0/1) under `flag == 0 || flag == 1` PROVES.
+        assert!(
+            discharged("fn f() { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[i]; i = i + 1; } } fn main() { f(); }"),
+            "a bounded symbolic-index array read under a scalar invariant proves"
+        );
+        // A post-loop ensures over the read value proves.
+        assert!(
+            discharged("fn f() -> i64 ensures(result == 0 || result == 1) { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[i]; i = i + 1; } return flag; } fn main() { let r = f(); }"),
+            "a post-loop ensures over the symbolic-read value proves"
+        );
+
+        // A cell that VIOLATES the invariant is disproved (preservation fails): a[1] == 2 breaks flag∈{0,1}.
+        assert!(
+            !discharged("fn f() { let a = [1, 2, 1]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[i]; i = i + 1; } } fn main() { f(); }"),
+            "a cell violating the invariant must be disproved"
+        );
+
+        // SOUNDNESS — the in-bounds lever. Each of these MUST fail closed (no OOB read certified):
+        // (1) a WRONG array: guard bounds i < len(a) (len 3) but the body reads a SHORTER b[i] (len 2) — the
+        //     mark is per-(array,index), so b[i] is not admitted (i can reach 2, b[2] OOB).
+        assert!(
+            !discharged("fn f() -> i64 { let a = [0, 0, 0]; let b = [7, 8]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(flag == 7 || flag == 8) { flag = b[i]; i = i + 1; } return flag; } fn main() { let r = f(); }"),
+            "a guard on len(a) must NOT license a read of a shorter array b[i]"
+        );
+        // (2) a FREE index: a[j] with j a parameter (not the guarded counter) is not admitted.
+        assert!(
+            !discharged("fn f(j: i64) { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[j]; i = i + 1; } } fn main() { f(0); }"),
+            "a free-parameter index a[j] must not be admitted by the counter's bound"
+        );
+        // (3) a `<=` guard: `i <= len(a)` lets i reach len(a) (OOB) — only a strict `<` guard is admitted.
+        assert!(
+            !discharged("fn f() { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i <= len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[i]; i = i + 1; } } fn main() { f(); }"),
+            "a `<=` guard (i can reach len) must not admit the read"
+        );
+        // (4) an index MODIFIED before the read: `i = i + 1; flag = a[i]` reads a[i+1] (non-Var index), which
+        //     is not admitted; with the read feeding the invariant, the stepped invariant is unmodelable →
+        //     fail-closed (a[i+1] with i at len-1 would be OOB).
+        assert!(
+            !discharged("fn f() { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { i = i + 1; flag = a[i]; } } fn main() { f(); }"),
+            "an index modified before the read (a[i+1]) feeding the invariant is fail-closed"
+        );
+        // (5) NO lower-bound invariant: without `i >= 0` the lower bound is unproven — fail-closed.
+        assert!(
+            !discharged("fn f() -> i64 { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(flag == 0 || flag == 1) { flag = a[i]; i = i + 1; } return flag; } fn main() { let r = f(); }"),
+            "no `i >= 0` invariant leaves the lower bound unproven — fail-closed"
+        );
+        // (6) a PROXY bound: guard `i < n` with a separate array `a` — the upper bound is not DIRECTLY against
+        //     len(a), so it is not admitted (the direct-guard-only scope).
+        assert!(
+            !discharged("fn f(n: i64) -> i64 requires(n <= 3) { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i < n invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[i]; i = i + 1; } return flag; } fn main() { let r = f(2); }"),
+            "a proxy bound `i < n` (not `i < len(a)`) is not admitted"
+        );
+        // (7) a RAW invariant reading a[i] directly is rejected (a base-case obligation cannot assume the guard).
+        assert!(
+            !discharged("fn f() { let a = [1, 0, 1]; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(a[i] <= 1) { i = i + 1; } } fn main() { f(); }"),
+            "a raw invariant reading a[i] is rejected (base case has no guard)"
+        );
+
+        // REGRESSION: a symbolic index OUTSIDE any loop still fail-closes as ANUBIS_INDEX_MAYBE_OOB.
+        let err =
+            tc_ok("fn f(i: u32) -> u32 ensures(result == 0) { let xs = [1, 2, 3]; return xs[i]; }")
+                .expect_err("a non-loop symbolic index must still reject");
+        assert!(err.contains("ANUBIS_INDEX_MAYBE_OOB"), "got: {err}");
+    }
+
+    #[test]
+    fn phase4_seq_length_mutation_demodels() {
+        // A length-MUTATING builtin (`push`/`pop`/`insert`/`remove`) grows/shrinks the runtime array, so the
+        // seed-time seq length + per-cell facts go STALE and MUST be de-modeled (fail-closed) — else a later
+        // `len(a)` bound or a modeled read certifies a contract the grown array violates (hunt-confirmed, and
+        // a PRE-EXISTING false proof: `push(a,v); assert(len(a) == <literal count>)` used to be certified
+        // while the runtime length had changed). `discharged` is false when the program is rejected.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // The pre-existing false proof is closed: `len(a)` after a push is UNMODELED (deferred), so it is no
+        // longer PROVED. Discriminator: BOTH polarities are accepted (a defer), where before `== <count>` was
+        // proved and its negation rejected. `tc_ok` returns Ok because an unmodeled assert defers to runtime.
+        assert!(
+            tc_ok("fn main() { let a = [1]; push(a, 2); assert(len(a) == 2); }").is_ok(),
+            "len(a) after push must not be PROVED stale — it defers (runtime backstop)"
+        );
+        assert!(
+            tc_ok("fn main() { let a = [1]; push(a, 2); assert(len(a) == 1); }").is_ok(),
+            "both polarities of len(a) after push defer (an unmodeled assert, not a false proof)"
+        );
+        // The symbolic-index read lane must NOT trust a mutated array's length: a push before the read-loop
+        // de-models the seq, so the loop's `i < len(a)` guard is unmodelable → fail-closed (was 6 hunt-
+        // confirmed false accepts where the model's trip-count was smaller than the grown runtime array).
+        assert!(
+            !discharged("fn main() { let a = [100]; push(a, 200); let mut i = 0; let mut total = 0; while i < len(a) invariant(i >= 0) invariant(i <= 1) invariant(total == 100 * i) { total = total + a[i]; i = i + 1; } assert(total == 100); }"),
+            "a symbolic-index read over a PUSHED array must fail closed (stale length)"
+        );
+        // A push GROWING the array inside a first loop, read in a second loop — still de-modeled, fail-closed.
+        assert!(
+            !discharged("fn main() { let a = [0]; let mut k = 0; while k < 3 { push(a, 1); k = k + 1; } let mut i = 0; let mut total = 0; while i < len(a) invariant(i >= 0) invariant(i <= 1) invariant(total == 0) { total = total + a[i]; i = i + 1; } assert(total == 0); }"),
+            "an array grown in a prior loop is de-modeled for a later read-loop"
+        );
+        // A never-mutated array's read-loop still PROVES (the de-modeling is scoped to mutating calls).
+        assert!(
+            discharged("fn f() { let a = [1, 0, 1]; let mut flag = 0; let mut i = 0; while i < len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[i]; i = i + 1; } } fn main() { f(); }"),
+            "a never-mutated array read-loop still proves (de-model only fires on push/pop/insert/remove)"
+        );
+        // ORDERING GAP (hunt-confirmed): a length-mutating call INSIDE a flat loop body — with the guard on a
+        // SEPARATE unmutated array so the loop still terminates — must NOT verify an invariant against the
+        // mutated seq's STALE model. `verify_while_invariants` runs before the frame de-model, so it rejects a
+        // loop whose body mutates a modeled seq (fail-closed). Each proved a false post-loop assert before.
+        assert!(
+            !discharged("fn main() { let a = [10]; let b = [0,0]; let mut x = 0; let mut i = 0; while i < len(b) invariant(x == a[0]) invariant(i >= 0) { insert(a, 0, 99); x = a[0]; i = i + 1; } assert(x == 10); }"),
+            "an insert() in the loop body (guard on another array) must not prove x==stale-cell"
+        );
+        assert!(
+            !discharged("fn main() { let a = [1,2,3]; let b = [0,0,0]; let mut x = 3; let mut i = 0; while i < len(b) invariant(x == len(a)) invariant(i >= 0) { push(a, 0); x = len(a); i = i + 1; } assert(x == 3); }"),
+            "a push() in the loop body (guard on another array) must not prove x==stale-length"
+        );
+        assert!(
+            !discharged("fn main() { let a = [1,2,3]; let b = [0,0]; let mut x = 3; let mut i = 0; while i < len(b) invariant(x == len(a)) invariant(i >= 0) { pop(a); x = len(a); i = i + 1; } assert(x == 3); }"),
+            "a pop() in the loop body must not prove x==stale-length"
+        );
+        assert!(
+            !discharged("fn main() { let a = [10,20,30]; let b = [0,0]; let mut x = 10; let mut i = 0; while i < len(b) invariant(x == a[0]) invariant(i >= 0) { remove(a, 0); x = a[0]; i = i + 1; } assert(x == 10); }"),
+            "a remove() in the loop body must not prove x==stale-cell"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,
