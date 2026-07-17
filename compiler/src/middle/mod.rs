@@ -2777,7 +2777,7 @@ fn analyze_stmts(
                 // the fact out of every integer obligation; STRUCTURAL `=` (not fp.eq, which is IEEE
                 // NaN≠NaN); NOT pushed to ctx.constraints/symbolic_defs (kept byte-identical for the
                 // self-host projection).
-                if genuinely_float && !ctx.reassigned_roots.contains(name) {
+                if genuinely_float {
                     ctx.solver_float_vars.insert(name.clone());
                     assumptions.push(format!("(= {} {})", smt_var(name), float_expr_to_smt(init)));
                 }
@@ -3299,6 +3299,18 @@ fn analyze_stmts(
                 // surviving `x == <old>` would then launder a false invariant/postcondition.
                 if let Some(root) = assign_target_root(target) {
                     clear_binding_modelability(&mut ctx.solver_int_vars, root);
+                    // Lane parity (Phase-3 QF_FP/QF_S): a reassigned float/string binding is no longer
+                    // modelable from its `let` value either — drop it from those sets too, so its
+                    // assertions fall to the runtime (fail-closed, honest ANUBIS_*_CONTRACT_UNMODELED)
+                    // rather than lingering as a FREE symbol that z3 inhabits with NaN / an arbitrary
+                    // string and then spuriously "disproves". The float `let` seed is unconditional (no
+                    // `reassigned_roots` gate — parity with the integer seed at the top of this arm), so
+                    // this removal is what makes a straight-line reassigned float unmodeled; the base
+                    // case of a float loop still sees the entry fact because that removal fires only on
+                    // the in-body assign, after `outer_assumptions` are captured. A loop re-models the
+                    // variable locally (verify_while_invariants' `model_vars` clone), exactly as for int.
+                    ctx.solver_float_vars.remove(root);
+                    ctx.solver_string_vars.remove(root);
                     let mangled = smt_var(root);
                     let arr = seq_arr_smt(root);
                     let len = seq_len_smt(root);
@@ -3505,13 +3517,24 @@ fn analyze_stmts(
                 if let Some((post, _written, readmit)) = admit {
                     // A VERIFIED invariant DOES hold after the loop: re-model the tracked variables
                     // (constrained by the proved invariants ∧ ¬cond) so a later `ensures`/`assert` can
-                    // rely on them.
+                    // rely on them. Lane-aware (Phase-3 QF_FP): a FLOAT loop's post facts carry an
+                    // `fp.`/`to_fp` token, so re-admit its tracked vars into `solver_float_vars` (no i64
+                    // width) and push the post facts to `assumptions` ONLY — NOT to `ctx.constraints`,
+                    // which feeds the self-host IR projection and must stay byte-identical (a float loop
+                    // is corpus-inert; an integer loop keeps its exact prior behavior below).
+                    let is_float = post.iter().any(|a| smt_uses_floats(a));
                     for v in &readmit {
-                        ctx.solver_int_vars.insert(v.clone());
-                        ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+                        if is_float {
+                            ctx.solver_float_vars.insert(v.clone());
+                        } else {
+                            ctx.solver_int_vars.insert(v.clone());
+                            ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+                        }
                     }
                     for a in post {
-                        ctx.constraints.push(format!("(assert {})", a));
+                        if !is_float {
+                            ctx.constraints.push(format!("(assert {})", a));
+                        }
                         assumptions.push(a);
                     }
                 }
@@ -7378,10 +7401,11 @@ fn stmt_contains_return(s: &Stmt) -> bool {
 /// Returns None when the body updates a variable in a way the checker cannot model soundly — a
 /// branch/nested-loop write to a tracked variable, a non-modelable right-hand side, or any
 /// break/continue/return — so the invariant cannot be verified inductively and the loop is rejected.
-fn extract_loop_transition(
+fn extract_loop_transition<F: Fn(&Expr, &BTreeSet<String>) -> bool>(
     body: &[Stmt],
     tracked: &BTreeSet<String>,
     model_vars: &BTreeSet<String>,
+    term_modelable: &F,
 ) -> Option<BTreeMap<String, Expr>> {
     // A break/continue/return anywhere in the body (including nested inside an `if`) can exit the
     // loop while its condition is still true, so the post-loop `¬cond` assumption would be unsound.
@@ -7409,10 +7433,13 @@ fn extract_loop_transition(
                 // A non-modelable update to a TRACKED variable defeats verification. A non-modelable
                 // update to an auxiliary is allowed here, but its stale fact is dropped by the
                 // caller's `written`/frame handling so it cannot be read as a frozen constant.
-                if tracked.contains(v) && !is_int_modelable(&concrete, model_vars) {
+                // `term_modelable` is the caller's per-lane arithmetic gate — `is_int_modelable` for the
+                // integer lane, `is_float_modelable` for the QF_FP lane — so the same flat-body extractor
+                // serves both without duplicating the transition machinery.
+                if tracked.contains(v) && !term_modelable(&concrete, model_vars) {
                     return None;
                 }
-                if is_int_modelable(&concrete, model_vars) {
+                if term_modelable(&concrete, model_vars) {
                     sub.insert(v.clone(), concrete);
                 } else {
                     sub.remove(v);
@@ -7461,6 +7488,29 @@ fn verify_while_invariants(
     body: &[Stmt],
     outer_assumptions: &[String],
 ) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
+    // Phase-3 QF_FP float-loop dispatch (BEFORE the integer float-filter below). A genuinely-FLOAT loop —
+    // condition and every invariant are Float64 formulas over the PRE-LOOP float set, and the loop is NOT
+    // integer-eligible over the pre-loop int set — routes to the parallel `verify_while_invariants_float`.
+    // Eligibility is judged on pre-loop SORT MEMBERSHIP with NO tracked-var injection: adding the loop-
+    // carried vars to either model set would make them trivially modelable in that lane and collapse the
+    // disjointness (`i < n` reads as int-modelable the moment `i` is force-added to the int set). Because a
+    // symbol is registered in EXACTLY ONE of solver_int_vars / solver_float_vars, a float loop's vars are
+    // int-INeligible (→ float lane) and an int loop's vars are float-INeligible (→ falls through). A loop
+    // whose vars are in NEITHER set yet is ineligible in both here and falls through to the integer lane,
+    // which re-models the tracked vars itself — no regression.
+    {
+        let float_eligible = is_bool_modelable_float(cond, &ctx.solver_float_vars)
+            && invariants
+                .iter()
+                .all(|inv| is_bool_modelable_float(inv, &ctx.solver_float_vars));
+        let int_eligible = is_bool_modelable(cond, &ctx.solver_int_vars)
+            && invariants
+                .iter()
+                .all(|inv| is_bool_modelable(inv, &ctx.solver_int_vars));
+        if float_eligible && !int_eligible {
+            return verify_while_invariants_float(ctx, cond, invariants, body, outer_assumptions);
+        }
+    }
     // Phase-3 QF_FP/QF_S: loop invariants are an INTEGER-only lane (the cond/invariant modelability gates
     // below reject non-integer formulas). A float `requires`/`let` fact from an enclosing float contract —
     // OR a string `requires` fact from an enclosing string contract — must therefore be dropped from the
@@ -7547,7 +7597,7 @@ fn verify_while_invariants(
     }
 
     // TRANSITION: the straight-line effect of one iteration on the tracked variables.
-    let transition = match extract_loop_transition(body, &tracked, &model_vars) {
+    let transition = match extract_loop_transition(body, &tracked, &model_vars, &is_int_modelable) {
         Some(t) => t,
         None => {
             reject(
@@ -7607,6 +7657,163 @@ fn verify_while_invariants(
     // written variable — a stale pre-loop fact about any of them (even an auxiliary) must be dropped
     // after the loop, while a fact about an unwritten variable (e.g. `n < 1000`) stays true — and
     // (2) the tracked variables to re-model so the post-loop invariant assumptions are usable.
+    let mut post = inv_smts;
+    post.push(format!("(not {cond_smt})"));
+    let written_vars: Vec<String> = written.into_iter().collect();
+    let readmit: Vec<String> = tracked.into_iter().collect();
+    Some((post, written_vars, readmit))
+}
+
+/// Phase-3 QF_FP: the Float64 mirror of `verify_while_invariants`. Identical Hoare structure (base case,
+/// straight-line transition, preservation, post-loop admission) but every formula is encoded with
+/// `float_bool_to_smt` / `float_expr_to_smt`, so the emitted obligations carry `fp.`/`to_fp` tokens and
+/// the per-obligation theory sniff (`smt_uses_floats`) auto-selects QF_FP and declares each loop variable
+/// IEEE-754 Float64. Reached ONLY from the float dispatch at the top of `verify_while_invariants` (the
+/// loop is float-eligible and int-INeligible over the pre-loop solver sets), so the two lanes never
+/// overlap. The `<=`/`>=` NaN disjunction inside `float_bool_to_smt` is LOAD-BEARING here too: it makes
+/// the base-case/step obligations match run.rs's `partial_cmp().unwrap_or(Equal)` at NaN, so a loop over a
+/// possibly-NaN value is neither falsely certified nor spuriously refuted.
+fn verify_while_invariants_float(
+    ctx: &mut SemanticContext,
+    cond: &Expr,
+    invariants: &[Expr],
+    body: &[Stmt],
+    outer_assumptions: &[String],
+) -> Option<(Vec<String>, Vec<String>, Vec<String>)> {
+    // Keep ONLY float facts in the outer assumptions: an integer/string fact would pull an i64/String
+    // symbol into the Float64 obligation body and mis-sort it (the dual of the integer lane's filter).
+    let outer_assumptions: Vec<String> = outer_assumptions
+        .iter()
+        .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
+        .cloned()
+        .collect();
+    let outer_assumptions: &[String] = &outer_assumptions;
+    let reject = |ctx: &mut SemanticContext, why: &str| {
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+            message: format!(
+                "cannot verify this float loop invariant inductively: {why}. Invariants are supported \
+                 on `while` loops whose body is straight-line float assignments (no branch/nested-loop \
+                 write to a loop-carried variable, no break/continue/return); state the invariant over \
+                 float variables the solver can model"
+            ),
+            span: None,
+        });
+    };
+
+    // The loop-carried variables the invariant/condition constrain, modeled as fresh Float64 symbols.
+    let mut tracked = BTreeSet::new();
+    collect_expr_vars(cond, &mut tracked);
+    for inv in invariants {
+        collect_expr_vars(inv, &mut tracked);
+    }
+    let mut model_vars = ctx.solver_float_vars.clone();
+    for v in &tracked {
+        model_vars.insert(v.clone());
+    }
+
+    // The condition and every invariant must be float-modelable, else induction is impossible.
+    if !is_bool_modelable_float(cond, &model_vars) {
+        reject(
+            ctx,
+            "the loop condition is not a float formula the solver can model",
+        );
+        return None;
+    }
+    for inv in invariants {
+        if !is_bool_modelable_float(inv, &model_vars) {
+            reject(ctx, "an invariant is not a float formula the solver can model");
+            return None;
+        }
+    }
+
+    let push_ob = |ctx: &mut SemanticContext, name: String, asm: Vec<String>, assertion: String| {
+        // Collect the obligation's free symbols, but keep ONLY `anb_`-prefixed ones (every real solver
+        // symbol is `anb_`-mangled). `collect_vars_from_smt` excludes the integer operator tokens
+        // (bvadd, …) but NOT the FLOAT ones — `fp.geq` scrapes as `fp`/`geq`, and `to_fp`/`RNE`/`isNaN`
+        // scrape as bare tokens — so without this filter they would be declared as Float64 consts and
+        // COLLIDE with z3's built-in `to_fp`/`RNE` FP operators, erroring the query (→ a spurious
+        // UNPROVEN over-rejection). Mirrors the float `assert`-site's `.starts_with("anb_")` filter.
+        let mut raw = BTreeSet::new();
+        collect_vars_from_smt(&assertion, &mut raw);
+        for a in &asm {
+            collect_vars_from_smt(a, &mut raw);
+        }
+        let vars: Vec<String> = raw.into_iter().filter(|v| v.starts_with("anb_")).collect();
+        ctx.solver_obligations.push(SolverObligation {
+            name,
+            assumptions: asm,
+            assertion,
+            vars,
+            strings: false,
+            guard_assumptions: ctx.active_branch_guards.clone(),
+        });
+    };
+
+    // BASE CASE: on entry, the pre-loop state implies each invariant.
+    for inv in invariants {
+        let smt = float_bool_to_smt(inv);
+        push_ob(
+            ctx,
+            format!("loop-invariant-base:{smt}"),
+            outer_assumptions.to_vec(),
+            smt,
+        );
+    }
+
+    // TRANSITION: the straight-line float effect of one iteration on the tracked variables.
+    let transition = match extract_loop_transition(body, &tracked, &model_vars, &is_float_modelable) {
+        Some(t) => t,
+        None => {
+            reject(ctx, "the loop body is not straight-line float assignments");
+            return None;
+        }
+    };
+
+    // PRESERVATION: assuming the invariants, the condition, and the FRAME, each invariant still holds
+    // after one iteration. A fact about a variable the loop WRITES is stale and dropped; a fact about an
+    // unwritten variable (e.g. a float bound `n`) holds every iteration and stays in scope.
+    let mut written: BTreeSet<String> = BTreeSet::new();
+    collect_assigned_roots(body, &mut written);
+    let written_mangled: BTreeSet<String> = written.iter().map(|v| smt_var(v)).collect();
+    let frame: Vec<String> = outer_assumptions
+        .iter()
+        .filter(|a| {
+            let mut vs = BTreeSet::new();
+            collect_vars_from_smt(a, &mut vs);
+            vs.is_disjoint(&written_mangled)
+        })
+        .cloned()
+        .collect();
+    let cond_smt = float_bool_to_smt(cond);
+    let inv_smts: Vec<String> = invariants.iter().map(float_bool_to_smt).collect();
+    let mut step_assumptions = inv_smts.clone();
+    step_assumptions.push(cond_smt.clone());
+    step_assumptions.extend(frame);
+    for inv in invariants {
+        let stepped = substitute_vars(inv, &transition);
+        if !is_bool_modelable_float(&stepped, &model_vars) {
+            reject(
+                ctx,
+                "an invariant is not modelable after the loop body's update",
+            );
+            return None;
+        }
+        let smt = float_bool_to_smt(&stepped);
+        push_ob(
+            ctx,
+            format!("loop-invariant-step:{smt}"),
+            step_assumptions.clone(),
+            smt,
+        );
+    }
+
+    // SUCCESS: after the loop the invariants hold and the loop has exited (¬cond). Return the post-loop
+    // float facts + every written variable (its stale pre-loop fact must be dropped) + the tracked
+    // variables to re-model. The caller re-admits the tracked vars into `solver_float_vars` (a float post
+    // fact carries an `fp.`/`to_fp` token, which the While handler sniffs to pick the float lane) and
+    // pushes the post facts to `assumptions` ONLY — never to `ctx.constraints`, keeping the self-host IR
+    // projection byte-identical (the float lane never contaminates the emitted constraint set).
     let mut post = inv_smts;
     post.push(format!("(not {cond_smt})"));
     let written_vars: Vec<String> = written.into_iter().collect();

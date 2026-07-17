@@ -2608,6 +2608,102 @@ fn main() {
     }
 
     #[test]
+    fn phase3_qf_fp_float_loop_invariants_verify_inductively() {
+        // Phase-3 QF_FP: a `while` loop over FLOAT variables now verifies its invariants inductively in
+        // the Float64 lane — the mirror of the integer B3 lane. The float-let unification (a genuinely-
+        // float `let` seeds its defining fact unconditionally, like the integer seed) makes the loop
+        // counter's entry value available at the base case; the parallel `verify_while_invariants_float`
+        // emits QF_FP base/step obligations with the NaN-aware `<=`/`>=` encoding that matches run.rs.
+        // `discharged` is false when the program is rejected (fail-closed diagnostic OR a solver FAIL).
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
+
+        // THE DEMONSTRATION (red baseline on HEAD — no float loop lane existed): a float `ensures` over a
+        // loop-carried float variable is UNPROVABLE without an invariant but PROVABLE with one.
+        assert!(
+            !discharged("fn f(n: f64) -> f64 requires(n > 0.0) ensures(result >= 0.0) { let mut i = 0.0; while i < n { i = i + 1.0; } return i; }"),
+            "without an invariant, a float ensures over the loop var must fail closed"
+        );
+        assert!(
+            discharged("fn f(n: f64) -> f64 requires(n > 0.0) ensures(result >= 0.0) { let mut i = 0.0; while i < n invariant(i >= 0.0) { i = i + 1.0; } return i; }"),
+            "with an invariant, the float loop var is readmitted and the ensures proves"
+        );
+
+        // Base case must hold on entry: `i >= 5.0` is false when `i` starts at 0.0.
+        assert!(
+            !discharged("fn f(n: f64) -> f64 requires(n > 0.0) ensures(result >= 5.0) { let mut i = 0.0; while i < n invariant(i >= 5.0) { i = i + 1.0; } return i; }"),
+            "float invariant that fails on entry is rejected (base case)"
+        );
+        // Base with a strict `>`: `i > 0.0` is false at entry (i == 0.0).
+        assert!(
+            !discharged("fn f(n: f64) -> f64 requires(n > 0.0) ensures(result > 0.0) { let mut i = 0.0; while i < n invariant(i > 0.0) { i = i + 1.0; } return i; }"),
+            "a strict-positive float invariant false at entry is rejected"
+        );
+        // Preservation must hold: `i <= 3.0` is not preserved as `i` increments past 3.0.
+        assert!(
+            !discharged("fn f(n: f64) -> f64 requires(n > 0.0) ensures(result <= 3.0) { let mut i = 0.0; while i < n invariant(i <= 3.0) { i = i + 1.0; } return i; }"),
+            "float invariant not preserved by the body is rejected (inductive step)"
+        );
+
+        // A valid post-loop assert proves (the invariant ∧ ¬cond survive): after `while i < 10.0`, the
+        // invariant `i >= 0.0` and `¬(i < 10.0)` hold, so `assert(i >= 10.0)` is certified.
+        assert!(
+            discharged("fn f() { let mut i = 0.0; while i < 10.0 invariant(i >= 0.0) { i = i + 1.0; } assert(i >= 10.0); }"),
+            "a post-loop float assert implied by (invariant ∧ ¬cond) proves"
+        );
+        // SOUNDNESS (no false accept): `assert(i < 10.0)` after the loop is FALSE at runtime (the loop
+        // exits with i >= 10.0) and must be rejected — the post-loop `¬cond` gives `i >= 10.0`, never
+        // `i < 10.0`.
+        assert!(
+            !discharged("fn f() { let mut i = 0.0; while i < 10.0 invariant(i >= 0.0) { i = i + 1.0; } assert(i < 10.0); }"),
+            "a false post-loop float assert (contradicting ¬cond) must be rejected"
+        );
+        // SOUNDNESS: an in-body assert the invariant does not establish is rejected (havoc drops the
+        // stale entry value); the runtime traps (`i` reaches 5.0 when n = 10.0).
+        assert!(
+            !discharged("fn f(n: f64) requires(n > 0.0) { let mut i = 0.0; while i < n invariant(i >= 0.0) { assert(i < 5.0); i = i + 1.0; } }"),
+            "an in-body float assert not established by the invariant is rejected (fail-closed)"
+        );
+
+        // A decreasing loop with a preserved upper bound proves.
+        assert!(
+            discharged("fn f() { let mut x = 5.0; while x > 0.0 invariant(x <= 5.0) { x = x - 1.0; } assert(x <= 5.0); }"),
+            "a decreasing float loop with a preserved upper-bound invariant proves"
+        );
+        // A branch that writes a loop-carried float variable defeats the straight-line transition.
+        assert!(
+            !discharged("fn f(n: f64, c: bool) requires(n > 0.0) { let mut i = 0.0; while i < n invariant(i >= 0.0) { if c { i = i + 1.0; } } }"),
+            "a branch writing the float loop variable is not analyzable -> rejected"
+        );
+        // `%` is excluded from the float lane (Rust f64 `%` is fmod, not SMT fp.rem) -> fail-closed.
+        assert!(
+            !discharged("fn f(n: f64) requires(n > 0.0) { let mut i = 1.0; while i < n invariant(i >= 0.0) { i = i % 2.0; } }"),
+            "a float `%` transition is unmodelable -> the loop is rejected (fail-closed)"
+        );
+        // A float `let` (not a param) as the bound proves — the float-let unification seeds it.
+        assert!(
+            discharged("fn f() { let n = 4.0; let mut i = 0.0; while i < n invariant(i >= 0.0) { i = i + 1.0; } assert(i >= 0.0); }"),
+            "a float loop bounded by a float `let` proves"
+        );
+
+        // REGRESSION GUARD: the integer B3 lane is unaffected — an integer loop still verifies via the
+        // integer verifier (the float dispatch only fires for a float-eligible, int-INeligible loop).
+        assert!(
+            discharged("fn count(n: u32) -> u32 requires(n < 1000000) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { i = i + 1; } return i; }"),
+            "the integer loop-invariant lane still proves (dispatch did not steal integer loops)"
+        );
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 5) { let mut i = 0; while i < n invariant(i >= 5) { i = i + 1; } return i; }"),
+            "the integer loop-invariant lane still rejects a false invariant"
+        );
+    }
+
+    #[test]
     fn solver_does_not_disprove_loop_carried_assertions() {
         // A binding mutated after its `let` (here, accumulated in a loop) cannot be modeled from
         // its initial value; the checker must not disprove a TRUE post-loop assertion against the
