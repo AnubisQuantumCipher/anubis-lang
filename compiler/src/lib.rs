@@ -6489,11 +6489,13 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
                 && !accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(P{v: x}.v > 0) { return x; } fn f() -> i64 { let z = g(0 - 5); return z; } fn main() { print(f()); }"#),
             "a struct-literal contract must substitute the call arg into the field value"
         );
-        // the VIA-LET form stays fail-open (documented residual — a struct VAR's fields need their own
-        // per-field symbols + invalidation, a separate feature). Must still accept (not made worse).
+        // the VIA-LET form is now MODELED by the struct-literal-let field slice: `let p = P{v: 0}` seeds
+        // p.v = 0 from the construction, so `g(p.v)` = `g(0)` violates `requires(x > 0)` and the call-site
+        // discharge correctly REJECTS (runtime `100 / 0` traps DIV_BY_ZERO). This was the documented
+        // residual ("struct VAR's fields need their own per-field symbols") — now closed.
         assert!(
-            accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let p = P{v: 0}; let z = g(p.v); return z; } fn main() { print(f()); }"#),
-            "a field access on a struct VAR stays fail-open (documented residual)"
+            !accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let p = P{v: 0}; let z = g(p.v); return z; } fn main() { print(f()); }"#),
+            "a let-struct field access now models the construction value — g(p.v)=g(0) violates requires(x>0), must reject"
         );
     }
 
@@ -6562,21 +6564,22 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             accepts(r#"struct P { a: string } fn pred(s: string) -> bool { return true; } fn g(p: P) requires(pred(p.a)) { assert(p.a == "zz"); } fn main() { g(P{a: "qq"}); }"#),
             "a field constrained only by a non-modelable user-predicate requires must be pruned to fail-open"
         );
-        // CASE 8 (LET-SHADOW soundness — a review-confirmed false proof): a `let p = P{n:99}` shadows the
-        // struct param, so at runtime `p.n` reads 99, not the call-entry 5. The entry `requires(p.n == 5)`
-        // seed must NOT survive to prove `assert(p.n == 5)`. The registration gate excludes a base that is
-        // reassigned OR SHADOWED (collect_assigned_roots + collect_let_bound), so the field is unregistered
-        // → the assert fail-opens rather than being falsely proved. Must REJECT is WRONG here — the correct
-        // outcome is fail-open ACCEPT (unmodeled), matching every other unmodeled assert; the KEY property
-        // is that it is NOT a false PROOF (before the fix, assert(p.n==5) was PROVED while assert(p.n==99)
-        // was REJECTED — the tell-tale of a stale-fact proof). We assert the discriminator directly.
+        // CASE 8 (LET-SHADOW soundness — a review-confirmed false proof, now the two fixes COMPOSED): a
+        // `let p = P{n:99}` shadows the struct param, so at runtime `p.n` reads 99, not the call-entry 5.
+        // TWO properties must hold together: (1) the struct-PARAM gate (collect_assigned_roots +
+        // collect_let_bound) must NOT register the ENTRY `requires(p.n == 5)` fact for the shadowed base —
+        // else it would falsely prove `assert(p.n == 5)`; and (2) the struct-LET slice DOES model the
+        // shadowing `let p = P{n:99}`'s field, so `p.n` in the body is checked against 99. The net (correct)
+        // behavior: the TRUE `assert(p.n == 99)` PROVES (the let value), and the FALSE `assert(p.n == 5)` is
+        // DISPROVED (99 ≠ 5) — a REJECT sourced from the let value, NOT a vacuous accept from contradictory
+        // entry+let facts. Runtime: `p.n == 99`, so `assert(p.n == 5)` traps → reject is correct.
         assert!(
             accepts(r#"struct P { n: i64 } fn g(p: P) -> i64 requires(p.n == 5) { let p = P { n: 99 }; assert(p.n == 99); return 0; } fn main() { let r = g(P { n: 5 }); }"#),
-            "a let-shadow's TRUE assert(p.n==99) must not be rejected by a surviving stale entry fact"
+            "a let-shadow's TRUE assert(p.n==99) proves against the LET value (not the stale entry fact)"
         );
         assert!(
-            accepts(r#"struct P { n: i64 } fn g(p: P) -> i64 requires(p.n == 5) { let p = P { n: 99 }; assert(p.n == 5); return 0; } fn main() { let r = g(P { n: 5 }); }"#),
-            "a let-shadow leaves the field unmodeled (fail-open) — it must NOT be a false PROOF of a stale fact; before the collect_let_bound fix this was a false accept via a live entry seed"
+            !accepts(r#"struct P { n: i64 } fn g(p: P) -> i64 requires(p.n == 5) { let p = P { n: 99 }; assert(p.n == 5); return 0; } fn main() { let r = g(P { n: 5 }); }"#),
+            "a let-shadow's FALSE assert(p.n==5) is DISPROVED by the LET value 99 — a real reject, not a vacuous accept from a surviving entry seed (the entry requires must not be registered for the shadowed base)"
         );
         // CASE 9 (INTENDED consistency with scalar params — NOT a regression to "fix"): a NON-PINNING
         // requires (`p.n > 3`) registers+seeds the field but does not fix its value, so a stronger
@@ -6591,6 +6594,80 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         assert!(
             !accepts(r#"struct P { n: i64 } fn g(p: P) -> i64 requires(p.n > 3) { assert(p.n == 10); return 0; } fn main() { let r = g(P { n: 10 }); }"#),
             "a struct field must match the scalar: a non-pinning requires + stronger assert rejects (modular)"
+        );
+    }
+
+    #[test]
+    fn struct_let_field_contracts_discharge_or_disprove() {
+        // The body twin of struct_param_field_contracts: a `let p = P{f: v}` binding seeds each scalar
+        // field's mangled symbol from the CONSTRUCTION value, so a later `assert(p.f == ..)` is proven or
+        // DISPROVED instead of fail-opening. Before this slice, `let p = P{v:5}; assert(p.v == 6)` was
+        // ACCEPTED (the field access was unmodeled) while it traps at runtime. Gated OFF a reassigned or
+        // SHADOWED base — the mangled per-field fact escapes the scalar shadow-clear, so a re-bound base
+        // fail-opens rather than reusing a stale field fact.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // int lane: false field assert on a let-struct must REJECT; true accepts.
+        assert!(
+            !accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; assert(p.v == 6); }"#),
+            "a false int field assert over a let-struct must reject"
+        );
+        assert!(
+            accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; assert(p.v == 5); }"#),
+            "a true int field assert over a let-struct must accept"
+        );
+        // string + float lanes.
+        assert!(
+            !accepts(r#"struct P { a: string } fn main() { let p = P { a: "x" }; assert(p.a == "z"); }"#),
+            "a false string field assert over a let-struct must reject"
+        );
+        assert!(
+            !accepts(r#"struct P { x: f64 } fn main() { let p = P { x: 3.0 }; assert(p.x > 4.0); }"#),
+            "a false float field assert over a let-struct must reject"
+        );
+        // multi-field: the NAMED field is selected, and a satisfied assert on a DIFFERENT field accepts.
+        assert!(
+            accepts(r#"struct P { a: i64, b: i64 } fn main() { let p = P { a: 1, b: 2 }; assert(p.a == 1); assert(p.b == 2); }"#),
+            "each named field of a let-struct is modeled to its own construction value"
+        );
+        // SHADOW soundness: a re-bound `p` fail-opens (mangled field fact escapes the scalar shadow-clear),
+        // so the SECOND binding's field is NOT falsely proved against the FIRST's fact. The false assert on
+        // the shadowed value must NOT be a false PROOF — the discriminator is that a shadowed base is
+        // unmodeled (both the true and false asserts fail-open ACCEPT), never proving a stale value.
+        assert!(
+            accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; let p = P { v: 9 }; assert(p.v == 5); }"#),
+            "a shadowed let-struct base is unmodeled (fail-open) — its field fact must not survive the re-bind as a false proof"
+        );
+        assert!(
+            accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; let p = P { v: 9 }; assert(p.v == 9); }"#),
+            "the true assert on a shadowed let-struct also fail-opens (base is unmodeled) — confirms it is not a stale-fact proof"
+        );
+        // REASSIGN soundness: a field written after the let (`p.v = 9`) makes the base reassigned → the
+        // construction fact is not seeded → fail-open (matches the has_contract path).
+        assert!(
+            accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; p.v = 9; assert(p.v == 5); }"#),
+            "a reassigned-field let-struct base is unmodeled (fail-open), not proved against the stale construction value"
+        );
+        // VALUE-STABILITY (review Finding 1 — the stranded-field OVER-REJECTION): a field value that
+        // references a variable REASSIGNED after the let must NOT be modeled. `let p = P{v: x}; x = 10`
+        // copies x=5 into p.v at construction (value semantics — p.v stays 5), so `assert(p.v == 5)` runs
+        // clean. But the field fact `(= sym anb_x)` is dropped when `x` is written while the field symbol
+        // stays registered → a FREE var → z3 can't prove ==5 → over-rejection. The value-stability gate
+        // (skip a field whose value mentions a reassigned/shadowed var) restores fail-open ACCEPT.
+        assert!(
+            accepts(r#"struct P { v: i64 } fn main() { let x = 5; let p = P { v: x }; x = 10; assert(p.v == 5); }"#),
+            "a let-struct field whose value references a later-reassigned var must fail-open (not strand a free symbol → over-reject)"
+        );
+        // …but a field over a STABLE var IS modeled (the value can't be stranded): a false assert rejects.
+        assert!(
+            !accepts(r#"struct P { v: i64 } fn g(a: i64) -> i64 requires(a == 7) { let p = P { v: a }; assert(p.v == 8); return 0; } fn main() { let r = g(7); }"#),
+            "a let-struct field over a stable (never-reassigned) var is modeled — a false assert rejects"
         );
     }
 

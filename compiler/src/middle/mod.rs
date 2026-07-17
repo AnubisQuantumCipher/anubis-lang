@@ -229,6 +229,11 @@ struct SemanticContext {
     /// statement-level frame sweep (which only visits `Stmt::If/While/…` bodies, not embedded expression
     /// writes) would miss. Reset + repopulated per function.
     reassigned_roots: BTreeSet<String>,
+    /// Names bound by MORE THAN ONE `let` in the current function (a shadow: `let p = …; …; let p = …`).
+    /// A struct-literal-let field fact rides `assumptions` keyed by a MANGLED per-field symbol the
+    /// scalar shadow-clear does not evict, so a shadowed struct binding could leave a stale field fact —
+    /// registration of struct-let field facts is skipped for a shadowed base (fail-open). Reset per fn.
+    shadowed_lets: BTreeSet<String>,
     /// Variables given an EXPLICIT `: T` annotation. Only these have their reassignments
     /// type-checked (the user opted into the type); an inferred binding is dynamic and reassignable
     /// to any type, so enforcing type-stability on it would be a false positive.
@@ -1285,6 +1290,8 @@ fn analyze_function(
     // `let` is chained only when its name is NOT here, so its defining-fact cannot leak past such a write.
     ctx.reassigned_roots.clear();
     collect_assigned_roots(body, &mut ctx.reassigned_roots);
+    ctx.shadowed_lets.clear();
+    collect_shadowed_lets(body, &mut ctx.shadowed_lets);
 
     analyze_stmts(
         body,
@@ -2700,6 +2707,72 @@ fn analyze_stmts(
                 if genuinely_string && !ctx.reassigned_roots.contains(name) {
                     ctx.solver_string_vars.insert(name.clone());
                     assumptions.push(format!("(= {} {})", smt_var(name), string_expr_to_smt(init)));
+                }
+                // Struct-literal LET field modeling — the body twin of the has_contract struct-PARAM path:
+                // `let p = P{f: v, ...}` (p neither reassigned nor SHADOWED) registers each scalar modelable
+                // field's canonical `mangle_field` symbol and seeds its defining fact `(= mangle(p,f) v)`, so
+                // a later assert/ensures over `p.field` is checked instead of fail-opening. Riding
+                // `assumptions` + the `reassigned_roots` gate mirrors the float/string let branches above; the
+                // `shadowed_lets` gate additionally fail-opens a re-bound base whose mangled per-field symbol
+                // the scalar shadow-clear cannot evict (incl. an expression-position match/if-let shadow). A
+                // param of the same name is mutually exclusive: slice-19 registration skips a let-shadowed
+                // param (its gate includes collect_let_bound), so no conflicting fact can coexist. Only a
+                // field whose value ENCODES is registered (else it declines → fail-open, no free-var strand).
+                if let Expr::StructLiteral { name: sname, fields, .. } = init {
+                    if !ctx.reassigned_roots.contains(name) && !ctx.shadowed_lets.contains(name) {
+                        if let Some(field_tys) = ctx.struct_fields.get(sname).cloned() {
+                            for (fname, fexpr) in fields {
+                                let Some(fty) = field_tys.get(fname) else {
+                                    continue;
+                                };
+                                // VALUE-STABILITY gate (review Finding 1 — the stranded-field over-reject):
+                                // the field DEFINING fact `(= sym <smt(fexpr)>)` rides `assumptions`, so a
+                                // frame sweep drops it when a variable it MENTIONS is written — but the
+                                // mangled field symbol stays registered, leaving a FREE var that makes a
+                                // valid `assert(p.f == ..)` unprovable → over-rejection (`let p = P{v:x}; x =
+                                // 10; assert(p.v == 5)` runs clean but check rejected). A struct field copies
+                                // its value AT CONSTRUCTION (value semantics), so the fact is faithful only
+                                // if it can never be dropped: register ONLY when no variable in the value
+                                // expr is reassigned or shadowed anywhere in the body (a literal, or a value
+                                // over stable vars). Otherwise fail-open (unmodeled), exactly as pre-slice.
+                                let mut fvars = BTreeSet::new();
+                                collect_expr_vars(fexpr, &mut fvars);
+                                if fvars.iter().any(|v| {
+                                    ctx.reassigned_roots.contains(v) || ctx.shadowed_lets.contains(v)
+                                }) {
+                                    continue;
+                                }
+                                let sym = mangle_field(name, fname);
+                                if is_integer_ty(fty)
+                                    && is_int_modelable(fexpr, &ctx.solver_int_vars)
+                                {
+                                    if let Some(vs) = expr_to_smt_value(fexpr, &ctx.symbolic_widths) {
+                                        ctx.solver_int_vars.insert(sym.clone());
+                                        ctx.symbolic_widths.insert(sym.clone(), 64);
+                                        assumptions.push(format!("(= {} {})", smt_var(&sym), vs));
+                                    }
+                                } else if is_float_ty(fty)
+                                    && is_float_modelable(fexpr, &ctx.solver_float_vars)
+                                {
+                                    ctx.solver_float_vars.insert(sym.clone());
+                                    assumptions.push(format!(
+                                        "(= {} {})",
+                                        smt_var(&sym),
+                                        float_expr_to_smt(fexpr)
+                                    ));
+                                } else if fty.as_str() == "string"
+                                    && is_string_modelable(fexpr, &ctx.solver_string_vars)
+                                {
+                                    ctx.solver_string_vars.insert(sym.clone());
+                                    assumptions.push(format!(
+                                        "(= {} {})",
+                                        smt_var(&sym),
+                                        string_expr_to_smt(fexpr)
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
                 // A `let` INITIALIZER can hide a write to an OUTER variable in an `if`/`match`/block
                 // expression (`let z = if c { y = 100; 0 } else { 0 };`). That write escapes the
@@ -6583,6 +6656,98 @@ fn collect_let_bound(body: &[Stmt], out: &mut BTreeSet<String>) {
             }
             Stmt::ExprStmt(e) => expr_let_bound(e, out),
             // Break / Continue / SpecBlock bind no runtime names.
+            _ => {}
+        }
+    }
+}
+
+/// Names bound by MORE THAN ONE binding site in the function — a SHADOW (`let p = …; …; let p = …`, or an
+/// outer `let p` re-bound by a `match`/`if let` arm / lambda param / `for` var). A struct-literal-let field
+/// fact rides `assumptions` keyed by a MANGLED per-field symbol (`mangle_field`); the scalar shadow-clear
+/// only evicts `anb_<name>`, not the field mangles, and an EXPRESSION-position shadow (a match arm binding
+/// `p`) never reaches the `Stmt::Let` clear at all — so a shadowed base could reuse the outer's field fact
+/// for a DIFFERENT value (a false proof). The struct-let field registration therefore SKIPS a shadowed base
+/// (fail-open). Over-collection is safe: it only declines to model a struct-let field, never over-proves;
+/// two disjoint-branch `let p`s counting as a shadow just fail-opens both. Uses `expr_let_bound` for
+/// expression-embedded bindings so no binding form is missed.
+fn collect_shadowed_lets(body: &[Stmt], out: &mut BTreeSet<String>) {
+    let mut seen = BTreeSet::new();
+    note_shadowed_lets(body, &mut seen, out);
+}
+
+fn note_shadowed_lets(body: &[Stmt], seen: &mut BTreeSet<String>, out: &mut BTreeSet<String>) {
+    // A binding is a shadow iff its name was already seen at another site (Stmt or expression).
+    let note_expr = |e: &Expr, seen: &mut BTreeSet<String>, out: &mut BTreeSet<String>| {
+        let mut here = BTreeSet::new();
+        expr_let_bound(e, &mut here);
+        for n in here {
+            if !seen.insert(n.clone()) {
+                out.insert(n);
+            }
+        }
+    };
+    for s in body {
+        match s {
+            Stmt::Let { name, init, .. } => {
+                if !seen.insert(name.clone()) {
+                    out.insert(name.clone());
+                }
+                note_expr(init, seen, out);
+            }
+            Stmt::LetPattern { pattern, init, .. } => {
+                for n in pattern.bound_names() {
+                    if !seen.insert(n.clone()) {
+                        out.insert(n);
+                    }
+                }
+                note_expr(init, seen, out);
+            }
+            Stmt::If { cond, then, else_ } => {
+                note_expr(cond, seen, out);
+                note_shadowed_lets(then, seen, out);
+                if let Some(e) = else_ {
+                    note_shadowed_lets(e, seen, out);
+                }
+            }
+            Stmt::For { var, source, body, .. } => {
+                if !seen.insert(var.clone()) {
+                    out.insert(var.clone());
+                }
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        note_expr(start, seen, out);
+                        note_expr(end, seen, out);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => note_expr(expr, seen, out),
+                }
+                note_shadowed_lets(body, seen, out);
+            }
+            Stmt::While { cond, body, .. } => {
+                note_expr(cond, seen, out);
+                note_shadowed_lets(body, seen, out);
+            }
+            Stmt::WhileLet { pattern, expr, body } => {
+                for n in pattern.bound_names() {
+                    if !seen.insert(n.clone()) {
+                        out.insert(n);
+                    }
+                }
+                note_expr(expr, seen, out);
+                note_shadowed_lets(body, seen, out);
+            }
+            Stmt::Loop { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => note_shadowed_lets(body, seen, out),
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    note_shadowed_lets(b, seen, out);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                note_expr(target, seen, out);
+                note_expr(value, seen, out);
+            }
+            Stmt::ExprStmt(e) => note_expr(e, seen, out),
             _ => {}
         }
     }
