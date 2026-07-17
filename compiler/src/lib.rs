@@ -3318,6 +3318,66 @@ fn bad() {
     }
 
     #[test]
+    fn phase4_struct_field_write_modeling() {
+        // Phase-3/4 (task #31): a straight-line struct FIELD write `p.f = v` (p a struct var, f an INTEGER
+        // field, v int-modelable and not referencing p) now registers the field's `mangle_field(p,f)`
+        // symbol with the written value, so a later read `p.f` in an assert/ensures is CHECKED. Gated
+        // fail-closed on `struct_write_disqualified`: any var mutated in any way OTHER than a top-level
+        // straight-line field write (a whole/embedded/branch/loop reassign) is EXCLUDED → its fields defer.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // THE DEMONSTRATION (red baseline — a field write de-modeled the base, so the post-write read
+        // deferred): the written value is now PROVED.
+        assert!(
+            discharged("struct P { x: int } fn f() -> int ensures(result == 5) { let mut p = P { x: 1 }; p.x = 5; return p.x; } fn main() { let r = f(); }"),
+            "a struct field write proves the written value (p.x=5 ⇒ p.x==5)"
+        );
+        // A FALSE post-write ensures is now DISPROVED (modeled, not deferred): the write REPLACES the
+        // field value, so the stale pre-write value (p.x==1) is gone and ensures(result==6) rejects.
+        assert!(
+            !discharged("struct P { x: int } fn f() -> int ensures(result == 6) { let mut p = P { x: 1 }; p.x = 5; return p.x; } fn main() { let r = f(); }"),
+            "a false post-write ensures must be disproved (result==6 for p.x after p.x=5 rejects)"
+        );
+        // A field REWRITE tracks the latest value; multi-field composes.
+        assert!(
+            discharged("struct P { x: int } fn f() -> int ensures(result == 7) { let mut p = P { x: 1 }; p.x = 5; p.x = 7; return p.x; } fn main() { let r = f(); }"),
+            "a field rewrite tracks the latest value (p.x=5; p.x=7 ⇒ p.x==7)"
+        );
+        assert!(
+            discharged("struct P { x: int, y: int } fn f() -> int ensures(result == 12) { let mut p = P { x: 1, y: 2 }; p.x = 5; p.y = 7; return p.x + p.y; } fn main() { let r = f(); }"),
+            "independent field writes each model their own field (p.x=5, p.y=7 ⇒ sum 12)"
+        );
+        // SOUNDNESS — a WHOLE reassign after a field write DISQUALIFIES the base: its fields de-model, so
+        // the stale pre-reassign value must NOT be proved (the checker must not certify result==5 when the
+        // whole reassign set p.x to 9 at runtime).
+        assert!(
+            !discharged("struct P { x: int } fn f() -> int ensures(result == 5) { let mut p = P { x: 1 }; p.x = 5; p = P { x: 9 }; return p.x; } fn main() { let r = f(); }"),
+            "a whole reassign after a field write must strand no stale field fact (result==5 must not prove)"
+        );
+        // SOUNDNESS — a self-referential RHS (`p.x = p.x + 1`) de-models the field (the old fact would go
+        // stale once dropped), so the stale value is NOT proved.
+        assert!(
+            !discharged("struct P { x: int } fn f() -> int ensures(result == 5) { let mut p = P { x: 1 }; p.x = 5; p.x = p.x + 1; return p.x; } fn main() { let r = f(); }"),
+            "a self-referential field write de-models (stale result==5 must not prove)"
+        );
+        // SOUNDNESS — a write in a BRANCH is not top-level straight-line → the base is disqualified → its
+        // fields defer (a conditional value must not be proved as unconditional).
+        assert!(
+            !discharged("struct P { x: int } fn f(c: bool) -> int ensures(result == 5) { let mut p = P { x: 1 }; if c { p.x = 5; } return p.x; } fn main() { let r = f(true); }"),
+            "a branch field write disqualifies the base (conditional value must not prove unconditionally)"
+        );
+        // SOUNDNESS — a write in a LOOP body disqualifies the base.
+        assert!(
+            !discharged("struct P { x: int } fn f() -> int ensures(result == 6) { let mut p = P { x: 0 }; let mut i = 0; while i < 3 { p.x = i; i = i + 1; } return p.x; } fn main() { let r = f(); }"),
+            "a loop-body field write disqualifies the base (loop-carried value must not prove)"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,
@@ -7125,11 +7185,18 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; let p = P { v: 9 }; assert(p.v == 9); }"#),
             "the true assert on a shadowed let-struct also fail-opens (base is unmodeled) — confirms it is not a stale-fact proof"
         );
-        // REASSIGN soundness: a field written after the let (`p.v = 9`) makes the base reassigned → the
-        // construction fact is not seeded → fail-open (matches the has_contract path).
+        // REASSIGN (Phase-3/4 task #31 — struct field-WRITE modeling closed this prior fail-open): a
+        // straight-line field write `p.v = 9` after the let is now MODELED IN PLACE (register-at-write),
+        // so the construction value is REPLACED. The stale-construction assert `p.v == 5` is now actively
+        // DISPROVED (was a fail-open ACCEPT), and the written value `p.v == 9` PROVES. SOUND: the model is
+        // the WRITTEN value, never the stale construction value (the two asserts below are the discriminator).
         assert!(
-            accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; p.v = 9; assert(p.v == 5); }"#),
-            "a reassigned-field let-struct base is unmodeled (fail-open), not proved against the stale construction value"
+            !accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; p.v = 9; assert(p.v == 5); }"#),
+            "a field write replaces the construction value — the stale `p.v == 5` assert is now disproved (was fail-open)"
+        );
+        assert!(
+            accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; p.v = 9; assert(p.v == 9); }"#),
+            "a straight-line field write models the WRITTEN value — `p.v == 9` proves (not the stale construction 5)"
         );
         // VALUE-STABILITY (review Finding 1 — the stranded-field OVER-REJECTION): a field value that
         // references a variable REASSIGNED after the let must NOT be modeled. `let p = P{v: x}; x = 10`

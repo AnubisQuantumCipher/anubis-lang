@@ -229,6 +229,15 @@ struct SemanticContext {
     /// statement-level frame sweep (which only visits `Stmt::If/While/…` bodies, not embedded expression
     /// writes) would miss. Reset + repopulated per function.
     reassigned_roots: BTreeSet<String>,
+    /// FAIL-CLOSED gate for struct-field-WRITE modeling: every root that is assigned ANYWHERE except as
+    /// a TOP-LEVEL straight-line field write `p.f = v` (a whole/embedded/branch/loop reassign, an index
+    /// write, or a nested assign). A struct whose field is modeled at a `p.f = v` write rides a MANGLED
+    /// per-field symbol (`mangle_field`) that no existing invalidation site evicts (the LESSON-19 gap the
+    /// param/let field-read lanes sidestep by not registering a reassigned base at all). Registering only
+    /// for a root NOT in this set means the field's ENTIRE mutation footprint is straight-line writes the
+    /// Assign handler tracks in order — so no stale field fact can survive a later reassign. Repopulated
+    /// per function; empty by default (Default-derived), so it is inert until the struct-write slice fills it.
+    struct_write_disqualified: BTreeSet<String>,
     /// Names bound by MORE THAN ONE `let` in the current function (a shadow: `let p = …; …; let p = …`).
     /// A struct-literal-let field fact rides `assumptions` keyed by a MANGLED per-field symbol the
     /// scalar shadow-clear does not evict, so a shadowed struct binding could leave a stale field fact —
@@ -1331,6 +1340,8 @@ fn analyze_function(
     // `let` is chained only when its name is NOT here, so its defining-fact cannot leak past such a write.
     ctx.reassigned_roots.clear();
     collect_assigned_roots(body, &mut ctx.reassigned_roots);
+    ctx.struct_write_disqualified.clear();
+    collect_struct_write_disqualified(body, &mut ctx.struct_write_disqualified);
     ctx.shadowed_lets.clear();
     collect_shadowed_lets(body, &mut ctx.shadowed_lets);
     // (BUILTIN-SHADOW detection — shadowed_string_preds + shadow_builtin_mark sentinels — is computed
@@ -3331,8 +3342,80 @@ fn analyze_stmts(
                 } else {
                     false
                 };
-                if concrete_cell_write {
-                    // Cell updated in place; the rest of the sequence model (other cells + length) stands.
+                // Concrete struct FIELD write `p.f = v` (p a plain struct var, f an INTEGER field, v
+                // int-modelable and not referencing p): register/UPDATE the field's `mangle_field` symbol
+                // IN PLACE — drop any prior `(= <p.f> <old>)` fact and add `(= <p.f> v)` — so a later read
+                // `p.f` (assert/ensures) is CHECKED instead of fail-opening (`let mut p = P{x:1}; p.x = 5;
+                // assert(p.x == 5)` now proves; a false `assert(p.x == 6)` is disproved). SOUND: `p` is
+                // gated OUT of `struct_write_disqualified`, so its ENTIRE mutation footprint is top-level
+                // straight-line field writes this handler applies IN ORDER — no whole/embedded/branch/loop
+                // reassign can strand a stale field fact (the mangled symbol no other invalidation site
+                // evicts, the LESSON-19 gap). A COPY `let q = p` is never registered and is Rc-COW
+                // independent at runtime (`q.x = 9` leaves `p.x` unchanged), so no aliasing false-accept.
+                // `v` must not reference `p` (a self/cross-field RHS would go stale once the old fact is
+                // dropped) and its vars must be stable (an unstable RHS the frame sweep would later drop →
+                // the field is left UNMODELED, i.e. fail-open, exactly as before the slice).
+                let concrete_field_write = if let Expr::FieldAccess { base, field, .. } = target {
+                    if let Expr::Var(pv) = base.as_ref() {
+                        let field_int = scope
+                            .get(pv)
+                            .and_then(|sb| sb.info.ty.as_deref())
+                            .and_then(|sty| ctx.struct_fields.get(sty))
+                            .and_then(|fields| fields.get(field))
+                            .is_some_and(|fty| is_integer_ty(fty));
+                        if field_int
+                            && !ctx.struct_write_disqualified.contains(pv)
+                            && !ctx.shadowed_lets.contains(pv)
+                        {
+                            let sym = mangle_field(pv, field);
+                            let fld = smt_var(&sym);
+                            // Overwrite: drop any prior fact for THIS field FIRST, regardless of whether
+                            // the new value models — a stale prior value must never survive a rewrite.
+                            assumptions.retain(|a| {
+                                let mut vs = BTreeSet::new();
+                                collect_vars_from_smt(a, &mut vs);
+                                !vs.contains(&fld)
+                            });
+                            let mut vvars = BTreeSet::new();
+                            collect_expr_vars(value, &mut vvars);
+                            let v_stable = !vvars.iter().any(|w| {
+                                ctx.reassigned_roots.contains(w) || ctx.shadowed_lets.contains(w)
+                            });
+                            if !vvars.contains(pv)
+                                && v_stable
+                                && is_int_modelable(value, &ctx.solver_int_vars)
+                            {
+                                if let Some(vs) = expr_to_smt_value(value, &ctx.symbolic_widths) {
+                                    ctx.solver_int_vars.insert(sym.clone());
+                                    // Width 64 even for a narrow (`u8`/`u16`/`u32`) field: SOUND because the
+                                    // runtime stores the FULL i64 into a struct field with NO truncation at the
+                                    // declared width (widths are inert — verified: a `u8` field written `300`
+                                    // reads back `300`, `check`/`run` agree). This is the same i64-faithful
+                                    // model the int/array lanes rely on; `expr_to_smt_value` returns `None` for
+                                    // a TRUNCATING cast, so a genuinely-narrowing value defers instead. If the
+                                    // runtime ever truncated narrow field stores, this width would need to match.
+                                    ctx.symbolic_widths.insert(sym.clone(), 64);
+                                    assumptions.push(format!("(= {} {})", fld, vs));
+                                } else {
+                                    ctx.solver_int_vars.remove(&sym);
+                                }
+                            } else {
+                                // Unmodelable / self-referencing / unstable value → field UNMODELED (defer).
+                                ctx.solver_int_vars.remove(&sym);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if concrete_cell_write || concrete_field_write {
+                    // Cell/field updated in place; the rest of the model (other cells/fields, the seq
+                    // length) stands. The generic whole-root de-model below is skipped for this target.
                 } else if let Some(root) = assign_target_root(target) {
                     clear_binding_modelability(&mut ctx.solver_int_vars, root);
                     // Lane parity (Phase-3 QF_FP/QF_S): a reassigned float/string binding is no longer
@@ -7171,6 +7254,83 @@ fn collect_assigned_roots(body: &[Stmt], out: &mut BTreeSet<String>) {
     }
 }
 
+/// FAIL-CLOSED disqualifier for struct-field-WRITE modeling: collect every root that is assigned in ANY
+/// position OTHER than a TOP-LEVEL straight-line field write `p.f = v`. A root survives (is NOT collected)
+/// only when its entire assignment footprint is such writes — which the Assign handler applies in order —
+/// so a modeled `mangle_field(p,f)` fact can never be left stale by a reassign no invalidation site evicts
+/// (the LESSON-19 mangled-symbol gap the field-READ lanes sidestep by never registering a reassigned base).
+/// Disqualifying: a whole `p = ..` or index `p[i] = ..` reassign; an assign nested in any `if`/`while`/
+/// `for`/`match`/`loop` body (a branch/loop-carried field fact the straight-line handler cannot track); an
+/// embedded assign inside an expression (`let z = if c { p = ..; 0 }`); a value that itself hides a write.
+/// Over-collection is always safe — it only makes struct-field-write registration MORE conservative (defer).
+fn collect_struct_write_disqualified(body: &[Stmt], out: &mut BTreeSet<String>) {
+    for s in body {
+        match s {
+            Stmt::Assign { target, value } => {
+                // A top-level `p.f = v` (single-level field write to a plain var) is the ONLY form that
+                // does NOT disqualify its base. Any other target — a whole `Var`, an `Index`, or a nested
+                // `p.a.b` — disqualifies its root. `expr_assigned_roots(p.f)` recurses only to the `Var`
+                // base and collects nothing, so a plain field write leaves its base eligible; a value (or
+                // target sub-expression) that hides an embedded write is still scanned and disqualifies.
+                let safe_field_write = matches!(
+                    target,
+                    Expr::FieldAccess { base, .. } if matches!(base.as_ref(), Expr::Var(_))
+                );
+                if !safe_field_write {
+                    if let Some(r) = assign_target_root(target) {
+                        out.insert(r.to_string());
+                    }
+                }
+                expr_assigned_roots(target, out);
+                expr_assigned_roots(value, out);
+            }
+            Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+                expr_assigned_roots(init, out)
+            }
+            Stmt::ExprStmt(e) => expr_assigned_roots(e, out),
+            // Any assign inside a branch/loop/nested body disqualifies its root — `collect_assigned_roots`
+            // gathers EVERY assigned root within, including safe-looking field writes, because a field
+            // write there is not a top-level straight-line write.
+            Stmt::If { cond, then, else_ } => {
+                expr_assigned_roots(cond, out);
+                collect_assigned_roots(then, out);
+                if let Some(e) = else_ {
+                    collect_assigned_roots(e, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                expr_assigned_roots(cond, out);
+                collect_assigned_roots(body, out);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                expr_assigned_roots(expr, out);
+                collect_assigned_roots(body, out);
+            }
+            Stmt::For { source, body, .. } => {
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        expr_assigned_roots(start, out);
+                        expr_assigned_roots(end, out);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        expr_assigned_roots(expr, out)
+                    }
+                }
+                collect_assigned_roots(body, out);
+            }
+            Stmt::Loop { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => collect_assigned_roots(body, out),
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    collect_assigned_roots(b, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Collect every name a body BINDS with `let`/`let (…)` at any depth (used to detect a `let` that
 /// shadows a parameter named in an `ensures`).
 /// Collect every name a body BINDS at any depth — `let`/`let (…)`, a `for`/`while let` binder, AND
@@ -8572,6 +8732,11 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
         Expr::Literal(s) if s.starts_with('"') || s.starts_with('\'') => Some("string".into()),
         Expr::StrLiteral(_) => Some("string".into()),
         Expr::Var(name) => scope.get(name).and_then(|b| b.info.ty.clone()),
+        // A struct literal's type IS its declared struct name. Populating `scope[p].ty` for
+        // `let p = P{..}` lets the Assign handler resolve a field's declared type at a later
+        // `p.f = v` write (struct-field-write modeling). More-precise struct typing only; a
+        // consumer that expected `None` here is strictly better served by the real type.
+        Expr::StructLiteral { name, .. } => Some(name.clone()),
         Expr::Unary { op, expr } if op == "!" => Some("bool".into()),
         // Bitwise-not is integer at runtime (anubis_bnot `as_i64()`s and returns `Int`); unary `-`
         // (anubis_neg) is float iff its operand is float, so it propagates.
