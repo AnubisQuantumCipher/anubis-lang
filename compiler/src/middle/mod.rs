@@ -3634,16 +3634,80 @@ fn analyze_stmts(
                 invariant,
             } => {
                 effects.push("loop".into());
-                if !invariant.is_empty() {
+                // Phase-3: verify a `for i in start..end invariant(P) { body }` loop by DESUGARING to the
+                // exactly-equivalent `let i = start; while i < end invariant(P) { body; i = i + 1 }` and
+                // reusing verify_while_invariants — a range `for` IS that `while` (i binds start, runs while
+                // i < end, increments by 1). Requires a Range source with int-modelable start AND end; a
+                // COLLECTION loop (no counter/bound to model) or a non-modelable range bound keeps the honest
+                // rejection (a green check must not silently ignore an invariant). Composes with the
+                // symbolic-index array read: `for i in 0..len(a) { … a[i] … }` gives the exact
+                // `i < len(a)` guard the read lane requires.
+                let for_admit = if invariant.is_empty() {
+                    None
+                } else if let crate::frontend::ForSource::Range { start, end } = source {
+                    let mut body_written = BTreeSet::new();
+                    collect_assigned_roots(body, &mut body_written);
+                    if !(is_int_modelable(start, &ctx.solver_int_vars)
+                        && is_int_modelable(end, &ctx.solver_int_vars))
+                    {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+                            message: "a `for` invariant is verified only over an integer RANGE with \
+                                 modelable bounds (`for i in a..b`); this range bound is not an integer \
+                                 formula the solver can model"
+                                .into(),
+                            span: None,
+                        });
+                        None
+                    } else if body_written.contains(var) {
+                        // The body REASSIGNS the loop counter. A `for` REBINDS `i` from the range each
+                        // iteration (it yields start, start+1, …; a body `i = …` is discarded next
+                        // iteration), but the while-desugaring's `i = i + 1` would COMPOUND the body write
+                        // into a divergent transition. Reject (fail-closed) rather than model it wrong.
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+                            message: "a `for` loop that reassigns its own counter inside the body cannot \
+                                 carry a verified invariant (the counter is rebound from the range each \
+                                 iteration); remove the counter write or use an auxiliary variable"
+                                .into(),
+                            span: None,
+                        });
+                        None
+                    } else {
+                        let cond = Expr::Binary {
+                            op: "<".into(),
+                            lhs: Box::new(Expr::Var(var.clone())),
+                            rhs: Box::new(end.clone()),
+                        };
+                        let mut body2 = body.clone();
+                        body2.push(Stmt::Assign {
+                            target: Expr::Var(var.clone()),
+                            value: Expr::Binary {
+                                op: "+".into(),
+                                lhs: Box::new(Expr::Var(var.clone())),
+                                rhs: Box::new(Expr::Literal("1".into())),
+                            },
+                        });
+                        // Seed the entry value `i == start` so the base case is checked at the first index.
+                        // verify_while_invariants models the tracked vars (incl. `i`) in a LOCAL clone and
+                        // declares them from the obligation's symbols, so `i` needs no mutation of
+                        // ctx.solver_int_vars here — avoiding any clash with an OUTER binding of the same name
+                        // that restore_binding_membership manages.
+                        let start_smt = expr_to_smt(start, &ctx.symbolic_widths);
+                        let mut outer = assumptions.clone();
+                        outer.push(format!("(= {} {})", smt_var(var), start_smt));
+                        verify_while_invariants(ctx, &cond, invariant, &body2, &outer)
+                    }
+                } else {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
-                        message: "loop invariants are currently verified on `while` loops only; \
-                             rewrite this `for` as a `while` with an explicit counter to attach an \
-                             invariant (a green check must not silently ignore an invariant)"
+                        message: "a `for` invariant is verified only over an integer RANGE \
+                             (`for i in a..b`), not a collection; rewrite as a counted range loop"
                             .into(),
                         span: None,
                     });
-                }
+                    None
+                };
                 // Wire the embedded-write sweep (like the 9 other statement sites): a write hidden in the
                 // for-loop SOURCE — a range bound (`0..(match c { 0 => { y = 100; 1 } _ => 1 })`) or the
                 // collection expression — mutates an outer variable but escapes the body frame sweep, so
@@ -3736,6 +3800,33 @@ fn analyze_stmts(
                 merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 restore_binding_membership(ctx, var, saved_var_model);
+                // A VERIFIED for-range invariant holds after the loop: re-model the tracked variables
+                // (constrained by the proved invariants ∧ ¬cond) and admit the post facts, exactly as the
+                // `while` handler does. EXCLUDE the loop counter `var` — it is loop-scoped and out of scope
+                // after the `for`, and re-admitting it would fight restore_binding_membership; the valuable
+                // facts are those about the OUTER invariant variables (e.g. an accumulator `s`), which do
+                // survive. Lane-aware for a float invariant (a post fact carrying an `fp.`/`to_fp` token →
+                // re-admit into solver_float_vars, never push to ctx.constraints).
+                if let Some((post, _written, readmit)) = for_admit {
+                    let is_float = post.iter().any(|a| smt_uses_floats(a));
+                    for v in &readmit {
+                        if v == var {
+                            continue;
+                        }
+                        if is_float {
+                            ctx.solver_float_vars.insert(v.clone());
+                        } else {
+                            ctx.solver_int_vars.insert(v.clone());
+                            ctx.symbolic_widths.entry(v.clone()).or_insert(64);
+                        }
+                    }
+                    for a in post {
+                        if !is_float {
+                            ctx.constraints.push(format!("(assert {})", a));
+                        }
+                        assumptions.push(a);
+                    }
+                }
             }
             Stmt::Break | Stmt::Continue => {}
             Stmt::SpecBlock { .. } => effects.push("spec".into()),

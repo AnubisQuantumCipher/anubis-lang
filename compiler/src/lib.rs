@@ -2704,6 +2704,59 @@ fn main() {
     }
 
     #[test]
+    fn phase3_for_range_loop_invariants_verify_inductively() {
+        // Phase-3 (task #27): a `for i in start..end invariant(P) { body }` loop verifies its invariant by
+        // desugaring to the exactly-equivalent `let i=start; while i<end invariant(P) { body; i=i+1 }` and
+        // reusing verify_while_invariants. Range source + modelable bounds only; a collection loop / a body
+        // that reassigns the counter keeps the honest rejection. `discharged` is false when rejected.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL"),
+                Err(_) => false,
+            };
+
+        // THE DEMONSTRATION (red baseline on HEAD — a `for` invariant was rejected outright): a bounded
+        // inductive invariant over a `for`-range loop now PROVES.
+        assert!(
+            discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut s = 0; for i in 0..n invariant(s >= 0) invariant(s <= i) { s = s + 1; } return s; } fn main() { let r = f(5); }"),
+            "a bounded inductive `for`-range invariant proves"
+        );
+        // A false invariant (not inductive) is rejected — parity with the `while` lane's overflow limit.
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 5) { let mut s = 0; for i in 0..n invariant(s >= 5) { s = s + 1; } return s; } fn main() { let r = f(5); }"),
+            "a `for` invariant false on entry / not preserved is rejected"
+        );
+        // A false ENSURES over a valid invariant is rejected.
+        assert!(
+            !discharged("fn f(n: u32) -> u32 requires(n > 0) requires(n < 100) ensures(result > n) { let mut s = 0; for i in 0..n invariant(s <= i) { s = s + 1; } return s; } fn main() { let r = f(5); }"),
+            "a valid `for` invariant must not certify a false ensures"
+        );
+        // COMPOSES with the symbolic-index array read: `for i in 0..len(a)` gives the exact `i<len(a)` guard.
+        assert!(
+            discharged("fn f() { let a = [1, 0, 1]; let mut flag = 0; for i in 0..len(a) invariant(i >= 0) invariant(flag == 0 || flag == 1) { flag = a[i]; } } fn main() { f(); }"),
+            "a `for i in 0..len(a)` loop reading a[i] under a scalar invariant proves"
+        );
+        // SOUNDNESS: a body that REASSIGNS the loop counter is rejected — a `for` rebinds `i` from the range
+        // each iteration, so the while-desugaring's `i=i+1` would model a divergent transition.
+        assert!(
+            !discharged("fn f() { let mut c = 0; for i in 0..3 invariant(c >= 0) invariant(c <= i) { c = c + 1; i = i + 100; } assert(c >= 0); } fn main() { f(); }"),
+            "a `for` body that reassigns its counter cannot carry a verified invariant (fail-closed)"
+        );
+        // A COLLECTION loop invariant is still honestly rejected (no counter/bound to model).
+        assert!(
+            !discharged("fn f() -> u32 ensures(result >= 0) { let mut s = 0; for x in [1,2,3] invariant(s >= 0) { s = s + 1; } return s; } fn main() { let r = f(); }"),
+            "a collection `for` invariant is rejected (only integer ranges are verified)"
+        );
+        // REGRESSION: the `while` lane is unchanged — a `while` counted loop still proves and rejects.
+        assert!(
+            discharged("fn count(n: u32) -> u32 requires(n < 1000000) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { i = i + 1; } return i; } fn main() { let r = count(5); }"),
+            "the while loop-invariant lane still proves after the for-range extension"
+        );
+    }
+
+    #[test]
     fn solver_does_not_disprove_loop_carried_assertions() {
         // A binding mutated after its `let` (here, accumulated in a loop) cannot be modeled from
         // its initial value; the checker must not disprove a TRUE post-loop assertion against the
