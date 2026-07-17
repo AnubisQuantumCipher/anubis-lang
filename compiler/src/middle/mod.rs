@@ -1785,21 +1785,63 @@ fn discharge_call_requires(
     all_requires_checkable
 }
 
+/// The SOUND path-condition fact a `match` arm's pattern contributes about the scrutinee, for discharging
+/// contracted calls in the arm body/guard. A `Literal`/`StrLiteral` pattern means the arm runs iff the
+/// scrutinee equals that value → `scrutinee == literal`; an `Or` of literals → the disjunction. Any other
+/// pattern (wildcard, binding, list, struct, enum variant) contributes no simple equality — its
+/// sub-values are unmodeled and encoding "the scrutinee is this variant" needs enum/pattern SMT modeling
+/// that does not exist yet — so it returns None (the arm body is then discharged under the enclosing
+/// assumptions only, which is sound: a subset of the true facts). The returned `Expr` is only USED if it
+/// is `is_bool_modelable*` (a non-modelable scrutinee makes `push_branch_path_condition` a no-op), so a
+/// bogus equality can never be assumed.
+fn match_arm_pattern_fact(scrutinee: &Expr, pattern: &crate::frontend::Pattern) -> Option<Expr> {
+    use crate::frontend::Pattern;
+    let eq = |rhs: Expr| Expr::Binary {
+        op: "==".to_string(),
+        lhs: Box::new(scrutinee.clone()),
+        rhs: Box::new(rhs),
+    };
+    match pattern {
+        Pattern::Literal(l) => Some(eq(Expr::Literal(l.clone()))),
+        Pattern::StrLiteral(s) => Some(eq(Expr::StrLiteral(s.clone()))),
+        Pattern::Or(alts) => {
+            let mut facts: Vec<Expr> = Vec::new();
+            for p in alts {
+                match p {
+                    Pattern::Literal(l) => facts.push(eq(Expr::Literal(l.clone()))),
+                    Pattern::StrLiteral(s) => facts.push(eq(Expr::StrLiteral(s.clone()))),
+                    // A non-literal alternative (`1 | _`) makes the disjunction match-anything → no fact.
+                    _ => return None,
+                }
+            }
+            facts.into_iter().reduce(|a, b| Expr::Binary {
+                op: "||".to_string(),
+                lhs: Box::new(a),
+                rhs: Box::new(b),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Discharge the precondition of every contracted call reachable in `expr`, under the correct path
 /// condition. `discharge_call_requires` alone fires only on a DIRECT `Expr::Call` at a statement position,
 /// so a call NESTED in an argument / operand / cast / `return`-arg (`h(g(x))`, `print(g(x))`, `g(x) + 0`,
 /// `return g(x)`) went unchecked — a reachable fail-open (the callee's `requires` is assumed in its body
 /// yet nothing proved it at the call). This walk closes that. It recurses two ways:
+///
 /// - UNCONDITIONAL positions (evaluated whenever `expr` is) are recursed under the current `assumptions`:
 ///   call args, non-`&&`/`||` binary operands, unary/cast/index/field/array/struct/map/enum children, a
 ///   `?`/assert/assume/declassify inner, a `match` scrutinee.
 /// - CONDITIONALLY-executed positions are recursed under their SCOPED PATH CONDITION (pushed via
-///   `push_branch_path_condition`, then restored): the RHS of a short-circuiting `&&`/`||` runs under the
-///   LHS (`a && rhs` iff `a`; `a || rhs` iff `!a`), and an `if`-EXPRESSION's branches run under `cond`/
-///   `!cond` — so a call there proves exactly when the guard establishes its precondition and is caught
-///   otherwise. STILL DEFERRED (the remaining residual): `match`-ARM bodies (pattern-implied facts are not
-///   yet modeled), and `if let`/block/lambda bodies. Every discharged call is as sound as a direct call —
-///   the same `assumptions` (including the pushed path condition) are in scope.
+///   `push_branch_path_condition`, then restored): the RHS of a short-circuiting `&&`/`||` (under the LHS:
+///   `a && rhs` iff `a`, `a || rhs` iff `!a`), an `if`-EXPRESSION's branches (under `cond`/`!cond`), and a
+///   `match` arm body/guard (under the literal-pattern / guard fact — see `match_arm_pattern_fact`). A
+///   call proves exactly when the path condition establishes its precondition and is caught otherwise.
+///
+/// STILL DEFERRED (the residual): `if let`/block/lambda bodies, and a `match` arm whose bound sub-values
+/// (enum/struct/list pattern) would constrain the call — those are unmodeled. Every discharged call is as
+/// sound as a direct call: the same `assumptions` (including the pushed path condition) are in scope.
 fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, expr: &Expr) {
     match expr {
         Expr::Call { callee, args } => {
@@ -1853,11 +1895,72 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
             assumptions.truncate(snap);
             ctx.active_branch_guards.truncate(snap_g);
         }
-        // A `match` scrutinee is unconditionally evaluated — recurse it. The ARM bodies run only on a
-        // pattern match, whose implied facts (a matched enum variant / bound sub-values) are not yet
-        // modeled as a path condition, so they stay the documented conditional residual (an unconditional
-        // discharge there would over-reject).
-        Expr::Match { scrutinee, .. } => discharge_calls_in_expr(ctx, assumptions, scrutinee),
+        // A `match` scrutinee is unconditionally evaluated — recurse it. Each ARM body runs only when its
+        // pattern matches (and its guard holds), so it is discharged under a SCOPED path condition: a
+        // literal/`|`-of-literals pattern over the scrutinee contributes `scrutinee == literal` (the arm
+        // runs iff the scrutinee equals that value); an `if`-GUARD is assumed for the body (and its own
+        // calls discharged under the pattern fact). A binding/wildcard/list/struct/enum-variant pattern
+        // contributes no simple equality — its bound sub-values are unmodeled, so a call over them simply
+        // defers (fail-open, the documented residual); a call over an ENCLOSING modeled var still
+        // discharges under the enclosing assumptions. All facts are true when the arm runs, so this is as
+        // sound as a branch guard; the snapshot/truncate keeps each arm's facts from leaking to a sibling.
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            discharge_calls_in_expr(ctx, assumptions, scrutinee);
+            // Arms are ordered: arm k runs only if NO earlier arm matched. So each arm additionally assumes
+            // the NEGATION of what every preceding arm's non-match guarantees — this is what makes the
+            // `match a { 0 => …, _ => recip(a) }` and `match a { _ if a>0 => …, _ => h(a) }` idioms sound
+            // (the fall-through arm proves `a != 0` / `a <= 0`). A preceding arm contributes a sound
+            // fall-through fact (stored here, pushed NEGATED for later arms) only when its non-match is a
+            // single modelable condition:
+            //   - a GUARDLESS literal / or-literal pattern: non-match ⟺ `scrutinee != lit`.
+            //   - a WILDCARD (`_`) GUARDED arm: the pattern always matches, so non-match ⟺ the GUARD was
+            //     false → `!guard` (a `_` guard references only enclosing/scrutinee vars, so `!guard` is
+            //     stable across later arms; a BINDING guard `n if G` is NOT — `G` may reference `n`, whose
+            //     name means something else later — so it is excluded below).
+            // A guarded LITERAL arm (non-match = pattern-false OR guard-false), a binding-guarded arm, and a
+            // refutable pattern's non-match (unmodeled) yield no single fact — they contribute nothing (sound:
+            // fewer premises).
+            let mut prior_negated: Vec<Expr> = Vec::new();
+            for arm in arms {
+                let snap = assumptions.len();
+                let snap_g = ctx.active_branch_guards.len();
+                for f in &prior_negated {
+                    push_branch_path_condition(ctx, assumptions, f, true);
+                }
+                let this_fact = match_arm_pattern_fact(scrutinee, &arm.pattern);
+                if let Some(fact) = &this_fact {
+                    push_branch_path_condition(ctx, assumptions, fact, false);
+                }
+                if let Some(guard) = &arm.guard {
+                    discharge_calls_in_expr(ctx, assumptions, guard);
+                    push_branch_path_condition(ctx, assumptions, guard, false);
+                }
+                discharge_calls_in_expr(ctx, assumptions, &arm.body);
+                assumptions.truncate(snap);
+                ctx.active_branch_guards.truncate(snap_g);
+                // A `_`-guarded arm's guard references only enclosing/scrutinee vars, so `!guard` means the
+                // same thing in a later arm. A BINDING-guarded arm (`n if G`) is excluded even though it is
+                // also irrefutable: `G` may reference the binding `n` (which aliases the scrutinee), and `n`
+                // denotes a DIFFERENT thing (or an enclosing shadowed var) in a later arm — pushing `!G`
+                // there could assert a wrong fact. Fail-closed: a binding-guarded arm contributes nothing.
+                let wildcard_guarded =
+                    matches!(arm.pattern, crate::frontend::Pattern::Wildcard);
+                match (&arm.guard, wildcard_guarded) {
+                    // Guardless literal/or-literal → later arms have `scrutinee != lit`.
+                    (None, _) => {
+                        if let Some(fact) = this_fact {
+                            prior_negated.push(fact);
+                        }
+                    }
+                    // Wildcard + guarded → the pattern always matches, so non-match ⟺ `!guard`.
+                    (Some(guard), true) => prior_negated.push(guard.clone()),
+                    // A binding-guarded, or guarded-literal, or refutable arm: no sound single fact.
+                    (Some(_), false) => {}
+                }
+            }
+        }
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
             discharge_calls_in_expr(ctx, assumptions, expr)
         }

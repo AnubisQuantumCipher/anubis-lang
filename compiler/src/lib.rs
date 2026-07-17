@@ -6212,6 +6212,79 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn match_arm_body_calls_discharge_under_the_pattern_condition() {
+        // The last call-site residual's tractable subset: a contracted call in a `match` ARM body/guard is
+        // discharged under a SOUND path condition derived from the arm — a literal pattern over the
+        // scrutinee contributes `scrutinee == literal`, an `if`-guard is assumed. So a violable arm call is
+        // caught and a pattern-/guard-/premise-provable one passes. (Enum/binding/struct patterns whose
+        // bound sub-values would constrain the call stay fail-open — the bound var is unmodeled.)
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // literal-pattern arm makes the scrutinee concrete: `0 => g(a)` runs iff a==0 ⇒ g(0) violates x>0.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 0 => g(a), _ => 1 }; return z; } fn main() { print(c(0)); }"#),
+            "a violable literal-pattern match-arm call (`0 => g(a)`, g requires x>0) must reject"
+        );
+        // literal pattern that PROVES the precondition: `5 => g(a)` runs iff a==5 ⇒ g(5) ok.
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 5 => g(a), _ => 0 }; return z; } fn main() { print(c(5)); }"#),
+            "a literal-pattern arm whose value proves the precondition (`5 => g(a)`) must be accepted"
+        );
+        // an `if`-guard proves it: `_ if a > 0 => g(a)`.
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { _ if a > 0 => g(a), _ => 0 }; return z; } fn main() { print(c(5)); }"#),
+            "a guarded match arm (`_ if a>0 => g(a)`) must prove the precondition"
+        );
+        // a violable GUARD-arm call whose guard does NOT establish the precondition rejects.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) -> i64 requires(a > 0 - 100) { let z = match a { _ if b => g(a), _ => 0 }; return z; } fn main() { print(c(0 - 5, true)); }"#),
+            "a guarded match-arm call whose guard (`b`) doesn't constrain `a` must reject when violable"
+        );
+        // wildcard arm, precondition provable from the caller premise alone.
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, s: i64) -> i64 requires(a > 0) { let z = match s { _ => g(a) }; return z; } fn main() { print(c(5, 1)); }"#),
+            "a wildcard-arm call whose precondition the caller premise proves must be accepted"
+        );
+        // NO OVER-REJECTION of the "special-case zero, otherwise operate" idiom: the `_` fall-through arm
+        // runs only when no earlier LITERAL arm matched, so it assumes the negation `a != 0` — which proves
+        // recip's `requires(a != 0)`. (Before threading prior-arm negations this valid idiom over-rejected.)
+        assert!(
+            accepts(r#"fn recip(x: i64) -> i64 requires(x != 0) { return 100 / x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 0 => 0, _ => recip(a) }; return z; } fn main() { print(c(0 - 5)); }"#),
+            "the special-case-zero-else-recip idiom must pass — the fall-through arm assumes a != 0"
+        );
+        // …but the negation is not over-strong: `_ => g(a)` (g requires a>0) still REJECTS, because `a != 0`
+        // does not prove `a > 0` (a could be negative).
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 0 => 0, _ => g(a) }; return z; } fn main() { print(c(0 - 5)); }"#),
+            "the fall-through negation `a != 0` must NOT over-prove `a > 0` — this stays a reject"
+        );
+        // An IRREFUTABLE (`_`/binding) GUARDED arm followed by a fall-through: the pattern always matches, so
+        // the fall-through runs only when the guard was false — it assumes `!guard`. `_ if a>0 => 1, _ =>
+        // h(a)` ⇒ the `_` arm has `a <= 0`, proving h's `requires(x <= 0)`. (The `match`/`if-else` idioms
+        // converge.) This must pass; the negation must NOT over-prove (a stricter callee still rejects).
+        assert!(
+            accepts(r#"fn h(x: i64) -> i64 requires(x <= 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 1) { let z = match a { _ if a > 0 => 1, _ => h(a) }; return z; } fn main() { print(c(5)); }"#),
+            "an irrefutable guarded arm's `!guard` must reach the fall-through (`_ if a>0`, `_ => h(a)`)"
+        );
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { _ if a > 0 => 1, _ => g(a) }; return z; } fn main() { print(c(0 - 5)); }"#),
+            "the irrefutable-guard negation `a <= 0` must NOT over-prove `a > 0` — stays a reject"
+        );
+        // A GUARDED literal arm contributes NO fall-through negation (its non-match could be the guard
+        // failing, not the pattern): `0 if cc => 0, _ => recip(a)` must still reject (a could be 0).
+        assert!(
+            !accepts(r#"fn recip(x: i64) -> i64 requires(x != 0) { return 100 / x; } fn c(a: i64, cc: bool) -> i64 requires(a > 0 - 100) { let z = match a { 0 if cc => 0, _ => recip(a) }; return z; } fn main() { print(c(0, false)); }"#),
+            "a guarded literal arm must NOT contribute `a != 0` (non-match could be the guard failing)"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
         // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
         // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string
