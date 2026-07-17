@@ -6506,6 +6506,125 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn phase3_qf_s_strlen_contracts_discharge_or_disprove() {
+        // Phase-3 str.len: a string-LENGTH contract (`len(s) OP k`) discharges in QF_S over `str.len`.
+        // Runtime `len(String)` = `s.chars().count()` (Unicode scalar count) = SMT-LIB `str.len` (code
+        // points), so the model is SOUND both ways. Scope: `len(s)`/`len(t)` vs a NON-NEGATIVE int literal
+        // (an int VAR bound stays fail-open — BitVec sort ≠ QF_S Int).
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // a body assert unprovable from the requires must REJECT (len>=1 does not prove len>=3)…
+        assert!(
+            !accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1) { assert(len(s) >= 3); return 0; } fn main() { print(f("abcd")); }"#),
+            "assert(len>=3) under requires(len>=1) is unprovable — must reject"
+        );
+        // …and the provable direction discharges (len>=3 proves len>=1) via the seeded requires assumption.
+        assert!(
+            accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 3) { assert(len(s) >= 1); return 0; } fn main() { print(g("abcd")); }"#),
+            "assert(len>=1) under requires(len>=3) is provable"
+        );
+        // call-site: a literal argument whose length violates the callee's requires is CAUGHT.
+        assert!(
+            !accepts(r#"fn h(s: string) -> i64 requires(len(s) >= 3) { return 0; } fn f() -> i64 { let z = h("ab"); return z; } fn main() { print(f()); }"#),
+            "h(\"ab\") against requires(len(s)>=3): len=2<3 must reject"
+        );
+        assert!(
+            accepts(r#"fn h(s: string) -> i64 requires(len(s) >= 3) { return 0; } fn f() -> i64 { let z = h("abcd"); return z; } fn main() { print(f()); }"#),
+            "h(\"abcd\") against requires(len(s)>=3): len=4>=3 must accept"
+        );
+        // ensures over lengths: identity return satisfies len(result)>=len(s); an over-strong bound fails.
+        assert!(
+            accepts(r#"fn ids(s: string) -> string ensures(len(result) >= len(s)) { return s; } fn main() { print(ids("x")); }"#),
+            "ensures(len(result) >= len(s)) for `return s` holds (equal lengths)"
+        );
+        assert!(
+            !accepts(r#"fn f(s: string) -> string ensures(len(result) >= 3) { return s; } fn main() { print(f("x")); }"#),
+            "ensures(len(result) >= 3) for `return s` is not provable (s may be short)"
+        );
+        // SOUNDNESS: a strlen fact must NOT leak into an INT obligation (sort clash) — a mixed contract's
+        // int assert still discharges cleanly.
+        assert!(
+            accepts(r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= 3) requires(n > 0) { assert(n > 0); return n; } fn main() { print(f("abc", 5)); }"#),
+            "a string-length fact must not sort-clash into an int obligation"
+        );
+        // an int-VAR length bound is deliberately OUT of scope (BitVec sort) → fail-open (accept), NOT a
+        // sort-clash reject.
+        assert!(
+            accepts(r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= n) { return 0; } fn main() { print(f("abc", 2)); }"#),
+            "an int-var length bound stays fail-open (no sort clash)"
+        );
+        // SOUNDNESS: a NON-ASCII string literal is NOT modeled — z3's `str.len` of a raw-UTF-8 literal
+        // counts bytes/units (`str.len("aé")` = 3), not runtime chars (`len("aé")` = 2). Modeling it would
+        // false-REJECT this runtime-valid call (`len("aé") == 2` holds) and false-ACCEPT the dual. The lane
+        // fail-opens on non-ASCII literals, so this stays ACCEPT (never a wrong-model reject).
+        assert!(
+            accepts(r#"fn h(s: string) -> i64 requires(len(s) == 2) { return 0; } fn f() -> i64 { let z = h("aé"); return z; } fn main() { print(f()); }"#),
+            "a non-ASCII string literal must fail-open (z3 str.len counts bytes, not chars) — no wrong-model"
+        );
+        // SOUNDNESS (review-caught): a raw NUL/control literal is NOT printable-ASCII, so it fail-opens like
+        // any non-modelable literal. z3 TRUNCATES a raw-NUL literal (`str.len("ab\0cd")` = 2, not runtime 5),
+        // so modeling it would false-accept `len("ab\0cd") <= 3` and false-reject this valid `>= 5`. The gate
+        // reuses is_string_modelable (printable-ASCII), so NUL stays unmodeled — this valid program accepts.
+        assert!(
+            accepts("fn main() { assert(len(\"ab\\u{0}cd\") >= 5); }"),
+            "a NUL/control-char literal length must fail-open (z3 truncates it) — never a wrong-model reject"
+        );
+        // SOUNDNESS (review-caught): a CONSTANT str.len fact over a literal (`requires(len(\"abc\") == 3)`)
+        // mentions no string var. fact_is_string must still classify it String (via the `str.len`/`\"`
+        // marker) so it is filtered OUT of a same-function INT obligation — else the `\"` re-routes that
+        // bit-vector query to QF_S and the int var is mis-declared String → z3 sort error → over-rejection.
+        assert!(
+            accepts(r#"fn f(n: i64) -> i64 requires(len("abc") == 3) requires(n > 0) { assert(n > 0); return n; } fn main() { print(f(5)); }"#),
+            "a constant str.len fact must not sort-clash an int obligation in the same function"
+        );
+        // COMPLETENESS (review-caught regression): a MIXED-lane `&&` requires (`len(s) >= 3 && s == "abc"`)
+        // must seed EACH conjunct in its own lane (the whole compound matches no single lane), so a body
+        // that chains on the length conjunct proves. Without the seed's `&&` decomposition this over-rejected
+        // a program that fail-open-accepted before the lane.
+        assert!(
+            accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 3 && s == "abc") { assert(len(s) >= 1); return 0; } fn main() { print(f("abc")); }"#),
+            "a mixed strlen && string-eq requires must seed both conjuncts (no over-rejection)"
+        );
+        // …and the decomposition is SOUND: the string-eq conjunct constrains the length transitively
+        // (`s == "abc"` ⇒ len 3), so `assert(len(s) >= 3)` proves; the dual over a length-2 literal rejects.
+        assert!(
+            accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1 && s == "abc") { assert(len(s) >= 3); return 0; } fn main() { print(f("abc")); }"#)
+                && !accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1 && s == "ab") { assert(len(s) >= 3); return 0; } fn main() { print(f("ab")); }"#),
+            "the && decomposition is sound: s==\"abc\" proves len>=3, s==\"ab\" disproves it"
+        );
+        // COVERAGE GATE (review-caught regression class): when the justifying precondition is UNSEEDABLE —
+        // a non-ASCII equality (`requires(s == "é")`) or an int-var bound (`requires(len(s) >= n)`) — the
+        // strlen obligation would carry ZERO string facts and z3 disproves it with the spurious `s = ""`,
+        // over-rejecting a valid program that fail-open-accepted before the lane. The assert and call-site
+        // sites skip an obligation whose referenced string var has no seeded fact (fail-open, pre-lane;
+        // the assert stays runtime-enforced). All three review reproducers must ACCEPT:
+        assert!(
+            accepts(r#"fn f(s: string) -> i64 requires(s == "é") { assert(len(s) >= 1); return 0; } fn main() { print(f("é")); }"#),
+            "an unseedable non-ASCII requires must not strand a body strlen assert (spurious s=\"\")"
+        );
+        assert!(
+            accepts(r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= n) requires(n >= 1) { assert(len(s) >= 1); return 0; } fn main() { print(f("abc", 1)); }"#),
+            "an unseedable int-var length bound must not strand a body strlen assert"
+        );
+        assert!(
+            accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 1) { return 0; } fn f(s: string) -> i64 requires(s == "é") { let z = g(s); return z; } fn main() { print(f("é")); }"#),
+            "an unseedable requires must not strand a forwarded call-site strlen obligation"
+        );
+        // …while a COVERED forwarded var still discharges both directions (the gate is not over-broad):
+        assert!(
+            accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 1) { return 0; } fn f(s: string) -> i64 requires(len(s) >= 3) { let z = g(s); return z; } fn main() { print(f("abc")); }"#)
+                && !accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 3) { return 0; } fn f(s: string) -> i64 requires(len(s) >= 1) { let z = g(s); return z; } fn main() { print(f("abc")); }"#),
+            "a covered forwarded strlen obligation still proves (len>=3⊨len>=1) and rejects (len>=1⊭len>=3)"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_let_chaining() {
         // Phase-3 QF_S: a genuinely-string, NEVER-REASSIGNED `let` becomes a String defining fact in
         // the shared sort-partitioned assumptions channel (the exact mirror of the float-let slice

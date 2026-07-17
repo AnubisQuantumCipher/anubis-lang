@@ -1188,17 +1188,7 @@ fn analyze_function(
             }
         }
         for req in requires {
-            if is_bool_modelable(req, &ctx.solver_int_vars) {
-                assumptions.push(expr_to_smt(req, &ctx.symbolic_widths));
-            } else if is_bool_modelable_float(req, &ctx.solver_float_vars) {
-                // Phase-3 QF_FP: a float precondition becomes a float ASSUMPTION (the `<=`/`>=` NaN
-                // disjunction in float_bool_to_smt keeps a runtime-reachable NaN input IN the assumed
-                // set, matching run.rs — a bare fp.leq would wrongly exclude it and over-certify).
-                assumptions.push(float_bool_to_smt(req));
-            } else if is_bool_modelable_string(req, &ctx.solver_string_vars) {
-                // Phase-3 QF_S: a string-equality precondition becomes a string ASSUMPTION.
-                assumptions.push(string_bool_to_smt(req));
-            }
+            seed_requires_fact(ctx, &mut assumptions, req);
         }
         // Mark parameters that a `requires` guard proves non-zero AS DIVISORS, so `x / v` / `x % v`
         // become modelable. Sound only if the guarantee holds at the division: require the parameter
@@ -1778,6 +1768,37 @@ fn discharge_call_requires(
                 strings: true,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
+        } else if is_bool_modelable_strlen(&concrete, &ctx.solver_string_vars) {
+            // Phase-3 str.len: discharge a string-LENGTH precondition at the call site (`h("ab")` against
+            // `requires(len(s) >= 3)` → `(str.len "ab") = 2 < 3` → caught). COVERAGE-GATED: a referenced
+            // string var with no seeded String-lane fact would make z3 disprove via the spurious `s = ""`
+            // (the caller's justification is real but unseedable) — skip instead (fail-open, pre-lane).
+            let str_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                .cloned()
+                .collect();
+            if strlen_vars_covered(&concrete, &str_asm, &ctx.solver_string_vars) {
+                let smt = strlen_bool_to_smt(&concrete, &ctx.solver_string_vars);
+                let mut raw = BTreeSet::new();
+                collect_expr_vars(&concrete, &mut raw);
+                let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+                for a in &str_asm {
+                    let mut avs = BTreeSet::new();
+                    collect_vars_from_smt(a, &mut avs);
+                    vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                }
+                ctx.solver_obligations.push(SolverObligation {
+                    name: format!("requires@{callee}:{smt}"),
+                    assumptions: str_asm,
+                    assertion: smt,
+                    vars: vars.into_iter().collect(),
+                    strings: true,
+                    guard_assumptions: ctx.active_branch_guards.clone(),
+                });
+            } else {
+                all_requires_checkable = false;
+            }
         } else {
             all_requires_checkable = false;
         }
@@ -2177,6 +2198,9 @@ fn push_branch_path_condition(
         float_bool_to_smt(cond)
     } else if is_bool_modelable_string(cond, &ctx.solver_string_vars) {
         string_bool_to_smt(cond)
+    } else if is_bool_modelable_strlen(cond, &ctx.solver_string_vars) {
+        // Phase-3 str.len: a string-LENGTH branch guard (`if len(s) >= 3 { … }`) is a scoped path condition.
+        strlen_bool_to_smt(cond, &ctx.solver_string_vars)
     } else {
         return;
     };
@@ -2796,6 +2820,36 @@ fn analyze_stmts(
                         strings: true,
                         guard_assumptions: ctx.active_branch_guards.clone(),
                     });
+                } else if is_bool_modelable_strlen(expr, &ctx.solver_string_vars) {
+                    // Phase-3 str.len: a string-LENGTH body `assert` (`assert(len(s) >= 1)`) discharges in
+                    // QF_S. COVERAGE-GATED (see strlen_vars_covered): with an unseedable justification
+                    // (`requires(s == "é")` / `requires(len(s) >= n)`) the obligation would carry zero
+                    // facts → spurious `s = ""` rejection of a valid program. Uncovered → skip (fail-open;
+                    // the assert is runtime-enforced, exactly the pre-lane stance for unmodeled asserts).
+                    let str_asm: Vec<String> = assumptions
+                        .iter()
+                        .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                        .cloned()
+                        .collect();
+                    if strlen_vars_covered(expr, &str_asm, &ctx.solver_string_vars) {
+                        let smt = strlen_bool_to_smt(expr, &ctx.solver_string_vars);
+                        let mut raw = BTreeSet::new();
+                        collect_expr_vars(expr, &mut raw);
+                        let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+                        for a in &str_asm {
+                            let mut avs = BTreeSet::new();
+                            collect_vars_from_smt(a, &mut avs);
+                            vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                        }
+                        ctx.solver_obligations.push(SolverObligation {
+                            name: format!("assert:{smt}"),
+                            assumptions: str_asm,
+                            assertion: smt,
+                            vars: vars.into_iter().collect(),
+                            strings: true,
+                            guard_assumptions: ctx.active_branch_guards.clone(),
+                        });
+                    }
                 }
                 // A write embedded in the asserted expression escapes the statement sweep; invalidate it
                 // AFTER building this obligation (the obligation is over the pre-write value).
@@ -5008,6 +5062,154 @@ fn string_bool_to_smt(e: &Expr) -> String {
     }
 }
 
+/// A `len(s)` term whose `str.len` model is SOUND, encoded as the SMT `str.len` (an Int). The arg must be
+/// `is_string_modelable` — a string VAR (abstract: z3 reasons about its length monotonically, matching
+/// runtime `chars().count()`) or a PRINTABLE-ASCII string literal. Reusing the sibling gate is deliberate:
+/// its printable-ASCII restriction is exactly what `str.len` also needs — a NON-ASCII literal is
+/// materialized BYTE-wise by z3 (`str.len("é")`=2 ≠ runtime 1), and a raw-NUL/control literal is TRUNCATED
+/// at the NUL (`str.len("ab\0cd")`=2 ≠ runtime 5) — both would mis-model the length. Any weaker gate (e.g.
+/// `s.is_ascii()`, which admits NUL) reintroduces the exact false accept the sibling was hardened against.
+fn is_strlen_term(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+    matches!(e, Expr::Call { callee, args }
+        if callee == "len" && args.len() == 1 && is_string_modelable(&args[0], string_vars))
+}
+
+/// An operand valid on either side of a string-length comparison: a `len(..)` term, or a NON-NEGATIVE
+/// integer literal. A bit-vector int VAR is deliberately EXCLUDED — it is `(_ BitVec 64)`-sorted while this
+/// obligation is QF_S/Int, and mixing the two sorts is unsound (z3 errors, or a silent misencoding). So the
+/// lane admits `len(s) OP <lit>`, `<lit> OP len(s)`, and `len(s) OP len(t)` — the common, sound subset.
+fn is_strlen_int_operand(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+    is_strlen_term(e, string_vars)
+        || matches!(e, Expr::Literal(l) if l.parse::<i64>().map(|n| n >= 0).unwrap_or(false))
+}
+
+/// A boolean formula comparing string LENGTHS: `len(s) OP k` / `k OP len(s)` / `len(s) OP len(t)` for a
+/// numeric comparison OP, plus `&&`/`||`/`!`. At least one side must be a `len(..)` term (else it is a pure
+/// literal comparison the int lane owns). Disjoint from `is_bool_modelable_string` (which requires both
+/// sides to be string TERMS — a `len(..)` Call is not `is_string_modelable`, and only `==`/`!=` there).
+fn is_bool_modelable_strlen(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Binary { op, lhs, rhs } => match op.as_str() {
+            "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+                (is_strlen_term(lhs, string_vars) || is_strlen_term(rhs, string_vars))
+                    && is_strlen_int_operand(lhs, string_vars)
+                    && is_strlen_int_operand(rhs, string_vars)
+            }
+            "&&" | "||" => {
+                is_bool_modelable_strlen(lhs, string_vars)
+                    && is_bool_modelable_strlen(rhs, string_vars)
+            }
+            _ => false,
+        },
+        Expr::Unary { op, expr } => op == "!" && is_bool_modelable_strlen(expr, string_vars),
+        Expr::Declassify { inner, .. } => is_bool_modelable_strlen(inner, string_vars),
+        _ => false,
+    }
+}
+
+/// Encode a length-comparison operand to an SMT Int: `len(s)` → `(str.len <s>)`, a literal verbatim.
+/// Total on `is_strlen_int_operand` terms (the only ones reachable).
+fn strlen_int_to_smt(e: &Expr, string_vars: &BTreeSet<String>) -> String {
+    if is_strlen_term(e, string_vars) {
+        if let Expr::Call { args, .. } = e {
+            return format!("(str.len {})", string_expr_to_smt(&args[0]));
+        }
+    }
+    if let Expr::Literal(l) = e {
+        return l.clone();
+    }
+    "0".to_string()
+}
+
+/// Encode a string-length boolean formula to SMT (Int comparisons over `str.len`, solved in QF_S). Uses the
+/// SMT-LIB Int relations `< <= > >=` and `=`; `!=` negates equality; `&& || !` map to and/or/not.
+fn strlen_bool_to_smt(e: &Expr, string_vars: &BTreeSet<String>) -> String {
+    match e {
+        Expr::Binary { op, lhs, rhs } => {
+            let l = strlen_int_to_smt(lhs, string_vars);
+            let r = strlen_int_to_smt(rhs, string_vars);
+            match op.as_str() {
+                "==" => format!("(= {l} {r})"),
+                "!=" => format!("(not (= {l} {r}))"),
+                "<" | "<=" | ">" | ">=" => format!("({op} {l} {r})"),
+                "&&" => format!(
+                    "(and {} {})",
+                    strlen_bool_to_smt(lhs, string_vars),
+                    strlen_bool_to_smt(rhs, string_vars)
+                ),
+                "||" => format!(
+                    "(or {} {})",
+                    strlen_bool_to_smt(lhs, string_vars),
+                    strlen_bool_to_smt(rhs, string_vars)
+                ),
+                _ => "true".to_string(),
+            }
+        }
+        Expr::Unary { op, expr } if op == "!" => {
+            format!("(not {})", strlen_bool_to_smt(expr, string_vars))
+        }
+        Expr::Declassify { inner, .. } => strlen_bool_to_smt(inner, string_vars),
+        _ => "true".to_string(),
+    }
+}
+
+/// True when every string VAR a strlen obligation references is COVERED by at least one String-lane
+/// assumption. Gate for the two previously-FAIL-OPEN strlen obligation sites (body `assert` + call-site
+/// `requires@`): when the justifying precondition lives in a lane that CANNOT be seeded (a non-ASCII
+/// string-equality literal `requires(s == "é")`, an int-var length bound `requires(len(s) >= n)`), the
+/// obligation would carry ZERO assumptions and z3 disproves it with the spurious `s = ""` — over-rejecting
+/// a valid program that fail-open-accepted before the lane (review-caught regression). Uncovered → the
+/// caller SKIPS the obligation (fail-open, the pre-lane behavior; a body assert stays runtime-enforced).
+/// A VAR-LESS obligation (a printable-ASCII literal, `len("ab") >= 3`) is self-contained and stays
+/// modeled. NOT applied to the `ensures` site: that site fails CLOSED when unmodeled (pre-lane rejected
+/// every strlen ensures), and its tautology case (`ensures(len(result) >= len(s))` over `return s`)
+/// legitimately proves with no assumptions — gating it would regress a completeness gain.
+fn strlen_vars_covered(
+    concrete: &Expr,
+    str_asm: &[String],
+    string_vars: &BTreeSet<String>,
+) -> bool {
+    let mut raw = BTreeSet::new();
+    collect_expr_vars(concrete, &mut raw);
+    let referenced: Vec<&String> = raw.iter().filter(|v| string_vars.contains(*v)).collect();
+    if referenced.is_empty() {
+        return true;
+    }
+    let mut mentioned = BTreeSet::new();
+    for a in str_asm {
+        collect_vars_from_smt(a, &mut mentioned);
+    }
+    referenced.iter().all(|v| mentioned.contains(&smt_var(v)))
+}
+
+/// Seed a `requires` as a solver ASSUMPTION in whichever lane its predicate is modelable (int QF_BV / float
+/// QF_FP / string-equality QF_S / string-length QF_S). A top-level `&&` is DECOMPOSED so a MIXED-lane
+/// compound seeds each conjunct SEPARATELY: `requires(len(s) >= 3 && s == "abc")` matches no single lane as
+/// a whole (the `&&` arm of each `is_bool_modelable_*` requires both sides in that ONE lane), so without
+/// decomposition NEITHER conjunct is assumed and a body that chains on one (`assert(len(s) >= 1)`) is
+/// spuriously rejected. `A && B` ⟺ assuming A and assuming B, so this is sound and, for a homogeneous
+/// compound, identical to seeding the whole formula. An unmodelable conjunct is simply skipped (fail-open).
+fn seed_requires_fact(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, req: &Expr) {
+    if let Expr::Binary { op, lhs, rhs } = req {
+        if op.as_str() == "&&" {
+            seed_requires_fact(ctx, assumptions, lhs);
+            seed_requires_fact(ctx, assumptions, rhs);
+            return;
+        }
+    }
+    if is_bool_modelable(req, &ctx.solver_int_vars) {
+        assumptions.push(expr_to_smt(req, &ctx.symbolic_widths));
+    } else if is_bool_modelable_float(req, &ctx.solver_float_vars) {
+        // Phase-3 QF_FP: the `<=`/`>=` NaN disjunction in float_bool_to_smt keeps a runtime-reachable NaN
+        // input IN the assumed set, matching run.rs — a bare fp.leq would wrongly exclude it and over-certify.
+        assumptions.push(float_bool_to_smt(req));
+    } else if is_bool_modelable_string(req, &ctx.solver_string_vars) {
+        assumptions.push(string_bool_to_smt(req));
+    } else if is_bool_modelable_strlen(req, &ctx.solver_string_vars) {
+        assumptions.push(strlen_bool_to_smt(req, &ctx.solver_string_vars));
+    }
+}
+
 /// Whether an obligation body is a QF_S (string) query — detected by an SMT string literal (`"`), which
 /// ONLY the string encoder emits (int/float encoders never produce `"`). A quoteless VAR-vs-VAR string
 /// obligation is invisible to this sniff — its push site tags the obligation `strings: true`, and both
@@ -5020,6 +5222,14 @@ fn smt_uses_strings(smt_body: &str) -> bool {
 /// string-modelable variable (mangled `anb_v`). Membership (not a `"` sniff) so the int/float obligation
 /// filters can drop a string fact rather than pull a `String`-sorted symbol into a QF_BV/QF_FP body.
 fn fact_is_string(smt: &str, string_vars: &BTreeSet<String>) -> bool {
+    // A `str.len` term or a string literal is String-theory even when the fact mentions NO string VAR — a
+    // constant seed like `(= (str.len "abc") 3)` (from `requires(len("abc") == 3)`) has no var, yet it must
+    // NOT leak into a bit-vector int/float obligation: the `"` would re-route that query to QF_S and the
+    // int var would be mis-declared `String` → z3 sort error → fail-closed over-rejection. Only the string
+    // encoders emit `str.len`/`"`, so this is a precise String-lane marker.
+    if smt.contains("str.len") || smt.contains('"') {
+        return true;
+    }
     if string_vars.is_empty() {
         return false;
     }
@@ -5600,6 +5810,31 @@ fn push_ensures_obligations(
             // the shared `assumptions` channel sort-partitioned to STRING facts (a string `requires`), so
             // `requires(s == "open") ensures(s == "open")` proves. All-`String` body, no sort clash.
             let smt = string_bool_to_smt(&concrete);
+            let str_asm: Vec<String> = assumptions
+                .iter()
+                .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                .cloned()
+                .collect();
+            let mut raw = BTreeSet::new();
+            collect_expr_vars(&concrete, &mut raw);
+            let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+            for a in &str_asm {
+                let mut avs = BTreeSet::new();
+                collect_vars_from_smt(a, &mut avs);
+                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+            }
+            ctx.solver_obligations.push(SolverObligation {
+                name: format!("ensures:{smt}"),
+                assumptions: str_asm,
+                assertion: smt,
+                vars: vars.into_iter().collect(),
+                strings: true,
+                guard_assumptions: ctx.active_branch_guards.clone(),
+            });
+        } else if is_bool_modelable_strlen(&concrete, &ctx.solver_string_vars) {
+            // Phase-3 str.len: a string-LENGTH postcondition (`ensures(len(result) >= 3)`) discharges in
+            // QF_S over `str.len` — runtime `len(String)` = `chars().count()` = SMT `str.len`, sound both ways.
+            let smt = strlen_bool_to_smt(&concrete, &ctx.solver_string_vars);
             let str_asm: Vec<String> = assumptions
                 .iter()
                 .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
