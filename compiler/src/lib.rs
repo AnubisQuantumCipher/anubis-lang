@@ -6285,6 +6285,72 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn match_whole_value_binding_aliases_the_scrutinee() {
+        // A whole-value match binding `match S { name => body }` binds name = S for that arm, so a call
+        // over `name` in the body must be discharged against S's facts — NOT a shadowed OUTER var of the
+        // same name. Modelling the binding as an outer param's SMT symbol (a shadow conflation) certifies
+        // a runtime-trapping call: a FALSE ACCEPT. The fix aliases the binding to the scrutinee.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // CASE 3 — the confirmed false accept. `match b { a => g(a) }` binds a = b (unconstrained), so
+        // g(a) = g(b) can trap though the param `a > 50` holds. Must REJECT (was accepted via conflated a).
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, b: i64) -> i64 requires(a > 50) { let z = match b { a => g(a) }; return z; } fn main() { print(f(200, 0)); }"#),
+            "a whole-value binding shadowing a param must alias the SCRUTINEE, not the param"
+        );
+        // identity rebind, SAFE: `match a { a => g(a) }`, a > 50 ⇒ a > 0. The binding IS the scrutinee IS
+        // the param (one value), so its own facts apply. Must ACCEPT (regression guard — no over-reject).
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 50) { let z = match a { a => g(a) }; return z; } fn main() { print(f(200)); }"#),
+            "an identity rebind keeps the scrutinee's own facts (a > 50 proves a > 0)"
+        );
+        // identity rebind, UNSAFE: `match a { a => g(a) }`, a > -100 allows a = -50. Must REJECT.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { a => g(a) }; return z; } fn main() { print(f(0 - 50)); }"#),
+            "an identity rebind cannot prove a > 0 from a > -100"
+        );
+        // non-identity binding over a PROVABLE scrutinee: `match p { a => g(a) }`, p > 0 ⇒ a = p > 0. The
+        // alias carries the scrutinee's fact, so this proves. Must ACCEPT.
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, p: i64) -> i64 requires(a > 50) requires(p > 0) { let z = match p { a => g(a) }; return z; } fn main() { print(f(200, 5)); }"#),
+            "a whole-value binding aliases the scrutinee, so a provable scrutinee proves the call"
+        );
+        // BLOCKER 1 (review-caught): a NON-int-modelable scrutinee (`ident(b)`, a user call) over a shadowed
+        // param must FAIL CLOSED — the binding value is unknown, so `g(a)` cannot be proved. Must REJECT
+        // (a fresh UNCONSTRAINED symbol, not a drop-from-the-model that would fail open).
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn ident(b: i64) -> i64 { return b; } fn f(a: i64, b: i64) -> i64 requires(b < 1000) { let z = match ident(b) { a => g(a) }; return z; } fn main() { print(f(7, 0)); }"#),
+            "a non-modelable scrutinee over a shadowed binding must fail CLOSED, not fail open"
+        );
+        // BLOCKER 2 (review-caught): a scrutinee CONSTRAINED via the shadowed name (`requires(p == a)`) must
+        // still prove — the outer `p == a` fact must NOT be collateral-filtered. `p == a > 50 ⇒ g(a)` safe.
+        // Must ACCEPT (a fresh symbol leaves the outer `anb_a` and `p == a` untouched).
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, p: i64) -> i64 requires(a > 50) requires(p == a) { let z = match p { a => g(a) }; return z; } fn main() { print(f(200, 200)); }"#),
+            "a scrutinee-constraining fact over the shadowed name must survive (no collateral filter)"
+        );
+        // wildcard-guard COMPOSED with a shadowing binding: `_ if k>0 => 1, k => g(k)` — the prior arm's
+        // `!(k>0)` push must not land on the shadowing binding `k`. Bound `k = a` here; `g(k)=g(a)` violable
+        // (g requires x<=0). Must REJECT.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x <= 0) { return 0 - x; } fn c(a: i64, k: i64) -> i64 requires(a > 0 - 1000) { let z = match a { _ if k > 0 => 1, k => g(k) }; return z; } fn main() { print(c(5, 0 - 1)); }"#),
+            "a wildcard-guard negation must not conflate with a later shadowing binding"
+        );
+        // NESTED same-name rebind: `match b { a => match c { a => g(a) } }` — inner `a = c` (unconstrained),
+        // so `g(a)` is unprovable. The inner rebind must get a DISTINCT fresh symbol. Must REJECT.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, b: i64, c: i64) -> i64 requires(a > 50) { let z = match b { a => match c { a => g(a) } }; return z; } fn main() { print(f(200, 1, 0)); }"#),
+            "a nested rebind of the same name must get a distinct fresh symbol (inner unconstrained)"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_equality_contracts_discharge_or_disprove() {
         // Phase-3 QF_S: a string-equality `ensures`/`requires`/`assert` over a `string` param is now
         // discharged in Z3 QF_S (was ANUBIS_STRING_CONTRACT_UNMODELED). Sound both ways — runtime string

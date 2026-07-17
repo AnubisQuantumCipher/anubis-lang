@@ -1824,6 +1824,117 @@ fn match_arm_pattern_fact(scrutinee: &Expr, pattern: &crate::frontend::Pattern) 
     }
 }
 
+/// Process-unique counter for minting fresh SMT symbols for whole-value match bindings (see the
+/// `Expr::Match` arm of `discharge_calls_in_expr`). Only used to guarantee distinct names; the value
+/// never affects a verdict or reaches the compiled output, so a global counter is fixpoint-safe.
+static MATCH_BIND_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Rename a whole-value match binding `name` to a FRESH symbol `fresh` in an arm's guard/body, so its
+/// obligations no longer collide with a shadowed outer var of the same mangled SMT name (`anb_<name>`).
+/// SHADOW-AWARE: a nested `match` arm that REBINDS `name` keeps its own scope — its guard/body are left
+/// with `name` intact (the inner binding is a different value, renamed by its own arm recursion); its
+/// SCRUTINEE is still renamed (it is evaluated before the inner pattern binds, so `name` there is the
+/// OUTER binding). Mirrors EXACTLY the positions `discharge_calls_in_expr` descends, so every renamed
+/// reference is one the walker will encode; deferred forms (Block/Lambda/IfLet — not discharged) and
+/// leaves are cloned untouched.
+fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
+    let go = |x: &Expr| rename_binding(x, name, fresh);
+    match e {
+        Expr::Var(v) if v == name => Expr::Var(fresh.to_string()),
+        Expr::Call { callee, args } => Expr::Call {
+            callee: callee.clone(),
+            args: args.iter().map(&go).collect(),
+        },
+        Expr::CallExpr { callee, args } => Expr::CallExpr {
+            callee: Box::new(go(callee)),
+            args: args.iter().map(&go).collect(),
+        },
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: op.clone(),
+            lhs: Box::new(go(lhs)),
+            rhs: Box::new(go(rhs)),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: op.clone(),
+            expr: Box::new(go(expr)),
+        },
+        Expr::Cast { expr, ty } => Expr::Cast {
+            expr: Box::new(go(expr)),
+            ty: ty.clone(),
+        },
+        Expr::Index { base, index } => Expr::Index {
+            base: Box::new(go(base)),
+            index: Box::new(go(index)),
+        },
+        Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
+            base: Box::new(go(base)),
+            field: field.clone(),
+            span: *span,
+        },
+        Expr::ArrayLiteral { elements } => Expr::ArrayLiteral {
+            elements: elements.iter().map(&go).collect(),
+        },
+        Expr::StructLiteral { name: n, fields, span } => Expr::StructLiteral {
+            name: n.clone(),
+            fields: fields.iter().map(|(k, v)| (k.clone(), Box::new(go(v)))).collect(),
+            span: *span,
+        },
+        Expr::EnumConstruct { enum_name, variant, fields, field_names, span } => Expr::EnumConstruct {
+            enum_name: enum_name.clone(),
+            variant: variant.clone(),
+            fields: fields.iter().map(&go).collect(),
+            field_names: field_names.clone(),
+            span: *span,
+        },
+        Expr::MapLiteral { entries, span } => Expr::MapLiteral {
+            entries: entries.iter().map(|(k, v)| (go(k), go(v))).collect(),
+            span: *span,
+        },
+        Expr::Tainted { ty, inner } => Expr::Tainted {
+            ty: ty.clone(),
+            inner: Box::new(go(inner)),
+        },
+        Expr::Declassify { inner, policy, reason } => Expr::Declassify {
+            inner: Box::new(go(inner)),
+            policy: policy.clone(),
+            reason: reason.clone(),
+        },
+        Expr::Assume(i) => Expr::Assume(Box::new(go(i))),
+        Expr::Assert(i) => Expr::Assert(Box::new(go(i))),
+        Expr::Try(i) => Expr::Try(Box::new(go(i))),
+        Expr::If { cond, then, else_, span } => Expr::If {
+            cond: Box::new(go(cond)),
+            then: Box::new(go(then)),
+            else_: Box::new(go(else_)),
+            span: *span,
+        },
+        Expr::Match { scrutinee, arms, span } => Expr::Match {
+            scrutinee: Box::new(go(scrutinee)),
+            arms: arms
+                .iter()
+                .map(|a| {
+                    // A nested arm that rebinds `name` shadows it — leave its guard/body untouched
+                    // (its own arm recursion renames the inner binding to a distinct fresh symbol).
+                    if a.pattern.bound_names().iter().any(|n| n == name) {
+                        a.clone()
+                    } else {
+                        crate::frontend::MatchArm {
+                            pattern: a.pattern.clone(),
+                            guard: a.guard.as_ref().map(&go),
+                            body: go(&a.body),
+                        }
+                    }
+                })
+                .collect(),
+            span: *span,
+        },
+        // Leaves + deferred forms (Literal/StrLiteral/Symbolic/TaintSource/UnifiedBuffer/RawPtr/Block/
+        // Lambda/IfLet/Other and a non-matching Var): the walker never discharges inside them, so a
+        // clone is sound (renaming there would be dead, and IfLet/Lambda/Block may rebind `name`).
+        _ => e.clone(),
+    }
+}
+
 /// Discharge the precondition of every contracted call reachable in `expr`, under the correct path
 /// condition. `discharge_call_requires` alone fires only on a DIRECT `Expr::Call` at a statement position,
 /// so a call NESTED in an argument / operand / cast / `return`-arg (`h(g(x))`, `print(g(x))`, `g(x) + 0`,
@@ -1933,13 +2044,58 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                 if let Some(fact) = &this_fact {
                     push_branch_path_condition(ctx, assumptions, fact, false);
                 }
-                if let Some(guard) = &arm.guard {
+                // A whole-value binding `match S { name => body }` binds `name = S` for this arm. Looking
+                // `name` up by its mangled SMT symbol `anb_<name>` CONFLATES it with a shadowed outer var of
+                // the same name, discharging a body call `g(name)` against the OUTER var's facts — a false
+                // accept (`match b { a => g(a) }`, param `a > 50`, yet the binding is `b = 0`, so `g(0)`
+                // traps). Fix: rename `name` to a FRESH symbol in the arm's guard/body and model the fresh
+                // symbol against the SCRUTINEE. The outer `anb_<name>` and every assumption over it are left
+                // UNTOUCHED — so a scrutinee-constraining fact like `requires(p == a)` survives (no filtering)
+                // and `p == a > 50` still proves `g(a)`. When `S` is int-modelable, alias `fresh == S` (the
+                // scrutinee's facts carry through — identity `match a { a => .. }` becomes `fresh == a`, which
+                // keeps `a`'s own facts, so no identity special-case is needed). When `S` is a non-modelable
+                // INT expr (a user call / cast / division), `fresh` is added UNCONSTRAINED so an INT obligation
+                // over it FAILS CLOSED (rejects — the binding value is unknown), never fail-open. (A FLOAT or
+                // STRING binding gets an int-lane `fresh` with no matching float/string membership, so a
+                // float/string call over it is skipped — fail-OPEN, the pre-existing residual, unchanged.)
+                // The fresh name is a process-unique counter FOLLOWED by letters (`<n>mbind`). It starts with
+                // a digit, which an Anubis identifier cannot — so no user var mangles to the same `anb_<n>mbind`
+                // symbol — while using only `[0-9A-Za-z_]`, the exact charset `collect_vars_from_smt`
+                // tokenizes as one identifier (a `$` would be split, breaking the alias↔assertion var link).
+                // The counter (not `assumptions.len()`) guarantees a nested rebind gets a DISTINCT symbol even
+                // when the outer pushed no alias. The name never affects a verdict or reaches the compiled
+                // output, so a global counter is fixpoint-safe. Only added state (`fresh` membership + its
+                // alias fact) is introduced, so `truncate(snap)` + `solver_int_vars.remove(fresh)` is exact.
+                let mut fresh_binding: Option<(String, Option<Expr>, Expr)> = None;
+                if let crate::frontend::Pattern::Binding(name) = &arm.pattern {
+                    let fresh = format!(
+                        "{}mbind",
+                        MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    );
+                    ctx.solver_int_vars.insert(fresh.clone());
+                    if is_int_modelable(scrutinee, &ctx.solver_int_vars) {
+                        if let Some(s) = expr_to_smt_value(scrutinee, &ctx.symbolic_widths) {
+                            assumptions.push(format!("(= {} {})", smt_var(&fresh), s));
+                        }
+                    }
+                    let g = arm.guard.as_ref().map(|x| rename_binding(x, name, &fresh));
+                    let b = rename_binding(&arm.body, name, &fresh);
+                    fresh_binding = Some((fresh, g, b));
+                }
+                let (eff_guard, eff_body) = match &fresh_binding {
+                    Some((_, g, b)) => (g.as_ref(), b),
+                    None => (arm.guard.as_ref(), &arm.body),
+                };
+                if let Some(guard) = eff_guard {
                     discharge_calls_in_expr(ctx, assumptions, guard);
                     push_branch_path_condition(ctx, assumptions, guard, false);
                 }
-                discharge_calls_in_expr(ctx, assumptions, &arm.body);
+                discharge_calls_in_expr(ctx, assumptions, eff_body);
                 assumptions.truncate(snap);
                 ctx.active_branch_guards.truncate(snap_g);
+                if let Some((fresh, _, _)) = fresh_binding {
+                    ctx.solver_int_vars.remove(&fresh);
+                }
                 // A `_`-guarded arm's guard references only enclosing/scrutinee vars, so `!guard` means the
                 // same thing in a later arm. A BINDING-guarded arm (`n if G`) is excluded even though it is
                 // also irrefutable: `G` may reference the binding `n` (which aliases the scrutinee), and `n`
