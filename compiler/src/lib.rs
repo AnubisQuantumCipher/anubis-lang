@@ -2754,6 +2754,24 @@ fn main() {
             discharged("fn count(n: u32) -> u32 requires(n < 1000000) ensures(result >= 0) { let mut i = 0; while i < n invariant(i >= 0) { i = i + 1; } return i; } fn main() { let r = count(5); }"),
             "the while loop-invariant lane still proves after the for-range extension"
         );
+
+        // AUTO IMPLICIT `i >= start`: a `for i in 0..len(a)` array scan proves WITHOUT an explicit
+        // `invariant(i >= 0)` — the read lane's lower bound is supplied by the auto-added `i >= 0` (start=0).
+        assert!(
+            discharged("fn f() { let a = [1, 0, 1]; let mut flag = 0; for i in 0..len(a) invariant(flag == 0 || flag == 1) { flag = a[i]; } } fn main() { f(); }"),
+            "a for-range array scan proves without an explicit invariant(i>=0) (auto i>=start)"
+        );
+        // SOUNDNESS: the auto-add is a TRUE fact — it must NOT mask a false invariant (a[1]==9 breaks it).
+        assert!(
+            !discharged("fn f() { let a = [1, 9, 1]; let mut flag = 0; for i in 0..len(a) invariant(flag == 0 || flag == 1) { flag = a[i]; } } fn main() { f(); }"),
+            "the auto i>=start must not mask a false array-read invariant"
+        );
+        // SOUNDNESS: a NEGATIVE start gives `i >= -1`, which does NOT imply `i >= 0`, so the array read
+        // stays fail-closed (a[-1] would be out of bounds) — the auto-add never certifies an OOB read.
+        assert!(
+            !discharged("fn f() { let a = [1, 0, 1]; let mut flag = 0; for i in (0-1)..2 invariant(flag == 0 || flag == 1) { flag = a[i]; } } fn main() { f(); }"),
+            "a negative-start range must not license an OOB symbolic read via the auto i>=start"
+        );
     }
 
     #[test]

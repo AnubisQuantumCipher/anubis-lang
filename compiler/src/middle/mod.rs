@@ -3696,7 +3696,21 @@ fn analyze_stmts(
                         let start_smt = expr_to_smt(start, &ctx.symbolic_widths);
                         let mut outer = assumptions.clone();
                         outer.push(format!("(= {} {})", smt_var(var), start_smt));
-                        verify_while_invariants(ctx, &cond, invariant, &body2, &outer)
+                        // Auto-add the IMPLICIT invariant `i >= start`. It is a theorem of every range `for`
+                        // (i binds start and only increments — the body cannot reassign it, guarded above), so
+                        // it is inductive (base: i==start ⊢ i>=start; step: i>=start ∧ i<end ⊢ i+1>=start) and
+                        // sound to assume. It removes boilerplate: `for i in 0..len(a) { … a[i] … }` gets the
+                        // symbolic-index read lane's LOWER bound (`i >= 0`, since start is the literal 0) for
+                        // free, without the user writing `invariant(i >= 0)`. A non-zero non-negative start
+                        // still supplies `i >= 0` (expr_implies_nonneg admits `i >= k` for k>=0); a negative
+                        // start correctly does NOT (a[-3] would be OOB → the read stays fail-closed).
+                        let mut augmented = vec![Expr::Binary {
+                            op: ">=".into(),
+                            lhs: Box::new(Expr::Var(var.clone())),
+                            rhs: Box::new(start.clone()),
+                        }];
+                        augmented.extend(invariant.iter().cloned());
+                        verify_while_invariants(ctx, &cond, &augmented, &body2, &outer)
                     }
                 } else {
                     ctx.diagnostics.push(SemanticDiagnostic {
