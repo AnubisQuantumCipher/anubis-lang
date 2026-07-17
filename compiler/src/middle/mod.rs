@@ -1041,6 +1041,35 @@ fn analyze_function(
     ctx.solver_string_vars.clear();
     ctx.active_branch_guards.clear();
     ctx.symbolic_widths.clear();
+    // BUILTIN-SHADOW detection — MUST run BEFORE any `requires` is seeded (a seeded `requires` over a
+    // shadowed builtin would otherwise be modeled with builtin semantics and POISON the assumptions → a
+    // review-confirmed false accept). Precompute which MODELED builtins are shadowed in this function by a
+    // top-level user fn (`all_fns`) OR a local param/`let` (the runtime resolves user-fn/local before the
+    // builtin). `shadowed_string_preds` gates the string-PREDICATE lane; the `shadow_builtin_mark` sentinels
+    // ride solver_int_vars/solver_string_vars (like nzdiv/seq marks, never emitted to SMT) to gate the
+    // int (`abs`/`min`/`max`/seq-`len`) and strlen (`len`) builtins. Runs for EVERY function — a contract-
+    // less body can still `assert(max(3,5)==0)` over a shadowed `max`.
+    ctx.shadowed_string_preds.clear();
+    {
+        let mut locals = BTreeSet::new();
+        for (pn, _) in params {
+            locals.insert(pn.clone());
+        }
+        collect_let_bound(body, &mut locals);
+        for name in ["contains", "starts_with", "ends_with"] {
+            if ctx.all_fns.contains(name) || locals.contains(name) {
+                ctx.shadowed_string_preds.insert(name.to_string());
+            }
+        }
+        for name in ["abs", "min", "max", "len"] {
+            if ctx.all_fns.contains(name) || locals.contains(name) {
+                ctx.solver_int_vars.insert(shadow_builtin_mark(name));
+                if name == "len" {
+                    ctx.solver_string_vars.insert(shadow_builtin_mark("len"));
+                }
+            }
+        }
+    }
     // Authorize declared capabilities for Safe-mode I/O (Phase-3 C5 dual-mode crown).
     ctx.authorized_caps = declared_effects
         .iter()
@@ -1297,22 +1326,8 @@ fn analyze_function(
     collect_assigned_roots(body, &mut ctx.reassigned_roots);
     ctx.shadowed_lets.clear();
     collect_shadowed_lets(body, &mut ctx.shadowed_lets);
-    // Precompute which of the modeled string-predicate builtins are SHADOWED in this function (by a
-    // top-level user fn or a local param/let of the same name) — the runtime would call the shadow, so the
-    // predicate lane must decline to model it. Only the three names matter, so this is a ≤3-element set.
-    ctx.shadowed_string_preds.clear();
-    {
-        let mut locals = BTreeSet::new();
-        for (pn, _) in params {
-            locals.insert(pn.clone());
-        }
-        collect_let_bound(body, &mut locals);
-        for name in ["contains", "starts_with", "ends_with"] {
-            if ctx.all_fns.contains(name) || locals.contains(name) {
-                ctx.shadowed_string_preds.insert(name.to_string());
-            }
-        }
-    }
+    // (BUILTIN-SHADOW detection — shadowed_string_preds + shadow_builtin_mark sentinels — is computed
+    // earlier, right after the solver-set clears, so it precedes requires-seeding; see there.)
 
     analyze_stmts(
         body,
@@ -1805,6 +1820,27 @@ fn discharge_call_requires(
     }
     let sub: BTreeMap<String, Expr> =
         pnames.iter().cloned().zip(args.iter().cloned()).collect();
+    // CROSS-CALL shadow scope (review Finding: a caller-local shadow leaking into the callee's requires):
+    // the callee's `requires` resolves its builtin tokens (`abs`/`min`/`max`/`len`/`contains`/…) in the
+    // CALLEE's scope, not the caller's. A CALLER-LOCAL shadow — a param/`let` named `max` in THIS function —
+    // must NOT suppress modeling of the callee's builtin (that dropped the obligation → a false accept).
+    // Only a TOP-LEVEL (`all_fns`) shadow applies to both. So temporarily drop the caller-LOCAL-only shadow
+    // marks for the discharge and restore them after (the caller's own body still sees them).
+    let mut restore_int: Vec<&str> = vec![];
+    let mut restore_str: Vec<&str> = vec![];
+    for name in ["abs", "min", "max", "len"] {
+        if !ctx.all_fns.contains(name) && ctx.solver_int_vars.remove(&shadow_builtin_mark(name)) {
+            restore_int.push(name);
+            if name == "len" {
+                ctx.solver_string_vars.remove(&shadow_builtin_mark("len"));
+            }
+        }
+    }
+    for name in ["contains", "starts_with", "ends_with"] {
+        if !ctx.all_fns.contains(name) && ctx.shadowed_string_preds.remove(name) {
+            restore_str.push(name);
+        }
+    }
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
@@ -1925,6 +1961,16 @@ fn discharge_call_requires(
             all_requires_checkable = false;
         }
         }
+    }
+    // Restore the caller-local shadow marks dropped for this discharge.
+    for name in restore_int {
+        ctx.solver_int_vars.insert(shadow_builtin_mark(name));
+        if name == "len" {
+            ctx.solver_string_vars.insert(shadow_builtin_mark("len"));
+        }
+    }
+    for name in restore_str {
+        ctx.shadowed_string_preds.insert(name.to_string());
     }
     all_requires_checkable
 }
@@ -4844,6 +4890,16 @@ fn nzdiv_mark(v: &str) -> String {
     format!("\u{1}nzdiv:{v}")
 }
 
+/// Sentinel key marking that a modeled INT builtin (`abs`/`min`/`max`/`len`) is SHADOWED in the current
+/// function by a user fn or a local (param/`let`) of the same name — the runtime calls THAT, not the
+/// builtin, so `is_int_modelable`/`is_strlen_term` must decline to model the call (else a mis-model: a
+/// wrong-proof false accept OR an over-rejection of a valid user-fn program). Rides `solver_int_vars` /
+/// `solver_string_vars` (like `nzdiv_mark`/`seq_mark`): the `\u{1}` prefix is not a valid identifier, so it
+/// never collides with a real var and is never emitted into SMT (it only gates modelability).
+fn shadow_builtin_mark(name: &str) -> String {
+    format!("\u{1}shadowbuiltin:{name}")
+}
+
 /// Phase-4 A2: mark `v` as a **bounded** sequence modelable in QF_ABV (array + length).
 fn seq_mark(v: &str) -> String {
     format!("\u{1}seq:{v}")
@@ -5078,6 +5134,10 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // MIN identically), and `min`/`max` of two i64 args (signed `bvsle` select, matching
         // anubis_value_cmp). Only these exact callee/arity shapes; any other call stays unmodelable.
         // Phase-4 A2: `len(xs)` over a bounded modeled sequence (fixed array literal or seq-marked var).
+        // #12: a builtin SHADOWED in this function (a user fn / local `let`/param of the same name) is NOT
+        // modeled — the runtime calls the shadow, so the builtin semantics would mis-certify. The
+        // `shadow_builtin_mark` sentinel rides `int_vars` (inserted per function; never emitted to SMT).
+        Expr::Call { callee, .. } if int_vars.contains(&shadow_builtin_mark(callee)) => false,
         Expr::Call { callee, args } => match (callee.as_str(), args.len()) {
             ("abs", 1) => is_int_modelable(&args[0], int_vars),
             ("min", 2) | ("max", 2) => args.iter().all(|a| is_int_modelable(a, int_vars)),
@@ -5354,8 +5414,8 @@ fn is_bool_modelable_string(
         // calls THEIRS (which may diverge from the builtin) — modeling it as the z3 predicate would
         // mis-certify (a review-confirmed false accept). `shadowed_builtins` is precomputed per function as
         // exactly the subset of the three names shadowed by all_fns ∪ params ∪ let-bound names, so a shadowed
-        // predicate declines (fail-open, as pre-lane). (Unlike len/abs/min/max, which carry NO such guard —
-        // a separate #12 slice — so this lane is strictly the safer one.)
+        // predicate declines (fail-open, as pre-lane). (`len`/`abs`/`min`/`max` carry the same guard via the
+        // `shadow_builtin_mark` sentinel on `int_vars`/`string_vars` — #12.)
         Expr::Call { callee, args } => {
             matches!(callee.as_str(), "contains" | "starts_with" | "ends_with")
                 && args.len() == 2
@@ -5449,8 +5509,12 @@ fn string_bool_to_smt(e: &Expr) -> String {
 /// at the NUL (`str.len("ab\0cd")`=2 ≠ runtime 5) — both would mis-model the length. Any weaker gate (e.g.
 /// `s.is_ascii()`, which admits NUL) reintroduces the exact false accept the sibling was hardened against.
 fn is_strlen_term(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+    // #12: a `len` SHADOWED by a user fn / local declines (the shadow_builtin_mark rides string_vars) — the
+    // runtime calls the shadow, so modeling it as `str.len` would mis-certify.
     matches!(e, Expr::Call { callee, args }
-        if callee == "len" && args.len() == 1 && is_string_modelable(&args[0], string_vars))
+        if callee == "len" && args.len() == 1
+            && !string_vars.contains(&shadow_builtin_mark("len"))
+            && is_string_modelable(&args[0], string_vars))
 }
 
 /// An operand valid on either side of a string-length comparison: a `len(..)` term, or a NON-NEGATIVE

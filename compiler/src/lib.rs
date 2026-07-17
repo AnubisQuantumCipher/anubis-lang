@@ -6453,6 +6453,71 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn builtin_int_modeling_declines_user_or_local_shadow() {
+        // #12: the solver models `abs`/`min`/`max`/`len` as their builtin semantics BY NAME. But a user
+        // `fn max(...)` — or a LOCAL `let max = |..|` / param named `max` — SHADOWS the builtin at runtime
+        // (run.rs resolves user-fn/local before builtin), so modeling the call as the builtin mis-certifies:
+        // it OVER-REJECTS a valid program (`fn max→0; assert(max(x,10)==0)` runs clean, but the builtin
+        // model disproves 10==0 → reject) and wrong-PROVES a false one. The shadow guard declines to model a
+        // shadowed builtin (fail-open, matching the pre-modeling stance for an unmodeled call).
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // OVER-REJECTION (the red baseline): a user `fn max` returning 0 makes `assert(max(x,10)==0)` TRUE at
+        // runtime (clean). Without the guard the builtin model disproves it (10 != 0) → wrongly REJECTS. The
+        // guard declines the shadowed builtin → fail-open ACCEPT.
+        assert!(
+            accepts(r#"fn max(a: i64, b: i64) -> i64 { return 0; } fn f(x: i64) requires(x == 5) { assert(max(x, 10) == 0); } fn main() { f(5); }"#),
+            "a user-shadowed `max` must not be builtin-modeled (declines) — no over-rejection of a valid program"
+        );
+        // LOCAL (let-closure) shadow of `max` — same.
+        assert!(
+            accepts(r#"fn f(x: i64) requires(x == 5) { let max = |a, b| 0; assert(max(x, 10) == 0); } fn main() { f(5); }"#),
+            "a LOCAL (let-closure) shadow of `max` declines to model — no over-rejection"
+        );
+        // user `fn abs` / `fn min` likewise.
+        assert!(
+            accepts(r#"fn abs(x: i64) -> i64 { return 0; } fn f(x: i64) requires(x == 0 - 5) { assert(abs(x) == 0); } fn main() { f(0 - 5); }"#),
+            "a user-shadowed `abs` declines — no over-rejection"
+        );
+        // GENUINE builtins (NO shadow) still model: max(3,5)==5 proves, ==3 disproves.
+        assert!(
+            accepts(r#"fn f() { assert(max(3, 5) == 5); } fn main() { f(); }"#)
+                && !accepts(r#"fn f() { assert(max(3, 5) == 3); } fn main() { f(); }"#),
+            "the genuine builtin `max` still models (proves 5, disproves 3)"
+        );
+        assert!(
+            accepts(r#"fn f(x: i64) requires(x == 0 - 7) { assert(abs(x) == 7); } fn main() { f(0 - 7); }"#)
+                && !accepts(r#"fn f(x: i64) requires(x == 0 - 7) { assert(abs(x) == 8); } fn main() { f(0 - 7); }"#),
+            "the genuine builtin `abs` still models (proves 7, disproves 8)"
+        );
+        // SEED-ORDERING (review-confirmed CRITICAL false accept): the shadow marks must be set BEFORE
+        // `requires` are seeded, else a `requires(max(a,b) <= 5)` over a user `max` is seeded with BUILTIN
+        // semantics (max ⟹ b<=5) and POISONS the assumptions → the body `assert(b <= 5)` is wrongly proved.
+        // With the shadow detection moved ahead of seeding, the shadowed `requires` is NOT seeded → the
+        // assert is unprovable → fail-CLOSED (reject). Runtime `foo(0,100)` traps, so reject is correct.
+        assert!(
+            !accepts(r#"fn max(a: i64, b: i64) -> i64 { return b; } fn foo(a: i64, b: i64) requires(max(a, b) <= 5) { assert(b <= 5); } fn main() { foo(0, 100); }"#),
+            "a shadowed builtin in a `requires` must NOT be seeded with builtin semantics (would poison the body → false accept)"
+        );
+        // CROSS-CALL shadow scope (review Finding): a CALLER-LOCAL shadow (a param/`let` named `max`) must
+        // NOT leak into the callee's `requires` and suppress its builtin discharge. Here `a` has a param
+        // named `max`; it calls `b(10,20)` whose `requires(max(p,q) <= 5)` uses the BUILTIN `max` (b does not
+        // shadow it). Without the fix, a's shadow declined b's `max` → the discharge obligation was dropped →
+        // `b(10,20)` (max=20>5) certified → false accept (b's body traps at runtime). The discharge now drops
+        // a's caller-LOCAL shadow, models b's builtin `max`, disproves 20<=5 → correctly REJECTS.
+        assert!(
+            !accepts(r#"fn b(p: i64, q: i64) -> i64 requires(max(p, q) <= 5) { assert(p <= 5); return p; } fn a(max: i64) -> i64 { let r = b(10, 20); return r; } fn main() { let z = a(0); }"#),
+            "a caller-local shadow of a builtin must not suppress the callee's builtin-requires discharge (cross-call leak → false accept)"
+        );
+    }
+
+    #[test]
     fn struct_literal_field_access_models_the_field_value() {
         // `P{v: e}.f` is value-equal to the named field's expr — the struct analog of the modeled
         // `[a, b][0]` bounded-array read. Leaving it unmodeled let `g(P{v: 0}.v)` certify against
