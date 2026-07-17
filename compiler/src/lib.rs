@@ -7169,6 +7169,65 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn phase3_qf_s_string_indexof_discharge_or_disprove() {
+        // Phase-3 QF_S: `index_of(s, sub)` is an INT-valued string term modeled as `(str.indexof s sub 0)`
+        // (an extension of the str.len lane). Runtime `s.find` → char index, or -1 — matches z3 exactly over
+        // printable-ASCII. Before this lane, `assert(index_of(s,"ll") == 5)` was ACCEPTED (fail-open) while
+        // `index_of("hello","ll") = 2 != 5` traps at runtime.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // the confirmed false accept: a FALSE index disproves.
+        assert!(
+            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 5); } fn main() { f("hello"); }"#),
+            "a false index_of value must reject"
+        );
+        // the TRUE index proves.
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 2); } fn main() { f("hello"); }"#),
+            "a true index_of value proves"
+        );
+        // not-found → -1; a false `>= 0` over a missing needle rejects.
+        assert!(
+            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "zzz") >= 0); } fn main() { f("hello"); }"#),
+            "index_of of a missing needle is -1 → `>= 0` is disproved"
+        );
+        // ABSTRACT reasoning is sound: contains(s,"ab") ⊨ index_of(s,"ab") >= 0.
+        assert!(
+            accepts(r#"fn f(s: string) requires(contains(s, "ab")) { assert(index_of(s, "ab") >= 0); } fn main() { f("xaby"); }"#),
+            "abstract: a contains premise entails index_of >= 0"
+        );
+        // composes with str.len: index_of(s,sub) < len(s) reasoning (a found needle's index is < the length).
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "l") < len(s)); } fn main() { f("hello"); }"#),
+            "index_of composes with str.len in one QF_S obligation"
+        );
+        // SHADOW guard (#12 class): a user `fn index_of` declines (fail-open), not builtin-modeled.
+        assert!(
+            accepts(r#"fn index_of(a: string, b: string) -> i64 { return 0; } fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 0); } fn main() { f("hello"); }"#),
+            "a user-shadowed index_of is not builtin-modeled (fail-open)"
+        );
+        // a LIST index_of declines (args not string-modelable) — no false model.
+        assert!(
+            accepts(r#"fn f() { let xs = [1, 2, 3]; assert(index_of(xs, 2) == 1); } fn main() { f(); }"#),
+            "a list index_of declines (args not string-modelable)"
+        );
+        // CROSS-CALL parity (review): a caller-LOCAL shadow named `index_of` must NOT suppress the callee's
+        // BUILTIN `index_of` in its `requires` — the discharge drops the caller-local shadow. Here `callee`
+        // requires `index_of(s,"x") >= 0`; `caller` has a param named `index_of` and calls `callee("no")`
+        // ("no" has no "x" → index_of = -1 → precondition false) → must REJECT (not fail-open via the leak).
+        assert!(
+            !accepts(r#"fn callee(s: string) requires(index_of(s, "x") >= 0) { return; } fn caller(index_of: i64) { callee("no"); } fn main() { caller(0); }"#),
+            "a caller-local `index_of` shadow must not suppress the callee's builtin index_of discharge"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_let_chaining() {
         // Phase-3 QF_S: a genuinely-string, NEVER-REASSIGNED `let` becomes a String defining fact in
         // the shared sort-partitioned assumptions channel (the exact mirror of the float-let slice

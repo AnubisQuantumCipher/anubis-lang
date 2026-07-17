@@ -1069,6 +1069,11 @@ fn analyze_function(
                 }
             }
         }
+        // `index_of` (str.indexof lane) — a string-lane builtin; its shadow mark rides solver_string_vars
+        // (is_strlen_term consults it).
+        if ctx.all_fns.contains("index_of") || locals.contains("index_of") {
+            ctx.solver_string_vars.insert(shadow_builtin_mark("index_of"));
+        }
     }
     // Authorize declared capabilities for Safe-mode I/O (Phase-3 C5 dual-mode crown).
     ctx.authorized_caps = declared_effects
@@ -1841,6 +1846,11 @@ fn discharge_call_requires(
             restore_str.push(name);
         }
     }
+    // `index_of` rides solver_string_vars (str.indexof lane), not shadowed_string_preds — drop its
+    // caller-local-only shadow for the discharge too, so a caller param named `index_of` doesn't suppress
+    // the callee's builtin index_of requires. (Parity with `len`, which is handled in the int loop above.)
+    let restore_index_of = !ctx.all_fns.contains("index_of")
+        && ctx.solver_string_vars.remove(&shadow_builtin_mark("index_of"));
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
@@ -1971,6 +1981,9 @@ fn discharge_call_requires(
     }
     for name in restore_str {
         ctx.shadowed_string_preds.insert(name.to_string());
+    }
+    if restore_index_of {
+        ctx.solver_string_vars.insert(shadow_builtin_mark("index_of"));
     }
     all_requires_checkable
 }
@@ -5509,12 +5522,24 @@ fn string_bool_to_smt(e: &Expr) -> String {
 /// at the NUL (`str.len("ab\0cd")`=2 ≠ runtime 5) — both would mis-model the length. Any weaker gate (e.g.
 /// `s.is_ascii()`, which admits NUL) reintroduces the exact false accept the sibling was hardened against.
 fn is_strlen_term(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
-    // #12: a `len` SHADOWED by a user fn / local declines (the shadow_builtin_mark rides string_vars) — the
-    // runtime calls the shadow, so modeling it as `str.len` would mis-certify.
-    matches!(e, Expr::Call { callee, args }
-        if callee == "len" && args.len() == 1
-            && !string_vars.contains(&shadow_builtin_mark("len"))
-            && is_string_modelable(&args[0], string_vars))
+    // An INT-valued STRING term modeled in QF_S: `len(s)` → `(str.len s)`, or `index_of(s, sub)` →
+    // `(str.indexof s sub 0)` (runtime `s.find` → char index / -1, exact vs z3 over printable-ASCII). A
+    // string VAR arg is abstract (sound); a non-ASCII literal or a LIST/int arg fails is_string_modelable →
+    // declines (the list `index_of`/`len` overload is never mis-modeled). #12: a `len`/`index_of` SHADOWED
+    // by a user fn / local declines (the shadow_builtin_mark rides string_vars) — the runtime calls the
+    // shadow, so modeling the builtin would mis-certify.
+    match e {
+        Expr::Call { callee, args } if callee == "len" && args.len() == 1 => {
+            !string_vars.contains(&shadow_builtin_mark("len"))
+                && is_string_modelable(&args[0], string_vars)
+        }
+        Expr::Call { callee, args } if callee == "index_of" && args.len() == 2 => {
+            !string_vars.contains(&shadow_builtin_mark("index_of"))
+                && is_string_modelable(&args[0], string_vars)
+                && is_string_modelable(&args[1], string_vars)
+        }
+        _ => false,
+    }
 }
 
 /// An operand valid on either side of a string-length comparison: a `len(..)` term, or a NON-NEGATIVE
@@ -5554,7 +5579,14 @@ fn is_bool_modelable_strlen(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
 /// Total on `is_strlen_int_operand` terms (the only ones reachable).
 fn strlen_int_to_smt(e: &Expr, string_vars: &BTreeSet<String>) -> String {
     if is_strlen_term(e, string_vars) {
-        if let Expr::Call { args, .. } = e {
+        if let Expr::Call { callee, args } = e {
+            if callee == "index_of" {
+                return format!(
+                    "(str.indexof {} {} 0)",
+                    string_expr_to_smt(&args[0]),
+                    string_expr_to_smt(&args[1])
+                );
+            }
             return format!("(str.len {})", string_expr_to_smt(&args[0]));
         }
     }
