@@ -5595,12 +5595,35 @@ fn is_strlen_term(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
     }
 }
 
-/// An operand valid on either side of a string-length comparison: a `len(..)` term, or a NON-NEGATIVE
-/// integer literal. A bit-vector int VAR is deliberately EXCLUDED — it is `(_ BitVec 64)`-sorted while this
-/// obligation is QF_S/Int, and mixing the two sorts is unsound (z3 errors, or a silent misencoding). So the
-/// lane admits `len(s) OP <lit>`, `<lit> OP len(s)`, and `len(s) OP len(t)` — the common, sound subset.
+/// A `+` sum of PURE length terms (`len(a) + len(b) + index_of(..)`) or a single length term. A LITERAL
+/// addend is EXCLUDED — that is the soundness boundary. `len(a) + <near-i64::MAX literal>` OVERFLOWS the
+/// runtime i64 at a SMALL, realizable string (a 6-char string + `i64::MAX - 5` wraps to a negative i64)
+/// while the unbounded SMT Int sum stays positive — z3 would then PROVE `len(a) + BIG >= 0` that the runtime
+/// violates (a confirmed false accept). A sum of length TERMS alone can never overflow: every length is
+/// memory-bounded (a string near i64::MAX chars would need ~2^62 bytes), so any realistic number of them
+/// stays far below i64::MAX and the unbounded-Int sum agrees with the runtime i64 sum on every reachable
+/// input. This term is also the `is_bool_modelable_strlen` GUARD (at least one comparison side must be a
+/// length sum, else it is a pure-literal comparison the integer lane owns).
+fn is_strlen_pure_len_sum(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Binary { op, lhs, rhs } if op == "+" => {
+            is_strlen_pure_len_sum(lhs, string_vars) && is_strlen_pure_len_sum(rhs, string_vars)
+        }
+        _ => is_strlen_term(e, string_vars),
+    }
+}
+
+/// An operand valid on either side of a string-length comparison: a length sum (a `len(..)` term or a `+`
+/// combination of length terms — see is_strlen_pure_len_sum), or a bare NON-NEGATIVE integer literal. A
+/// bit-vector int VAR is deliberately EXCLUDED — it is `(_ BitVec 64)`-sorted while this obligation is
+/// QF_S/Int, and mixing the two sorts is unsound (z3 errors, or a silent misencoding). So the lane admits
+/// `len(s) OP <lit>`, `<lit> OP len(s)`, `len(s) OP len(t)`, and `len(a)+len(b) OP <lit>`.
+///
+/// A bare literal is a valid TOP-LEVEL operand but NEVER a sum addend (that is what keeps the overflow out);
+/// `+` is the only arithmetic op (never `-`: runtime `usize` subtraction underflows and wraps while SMT Int
+/// goes negative; never `*`: nonlinear and it re-introduces a realistic overflow).
 fn is_strlen_int_operand(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
-    is_strlen_term(e, string_vars)
+    is_strlen_pure_len_sum(e, string_vars)
         || matches!(e, Expr::Literal(l) if l.parse::<i64>().map(|n| n >= 0).unwrap_or(false))
 }
 
@@ -5612,7 +5635,8 @@ fn is_bool_modelable_strlen(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Binary { op, lhs, rhs } => match op.as_str() {
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
-                (is_strlen_term(lhs, string_vars) || is_strlen_term(rhs, string_vars))
+                (is_strlen_pure_len_sum(lhs, string_vars)
+                    || is_strlen_pure_len_sum(rhs, string_vars))
                     && is_strlen_int_operand(lhs, string_vars)
                     && is_strlen_int_operand(rhs, string_vars)
             }
@@ -5631,6 +5655,17 @@ fn is_bool_modelable_strlen(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
 /// Encode a length-comparison operand to an SMT Int: `len(s)` → `(str.len <s>)`, a literal verbatim.
 /// Total on `is_strlen_int_operand` terms (the only ones reachable).
 fn strlen_int_to_smt(e: &Expr, string_vars: &BTreeSet<String>) -> String {
+    // A `+` sum stays in pure SMT Int: `(+ (str.len a) (str.len b))`. Recurses so nested sums and
+    // `len(a) + 2` encode uniformly. (Only `+` is reachable — is_strlen_int_operand admits no other op.)
+    if let Expr::Binary { op, lhs, rhs } = e {
+        if op == "+" {
+            return format!(
+                "(+ {} {})",
+                strlen_int_to_smt(lhs, string_vars),
+                strlen_int_to_smt(rhs, string_vars)
+            );
+        }
+    }
     if is_strlen_term(e, string_vars) {
         if let Expr::Call { callee, args } = e {
             if callee == "index_of" {

@@ -7173,6 +7173,97 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn phase3_qf_s_strlen_sum_discharge_or_disprove() {
+        // Phase-3 str.len sums (task #18): a `+` combination of length TERMS (`len(a) + len(b) +
+        // index_of(..)`) now discharges in QF_S over pure SMT Int `(+ (str.len a) (str.len b))`. `+` only,
+        // and PURE LENGTH TERMS only — no literal addend inside a sum. The whole lane is Int-sorted so a sum
+        // needs no int2bv bridge; a sum of length terms cannot overflow i64 (each length is memory-bounded),
+        // so unbounded-Int `+` agrees with the runtime i64 sum on every realizable input. A LITERAL addend is
+        // EXCLUDED — `len(a) + <near-i64::MAX literal>` overflows the runtime i64 at a small realizable string
+        // while unbounded Int does not (a false proof — see the overflow guard below). `-` (usize underflow
+        // vs signed Int) and `*` (nonlinear + realistic overflow) also stay unmodeled → fail-open.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+
+        // THE DISCRIMINATOR (red baseline on HEAD — a len-sum was unmodelable → the assert fail-opened):
+        // a COVERED false len-sum assert is now DISPROVED. `a=="xx"`,`b=="yy"` ⇒ len(a)+len(b)=4, not 0.
+        assert!(
+            !accepts(r#"fn f(a: string, b: string) requires(a == "xx") requires(b == "yy") { assert(len(a) + len(b) == 0); return; } fn main() { f("xx", "yy"); }"#),
+            "a covered FALSE len-sum assert (4 != 0) must be disproved"
+        );
+        // …and the covered TRUE len-sum assert proves.
+        assert!(
+            accepts(r#"fn f(a: string, b: string) requires(a == "xx") requires(b == "yy") { assert(len(a) + len(b) == 4); return; } fn main() { f("xx", "yy"); }"#),
+            "a covered TRUE len-sum assert (4 == 4) proves"
+        );
+        // Transitivity via a len-sum requires bound: len(a)+len(b) >= 5 ⊨ len(a)+len(b) >= 3.
+        assert!(
+            accepts(r#"fn f(a: string, b: string) requires(len(a) + len(b) >= 5) { assert(len(a) + len(b) >= 3); return; } fn main() { f("xxx", "yy"); }"#),
+            "len(a)+len(b) >= 5 proves len(a)+len(b) >= 3"
+        );
+        // …and a FALSE consequence of a len-sum bound is disproved: len(a)+len(b) <= 3 ⊭ len(a)+len(b) >= 5.
+        assert!(
+            !accepts(r#"fn f(a: string, b: string) requires(len(a) + len(b) <= 3) { assert(len(a) + len(b) >= 5); return; } fn main() { f("x", "y"); }"#),
+            "len(a)+len(b) <= 3 must not certify len(a)+len(b) >= 5"
+        );
+        // `len(s) + <lit>` form + a single-len consequence of a sum bound.
+        assert!(
+            accepts(r#"fn f(a: string, b: string) requires(len(a) + len(b) <= 2) { assert(len(a) <= 2); return; } fn main() { f("a", "b"); }"#),
+            "len(a)+len(b) <= 2 proves len(a) <= 2 (a single term of the sum)"
+        );
+        // CALL SITE: a literal-argument pair whose combined length violates the callee's sum requires.
+        assert!(
+            !accepts(r#"fn g(a: string, b: string) -> i64 requires(len(a) + len(b) <= 3) { return 0; } fn f() -> i64 { let z = g("xx", "yy"); return z; } fn main() { print(f()); }"#),
+            "g(\"xx\",\"yy\") against requires(len(a)+len(b)<=3): 4>3 must reject"
+        );
+        assert!(
+            accepts(r#"fn g(a: string, b: string) -> i64 requires(len(a) + len(b) <= 5) { return 0; } fn f() -> i64 { let z = g("xx", "yy"); return z; } fn main() { print(f()); }"#),
+            "g(\"xx\",\"yy\") against requires(len(a)+len(b)<=5): 4<=5 must accept"
+        );
+        // SOUNDNESS — OVERFLOW GUARD: a LITERAL addend near i64::MAX is EXCLUDED. `len("abcdef") +
+        // (i64::MAX - 5)` overflows the runtime i64 to a NEGATIVE value, so `len(a) + <BIG> < 0` is TRUE at
+        // runtime; if a literal addend were (unsoundly) modeled, z3's unbounded Int would compute a positive
+        // sum and FALSELY REJECT this runtime-true assert. It stays unmodeled → accepts (defer). If this ever
+        // flips to reject, someone re-admitted a literal addend and re-opened the overflow false-proof.
+        assert!(
+            accepts(r#"fn f(a: string) requires(a == "abcdef") { assert(len(a) + 9223372036854775802 < 0); return; } fn main() { f("abcdef"); }"#),
+            "a literal addend near i64::MAX must stay unmodeled (its runtime i64 sum overflows) — no wrong model"
+        );
+        // …and the dual `len(a) + <BIG> >= 0` (runtime FALSE via overflow) must NOT be certified as a PROOF;
+        // it stays unmodeled, so the runtime `assert` is the backstop (it traps), not a compile-time claim.
+        // `len(s) + <small literal>` is likewise unmodeled now (a clean pure-len-sum-only scope), fail-open.
+        assert!(
+            accepts(r#"fn f(a: string) requires(a == "z") { assert(len(a) + 2 == 3); return; } fn main() { f("z"); }"#),
+            "len(s) + <literal> stays unmodeled (literal addends excluded) — fail-open, never a wrong model"
+        );
+        // SOUNDNESS: `-` is NOT modeled (runtime usize underflow ≠ signed SMT Int) — stays fail-open, never a
+        // wrong proof. A covered `len(a) - len(b)` assert must NOT be certified via the (excluded) model; it
+        // fail-opens (accept, runtime backstop), it does NOT falsely reject a true one either.
+        assert!(
+            accepts(r#"fn f(a: string, b: string) requires(a == "xxx") requires(b == "y") { assert(len(a) - len(b) == 2); return; } fn main() { f("xxx", "y"); }"#),
+            "a `-` of length terms stays unmodeled (fail-open) — never a wrong model"
+        );
+        // CONSISTENCY: an UNCOVERED len-sum assert fail-opens exactly like an uncovered single-len assert
+        // (the LESSON-12 coverage gate over free string vars), not a len-sum-specific regression.
+        assert!(
+            accepts(r#"fn f(a: string, b: string) { assert(len(a) + len(b) == 0); return; } fn main() { f("x", "y"); }"#),
+            "an uncovered len-sum assert fail-opens (coverage gate), same as uncovered single-len"
+        );
+        // REGRESSION: a single-len contract (no sum) still discharges both directions unchanged.
+        assert!(
+            accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 3) { assert(len(s) >= 1); return 0; } fn main() { print(g("abcd")); }"#)
+                && !accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1) { assert(len(s) >= 3); return 0; } fn main() { print(f("abcd")); }"#),
+            "the single-len strlen lane is unchanged by the sum extension"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_predicates_discharge_or_disprove() {
         // Phase-3 QF_S string PREDICATES: `contains(s,sub)` / `starts_with(s,p)` / `ends_with(s,p)` now
         // DISCHARGE in Z3 QF_S (`str.contains` / `str.prefixof` / `str.suffixof`) instead of fail-opening.
