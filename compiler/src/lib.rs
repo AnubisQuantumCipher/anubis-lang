@@ -7228,6 +7228,75 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn phase3_qf_s_string_substr_discharge_or_disprove() {
+        // Phase-3 QF_S: `substr(s, off, len)` with NONNEG INT LITERAL off/len is modeled as
+        // `(str.substr s off len)` — a STRING term (extends is_string_modelable, like str.++). Runtime
+        // `chars.skip(off).take(len)` = z3 str.substr for off>=0 over printable-ASCII (validated: clamping,
+        // off==len→"", off>len→""). Before this lane, `assert(substr(s,0,3) == "xyz")` was ACCEPTED (fail-
+        // open) while `substr("hello",0,3) = "hel" != "xyz"` traps.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // the confirmed false accept: a FALSE substring disproves.
+        assert!(
+            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "xyz"); } fn main() { f("hello"); }"#),
+            "a false substr value must reject"
+        );
+        // the TRUE substrings prove (prefix, interior, clamped-past-end).
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "hel"); } fn main() { f("hello"); }"#),
+            "a true substr prefix proves"
+        );
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 1, 3) == "ell"); } fn main() { f("hello"); }"#),
+            "a true substr interior proves"
+        );
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 3, 10) == "lo"); } fn main() { f("hello"); }"#),
+            "a substr clamped past the end proves"
+        );
+        // composes with str.len: len(substr(s, 0, 3)) <= 3 for any s.
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "hello") { assert(len(substr(s, 0, 3)) <= 3); } fn main() { f("hello"); }"#),
+            "substr composes with str.len"
+        );
+        // a VAR offset fail-opens (only nonneg literals are modeled — a var offset needs Int↔BV, excluded).
+        assert!(
+            accepts(r#"fn f(s: string, k: i64) requires(s == "hello") { assert(substr(s, k, 3) == "zzz"); } fn main() { f("hello", 0); }"#),
+            "a var-offset substr fail-opens (not modeled)"
+        );
+        // SHADOW guard (#12 class): a user `fn substr` declines (fail-open), not builtin-modeled.
+        assert!(
+            accepts(r#"fn substr(s: string, a: i64, b: i64) -> string { return "zzz"; } fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "hel"); } fn main() { f("hello"); }"#),
+            "a user-shadowed substr is not builtin-modeled (fail-open)"
+        );
+        // OVER-REJECTION guard (LESSON-12 stranding): a substr-equality is a WEAK consequence (constrains
+        // only part of s), so with an UNSEEABLE justification (a non-ASCII / user-predicate `requires` that
+        // seeds nothing) it must fail-OPEN, not strand against a free var. `substr("café",0,2)="ca"` holds
+        // at runtime → VALID → must ACCEPT. (A plain `s == lit` pin is NOT gated — its uncovered reject is
+        // correct.)
+        assert!(
+            accepts(r#"fn f(s: string) requires(s == "café") { assert(substr(s, 0, 2) == "ca"); } fn main() { f("café"); }"#),
+            "a substr-equality with an unseeable (non-ASCII) justification fail-opens — no stranded over-rejection"
+        );
+        assert!(
+            accepts(r#"fn pred(s: string) -> bool { return true; } fn f(s: string) requires(pred(s)) { assert(substr(s, 0, 2) == "he"); } fn main() { f("hello"); }"#),
+            "a substr-equality under a non-modelable user-predicate requires fail-opens"
+        );
+        // …but a MIXED `substr == lit && s == lit` is NOT gated (the plain-pin conjunct keeps it fail-closed)
+        // → a violated pin still REJECTS, no false accept.
+        assert!(
+            !accepts(r#"fn pred(s: string) -> bool { return true; } fn f(s: string) requires(pred(s)) { assert(substr(s, 0, 2) == "he" && s == "hello"); } fn main() { f("bye"); }"#),
+            "a mixed substr + plain-pin obligation stays fail-closed (the pin's uncovered reject is correct)"
+        );
+    }
+
+    #[test]
     fn phase3_qf_s_string_let_chaining() {
         // Phase-3 QF_S: a genuinely-string, NEVER-REASSIGNED `let` becomes a String defining fact in
         // the shared sort-partitioned assumptions channel (the exact mirror of the float-let slice

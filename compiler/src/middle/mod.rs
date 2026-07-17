@@ -1069,10 +1069,12 @@ fn analyze_function(
                 }
             }
         }
-        // `index_of` (str.indexof lane) — a string-lane builtin; its shadow mark rides solver_string_vars
-        // (is_strlen_term consults it).
-        if ctx.all_fns.contains("index_of") || locals.contains("index_of") {
-            ctx.solver_string_vars.insert(shadow_builtin_mark("index_of"));
+        // `index_of` (str.indexof lane) and `substr` (str.substr lane) — string-lane builtins; their shadow
+        // marks ride solver_string_vars (is_strlen_term / is_string_modelable consult them).
+        for name in ["index_of", "substr"] {
+            if ctx.all_fns.contains(name) || locals.contains(name) {
+                ctx.solver_string_vars.insert(shadow_builtin_mark(name));
+            }
         }
     }
     // Authorize declared capabilities for Safe-mode I/O (Phase-3 C5 dual-mode crown).
@@ -1846,11 +1848,17 @@ fn discharge_call_requires(
             restore_str.push(name);
         }
     }
-    // `index_of` rides solver_string_vars (str.indexof lane), not shadowed_string_preds — drop its
-    // caller-local-only shadow for the discharge too, so a caller param named `index_of` doesn't suppress
-    // the callee's builtin index_of requires. (Parity with `len`, which is handled in the int loop above.)
-    let restore_index_of = !ctx.all_fns.contains("index_of")
-        && ctx.solver_string_vars.remove(&shadow_builtin_mark("index_of"));
+    // `index_of`/`substr` ride solver_string_vars (str.indexof/str.substr lanes), not shadowed_string_preds
+    // — drop their caller-local-only shadows for the discharge too, so a caller param named `index_of` /
+    // `substr` doesn't suppress the callee's builtin requires. (Parity with `len`, handled in the int loop.)
+    let mut restore_str_builtin: Vec<&str> = vec![];
+    for name in ["index_of", "substr"] {
+        if !ctx.all_fns.contains(name)
+            && ctx.solver_string_vars.remove(&shadow_builtin_mark(name))
+        {
+            restore_str_builtin.push(name);
+        }
+    }
     let mut all_requires_checkable = true;
     for req in &creq {
         let concrete = substitute_vars(req, &sub);
@@ -1982,8 +1990,8 @@ fn discharge_call_requires(
     for name in restore_str {
         ctx.shadowed_string_preds.insert(name.to_string());
     }
-    if restore_index_of {
-        ctx.solver_string_vars.insert(shadow_builtin_mark("index_of"));
+    for name in restore_str_builtin {
+        ctx.solver_string_vars.insert(shadow_builtin_mark(name));
     }
     all_requires_checkable
 }
@@ -5379,6 +5387,18 @@ fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
         Expr::Binary { op, lhs, rhs } if op == "+" => {
             is_string_modelable(lhs, string_vars) && is_string_modelable(rhs, string_vars)
         }
+        // Phase-3 str.substr: `substr(s, off, len)` with NONNEG INT LITERAL off/len is `(str.substr s off
+        // len)`. Runtime `chars.skip(off).take(len)` = z3 str.substr for off>=0 over printable-ASCII
+        // (validated: clamps len past the end, off>=|s|→""). The ONLY divergence — Anubis clamps a NEGATIVE
+        // start to 0 while z3 returns "" — is excluded by the nonneg-literal gate; an int-VAR off/len is
+        // excluded too (it is BitVec-sorted, str.substr wants Int — no unsound BV↔Int mix). #12: a user/local
+        // `substr` shadow declines (the shadow_builtin_mark rides string_vars).
+        Expr::Call { callee, args } if callee == "substr" && args.len() == 3 => {
+            !string_vars.contains(&shadow_builtin_mark("substr"))
+                && is_string_modelable(&args[0], string_vars)
+                && as_nonneg_int_lit(&args[1]).is_some()
+                && as_nonneg_int_lit(&args[2]).is_some()
+        }
         // A string field `p.field` off a struct VAR — modelable IFF registered (a struct param's string
         // field constrained by a `requires`). Mirrors the int/float field arms.
         Expr::FieldAccess { base, field, .. } => {
@@ -5463,6 +5483,16 @@ fn string_expr_to_smt(e: &Expr) -> String {
         // string-modelable). Total on reachable exprs; a non-string operand can never arrive here.
         Expr::Binary { op, lhs, rhs } if op == "+" => {
             format!("(str.++ {} {})", string_expr_to_smt(lhs), string_expr_to_smt(rhs))
+        }
+        // Phase-3 str.substr (gated by is_string_modelable's `substr` arm — off/len are nonneg int
+        // literals). The off/len literals encode directly as SMT-LIB Int (nonneg, fit i64).
+        Expr::Call { callee, args } if callee == "substr" && args.len() == 3 => {
+            format!(
+                "(str.substr {} {} {})",
+                string_expr_to_smt(&args[0]),
+                as_nonneg_int_lit(&args[1]).unwrap_or(0),
+                as_nonneg_int_lit(&args[2]).unwrap_or(0)
+            )
         }
         Expr::FieldAccess { base, field, .. } => match base.as_ref() {
             // A registered struct-param string field → its canonical mangled symbol (gated by
@@ -5651,23 +5681,44 @@ fn is_predicate_fact(a: &str) -> bool {
     a.contains("str.contains") || a.contains("str.prefixof") || a.contains("str.suffixof")
 }
 
-/// True when `e` is built PURELY from string predicates (`contains`/`starts_with`/`ends_with`) and boolean
-/// combinators (`&&`/`||`/`!`) — no `==`/`!=`. A pure predicate is a WEAKER consequence than an equality
-/// pin, so an uncovered one (an unseeable justification like a non-ASCII `requires`) must fail-OPEN rather
-/// than strand against a free var and over-reject; an equality assert under the same uncovered pin is
-/// genuinely runtime-false, so it stays fail-CLOSED. A MIXED `s == "hi" && starts_with(s, "h")` is NOT pure
-/// (the `==` sub → false), so it keeps the equality lane's unconditional (fail-closed) behavior — gating it
-/// would fail-open the equality part into a false accept.
+/// True when `e` is a PURELY WEAK-consequence string obligation — built only from string predicates
+/// (`contains`/`starts_with`/`ends_with`), SUBSTR-equalities (`substr(s,..) == lit`), and `&&`/`||`/`!`.
+/// A weak consequence constrains only PART of a string (a prefix/containment/substring), so an uncovered
+/// one (an unseeable justification like a non-ASCII `requires`) must fail-OPEN rather than strand against a
+/// free var and over-reject a valid program. A PLAIN var/literal equality PIN (`s == "hi"`) is NOT weak:
+/// its uncovered reject is correct (an ASCII pin under an unseeable premise is genuinely runtime-false), and
+/// gating it would fail-open a false accept. A MIXED `s == "hi" && starts_with(s,"h")` is NOT pure (the
+/// plain `==` conjunct → false), so it keeps the equality lane's fail-closed behavior.
 fn is_pure_string_predicate(e: &Expr) -> bool {
     match e {
         Expr::Call { callee, args } => {
             args.len() == 2 && matches!(callee.as_str(), "contains" | "starts_with" | "ends_with")
+        }
+        // A `==`/`!=` is weak (gateable) ONLY when a side is a DERIVED substring term (`substr(..)`); a
+        // plain var/literal equality pin is not, and stays fail-closed.
+        Expr::Binary { op, lhs, rhs } if op == "==" || op == "!=" => {
+            expr_contains_substr(lhs) || expr_contains_substr(rhs)
         }
         Expr::Binary { op, lhs, rhs } if op == "&&" || op == "||" => {
             is_pure_string_predicate(lhs) && is_pure_string_predicate(rhs)
         }
         Expr::Unary { op, expr } if op == "!" => is_pure_string_predicate(expr),
         Expr::Declassify { inner, .. } => is_pure_string_predicate(inner),
+        _ => false,
+    }
+}
+
+/// True when `e` contains a `substr(s, off, len)` call anywhere — used to classify a `==` as a weak
+/// (coverage-gateable) substring consequence rather than a fail-closed pin.
+fn expr_contains_substr(e: &Expr) -> bool {
+    match e {
+        Expr::Call { callee, args } if callee == "substr" && args.len() == 3 => true,
+        Expr::Call { args, .. } => args.iter().any(expr_contains_substr),
+        Expr::Binary { lhs, rhs, .. } => {
+            expr_contains_substr(lhs) || expr_contains_substr(rhs)
+        }
+        Expr::Unary { expr, .. } => expr_contains_substr(expr),
+        Expr::Declassify { inner, .. } => expr_contains_substr(inner),
         _ => false,
     }
 }
