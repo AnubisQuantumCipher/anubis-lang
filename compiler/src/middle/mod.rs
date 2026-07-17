@@ -2518,12 +2518,14 @@ fn analyze_stmts(
                 // Phase-3 QF_S: a genuinely-string `let` must be kept OUT of `symbolic_widths` — string
                 // PARAMS are excluded from the width map for exactly this reason: `expr_to_smt_value`
                 // gates a Var on width membership, so a width entry would let it build a BIT-VECTOR fact
-                // over a String-sorted symbol. `+` is runtime string concat, so `let u = s + s` would
-                // otherwise push `(= anb_u (bvadd anb_s anb_s))`, which `fact_is_string` then routes into
-                // a QF_S obligation → bvadd on String sorts → z3 error → fail-closed over-rejection of an
-                // unrelated valid string contract. REMOVE (not merely skip) so a stale width from a
-                // shadowed integer binding of the same name is evicted too. (Concat itself stays a
-                // deferred fail-closed residual — `is_string_modelable` has no Binary arm.)
+                // over a String-sorted symbol. `+` is runtime string concat, so a width entry on `u` would
+                // let `expr_to_smt_value` push `(= anb_u (bvadd anb_s anb_s))`, which `fact_is_string` then
+                // routes into a QF_S obligation → bvadd on String sorts → z3 error → fail-closed
+                // over-rejection of an unrelated valid string contract. REMOVE (not merely skip) so a stale
+                // width from a shadowed integer binding of the same name is evicted too. Concat IS now
+                // modeled (is_string_modelable has a Binary `+` arm) — via `string_expr_to_smt`'s
+                // `(str.++ …)` on the String-sorted symbols, NOT a bit-vector; this eviction is exactly what
+                // keeps the concat def-fact in the String lane.
                 let genuinely_string = !is_int_modelable(init, &ctx.solver_int_vars)
                     && is_string_modelable(init, &ctx.solver_string_vars);
                 if genuinely_string {
@@ -5098,6 +5100,13 @@ fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
         // into a false discharge (hunt-found false-accept). Non-ASCII is excluded too (z3's UTF-8 handling
         // is unvalidated here). Both fall through to fail-closed (deferred to runtime), never a wrong proof.
         Expr::StrLiteral(s) => s.chars().all(|c| c == ' ' || c.is_ascii_graphic()),
+        // Phase-3 str.++: `s + t` is runtime string CONCATENATION (run.rs) = SMT `str.++`, sound both ways
+        // (concat appends char sequences; z3 str.++ is exact, and str.len(str.++ a b) = len a + len b). Both
+        // operands must be string-modelable — a non-ASCII/NUL literal operand fails the StrLiteral arm →
+        // the whole concat declines (fail-open/closed), never a byte-wise mis-model.
+        Expr::Binary { op, lhs, rhs } if op == "+" => {
+            is_string_modelable(lhs, string_vars) && is_string_modelable(rhs, string_vars)
+        }
         Expr::Declassify { inner, .. } => is_string_modelable(inner, string_vars),
         _ => false,
     }
@@ -5143,6 +5152,11 @@ fn string_expr_to_smt(e: &Expr) -> String {
         Expr::StrLiteral(s) => {
             let escaped = s.replace('\\', "\\u{5c}").replace('"', "\"\"");
             format!("\"{escaped}\"")
+        }
+        // Phase-3 str.++: string concat (gated by is_string_modelable's Binary `+` arm — both operands
+        // string-modelable). Total on reachable exprs; a non-string operand can never arrive here.
+        Expr::Binary { op, lhs, rhs } if op == "+" => {
+            format!("(str.++ {} {})", string_expr_to_smt(lhs), string_expr_to_smt(rhs))
         }
         Expr::Declassify { inner, .. } => string_expr_to_smt(inner),
         _ => "\"\"".to_string(),

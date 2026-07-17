@@ -5871,6 +5871,54 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn phase3_qf_s_string_concat_contracts_discharge_or_disprove() {
+        // Phase-3 str.++: a string CONCAT `s + t` now models as `(str.++ anb_s anb_t)` in QF_S, so an
+        // `ensures`/`requires`/`assert(result == s + t)` DISCHARGES instead of the ensures site
+        // fail-closing (over-reject) and the requires/assert site fail-opening. Sound: runtime string `+`
+        // is char-sequence concat = SMT `str.++`; the printable-ASCII literal gate + abstract vars hold.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // a VALID concat ensures now discharges (was a fail-closed over-rejection).
+        assert!(
+            accepts(r#"fn cat(s: string, t: string) -> string ensures(result == s + t) { return s + t; } fn main() { print(cat("a", "b")); }"#),
+            "ensures(result == s + t) for `return s + t` must discharge (str.++ identity)"
+        );
+        // a FALSE concat ensures (`t + s` for `return s + t`) is DISPROVED (z3 finds s,t with t++s != s++t).
+        assert!(
+            !accepts(r#"fn cat(s: string, t: string) -> string ensures(result == t + s) { return s + t; } fn main() { print(cat("a", "b")); }"#),
+            "ensures(result == t + s) for `return s + t` must be disproved (concat is not commutative)"
+        );
+        // call-site: a violated concat precondition is CAUGHT (was fail-open accept + runtime trap).
+        assert!(
+            !accepts(r#"fn g(s: string, t: string) -> i64 requires(s + t == "ab") { assert(s + t == "ab"); return 1; } fn f() -> i64 { return g("x", "y"); } fn main() { print(f()); }"#),
+            "a call `g(\"x\",\"y\")` against requires(s + t == \"ab\") must reject (\"xy\" != \"ab\")"
+        );
+        // …satisfied → ACCEPT.
+        assert!(
+            accepts(r#"fn g(s: string, t: string) -> i64 requires(s + t == "ab") { assert(s + t == "ab"); return 1; } fn f() -> i64 { return g("a", "b"); } fn main() { print(f()); }"#),
+            "a call `g(\"a\",\"b\")` against requires(s + t == \"ab\") must accept (\"ab\" == \"ab\")"
+        );
+        // a string-LET concat composes: `let u = s + t; assert(u == s + t)` proves; the false dual rejects.
+        // (The fn declares a contract so its string params are solver-modeled — has_contract gates that.)
+        assert!(
+            accepts(r#"fn cat(s: string, t: string) -> i64 requires(len(s) >= 0) { let u = s + t; assert(u == s + t); return 1; } fn main() { print(cat("a", "b")); }"#)
+                && !accepts(r#"fn cat(s: string, t: string) -> i64 requires(len(s) >= 0) { let u = s + t; assert(u == t + s); return 1; } fn main() { print(cat("a", "b")); }"#),
+            "a string-let concat proves `u == s + t` and disproves `u == t + s`"
+        );
+        // a NON-ASCII literal operand keeps the concat unmodeled (fail-open), per the printable-ASCII gate.
+        assert!(
+            accepts(r#"fn g(s: string) -> i64 requires(s + "é" == "aé") { return 1; } fn f() -> i64 { return g("a"); } fn main() { print(f()); }"#),
+            "a concat with a non-ASCII literal operand stays fail-open (printable-ASCII gate)"
+        );
+    }
+
+    #[test]
     fn mixed_lane_conjunction_requires_decomposes() {
         // A callee `requires` that is a top-level `&&` MIXING solver lanes (a string-equality conjunct AND
         // a string-length conjunct) is neither fully modelable as one formula, so tested atomically it
@@ -6865,14 +6913,22 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             discharged(r#"fn f() { let s = "a"; let s = 3; assert(s == 3); }"#),
             "a string→int re-let must clear string membership so the int fact is not sort-dropped"
         );
-        // String concat (`+` is runtime concat) is a DEFERRED residual — must stay unmodeled, and in
-        // particular must never inject a bit-vector fact over String-sorted symbols (the
-        // symbolic_widths eviction guards this).
+        // String concat (`+`) is now MODELED as `str.++` (see phase3_qf_s_string_concat_*): `let u = s + s`
+        // discharges `ensures(result == "aa")` for `s == "a"` (a genuine proof, not a fail-open). The
+        // symbolic_widths eviction still guards against a bit-vector fact over String symbols — a spurious
+        // `bvadd` would z3-error → fail-CLOSED reject, so a true ACCEPT proves the string-sorted path holds.
         assert!(
-            !discharged(
+            discharged(
                 r#"fn f() -> string ensures(result == "aa") { let s = "a"; let u = s + s; return u; }"#
             ),
-            "string concat must stay unmodeled (deferred residual)"
+            "string concat `s + s` for s==\"a\" discharges `ensures(result == \"aa\")` via str.++"
+        );
+        // …and a FALSE concat postcondition is disproved (not fail-open accepted).
+        assert!(
+            !discharged(
+                r#"fn f() -> string ensures(result == "ab") { let s = "a"; let u = s + s; return u; }"#
+            ),
+            "a false concat postcondition (`\"ab\"` for `s + s`, s==\"a\") must be disproved"
         );
     }
 
