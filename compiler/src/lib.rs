@@ -6285,6 +6285,84 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
     }
 
     #[test]
+    fn destructured_binding_shadows_get_fresh_symbols() {
+        // A DESTRUCTURING pattern's bound name that SHADOWS a modeled outer var must not be discharged
+        // against the outer var's facts (the same conflation the whole-value fix closed): `match o {
+        // Opt::Some(a) => g(a) }` where the param `a > 50` "proved" g's `x > 0` while the binding is the
+        // PAYLOAD (0) — check ACCEPTED, run TRAPPED. The payload value is unknowable (no enum modeling),
+        // so the shadowing binding becomes a fresh UNCONSTRAINED int symbol → the obligation fires with no
+        // facts → fail-CLOSED. A NON-shadowing bound name stays untouched (fail-open, the documented
+        // residual) — this slice is monotone-toward-reject on exactly the shadow class.
+        let accepts = |src: &str| {
+            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            }
+        };
+        // the confirmed enum-payload shadow false accept → must REJECT.
+        assert!(
+            !accepts(r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, o: Opt) -> i64 requires(a > 50) { let z = match o { Opt::Some(a) => g(a), Opt::None => 1 }; return z; } fn main() { print(f(200, Opt::Some(0))); }"#),
+            "an enum-payload binding shadowing a param must not inherit the param's facts"
+        );
+        // the list-pattern sibling → must REJECT.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 50) { let xs = [0]; let z = match xs { [a] => g(a), _ => 1 }; return z; } fn main() { print(f(200)); }"#),
+            "a list-pattern binding shadowing a param must not inherit the param's facts"
+        );
+        // a NON-shadowing payload binding stays fail-open (documented residual — unchanged verdict).
+        assert!(
+            accepts(r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(o: Opt) -> i64 { let z = match o { Opt::Some(n) => g(n), Opt::None => 1 }; return z; } fn main() { print(f(Opt::Some(5))); }"#),
+            "a non-shadowing payload binding stays fail-open (documented residual)"
+        );
+        // an ENCLOSING modeled var used in a destructuring arm's body still discharges normally — the
+        // rename touches only the SHADOWING bound names, not other vars.
+        assert!(
+            accepts(r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, o: Opt) -> i64 requires(a > 50) { let z = match o { Opt::Some(n) => g(a), Opt::None => 1 }; return z; } fn main() { print(f(200, Opt::Some(7))); }"#)
+                && !accepts(r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, o: Opt) -> i64 requires(a > 0 - 100) { let z = match o { Opt::Some(n) => g(a), Opt::None => 1 }; return z; } fn main() { print(f(200, Opt::Some(7))); }"#),
+            "an enclosing var in a destructuring arm still proves (a>50) and rejects (a>-100) normally"
+        );
+        // NESTED whole-value alias chain: `match a { p => match p { d => g(d) } }` under a > 0 is VALID
+        // (d == p == a > 0) — the fresh symbols must carry a width so the inner alias encodes. Was a
+        // review-noted fail-closed over-rejection; must ACCEPT.
+        assert!(
+            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0) { let z = match a { p => match p { d => g(d) } }; return z; } fn main() { print(f(5)); }"#),
+            "a nested whole-value alias chain must encode (fresh symbols need widths)"
+        );
+        // …and the nested chain is not over-trusted: under a weak `a > -100` it must still REJECT.
+        assert!(
+            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { p => match p { d => g(d) } }; return z; } fn main() { print(f(0 - 5)); }"#),
+            "a nested alias chain must not over-prove (a > -100 does not prove d > 0)"
+        );
+        // LANE ROUTING (review-caught): the fresh symbol must join the SHADOWED var's OWN lane. An
+        // int-only fresh symbol made a FLOAT/STRING callee requires match no lane → skipped → fail-OPEN,
+        // flipping the pre-diff fail-closed reject (the obligation was built in the float/string lane over
+        // the OUTER var, whose contradicting premise disproved it). Both must REJECT (fail closed).
+        assert!(
+            !accepts(r#"enum FOpt { Some(f64), None } fn gf(x: f64) -> i64 requires(x >= 1.0) { let n = x as i64; return 100 / n; } fn f(a: f64, o: FOpt) -> i64 requires(a < 0.0) { let z = match o { FOpt::Some(a) => gf(a), FOpt::None => 1 }; return z; } fn main() { print(f(0.0 - 3.0, FOpt::Some(0.0))); }"#),
+            "a FLOAT payload shadow must fail closed (fresh symbol in the float lane)"
+        );
+        assert!(
+            !accepts(r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(s == "ok") { assert(s == "ok"); return 1; } fn f(a: string, o: SOpt) -> i64 requires(a == "hello") { let z = match o { SOpt::Some(a) => gs(a), SOpt::None => 1 }; return z; } fn main() { print(f("hello", SOpt::Some("no"))); }"#),
+            "a STRING payload shadow must fail closed (fresh symbol in the string lane)"
+        );
+        // …and the string-LENGTH sub-lane too (review-caught): the str.len coverage gate skips an
+        // obligation over an UNCOVERED string var, so the fresh shadow symbol carries a tautological
+        // `str.len >= 0` seed — it constrains nothing but marks the var covered, so the callee's
+        // `requires(len(s) >= 3)` FIRES and fails closed instead of being skipped fail-open.
+        assert!(
+            !accepts(r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(len(s) >= 3) { return 100 / (len(s) - 2); } fn f(a: string, o: SOpt) -> i64 requires(len(a) >= 1) { let z = match o { SOpt::Some(a) => gs(a), SOpt::None => 1 }; return z; } fn main() { print(f("x", SOpt::Some("no"))); }"#),
+            "a STRING payload shadow must fail closed in the str.len sub-lane too (coverage tautology)"
+        );
+        // a NON-shadowing string payload feeding a strlen-contracted call stays fail-open (unchanged).
+        assert!(
+            accepts(r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(len(s) >= 3) { return 1; } fn f(o: SOpt) -> i64 { let z = match o { SOpt::Some(n) => gs(n), SOpt::None => 1 }; return z; } fn main() { print(f(SOpt::Some("abc"))); }"#),
+            "a non-shadowing string payload stays fail-open (documented residual)"
+        );
+    }
+
+    #[test]
     fn struct_literal_field_access_models_the_field_value() {
         // `P{v: e}.f` is value-equal to the named field's expr — the struct analog of the modeled
         // `[a, b][0]` bounded-array read. Leaving it unmodeled let `g(P{v: 0}.v)` certify against

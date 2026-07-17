@@ -2087,13 +2087,20 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                 // when the outer pushed no alias. The name never affects a verdict or reaches the compiled
                 // output, so a global counter is fixpoint-safe. Only added state (`fresh` membership + its
                 // alias fact) is introduced, so `truncate(snap)` + `solver_int_vars.remove(fresh)` is exact.
-                let mut fresh_binding: Option<(String, Option<Expr>, Expr)> = None;
+                let mut fresh_syms: Vec<String> = Vec::new();
+                let mut renamed: Option<(Option<Expr>, Expr)> = None;
                 if let crate::frontend::Pattern::Binding(name) = &arm.pattern {
+                    // WHOLE-VALUE binding: fresh symbol ALIASED to the scrutinee when modelable (its facts
+                    // carry through), else unconstrained (fail-closed). The width entry lets a NESTED alias
+                    // chain encode (`match a { p => match p { d => g(d) } }` — the inner alias's scrutinee
+                    // is the OUTER fresh symbol, and expr_to_smt_value needs its width; without it a valid
+                    // chain was fail-closed over-rejected).
                     let fresh = format!(
                         "{}mbind",
                         MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                     );
                     ctx.solver_int_vars.insert(fresh.clone());
+                    ctx.symbolic_widths.insert(fresh.clone(), 64);
                     if is_int_modelable(scrutinee, &ctx.solver_int_vars) {
                         if let Some(s) = expr_to_smt_value(scrutinee, &ctx.symbolic_widths) {
                             assumptions.push(format!("(= {} {})", smt_var(&fresh), s));
@@ -2101,10 +2108,72 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                     }
                     let g = arm.guard.as_ref().map(|x| rename_binding(x, name, &fresh));
                     let b = rename_binding(&arm.body, name, &fresh);
-                    fresh_binding = Some((fresh, g, b));
+                    fresh_syms.push(fresh);
+                    renamed = Some((g, b));
+                } else {
+                    // DESTRUCTURING pattern (enum/list/struct): a bound name that SHADOWS a modeled outer
+                    // var would be discharged against the OUTER var's facts — the same conflation the
+                    // whole-value fix closed (`match o { Opt::Some(a) => g(a) }` where the param `a > 50`
+                    // "proved" g's requires while the binding is the PAYLOAD; check ACCEPTED, run TRAPPED).
+                    // The payload value is unknowable (no enum/list element modeling), so each SHADOWING
+                    // name is renamed to a fresh UNCONSTRAINED int symbol: the obligation fires with no
+                    // facts and FAILS CLOSED. This is monotone-toward-reject on exactly the shadow class —
+                    // a wrong-premise accept becomes a reject, a wrong-premise reject stays a reject, and a
+                    // NON-shadowing bound name is untouched (unmodeled → fail-open, the documented
+                    // residual), so no fail-open is introduced anywhere.
+                    let shadowing: Vec<String> = arm
+                        .pattern
+                        .bound_names()
+                        .into_iter()
+                        .filter(|n| {
+                            ctx.solver_int_vars.contains(n)
+                                || ctx.solver_float_vars.contains(n)
+                                || ctx.solver_string_vars.contains(n)
+                        })
+                        .collect();
+                    if !shadowing.is_empty() {
+                        let mut g = arm.guard.clone();
+                        let mut b = arm.body.clone();
+                        for n in &shadowing {
+                            let fresh = format!(
+                                "{}mbind",
+                                MATCH_BIND_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            );
+                            // The fresh symbol joins the SHADOWED var's OWN lane. An int-only fresh
+                            // symbol would make a FLOAT/STRING callee requires match NO lane → skipped →
+                            // fail-OPEN — flipping the pre-diff behavior (the obligation was built in the
+                            // float/string lane over the OUTER var, whose contradicting premise rejected
+                            // it): a review-caught reject→accept regression. A free QF_FP/QF_S symbol
+                            // makes the obligation fire and FAIL CLOSED, matching the int lane exactly.
+                            if ctx.solver_float_vars.contains(n) {
+                                ctx.solver_float_vars.insert(fresh.clone());
+                            } else if ctx.solver_string_vars.contains(n) {
+                                ctx.solver_string_vars.insert(fresh.clone());
+                                // Seed a TAUTOLOGY (`str.len >= 0` always holds) so strlen_vars_covered
+                                // sees the fresh var MENTIONED in a String-lane fact. Without it the
+                                // string-LENGTH sub-lane's coverage gate (built for the unseedable-
+                                // justification over-rejection) SKIPS a `requires(len(s) >= k)` over this
+                                // unconstrained symbol → fail-OPEN — flipping the pre-diff reject built
+                                // over the covered OUTER var (a review-caught regression; the string-
+                                // EQUALITY sub-lane is ungated and already failed closed). The tautology
+                                // constrains nothing, so z3 still disproves via len=0 → FAIL-CLOSED,
+                                // matching the int/float/string-eq lanes. Pushed after `snap` → removed
+                                // by the arm's truncate (leak-free).
+                                assumptions
+                                    .push(format!("(>= (str.len {}) 0)", smt_var(&fresh)));
+                            } else {
+                                ctx.solver_int_vars.insert(fresh.clone());
+                                ctx.symbolic_widths.insert(fresh.clone(), 64);
+                            }
+                            g = g.map(|x| rename_binding(&x, n, &fresh));
+                            b = rename_binding(&b, n, &fresh);
+                            fresh_syms.push(fresh);
+                        }
+                        renamed = Some((g, b));
+                    }
                 }
-                let (eff_guard, eff_body) = match &fresh_binding {
-                    Some((_, g, b)) => (g.as_ref(), b),
+                let (eff_guard, eff_body) = match &renamed {
+                    Some((g, b)) => (g.as_ref(), b),
                     None => (arm.guard.as_ref(), &arm.body),
                 };
                 if let Some(guard) = eff_guard {
@@ -2114,8 +2183,13 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                 discharge_calls_in_expr(ctx, assumptions, eff_body);
                 assumptions.truncate(snap);
                 ctx.active_branch_guards.truncate(snap_g);
-                if let Some((fresh, _, _)) = fresh_binding {
-                    ctx.solver_int_vars.remove(&fresh);
+                for fresh in &fresh_syms {
+                    // A fresh symbol lives in exactly ONE lane (int XOR float XOR string) and its
+                    // `<ctr>mbind` name is globally unique, so removing from all three is exact/leak-free.
+                    ctx.solver_int_vars.remove(fresh);
+                    ctx.solver_float_vars.remove(fresh);
+                    ctx.solver_string_vars.remove(fresh);
+                    ctx.symbolic_widths.remove(fresh);
                 }
                 // A `_`-guarded arm's guard references only enclosing/scrutinee vars, so `!guard` means the
                 // same thing in a later arm. A BINDING-guarded arm (`n if G`) is excluded even though it is
