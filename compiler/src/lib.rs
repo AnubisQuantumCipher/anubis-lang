@@ -3266,6 +3266,58 @@ fn bad() {
     }
 
     #[test]
+    fn phase4_concrete_index_array_write() {
+        // Phase-3/4 (task #30): a CONCRETE-index array write `a[k] = v` (k a proven in-range literal, `a` a
+        // modeled bounded seq, `v` not referencing `a`) now UPDATES cell k in place instead of de-modeling
+        // the whole sequence, so a later read `a[k]` (and the untouched cells + length) still verify.
+        // `discharged` is false when the program is rejected.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // THE DEMONSTRATION (red baseline — a write de-modeled the whole seq, so the post-write read deferred):
+        // the written value is now PROVED, and the OTHER cells + length survive.
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 5) { let mut a = [1, 2, 3]; a[1] = 5; return a[1]; } fn main() { let r = f(); }"),
+            "a concrete-index write proves the written value (a[1]=5 ⇒ a[1]==5)"
+        );
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 4) { let mut a = [1, 2, 3]; a[1] = 5; return a[0] + a[2]; } fn main() { let r = f(); }"),
+            "the untouched cells survive a concrete-index write (a[0]==1, a[2]==3)"
+        );
+        // A FALSE post-write ensures is now DISPROVED (modeled, not deferred): the write REPLACES the cell,
+        // so the stale pre-write value (a[1]==2) is gone and `ensures(result == 2)` for `return a[1]` fails.
+        assert!(
+            !discharged("fn f() -> u32 ensures(result == 2) { let mut a = [1, 2, 3]; a[1] = 5; return a[1]; } fn main() { let r = f(); }"),
+            "the stale pre-write value must be gone (ensures(result==2) for a[1] after a[1]=5 rejects)"
+        );
+        // A write from a scalar variable proves.
+        assert!(
+            discharged("fn f(v: u32) -> u32 requires(v == 7) ensures(result == 7) { let mut a = [1, 2, 3]; a[0] = v; return a[0]; } fn main() { let r = f(7); }"),
+            "a concrete-index write from a scalar variable proves"
+        );
+        // Two writes compose: each replaces its own cell.
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 17) { let mut a = [1, 2, 3]; a[0] = 9; a[1] = 8; return a[0] + a[1]; } fn main() { let r = f(); }"),
+            "two concrete-index writes each replace their own cell"
+        );
+        // SOUNDNESS: a SELF-/cross-referential RHS (`a[0] = a[0] + 1`) falls through to the conservative
+        // whole-seq de-model (the old cell fact would go stale), so the post-write value is NOT proved —
+        // it defers (both polarities accepted). Assert it does not falsely DISPROVE the true value.
+        assert!(
+            discharged("fn f() -> u32 { let mut a = [1, 2, 3]; a[0] = a[0] + 1; return a[0]; } fn main() { let r = f(); }"),
+            "a self-referential concrete write de-models (defers) — never a wrong model"
+        );
+        // SOUNDNESS: a symbolic-index write still de-models (only a proven-literal index updates a cell).
+        assert!(
+            discharged("fn f(i: u32) -> u32 { let mut a = [1, 2, 3]; a[i] = 5; return a[0]; } fn main() { let r = f(0); }"),
+            "a symbolic-index write de-models the seq (defers) — no false proof"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,

@@ -3297,7 +3297,43 @@ fn analyze_stmts(
                 // with the stale `total == 0`). Removing the stale fact — not just dropping
                 // modelability — is essential: a loop invariant later RE-MODELS the variable, and a
                 // surviving `x == <old>` would then launder a false invariant/postcondition.
-                if let Some(root) = assign_target_root(target) {
+                // Concrete-index array WRITE `a[k] = v` (k a proven in-range non-negative literal, `a` a
+                // modeled bounded seq, `v` not referencing `a`): UPDATE cell k IN PLACE — drop the old
+                // `(select a__arr k) = <old>` fact and add the new one — instead of de-modeling the whole
+                // sequence, so a later read `a[k]` (and the untouched cells + the length) still verify
+                // (`a[1] = 5; assert(a[1] == 5)` now proves; `assert(a[0] == 1)` survives). SOUND: each
+                // modeled seq owns its `__arr` symbol — a copy `let b = a` is NOT modeled (no aliasing) and
+                // a fresh `let a = […]` gets its own symbol — so the replacement affects only `a`. `v` must
+                // not reference `a` (a self-/cross-cell RHS like `a[0] = a[0] + 1` would go stale once the
+                // old cell fact is dropped); such a write falls through to the conservative whole-seq
+                // de-model below.
+                let concrete_cell_write = if let Expr::Index { base, index } = target {
+                    if let (Expr::Var(seq), Some(k)) = (base.as_ref(), as_nonneg_int_lit(index)) {
+                        let mut vvars = BTreeSet::new();
+                        collect_expr_vars(value, &mut vvars);
+                        if seq_fixed_len(seq, &ctx.solver_int_vars).is_some_and(|n| k < n)
+                            && !vvars.contains(seq)
+                        {
+                            if let Some(vs) = expr_to_smt_value(value, &ctx.symbolic_widths) {
+                                let cell = format!("(select {} (_ bv{} 64))", seq_arr_smt(seq), k);
+                                assumptions.retain(|a| !a.contains(&cell));
+                                assumptions.push(format!("(= {} {})", cell, vs));
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if concrete_cell_write {
+                    // Cell updated in place; the rest of the sequence model (other cells + length) stands.
+                } else if let Some(root) = assign_target_root(target) {
                     clear_binding_modelability(&mut ctx.solver_int_vars, root);
                     // Lane parity (Phase-3 QF_FP/QF_S): a reassigned float/string binding is no longer
                     // modelable from its `let` value either — drop it from those sets too, so its
