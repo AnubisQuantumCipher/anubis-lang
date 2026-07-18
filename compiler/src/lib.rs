@@ -3482,6 +3482,42 @@ fn bad() {
     }
 
     #[test]
+    fn phase4_nested_struct_field_read_modeling() {
+        // Phase-3/4 (task #36, read half): a NESTED field read `p.a.b` off a `let p = P{a: A{b: 5}}`
+        // (p neither reassigned nor shadowed) is now CHECKED — the struct-literal-let seed recurses,
+        // seeding `mangle_field(mangle_field(p,a),b)`, and the read resolves to the same symbol via
+        // `field_access_symbol`. SOUND with NO invalidation: any write to p at any level (`p =`, `p.a =`,
+        // `p.a.b =`) puts p in reassigned_roots → not seeded → fail-open.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // THE DEMONSTRATION: a nested read is proved (was fail-open before the slice).
+        assert!(
+            discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 5) { let p = P{a: A{b: 5}}; return p.a.b; } fn main() { let r = f(); }"),
+            "a nested field read proves the constructed value: p.a.b == 5"
+        );
+        // A FALSE nested read is DISPROVED (modeled, not deferred).
+        assert!(
+            !discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 9) { let p = P{a: A{b: 5}}; return p.a.b; } fn main() { let r = f(); }"),
+            "a false nested read is disproved: p.a.b == 9 rejects when the field was constructed 5"
+        );
+        // Three-level nesting resolves.
+        assert!(
+            !discharged("struct C { d: i64 } struct B { c: C } struct A { b: B } fn f() -> i64 ensures(result == 8) { let p = A{b: B{c: C{d: 7}}}; return p.b.c.d; } fn main() { let r = f(); }"),
+            "a 3-level nested read disproves a false value: p.b.c.d == 8 rejects when d is 7"
+        );
+        // SOUNDNESS: any write to the base disqualifies the WHOLE binding → the nested read defers (a
+        // written base is in reassigned_roots, so it is never seeded — the read half needs no invalidation).
+        assert!(
+            !discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 5) { let mut p = P{a: A{b: 5}}; p.a.b = 7; return p.a.b; } fn main() { let r = f(); }"),
+            "a nested-field write disqualifies the base — the read defers, the stale construction value 5 must not prove"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,

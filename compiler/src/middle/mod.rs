@@ -2488,6 +2488,87 @@ fn push_branch_path_condition(
     ctx.active_branch_guards.push(fact);
 }
 
+/// Resolve a (possibly NESTED) field-access place to its canonical solver symbol: `p` → `p`, `p.a` →
+/// `mangle_field(p,a)`, `p.a.b` → `mangle_field(mangle_field(p,a),b)`. This GENERALIZES the single-level
+/// `mangle_field(v, field)` the read/encoder arms used (for a `Var` base it is identical), and is kept in
+/// lockstep with `seed_struct_literal_fields`, which seeds at the same accumulated path. Returns `None`
+/// for a non-place base (an index, a call, …) so such a read declines to model (fail-open).
+fn field_access_symbol(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Var(v) => Some(v.clone()),
+        Expr::FieldAccess { base, field, .. } => {
+            Some(mangle_field(&field_access_symbol(base)?, field))
+        }
+        _ => None,
+    }
+}
+
+/// Recursively seed a struct-literal LET's scalar field facts at ANY nesting depth. `base_sym` is the
+/// accumulated `mangle_field` path (the let name at the top, `mangle_field(parent, f)` deeper), so
+/// `let p = P{a: A{b: 5}}` seeds `mangle_field(mangle_field(p,a),b) == 5` and a later `p.a.b` read
+/// (resolved by `field_access_symbol` to the same symbol) is CHECKED. The caller gates on the WHOLE
+/// binding being neither reassigned nor shadowed; a field is seeded only when its value's vars are all
+/// stable (never reassigned/shadowed) so the fact can never be stranded — identical to the single-level
+/// seed this replaces. A field whose value is a nested struct literal (and whose DECLARED type is that
+/// struct) recurses; termination is guaranteed because a struct cannot contain itself by value.
+fn seed_struct_literal_fields(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    base_sym: &str,
+    sname: &str,
+    fields: &[(String, Box<Expr>)],
+) {
+    let Some(field_tys) = ctx.struct_fields.get(sname).cloned() else {
+        return;
+    };
+    for (fname, fexpr) in fields {
+        let Some(fty) = field_tys.get(fname) else {
+            continue;
+        };
+        let mut fvars = BTreeSet::new();
+        collect_expr_vars(fexpr, &mut fvars);
+        if fvars
+            .iter()
+            .any(|v| ctx.reassigned_roots.contains(v) || ctx.shadowed_lets.contains(v))
+        {
+            continue;
+        }
+        let sym = mangle_field(base_sym, fname);
+        if is_integer_ty(fty) && is_int_modelable(fexpr, &ctx.solver_int_vars) {
+            if let Some(vs) = expr_to_smt_value(fexpr, &ctx.symbolic_widths) {
+                ctx.solver_int_vars.insert(sym.clone());
+                ctx.symbolic_widths.insert(sym.clone(), 64);
+                assumptions.push(format!("(= {} {})", smt_var(&sym), vs));
+            }
+        } else if is_float_ty(fty)
+            && is_float_modelable(fexpr, &ctx.solver_float_vars)
+            && !is_int_modelable(fexpr, &ctx.solver_int_vars)
+        {
+            ctx.solver_float_vars.insert(sym.clone());
+            assumptions.push(format!("(= {} {})", smt_var(&sym), float_expr_to_smt(fexpr)));
+        } else if fty.as_str() == "string"
+            && is_string_modelable(fexpr, &ctx.solver_string_vars)
+        {
+            ctx.solver_string_vars.insert(sym.clone());
+            assumptions.push(format!("(= {} {})", smt_var(&sym), string_expr_to_smt(fexpr)));
+        } else if let Expr::StructLiteral {
+            name: nested_sname,
+            fields: nested_fields,
+            ..
+        } = fexpr.as_ref()
+        {
+            // NESTED struct field `p.a = A{b: ..}`: recurse so `p.a.b` is seeded at the deeper mangle
+            // path. Gate on the field's DECLARED type matching the literal's struct (a mismatch or an
+            // unknown type declines → the nested facts simply aren't seeded, fail-open).
+            if fty.as_str() == nested_sname.as_str()
+                && ctx.struct_fields.contains_key(nested_sname)
+            {
+                seed_struct_literal_fields(ctx, assumptions, &sym, nested_sname, nested_fields);
+            }
+        }
+    }
+}
+
 // Threads the full intraprocedural analysis state (scope, symbols, effects, solver assumptions, ctx);
 // bundling into a struct would obscure the borrow pattern for no gain.
 fn analyze_stmts(
@@ -2821,66 +2902,14 @@ fn analyze_stmts(
                 // field whose value ENCODES is registered (else it declines → fail-open, no free-var strand).
                 if let Expr::StructLiteral { name: sname, fields, .. } = init {
                     if !ctx.reassigned_roots.contains(name) && !ctx.shadowed_lets.contains(name) {
-                        if let Some(field_tys) = ctx.struct_fields.get(sname).cloned() {
-                            for (fname, fexpr) in fields {
-                                let Some(fty) = field_tys.get(fname) else {
-                                    continue;
-                                };
-                                // VALUE-STABILITY gate (review Finding 1 — the stranded-field over-reject):
-                                // the field DEFINING fact `(= sym <smt(fexpr)>)` rides `assumptions`, so a
-                                // frame sweep drops it when a variable it MENTIONS is written — but the
-                                // mangled field symbol stays registered, leaving a FREE var that makes a
-                                // valid `assert(p.f == ..)` unprovable → over-rejection (`let p = P{v:x}; x =
-                                // 10; assert(p.v == 5)` runs clean but check rejected). A struct field copies
-                                // its value AT CONSTRUCTION (value semantics), so the fact is faithful only
-                                // if it can never be dropped: register ONLY when no variable in the value
-                                // expr is reassigned or shadowed anywhere in the body (a literal, or a value
-                                // over stable vars). Otherwise fail-open (unmodeled), exactly as pre-slice.
-                                let mut fvars = BTreeSet::new();
-                                collect_expr_vars(fexpr, &mut fvars);
-                                if fvars.iter().any(|v| {
-                                    ctx.reassigned_roots.contains(v) || ctx.shadowed_lets.contains(v)
-                                }) {
-                                    continue;
-                                }
-                                let sym = mangle_field(name, fname);
-                                if is_integer_ty(fty)
-                                    && is_int_modelable(fexpr, &ctx.solver_int_vars)
-                                {
-                                    if let Some(vs) = expr_to_smt_value(fexpr, &ctx.symbolic_widths) {
-                                        ctx.solver_int_vars.insert(sym.clone());
-                                        ctx.symbolic_widths.insert(sym.clone(), 64);
-                                        assumptions.push(format!("(= {} {})", smt_var(&sym), vs));
-                                    }
-                                } else if is_float_ty(fty)
-                                    && is_float_modelable(fexpr, &ctx.solver_float_vars)
-                                    && !is_int_modelable(fexpr, &ctx.solver_int_vars)
-                                {
-                                    // `!is_int_modelable` (matching the float-`let` `genuinely_float` gate and
-                                    // the field-WRITE branch): an INT-KINDED field value — a bare integer
-                                    // literal `let p = P{x: 7}` for an `f64` field — is stored as `Int(7)` at
-                                    // runtime (no int→float coercion on the struct store), so `p.x / 2` is
-                                    // integer division. Seeding it as float `7.0` here was a false accept
-                                    // (hunt-found, the read-side twin of the write hole). Only a genuinely
-                                    // float-kinded value is float-seeded; an all-int value defers.
-                                    ctx.solver_float_vars.insert(sym.clone());
-                                    assumptions.push(format!(
-                                        "(= {} {})",
-                                        smt_var(&sym),
-                                        float_expr_to_smt(fexpr)
-                                    ));
-                                } else if fty.as_str() == "string"
-                                    && is_string_modelable(fexpr, &ctx.solver_string_vars)
-                                {
-                                    ctx.solver_string_vars.insert(sym.clone());
-                                    assumptions.push(format!(
-                                        "(= {} {})",
-                                        smt_var(&sym),
-                                        string_expr_to_smt(fexpr)
-                                    ));
-                                }
-                            }
-                        }
+                        // Seed each modelable scalar field's `mangle_field` fact — RECURSIVELY, so a nested
+                        // `let p = P{a: A{b: 5}}` also seeds `p.a.b`; a later `p.a.b` read resolves to the
+                        // same symbol via `field_access_symbol`. Gated on the whole binding being neither
+                        // reassigned nor shadowed (above): ANY write to `p` at any level (`p =`, `p.a =`,
+                        // `p.a.b =`) puts `p` in `reassigned_roots` → not seeded, so this READ modeling needs
+                        // NO field-fact invalidation (a written base simply fail-opens). The per-field
+                        // value-stability gate lives in the helper (unchanged from the single-level seed).
+                        seed_struct_literal_fields(ctx, assumptions, name, sname, fields);
                     }
                 }
                 // A `let` INITIALIZER can hide a write to an OUTER variable in an `if`/`match`/block
@@ -5628,6 +5657,10 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
             // by a `requires` (see the has_contract registration). An unregistered field is unmodeled
             // (fail-open), so this can only strengthen checking, never over-reject an unseeded field.
             Expr::Var(v) => int_vars.contains(&mangle_field(v, field)),
+            // NESTED `p.a.b`: resolve the whole field path (the `Var` arm is the single-level `p.a`).
+            Expr::FieldAccess { .. } => {
+                field_access_symbol(base).is_some_and(|bs| int_vars.contains(&mangle_field(&bs, field)))
+            }
             _ => false,
         },
         // A bare array literal is a sequence value, not an integer — not int-modelable.
@@ -5683,7 +5716,8 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
         // A float field `p.field` off a struct VAR — modelable IFF registered (a struct param's float
         // field constrained by a `requires`). Mirrors the int/string field arms.
         Expr::FieldAccess { base, field, .. } => {
-            matches!(base.as_ref(), Expr::Var(v) if float_vars.contains(&mangle_field(v, field)))
+            // Single-level `p.a` OR nested `p.a.b` — resolve the whole field path to its symbol.
+            field_access_symbol(base).is_some_and(|bs| float_vars.contains(&mangle_field(&bs, field)))
         }
         _ => false,
     }
@@ -5737,12 +5771,12 @@ fn float_expr_to_smt(e: &Expr) -> String {
             format!("({f} RNE {l} {r})")
         }
         Expr::Unary { expr, .. } => format!("(fp.neg {})", float_expr_to_smt(expr)),
-        Expr::FieldAccess { base, field, .. } => match base.as_ref() {
-            // A registered struct-param float field → its canonical mangled symbol (gated by
-            // is_float_modelable's FieldAccess arm, so an unregistered field never reaches here).
-            Expr::Var(v) => smt_var(&mangle_field(v, field)),
-            _ => "((_ to_fp 11 53) RNE 0.0)".to_string(),
-        },
+        // A registered struct float field (single-level or nested `p.a.b`) → its canonical mangled
+        // symbol (gated by is_float_modelable's FieldAccess arm, so an unregistered field never reaches
+        // here). field_access_symbol resolves the whole path; a non-place base falls to the 0.0 default.
+        Expr::FieldAccess { base, field, .. } => field_access_symbol(base)
+            .map(|bs| smt_var(&mangle_field(&bs, field)))
+            .unwrap_or_else(|| "((_ to_fp 11 53) RNE 0.0)".to_string()),
         Expr::Declassify { inner, .. } => float_expr_to_smt(inner),
         _ => "((_ to_fp 11 53) RNE 0.0)".to_string(),
     }
@@ -5824,7 +5858,8 @@ fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
         // A string field `p.field` off a struct VAR — modelable IFF registered (a struct param's string
         // field constrained by a `requires`). Mirrors the int/float field arms.
         Expr::FieldAccess { base, field, .. } => {
-            matches!(base.as_ref(), Expr::Var(v) if string_vars.contains(&mangle_field(v, field)))
+            // Single-level `p.a` OR nested `p.a.b` — resolve the whole field path to its symbol.
+            field_access_symbol(base).is_some_and(|bs| string_vars.contains(&mangle_field(&bs, field)))
         }
         Expr::Declassify { inner, .. } => is_string_modelable(inner, string_vars),
         _ => false,
@@ -5916,12 +5951,12 @@ fn string_expr_to_smt(e: &Expr) -> String {
                 as_nonneg_int_lit(&args[2]).unwrap_or(0)
             )
         }
-        Expr::FieldAccess { base, field, .. } => match base.as_ref() {
-            // A registered struct-param string field → its canonical mangled symbol (gated by
-            // is_string_modelable's FieldAccess arm, so an unregistered field never reaches here).
-            Expr::Var(v) => smt_var(&mangle_field(v, field)),
-            _ => "\"\"".to_string(),
-        },
+        // A registered struct string field (single-level or nested `p.a.b`) → its canonical mangled
+        // symbol (gated by is_string_modelable's FieldAccess arm). field_access_symbol resolves the whole
+        // path; a non-place base falls to the empty-string default.
+        Expr::FieldAccess { base, field, .. } => field_access_symbol(base)
+            .map(|bs| smt_var(&mangle_field(&bs, field)))
+            .unwrap_or_else(|| "\"\"".to_string()),
         Expr::Declassify { inner, .. } => string_expr_to_smt(inner),
         _ => "\"\"".to_string(),
     }
@@ -6311,12 +6346,15 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
                 }
                 Some(expr_to_smt(e, widths))
             }
-            // A registered struct-param integer field → its canonical symbol (present in `widths` with
-            // width 64 when registered; an unregistered field declines, so the anti-launder value check
-            // stays fail-open on it).
+            // A registered struct integer field (single-level or nested `p.a.b`) → its canonical symbol
+            // (present in `widths` with width 64 when registered; an unregistered field declines, so the
+            // anti-launder value check stays fail-open on it).
             Expr::Var(v) if widths.contains_key(&mangle_field(v, field)) => {
                 Some(smt_var(&mangle_field(v, field)))
             }
+            Expr::FieldAccess { .. } => field_access_symbol(base)
+                .filter(|bs| widths.contains_key(&mangle_field(bs, field)))
+                .map(|bs| smt_var(&mangle_field(&bs, field))),
             _ => None,
         },
         Expr::Cast { expr, ty } => {
@@ -6463,11 +6501,15 @@ fn expr_to_smt_with_width(
                 .find(|(n, _)| n == field)
                 .map(|(_, v)| expr_to_smt_with_width(v, widths, expected_width))
                 .unwrap_or_else(|| "(_ bv0 64)".into()),
-            // A registered struct-param integer field → its canonical symbol (only reached for a
-            // registered field, since is_int_modelable gates the obligation upstream).
+            // A registered struct integer field (single-level or nested `p.a.b`) → its canonical symbol
+            // (only reached for a registered field, since is_int_modelable gates the obligation upstream).
             Expr::Var(v) if widths.contains_key(&mangle_field(v, field)) => {
                 smt_var(&mangle_field(v, field))
             }
+            Expr::FieldAccess { .. } => field_access_symbol(base)
+                .filter(|bs| widths.contains_key(&mangle_field(bs, field)))
+                .map(|bs| smt_var(&mangle_field(&bs, field)))
+                .unwrap_or_else(|| "(_ bv0 64)".into()),
             _ => "(_ bv0 64)".into(),
         },
         Expr::TaintSource { label } => format!("taint_source_{}", label.replace("\"", "")),
