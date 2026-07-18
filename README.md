@@ -1,6 +1,32 @@
 # Anubis
 
-**Anubis** is being built as an evidence-native dual-use systems language for professional bug bounty hunters (Sicarii) and builders of sovereign, high-assurance systems.
+**Anubis** is being built as an evidence-native dual-use systems language for professional bug bounty hunters (Sicarii) and builders of sovereign, high-assurance systems. The core bet: **a green `anubis check` must never certify a contract the runtime `anubis run` violates** — soundness is the product, and every claim below is checkable, not just asserted.
+
+## Where Anubis is — honest phase status
+
+Anubis follows an 11-phase maturity arc; the canonical source of truth is
+[`docs/language/ROADMAP.md`](docs/language/ROADMAP.md). Status uses a graded vocabulary —
+**REAL** (implemented **and** gated), **PARTIAL** (real slices landed, honest boundaries, fails
+closed on the rest), **PLANNED**. Nothing here is marked done that isn't sealed.
+
+| Phase | State | What that means today |
+|---|---|---|
+| 0 — Trust spine | ✅ REAL | reproducible build + self-host bootstrap + byte-identical fixpoint seal (`dc680001`) |
+| 1 — Real type system | ✅ REAL | bidirectional inference, captured generics, traits + coherence — all enforcing |
+| 2 — Capability & effect | ✅ REAL | transitive effect inference, linear capability tokens, and the **lethal trifecta as a compile error** |
+| 3 — Broaden verified surface | 🟡 PARTIAL (converging) | Z3 contract lanes for int / float / string / bounded arrays / loop invariants / struct fields; **every case outside the modeled fragment fails closed** |
+| 4 — Port checker into Anubis | ⬜ PLANNED | deliberately deferred until 1–3 settle (each port would reseal the fixpoint) |
+| 5 — Mechanized soundness | 🟡 PARTIAL (live) | a **Lean 4 formal gate** — 72 machine-checked theorems: SMT-encoding soundness (the checker's bit-vector terms = the runtime's `i64` semantics), plus Safe-mode **non-interference** and **effect soundness** over a core calculus. Verify it yourself: `bash scripts/run_formal_gate.sh` |
+| 6 — Proof-carrying packages | 🟡 PARTIAL | signed evidence bundles — source Merkle root, effect/taint summaries, receipts (`compiler/src/package/`) |
+| 7 — Minimize TCB | ⬜ PLANNED | a second **independently-authored** parser + backend — closing author-diversity needs a second human |
+| 8 — Developer experience | 🟡 PARTIAL | LSP, formatter, REPL, doc-gen, tree-sitter grammar, tutorial, spec |
+| 9 — External reproduction | 🟡 PARTIAL | reproducibility + differential-compiler gates exist; independent-stranger reproduction is the pending step |
+| 10 — Production 1.0 | ⬜ PLANNED | ship in ≥2 domains + a frozen, semver'd 1.0 spec |
+
+**Watch it happen.** This repo is a live, minute-by-minute public record: every commit lands on the
+`a-plus-maturity/20260705-1649` branch within seconds of being made. The discipline is auditable, not
+advertised — `bash scripts/run_formal_gate.sh` machine-checks the Lean proofs, and every solver slice
+is sealed against a byte-identical self-host fixpoint before it is allowed to commit.
 
 ## v0.2 Backend Status
 - Dual safe (default) / research/exploit modes with intent annotations
@@ -27,7 +53,7 @@
 
 See `docs/spec.md`, `docs/APPLE_NATIVE.md`, `docs/language/POC_KIT.md`, `docs/adr/`, `examples/`, and run `cargo test -p anubis-compiler`.
 
-## Learn Anubis (Phase 7 — developer experience)
+## Learn Anubis (developer experience — Phase 8)
 
 Verification-first adoption path:
 
@@ -47,7 +73,7 @@ cargo build --release -p anubis
 bash scripts/run_dx_gate.sh out/dx_gate   # DX_GATE: PASS
 ```
 
-### Self-hosting (Phase 8 — Anubis-SH)
+### Self-hosting bootstrap (Anubis-SH — trust spine; porting the *checker* into it is Phase 4)
 
 The compiler subset that compiles itself lives in `selfhost/`. The gate runs a **real bootstrap** (stage0 host → stage1 → stage2 → stage3, `cmp` stage2/stage3), not host×2:
 

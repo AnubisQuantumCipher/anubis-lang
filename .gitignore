@@ -41,3 +41,12 @@ secrets/
 # Temporary
 tmp/
 *.tmp
+
+# Editor extension deps (install via npm install in editors/*)
+editors/**/node_modules/
+
+# Ammit evidence deck — local machine-produced artifacts (test reports), never committed
+.ammit/
+
+# Claude Code session data — transcripts, worktrees, workflow scripts (never publish)
+.claude/
