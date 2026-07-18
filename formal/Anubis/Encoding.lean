@@ -44,6 +44,19 @@ theorem enc_and (x y : Word) : x &&& y = BitVec.and x y := rfl
 theorem enc_or  (x y : Word) : x ||| y = BitVec.or  x y := rfl
 theorem enc_xor (x y : Word) : x ^^^ y = BitVec.xor x y := rfl
 
+/-! ### Signed comparisons: encoder = runtime
+
+The runtime's i64 `<` and `<=` are SIGNED comparisons — the two's-complement value order that
+`BitVec.toInt` denotes. The encoder emits `bvslt`/`bvsle` (the checker uses SIGNED bit-vector
+comparisons for `<`/`<=`, matching i64 — a 32-bit unsigned model was proven unsound). They coincide,
+so an `ensures`/`requires` comparison the solver proves holds over the runtime's i64 ordering. -/
+
+/-- `bvslt` (encoder) = signed i64 `<` (runtime), both the `toInt` order. -/
+theorem enc_slt (x y : Word) : x.slt y = decide (x.toInt < y.toInt) := BitVec.slt_eq_decide
+
+/-- `bvsle` (encoder) = signed i64 `≤` (runtime). -/
+theorem enc_sle (x y : Word) : x.sle y = decide (x.toInt ≤ y.toInt) := BitVec.sle_eq_decide
+
 /-! ### A1 unsigned-param boundary mask soundness (commit 4ce6537)
 
 `anubis_coerce_uint_param` masks a `u32` parameter to its low 32 bits at the runtime boundary. The
@@ -56,6 +69,13 @@ def u32Mask : Word := 0xFFFFFFFF
 
 /-- `0xFFFFFFFF` denotes exactly `2^32 - 1`. -/
 theorem u32Mask_toNat : u32Mask.toNat = 2^32 - 1 := by decide
+
+/-- **The mask IS reduction mod 2^32.** `anubis_coerce_uint_param` computes `n & 0xFFFFFFFF`, which
+    this proves equals `n mod 2^32` — so the runtime boundary genuinely reduces a u32 parameter modulo
+    `2^32`, the semantics the "u32 ∈ [0, 2^32)" contract and the SPEC's integer section both assert. -/
+theorem u32_mask_eq_mod (x : Word) : (x &&& u32Mask).toNat = x.toNat % 2^32 := by
+  rw [BitVec.toNat_and, u32Mask_toNat]
+  exact Nat.and_two_pow_sub_one_eq_mod x.toNat 32
 
 /-- **A1 upper bound.** A masked u32 param is `< 2^32` — the sound justification for the injected
     `bvsle x (2^32-1)`. Proof: `(x &&& mask).toNat = x.toNat &&& (2^32-1)`, and `&&&` with a value
