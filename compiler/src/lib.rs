@@ -3741,6 +3741,81 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_callsite_f64_param_coercion_rounding_discharge() {
+        // SOUNDNESS (task #40): `anubis_coerce_float_param` (run.rs) coerces an INTEGER argument into an
+        // f64 param via `n as f64`, which ROUNDS (round-to-even) when |n| > 2^53. The call-site `requires`
+        // discharge substituted the RAW integer arg and proved it in the EXACT integer lane, so
+        // `g(2^53+1)` certified `requires(x > 2^53)` while the runtime coerces the arg to 2^53 — a
+        // check-accept / run-trap false accept (the runtime violates the precondition, trapping a mirroring
+        // body `assert`). The fix models the coercion at the call site: an integer arg into an f64 param is
+        // substituted by its RUNTIME-COERCED value (const-foldable) or discharged fail-closed (symbolic).
+        // OBLIGATION-level facts → check through the SOLVER (check_obligations), not `tc_ok` (LESSON 33).
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // 2^53 = 9007199254740992. The literal 2^53+1 rounds to 2^53 under `n as f64`, which does NOT
+        // satisfy `x > 2^53` — the precondition is violated at runtime, so the discharge must FAIL.
+        assert!(
+            !discharged("fn g(x: f64) requires(x > 9007199254740992) {} fn main() { g(9007199254740993); }"),
+            "an int arg that ROUNDS across the callee's f64 requires (2^53+1 -> 2^53) must be rejected"
+        );
+        // 2^53+2 IS exactly representable and satisfies `x > 2^53` after coercion — must still ACCEPT.
+        assert!(
+            discharged("fn g(x: f64) requires(x > 9007199254740992) {} fn main() { g(9007199254740994); }"),
+            "an exactly-representable int arg satisfying the f64 requires (2^53+2) still discharges"
+        );
+        // The == boundary: 2^53 does NOT satisfy `> 2^53` (a control that the coercion model did not
+        // spuriously flip a true rejection into an accept).
+        assert!(
+            !discharged("fn g(x: f64) requires(x > 9007199254740992) {} fn main() { g(9007199254740992); }"),
+            "the arg exactly equal to the bound does not satisfy `>` (control rejection)"
+        );
+        // A const-foldable int-ARITHMETIC arg is folded to its runtime i64 value THEN coerced — `2^53 + 1`
+        // rounds identically and must reject; `2^53 + 2` is exact and accepts.
+        assert!(
+            !discharged("fn g(x: f64) requires(x > 9007199254740992) {} fn main() { g(9007199254740992 + 1); }"),
+            "a const-foldable int-arithmetic arg is coerced at its folded value (2^53+1 -> 2^53) → reject"
+        );
+        assert!(
+            discharged("fn g(x: f64) requires(x > 9007199254740992) {} fn main() { g(9007199254740992 + 2); }"),
+            "a const-foldable int-arithmetic arg that is exact (2^53+2) still discharges"
+        );
+        // A SYMBOLIC integer variable into an f64 param cannot be bounded below 2^53 here, so its coercion
+        // MAY round it across the bound — discharged fail-closed even when the caller's own `requires` makes
+        // it look satisfiable in the exact integer lane (the pre-fix symbolic false accept).
+        assert!(
+            !discharged("fn g(x: f64) requires(x > 9007199254740992) {} fn f(k: i64) requires(k > 9007199254740992) { g(k); } fn main() { f(9007199254740994); }"),
+            "a symbolic int var into an f64 param is discharged fail-closed (coercion may round across the bound)"
+        );
+        // A small genuine int arg into an f64 param is UNCHANGED — the exact coercion (|n| <= 2^53, lossless)
+        // keeps the existing sound accept (no over-rejection of the common case).
+        assert!(
+            discharged("fn g(x: f64) requires(x > 2.0) {} fn main() { g(3); }"),
+            "a small int arg into an f64 param (lossless coercion) still discharges — no over-rejection"
+        );
+        // A GENUINE FLOAT arg is untouched by the coercion model (a Float passes through) — still discharges.
+        assert!(
+            discharged("fn g(x: f64) requires(x > 2.0) {} fn main() { g(3.5); }"),
+            "a genuine float arg into an f64 param is unchanged and still discharges"
+        );
+        // HONEST completeness note: the symbolic path models the coerced param as an ARBITRARY f64 (a fresh
+        // unconstrained float var), so ANY non-trivial requires — including a sound loose bound like
+        // `x > 0.0` with a provably-positive int — is (conservatively) OVER-REJECTED. This is a completeness
+        // loss, NOT unsound: we cannot bound the coerced value below 2^53 here, and the fresh-FLOAT model is
+        // required to catch a FRACTIONAL bound like `x > 2^53.5` (a fresh INT var leaves that clause
+        // cross-lane-unmodelable → a false accept, hunt p10). A future bounds-aware refinement proving
+        // |k| <= 2^53 (exact coercion) may flip this to an accept — update as an improvement (LESSON 20).
+        assert!(
+            !discharged("fn g(x: f64) requires(x > 0.0) {} fn f(k: i64) requires(k > 0 && k < 100) { g(k); } fn main() { f(5); }"),
+            "a symbolic int var into an f64 param is over-rejected (arbitrary-f64 model) — conservative, sound, documented"
+        );
+    }
+
+    #[test]
     fn phase3_divisor_gate_no_false_model_on_beyond_i64_divisor() {
         // SOUNDNESS (hunt a1250c79): `divisor_is_proven_nonzero` is consulted by the INTEGER `/`/`%` QF_BV
         // lane. An interim float-% cut added an f64-parse branch to it (to "prove" float divisors non-zero),

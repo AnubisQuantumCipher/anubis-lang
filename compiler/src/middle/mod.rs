@@ -1883,8 +1883,65 @@ fn discharge_call_requires(
     if pnames.len() != args.len() {
         return true;
     }
-    let sub: BTreeMap<String, Expr> =
-        pnames.iter().cloned().zip(args.iter().cloned()).collect();
+    // #40 — CALL-SITE f64-PARAM COERCION ROUNDING. `anubis_coerce_float_param` (run.rs) coerces an INTEGER
+    // argument into an f64 param via `n as f64`, which ROUNDS (round-to-even) when |n| > 2^53. Substituting
+    // the RAW integer arg and discharging the callee's `requires` in the EXACT integer lane certified
+    // `g(2^53+1)` against `requires(x > 2^53)` while the runtime coerces the arg to 2^53 — violating the
+    // precondition and trapping a mirroring body `assert` (a check-accept / run-trap false accept). Model
+    // the coercion per float-typed param:
+    //   * a genuine float arg (float var/literal/arith, or a float-returning call) is UNCHANGED — a Float
+    //     value passes the coercion through untouched, so the existing float-lane model is already exact;
+    //   * a const-foldable integer arg is replaced by its RUNTIME-COERCED value `n as f64` (rendered back as
+    //     an i64 literal — `n as f64` is integer-valued), so the exact case (|n| <= 2^53, coercion lossless)
+    //     is unchanged while a rounding case (|n| > 2^53) is modeled at its rounded value and rejects;
+    //   * a SYMBOLIC integer arg (an int var / int arithmetic — cannot be bounded below 2^53 here) is
+    //     replaced by a FRESH UNCONSTRAINED FLOAT var (an "arbitrary f64") so the precondition cannot be
+    //     proved — fail-closed reject (over-rejects only the exotic int-var-into-f64-param-with-requires
+    //     shape; sound: the runtime may round it across the bound). An OPAQUE arg (a non-float
+    //     call/index/field) is left unchanged and keeps its existing (unmodeled → deferred) behavior, so
+    //     this never over-rejects a call result.
+    let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
+    let mut havoc_names: Vec<String> = Vec::new();
+    let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+    for (i, (pname, arg)) in pnames.iter().zip(args.iter()).enumerate() {
+        let is_float_param = ptypes.get(i).map(|t| t == "f64").unwrap_or(false);
+        let float_returning_call = matches!(arg, Expr::Call { callee: c, .. }
+            if ctx.fn_ret_types.get(c).map(|t| t == "f64").unwrap_or(false));
+        if is_float_param
+            && !is_genuinely_float(arg, &ctx.solver_float_vars)
+            && !float_returning_call
+        {
+            // The fail-closed model of an unknown coerced param is a FRESH UNCONSTRAINED FLOAT var (`hv`) —
+            // the param is "some arbitrary f64", so the requires clause (int- OR float-bounded) routes to the
+            // QF_FP lane and is unprovable → reject. (A fresh INT var instead leaves a float-literal bound
+            // like `x > 2^53.5` cross-lane-unmodelable → it would DEFER to a false accept — hunt p10.)
+            let hv = format!("anb_c40h_{i}");
+            if let Some(v) = const_fold_i64(arg) {
+                if v.unsigned_abs() > (1u64 << 53) {
+                    // Coercion rounds: model the runtime's `v as f64`. It is integer-valued; render it as an
+                    // i64 literal when it lands back in range (every realistic magnitude, incl. 2^53±). A
+                    // value that rounds up to exactly 2^63 (only near i64::MAX) cannot be rendered — havoc it.
+                    let coerced = v as f64;
+                    if coerced.abs() < 9223372036854775808.0 {
+                        sub.insert(pname.clone(), Expr::Literal((coerced as i64).to_string()));
+                        continue;
+                    }
+                    ctx.solver_float_vars.insert(hv.clone());
+                    havoc_names.push(hv.clone());
+                    sub.insert(pname.clone(), Expr::Var(hv));
+                    continue;
+                }
+                // |v| <= 2^53: coercion is lossless (`v as f64 == v`) — leave the arg unchanged, the exact
+                // int/float-lane model is already sound (zero behavioral change on the common case).
+            } else if references_int_var(arg, &ctx.solver_int_vars) {
+                ctx.solver_float_vars.insert(hv.clone());
+                havoc_names.push(hv.clone());
+                sub.insert(pname.clone(), Expr::Var(hv));
+                continue;
+            }
+        }
+        sub.insert(pname.clone(), arg.clone());
+    }
     // CROSS-CALL shadow scope (review Finding: a caller-local shadow leaking into the callee's requires):
     // the callee's `requires` resolves its builtin tokens (`abs`/`min`/`max`/`len`/`contains`/…) in the
     // CALLEE's scope, not the caller's. A CALLER-LOCAL shadow — a param/`let` named `max` in THIS function —
@@ -2050,6 +2107,11 @@ fn discharge_call_requires(
     }
     for name in restore_str_builtin {
         ctx.solver_string_vars.insert(shadow_builtin_mark(name));
+    }
+    // Remove the fresh unconstrained FLOAT havoc vars minted for symbolic-int / overflow float-param args
+    // (#40); they exist only to force the precondition obligation to fail for this discharge.
+    for hv in havoc_names {
+        ctx.solver_float_vars.remove(&hv);
     }
     all_requires_checkable
 }
@@ -5969,6 +6031,42 @@ fn int_chain_exact(e: &Expr) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+/// Exact i64 value of an ALL-INTEGER-literal arithmetic argument, mirroring the runtime's integer
+/// evaluation (`anubis_add`/`sub`/`mul`/`div`/`rem` over `Int` values, truncating `/` and `%`). UNLIKE
+/// `int_chain_exact` this is NOT gated to |v| <= 2^53 — the whole point (task #40) is to obtain the exact
+/// integer the runtime computes BEFORE `anubis_coerce_float_param` rounds it to f64, so a value beyond
+/// 2^53 must be returned (its coercion is what we then model). Returns None on a non-int-literal leaf, an
+/// unmodeled op, i64 overflow (`checked_*`), or division/remainder by zero (a runtime trap).
+fn const_fold_i64(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Literal(l) => l.parse::<i64>().ok(),
+        Expr::Binary { op, lhs, rhs } => {
+            let a = const_fold_i64(lhs)?;
+            let b = const_fold_i64(rhs)?;
+            match op.as_str() {
+                "+" => a.checked_add(b),
+                "-" => a.checked_sub(b),
+                "*" => a.checked_mul(b),
+                "/" => a.checked_div(b), // None on b==0 or i64::MIN / -1 — both runtime traps
+                "%" => a.checked_rem(b),
+                _ => None,
+            }
+        }
+        Expr::Unary { op, expr } if op == "-" => const_fold_i64(expr).and_then(i64::checked_neg),
+        _ => None,
+    }
+}
+
+/// True when `e` mentions at least one variable the solver tracks as an integer — i.e. `e` is a SYMBOLIC
+/// integer term (an int param/`let`, or arithmetic over them), not a pure literal and not a genuine float.
+/// Used at a call site (task #40) to detect an integer VARIABLE flowing into an f64 param, whose runtime
+/// coercion `n as f64` may round it across the callee's `requires` — that case is discharged fail-closed.
+fn references_int_var(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    vars.iter().any(|v| int_vars.contains(v))
 }
 
 fn is_genuinely_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
