@@ -67,6 +67,7 @@ inductive Expr where
   | prim (e : Effect)
   | seq (a b : Expr)
   | cond (c : Nat) (a b : Expr)
+  | call (body : Expr)            -- invoke a callee whose body is `body` (transitive effects)
   deriving Repr
 
 /-! ### The inferred effect SET
@@ -123,6 +124,7 @@ def infer : Expr → List Effect
   | .prim e     => [e]
   | .seq a b    => union (infer a) (infer b)
   | .cond _ a b => union (infer a) (infer b)
+  | .call body  => infer body      -- TRANSITIVE: the caller inherits all of the callee's effects
 
 /-! ### The operational effect semantics
 
@@ -139,6 +141,8 @@ inductive PerformsIn (w : Nat → Bool) : Expr → Effect → Prop where
       w c = true → PerformsIn w a f → PerformsIn w (.cond c a b) f
   | condF {c : Nat} {a b : Expr} {f : Effect} :
       w c = false → PerformsIn w b f → PerformsIn w (.cond c a b) f
+  | call {body : Expr} {f : Effect} :
+      PerformsIn w body f → PerformsIn w (.call body) f
 
 /-- "Some evaluation of `e` triggers `f`" — the world-free effect judgment (the requested
     `performs : Expr → Effect → Prop`), obtained by existentially closing over the runtime world. -/
@@ -159,6 +163,7 @@ theorem infer_sound_run {w : Nat → Bool} {e : Expr} {f : Effect} :
   | seqR _ ih => exact (mem_union _ _ _).mpr (Or.inr ih)
   | condT _ _ ih => exact (mem_union _ _ _).mpr (Or.inl ih)
   | condF _ _ ih => exact (mem_union _ _ _).mpr (Or.inr ih)
+  | call _ ih => exact ih   -- infer (call body) = infer body, so the callee's effect carries up
 
 /-- World-free corollary: `Performs e f → f ∈ infer e`. -/
 theorem infer_sound {e : Expr} {f : Effect} : Performs e f → f ∈ infer e := by
@@ -250,5 +255,26 @@ theorem infer_nodup (e : Expr) : (infer e).Nodup := by
   | prim e => exact List.nodup_cons.mpr ⟨by simp, List.nodup_nil⟩
   | seq a b iha ihb => exact nodup_union (infer a) (infer b) ihb
   | cond c a b iha ihb => exact nodup_union (infer a) (infer b) ihb
+  | call body ih => exact ih
+
+/-! ### Transitive effect inference: the caller inherits the callee's effects -/
+
+/-- **Transitive effect inference is sound.** A caller that invokes a callee `body` inherits ALL of
+    the callee's effects: if the callee can perform `f`, then `f` is in the CALLER's inferred set.
+    This mechanizes Anubis's transitive effect-inference discipline (Phase 2) — the effect check
+    does not stop at a function boundary; a called function's effects flow into the caller's
+    `inferred` set. -/
+theorem infer_transitive {body : Expr} {f : Effect} :
+    Performs body f → f ∈ infer (.call body) := by
+  rintro ⟨w, h⟩
+  exact infer_sound_run (PerformsIn.call h)
+
+/-- **The gate is TRANSITIVELY sound.** If the CALLER passes `inferred ⊆ declared`, then every
+    effect the callee performs THROUGH the call is declared by the caller — so a green build cannot
+    hide an undeclared effect behind a function call. This is the transitive face of `gate_sound`. -/
+theorem gate_sound_transitive {body : Expr} {declared : List Effect} {f : Effect} :
+    Subseteq (infer (.call body)) declared → Performs body f → f ∈ declared := by
+  intro hsub hperf
+  exact hsub f (infer_transitive hperf)
 
 end Anubis.EffectSoundness
