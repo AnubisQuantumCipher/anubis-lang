@@ -5689,6 +5689,28 @@ fn main() {
             .expect("a clean var-bound closure applied directly is accepted");
         tc_ok(r#"fn main() uses(fs.write) { let g = |x| write_file("o", "d"); g(0); }"#)
             .expect("a var-bound closure whose fs.write IS declared is accepted");
+
+        // INTERPROC (task #48, broad-hunt FP2): a RETURNED closure — a function whose tail value is a lambda
+        // capturing its param, whose result is bound and applied. The callee's param is beta-substituted by
+        // the call arg into the returned lambda body, so `let g = make(t); g(0)` descends into
+        // `|x| sink(<the tainted arg>)` and is caught.
+        let returned = r#"
+fn make(t) { return |x| sink(t); }
+fn main() {
+    let s: tainted<u32> = symbolic();
+    let g = make(s);
+    g(0);
+}
+"#;
+        let err = tc_ok(returned)
+            .expect_err("a returned closure capturing a tainted call arg, then applied, must be rejected");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        // NON-REGRESSION: a returned closure that does nothing harmful, and one whose effect is declared,
+        // are accepted (the substitution + descent enforce, they do not over-reject).
+        tc_ok("fn make(t) { return |x| t; } fn main() { let g = make(5); g(0); }")
+            .expect("a returned closure that does not egress is accepted");
+        tc_ok(r#"fn make(t) { return |x| write_file("o", "d"); } fn main() uses(fs.write) { let g = make(5); g(0); }"#)
+            .expect("a returned closure whose fs.write IS declared is accepted");
     }
 
     #[test]

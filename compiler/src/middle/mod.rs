@@ -285,6 +285,13 @@ struct SemanticContext {
     /// grows), so no control-flow-merge hazard — the return-value over-approximation is the safe
     /// direction for a security check.
     tainting_fns: BTreeSet<String>,
+    /// Task #48: a function whose SOLE tail-returned value is a lambda literal → its (param names, returned
+    /// lambda). At `let g = make(t); g(0)` the caller binds and applies the returned closure; storing the
+    /// returned lambda (with the callee's params BETA-SUBSTITUTED by the call args) as g's `closure_lambda`
+    /// lets the #47 application descent enforce the returned closure's captured taint / effect egress — the
+    /// interproc twin of the var-bound closure fix. Single tail-lambda only (a conditional / multi-return
+    /// lambda, or a nested lambda in the body that substitute_vars will not descend, stays a residual).
+    fn_returns_lambda: BTreeMap<String, (Vec<String>, Expr)>,
     /// Interprocedural param→sink summary (Phase-3 A1): for each function, the set of formal
     /// parameter indices that can flow to a sink (builtin `is_sink`, or a call argument position
     /// that another function's summary marks as sinking) without declassify. Monotone fixpoint.
@@ -577,8 +584,24 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 effects,
                 generics,
                 generic_bounds,
+                body,
                 ..
             } => {
+                // Task #48 (FP2): record a function whose SOLE tail value is a lambda literal, so a caller
+                // binding + applying its result can descend into the returned closure (with the callee's
+                // params substituted by the call args). Skip a conditional / multi-value tail.
+                {
+                    let mut tv = Vec::new();
+                    tail_values(body, true, &mut tv);
+                    if tv.len() == 1 {
+                        if let Expr::Lambda { .. } = &tv[0] {
+                            ctx.fn_returns_lambda.insert(
+                                name.clone(),
+                                (params.iter().map(|(n, _)| n.clone()).collect(), tv[0].clone()),
+                            );
+                        }
+                    }
+                }
                 // Flat function namespace: a redefinition is an error.
                 if !ctx.all_fns.insert(name.clone()) {
                     ctx.diagnostics.push(SemanticDiagnostic {
@@ -2872,6 +2895,32 @@ fn analyze_stmts(
                 let cl: Option<Box<Expr>> = match init {
                     Expr::Lambda { .. } => Some(Box::new(init.clone())),
                     Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                    // Task #48 (FP2): `let g = make(args)` where `make` returns a lambda — bind g to the
+                    // returned closure with make's params BETA-SUBSTITUTED by the call args, so g(0) then
+                    // descends into e.g. `|x| write_file(<the tainted arg>)`. substitute_vars does not
+                    // descend into the lambda WRAPPER, so we substitute into its BODY directly (a nested
+                    // lambda in the body is not reached — a residual); the lambda's own params shadow.
+                    Expr::Call { callee, args } => {
+                        ctx.fn_returns_lambda.get(callee).and_then(|(pnames, lam)| {
+                            if pnames.len() != args.len() {
+                                return None;
+                            }
+                            if let Expr::Lambda { params: lparams, body } = lam {
+                                let mut sub: BTreeMap<String, Expr> =
+                                    pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                                for lp in lparams {
+                                    sub.remove(lp);
+                                }
+                                let new_body = substitute_vars(body, &sub);
+                                Some(Box::new(Expr::Lambda {
+                                    params: lparams.clone(),
+                                    body: Box::new(new_body),
+                                }))
+                            } else {
+                                None
+                            }
+                        })
+                    }
                     _ => None,
                 };
                 scope.insert(
