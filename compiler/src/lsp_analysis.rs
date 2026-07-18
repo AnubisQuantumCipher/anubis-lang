@@ -150,6 +150,40 @@ fn find_fn_hover(items: &[Item], name: &str) -> Option<HoverInfo> {
                         s.push_str(&format!("- ensures: `{}`\n", expr_to_src(e)));
                     }
                 }
+                // Taint & confidentiality: surface the information-flow qualifiers explicitly (the
+                // ROADMAP promises "hover shows contracts+effects+taint"). A `tainted<T>` param is
+                // untrusted input that must be `declassify`'d before a sink; a `secret<T>` param is
+                // confidential and must not reach net/shell egress without declassify. Detected on the
+                // raw annotation (`tainted<`/`secret<` prefix) — the same qualifiers the Safe-mode
+                // lethal-trifecta enforcement keys on.
+                let taint_of = |t: &str| -> Option<&'static str> {
+                    let tl = t.trim();
+                    if tl.starts_with("tainted<") {
+                        Some("tainted — untrusted input; declassify before any sink")
+                    } else if tl.starts_with("secret<") {
+                        Some("secret — confidential; must not reach net/shell egress without declassify")
+                    } else {
+                        None
+                    }
+                };
+                let mut taint_lines: Vec<String> = Vec::new();
+                for (a, t) in params {
+                    if let Some(note) = taint_of(t) {
+                        taint_lines.push(format!("- `{a}`: **{note}**"));
+                    }
+                }
+                if let Some(r) = ret {
+                    if let Some(note) = taint_of(r) {
+                        taint_lines.push(format!("- return: **{note}**"));
+                    }
+                }
+                if !taint_lines.is_empty() {
+                    s.push_str("\n**Taint & confidentiality**\n");
+                    for l in taint_lines {
+                        s.push_str(&l);
+                        s.push('\n');
+                    }
+                }
                 return Some(HoverInfo { contents: s });
             }
             Item::Module { items: inner, .. } | Item::Impl { methods: inner, .. } => {
@@ -207,5 +241,29 @@ fn main() { print(div(4, 2)); }
         let off = src.find("fn div").unwrap() + 3;
         let h = hover_at(src, off).expect("hover");
         assert!(h.contents.contains("Contracts") || h.contents.contains("requires"));
+    }
+
+    #[test]
+    fn hover_shows_taint_and_secret() {
+        // The ROADMAP promises "hover shows contracts+effects+taint" — surface the information-flow
+        // qualifiers explicitly, not just buried in the type string.
+        let src = r#"
+fn handle(q: tainted<string>, key: secret<u64>) -> tainted<string> { return q; }
+fn main() {}
+"#;
+        let off = src.find("fn handle").unwrap() + 3;
+        let h = hover_at(src, off).expect("hover");
+        assert!(
+            h.contents.contains("Taint & confidentiality"),
+            "hover should have a Taint section, got:\n{}",
+            h.contents
+        );
+        assert!(h.contents.contains("`q`") && h.contents.contains("tainted"), "tainted param shown");
+        assert!(h.contents.contains("`key`") && h.contents.contains("secret"), "secret param shown");
+        assert!(h.contents.contains("return") && h.contents.contains("tainted"), "tainted return shown");
+        // A function with NO taint qualifiers must NOT get a spurious Taint section.
+        let clean = "fn f(a: u32) -> u32 { return a; }\nfn main() {}\n";
+        let hc = hover_at(clean, clean.find("fn f").unwrap() + 3).expect("hover");
+        assert!(!hc.contents.contains("Taint & confidentiality"), "no taint section for a clean fn");
     }
 }
