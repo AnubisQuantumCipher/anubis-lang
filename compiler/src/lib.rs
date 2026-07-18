@@ -5972,6 +5972,51 @@ fn main() {
     }
 
     #[test]
+    fn closure_forwarded_through_hof_and_transitive_chains_is_enforced() {
+        // SECURITY (task #48, soundness-hunt wf_7e946a56): a closure laundered through a user forwarder
+        // that (a) forwards it to a HOF builtin, or (b) forwards it through TWO+ user fns, bypassed the
+        // #48-A descent (which caught only DIRECT application). Now `scan_applied_param_expr` marks a
+        // HOF-forward position as applied, and `compute_applies_param_fixpoint` propagates applied-ness
+        // transitively through forward edges.
+
+        // (a) HOF-forwarding: `fn runner(g){ each([1], g) }` applies g via the builtin.
+        assert!(
+            tc_ok("fn runner(g) { each([1], g); } fn main() { let t: tainted<u32> = symbolic(); let leak = |x| sink(t); runner(leak); }")
+                .is_err(),
+            "a closure forwarded to a HOF inside a user fn must be enforced (taint)"
+        );
+        assert!(
+            tc_ok(r#"fn runner(g) { each([1], g); } fn main() { let leak = |x| write_file("o","d"); runner(leak); }"#)
+                .is_err(),
+            "a closure forwarded to a HOF inside a user fn must be enforced (effect)"
+        );
+        // (b) two-hop and three-hop transitive forwarding.
+        assert!(
+            tc_ok("fn b(g) { g(0); } fn a(g) { b(g); } fn main() { let t: tainted<u32> = symbolic(); let leak = |x| sink(t); a(leak); }")
+                .is_err(),
+            "a closure laundered through TWO user fns must be enforced (taint)"
+        );
+        assert!(
+            tc_ok(r#"fn c(g) { g(0); } fn b(g) { c(g); } fn a(g) { b(g); } fn main() { let leak = |x| write_file("o","d"); a(leak); }"#)
+                .is_err(),
+            "a closure laundered through THREE user fns must be enforced (transitive fixpoint)"
+        );
+
+        // NON-REGRESSION (must NOT over-reject): clean chains, declared effects, non-applying callees,
+        // a shadowed param in the chain, and a self-forwarding recursion (fixpoint must converge).
+        tc_ok("fn b(g) { g(0); } fn a(g) { b(g); } fn main() { let g = |x| 1; a(g); }")
+            .expect("a clean closure through a forwarding chain is accepted");
+        tc_ok(r#"fn b(g) { g(0); } fn a(g) { b(g); } fn main() uses(fs.write) { let g = |x| write_file("o","d"); a(g); }"#)
+            .expect("a declared-effect closure through a chain is accepted");
+        tc_ok(r#"fn b(g) { let x = 0; } fn a(g) { b(g); } fn main() { let leak = |x| write_file("o","d"); a(leak); }"#)
+            .expect("a callee that does NOT apply the forwarded param must not trigger the descent");
+        tc_ok(r#"fn b(g) { g(0); } fn a(g) { let g = |y| 1; b(g); } fn main() { let leak = |x| write_file("o","d"); a(leak); }"#)
+            .expect("a param shadowed by a clean local before forwarding must not be marked applied");
+        tc_ok("fn rec(g, n) { if n > 0 { rec(g, n - 1); } } fn main() { let g = |x| 1; rec(g, 3); }")
+            .expect("a self-forwarding recursion must converge and not over-reject");
+    }
+
+    #[test]
     fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
         // Regression for a false negative an adversarial workflow found in the first version of this
         // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"

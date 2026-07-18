@@ -299,7 +299,18 @@ struct SemanticContext {
     /// launders through a user forwarder: `fn apply(g){g(0);} … apply(|x| write_file(..))` was accepted).
     /// UNDER-approximated: a shadowed/reassigned or lambda-captured (deferred-application) param is
     /// EXCLUDED, so a false reject is impossible — an excluded param merely leaves the hole open.
+    /// This is the FIXPOINT result (direct/HOF applies + transitive forwarding); the raw direct+edges
+    /// are collected in `register_program_surface` and closed by `compute_applies_param_fixpoint`.
     fn_applies_param: BTreeMap<String, Vec<usize>>,
+    /// Task #48 (transitive closure forwarding): the parameter indices each fn SHADOWS/reassigns — used
+    /// to gate the transitive fixpoint so a forwarded-but-shadowed param is never marked applied.
+    fn_param_shadowed: BTreeMap<String, Vec<usize>>,
+    /// Task #48 (transitive closure forwarding): forward edges `(callee, callee_arg_pos, this_param_idx)`
+    /// — "this fn passes its param `this_param_idx` to `callee` at position `callee_arg_pos`". If the
+    /// callee applies that position, this fn applies the forwarded param (a closure laundered through two
+    /// user fns: `fn a(g){ b(g) } fn b(g){ g(0) } … a(leak)`). Accurately collected (arg IS the param),
+    /// gated by `fn_param_shadowed` in the fixpoint → sound; incompleteness only leaves a hole.
+    fn_forward_edges: BTreeMap<String, Vec<(String, usize, usize)>>,
     /// Interprocedural param→sink summary (Phase-3 A1): for each function, the set of formal
     /// parameter indices that can flow to a sink (builtin `is_sink`, or a call argument position
     /// that another function's summary marks as sinking) without declassify. Monotone fixpoint.
@@ -427,6 +438,9 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     };
     // A+ pass 1: register enums + function signatures so call/match checks see the whole program.
     register_program_surface(&ast.items, &mut ctx);
+    // Task #48: close `fn_applies_param` under transitive user-fn forwarding (a closure laundered through
+    // two+ user fns), using the direct/HOF applies + forward edges collected above. Monotone → converges.
+    compute_applies_param_fixpoint(&mut ctx);
     // Trait coherence + missing-required-method, over the trait environment captured before
     // `resolve_traits` erased it. Analysis-only: emits (shadow-gated) diagnostics and reads no
     // desugaring output, so it cannot move the fixpoint.
@@ -610,21 +624,39 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         }
                     }
                 }
-                // Task #48-A: record which param positions this fn APPLIES directly at its own level
-                // (`p(...)`, not inside a deferred lambda) and never shadows/reassigns — a closure passed
-                // there is enforced at the call site (`fn_applies_param`). Under-approximated: a shadowed
-                // or lambda-captured param is excluded, so the call-site descent can never false-reject.
+                // Task #48-A / #48 transitive: record which param positions this fn APPLIES directly at
+                // its own level (`p(...)` or a HOF-forward `each([1],p)`, NOT inside a deferred lambda)
+                // and never shadows/reassigns — seed of `fn_applies_param`. Also collect the SHADOWED set
+                // and the forward EDGES (this param passed to another fn) so `compute_applies_param_fixpoint`
+                // can propagate applied-ness through user-fn forwarding chains. Under-approximated: a
+                // shadowed/lambda-captured param is excluded, so the call-site descent can never false-reject.
                 {
                     let mut applied = Vec::new();
+                    let mut shadowed = Vec::new();
                     for (i, (pname, _)) in params.iter().enumerate() {
                         let (mut applies, mut shadows) = (false, false);
                         scan_applied_param_stmts(body, pname, &mut applies, &mut shadows);
-                        if applies && !shadows {
+                        if shadows {
+                            shadowed.push(i);
+                        } else if applies {
                             applied.push(i);
                         }
                     }
                     if !applied.is_empty() {
                         ctx.fn_applies_param.insert(name.clone(), applied);
+                    }
+                    if !shadowed.is_empty() {
+                        ctx.fn_param_shadowed.insert(name.clone(), shadowed);
+                    }
+                    let pidx: BTreeMap<String, usize> = params
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (n, _))| (n.clone(), i))
+                        .collect();
+                    let mut edges = Vec::new();
+                    scan_forward_edges_stmts(body, &pidx, &mut edges);
+                    if !edges.is_empty() {
+                        ctx.fn_forward_edges.insert(name.clone(), edges);
                     }
                 }
                 // Flat function namespace: a redefinition is an error.
@@ -7787,6 +7819,17 @@ fn scan_applied_param_expr(e: &Expr, p: &str, applies: &mut bool, shadows: &mut 
             if callee == p {
                 *applies = true;
             }
+            // Task #48 (HOF-forwarding): a param passed at a higher-order-builtin closure-arg position
+            // (`each([1], p)`, `map(p, xs)`, …) IS applied by that builtin, so it counts as an
+            // application of `p` — a closure forwarded to a HOF inside a user forwarder otherwise
+            // laundered its egress (`fn runner(g){ each([1], g) } … runner(|x| write_file(..))`).
+            for &j in effects::higher_order_closure_args(callee) {
+                if let Some(Expr::Var(v)) = args.get(j) {
+                    if v == p {
+                        *applies = true;
+                    }
+                }
+            }
             for a in args {
                 scan_applied_param_expr(a, p, applies, shadows);
             }
@@ -7885,6 +7928,221 @@ fn scan_applied_param_expr(e: &Expr, p: &str, applies: &mut bool, shadows: &mut 
         Expr::Lambda { .. } => {}
         // Leaves (Var/Literal/StrLiteral/Symbolic/TaintSource/UnifiedBuffer/RawPtr/Other/…).
         _ => {}
+    }
+}
+
+/// Task #48 (transitive closure forwarding): collect forward edges `(callee, arg_pos, param_idx)` — a
+/// call in this fn's body that passes one of its own params as an argument. If the callee applies that
+/// argument position, this fn applies the forwarded param (`fn a(g){ b(g) } fn b(g){ g(0) }`). Nested
+/// lambda bodies are NOT descended (deferred). Edges are ACCURATE (the arg IS the param `Var`); the
+/// fixpoint gates them by the shadowed-param set, so a shadowed forward is never marked applied. Under-
+/// collection only leaves a laundering hole (never a false reject).
+fn scan_forward_edges_stmts(
+    body: &[Stmt],
+    pidx: &BTreeMap<String, usize>,
+    out: &mut Vec<(String, usize, usize)>,
+) {
+    use crate::frontend::ForSource;
+    for s in body {
+        match s {
+            Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+                scan_forward_edges_expr(init, pidx, out)
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                scan_forward_edges_expr(expr, pidx, out);
+                scan_forward_edges_stmts(body, pidx, out);
+            }
+            Stmt::Assign { target, value } => {
+                scan_forward_edges_expr(target, pidx, out);
+                scan_forward_edges_expr(value, pidx, out);
+            }
+            Stmt::If { cond, then, else_ } => {
+                scan_forward_edges_expr(cond, pidx, out);
+                scan_forward_edges_stmts(then, pidx, out);
+                if let Some(e) = else_ {
+                    scan_forward_edges_stmts(e, pidx, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                scan_forward_edges_expr(cond, pidx, out);
+                scan_forward_edges_stmts(body, pidx, out);
+            }
+            Stmt::Loop { body, .. } => scan_forward_edges_stmts(body, pidx, out),
+            Stmt::For {
+                source, body, ..
+            } => {
+                match source {
+                    ForSource::Range { start, end } => {
+                        scan_forward_edges_expr(start, pidx, out);
+                        scan_forward_edges_expr(end, pidx, out);
+                    }
+                    ForSource::Collection { expr } => scan_forward_edges_expr(expr, pidx, out),
+                }
+                scan_forward_edges_stmts(body, pidx, out);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                scan_forward_edges_stmts(body, pidx, out)
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                if let Some(b) = gpu {
+                    scan_forward_edges_stmts(b, pidx, out);
+                }
+                if let Some(b) = cpu {
+                    scan_forward_edges_stmts(b, pidx, out);
+                }
+                if let Some(b) = prove {
+                    scan_forward_edges_stmts(b, pidx, out);
+                }
+            }
+            Stmt::ExprStmt(e) => scan_forward_edges_expr(e, pidx, out),
+            Stmt::SpecBlock { .. } | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn scan_forward_edges_expr(
+    e: &Expr,
+    pidx: &BTreeMap<String, usize>,
+    out: &mut Vec<(String, usize, usize)>,
+) {
+    match e {
+        Expr::Call { callee, args } => {
+            for (k, a) in args.iter().enumerate() {
+                if let Expr::Var(v) = a {
+                    if let Some(&i) = pidx.get(v) {
+                        out.push((callee.clone(), k, i));
+                    }
+                }
+            }
+            for a in args {
+                scan_forward_edges_expr(a, pidx, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            scan_forward_edges_expr(callee, pidx, out);
+            for a in args {
+                scan_forward_edges_expr(a, pidx, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            scan_forward_edges_expr(lhs, pidx, out);
+            scan_forward_edges_expr(rhs, pidx, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
+            scan_forward_edges_expr(expr, pidx, out)
+        }
+        Expr::Tainted { inner, .. }
+        | Expr::Assume(inner)
+        | Expr::Assert(inner)
+        | Expr::Declassify { inner, .. }
+        | Expr::Try(inner) => scan_forward_edges_expr(inner, pidx, out),
+        Expr::Index { base, index } => {
+            scan_forward_edges_expr(base, pidx, out);
+            scan_forward_edges_expr(index, pidx, out);
+        }
+        Expr::FieldAccess { base, .. } => scan_forward_edges_expr(base, pidx, out),
+        Expr::ArrayLiteral { elements } => {
+            for el in elements {
+                scan_forward_edges_expr(el, pidx, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                scan_forward_edges_expr(v, pidx, out);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for f in fields {
+                scan_forward_edges_expr(f, pidx, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                scan_forward_edges_expr(k, pidx, out);
+                scan_forward_edges_expr(v, pidx, out);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            scan_forward_edges_expr(scrutinee, pidx, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    scan_forward_edges_expr(g, pidx, out);
+                }
+                scan_forward_edges_expr(&arm.body, pidx, out);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            scan_forward_edges_expr(cond, pidx, out);
+            scan_forward_edges_expr(then, pidx, out);
+            scan_forward_edges_expr(else_, pidx, out);
+        }
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            scan_forward_edges_expr(scrutinee, pidx, out);
+            scan_forward_edges_expr(then, pidx, out);
+            scan_forward_edges_expr(else_, pidx, out);
+        }
+        Expr::Block { stmts, tail } => {
+            scan_forward_edges_stmts(stmts, pidx, out);
+            if let Some(t) = tail {
+                scan_forward_edges_expr(t, pidx, out);
+            }
+        }
+        // Deferred body; leaves.
+        Expr::Lambda { .. } => {}
+        _ => {}
+    }
+}
+
+/// Task #48: close `fn_applies_param` under transitive forwarding. Direct/HOF applies are the seed; a
+/// forward edge `(H, k, i)` promotes param `i` of the forwarding fn to "applied" once `H` applies its
+/// position `k` — a closure laundered through two+ user fns (`fn a(g){ b(g) } fn b(g){ g(0) } … a(leak)`)
+/// is then enforced at the outer call site. Monotone (applied-ness only grows over a finite set of
+/// params) → converges; gated by `fn_param_shadowed` so a shadowed forward is never marked applied.
+fn compute_applies_param_fixpoint(ctx: &mut SemanticContext) {
+    // Collect the fns that have edges (only those can gain transitively).
+    let edge_fns: Vec<String> = ctx.fn_forward_edges.keys().cloned().collect();
+    if edge_fns.is_empty() {
+        return;
+    }
+    loop {
+        let mut changed = false;
+        for f in &edge_fns {
+            let edges = match ctx.fn_forward_edges.get(f) {
+                Some(e) => e.clone(),
+                None => continue,
+            };
+            let shadowed = ctx.fn_param_shadowed.get(f).cloned().unwrap_or_default();
+            for (callee, k, i) in edges {
+                if shadowed.contains(&i) {
+                    continue;
+                }
+                let callee_applies_k = ctx
+                    .fn_applies_param
+                    .get(&callee)
+                    .map(|v| v.contains(&k))
+                    .unwrap_or(false);
+                if !callee_applies_k {
+                    continue;
+                }
+                let entry = ctx.fn_applies_param.entry(f.clone()).or_default();
+                if !entry.contains(&i) {
+                    entry.push(i);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
 }
 
