@@ -3378,6 +3378,69 @@ fn bad() {
     }
 
     #[test]
+    fn phase4_struct_float_field_write_modeling() {
+        // Phase-3/4 (task #33): the QF_FP dual of phase4_struct_field_write_modeling — a straight-line
+        // write to a FLOAT field `p.f = v` (v float-modelable and not referencing p) registers the field's
+        // `mangle_field(p,f)` symbol in the FLOAT lane with the Float64 encoding, so a later read `p.f` is
+        // CHECKED. Same `struct_write_disqualified` gate + Rc-COW soundness as the integer branch.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // THE DEMONSTRATION: the written float value is PROVED (was fail-open before the slice).
+        assert!(
+            discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 5.0) { let mut p = P { x: 1.0 }; p.x = 5.0; return p.x; } fn main() { let r = f(); }"),
+            "a float field write proves the written value (p.x=5.0 ⇒ p.x==5.0)"
+        );
+        // A FALSE post-write ensures is DISPROVED (modeled, not deferred).
+        assert!(
+            !discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 6.0) { let mut p = P { x: 1.0 }; p.x = 5.0; return p.x; } fn main() { let r = f(); }"),
+            "a false float field write ensures is disproved (result==6.0 for p.x after p.x=5.0 rejects)"
+        );
+        // Sound float arithmetic (`+ - *` of finite floats) models; a rewrite tracks the latest value.
+        assert!(
+            discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 5.0) { let mut p = P { x: 0.0 }; p.x = 2.0 + 3.0; return p.x; } fn main() { let r = f(); }"),
+            "a modelable float arithmetic field write proves (p.x = 2.0 + 3.0 ⇒ 5.0)"
+        );
+        // SOUNDNESS: float `%` is NOT modeled (SMT `fp.rem` ≠ runtime `fmod`: 5.5%2.0 is 1.5 at runtime but
+        // -0.5 under fp.rem), so the field defers — the true runtime value must NOT be proved (fail-open).
+        assert!(
+            !discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 1.5) { let mut p = P { x: 0.0 }; p.x = 5.5 % 2.0; return p.x; } fn main() { let r = f(); }"),
+            "a float `%` field write is unmodeled (fp.rem != fmod) — the runtime value must not prove"
+        );
+        // SOUNDNESS: a whole reassign after a float field write disqualifies the base (stale must not prove).
+        assert!(
+            !discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 5.0) { let mut p = P { x: 1.0 }; p.x = 5.0; p = P { x: 9.0 }; return p.x; } fn main() { let r = f(); }"),
+            "a whole reassign after a float field write strands no stale float fact (result==5.0 must not prove)"
+        );
+        // The integer branch is unaffected — a mixed int+float struct models each field in its own lane.
+        assert!(
+            discharged("struct P { i: i64, x: f64 } fn f() -> f64 ensures(result == 3.0) { let mut p = P { i: 1, x: 1.0 }; p.i = 5; p.x = 3.0; return p.x; } fn main() { let r = f(); }"),
+            "a mixed int+float struct models each field write in its own lane"
+        );
+        // SOUNDNESS (hunt-found int-kinded-value-as-float lane confusion — the `!is_int_modelable` gate): a
+        // bare INTEGER literal or an all-integer expression written to a float field is stored as `Int` at
+        // runtime (NO int→float coercion on the field store), so `p.x / 2` is INTEGER division, not float.
+        // Modeling the field as a float was a false accept; the gate DEFERS instead — the runtime-false
+        // float value must NOT prove.
+        assert!(
+            !discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 3.5) { let mut p = P { x: 0.0 }; p.x = 7; return p.x / 2; } fn main() { let r = f(); }"),
+            "a bare int literal into a float field is Int-kinded (defers) — the float value p.x/2==3.5 must not prove"
+        );
+        assert!(
+            !discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 0.5) { let mut p = P { x: 0.0 }; p.x = 1 / 2; return p.x; } fn main() { let r = f(); }"),
+            "integer division into a float field (1/2) is Int-kinded — 0.5 must not prove (runtime int div)"
+        );
+        // …but a GENUINE float value (float literal / float division) still models — the gate admits it.
+        assert!(
+            discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 0.5) { let mut p = P { x: 0.0 }; p.x = 1.0 / 2.0; return p.x; } fn main() { let r = f(); }"),
+            "a genuine float division into a float field models (1.0/2.0 ⇒ 0.5)"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,

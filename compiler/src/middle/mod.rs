@@ -2854,7 +2854,15 @@ fn analyze_stmts(
                                     }
                                 } else if is_float_ty(fty)
                                     && is_float_modelable(fexpr, &ctx.solver_float_vars)
+                                    && !is_int_modelable(fexpr, &ctx.solver_int_vars)
                                 {
+                                    // `!is_int_modelable` (matching the float-`let` `genuinely_float` gate and
+                                    // the field-WRITE branch): an INT-KINDED field value — a bare integer
+                                    // literal `let p = P{x: 7}` for an `f64` field — is stored as `Int(7)` at
+                                    // runtime (no int→float coercion on the struct store), so `p.x / 2` is
+                                    // integer division. Seeding it as float `7.0` here was a false accept
+                                    // (hunt-found, the read-side twin of the write hole). Only a genuinely
+                                    // float-kinded value is float-seeded; an all-int value defers.
                                     ctx.solver_float_vars.insert(sym.clone());
                                     assumptions.push(format!(
                                         "(= {} {})",
@@ -3357,20 +3365,24 @@ fn analyze_stmts(
                 // the field is left UNMODELED, i.e. fail-open, exactly as before the slice).
                 let concrete_field_write = if let Expr::FieldAccess { base, field, .. } = target {
                     if let Expr::Var(pv) = base.as_ref() {
-                        let field_int = scope
+                        let fty = scope
                             .get(pv)
                             .and_then(|sb| sb.info.ty.as_deref())
                             .and_then(|sty| ctx.struct_fields.get(sty))
                             .and_then(|fields| fields.get(field))
-                            .is_some_and(|fty| is_integer_ty(fty));
-                        if field_int
+                            .cloned();
+                        let field_int = fty.as_deref().is_some_and(is_integer_ty);
+                        // Float field (QF_FP): the write lane's dual of the integer branch — the field-READ
+                        // side already models a float field (struct-literal-let seed), this adds the WRITE.
+                        let field_float = fty.as_deref().is_some_and(is_float_ty);
+                        if (field_int || field_float)
                             && !ctx.struct_write_disqualified.contains(pv)
                             && !ctx.shadowed_lets.contains(pv)
                         {
                             let sym = mangle_field(pv, field);
                             let fld = smt_var(&sym);
-                            // Overwrite: drop any prior fact for THIS field FIRST, regardless of whether
-                            // the new value models — a stale prior value must never survive a rewrite.
+                            // Overwrite: drop any prior fact for THIS field FIRST (either lane), regardless
+                            // of whether the new value models — a stale prior value must never survive a rewrite.
                             assumptions.retain(|a| {
                                 let mut vs = BTreeSet::new();
                                 collect_vars_from_smt(a, &mut vs);
@@ -3381,10 +3393,8 @@ fn analyze_stmts(
                             let v_stable = !vvars.iter().any(|w| {
                                 ctx.reassigned_roots.contains(w) || ctx.shadowed_lets.contains(w)
                             });
-                            if !vvars.contains(pv)
-                                && v_stable
-                                && is_int_modelable(value, &ctx.solver_int_vars)
-                            {
+                            let v_ok = !vvars.contains(pv) && v_stable;
+                            if field_int && v_ok && is_int_modelable(value, &ctx.solver_int_vars) {
                                 if let Some(vs) = expr_to_smt_value(value, &ctx.symbolic_widths) {
                                     ctx.solver_int_vars.insert(sym.clone());
                                     // Width 64 even for a narrow (`u8`/`u16`/`u32`) field: SOUND because the
@@ -3399,9 +3409,31 @@ fn analyze_stmts(
                                 } else {
                                     ctx.solver_int_vars.remove(&sym);
                                 }
+                            } else if field_float
+                                && v_ok
+                                && is_float_modelable(value, &ctx.solver_float_vars)
+                                && !is_int_modelable(value, &ctx.solver_int_vars)
+                            {
+                                // Float field WRITE (QF_FP): register the field's symbol in the FLOAT lane
+                                // with the written value's Float64/RNE encoding, mirroring the int branch. Same
+                                // COW soundness and `struct_write_disqualified` gate. `is_float_modelable`
+                                // admits only the sound float shapes (`+ - *` of finite floats and modeled
+                                // float vars) — it excludes `%` (`fp.rem` ≠ runtime `fmod`) and division.
+                                // The `!is_int_modelable` guard (matching the float-`let` `genuinely_float`
+                                // gate) is LOAD-BEARING: an INT-KINDED value — a bare integer literal `7` or
+                                // an all-integer expression — is stored as `Int` at runtime (no int→float
+                                // coercion on a field store: `p.x = 7` reads back `Int(7)`, so `p.x / 2` is
+                                // INTEGER division `3`, not float `3.5`). Modeling it as float `7.0` would be
+                                // a false accept (hunt-found). Only a genuinely float-kinded value (a float
+                                // literal, a modeled float var, or a mixed expr like `7.0 + 3` that carries a
+                                // float and thus coerces at runtime) is float-modeled; an all-int value defers.
+                                ctx.solver_float_vars.insert(sym.clone());
+                                assumptions.push(format!("(= {} {})", fld, float_expr_to_smt(value)));
                             } else {
-                                // Unmodelable / self-referencing / unstable value → field UNMODELED (defer).
+                                // Unmodelable / self-referencing / unstable value → field UNMODELED (defer),
+                                // dropped from BOTH lanes so no stale fact of either sort survives.
                                 ctx.solver_int_vars.remove(&sym);
+                                ctx.solver_float_vars.remove(&sym);
                             }
                             true
                         } else {
