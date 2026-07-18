@@ -4045,6 +4045,49 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_float_coercion_covers_f32_and_float_alias_spellings() {
+        // SOUNDNESS (soundness-hunt wf_7e946a56 finding): the #40/#41 int→f64 coercion gates keyed on the
+        // LITERAL `"f64"` spelling, but `ty::normalize` collapses `f32`/`f64`/`float` all to a Float type and
+        // the RUNTIME coerces all three identically (run.rs `anubis_coerce_float_{param,ret}` gate on
+        // `ty::is_float`). So a `-> float` / `-> f32` return (or param) BYPASSED the rounding model —
+        // `fn f(x:u64)->float ensures(result==x)` proved exact-int equality the runtime rounds away at >2^53
+        // (CONFIRMED false accept: check proved `result==x`, runtime returned 9007199254740992.0). Fixed by
+        // gating the three coercion sites on `is_float_ty` (the same predicate the runtime + the float-var
+        // marking use), so the three spellings are INDISTINGUISHABLE.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // The confirmed bypass: a rounding return (2^53+1 -> 2^53) must be REJECTED for ALL float spellings.
+        for spell in ["f64", "float", "f32"] {
+            let src = format!(
+                "fn f(x: u64) -> {spell} ensures(result >= 9007199254740994) {{ return x; }}"
+            );
+            assert!(
+                !discharged(&src),
+                "a rounding {spell} return must be rejected (alias-spelling bypass closed): {src}"
+            );
+        }
+        // Parity: the three spellings must agree on the same program (indistinguishable to the checker).
+        let parity = |body: &str| {
+            let v: Vec<bool> = ["f64", "float", "f32"]
+                .iter()
+                .map(|s| discharged(&body.replace("SPELL", s)))
+                .collect();
+            assert!(
+                v[0] == v[1] && v[1] == v[2],
+                "f64/float/f32 must give identical verdicts for: {body} (got {v:?})"
+            );
+        };
+        parity("fn f(x: u64) -> SPELL ensures(result >= 9007199254740994) { return x; }");
+        parity("fn g(y: SPELL) -> u64 requires(y == 9007199254740993) { return 1; } fn c() -> u64 { return g(9007199254740993); }");
+        parity("fn id(x: SPELL) -> SPELL requires(x > 3.0) ensures(result > 2.0) { return x; }");
+    }
+
+    #[test]
     fn phase3_coercion_value_robust_across_int_ops_and_magnitudes() {
         // SOUNDNESS (task #41 robustness — an exhaustive parallel hunt found these): the shared
         // `coerce_int_into_float_slot` must model the int→f64 coercion for EVERY integer value flowing into a

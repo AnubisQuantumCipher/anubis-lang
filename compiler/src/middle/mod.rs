@@ -1769,7 +1769,11 @@ fn analyze_function(
         // `let r = src(); assert(r > 2^53)` then TRAPS (a check-accept / run-trap false accept). When the
         // function returns f64, model the coercion on each returned value via the shared helper before
         // discharging the postcondition (const-fold → rounded value; symbolic int → fresh-float havoc).
-        let ret_is_f64 = ret.map(str::trim) == Some("f64");
+        // Match the RUNTIME's `ty::is_float` (run.rs `anubis_coerce_float_ret` fires for f32/f64/float
+        // alike) — gating on the literal `"f64"` spelling let a `-> float` / `-> f32` return BYPASS the
+        // rounding-coercion model, so `fn f(x:u64)->float ensures(result==x)` proved exact-int equality
+        // the runtime rounds away at >2^53 (an isomorphic-form false accept the alias spellings hid).
+        let ret_is_f64 = ret.map(|t| is_float_ty(t.trim())).unwrap_or(false);
         // A1 (task #50): u32 RETURNS are NOT masked (only PARAMS are — see the param range injection
         // above and `anubis_coerce_uint_param`). A `u32` return keeps the canonical unbounded-i64 model,
         // so a body returning a negative/overflowing value from a `-> u32` function is unchanged. The
@@ -2007,7 +2011,9 @@ fn discharge_call_requires(
     let mut havoc_names: Vec<String> = Vec::new();
     let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
     for (i, (pname, arg)) in pnames.iter().zip(args.iter()).enumerate() {
-        let is_float_param = ptypes.get(i).map(|t| t == "f64").unwrap_or(false);
+        // is_float_ty (f32/f64/float) — parity with the runtime `anubis_coerce_float_param`; the literal
+        // "f64" spelling let a `float`/`f32` param bypass the int→f64 arg-coercion model (the #40 twin).
+        let is_float_param = ptypes.get(i).map(|t| is_float_ty(t)).unwrap_or(false);
         let coerced = if is_float_param {
             coerce_int_into_float_slot(ctx, arg, &format!("p{i}"), &mut havoc_names)
         } else if let Some(w) = ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
@@ -6389,7 +6395,7 @@ fn coerce_int_into_float_slot(
     havoc_out: &mut Vec<String>,
 ) -> Expr {
     let float_returning_call = matches!(arg, Expr::Call { callee: c, .. }
-        if ctx.fn_ret_types.get(c).map(|t| t == "f64").unwrap_or(false));
+        if ctx.fn_ret_types.get(c).map(|t| is_float_ty(t)).unwrap_or(false));
     if is_genuinely_float(arg, &ctx.solver_float_vars) || float_returning_call {
         return arg.clone();
     }
