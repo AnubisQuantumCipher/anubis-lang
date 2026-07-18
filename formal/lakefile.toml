@@ -1,0 +1,5 @@
+name = "anubis-formal"
+defaultTargets = ["Anubis"]
+
+[[lean_lib]]
+name = "Anubis"
