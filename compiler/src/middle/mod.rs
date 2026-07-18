@@ -11524,6 +11524,31 @@ fn expr_taint_source_m(
                     args.get(i)
                         .and_then(|a| expr_taint_source_m(a, scope, tainting_fns, param_return_taint, method_tainting_fns))
                 })
+            } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
+                // Task #48-g: a LOCAL CLOSURE's RESULT carries the taint of its body's RETURNED value,
+                // evaluated in the caller scope (where the closure's CAPTURES live) MINUS the lambda's
+                // own params (a param is bound to the arg, not a capture, so it must not shadow-taint).
+                // `let g = |x| t; let r = g(0); sink(r)` otherwise laundered the captured `t`. Combined
+                // with the existing conservative rule (a tainted ARG into the closure). A `return` in a
+                // block body is covered via `expr_tail_values`; a deeper-nested capture is a residual.
+                let capture_taint = if let Expr::Lambda { params, body } = lam.as_ref() {
+                    let mut inner = scope.clone();
+                    for p in params {
+                        inner.remove(p);
+                    }
+                    let mut tails = Vec::new();
+                    expr_tail_values(body, &mut tails);
+                    tails.iter().find_map(|t| {
+                        expr_taint_source_m(t, &inner, tainting_fns, param_return_taint, method_tainting_fns)
+                    })
+                } else {
+                    None
+                };
+                capture_taint.or_else(|| {
+                    args.iter().find_map(|arg| {
+                        expr_taint_source_m(arg, scope, tainting_fns, param_return_taint, method_tainting_fns)
+                    })
+                })
             } else {
                 // Builtin / not-yet-summarized: any tainted argument taints the call (conservative).
                 args.iter()
@@ -11731,6 +11756,29 @@ fn expr_secret_source_m(
                 rets.iter().find_map(|&i| {
                     args.get(i)
                         .and_then(|a| expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns))
+                })
+            } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
+                // Task #48-g (secret dual, keeps parity with `expr_taint_source_m`): a LOCAL CLOSURE's
+                // RESULT carries the secrecy of its body's RETURNED value, evaluated in the caller scope
+                // (captures) MINUS the lambda params. `let g = |x| s; let r = g(0); send(r)` otherwise
+                // laundered the captured secret `s`. Combined with the conservative secret-ARG rule.
+                let capture_secret = if let Expr::Lambda { params, body } = lam.as_ref() {
+                    let mut inner = scope.clone();
+                    for p in params {
+                        inner.remove(p);
+                    }
+                    let mut tails = Vec::new();
+                    expr_tail_values(body, &mut tails);
+                    tails.iter().find_map(|t| {
+                        expr_secret_source_m(t, &inner, secret_fns, param_return_taint, method_secret_fns)
+                    })
+                } else {
+                    None
+                };
+                capture_secret.or_else(|| {
+                    args.iter().find_map(|a| {
+                        expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns)
+                    })
                 })
             } else {
                 // Builtin / not-yet-summarized: any secret argument is conservative.

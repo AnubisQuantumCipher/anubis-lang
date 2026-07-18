@@ -6091,6 +6091,35 @@ fn main() {
     }
 
     #[test]
+    fn closure_return_value_carries_capture_taint_and_secrecy() {
+        // SECURITY (task #48-g, soundness-hunt wf_7e946a56): a local closure's RESULT carries the
+        // taint/secrecy of its body's returned CAPTURE — `let g = |x| t; let r = g(0); sink(r)`
+        // otherwise laundered the captured `t`. Closed in BOTH `expr_taint_source_m` and
+        // `expr_secret_source_m` (parity), evaluating the body's tail-value in the caller scope MINUS
+        // the lambda params (a param is bound to the arg, not a capture — so `|x| x` does not over-taint).
+
+        // TAINT: captured tainted value returned then sunk.
+        assert!(
+            tc_ok("fn main() { let t: tainted<u32> = symbolic(); let g = |x| t; let r = g(0); sink(r); }").is_err(),
+            "a closure returning a captured tainted value must taint its result"
+        );
+        // SECRET dual (with the network effect declared so only the exfil check remains).
+        assert!(
+            tc_ok(r#"fn main() uses(net.send) { let s = secret_source("k"); let g = |x| s; let r = g(0); send("h", 80, r); }"#).is_err(),
+            "a closure returning a captured secret must make its result secret (parity)"
+        );
+
+        // NON-REGRESSION (must NOT over-taint): a closure returning a CLEAN capture, a closure returning
+        // its PARAM (not a capture), and a declassified capture — all accepted.
+        tc_ok("fn main() { let k = 5; let g = |x| k; let r = g(0); sink(r); }")
+            .expect("a closure returning a clean capture does not taint its result");
+        tc_ok("fn main() { let g = |x| x; let r = g(0); sink(r); }")
+            .expect("a closure returning its PARAM must not over-taint (scope-minus-params)");
+        tc_ok(r#"fn main() { let t: tainted<u32> = symbolic(); let g = |x| declassify(t, "p", "r"); let r = g(0); sink(r); }"#)
+            .expect("a declassified capture returned from a closure is accepted");
+    }
+
+    #[test]
     fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
         // Regression for a false negative an adversarial workflow found in the first version of this
         // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"
