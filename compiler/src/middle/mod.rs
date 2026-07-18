@@ -1342,6 +1342,35 @@ fn analyze_function(
     collect_assigned_roots(body, &mut ctx.reassigned_roots);
     ctx.struct_write_disqualified.clear();
     collect_struct_write_disqualified(body, &mut ctx.struct_write_disqualified);
+    // PREFIX-CONFLICT gate for NESTED field writes (the soundness core of the nested-write half): collect
+    // every TOP-LEVEL field write's (root, path) and disqualify a root if any of its write paths is a
+    // STRICT PREFIX of another (`p.a` prefix-of `p.a.b`). An intermediate reassign `p.a = ..` would stale
+    // the deeper leaf `p.a.b`'s fact (a subtree the single-level de-model does not evict), so such a base
+    // must defer. Under the gate a root's writes are PARALLEL non-prefix-related leaf writes, each updating
+    // its OWN mangled symbol — no subtree eviction needed. Only top-level writes matter: a non-top-level
+    // write already disqualifies the root via collect_struct_write_disqualified above.
+    {
+        let mut fw_paths: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
+        for s in body {
+            if let Stmt::Assign { target, .. } = s {
+                if let Some((root, path)) = field_place_path(target) {
+                    if !path.is_empty() {
+                        fw_paths.entry(root).or_default().push(path);
+                    }
+                }
+            }
+        }
+        for (root, paths) in &fw_paths {
+            let has_prefix_conflict = paths.iter().any(|p| {
+                paths
+                    .iter()
+                    .any(|q| p.len() < q.len() && q.starts_with(p.as_slice()))
+            });
+            if has_prefix_conflict {
+                ctx.struct_write_disqualified.insert(root.clone());
+            }
+        }
+    }
     ctx.shadowed_lets.clear();
     collect_shadowed_lets(body, &mut ctx.shadowed_lets);
     // (BUILTIN-SHADOW detection — shadowed_string_preds + shadow_builtin_mark sentinels — is computed
@@ -2503,6 +2532,40 @@ fn field_access_symbol(e: &Expr) -> Option<String> {
     }
 }
 
+/// The (root var, field path) of a field-access PLACE: `p` → (p, []), `p.a` → (p, [a]), `p.a.b` →
+/// (p, [a,b]). `None` for a non-place base (an index, a call, …). A field-WRITE target has a NON-EMPTY
+/// path; a whole `p =` reassign has an empty path. Used to gate + prefix-analyze nested field writes.
+fn field_place_path(e: &Expr) -> Option<(String, Vec<String>)> {
+    match e {
+        Expr::Var(v) => Some((v.clone(), Vec::new())),
+        Expr::FieldAccess { base, field, .. } => {
+            let (root, mut path) = field_place_path(base)?;
+            path.push(field.clone());
+            Some((root, path))
+        }
+        _ => None,
+    }
+}
+
+/// The DECLARED type of a field-access place, walking `scope[root].ty` through `struct_fields`: for
+/// `p.a.b` it returns b's type (`struct_fields[struct_fields[type_of(p)][a]][b]`). Generalizes the
+/// single-level `scope[p].ty → struct_fields[..][field]` lookup so a nested field write can pick its
+/// solver lane (int/float/string). `None` if any hop is untyped or unknown.
+fn place_struct_type(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    struct_fields: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Option<String> {
+    match e {
+        Expr::Var(v) => scope.get(v).and_then(|b| b.info.ty.clone()),
+        Expr::FieldAccess { base, field, .. } => {
+            let base_ty = place_struct_type(base, scope, struct_fields)?;
+            struct_fields.get(&base_ty)?.get(field).cloned()
+        }
+        _ => None,
+    }
+}
+
 /// Recursively seed a struct-literal LET's scalar field facts at ANY nesting depth. `base_sym` is the
 /// accumulated `mangle_field` path (the let name at the top, `mangle_field(parent, f)` deeper), so
 /// `let p = P{a: A{b: 5}}` seeds `mangle_field(mangle_field(p,a),b) == 5` and a later `p.a.b` read
@@ -3392,14 +3455,15 @@ fn analyze_stmts(
                 // `v` must not reference `p` (a self/cross-field RHS would go stale once the old fact is
                 // dropped) and its vars must be stable (an unstable RHS the frame sweep would later drop →
                 // the field is left UNMODELED, i.e. fail-open, exactly as before the slice).
-                let concrete_field_write = if let Expr::FieldAccess { base, field, .. } = target {
-                    if let Expr::Var(pv) = base.as_ref() {
-                        let fty = scope
-                            .get(pv)
-                            .and_then(|sb| sb.info.ty.as_deref())
-                            .and_then(|sty| ctx.struct_fields.get(sty))
-                            .and_then(|fields| fields.get(field))
-                            .cloned();
+                let concrete_field_write = if let Some((root, path)) = field_place_path(target) {
+                    // A field-access chain to a Var — single-level `p.f` OR nested `p.a.b` (a whole `p =`
+                    // has an empty path; a non-place base gives None). `place_struct_type` walks the path to
+                    // the WRITTEN field's declared type; `field_access_symbol` folds the mangle over the path.
+                    // The prefix-conflict gate in analyze_function has already disqualified a base whose nested
+                    // write paths overlap (`p.a` + `p.a.b`), so a modeled nested write can only be a leaf whose
+                    // intermediates are never reassigned — no subtree eviction is needed.
+                    if !path.is_empty() {
+                        let fty = place_struct_type(target, scope, &ctx.struct_fields);
                         let field_int = fty.as_deref().is_some_and(is_integer_ty);
                         // Float field (QF_FP): the write lane's dual of the integer branch — the field-READ
                         // side already models a float field (struct-literal-let seed), this adds the WRITE.
@@ -3408,10 +3472,10 @@ fn analyze_stmts(
                         // by the struct-literal-let seed; this adds the WRITE.
                         let field_string = fty.as_deref() == Some("string");
                         if (field_int || field_float || field_string)
-                            && !ctx.struct_write_disqualified.contains(pv)
-                            && !ctx.shadowed_lets.contains(pv)
+                            && !ctx.struct_write_disqualified.contains(&root)
+                            && !ctx.shadowed_lets.contains(&root)
                         {
-                            let sym = mangle_field(pv, field);
+                            let sym = field_access_symbol(target).unwrap_or_default();
                             let fld = smt_var(&sym);
                             // Overwrite: drop any prior fact for THIS field FIRST (either lane), regardless
                             // of whether the new value models — a stale prior value must never survive a rewrite.
@@ -3425,7 +3489,7 @@ fn analyze_stmts(
                             let v_stable = !vvars.iter().any(|w| {
                                 ctx.reassigned_roots.contains(w) || ctx.shadowed_lets.contains(w)
                             });
-                            let v_ok = !vvars.contains(pv) && v_stable;
+                            let v_ok = !vvars.contains(&root) && v_stable;
                             if field_int && v_ok && is_int_modelable(value, &ctx.solver_int_vars) {
                                 if let Some(vs) = expr_to_smt_value(value, &ctx.symbolic_widths) {
                                     ctx.solver_int_vars.insert(sym.clone());
@@ -7359,15 +7423,15 @@ fn collect_struct_write_disqualified(body: &[Stmt], out: &mut BTreeSet<String>) 
     for s in body {
         match s {
             Stmt::Assign { target, value } => {
-                // A top-level `p.f = v` (single-level field write to a plain var) is the ONLY form that
-                // does NOT disqualify its base. Any other target — a whole `Var`, an `Index`, or a nested
-                // `p.a.b` — disqualifies its root. `expr_assigned_roots(p.f)` recurses only to the `Var`
-                // base and collects nothing, so a plain field write leaves its base eligible; a value (or
-                // target sub-expression) that hides an embedded write is still scanned and disqualifies.
-                let safe_field_write = matches!(
-                    target,
-                    Expr::FieldAccess { base, .. } if matches!(base.as_ref(), Expr::Var(_))
-                );
+                // A field-access CHAIN to a plain var — single-level `p.f` OR nested `p.a.b` — is the ONLY
+                // top-level form that does NOT disqualify its base by itself. Any other target — a whole
+                // `Var`, an `Index`, a non-place base — disqualifies its root. `expr_assigned_roots` on the
+                // target collects nothing for a pure field chain, so it leaves the base eligible; a value (or
+                // target sub-expression) that hides an embedded write is still scanned and disqualifies. The
+                // PREFIX-CONFLICT gate (computed in analyze_function) additionally disqualifies a base with
+                // prefix-related write paths (`p.a` + `p.a.b`), where an intermediate reassign would stale a leaf.
+                let safe_field_write =
+                    field_place_path(target).is_some_and(|(_, p)| !p.is_empty());
                 if !safe_field_write {
                     if let Some(r) = assign_target_root(target) {
                         out.insert(r.to_string());

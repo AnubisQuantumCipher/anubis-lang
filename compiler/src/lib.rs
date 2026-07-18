@@ -3513,7 +3513,50 @@ fn bad() {
         // written base is in reassigned_roots, so it is never seeded — the read half needs no invalidation).
         assert!(
             !discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 5) { let mut p = P{a: A{b: 5}}; p.a.b = 7; return p.a.b; } fn main() { let r = f(); }"),
-            "a nested-field write disqualifies the base — the read defers, the stale construction value 5 must not prove"
+            "the stale construction value must not prove after a nested write (p.a.b = 7 ⇒ result==5 rejects)"
+        );
+    }
+
+    #[test]
+    fn phase4_nested_struct_field_write_modeling() {
+        // Phase-3/4 (task #36, write half): a NESTED field write `p.a.b = v` is now CHECKED — the
+        // concrete_field_write path resolves the target via field_access_symbol + place_struct_type and
+        // registers the nested symbol. SOUNDNESS CORE = the PREFIX-CONFLICT gate: a root whose write paths
+        // are prefix-related (`p.a` is a strict prefix of `p.a.b`) is disqualified, because an intermediate
+        // reassign `p.a = ..` would stale the leaf's fact. Under the gate all writes are PARALLEL leaf
+        // writes updating their OWN symbol — no subtree eviction needed.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // THE DEMONSTRATION: a nested write proves the written value (was fail-open before the slice).
+        assert!(
+            discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 5) { let mut p = P{a: A{b: 0}}; p.a.b = 5; return p.a.b; } fn main() { let r = f(); }"),
+            "a nested field write proves the written value (p.a.b = 5 ⇒ p.a.b == 5)"
+        );
+        // A FALSE nested-write ensures is DISPROVED.
+        assert!(
+            !discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 6) { let mut p = P{a: A{b: 0}}; p.a.b = 5; return p.a.b; } fn main() { let r = f(); }"),
+            "a false nested-write ensures is disproved (result==6 for p.a.b after p.a.b=5 rejects)"
+        );
+        // SIBLINGS (no prefix conflict) each model in their own symbol.
+        assert!(
+            discharged("struct A { b: i64, c: i64 } struct P { a: A } fn f() -> i64 ensures(result == 12) { let mut p = P{a: A{b: 0, c: 0}}; p.a.b = 5; p.a.c = 7; return p.a.b + p.a.c; } fn main() { let r = f(); }"),
+            "sibling nested writes model independently (p.a.b=5, p.a.c=7 ⇒ sum 12)"
+        );
+        // SOUNDNESS CORE: a PREFIX-CONFLICTING intermediate write (`p.a = ..` after `p.a.b = ..`)
+        // disqualifies the base — the stale leaf value must NOT prove (the intermediate reassigns the
+        // subtree; runtime p.a.b becomes 9, so `result == 5` is a false model that must be rejected).
+        assert!(
+            !discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 5) { let mut p = P{a: A{b: 0}}; p.a.b = 5; p.a = A{b: 9}; return p.a.b; } fn main() { let r = f(); }"),
+            "a prefix-conflicting intermediate write disqualifies the base — the stale leaf value 5 must not prove"
+        );
+        // A whole reassign after a nested write disqualifies (a Var target is never a safe field write).
+        assert!(
+            !discharged("struct A { b: i64 } struct P { a: A } fn f() -> i64 ensures(result == 5) { let mut p = P{a: A{b: 0}}; p.a.b = 5; p = P{a: A{b: 9}}; return p.a.b; } fn main() { let r = f(); }"),
+            "a whole reassign after a nested write strands no stale fact (result==5 must not prove)"
         );
     }
 
