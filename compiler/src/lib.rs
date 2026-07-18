@@ -6017,6 +6017,53 @@ fn main() {
     }
 
     #[test]
+    fn closure_stored_in_a_struct_field_is_enforced_on_application() {
+        // SECURITY (task #48-c, soundness-hunt wf_7e946a56): a closure stored in a struct field and
+        // applied via `b.f(0)` (a CallExpr on a FieldAccess, handled by the method-call arm) hid its
+        // body from Safe-mode enforcement. Now `let b = S { f: |x| ... }` records the field-closure on
+        // the binding (`field_closures`) and the CallExpr arm descends into it at `b.f(0)`.
+
+        // EFFECT: an undeclared fs.write in a field closure, inline and var-bound.
+        assert!(
+            tc_ok(r#"struct Box { f: u32 } fn main() { let b = Box { f: |x| write_file("o","d") }; b.f(0); }"#)
+                .is_err(),
+            "an inline field-closure's undeclared fs.write must be enforced"
+        );
+        assert!(
+            tc_ok(r#"struct Box { f: u32 } fn main() { let leak = |x| write_file("o","d"); let b = Box { f: leak }; b.f(0); }"#)
+                .is_err(),
+            "a var-bound field-closure's undeclared fs.write must be enforced"
+        );
+        // TAINT.
+        assert!(
+            tc_ok("struct Box { f: u32 } fn main() { let t: tainted<u32> = symbolic(); let b = Box { f: |x| sink(t) }; b.f(0); }")
+                .is_err(),
+            "a field-closure capturing taint into a sink must be enforced"
+        );
+        // ALIAS: `let b2 = b` propagates the field-closures.
+        assert!(
+            tc_ok(r#"struct Box { f: u32 } fn main() { let b = Box { f: |x| write_file("o","d") }; let b2 = b; b2.f(0); }"#)
+                .is_err(),
+            "an alias of a struct with a field-closure still enforces it"
+        );
+
+        // NON-REGRESSION (must NOT over-reject): clean field closure, declared effect, a field-closure
+        // STORED but never applied, a field READ (not called), a declassified flow, and a genuine method.
+        tc_ok(r#"struct Box { f: u32 } fn main() { let b = Box { f: |x| 1 }; b.f(0); }"#)
+            .expect("a clean field-closure application is accepted");
+        tc_ok(r#"struct Box { f: u32 } fn main() uses(fs.write) { let b = Box { f: |x| write_file("o","d") }; b.f(0); }"#)
+            .expect("a field-closure whose fs.write the caller declares is accepted");
+        tc_ok(r#"struct Box { f: u32 } fn main() { let b = Box { f: |x| write_file("o","d") }; print(1); }"#)
+            .expect("a field-closure that is STORED but never applied must not be enforced");
+        tc_ok(r#"struct Box { f: u32 } fn main() { let b = Box { f: |x| 1 }; let g = b.f; print(1); }"#)
+            .expect("reading a field-closure without applying it must not descend");
+        tc_ok(r#"struct Box { f: u32 } fn main() { let t: tainted<u32> = symbolic(); let b = Box { f: |x| sink(declassify(t, "p", "r")) }; b.f(0); }"#)
+            .expect("a declassified flow through a field-closure is accepted");
+        tc_ok("struct C { } impl C { fn m(self, x: u32) -> u32 { return x; } } fn main() { let c = C{}; print(c.m(5)); }")
+            .expect("a genuine method call (no field closure) is unaffected");
+    }
+
+    #[test]
     fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
         // Regression for a false negative an adversarial workflow found in the first version of this
         // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"

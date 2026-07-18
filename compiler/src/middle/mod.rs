@@ -132,6 +132,13 @@ struct ScopeBinding {
     /// pure analysis scratch — no HIR/evidence/fixpoint surface. A secret reaching a network/shell
     /// egress without declassify is `ANUBIS_SECRET_EXFILTRATION`.
     secret: bool,
+    /// Task #48 (aggregate closure tracking): closures stored in this binding's STRUCT FIELDS
+    /// (`let b = S { f: |x| write_file(..) }`), keyed by field name → the lambda. A field-closure
+    /// applied via `b.f(0)` (a `CallExpr` on a `FieldAccess`) otherwise hides its body from the
+    /// Safe-mode taint/effect/capability enforcement — the #47/#48 descent only followed a closure
+    /// through a plain binding or a fn param, not through a struct field. Pure analysis scratch (like
+    /// `closure_lambda`), no HIR/fixpoint surface. Empty for a non-struct or closure-free binding.
+    field_closures: BTreeMap<String, Box<Expr>>,
 }
 
 /// Arity of an initializer if it is a closure or first-class function reference, else `None`.
@@ -1200,6 +1207,7 @@ fn analyze_function(
                         },
                         closure_arity: None,
                         closure_lambda: None,
+                        field_closures: BTreeMap::new(),
                         secret: false,
                     },
                 )
@@ -1285,6 +1293,7 @@ fn analyze_function(
                     info: info.clone(),
                     closure_arity: None,
                     closure_lambda: None,
+                    field_closures: BTreeMap::new(),
                     // A `secret<T>` param qualifier auto-labels the parameter as secret (the
                     // confidentiality dual of the `tainted<T>` param seeded above), so a secret
                     // arriving via a param needs no `secret_source(..)` call — an egress of it is
@@ -3021,12 +3030,34 @@ fn analyze_stmts(
                     }
                     _ => None,
                 };
+                // Task #48: closures stored in this binding's STRUCT FIELDS (`let b = S { f: |x| ... }`),
+                // keyed field → lambda, so `b.f(0)` can descend into the field-closure body. A field value
+                // that is an inline lambda, or a var bound to a closure, is recorded; an alias `let b2 = b`
+                // propagates b's field-closures. (Nested-struct fields / reassignment are residuals.)
+                let fclos: BTreeMap<String, Box<Expr>> = match init {
+                    Expr::StructLiteral { fields, .. } => fields
+                        .iter()
+                        .filter_map(|(fname, fval)| {
+                            let lam: Option<Box<Expr>> = match fval.as_ref() {
+                                Expr::Lambda { .. } => Some(fval.clone()),
+                                Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                                _ => None,
+                            };
+                            lam.map(|l| (fname.clone(), l))
+                        })
+                        .collect(),
+                    Expr::Var(v) => {
+                        scope.get(v).map(|b| b.field_closures.clone()).unwrap_or_default()
+                    }
+                    _ => BTreeMap::new(),
+                };
                 scope.insert(
                     name.clone(),
                     ScopeBinding {
                         info: info.clone(),
                         closure_arity: ca,
                         closure_lambda: cl,
+                        field_closures: fclos,
                         secret: init_secret.is_some() || explicit_secret,
                     },
                 );
@@ -4131,6 +4162,7 @@ fn analyze_stmts(
                             info,
                             closure_arity: None,
                             closure_lambda: None,
+                            field_closures: BTreeMap::new(),
                             secret: wl_secret,
                         },
                     );
@@ -4439,6 +4471,7 @@ fn analyze_stmts(
                         info: info.clone(),
                         closure_arity: None,
                         closure_lambda: None,
+                        field_closures: BTreeMap::new(),
                         secret: secret_src,
                     },
                 );
@@ -4824,6 +4857,7 @@ fn analyze_expr_effect(
                                     },
                                     closure_arity: None,
                                     closure_lambda: None,
+                                    field_closures: BTreeMap::new(),
                                     secret: false,
                                 },
                             );
@@ -4856,6 +4890,7 @@ fn analyze_expr_effect(
                                 },
                                 closure_arity: None,
                                 closure_lambda: None,
+                                field_closures: BTreeMap::new(),
                                 secret: false,
                             },
                         );
@@ -4898,6 +4933,7 @@ fn analyze_expr_effect(
                                     },
                                     closure_arity: None,
                                     closure_lambda: None,
+                                    field_closures: BTreeMap::new(),
                                     secret: false,
                                 },
                             );
@@ -5026,6 +5062,44 @@ fn analyze_expr_effect(
             // body (#65); and a sink buried in non-linear control-flow inside a method's value-position
             // block (inherited from the summary walker's linear block handling).
             if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                // Task #48 (aggregate closure): a closure stored in a struct field (`let b = S { f: |x|
+                // write_file(..) }`) and applied via `b.f(0)` otherwise hides its body from the Safe-mode
+                // taint/effect/capability enforcement — this arm treats `b.f(..)` as a METHOD call and
+                // never visits the stored closure. Descend into the field-closure body (in the CALLER's
+                // scope, so a captured tainted/secret binding is seen), charging its egress to the caller
+                // — sound: the application happens in the caller's dynamic extent. Only fires when the
+                // base resolves to a binding whose `field_closures` holds this field (a real stored
+                // closure), so a genuine method call is unaffected.
+                if let Expr::Var(bname) = base.as_ref() {
+                    if let Some(lam) =
+                        scope.get(bname).and_then(|b| b.field_closures.get(field).cloned())
+                    {
+                        if let Expr::Lambda { params, body } = lam.as_ref() {
+                            let mut local = scope.clone();
+                            for p in params {
+                                local.insert(
+                                    p.clone(),
+                                    ScopeBinding {
+                                        info: BindingInfo {
+                                            name: p.clone(),
+                                            ty: None,
+                                            mode: String::new(),
+                                            tainted: false,
+                                            taint_source: None,
+                                            declassified: false,
+                                            span: None,
+                                        },
+                                        closure_arity: None,
+                                        closure_lambda: None,
+                                        field_closures: BTreeMap::new(),
+                                        secret: false,
+                                    },
+                                );
+                            }
+                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                        }
+                    }
+                }
                 // Resolve a method-summary parameter index to its call-site expression under the
                 // self-offset: index 0 is the receiver (`base`), index p≥1 is call arg p-1. Inlined
                 // (rather than a closure) to sidestep closure return-lifetime elision on the `&Expr`.
@@ -11209,6 +11283,7 @@ fn walk_block_taint(
                         },
                         closure_arity: None,
                         closure_lambda: None,
+                        field_closures: BTreeMap::new(),
                         secret: false,
                     },
                 );
@@ -11321,6 +11396,7 @@ fn walk_block_secret(
                         },
                         closure_arity: None,
                         closure_lambda: None,
+                        field_closures: BTreeMap::new(),
                         secret: secret_src,
                     },
                 );
@@ -11773,6 +11849,7 @@ fn seed_one_let(
             },
             closure_arity: None,
             closure_lambda: None,
+            field_closures: BTreeMap::new(),
             // This scope feeds the INTEGRITY return summary only; secrecy has its own parallel
             // seeder (`seed_one_let_secret`, feeding `compute_secret_fns`), so it is not seeded here.
             secret: false,
@@ -11807,6 +11884,7 @@ fn seed_taint_pattern(
                 },
                 closure_arity: None,
                 closure_lambda: None,
+                field_closures: BTreeMap::new(),
                 secret: false,
             },
         );
@@ -11865,6 +11943,7 @@ fn seed_effect_let(
             },
             closure_arity: None,
             closure_lambda: None,
+            field_closures: BTreeMap::new(),
             secret: init_secret || explicit_secret,
         },
     );
@@ -11895,6 +11974,7 @@ fn seed_effect_pattern(
                 },
                 closure_arity: None,
                 closure_lambda: None,
+                field_closures: BTreeMap::new(),
                 secret,
             },
         );
@@ -12042,6 +12122,7 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                     },
                     closure_arity: None,
                     closure_lambda: None,
+                    field_closures: BTreeMap::new(),
                     secret,
                 },
             );
@@ -12173,6 +12254,7 @@ fn seed_one_let_secret(
             },
             closure_arity: None,
             closure_lambda: None,
+            field_closures: BTreeMap::new(),
             secret,
         },
     );
@@ -12201,6 +12283,7 @@ fn seed_secret_pattern(
                 },
                 closure_arity: None,
                 closure_lambda: None,
+                field_closures: BTreeMap::new(),
                 secret,
             },
         );
