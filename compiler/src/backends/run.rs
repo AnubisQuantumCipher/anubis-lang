@@ -324,6 +324,15 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
                 "    anubis_require_int(&{id}, {});\n",
                 rust_string_lit(p)?
             ));
+        } else if crate::middle::ty::is_float(ty) {
+            // Operator policy (task #34): coerce an Int argument to a Float for a float-typed param, so the
+            // checker's QF_FP model (which treats the param as a float) is sound — `f(7)` binds x = 7.0, not
+            // Int(7), so `x / 2` is float division. Shadows the param binding (mut suppressed if unused).
+            let id = sanitize_ident(p)?;
+            body_src.push_str(&format!(
+                "    let mut {id} = anubis_coerce_float_param({id}, {});\n",
+                rust_string_lit(p)?
+            ));
         }
     }
     for stmt in &head {
@@ -343,11 +352,19 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     // poisoning a proof. Enforce the model on EVERY return path by emitting the body as an inner fn and
     // guarding its result (covers the tail AND every explicit `return` uniformly). A non-integer return
     // fails closed (ANUBIS_TYPE_VIOLATION). The outer params drop `mut` since they are only forwarded.
-    if def
-        .ret_type
-        .map(crate::middle::ty::is_integer)
-        .unwrap_or(false)
-    {
+    // An INTEGER return guards fail-closed (anubis_require_int_ret); a FLOAT return COERCES an Int result
+    // to a Float (anubis_coerce_float_ret — task #34 dual of the param coercion), so an f64-declared body
+    // that yields `Int(7)` still binds a float at the call site and the checker's f64 model stays sound.
+    let ret_guard = def.ret_type.and_then(|t| {
+        if crate::middle::ty::is_integer(t) {
+            Some("anubis_require_int_ret")
+        } else if crate::middle::ty::is_float(t) {
+            Some("anubis_coerce_float_ret")
+        } else {
+            None
+        }
+    });
+    if let Some(guard_fn) = ret_guard {
         let mut outer_params = Vec::new();
         let mut fwd = Vec::new();
         for (p, _ty) in def.params {
@@ -356,7 +373,7 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
             fwd.push(id);
         }
         Ok(format!(
-            "fn {rust_name}({outer}) -> AnubisValue {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    anubis_require_int_ret(__anb_body({fwd}), {namelit})\n}}\n",
+            "fn {rust_name}({outer}) -> AnubisValue {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    {guard_fn}(__anb_body({fwd}), {namelit})\n}}\n",
             outer = outer_params.join(", "),
             fwd = fwd.join(", "),
             namelit = rust_string_lit(def.name)?,
@@ -1460,6 +1477,27 @@ fn anubis_require_int_ret(v: AnubisValue, name: &str) -> AnubisValue {
         panic!("ANUBIS_TYPE_VIOLATION: function `{}` declares an integer return type but returned a non-integer at runtime; the checker models its result as an i64, so this is fail-closed rather than silently mis-proved", name);
     }
     v
+}
+// The FLOAT dual of anubis_require_int (operator policy, task #34): a float-typed parameter is modeled by
+// the checker as an f64, but the dynamically-typed runtime would otherwise let `f(7)` bind an Int(7),
+// making `x / 2` INTEGER division (3) instead of float (3.5) — a checker/runtime divergence. COERCE an Int
+// argument to a Float at the boundary (lossless for |n| < 2^53), so the param genuinely holds a float and
+// the model is sound. A non-numeric argument (string/list/…) fails closed, exactly like the int guard.
+fn anubis_coerce_float_param(v: AnubisValue, name: &str) -> AnubisValue {
+    match v {
+        AnubisValue::Int(n) => AnubisValue::Float(n as f64),
+        AnubisValue::Float(_) => v,
+        _ => panic!("ANUBIS_TYPE_VIOLATION: float parameter `{}` received a non-numeric value at runtime; the checker models it as an f64, so a string/list/other argument is fail-closed rather than silently mis-proved", name),
+    }
+}
+// Same coercion on a float-typed function's RETURN value (the model is only sound if a float-returning
+// function actually yields a float): coerce an Int return to a Float, fail closed on a non-numeric.
+fn anubis_coerce_float_ret(v: AnubisValue, name: &str) -> AnubisValue {
+    match v {
+        AnubisValue::Int(n) => AnubisValue::Float(n as f64),
+        AnubisValue::Float(_) => v,
+        _ => panic!("ANUBIS_TYPE_VIOLATION: function `{}` declares a float return type but returned a non-numeric value at runtime; the checker models its result as an f64, so this is fail-closed rather than silently mis-proved", name),
+    }
 }
 fn anubis_panic(msg: AnubisValue) -> AnubisValue { panic!("ANUBIS_PANIC: {}", msg.display_string()); }
 
@@ -4530,6 +4568,27 @@ mod run_tests {
             "fn main() { print(match parse_float_opt(\"3.5\") { Some(f) => f, None => 0.0 }); \
                     print(match parse_float_opt(\"x\") { Some(f) => f, None => -1.0 }); }";
         assert_eq!(run(fsrc), "3.5\n-1.0");
+    }
+
+    #[test]
+    fn float_param_and_return_coerce_int() {
+        // task #34: an Int argument to a float-typed PARAM is coerced to a Float at the boundary, so the
+        // checker's f64 model is sound — the param genuinely holds a float and `x / 2.0` is float division,
+        // not integer. `half(7)` binds x = 7.0 → 3.5 (was a checker/runtime divergence: the checker proved
+        // 3.5 while the runtime did Int(7)/2 = 3).
+        assert_eq!(
+            run("fn half(x: f64) -> f64 { return x / 2.0; } fn main() { print(half(7)); }"),
+            "3.5"
+        );
+        assert_eq!(
+            run("fn f(x: f64) -> f64 { return x + 1.0; } fn main() { print(f(2)); }"),
+            "3.0"
+        );
+        // a float RETURN coerces an Int result to a Float likewise (dual of anubis_require_int_ret).
+        assert_eq!(
+            run("fn g() -> f64 { return 7; } fn main() { print(g()); }"),
+            "7.0"
+        );
     }
 
     #[test]
