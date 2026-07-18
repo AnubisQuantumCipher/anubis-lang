@@ -6064,6 +6064,33 @@ fn main() {
     }
 
     #[test]
+    fn closure_stored_in_a_list_element_is_enforced_on_application() {
+        // SECURITY (task #48-d, soundness-hunt wf_7e946a56): a closure stored in a list element and
+        // applied via `arr[0](0)` (a CallExpr on an Index) hid its body. Now the array literal records
+        // element-closures into `field_closures` keyed by the index string, and the CallExpr Index arm
+        // descends into the stored closure at a concrete literal index.
+        assert!(
+            tc_ok(r#"fn main() { let arr = [|x| write_file("o","d")]; arr[0](0); }"#).is_err(),
+            "a list-element closure's undeclared fs.write must be enforced"
+        );
+        assert!(
+            tc_ok("fn main() { let t: tainted<u32> = symbolic(); let arr = [|x| sink(t)]; arr[0](0); }").is_err(),
+            "a list-element closure capturing taint into a sink must be enforced"
+        );
+        assert!(
+            tc_ok(r#"fn main() { let arr = [|x| 1, |x| write_file("o","d")]; arr[1](0); }"#).is_err(),
+            "the correct element-closure is enforced at a non-zero index"
+        );
+        // NON-REGRESSION: clean, caller-declared, and stored-but-unapplied must ACCEPT.
+        tc_ok(r#"fn main() { let arr = [|x| 1]; arr[0](0); }"#)
+            .expect("a clean list-element closure application is accepted");
+        tc_ok(r#"fn main() uses(fs.write) { let arr = [|x| write_file("o","d")]; arr[0](0); }"#)
+            .expect("a list-element closure whose fs.write the caller declares is accepted");
+        tc_ok(r#"fn main() { let arr = [|x| write_file("o","d")]; print(1); }"#)
+            .expect("a list-element closure stored but never applied must not be enforced");
+    }
+
+    #[test]
     fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
         // Regression for a false negative an adversarial workflow found in the first version of this
         // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"

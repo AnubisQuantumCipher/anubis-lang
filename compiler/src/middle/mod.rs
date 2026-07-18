@@ -3034,6 +3034,8 @@ fn analyze_stmts(
                 // keyed field → lambda, so `b.f(0)` can descend into the field-closure body. A field value
                 // that is an inline lambda, or a var bound to a closure, is recorded; an alias `let b2 = b`
                 // propagates b's field-closures. (Nested-struct fields / reassignment are residuals.)
+                // Also holds LIST-ELEMENT closures (`let arr = [|x| ...]`) keyed by the element index as
+                // a string, so `arr[0](0)` (a `CallExpr` on an `Index`) descends the same way (#48-d).
                 let fclos: BTreeMap<String, Box<Expr>> = match init {
                     Expr::StructLiteral { fields, .. } => fields
                         .iter()
@@ -3044,6 +3046,18 @@ fn analyze_stmts(
                                 _ => None,
                             };
                             lam.map(|l| (fname.clone(), l))
+                        })
+                        .collect(),
+                    Expr::ArrayLiteral { elements } => elements
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, el)| {
+                            let lam: Option<Box<Expr>> = match el {
+                                Expr::Lambda { .. } => Some(Box::new(el.clone())),
+                                Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                                _ => None,
+                            };
+                            lam.map(|l| (i.to_string(), l))
                         })
                         .collect(),
                     Expr::Var(v) => {
@@ -5040,6 +5054,44 @@ fn analyze_expr_effect(
         // higher-order boundary; the closure-application callee/args ARE concrete call-site exprs and
         // are walked via `CallExpr`).
         Expr::CallExpr { callee, args } => {
+            // Task #48-d: a closure stored in a LIST ELEMENT (`let arr = [|x| write_file(..)]`) applied
+            // via `arr[0](0)` — a `CallExpr` on an `Index` — otherwise hides its body. Descend into the
+            // stored element-closure (keyed by the concrete index in `field_closures`, populated at the
+            // array literal), the same safe-direction descent as the struct-field case (#48-c). Only a
+            // concrete literal index on a Var base is resolved (a symbolic index is a residual).
+            if let Expr::Index { base, index } = callee.as_ref() {
+                if let (Expr::Var(bname), Expr::Literal(idx)) = (base.as_ref(), index.as_ref()) {
+                    if let Some(lam) = scope
+                        .get(bname)
+                        .and_then(|b| b.field_closures.get(idx.trim()).cloned())
+                    {
+                        if let Expr::Lambda { params, body } = lam.as_ref() {
+                            let mut local = scope.clone();
+                            for p in params {
+                                local.insert(
+                                    p.clone(),
+                                    ScopeBinding {
+                                        info: BindingInfo {
+                                            name: p.clone(),
+                                            ty: None,
+                                            mode: String::new(),
+                                            tainted: false,
+                                            taint_source: None,
+                                            declassified: false,
+                                            span: None,
+                                        },
+                                        closure_arity: None,
+                                        closure_lambda: None,
+                                        field_closures: BTreeMap::new(),
+                                        secret: false,
+                                    },
+                                );
+                            }
+                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                        }
+                    }
+                }
+            }
             // Interprocedural METHOD sink/egress — the impl-method twin of the two blocks in the bare
             // `Expr::Call` arm above. A method call `recv.name(a, b)` parses as `CallExpr { callee:
             // FieldAccess{ base: recv, field: name }, args: [a, b] }`; the sink/egress laundering checks
