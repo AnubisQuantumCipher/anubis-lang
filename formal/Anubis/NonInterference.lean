@@ -13,18 +13,28 @@
   runtime/encoder operations (`+ = bvadd`, `&&& = bvand`; see `enc_add`/`enc_and`). So the
   theorem is about label flow over the actual runtime value domain, not a toy `Int`.
 
+  Declassification. Safe mode's ONE sanctioned escape hatch is `declassify`, which downgrades a
+  value's label to `Lo` on purpose (an authorized release). This file models it faithfully — a
+  `declassify` node forces the result label to `Lo` while leaving the VALUE unchanged — and proves
+  BOTH halves of the real guarantee: (i) over the DECLASSIFY-FREE fragment non-interference is
+  absolute (no secret can reach a public sink), and (ii) `declassify` genuinely CAN move a secret
+  into a public value — so declassification is exactly the only breach, precisely what the checker
+  permits under authorization and forbids otherwise.
+
   What is proved here:
     * `Label.join_eq_lo`   — a join is `Lo` only when BOTH operands are `Lo`; this is the crux of
                              taint propagation (a `Lo` result had NO `Hi` operand in its subtree);
-    * `noninterference`    — MAIN THEOREM. If two stores are low-equivalent (agree on the value of
-                             every `Lo` variable) then every expression whose result is `Lo` has
-                             the SAME value in both stores: a secret never flows to a public sink;
+    * `noninterference`    — MAIN THEOREM. Over a DECLASSIFY-FREE expression, if two stores are
+                             low-equivalent (agree on every `Lo` variable) then a `Lo` result has
+                             the SAME value in both: a secret never flows to a public sink;
     * `secret_write_invisible` — the operational reading: overwriting a `Hi` variable with ANY
-                             value leaves every public result unchanged (you cannot leak a secret
-                             by choosing its value);
+                             value leaves every public (declassify-free) result unchanged;
     * `hi_can_leak_into_hi` — TIGHTNESS / non-vacuity: drop the `Lo`-result premise and the
-                             conclusion genuinely FAILS (a secret DOES influence a *secret* sink),
-                             so the main theorem is not vacuously true.
+                             conclusion genuinely FAILS (a secret DOES influence a *secret* sink);
+    * `declassify_downgrades` — declassification IS a real (authorized) downgrade: a `declassify`d
+                             secret is a `Lo` result whose value DIFFERS across low-equivalent
+                             stores. Together with `noninterference` this pins declassify as the
+                             SOLE way a secret becomes public — the exact Safe-mode boundary.
 
   Reused from `Anubis.Encoding` (not re-proved): `Word`, and the encoder=runtime identities
   `enc_add`, `enc_and` that pin the operation semantics.
@@ -75,6 +85,7 @@ inductive Expr where
   | add  : Expr → Expr → Expr      -- runtime `+`  (= encoder `bvadd`)
   | eqb  : Expr → Expr → Expr      -- runtime `==` (0/1-valued)
   | band : Expr → Expr → Expr      -- runtime `&`  (= encoder `bvand`)
+  | declassify : Expr → Expr       -- Safe mode's sanctioned downgrade: force the label to `Lo`
 
 /-- A store maps each variable to a runtime value AND its security label; the label is intrinsic
     to the variable (the taint source / security policy), exactly as Safe mode assigns it. -/
@@ -92,6 +103,17 @@ def eval (s : Store) : Expr → Word × Label
                   (eval s a).2.join (eval s b).2)
   | .band a b => ((eval s a).1 &&& (eval s b).1,
                   (eval s a).2.join (eval s b).2)
+  | .declassify e => ((eval s e).1, Label.Lo)   -- value preserved; label forced public
+
+/-- An expression uses NO declassification anywhere — the fragment Safe mode enforces when no
+    authorized release is present. Non-interference is absolute exactly on this fragment. -/
+def DeclassifyFree : Expr → Prop
+  | .lit _        => True
+  | .var _        => True
+  | .add a b      => DeclassifyFree a ∧ DeclassifyFree b
+  | .eqb a b      => DeclassifyFree a ∧ DeclassifyFree b
+  | .band a b     => DeclassifyFree a ∧ DeclassifyFree b
+  | .declassify _ => False
 
 /-- The `add` result value is exactly the encoder's `bvadd` on the operand values — the operation
     non-interference reasons about IS the one `Encoding.enc_add` matches to the runtime. -/
@@ -122,26 +144,30 @@ def LowEquiv (s1 s2 : Store) : Prop :=
     subtrees to be `Lo`, so both recurse to equal values and the op — identical on both sides —
     yields equal results. -/
 theorem noninterference {s1 s2 : Store} (h : LowEquiv s1 s2) :
-    ∀ e : Expr, (eval s1 e).2 = Label.Lo → (eval s1 e).1 = (eval s2 e).1 := by
+    ∀ e : Expr, DeclassifyFree e → (eval s1 e).2 = Label.Lo → (eval s1 e).1 = (eval s2 e).1 := by
   intro e
   induction e with
-  | lit n => intro _; rfl
-  | var x => intro hlo; exact h x hlo
+  | lit n => intro _ _; rfl
+  | var x => intro _ hlo; exact h x hlo
   | add a b iha ihb =>
-      intro hlo
+      intro hdf hlo
       simp only [eval] at hlo ⊢
       obtain ⟨ha, hb⟩ := Label.join_eq_lo hlo
-      rw [iha ha, ihb hb]
+      rw [iha hdf.1 ha, ihb hdf.2 hb]
   | eqb a b iha ihb =>
-      intro hlo
+      intro hdf hlo
       simp only [eval] at hlo ⊢
       obtain ⟨ha, hb⟩ := Label.join_eq_lo hlo
-      rw [iha ha, ihb hb]
+      rw [iha hdf.1 ha, ihb hdf.2 hb]
   | band a b iha ihb =>
-      intro hlo
+      intro hdf hlo
       simp only [eval] at hlo ⊢
       obtain ⟨ha, hb⟩ := Label.join_eq_lo hlo
-      rw [iha ha, ihb hb]
+      rw [iha hdf.1 ha, ihb hdf.2 hb]
+  | declassify e _ =>
+      -- Vacuous: a `declassify` expression is not declassify-free.
+      intro hdf _
+      exact absurd hdf (by simp [DeclassifyFree])
 
 /-! ### Operational corollary: secret writes are invisible to public outputs -/
 
@@ -154,9 +180,10 @@ def Store.set (s : Store) (x : Var) (v : Word) : Store :=
     leak a secret into a public output by choosing the secret's value. Follows from the main
     theorem, because updating only a secret keeps the two stores low-equivalent. -/
 theorem secret_write_invisible (s : Store) (x : Var) (v : Word)
-    (hx : (s x).2 = Label.Hi) (e : Expr) (hpub : (eval s e).2 = Label.Lo) :
+    (hx : (s x).2 = Label.Hi) (e : Expr) (hdf : DeclassifyFree e)
+    (hpub : (eval s e).2 = Label.Lo) :
     (eval s e).1 = (eval (s.set x v) e).1 := by
-  refine noninterference (s1 := s) (s2 := s.set x v) ?_ e hpub
+  refine noninterference (s1 := s) (s2 := s.set x v) ?_ e hdf hpub
   intro y hy
   by_cases hyx : y = x
   · subst hyx; rw [hx] at hy; exact absurd hy (by decide)
@@ -180,6 +207,25 @@ theorem hi_can_leak_into_hi :
     by_cases hx0 : x = 0
     · subst hx0; simp only [sSecret0] at hx; exact absurd hx (by decide)
     · simp only [sSecret0, sSecret1, if_neg hx0]
+  · decide
+  · decide
+
+/-- **Declassification is a real, authorized downgrade.** `declassify (var 0)` over the two
+    low-equivalent stores (which differ only on the SECRET `var 0`) produces a `Lo` result whose
+    VALUE differs (`0` vs `1`). So a `declassify`d secret genuinely reaches a public output — the
+    single breach Safe mode permits under authorization. Together with `noninterference` (which
+    holds on exactly the `DeclassifyFree` fragment), this pins declassification as the SOLE way a
+    secret becomes public: no declassify ⟹ no leak; a declassify ⟹ a controlled release. -/
+theorem declassify_downgrades :
+    ∃ (s1 s2 : Store) (e : Expr),
+      LowEquiv s1 s2 ∧ ¬ DeclassifyFree e ∧ (eval s1 e).2 = Label.Lo
+        ∧ (eval s1 e).1 ≠ (eval s2 e).1 := by
+  refine ⟨sSecret0, sSecret1, Expr.declassify (Expr.var 0), ?_, ?_, ?_, ?_⟩
+  · intro x hx
+    by_cases hx0 : x = 0
+    · subst hx0; simp only [sSecret0] at hx; exact absurd hx (by decide)
+    · simp only [sSecret0, sSecret1, if_neg hx0]
+  · simp [DeclassifyFree]
   · decide
   · decide
 
