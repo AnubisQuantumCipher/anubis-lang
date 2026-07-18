@@ -2746,6 +2746,25 @@ fn main() {
             !discharged("fn f() { let mut c = 0; for i in 0..3 invariant(c >= 0) invariant(c <= i) { c = c + 1; i = i + 100; } assert(c >= 0); } fn main() { f(); }"),
             "a `for` body that reassigns its counter cannot carry a verified invariant (fail-closed)"
         );
+        // SOUNDNESS (task #45, broad hunt wf_bf84c047 FP5): a body that MUTATES THE RANGE BOUND is rejected.
+        // The runtime freezes `0..e` at loop ENTRY, but the while-desugaring re-reads `e` each iteration, so
+        // the post-loop exit fact `i >= e` would use e's body-mutated final value — proving `s >= e` (the
+        // negation `s < e` correctly rejects) that the entry-bounded runtime then TRAPS. Must fail closed.
+        assert!(
+            !discharged("fn main() { let mut s = 0; let mut e = 2; for i in 0..e invariant(s == i) { s = s + 1; e = e + 1; } assert(s >= e); }"),
+            "a `for` loop that mutates its range bound cannot carry a verified invariant (runtime freezes the range at entry)"
+        );
+        // A bound mutated via the START of the range is likewise rejected (both ends are gated).
+        assert!(
+            !discharged("fn main() { let mut lo = 0; let mut s = 0; for i in lo..5 invariant(s == i) { s = s + 1; lo = lo + 1; } assert(s >= 5); }"),
+            "a `for` loop that mutates its range START is also rejected"
+        );
+        // NON-REGRESSION: a bound that is READ (not written) in the body still verifies — only a WRITE to a
+        // bound variable is gated, so a normal `for i in 0..n` reading `n` in the body is unaffected.
+        assert!(
+            discharged("fn f(n: u32) -> u32 requires(n < 100) ensures(result >= 0) { let mut s = 0; for i in 0..n invariant(s >= 0) invariant(s <= i) { s = s + n - n; } return s; } fn main() { let r = f(5); }"),
+            "a `for` loop that READS its bound in the body (no write) still verifies — the gate is write-only"
+        );
         // A COLLECTION loop invariant is still honestly rejected (no counter/bound to model).
         assert!(
             !discharged("fn f() -> u32 ensures(result >= 0) { let mut s = 0; for x in [1,2,3] invariant(s >= 0) { s = s + 1; } return s; } fn main() { let r = f(); }"),
@@ -5559,6 +5578,46 @@ fn main() {
 }
 "#;
         tc_ok(clean_index).expect("clean array element into a sink must not be flagged tainted");
+    }
+
+    #[test]
+    fn taint_launders_through_push_container_and_while_let_binding() {
+        // SECURITY (task #46, broad hunt wf_bf84c047 FP0+FP1): two Safe-mode taint-laundering gaps the
+        // exhaustive parallel hunt found. FP0: pushing a tainted value into a container did NOT taint the
+        // container binding, so reading it back out (`xs[0]`) reached a sink clean — the CALL analog of the
+        // already-caught `xs[0] = t` place-write taint.
+        let push_launder = r#"
+fn main() {
+    let t: tainted<u32> = symbolic();
+    let xs = [];
+    push(xs, t);
+    sink(xs[0]);
+}
+"#;
+        let err = tc_ok(push_launder)
+            .expect_err("push of a tainted value into a container, then sink of a read-back, must be rejected");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // FP1: a `while let Some(v) = o` binder did NOT inherit the scrutinee `o`'s taint, so extracting a
+        // tainted value through the loop pattern laundered it (the isomorphic `if let` form WAS caught).
+        let while_let_launder = r#"
+fn main() {
+    let t: tainted<u32> = symbolic();
+    let o = Some(t);
+    while let Some(v) = o {
+        sink(v);
+    }
+}
+"#;
+        let err = tc_ok(while_let_launder)
+            .expect_err("a while-let binder inheriting the scrutinee's taint, reaching a sink, must be rejected");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // NON-REGRESSION: a CLEAN push and a CLEAN while-let must still be accepted (no over-tainting).
+        tc_ok("fn main() { let xs = []; push(xs, 7); sink(xs[0]); }")
+            .expect("a clean push into a container is not tainted");
+        tc_ok("fn main() { let o = Some(7); while let Some(v) = o { sink(v); } }")
+            .expect("a clean while-let binder is not tainted");
     }
 
     #[test]

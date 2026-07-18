@@ -3384,6 +3384,36 @@ fn analyze_stmts(
             }
             Stmt::ExprStmt(expr) => {
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
+                // SECURITY (task #46, broad hunt wf_bf84c047 FP0): a mutating container builtin
+                // `push(xs, v)` / `insert(xs, k, v)` that stores a TAINTED/SECRET argument taints/secrets
+                // the container binding `xs` (whole-binding granularity, SET-only) — the CALL analog of the
+                // `xs[0]=v` place-assign taint in the `Stmt::Assign` handler. Without it, `let xs=[];
+                // push(xs, input()); write_file(xs[0])` laundered untrusted stdin (the `xs[0]` read saw the
+                // container as clean). Any stored arg (a value, or a map key) that is tainted/secret marks
+                // the container root; the stored data is read back out via `xs[i]`, so this is conservative.
+                if let Expr::Call { callee, args } = expr {
+                    if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 {
+                        let root = assign_target_root(&args[0]);
+                        let any_taint = args[1..].iter().find_map(|a| {
+                            expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns)
+                        });
+                        let any_secret = args[1..].iter().any(|a| {
+                            expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some()
+                        });
+                        if let Some(root) = root {
+                            if let Some(b) = scope.get_mut(root) {
+                                if let Some(src) = &any_taint {
+                                    b.info.tainted = true;
+                                    b.info.taint_source = Some(src.clone());
+                                    b.info.declassified = false;
+                                }
+                                if any_secret {
+                                    b.secret = true;
+                                }
+                            }
+                        }
+                    }
+                }
                 check_expr_semantics(expr, scope, ctx);
                 // A bare `match`/`if`-expression statement (or a `return <expr>` — parsed as
                 // `ExprStmt(Call{"return", …})`) can hide a write to an outer variable in an arm/branch
@@ -3881,6 +3911,19 @@ fn analyze_stmts(
                 // The scrutinee is evaluated at least once (unconditionally on entry) — discharge a
                 // contracted call in it (`while let Ok(v) = g(a) { … }`).
                 discharge_calls_in_expr(ctx, assumptions, expr);
+                // SECURITY (task #46, broad hunt wf_bf84c047 FP1): a `while let PAT = scrut` pattern binder
+                // INHERITS the scrutinee's taint/secret — extracting a value out of a tainted/secret
+                // container yields a tainted/secret value. The `if let` / `match` arms already seed this
+                // (analyze_expr_effect via `expr_taint_source_m` + seed_effect_pattern); the `while let`
+                // binder was inserted `tainted: false`, so `let o = Some(input()); while let Some(v) = o {
+                // write_file(v) }` laundered untrusted stdin to disk (the isomorphic `if let` was caught).
+                let wl_taint = expr_taint_source_m(
+                    expr, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns,
+                );
+                let wl_secret = expr_secret_source_m(
+                    expr, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns,
+                )
+                .is_some();
                 // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
                 let snap_scope = scope.clone();
                 for n in pattern.bound_names() {
@@ -3888,8 +3931,8 @@ fn analyze_stmts(
                         name: n.clone(),
                         ty: None,
                         mode: mode_name(mode).into(),
-                        tainted: false,
-                        taint_source: None,
+                        tainted: wl_taint.is_some(),
+                        taint_source: wl_taint.clone(),
                         declassified: false,
                         span: None,
                     };
@@ -3898,7 +3941,7 @@ fn analyze_stmts(
                         ScopeBinding {
                             info,
                             closure_arity: None,
-                            secret: false,
+                            secret: wl_secret,
                         },
                     );
                     ctx.known_bindings.insert(n);
@@ -3976,6 +4019,16 @@ fn analyze_stmts(
                 } else if let crate::frontend::ForSource::Range { start, end } = source {
                     let mut body_written = BTreeSet::new();
                     collect_assigned_roots(body, &mut body_written);
+                    // A range BOUND (`start`/`end`) that references a body-MUTATED variable diverges: the
+                    // runtime freezes the `start..end` range at loop ENTRY (native Rust `0..e`), but the
+                    // while-desugaring below re-reads the bound each iteration, so the post-loop exit fact
+                    // `i >= end` would use the bound's body-MUTATED final value (hunt wf_bf84c047 FP5:
+                    // `for i in 0..e { s=s+1; e=e+1 } assert(s>=e)` PROVES `s>=e` from the mutated `e` while
+                    // the runtime ran the entry-bounded iteration count and traps). Fail closed.
+                    let mut bound_vars = BTreeSet::new();
+                    collect_expr_vars(start, &mut bound_vars);
+                    collect_expr_vars(end, &mut bound_vars);
+                    let bound_mutated = bound_vars.iter().any(|v| body_written.contains(v));
                     if !(is_int_modelable(start, &ctx.solver_int_vars)
                         && is_int_modelable(end, &ctx.solver_int_vars))
                     {
@@ -3998,6 +4051,17 @@ fn analyze_stmts(
                             message: "a `for` loop that reassigns its own counter inside the body cannot \
                                  carry a verified invariant (the counter is rebound from the range each \
                                  iteration); remove the counter write or use an auxiliary variable"
+                                .into(),
+                            span: None,
+                        });
+                        None
+                    } else if bound_mutated {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
+                            message: "a `for` loop whose range bound is mutated inside the body cannot \
+                                 carry a verified invariant (the runtime freezes the range at loop entry \
+                                 while the invariant model would re-read the mutated bound); bind the \
+                                 bound to an auxiliary variable computed before the loop"
                                 .into(),
                             span: None,
                         });
