@@ -1,9 +1,12 @@
 //! Package function summaries — sealed in evidence, re-derived on verify (fail-closed).
 //!
-//! Schema `anubis.summaries.v1`: every `pub fn` effect/taint/return annotation that the
-//! consumer must inherit at call sites. Live re-typecheck of mounted sources is still the
-//! enforcement engine; summaries are the *proof-carrying claim* that the sealed package
-//! advertised those properties honestly.
+//! Schema `anubis.summaries.v2`: every `pub fn` effect/taint/return annotation AND its declared
+//! `requires`/`ensures` contracts — the surface a consumer must inherit at call sites. Live
+//! re-typecheck of mounted sources is still the enforcement engine; summaries are the
+//! *proof-carrying claim* that the sealed package advertised those properties honestly. v2 adds
+//! contracts: sealing them makes a dependency's advertised pre/postconditions tamper-evident (the
+//! summary is re-derived and byte-compared on verify, and the source merkle covers the contract
+//! text), and is the prerequisite for cross-package call-site requires-discharge (follow-up).
 
 use crate::frontend::{parse_source, Item, Visibility};
 use crate::package::merkle;
@@ -13,7 +16,7 @@ use std::path::Path;
 const MODULE_EXTS: &[&str] = &["anb", "anub", "anubis"];
 
 pub const SUMMARIES_FILENAME: &str = "summaries.json";
-pub const SUMMARIES_SCHEMA: &str = "anubis.summaries.v1";
+pub const SUMMARIES_SCHEMA: &str = "anubis.summaries.v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PackageSummaries {
@@ -32,6 +35,16 @@ pub struct FnSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ret: Option<String>,
     pub returns_tainted: bool,
+    /// B2 preconditions declared as `requires(P)`, rendered to canonical source form. A consumer
+    /// that calls this function must establish each `requires` at the call site. Empty when the
+    /// function declares no preconditions (then omitted from the sealed JSON for compactness).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// B2 postconditions declared as `ensures(Q)` (may reference `result`), rendered to canonical
+    /// source form. A consumer may assume each `ensures` holds of the call's result. Empty when the
+    /// function declares no postconditions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ensures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -147,6 +160,8 @@ fn collect_fns(items: &[Item], out: &mut Vec<FnSummary>) {
                 params,
                 ret,
                 effects,
+                requires,
+                ensures,
                 ..
             } => {
                 if !matches!(visibility, Visibility::Public) {
@@ -155,6 +170,12 @@ fn collect_fns(items: &[Item], out: &mut Vec<FnSummary>) {
                 let mut eff = effects.clone();
                 eff.sort();
                 eff.dedup();
+                // Contracts are rendered to canonical source form and preserved in declaration
+                // order (NOT sorted): a precondition/postcondition list is an ordered conjunction as
+                // authored, and re-deriving it must reproduce the sealed text byte-for-byte.
+                let requires: Vec<String> =
+                    requires.iter().map(crate::doc::expr_to_src).collect();
+                let ensures: Vec<String> = ensures.iter().map(crate::doc::expr_to_src).collect();
                 let params: Vec<ParamSummary> = params
                     .iter()
                     .map(|(n, ty)| {
@@ -184,6 +205,8 @@ fn collect_fns(items: &[Item], out: &mut Vec<FnSummary>) {
                     params,
                     ret: ret.clone(),
                     returns_tainted,
+                    requires,
+                    ensures,
                 });
             }
             Item::Module { items, .. } => collect_fns(items, out),
@@ -264,5 +287,51 @@ mod tests {
         assert!(id.params[0].tainted);
         assert!(id.returns_tainted);
         assert!(!s.functions.iter().any(|f| f.name == "private"));
+    }
+
+    #[test]
+    fn seals_requires_and_ensures_contracts() {
+        // v2: a pub fn's declared requires/ensures are captured into the summary (source-rendered),
+        // and re-deriving from swapped-contract sources fails closed (tamper-evidence).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Anubis.toml"),
+            "[package]\nname=\"c\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+        let src = root.join("src/lib.anb");
+        std::fs::write(
+            &src,
+            "pub fn inc(x: u32) -> u32 requires(x > 0) ensures(result >= x) { return x + 1; }\n",
+        )
+        .unwrap();
+
+        let s = extract_from_package(root).unwrap();
+        assert_eq!(s.schema, "anubis.summaries.v2");
+        let inc = s.functions.iter().find(|f| f.name == "inc").unwrap();
+        // Precondition and postcondition both captured, in declaration order.
+        assert_eq!(inc.requires.len(), 1, "requires captured");
+        assert_eq!(inc.ensures.len(), 1, "ensures captured");
+        assert!(inc.requires[0].contains('x') && inc.requires[0].contains('>'), "requires text: {}", inc.requires[0]);
+        assert!(inc.ensures[0].contains("result"), "ensures references result: {}", inc.ensures[0]);
+
+        // Tamper-evidence: seal, then weaken the precondition in the source; re-derive must reject.
+        let ev = tmp.path().join("evidence");
+        std::fs::create_dir_all(&ev).unwrap();
+        write_to_evidence_dir(&ev, &s).unwrap();
+        verify_against_package(root, &ev).expect("honest package re-derives to the sealed summary");
+
+        std::fs::write(
+            &src,
+            "pub fn inc(x: u32) -> u32 requires(x > 100) ensures(result >= x) { return x + 1; }\n",
+        )
+        .unwrap();
+        let tampered = verify_against_package(root, &ev);
+        assert!(
+            tampered.is_err(),
+            "swapping the requires must fail the sealed re-derive (contract tamper caught)"
+        );
     }
 }
