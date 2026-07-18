@@ -3607,6 +3607,140 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_all_integer_division_subexpr_defers_in_float_lane() {
+        // SOUNDNESS (final hunt a1c681b1): `/` is INTEGER (truncating) division at runtime when BOTH
+        // operands are integer-kinded (`7 / 2 = 3`), which the QF_FP `fp.div` encoding (3.5) contradicts.
+        // A float wrapper like `+ 0.0` flips the whole term's static type to float and used to engage the
+        // float encoder on the int-division subexpr → `let x: f64 = (7/2)+0.0; assert(x == 3.5)` false-
+        // accepted (checker pinned 3.5, runtime 3.0). An all-integer `/` must now DEFER in the float lane.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // The false model value (3.5, from fp.div) must NOT prove — the all-int `/` defers (fail-closed):
+        assert!(
+            !discharged("fn f() -> f64 ensures(result == 3.5) { return (7 / 2) + 0.0; } fn main() { let r = f(); }"),
+            "an all-integer `/` inside a float term must NOT be modeled as fp.div (3.5)"
+        );
+        // The LET / struct-field body-assert manifestation converts from a pinned FALSE MODEL (which
+        // REJECTED the true runtime value 3.0 while proving 3.5) to a sound DEFER (accepts every value):
+        // the true runtime value (3.0) must NO LONGER be rejected by a false model.
+        assert!(
+            discharged("fn main() { let x: f64 = (7 / 2) + 0.0; assert(x == 3.0); }"),
+            "the all-int `/` let-manifestation defers — the true value (3.0) is not rejected by a false model"
+        );
+        assert!(
+            discharged("struct P { x: f64 } fn main() { let p = P { x: (7 / 2) + 0.0 }; assert(p.x == 3.0); }"),
+            "the all-int `/` struct-field manifestation defers — the true value (3.0) is not rejected"
+        );
+        // A GENUINE float division still models precisely (at least one operand is genuinely float):
+        assert!(
+            discharged("fn f(x: f64) -> f64 requires(x == 7.0) ensures(result == 3.5) { return (x / 2) + 0.0; } fn main() { let r = f(7.0); }"),
+            "a `/` with a genuine float operand still models via fp.div (x/2 = 3.5)"
+        );
+        assert!(
+            discharged("fn f() -> f64 ensures(result == 3.5) { return (7.0 / 2) + 0.0; } fn main() { let r = f(); }"),
+            "a `/` with a float LITERAL operand still models via fp.div (7.0/2 = 3.5)"
+        );
+        // The non-diverging float ops over SMALL integer literals still model (int and float agree, coerce
+        // alike, |n| <= 2^53):
+        assert!(
+            discharged("fn f() -> f64 ensures(result == 9.0) { return (7 + 2) + 0.0; } fn main() { let r = f(); }"),
+            "an all-integer `+` inside a float term still models (7+2 = 9 both int and float)"
+        );
+        assert!(
+            discharged("fn f() -> f64 ensures(result == 1.0) { return (7 % 2) + 0.0; } fn main() { let r = f(); }"),
+            "a small all-integer `%` inside a float term still models (7%2 = 1)"
+        );
+        // SOUNDNESS (final hunt a2c88967): the sibling ops `%`/`+`/`-` over an integer literal BEYOND f64's
+        // exact-integer range (2^53) diverge by a DIFFERENT mechanism — the operand rounds under `to_fp`
+        // (2^53+1 → the even 2^53) while the runtime keeps it EXACT in an all-int subexpr. `9007199254740993
+        // % 2` = 1 at runtime but the model (over the rounded 2^53) gives 0. The Literal-arm |n| <= 2^53
+        // range gate closes it: the term DEFERS, so the false model value (0.0) does NOT prove.
+        assert!(
+            !discharged("fn f() -> f64 ensures(result == 0.0) { return (9007199254740993 % 2) + 0.0; } fn main() { let r = f(); }"),
+            "an int literal > 2^53 in a float `%` must NOT be modeled (to_fp rounds 2^53+1 to even 2^53 → 0)"
+        );
+        assert!(
+            discharged("fn main() { let x: f64 = (9007199254740993 % 2) + 0.0; assert(x == 1.0); }"),
+            "the > 2^53 `%` let-manifestation defers — the true value (1.0) is not rejected by a false model"
+        );
+        assert!(
+            !discharged("fn f() -> f64 ensures(result == 9007199254740992.0) { return (9007199254740993 + 1) + 0.0; } fn main() { let r = f(); }"),
+            "an int literal > 2^53 in a float `+` must NOT be modeled (to_fp rounding diverges from exact i64)"
+        );
+        // SOUNDNESS (final hunt a3c25d29): an all-integer `*` whose PRODUCT overflows i64 diverges even
+        // with operands FAR below 2^53 — `3037000500 * 3037000500` > i64::MAX, so the runtime wrapping_mul
+        // WRAPS (sign-flips to negative) while `fp.mul` computes the true positive product. The model must
+        // NOT prove `> 0` when the runtime is negative. A small `*` (product fits i64) still models.
+        assert!(
+            discharged("fn f() -> f64 ensures(result == 14.0) { return (7 * 2) + 0.0; } fn main() { let r = f(); }"),
+            "a small all-integer `*` (product fits i64) still models (7*2 = 14)"
+        );
+        // The overflowing `*` DEFERS: on the buggy version the positive-product false model REJECTED the
+        // true runtime sign (negative, from wrapping_mul); after the gate it accepts (defer). The true
+        // value `x < 0.0` must NOT be rejected by a false model:
+        assert!(
+            discharged("fn main() { let x: f64 = (3037000500 * 3037000500) + 0.0; assert(x < 0.0); }"),
+            "the overflowing `*` defers — the true (negative) runtime value is not rejected by a false model"
+        );
+        assert!(
+            discharged("fn main() { let x: f64 = (3037000500 * 3037000500) + 0.0; assert(x > 0.0); }"),
+            "…and it accepts the wrong value too (accept-both = sound defer, not a pinned false model)"
+        );
+        // SOUNDNESS (final hunt acbec3cc — the FOURTH class): an all-integer `+`/`-` CHAIN whose
+        // INTERMEDIATE crosses 2^53 DOUBLE-ROUNDS — the runtime computes `(2^53 + 1) + 1` exactly in i64
+        // (2^53+2) and rounds ONCE at the coercion (→ 9007199254740994.0), while the per-op fp chain
+        // rounds at EVERY step (2^53+1 → ties-to-even 2^53, twice → 9007199254740992.0). All operands can
+        // be small (2^52 each), so no per-operand gate catches it — the `int_chain_exact` fold (every
+        // partial result <= 2^53) does. The chain now DEFERS: the pinned false model (2^53) must not
+        // prove, and the TRUE runtime value must not be rejected.
+        assert!(
+            !discharged("fn f() -> f64 ensures(result == 9007199254740992.0) { return (9007199254740992 + 1) + 1 + 0.0; } fn main() { let r = f(); }"),
+            "an all-int +-chain crossing 2^53 must NOT be modeled (per-op fp double-rounds vs runtime's single round)"
+        );
+        assert!(
+            discharged("fn main() { let x: f64 = (9007199254740992 + 1) + 1 + 0.0; assert(x == 9007199254740994.0); }"),
+            "the 2^53-crossing chain defers — the TRUE runtime value (2^53+2) is not rejected by a false model"
+        );
+        // dr4: ALL operands small (2^52) — only the intermediate crosses 2^53. Must defer identically.
+        assert!(
+            discharged("fn main() { let x: f64 = (4503599627370496 + 4503599627370496 + 1) + 1 + 0.0; assert(x == 9007199254740994.0); }"),
+            "a small-operand chain whose INTERMEDIATE crosses 2^53 defers (true value not rejected)"
+        );
+        // SOUNDNESS (final hunt a0ac5fe7 — the FIFTH class, SIGNED ZERO): an all-int subexpr that folds to
+        // 0 is coerced to +0.0 by the runtime (`Int(0).as_f64()`), but the fp encoder yields -0.0 for
+        // `fp.rem`(neg dividend) / `fp.mul`(opposite signs) / `fp.neg`(0). Signed zeros compare EQUAL, so it
+        // hides until DIVISION: `1.0 / ((0-4) % 2)` = -inf (model, -0.0 denom) vs +inf (runtime, +0.0). The
+        // model must NOT prove `x < 0.0` (true value is +inf). A zero fold now DEFERS.
+        assert!(
+            discharged("fn main() { let x: f64 = 1.0 / ((0 - 4) % 2); assert(x > 0.0); }"),
+            "a zero-folding `%` denom defers — the true runtime value (+inf) is not rejected by a -inf model"
+        );
+        assert!(
+            discharged("fn main() { let x: f64 = 1.0 / ((0 - 2) * 0); assert(x > 0.0); }"),
+            "a zero-folding `*` (opposite-sign) denom defers (fp.mul -0.0 vs runtime +0.0)"
+        );
+        assert!(
+            discharged("fn main() { let x: f64 = 1.0 / (0 - (3 % 3)); assert(x > 0.0); }"),
+            "a zero-folding unary-negation denom defers (fp.neg 0 = -0.0 vs runtime +0.0)"
+        );
+        // A clean NON-zero fold (no zero-folding subexpr) still models — the zero-fold gate is targeted:
+        assert!(
+            discharged("fn f() -> f64 ensures(result == 2.0) { return (3 - 1) + 0.0; } fn main() { let r = f(); }"),
+            "a clean non-zero fold still models (3-1 = 2)"
+        );
+        // …but an expr BUILT ON a zero-fold defers (the recursive is_float_modelable propagates it):
+        assert!(
+            discharged("fn main() { let x: f64 = 1.0 / (((0 - 4) % 2) - 1 + 5); assert(x > 0.0); }"),
+            "an expr containing a zero-folding `%` subexpr defers even where its own fold is non-zero"
+        );
+    }
+
+    #[test]
     fn phase3_divisor_gate_no_false_model_on_beyond_i64_divisor() {
         // SOUNDNESS (hunt a1250c79): `divisor_is_proven_nonzero` is consulted by the INTEGER `/`/`%` QF_BV
         // lane. An interim float-% cut added an f64-parse branch to it (to "prove" float divisors non-zero),

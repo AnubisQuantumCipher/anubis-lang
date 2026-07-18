@@ -5850,21 +5850,67 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
         // A finite f64 literal that has a plain decimal form: `"NaN"`/`"inf"` both `.parse::<f64>()` OK in
         // Rust (a non-finite literal would break the NaN/inf reasoning), and a very large/small value
         // formats to scientific notation (`1e20`) which is NOT a valid SMT-LIB Real — reject both.
-        Expr::Literal(l) => l
-            .parse::<f64>()
-            .map(|v| v.is_finite() && !format!("{v:?}").contains(['e', 'E']))
-            .unwrap_or(false),
+        Expr::Literal(l) => {
+            let plain_finite = l
+                .parse::<f64>()
+                .map(|v| v.is_finite() && !format!("{v:?}").contains(['e', 'E']))
+                .unwrap_or(false);
+            // CRITICAL (final hunt a2c88967): an INTEGER-FORM literal beyond f64's exact-integer range
+            // (2^53) is kept EXACTLY as i64 at runtime when it flows through an ALL-INTEGER subexpr —
+            // `9007199254740993 % 2 = 1` — but the float encoder rounds it via `to_fp` (2^53+1 → the even
+            // 2^53), so `fmod`/`fp.add` compute a divergent value (`% 2` → 0). A large int literal `to_fp`
+            // rounds, whereas `/`'s divergence is truncation (gated separately in the `/` arm). Reject an
+            // int-form literal with |n| > 2^53 from the float lane. A float-FORM literal (has a `.`) rounds
+            // IDENTICALLY at parse-time on both sides (runtime and `to_fp`), so it stays admissible.
+            let int_form_exact = match l.parse::<i64>() {
+                Ok(n) => n.unsigned_abs() <= (1u64 << 53),
+                Err(_) => true,
+            };
+            plain_finite && int_form_exact
+        }
         // `/` is included: runtime float division is TOTAL (no trap, unlike integer `/` — run.rs), and
         // `fp.div RNE` is bit-exact to it including x/0 → ±inf/NaN, which the NaN-aware comparison
         // encoding then handles. So the whole "prove divisor non-zero" machinery the QF_BV lane needs is
         // unnecessary here. `%` is still excluded (Rust f64 `%` is fmod, not SMT fp.rem).
-        Expr::Binary { op, lhs, rhs }
-            if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" =>
-        {
-            // `%` is float `fmod`, encoded EXACTLY via fp.rem + a sign-correction in float_expr_to_smt
-            // (NOT the divergent fp.rem — see there); `/` is IEEE fp.div = runtime f64 `/`. Both operands
-            // must be float-modelable.
-            is_float_modelable(lhs, float_vars) && is_float_modelable(rhs, float_vars)
+        Expr::Binary { op, lhs, rhs } if op == "+" || op == "-" || op == "*" || op == "%" => {
+            // An ALL-INTEGER `+`/`-`/`*`/`%` subexpr is admitted ONLY when it CONST-FOLDS exactly with
+            // EVERY partial result |v| <= 2^53 (`int_chain_exact`): then every `fp.*` step in the encoder's
+            // per-op chain is EXACT (no rounding anywhere) and equals the runtime's exact-i64-then-coerce
+            // by construction. This one principled gate subsumes the ad-hoc per-mechanism guards, closing
+            // ALL FOUR hunted divergence classes: `*` i64-overflow (checked_mul fails → defer, hunt
+            // a3c25d29), a `> 2^53` operand (the |v| bound, hunt a2c88967), an `+`/`-` CHAIN whose
+            // INTERMEDIATE crosses 2^53 and double-rounds (`(2^53 + 1) + 1`: runtime rounds ONCE at the
+            // coercion → 2^53+2, the fp chain rounds at EVERY step → 2^53 — hunt acbec3cc, operands all
+            // small in its dr4 case so no per-operand gate can catch it), and `%`-by-zero (runtime trap →
+            // fold fails → defer). A subexpr with a GENUINE float operand is the normal float lane (the
+            // runtime itself computes in f64 there, matching fp.* step for step). (`/` stays separate
+            // below — integer `/` TRUNCATES, so even an exactly-foldable all-int `/` diverges from fp.div.)
+            // The fold must be exact AND its value NON-ZERO. A zero fold is the one place the "every fp
+            // step equals the runtime" invariant breaks on the SIGN of zero: the runtime coerces `Int(0)`
+            // to +0.0 ALWAYS, but the fp encoder yields -0.0 for `fp.rem`(neg dividend), `fp.mul`(opposite
+            // signs), `fp.neg`(0) — `(0-4)%2` → -0.0 vs runtime +0.0. Signed zeros compare EQUAL, so this
+            // hid behind every comparison, but DIVISION exposes it (`1.0 / -0.0 = -inf` vs `+inf`) — final
+            // hunt a0ac5fe7. Because this predicate is applied by the recursive `is_float_modelable` (which
+            // requires BOTH operands modelable), rejecting a zero-folding subexpr here ALSO defers every
+            // enclosing term that contains it — so a `%`/`*`/`neg` that folds to 0 can never reach the fp
+            // encoder in any position. Conservative (it over-defers `(5-5)+0.0`, whose fp is +0.0 both, and
+            // any expr built on a zero-fold) but sound — a pathological precision loss for a soundness gate.
+            is_float_modelable(lhs, float_vars)
+                && is_float_modelable(rhs, float_vars)
+                && (is_genuinely_float(lhs, float_vars)
+                    || is_genuinely_float(rhs, float_vars)
+                    || int_chain_exact(e).is_some_and(|v| v != 0))
+        }
+        Expr::Binary { op, lhs, rhs } if op == "/" => {
+            // `/` is IEEE `fp.div` = runtime f64 `/` ONLY when the runtime does FLOAT division — i.e. at
+            // least one operand is genuinely a float. When BOTH operands are integer-kinded the runtime
+            // does INTEGER (truncating) division (`7 / 2 = 3`), which `fp.div` (3.5) contradicts. An
+            // all-integer `/`, even inside a float term via `+ 0.0`, must DEFER — else the float encoder
+            // false-models the int division (final hunt a1c681b1). Unlike `+`/`-`/`*`, `/` diverges even
+            // without overflow, so it needs this extra genuine-float-operand gate.
+            is_float_modelable(lhs, float_vars)
+                && is_float_modelable(rhs, float_vars)
+                && (is_genuinely_float(lhs, float_vars) || is_genuinely_float(rhs, float_vars))
         }
         Expr::Unary { op, expr } if op == "-" => is_float_modelable(expr, float_vars),
         Expr::Declassify { inner, .. } => is_float_modelable(inner, float_vars),
@@ -5872,6 +5918,71 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
         // field constrained by a `requires`). Mirrors the int/string field arms.
         Expr::FieldAccess { base, field, .. } => {
             // Single-level `p.a` OR nested `p.a.b` — resolve the whole field path to its symbol.
+            field_access_symbol(base).is_some_and(|bs| float_vars.contains(&mangle_field(&bs, field)))
+        }
+        _ => false,
+    }
+}
+
+/// True when `e` is GENUINELY a float at runtime — a float-form literal (`7.0`, has a `.`; an `e`/`E`
+/// literal is already rejected by `is_float_modelable`), a registered float variable/field, or an
+/// arithmetic term one of whose operands is genuinely float (runtime type promotion). This is STRICTER
+/// than `is_float_modelable`, which admits a bare integer literal `"7"` as a float via `.parse::<f64>()`.
+/// It is the gate that keeps an all-integer `/` (integer truncating division at runtime) out of the QF_FP
+/// `fp.div` lane: only a `/` with a genuinely-float operand actually does float division at runtime.
+/// Exact i64 const-fold of an ALL-INTEGER arithmetic subexpression (int literals composed with `+ - * %`
+/// and unary `-`) requiring EVERY partial result (and every literal) to satisfy |v| <= 2^53, f64's
+/// exact-integer bound. Under that bound each `fp.add`/`fp.sub`/`fp.mul`/fmod step over the encoded operands
+/// is EXACT, so the float-lane model provably equals the runtime's exact-i64-then-coerce-once evaluation.
+/// Returns None (→ the caller defers) on: a non-int-literal leaf, any op the fold does not cover (incl.
+/// `/`, which truncates), i64 overflow (`checked_*`), `%` by zero (a runtime trap), or any partial |v|
+/// beyond 2^53 (where fp steps start ROUNDING and a chain double-rounds vs the runtime's single rounding).
+fn int_chain_exact(e: &Expr) -> Option<i64> {
+    fn exact(v: i64) -> Option<i64> {
+        if v.unsigned_abs() <= (1u64 << 53) {
+            Some(v)
+        } else {
+            None
+        }
+    }
+    match e {
+        Expr::Literal(l) => l.parse::<i64>().ok().and_then(exact),
+        Expr::Binary { op, lhs, rhs } => {
+            let a = int_chain_exact(lhs)?;
+            let b = int_chain_exact(rhs)?;
+            let v = match op.as_str() {
+                "+" => a.checked_add(b)?,
+                "-" => a.checked_sub(b)?,
+                "*" => a.checked_mul(b)?,
+                "%" => {
+                    if b == 0 {
+                        return None;
+                    }
+                    a.checked_rem(b)?
+                }
+                _ => return None,
+            };
+            exact(v)
+        }
+        Expr::Unary { op, expr } if op == "-" => {
+            int_chain_exact(expr).and_then(|v| v.checked_neg()).and_then(exact)
+        }
+        _ => None,
+    }
+}
+
+fn is_genuinely_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
+    match e {
+        Expr::Var(v) => float_vars.contains(v),
+        // A float LITERAL is written with a decimal point (an `e`/`E` form is rejected upstream). A bare
+        // integer literal `"7"` is NOT genuinely float — that is exactly the value this gate excludes.
+        Expr::Literal(l) => l.contains('.'),
+        Expr::Binary { lhs, rhs, .. } => {
+            is_genuinely_float(lhs, float_vars) || is_genuinely_float(rhs, float_vars)
+        }
+        Expr::Unary { expr, .. } => is_genuinely_float(expr, float_vars),
+        Expr::Declassify { inner, .. } => is_genuinely_float(inner, float_vars),
+        Expr::FieldAccess { base, field, .. } => {
             field_access_symbol(base).is_some_and(|bs| float_vars.contains(&mangle_field(&bs, field)))
         }
         _ => false,
