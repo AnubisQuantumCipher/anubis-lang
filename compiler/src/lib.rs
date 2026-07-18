@@ -5865,6 +5865,70 @@ fn main() {
     }
 
     #[test]
+    fn closure_through_user_fn_param_does_not_launder_taint_or_effect() {
+        // SECURITY (task #48-A): a closure passed to a USER FN that APPLIES that param position
+        // laundered its egress — the callee's isolated analysis sees the param as opaque, and the
+        // caller never DIRECTLY applies the closure, so #47 never fired. Now `fn_applies_param` marks
+        // the applied-and-unshadowed positions and the call site descends into the closure arg's body.
+
+        // TAINT: a var-bound closure captures a tainted value into a sink, laundered through a forwarder.
+        let taint = r#"
+fn apply_it(g) { g(0); }
+fn main() {
+    let t: tainted<u32> = symbolic();
+    let leak = |x| sink(t);
+    apply_it(leak);
+}
+"#;
+        let err = tc_ok(taint)
+            .expect_err("a closure laundering taint through a user-fn param that applies it must be rejected");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // TAINT via an INLINE closure arg (not var-bound) — the same descent resolves it.
+        let taint_inline = r#"
+fn apply_it(g) { g(0); }
+fn main() { let t: tainted<u32> = symbolic(); apply_it(|x| sink(t)); }
+"#;
+        let err = tc_ok(taint_inline)
+            .expect_err("an inline closure arg laundering taint through an applying user fn must be rejected");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // EFFECT dual: an undeclared fs.write laundered through a user forwarder is charged to the caller.
+        let effect = r#"
+fn apply_it(g) { g(0); }
+fn main() {
+    let leak = |x| write_file("o", "d");
+    apply_it(leak);
+}
+"#;
+        let err = tc_ok(effect)
+            .expect_err("a closure's undeclared fs.write laundered through an applying user fn must be rejected");
+        assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN"), "got: {err}");
+
+        // NON-REGRESSION (must NOT over-reject): a clean closure through a forwarder, and one whose
+        // effect the CALLER declares, are accepted (the descent enforces, it does not over-reject).
+        tc_ok("fn apply_it(g) { g(0); } fn main() { let g = |x| 1; apply_it(g); }")
+            .expect("a clean closure through an applying user fn is accepted");
+        tc_ok(r#"fn apply_it(g) { g(0); } fn main() uses(fs.write) { let g = |x| write_file("o","d"); apply_it(g); }"#)
+            .expect("a closure whose fs.write the caller declares, through a forwarder, is accepted");
+        // Declassify (with policy+reason) is honored through the descent.
+        tc_ok(r#"fn apply_it(g) { g(0); } fn main() { let t: tainted<u32> = symbolic(); let leak = |x| sink(declassify(t, "p", "r")); apply_it(leak); }"#)
+            .expect("a declassified tainted flow through an applying user fn is accepted");
+
+        // FALSE-REJECT GUARD: the callee SHADOWS the applied param with a clean local — at runtime the
+        // LOCAL (not the passed closure) is applied, so passing an effectful closure is VALID. The
+        // under-approximating `fn_applies_param` must EXCLUDE the shadowed param (no descent, accepted).
+        tc_ok(r#"fn apply_it(g) { let g = |y| 1; g(0); } fn main() { let leak = |x| write_file("o","d"); apply_it(leak); }"#)
+            .expect("a param shadowed by a clean local before application must not be treated as applied (no false reject)");
+
+        // NON-INTERFERENCE with the returned-closure lane: a fn that RETURNS a closure capturing its
+        // param does NOT apply it during its own execution, so the new descent must not fire on a bare
+        // `make(secret)` that is never itself applied.
+        tc_ok("fn make(t) { return |x| t; } fn main() { let s: tainted<u32> = symbolic(); let g = make(s); }")
+            .expect("a returned-but-unapplied closure must not trigger the applied-param descent");
+    }
+
+    #[test]
     fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
         // Regression for a false negative an adversarial workflow found in the first version of this
         // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"

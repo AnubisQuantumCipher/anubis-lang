@@ -292,6 +292,14 @@ struct SemanticContext {
     /// interproc twin of the var-bound closure fix. Single tail-lambda only (a conditional / multi-return
     /// lambda, or a nested lambda in the body that substitute_vars will not descend, stays a residual).
     fn_returns_lambda: BTreeMap<String, (Vec<String>, Expr)>,
+    /// Task #48-A: for each function, the formal-parameter indices it APPLIES directly during its own
+    /// execution (a `p(...)` call at F's level, NOT inside a nested lambda) and never shadows/reassigns.
+    /// Passing a closure at such a position is equivalent to applying it, so the Safe-mode taint/effect
+    /// egress of the closure ARG must be enforced at the call site (a var-bound closure otherwise
+    /// launders through a user forwarder: `fn apply(g){g(0);} … apply(|x| write_file(..))` was accepted).
+    /// UNDER-approximated: a shadowed/reassigned or lambda-captured (deferred-application) param is
+    /// EXCLUDED, so a false reject is impossible — an excluded param merely leaves the hole open.
+    fn_applies_param: BTreeMap<String, Vec<usize>>,
     /// Interprocedural param→sink summary (Phase-3 A1): for each function, the set of formal
     /// parameter indices that can flow to a sink (builtin `is_sink`, or a call argument position
     /// that another function's summary marks as sinking) without declassify. Monotone fixpoint.
@@ -600,6 +608,23 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                 (params.iter().map(|(n, _)| n.clone()).collect(), tv[0].clone()),
                             );
                         }
+                    }
+                }
+                // Task #48-A: record which param positions this fn APPLIES directly at its own level
+                // (`p(...)`, not inside a deferred lambda) and never shadows/reassigns — a closure passed
+                // there is enforced at the call site (`fn_applies_param`). Under-approximated: a shadowed
+                // or lambda-captured param is excluded, so the call-site descent can never false-reject.
+                {
+                    let mut applied = Vec::new();
+                    for (i, (pname, _)) in params.iter().enumerate() {
+                        let (mut applies, mut shadows) = (false, false);
+                        scan_applied_param_stmts(body, pname, &mut applies, &mut shadows);
+                        if applies && !shadows {
+                            applied.push(i);
+                        }
+                    }
+                    if !applied.is_empty() {
+                        ctx.fn_applies_param.insert(name.clone(), applied);
                     }
                 }
                 // Flat function namespace: a redefinition is an error.
@@ -4800,6 +4825,49 @@ fn analyze_expr_effect(
                     analyze_expr_effect(body, mode, &local, effects, ctx);
                 }
             }
+            // Task #48-A: a closure passed to a USER FN that APPLIES that param position
+            // (`fn apply(g){ g(0); } … apply(|x| write_file(..))`) otherwise launders the closure's
+            // taint/effect — the callee's isolated analysis sees `g` as an opaque param (no descent),
+            // and the caller never DIRECTLY applies the closure, so #47 never fires. Descend into the
+            // closure ARG's body here, in the CALLER's scope (a captured tainted/secret binding is
+            // seen), charging its egress to the caller — sound: the application happens in the caller's
+            // dynamic extent through the callee. Only param positions the callee applies-and-never-
+            // shadows are enforced (`fn_applies_param`), so a non-applied/shadowed closure arg is never
+            // spuriously charged (no false reject). Cloned out of `ctx` first to free the borrow.
+            if let Some(applied) = ctx.fn_applies_param.get(callee).cloned() {
+                for i in applied {
+                    let resolved: Option<Expr> = match args.get(i) {
+                        Some(l @ Expr::Lambda { .. }) => Some(l.clone()),
+                        Some(Expr::Var(g)) => {
+                            scope.get(g).and_then(|b| b.closure_lambda.as_deref().cloned())
+                        }
+                        _ => None,
+                    };
+                    if let Some(Expr::Lambda { params, body }) = resolved {
+                        let mut local = scope.clone();
+                        for pp in &params {
+                            local.insert(
+                                pp.clone(),
+                                ScopeBinding {
+                                    info: BindingInfo {
+                                        name: pp.clone(),
+                                        ty: None,
+                                        mode: String::new(),
+                                        tainted: false,
+                                        taint_source: None,
+                                        declassified: false,
+                                        span: None,
+                                    },
+                                    closure_arity: None,
+                                    closure_lambda: None,
+                                    secret: false,
+                                },
+                            );
+                        }
+                        analyze_expr_effect(&body, mode, &local, effects, ctx);
+                    }
+                }
+            }
         }
         Expr::Declassify {
             inner,
@@ -7605,6 +7673,213 @@ fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
     let mut m = BTreeMap::new();
     m.insert("result".to_string(), repl.clone());
     substitute_vars(e, &m)
+}
+
+/// Task #48-A: scan a function body at its OWN execution level for (a) a direct application `p(...)`
+/// of param `p` and (b) any construct that shadows/reassigns the name `p`. A param that is applied
+/// but never shadowed is "descend-safe": passing a closure there is equivalent to applying it, so the
+/// closure's Safe-mode taint/effect egress is enforced at the call site. Nested lambda bodies are NOT
+/// descended — their applications are DEFERRED (they run when the lambda is later applied, not now),
+/// so counting them would risk a false reject at a call site where no application actually occurs.
+/// Over-detecting a shadow only forgoes a descent (leaves the laundering hole open); it can never
+/// cause a false reject, so this is sound-by-under-approximation.
+fn scan_applied_param_stmts(body: &[Stmt], p: &str, applies: &mut bool, shadows: &mut bool) {
+    use crate::frontend::ForSource;
+    for s in body {
+        match s {
+            Stmt::Let { name, init, .. } => {
+                if name == p {
+                    *shadows = true;
+                }
+                scan_applied_param_expr(init, p, applies, shadows);
+            }
+            Stmt::LetPattern { pattern, init, .. } => {
+                if pattern.bound_names().iter().any(|n| n == p) {
+                    *shadows = true;
+                }
+                scan_applied_param_expr(init, p, applies, shadows);
+            }
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
+                if pattern.bound_names().iter().any(|n| n == p) {
+                    *shadows = true;
+                }
+                scan_applied_param_expr(expr, p, applies, shadows);
+                scan_applied_param_stmts(body, p, applies, shadows);
+            }
+            Stmt::Assign { target, value } => {
+                if let Expr::Var(v) = target {
+                    if v == p {
+                        *shadows = true;
+                    }
+                }
+                scan_applied_param_expr(target, p, applies, shadows);
+                scan_applied_param_expr(value, p, applies, shadows);
+            }
+            Stmt::If { cond, then, else_ } => {
+                scan_applied_param_expr(cond, p, applies, shadows);
+                scan_applied_param_stmts(then, p, applies, shadows);
+                if let Some(e) = else_ {
+                    scan_applied_param_stmts(e, p, applies, shadows);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                scan_applied_param_expr(cond, p, applies, shadows);
+                scan_applied_param_stmts(body, p, applies, shadows);
+            }
+            Stmt::Loop { body, .. } => scan_applied_param_stmts(body, p, applies, shadows),
+            Stmt::For {
+                var, source, body, ..
+            } => {
+                if var == p {
+                    *shadows = true;
+                }
+                match source {
+                    ForSource::Range { start, end } => {
+                        scan_applied_param_expr(start, p, applies, shadows);
+                        scan_applied_param_expr(end, p, applies, shadows);
+                    }
+                    ForSource::Collection { expr } => {
+                        scan_applied_param_expr(expr, p, applies, shadows)
+                    }
+                }
+                scan_applied_param_stmts(body, p, applies, shadows);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                scan_applied_param_stmts(body, p, applies, shadows)
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                if let Some(b) = gpu {
+                    scan_applied_param_stmts(b, p, applies, shadows);
+                }
+                if let Some(b) = cpu {
+                    scan_applied_param_stmts(b, p, applies, shadows);
+                }
+                if let Some(b) = prove {
+                    scan_applied_param_stmts(b, p, applies, shadows);
+                }
+            }
+            Stmt::SpecBlock { forall } => {
+                if forall == p {
+                    *shadows = true;
+                }
+            }
+            Stmt::ExprStmt(e) => scan_applied_param_expr(e, p, applies, shadows),
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+/// Expression half of `scan_applied_param_stmts`. A nested `Lambda` is a HARD STOP (deferred body).
+fn scan_applied_param_expr(e: &Expr, p: &str, applies: &mut bool, shadows: &mut bool) {
+    match e {
+        // A direct application `p(...)` at this level is the target pattern.
+        Expr::Call { callee, args } => {
+            if callee == p {
+                *applies = true;
+            }
+            for a in args {
+                scan_applied_param_expr(a, p, applies, shadows);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            if let Expr::Var(v) = &**callee {
+                if v == p {
+                    *applies = true;
+                }
+            }
+            scan_applied_param_expr(callee, p, applies, shadows);
+            for a in args {
+                scan_applied_param_expr(a, p, applies, shadows);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            scan_applied_param_expr(lhs, p, applies, shadows);
+            scan_applied_param_expr(rhs, p, applies, shadows);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
+            scan_applied_param_expr(expr, p, applies, shadows)
+        }
+        Expr::Tainted { inner, .. }
+        | Expr::Assume(inner)
+        | Expr::Assert(inner)
+        | Expr::Declassify { inner, .. }
+        | Expr::Try(inner) => scan_applied_param_expr(inner, p, applies, shadows),
+        Expr::Index { base, index } => {
+            scan_applied_param_expr(base, p, applies, shadows);
+            scan_applied_param_expr(index, p, applies, shadows);
+        }
+        Expr::FieldAccess { base, .. } => scan_applied_param_expr(base, p, applies, shadows),
+        Expr::ArrayLiteral { elements } => {
+            for el in elements {
+                scan_applied_param_expr(el, p, applies, shadows);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                scan_applied_param_expr(v, p, applies, shadows);
+            }
+        }
+        Expr::EnumConstruct { fields, .. } => {
+            for f in fields {
+                scan_applied_param_expr(f, p, applies, shadows);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                scan_applied_param_expr(k, p, applies, shadows);
+                scan_applied_param_expr(v, p, applies, shadows);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            scan_applied_param_expr(scrutinee, p, applies, shadows);
+            for arm in arms {
+                if arm.pattern.bound_names().iter().any(|n| n == p) {
+                    *shadows = true;
+                }
+                if let Some(g) = &arm.guard {
+                    scan_applied_param_expr(g, p, applies, shadows);
+                }
+                scan_applied_param_expr(&arm.body, p, applies, shadows);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            scan_applied_param_expr(cond, p, applies, shadows);
+            scan_applied_param_expr(then, p, applies, shadows);
+            scan_applied_param_expr(else_, p, applies, shadows);
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            if pattern.bound_names().iter().any(|n| n == p) {
+                *shadows = true;
+            }
+            scan_applied_param_expr(scrutinee, p, applies, shadows);
+            scan_applied_param_expr(then, p, applies, shadows);
+            scan_applied_param_expr(else_, p, applies, shadows);
+        }
+        Expr::Block { stmts, tail } => {
+            scan_applied_param_stmts(stmts, p, applies, shadows);
+            if let Some(t) = tail {
+                scan_applied_param_expr(t, p, applies, shadows);
+            }
+        }
+        // A nested lambda's body is DEFERRED — do not descend (see fn doc). Its params are irrelevant.
+        Expr::Lambda { .. } => {}
+        // Leaves (Var/Literal/StrLiteral/Symbolic/TaintSource/UnifiedBuffer/RawPtr/Other/…).
+        _ => {}
+    }
 }
 
 /// Create an `ensures` obligation for a return: substitute `result` with the returned expression and
