@@ -2680,10 +2680,12 @@ fn main() {
             !discharged("fn f(n: f64, c: bool) requires(n > 0.0) { let mut i = 0.0; while i < n invariant(i >= 0.0) { if c { i = i + 1.0; } } }"),
             "a branch writing the float loop variable is not analyzable -> rejected"
         );
-        // `%` is excluded from the float lane (Rust f64 `%` is fmod, not SMT fp.rem) -> fail-closed.
+        // Float `%` is now modeled EXACTLY as fmod (fp.rem + a sign-correction; task float-%), so a loop
+        // transition `i = i % 2.0` is analyzable and the invariant `i >= 0.0` PROVES inductively (fmod's
+        // result is >= 0 for a non-negative dividend). (Was: rejected while `%` was unmodeled.)
         assert!(
-            !discharged("fn f(n: f64) requires(n > 0.0) { let mut i = 1.0; while i < n invariant(i >= 0.0) { i = i % 2.0; } }"),
-            "a float `%` transition is unmodelable -> the loop is rejected (fail-closed)"
+            discharged("fn f(n: f64) requires(n > 0.0) { let mut i = 1.0; while i < n invariant(i >= 0.0) { i = i % 2.0; } }"),
+            "a float `%` (fmod) loop transition is now analyzable and the invariant proves"
         );
         // A float `let` (not a param) as the bound proves — the float-let unification seeds it.
         assert!(
@@ -3404,11 +3406,16 @@ fn bad() {
             discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 5.0) { let mut p = P { x: 0.0 }; p.x = 2.0 + 3.0; return p.x; } fn main() { let r = f(); }"),
             "a modelable float arithmetic field write proves (p.x = 2.0 + 3.0 ⇒ 5.0)"
         );
-        // SOUNDNESS: float `%` is NOT modeled (SMT `fp.rem` ≠ runtime `fmod`: 5.5%2.0 is 1.5 at runtime but
-        // -0.5 under fp.rem), so the field defers — the true runtime value must NOT be proved (fail-open).
+        // Float `%` is now modeled EXACTLY as fmod (fp.rem + a sign-correction; task float-%), so a field
+        // write `p.x = 5.5 % 2.0` carries the true runtime value (1.5) and the ensures PROVES. (Was: the
+        // field deferred while `%` was unmodeled.) The divergent SMT `fp.rem` value (-0.5) does NOT prove.
         assert!(
-            !discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 1.5) { let mut p = P { x: 0.0 }; p.x = 5.5 % 2.0; return p.x; } fn main() { let r = f(); }"),
-            "a float `%` field write is unmodeled (fp.rem != fmod) — the runtime value must not prove"
+            discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 1.5) { let mut p = P { x: 0.0 }; p.x = 5.5 % 2.0; return p.x; } fn main() { let r = f(); }"),
+            "a float `%` (fmod) field write is now modeled — 5.5 % 2.0 = 1.5 proves"
+        );
+        assert!(
+            !discharged("struct P { x: f64 } fn f() -> f64 ensures(result == 0.0 - 0.5) { let mut p = P { x: 0.0 }; p.x = 5.5 % 2.0; return p.x; } fn main() { let r = f(); }"),
+            "the divergent SMT fp.rem value (-0.5) must NOT prove — the encoding is fmod"
         );
         // SOUNDNESS: a whole reassign after a float field write disqualifies the base (stale must not prove).
         assert!(
@@ -3561,6 +3568,90 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_float_modulo_is_fmod_not_fp_rem() {
+        // Phase-3 QF_FP: float `%` is C/Rust `fmod` (a - b*trunc(a/b)), encoded EXACTLY in
+        // float_expr_to_smt via fp.rem + a sign-correction — NOT the divergent SMT fp.rem (which uses a
+        // round-to-nearest quotient). fmod(5.5, 2.0) = 1.5, while fp.rem(5.5, 2.0) = -0.5.
+        //
+        // These are OBLIGATION-level facts, so they must be checked through the SOLVER (check_obligations),
+        // not `tc_ok` (parse+typecheck only — it never runs the SMT obligations, so it cannot see an
+        // obligation FAIL; see [[anubis-strlen-sum-lane]] LESSON 33). This helper matches the CLI verdict.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        assert!(
+            discharged("fn f(x: f64) -> f64 requires(x == 5.5) ensures(result == 1.5) { return x % 2.0; }"),
+            "float 5.5 % 2.0 discharges to 1.5 (fmod)"
+        );
+        // The fp.rem value (-0.5) must NOT discharge — proves the encoding is fmod, not fp.rem.
+        assert!(
+            !discharged("fn f(x: f64) -> f64 requires(x == 5.5) ensures(result == 0.0 - 0.5) { return x % 2.0; }"),
+            "the fp.rem value -0.5 must NOT discharge — the encoding is fmod, not fp.rem"
+        );
+        // Sign cases match runtime fmod (sign follows the dividend): -5.5 % 2.0 = -1.5.
+        assert!(
+            discharged("fn f(x: f64) -> f64 requires(x == 0.0 - 5.5) ensures(result == 0.0 - 1.5) { return x % 2.0; }"),
+            "float -5.5 % 2.0 discharges to -1.5 (fmod sign follows dividend)"
+        );
+        // Float division is modeled by the FLOAT lane (fp.div, TOTAL — no div-by-zero trap to guard), so
+        // the contract discharges without ever consulting the integer divisor gate (`x / 0.0` = ±inf is
+        // handled by the NaN-aware comparison encoding; there is no spurious ANUBIS_DIVISOR_MAYBE_ZERO).
+        assert!(
+            discharged("fn f(x: f64) -> f64 requires(x == 7.0) ensures(result == 3.5) { return x / 2.0; }"),
+            "float division discharges via the total fp.div lane (no div-by-zero gate)"
+        );
+    }
+
+    #[test]
+    fn phase3_divisor_gate_no_false_model_on_beyond_i64_divisor() {
+        // SOUNDNESS (hunt a1250c79): `divisor_is_proven_nonzero` is consulted by the INTEGER `/`/`%` QF_BV
+        // lane. An interim float-% cut added an f64-parse branch to it (to "prove" float divisors non-zero),
+        // but the FLOAT lane never consults this gate (fp.div/fmod are total) — so the branch only leaked
+        // into the INTEGER lane. An integer-form literal beyond i64::MAX (2^64+1) parsed as a non-zero f64
+        // and was routed into QF_BV, where it silently reduces mod 2^64 (2^64+1 → 1). That built a FALSE
+        // MODEL: `x % (2^64+1)` modeled as 0, which *proved* `== 0` (runtime TRAPs there) AND *rejected*
+        // the true runtime value 5 (`5.0`, because the runtime parses 2^64+1 as f64 → a total float op).
+        // The fix REMOVES the f64 branch entirely, reverting the gate to integer-literals-only (identical
+        // to the pre-slice base): a beyond-i64 literal fails parse::<i64>(), so the `%` becomes UNMODELABLE
+        // and DEFERS (fail-open — the same accepted behavior as any unmodeled body assert, e.g. over an
+        // opaque call; see [[anubis-strlen-sum-lane]] LESSON 33). The checker makes NO false claim.
+        // DISCRIMINATOR: a false BV model would REJECT the true runtime value (5); the deferred checker
+        // must NOT reject it.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // The TRUE runtime value (5) must NOT be rejected — a false BV model (which excludes 5) would.
+        assert!(
+            discharged("fn f(x: i64) requires(x == 5) { assert(x % 18446744073709551617 == 5); } fn main() { f(5); }"),
+            "beyond-i64 `%` divisor must defer, not build a false BV model that rejects the true value (5)"
+        );
+        // The `/` variant likewise: the true runtime value (0, since 5.0 / 1.8e19 ≈ 0) must not be rejected
+        // by a false BV model (BV would give 5/1 = 5).
+        assert!(
+            discharged("fn f(x: i64) requires(x == 5) { assert(x / 18446744073709551617 == 0); } fn main() { f(5); }"),
+            "beyond-i64 `/` divisor must defer, not build a false BV model that rejects the true value (0)"
+        );
+        // Guardrail: an IN-RANGE integer divisor is STILL proven non-zero and models soundly in QF_BV —
+        // 5 % 3 = 2 proves, and the false value 5 % 3 == 1 is rejected.
+        assert!(
+            discharged("fn f(x: i64) requires(x == 5) { assert(x % 3 == 2); } fn main() { f(5); }"),
+            "an in-range integer divisor still models in QF_BV (5 % 3 = 2)"
+        );
+        assert!(
+            !discharged("fn f(x: i64) requires(x == 5) { assert(x % 3 == 1); } fn main() { f(5); }"),
+            "an in-range integer divisor rejects a false value (5 % 3 != 1)"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,
@@ -3584,12 +3675,26 @@ fn bad() {
             tc_ok("fn f() -> f64 ensures(result == 1.5) { return 1.5; }").is_ok(),
             "a true modelable float ensures should discharge under the QF_FP lane",
         );
-        // …but a NON-modelable float construct stays fail-closed — the lane never fabricates a proof for
-        // what it cannot faithfully model. `%` is excluded (Rust f64 `%` is fmod, not SMT fp.rem); `/`
-        // IS modelable now (fp.div is total + bit-exact), so it is no longer the opaque example.
-        let err = tc_ok("fn f(x: f64, y: f64) -> f64 ensures(result == x % y) { return x % y; }")
-            .expect_err("a non-modelable float `%` ensures must still reject");
-        assert!(err.contains("ANUBIS_"), "got: {err}");
+        // …float `%` is now MODELED too (fmod, via fp.rem + a sign-correction), so it is no longer the
+        // opaque example: it DISCHARGES for concrete operands (5.5 % 2.0 = 1.5). Yet the lane still never
+        // fabricates a proof — a fully-symbolic `result == x % y` is UNPROVABLE (when y == 0, x % y is NaN
+        // and NaN != NaN defeats reflexivity), so the SOLVER keeps it fail-closed. This is an obligation-
+        // level fact, so it is checked through the solver (check_obligations), not `tc_ok` (typecheck-only).
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
+        {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        assert!(
+            discharged("fn f(x: f64) -> f64 requires(x == 5.5) ensures(result == 1.5) { return x % 2.0; }"),
+            "float `%` now models fmod: 5.5 % 2.0 = 1.5 discharges (no longer opaque)"
+        );
+        assert!(
+            !discharged("fn f(x: f64, y: f64) -> f64 ensures(result == x % y) { return x % y; }"),
+            "a fully-symbolic `x % y` stays fail-closed (NaN when y == 0 defeats reflexivity)"
+        );
     }
 
     #[test]

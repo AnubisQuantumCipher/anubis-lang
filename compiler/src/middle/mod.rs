@@ -5772,7 +5772,12 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
         // `fp.div RNE` is bit-exact to it including x/0 → ±inf/NaN, which the NaN-aware comparison
         // encoding then handles. So the whole "prove divisor non-zero" machinery the QF_BV lane needs is
         // unnecessary here. `%` is still excluded (Rust f64 `%` is fmod, not SMT fp.rem).
-        Expr::Binary { op, lhs, rhs } if op == "+" || op == "-" || op == "*" || op == "/" => {
+        Expr::Binary { op, lhs, rhs }
+            if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" =>
+        {
+            // `%` is float `fmod`, encoded EXACTLY via fp.rem + a sign-correction in float_expr_to_smt
+            // (NOT the divergent fp.rem — see there); `/` is IEEE fp.div = runtime f64 `/`. Both operands
+            // must be float-modelable.
             is_float_modelable(lhs, float_vars) && is_float_modelable(rhs, float_vars)
         }
         Expr::Unary { op, expr } if op == "-" => is_float_modelable(expr, float_vars),
@@ -5826,13 +5831,28 @@ fn float_expr_to_smt(e: &Expr) -> String {
         Expr::Binary { op, lhs, rhs } => {
             let l = float_expr_to_smt(lhs);
             let r = float_expr_to_smt(rhs);
-            let f = match op.as_str() {
-                "+" => "fp.add",
-                "-" => "fp.sub",
-                "*" => "fp.mul",
-                _ => "fp.div",
-            };
-            format!("({f} RNE {l} {r})")
+            if op == "%" {
+                // Float `%` is C/Rust `fmod` (`a - b*trunc(a/b)`, round-toward-ZERO quotient), NOT SMT
+                // `fp.rem` (round-to-NEAREST quotient). They coincide EXCEPT when the fp.rem sign disagrees
+                // with `a`'s sign, where they differ by exactly ±|b|: so fmod = fp.rem, corrected by
+                // sign(a)*|b| in that case. EXACT — fp.rem is exact, and fmod is exactly representable so the
+                // ±|b| add rounds to itself. NaN / ±inf / ±0 / b==0 are all handled by fp.rem (a NaN
+                // propagates through the correction; a zero remainder skips it). Verified vs runtime fmod:
+                // 5.5%2.0=1.5, -5.5%2.0=-1.5, 5.5%-2.0=1.5, 3.0%2.0=1.0.
+                format!(
+                    "(let ((la {l}) (rb {r})) (let ((rr (fp.rem la rb))) \
+                     (ite (and (not (fp.isZero rr)) (not (= (fp.isNegative rr) (fp.isNegative la)))) \
+                     (fp.add RNE rr (ite (fp.isNegative la) (fp.neg (fp.abs rb)) (fp.abs rb))) rr)))"
+                )
+            } else {
+                let f = match op.as_str() {
+                    "+" => "fp.add",
+                    "-" => "fp.sub",
+                    "*" => "fp.mul",
+                    _ => "fp.div",
+                };
+                format!("({f} RNE {l} {r})")
+            }
         }
         Expr::Unary { expr, .. } => format!("(fp.neg {})", float_expr_to_smt(expr)),
         // A registered struct float field (single-level or nested `p.a.b`) → its canonical mangled
@@ -7156,8 +7176,17 @@ fn unmodelable_contract_code(e: &Expr, int_vars: &BTreeSet<String>) -> &'static 
     scan(e, int_vars).unwrap_or("ANUBIS_CONTRACT_UNPROVABLE")
 }
 
-/// True when `e` is a divisor the solver may use in `bvsdiv`/`bvsrem` without modeling a trap:
-/// non-zero integer literal, or a variable marked `nzdiv` (from `requires` that excludes 0).
+/// True when `e` is a divisor the solver may use in `bvsdiv`/`bvsrem` (the INTEGER QF_BV lane) without
+/// modeling a trap: a non-zero INTEGER literal, or a variable marked `nzdiv` (from a `requires` that
+/// excludes 0). This gate is consulted ONLY by the integer `/`/`%` lane (`is_int_modelable`) and the
+/// div-by-zero diagnostic — so it must admit ONLY genuine integer divisors. It is deliberately NOT
+/// extended to float-form literals: the FLOAT `/`/`%` lane (`is_float_modelable`) never consults this
+/// function (`fp.div`/`fmod` are TOTAL — `x/0.0`=±inf, `x%0.0`=NaN, modeled faithfully, no trap to
+/// guard), and a genuine float divisor makes `is_int_modelable` false via its operand check anyway.
+/// Admitting a float-form literal here would be HARMFUL: an integer-form literal beyond i64::MAX
+/// (2^64+1) parses as a non-zero f64 but the BV lane silently reduces it mod 2^64 → a false model
+/// (soundness hunt a1250c79); a float-form divisor `2.0` over a genuine i64 dividend would drag the
+/// term into the BV lane and mis-encode `2.0` as an integer. Integer-form only, fail-closed.
 fn divisor_is_proven_nonzero(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
     is_nonzero_int_literal(e) || matches!(e, Expr::Var(v) if int_vars.contains(&nzdiv_mark(v)))
 }
