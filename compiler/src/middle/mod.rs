@@ -13417,6 +13417,22 @@ fn body_param_returns(
                     flow.entry(root.to_string()).or_default().extend(rhs);
                 }
             }
+            // Task #48-f: `push(xs, v)` / `insert(map, k, v)` MUTATES the container `xs`/`map` to include
+            // the pushed value(s), so if the container is later RETURNED, those values' param-flow reaches
+            // the return. Weak-union the flow of every non-container arg into the container binding (push
+            // ADDS, it does not overwrite). Closes container-return taint laundering
+            // (`fn fill(xs, v){ push(xs, v); return xs }` — v reaches the return via the mutated container,
+            // so `send(fill([0], secret)[0])` is caught). Over-approximate (key + value) = safe direction.
+            Stmt::ExprStmt(Expr::Call { callee, args })
+                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+            {
+                if let Expr::Var(container) = &args[0] {
+                    for a in &args[1..] {
+                        let rhs = expr_param_return_flow(a, flow, known_param_return);
+                        flow.entry(container.clone()).or_default().extend(rhs);
+                    }
+                }
+            }
             _ => {
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);

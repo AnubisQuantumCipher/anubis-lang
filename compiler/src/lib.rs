@@ -6120,6 +6120,31 @@ fn main() {
     }
 
     #[test]
+    fn container_mutated_with_a_param_then_returned_carries_taint_and_secrecy() {
+        // SECURITY (task #48-f, soundness-hunt wf_7e946a56): `fn fill(xs, v){ push(xs, v); return xs }`
+        // pushes a labelled `v` into a param container that is RETURNED, so the label reaches the return.
+        // The interproc `param_return_taint` summary dropped container-mutating builtins, so
+        // `send(fill([0], secret)[0])` / `sink(fill([0], tainted))` laundered. Now `body_param_returns`
+        // weak-unions a pushed value's param-flow into the container binding.
+
+        // TAINT.
+        assert!(
+            tc_ok("fn fill(xs, v) { push(xs, v); return xs; } fn main() { let t: tainted<u32> = symbolic(); let c = fill([0], t); sink(c); }").is_err(),
+            "a tainted value pushed into a returned container must taint the caller's result"
+        );
+        // SECRET dual (shares the param_return_taint summary → covered automatically).
+        assert!(
+            tc_ok(r#"fn fill(xs, v) { push(xs, v); return xs; } fn main() uses(net.send) { let s = secret_source("k"); let c = fill([0], s); send("h", 80, c); }"#).is_err(),
+            "a secret pushed into a returned container must make the caller's result secret"
+        );
+        // NON-REGRESSION: a clean value pushed, and a param NOT pushed into the returned container.
+        tc_ok("fn fill(xs, v) { push(xs, v); return xs; } fn main() { let c = fill([0], 5); sink(c); }")
+            .expect("a clean value pushed into a returned container does not taint the result");
+        tc_ok("fn keepfirst(xs, v) { return xs; } fn main() { let t: tainted<u32> = symbolic(); let c = keepfirst([0], t); sink(c); }")
+            .expect("a param NOT pushed into the returned container does not reach the return");
+    }
+
+    #[test]
     fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
         // Regression for a false negative an adversarial workflow found in the first version of this
         // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"
