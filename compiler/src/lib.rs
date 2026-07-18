@@ -3652,6 +3652,94 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_struct_literal_field_numeric_kind_boundary() {
+        // SOUNDNESS (cross-lane audit wf_78499882 + post-fix hunt a1d6b0ae): a struct-literal field whose
+        // value is numeric of the OPPOSITE kind to the declared field type smuggled the wrong runtime kind
+        // into a modeled field — the checker reasoned in the DECLARED type's lane (QF_FP float / QF_BV int)
+        // while the runtime kept the value's NATIVE kind, diverging on `/`. Fixed at the RUNTIME
+        // construction boundary (task #34 dual, so it is COMPREHENSIVE across literal / var / Call /
+        // FieldAccess / Index — the checker cannot statically type the last three): an Int value into a
+        // FLOAT field is COERCED to Float (`anubis_coerce_float_ret`), a Float value into an INTEGER field
+        // FAIL-CLOSES (`anubis_require_int_ret` → ANUBIS_TYPE_VIOLATION). The checker additionally rejects
+        // the RESOLVABLE float→int case early as a clean ANUBIS_TYPE_MISMATCH.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // FLOAT value into an INTEGER field is REJECTED at typecheck (resolvable — literal, nested, Call):
+        assert!(
+            tc_ok("struct P { d: i64 } fn f(p: P) -> i64 requires(p.d == 7) { assert(p.d / 2 == 3); return 0; } fn main() -> i64 { let p = P { d: 7.0 }; return f(p); }").is_err(),
+            "a float literal into an i64 struct field must be rejected"
+        );
+        assert!(
+            tc_ok("struct Inner { d: i64 } struct Outer { inner: Inner } fn f(o: Outer) requires(o.inner.d == 7) { assert(o.inner.d / 2 == 3); } fn main() { f(Outer { inner: Inner { d: 7.0 } }); }").is_err(),
+            "a nested float→i64 leaf is rejected recursively"
+        );
+        assert!(
+            tc_ok("struct P { d: i64 } fn g() -> f64 { return 7.0; } fn f(p: P) -> i64 requires(p.d == 7) { assert(p.d / 2 == 3); return 0; } fn main() -> i64 { return f(P { d: g() }); }").is_err(),
+            "a float-returning CALL into an i64 field is rejected (synth resolves the return type)"
+        );
+        // INT value into a FLOAT field is COERCED (sound): it typechecks AND the QF_FP model discharges the
+        // COERCED float value (7 → 7.0, so p.x/2 == 3.5), NOT the divergent integer value (3). This holds
+        // even when the value is an opaque `Call` — the runtime coercion is comprehensive.
+        assert!(
+            discharged("struct P { x: f64 } fn f(p: P) requires(p.x == 7.0) { assert(p.x / 2 == 3.5); } fn main() { f(P { x: 7 }); }"),
+            "an int literal into an f64 field is coerced → the float value (3.5) is modeled and proves"
+        );
+        assert!(
+            !discharged("struct P { x: f64 } fn f(p: P) requires(p.x == 7.0) { assert(p.x / 2 == 3); } fn main() { f(P { x: 7 }); }"),
+            "the coerced float model rejects the divergent INTEGER value (3) — proving the coercion is modeled"
+        );
+        assert!(
+            discharged("struct P { x: f64 } fn g() -> i64 { return 7; } fn f(p: P) requires(p.x == 7.0) { assert(p.x / 2 == 3.5); } fn main() { f(P { x: g() }); }"),
+            "an int-returning CALL into an f64 field is coerced → the float value (3.5) proves"
+        );
+        // A MATCHING field value still typechecks (no over-rejection); a struct-typed field is not numeric:
+        assert!(
+            tc_ok("struct P { d: i64 } fn f(p: P) requires(p.d == 6) { assert(p.d / 2 == 3); } fn main() { f(P { d: 6 }); }").is_ok(),
+            "a matching i64 field value (6) must still typecheck"
+        );
+        assert!(
+            tc_ok("struct Inner { d: i64 } struct Outer { inner: Inner } fn f(o: Outer) requires(o.inner.d == 6) { assert(o.inner.d / 2 == 3); } fn main() { f(Outer { inner: Inner { d: 6 } }); }").is_ok(),
+            "a matching nested struct field must still typecheck"
+        );
+    }
+
+    #[test]
+    fn phase3_param_shadowing_let_evicts_stale_field_fact() {
+        // SOUNDNESS (cross-lane audit wf_78499882): a param-field write `p.x = 5` registered
+        // mangle_field(p,x) == 5; a `let p = P{x:99}` shadowing the PARAM was not detected as a shadow
+        // (collect_shadowed_lets never pre-seeded parameter names), so the stale fact survived and a later
+        // `p.x` read of the NEW binding proved against the OLD param's field value — a discriminator-
+        // confirmed false model (rejected the true value 99 while proving the stale 5). Fixed: params
+        // pre-seed the shadow set, so the stale mangled fact is evicted and the read DEFERS (fail-open).
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // The TRUE runtime value (99) must NOT be rejected — a pinned false model (p.x=5) would reject it.
+        assert!(
+            discharged("struct P { x: int } fn f(p: P) { p.x = 5; let p = P { x: 99 }; assert(p.x == 99); } fn main() { f(P { x: 1 }); }"),
+            "a param-shadowing let must evict the stale field fact (true value 99 not rejected)"
+        );
+        // The base struct-field-write lane (no param shadow) still models precisely — proves and disproves.
+        assert!(
+            discharged("struct P { x: int } fn f() { let mut p = P { x: 1 }; p.x = 5; assert(p.x == 5); } fn main() { f(); }"),
+            "the base struct-field-write lane still proves (p.x=5 => p.x==5)"
+        );
+        assert!(
+            !discharged("struct P { x: int } fn f() { let mut p = P { x: 1 }; p.x = 5; assert(p.x == 6); } fn main() { f(); }"),
+            "the base struct-field-write lane still disproves a false value (p.x != 6)"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,

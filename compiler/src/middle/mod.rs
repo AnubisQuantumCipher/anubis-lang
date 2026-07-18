@@ -1342,6 +1342,24 @@ fn analyze_function(
     collect_assigned_roots(body, &mut ctx.reassigned_roots);
     ctx.struct_write_disqualified.clear();
     collect_struct_write_disqualified(body, &mut ctx.struct_write_disqualified);
+    // PARAM-SHADOW gate (cross-lane audit wf_78499882): a param-field WRITE `p.f = v` registers the mangled
+    // fact `mangle_field(p,f)`, but a later `let p = …` that SHADOWS the parameter leaves that fact stale —
+    // the read resolves to the NEW binding while the write fact still pins the OLD param field, a
+    // discriminator-confirmed false accept (proved the stale value, rejected the true one). The slice-19
+    // entry-`requires` registration already excludes a let-shadowed param (its gate includes
+    // `collect_let_bound`); mirror that here for the WRITE lane by disqualifying a PARAMETER whose name is
+    // also let-bound in the body. This gates ONLY the write registration (not the struct-LET modeling,
+    // which keys on `reassigned_roots`/`shadowed_lets`), so a param-write-then-shadow soundly DEFERS while a
+    // non-shadowed local write (`let mut q = …; q.f = v`) is untouched. Direction is fail-open (safe).
+    {
+        let mut let_bound = BTreeSet::new();
+        collect_let_bound(body, &mut let_bound);
+        for (pname, _) in params {
+            if let_bound.contains(pname) {
+                ctx.struct_write_disqualified.insert(pname.clone());
+            }
+        }
+    }
     // PREFIX-CONFLICT gate for NESTED field writes (the soundness core of the nested-write half): collect
     // every TOP-LEVEL field write's (root, path) and disqualify a root if any of its write paths is a
     // STRICT PREFIX of another (`p.a` prefix-of `p.a.b`). An intermediate reassign `p.a = ..` would stale
@@ -4725,7 +4743,75 @@ fn analyze_expr_effect(
                 analyze_expr_effect(e, mode, scope, effects, ctx);
             }
         }
-        Expr::StructLiteral { fields, .. } => {
+        Expr::StructLiteral { name, fields, .. } => {
+            // SOUNDNESS (cross-lane audit wf_78499882): a struct-literal field value whose numeric KIND
+            // mismatches the declared field type smuggles the wrong runtime kind into a modeled field —
+            // the checker reasons in the DECLARED type's lane (the QF_FP float model, or the QF_BV integer
+            // model) while the runtime stores the value's NATIVE kind, and the two diverge on a
+            // kind-sensitive op like `/`. Two confirmed false accepts: an int literal into an f64 field
+            // (checker floats `7.0/2=3.5`, runtime ints `7/2=3`) and a float literal into an i64 field
+            // (checker bvsdivs `7/2=3`, runtime floats `7.0/2=3.5`). Reject the mismatch here — the
+            // struct-literal analog of the call-arg / let-annotation type check — in BOTH numeric
+            // directions (Rust rejects `P{x:7}` for an f64 field too). Nested literals are checked
+            // recursively through the per-field `analyze_expr_effect` below. Fixpoint-inert: the self-host
+            // declares no float struct fields, so no self-host construction is reclassified.
+            // Collect mismatches while the `ctx.struct_fields` / `ctx.fn_ret_types` borrows are live, then
+            // push diagnostics after they end (avoids a borrow conflict with `ctx.diagnostics`).
+            let mut kind_mismatches: Vec<(String, String, String, String)> = Vec::new();
+            if let Some(field_tys) = ctx.struct_fields.get(name) {
+                let vars = scope_vars(scope);
+                let env = ty::InferEnv {
+                    vars: &vars,
+                    fns: &ctx.fn_ret_types,
+                    structs: &ctx.struct_fields,
+                };
+                for (fname, e) in fields {
+                    if let Some(field_ty) = field_tys.get(fname) {
+                        // Resolve the value's type via the bidirectional core (`synth_concrete`), which —
+                        // unlike the flat `infer_expr_type_scoped` — synthesizes `Call` / `FieldAccess` /
+                        // `Index`. Those three opaque value exprs are the exact hole the flat inference
+                        // left (`None` → the check was skipped), so a field initialized from `g()` / `q.y`
+                        // / `a[0]` of the OPPOSITE numeric kind smuggled the wrong runtime kind into a
+                        // `requires`-modeled field — a re-opened false accept (post-fix hunt a1d6b0ae).
+                        // Fall back to the flat infer for anything synth cannot type.
+                        let got = ty::synth_concrete(&env, e)
+                            .or_else(|| infer_expr_type_scoped(e, scope));
+                        if let Some(got) = got {
+                            // Reject a FLOAT value into an INTEGER field (lossy, Shor-unmodelable): the
+                            // solver models the field in QF_BV (bvsdiv) while the runtime keeps a Float,
+                            // diverging on `/`. The runtime ALSO fail-closes this at construction
+                            // (`anubis_require_int_ret`), but rejecting the RESOLVABLE case here gives a
+                            // clean compile-time `ANUBIS_TYPE_MISMATCH` instead of a runtime trap. The
+                            // reverse (Int into a FLOAT field) is NOT rejected — the runtime COERCES it to
+                            // Float at construction (`anubis_coerce_float_ret`, task #34 dual), so the QF_FP
+                            // model is sound and `P{x: 7}` is valid, exactly like a float PARAM `f(7)`. A
+                            // non-numeric mismatch is left alone (a `list` into a `[int]` field is a valid
+                            // dynamic construction; an int into a string field DEFERS soundly in QF_S).
+                            let float_into_int_field = ty::is_numeric(field_ty)
+                                && !ty::is_float(field_ty)
+                                && ty::is_numeric(&got)
+                                && ty::is_float(&got);
+                            if float_into_int_field {
+                                kind_mismatches.push((
+                                    name.clone(),
+                                    fname.clone(),
+                                    field_ty.clone(),
+                                    got,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            for (sname, fname, field_ty, got) in kind_mismatches {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                    message: format!(
+                        "struct `{sname}` field `{fname}` expects `{field_ty}`, got `{got}`"
+                    ),
+                    span: None,
+                });
+            }
             for (_, e) in fields {
                 analyze_expr_effect(e, mode, scope, effects, ctx);
             }

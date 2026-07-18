@@ -24,6 +24,13 @@ struct EmitCtx<'a> {
     /// Names bound locally in the current function (params + all let/for/match/… bindings). A
     /// call to one of these is a closure application, shadowing any builtin of the same name.
     locals: &'a std::collections::BTreeSet<String>,
+    /// struct name → (field name → declared type). Used to enforce a struct-literal field's declared
+    /// NUMERIC kind at construction (task #34 dual, extended to the struct-field boundary): a float
+    /// field coerces an Int value to Float, an integer field fail-closes on a non-Int. This keeps the
+    /// solver's per-field SMT model (QF_FP vs QF_BV) sound even when the value is an opaque expression
+    /// (a `Call`/`FieldAccess`/`Index` the checker cannot type) that smuggles the wrong runtime kind.
+    struct_field_types:
+        &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 
 /// Collect every name bound anywhere in a function (params + let/for/match/if-let/while-let/
@@ -305,6 +312,7 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
         fn_arities: base.fn_arities,
         methods: base.methods,
         locals: &locals,
+        struct_field_types: base.struct_field_types,
     };
     let mut sig = Vec::new();
     for (p, _ty) in def.params {
@@ -542,6 +550,19 @@ fn lower_program_with_entry(
         .collect();
     let mut methods = std::collections::BTreeMap::new();
     collect_methods(items, &mut methods);
+    // struct name → (field → declared type), for the construction-boundary numeric-kind coercion.
+    let mut struct_field_types: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, String>,
+    > = std::collections::BTreeMap::new();
+    for item in items {
+        if let Item::Struct { name, fields, .. } = item {
+            struct_field_types.insert(
+                name.clone(),
+                fields.iter().map(|(f, t)| (f.clone(), t.clone())).collect(),
+            );
+        }
+    }
     let empty_locals = std::collections::BTreeSet::new();
     let ctx = EmitCtx {
         allow_research,
@@ -549,6 +570,7 @@ fn lower_program_with_entry(
         fn_arities: &fn_arities,
         methods: &methods,
         locals: &empty_locals,
+        struct_field_types: &struct_field_types,
     };
     let mut functions_src = String::new();
     for def in &fns {
@@ -1497,6 +1519,29 @@ fn anubis_coerce_float_ret(v: AnubisValue, name: &str) -> AnubisValue {
         AnubisValue::Int(n) => AnubisValue::Float(n as f64),
         AnubisValue::Float(_) => v,
         _ => panic!("ANUBIS_TYPE_VIOLATION: function `{}` declares a float return type but returned a non-numeric value at runtime; the checker models its result as an f64, so this is fail-closed rather than silently mis-proved", name),
+    }
+}
+// STRUCT-FIELD numeric-kind guards (task #34 dual, extended to the construction boundary). They are
+// deliberately GENTLER than the param/return guards above, because a struct field's declared type is
+// unreliable: the parser stores a list type `[int]` as its element `int` (the brackets are dropped), so a
+// genuine LIST field looks integer-typed. We therefore act on the VALUE and enforce ONLY the confirmed
+// numeric-kind smuggle — a Float in an INTEGER field (float→int: the solver's QF_BV `bvsdiv` model would
+// diverge from the runtime's float `/`) fails closed; every other value (Int, List, String, Bool, Struct)
+// passes UNCHANGED, so a list/string/bool in an int-typed field (the parser quirk, or a dynamic value the
+// solver does not model as a scalar int) is not spuriously trapped.
+fn anubis_field_require_int(v: AnubisValue, name: &str) -> AnubisValue {
+    if matches!(v, AnubisValue::Float(_)) {
+        panic!("ANUBIS_TYPE_VIOLATION: integer field `{}` received a float value at runtime; the checker models it as an i64, so a float is fail-closed rather than silently mis-proved", name);
+    }
+    v
+}
+// The float dual: COERCE an Int value in a FLOAT field to a Float (so the QF_FP model is sound and
+// `P{x: 7}` binds 7.0, exactly like a float param `f(7)`); pass every other value UNCHANGED (a list/string
+// in a float-typed field is the parser quirk or a dynamic value — not the int→float smuggle).
+fn anubis_field_coerce_float(v: AnubisValue, _name: &str) -> AnubisValue {
+    match v {
+        AnubisValue::Int(n) => AnubisValue::Float(n as f64),
+        other => other,
     }
 }
 fn anubis_panic(msg: AnubisValue) -> AnubisValue { panic!("ANUBIS_PANIC: {}", msg.display_string()); }
@@ -3583,12 +3628,27 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         // Nominal struct construction: `Name { f: e, ... }`.
         Expr::StructLiteral { name, fields, .. } => {
             let mut fs = Vec::new();
+            let field_tys = ctx.struct_field_types.get(name);
             for (fname, fexpr) in fields {
-                fs.push(format!(
-                    "({}.to_string(), {})",
-                    rust_string_lit(fname)?,
-                    safe_run_expr(fexpr, ctx)?
-                ));
+                let val = safe_run_expr(fexpr, ctx)?;
+                // Enforce the declared NUMERIC kind at the struct-construction boundary (task #34 dual):
+                // a float field coerces an Int value to Float (so the solver's QF_FP model is sound), an
+                // integer field fail-closes on a non-Int (so its QF_BV model is sound). Comprehensive
+                // across ALL value shapes — literal, var, `Call`, `FieldAccess`, `Index` — because it acts
+                // on the runtime VALUE, not the checker's (partial) static type. Non-numeric fields are
+                // left untouched. `anubis_require_int_ret` is the identity on an Int, so this is inert on
+                // the self-host (no float fields; every int field already receives an Int).
+                let declared = field_tys.and_then(|m| m.get(fname));
+                let wrapped = match declared {
+                    Some(t) if crate::middle::ty::is_integer(t) => {
+                        format!("anubis_field_require_int({}, {})", val, rust_string_lit(fname)?)
+                    }
+                    Some(t) if crate::middle::ty::is_float(t) => {
+                        format!("anubis_field_coerce_float({}, {})", val, rust_string_lit(fname)?)
+                    }
+                    _ => val,
+                };
+                fs.push(format!("({}.to_string(), {})", rust_string_lit(fname)?, wrapped));
             }
             Ok(format!(
                 "AnubisValue::Struct {{ ty: {}.to_string(), fields: vec![{}] }}",
