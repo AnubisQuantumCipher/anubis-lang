@@ -3441,6 +3441,47 @@ fn bad() {
     }
 
     #[test]
+    fn phase4_struct_string_field_write_modeling() {
+        // Phase-3/4 (task #35): the QF_S dual of the int/float struct-field writes — a straight-line write
+        // to a STRING field `p.s = v` (v string-modelable and not referencing p) registers the field's
+        // `mangle_field(p,s)` symbol in the STRING lane, so a later read `p.s` is CHECKED. Same
+        // `struct_write_disqualified` gate + Rc-COW soundness. No int/float kind-coercion subtlety (a string
+        // field only ever holds a string); the z3 `\u`-decode escaping rides `string_expr_to_smt`.
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+            Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                .iter()
+                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+            Err(_) => false,
+        };
+        // THE DEMONSTRATION: the written string is PROVED (was fail-open before the slice).
+        assert!(
+            discharged(r#"struct P { s: string } fn f() -> string ensures(result == "hi") { let mut p = P { s: "a" }; p.s = "hi"; return p.s; } fn main() { let r = f(); }"#),
+            "a string field write proves the written value (p.s=\"hi\" ⇒ p.s==\"hi\")"
+        );
+        // A FALSE post-write ensures is DISPROVED (modeled, not deferred).
+        assert!(
+            !discharged(r#"struct P { s: string } fn f() -> string ensures(result == "no") { let mut p = P { s: "a" }; p.s = "hi"; return p.s; } fn main() { let r = f(); }"#),
+            "a false string field write ensures is disproved (result==\"no\" for p.s after p.s=\"hi\" rejects)"
+        );
+        // A string field write composes with the str.len lane; a rewrite tracks the latest value.
+        assert!(
+            discharged(r#"struct P { s: string } fn f() -> i64 ensures(result == 5) { let mut p = P { s: "a" }; p.s = "hello"; return len(p.s); } fn main() { let r = f(); }"#),
+            "a string field write composes with str.len (p.s=\"hello\" ⇒ len==5)"
+        );
+        // A `\`-bearing literal is faithfully modeled (the z3 `\u`-decode escaping holds both ways) — a true
+        // self-equality proves, so the encoding is not a false accept nor a decode exploit.
+        assert!(
+            discharged(r#"struct P { s: string } fn f() -> string ensures(result == "a\\b") { let mut p = P { s: "a" }; p.s = "a\\b"; return p.s; } fn main() { let r = f(); }"#),
+            "a backslash-bearing string field write models faithfully (p.s==\"a\\\\b\")"
+        );
+        // SOUNDNESS: a whole reassign after a string field write disqualifies the base (stale must not prove).
+        assert!(
+            !discharged(r#"struct P { s: string } fn f() -> string ensures(result == "b") { let mut p = P { s: "a" }; p.s = "b"; p = P { s: "c" }; return p.s; } fn main() { let r = f(); }"#),
+            "a whole reassign after a string field write strands no stale string fact (result==\"b\" must not prove)"
+        );
+    }
+
+    #[test]
     fn phase4_string_and_float_opaque_diagnostics() {
         // S (Phase-3 QF_S): a MODELABLE string-equality contract — a comparison with a string LITERAL —
         // now DISCHARGES instead of staying opaque. `result == "ok"` for `return "ok"` is `"ok" == "ok"`,

@@ -3375,7 +3375,10 @@ fn analyze_stmts(
                         // Float field (QF_FP): the write lane's dual of the integer branch — the field-READ
                         // side already models a float field (struct-literal-let seed), this adds the WRITE.
                         let field_float = fty.as_deref().is_some_and(is_float_ty);
-                        if (field_int || field_float)
+                        // String field (QF_S): the third dual — a string field's READ is already modeled
+                        // by the struct-literal-let seed; this adds the WRITE.
+                        let field_string = fty.as_deref() == Some("string");
+                        if (field_int || field_float || field_string)
                             && !ctx.struct_write_disqualified.contains(pv)
                             && !ctx.shadowed_lets.contains(pv)
                         {
@@ -3429,11 +3432,26 @@ fn analyze_stmts(
                                 // float and thus coerces at runtime) is float-modeled; an all-int value defers.
                                 ctx.solver_float_vars.insert(sym.clone());
                                 assumptions.push(format!("(= {} {})", fld, float_expr_to_smt(value)));
+                            } else if field_string
+                                && v_ok
+                                && is_string_modelable(value, &ctx.solver_string_vars)
+                            {
+                                // String field WRITE (QF_S): register the field's symbol in the STRING lane
+                                // with the value's SMT-string encoding, mirroring the int/float branches. Same
+                                // COW soundness and `struct_write_disqualified` gate. No int/float kind-coercion
+                                // subtlety — a string field only ever holds a string. `string_expr_to_smt`
+                                // carries the z3 `\u`-decode escaping (a `\` in the literal is emitted as
+                                // `\u{5c}` so z3 cannot re-decode a false accept), inherited from the shared
+                                // string encoder. A non-string-modelable value (a call, an unmodeled var)
+                                // defers.
+                                ctx.solver_string_vars.insert(sym.clone());
+                                assumptions.push(format!("(= {} {})", fld, string_expr_to_smt(value)));
                             } else {
                                 // Unmodelable / self-referencing / unstable value → field UNMODELED (defer),
-                                // dropped from BOTH lanes so no stale fact of either sort survives.
+                                // dropped from ALL lanes so no stale fact of any sort survives.
                                 ctx.solver_int_vars.remove(&sym);
                                 ctx.solver_float_vars.remove(&sym);
+                                ctx.solver_string_vars.remove(&sym);
                             }
                             true
                         } else {
