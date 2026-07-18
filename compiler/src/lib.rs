@@ -3816,6 +3816,118 @@ fn bad() {
     }
 
     #[test]
+    fn phase3_return_side_f64_coercion_rounding_discharge() {
+        // SOUNDNESS (task #41, the RETURN-side dual of #40): a float-returning function coerces its return
+        // value via `n as f64` (run.rs `anubis_coerce_float_ret`), which ROUNDS (round-to-even) when
+        // |n| > 2^53. `ensures` was discharged against the RAW returned expression, so
+        // `fn src() -> f64 ensures(result > 2^53) { return 2^53+1; }` modeled `result` as the exact int
+        // (2^53+1 > 2^53 TRUE) while the runtime rounds the return to 2^53 — a caller
+        // `let r = src(); assert(r > 2^53)` then TRAPS. The fix runs the returned value through the SAME
+        // `coerce_int_into_float_slot` helper the call-site (#40) uses, before discharging the postcondition.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // 2^53 = 9007199254740992. Returning 2^53+1 rounds to 2^53 under `n as f64`, which does NOT satisfy
+        // the postcondition `result > 2^53` — the `ensures` is FALSE at runtime, so it must be REJECTED.
+        assert!(
+            !discharged("fn src() -> f64 ensures(result > 9007199254740992) { return 9007199254740993; }"),
+            "a return value that ROUNDS across the f64 ensures (2^53+1 -> 2^53) must be rejected"
+        );
+        // 2^53+2 IS exactly representable and satisfies `result > 2^53` after coercion — must still ACCEPT.
+        assert!(
+            discharged("fn src() -> f64 ensures(result > 9007199254740992) { return 9007199254740994; }"),
+            "an exactly-representable return satisfying the f64 ensures (2^53+2) still discharges"
+        );
+        // A const-foldable int-ARITHMETIC return is folded then coerced (2^53+1 rounds → reject).
+        assert!(
+            !discharged("fn src() -> f64 ensures(result > 9007199254740992) { return 9007199254740992 + 1; }"),
+            "a const-foldable int-arithmetic return is coerced at its folded value (2^53+1 -> 2^53) → reject"
+        );
+        // A small exact int-literal return with a loose bound is UNCHANGED (lossless coercion) — accepts.
+        assert!(
+            discharged("fn c() -> f64 ensures(result > 2.0) { return 5; }"),
+            "a small int-literal return (lossless coercion) still discharges — no over-rejection"
+        );
+        // A genuine FLOAT return (a float param passed through) is untouched — accepts.
+        assert!(
+            discharged("fn id(x: f64) -> f64 requires(x > 3.0) ensures(result > 2.0) { return x; }"),
+            "a genuine float return (float param passed through) is unchanged and still discharges"
+        );
+        // A SYMBOLIC int return whose coercion could round across the bound is discharged fail-closed
+        // (arbitrary-f64 model) — this is the return-side of the pre-fix symbolic false accept.
+        assert!(
+            !discharged("fn src(k: i64) -> f64 requires(k > 9007199254740992) ensures(result > 9007199254740992) { return k; }"),
+            "a symbolic int return that could round across the f64 ensures is discharged fail-closed"
+        );
+        // HONEST completeness note: the symbolic fail-closed path also OVER-REJECTS a benign int→float
+        // conversion (`requires(n >= 0) ensures(result >= 0.0) { return n; }` — a nonneg int coerces to a
+        // nonneg float, sound). Conservative, NOT unsound; corpus verdict-diff 0/319. A future mixed-lane
+        // `to_fp(k)` model (or a bound-distance heuristic: a bound far below 2^53 cannot be crossed by
+        // rounding) would flip this to an accept — update as an improvement (LESSON 20).
+        assert!(
+            !discharged("fn to_f(n: i64) -> f64 requires(n >= 0) ensures(result >= 0.0) { return n; }"),
+            "a benign int→float conversion with a postcondition is (conservatively) over-rejected — documented"
+        );
+    }
+
+    #[test]
+    fn phase3_coercion_value_robust_across_int_ops_and_magnitudes() {
+        // SOUNDNESS (task #41 robustness — an exhaustive parallel hunt found these): the shared
+        // `coerce_int_into_float_slot` must model the int→f64 coercion for EVERY integer value flowing into a
+        // float slot, not just `+ - * / %` const-folds. It gates on `is_int_modelable` (the full int op set)
+        // and (a) keeps a value with |v| <= 2^53 (lossless), (b) renders a const-fold with |v| > 2^53 as its
+        // exact coerced DOUBLE in FLOAT-FORM (dodging the #39 int-form >2^53 gate that silently deferred an
+        // i64-rendered rounded value → a false accept), (c) fails closed (fresh-float havoc) for a symbolic /
+        // unfoldable / scientific-magnitude value.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // (B) const-fold op-subset gap: a return over an int op OUTSIDE {+,-,*,/,%,unary-} (`>>`, `&`, `|`,
+        // `^`, `abs`, `max`) must STILL be coerce-rounded, not passed through unmodeled. `2^54>>1` = 2^53+1
+        // rounds to 2^53, violating `result > 2^53` — reject.
+        assert!(
+            !discharged("fn f() -> f64 ensures(result > 9007199254740992) { return 18014398509481986 >> 1; }"),
+            "a `>>` return that folds to 2^53+1 must be coerce-rounded (rounds to 2^53) → reject"
+        );
+        assert!(
+            !discharged("fn f() -> f64 ensures(result > 9007199254740992) { return abs(9007199254740993); }"),
+            "an `abs(..)` return that yields 2^53+1 must be coerce-rounded → reject"
+        );
+        // (D) round-UP at a call site: an arg 2^53+3 rounds UP to 2^53+4; against `x < 2^53+4.0` the coerced
+        // value EQUALS the bound, so `<` is false — reject. (The i64-render approach deferred this: the
+        // rounded value 2^53+4 > 2^53 is rejected by the #39 int-form gate; the float-form render fixes it.)
+        assert!(
+            !discharged("fn g(x: f64) requires(x < 9007199254740996.0) { assert(x < 9007199254740996.0); } fn main() { g(9007199254740995); }"),
+            "a call arg 2^53+3 that rounds UP onto a strict `<` bound must reject"
+        );
+        // COMPLETENESS preserved: an EXACTLY-representable value just above 2^53 (2^53+2) is NOT rounded, so
+        // the float-form render models it precisely and it still ACCEPTS (the earlier havoc-all design would
+        // have over-rejected this).
+        assert!(
+            discharged("fn g(x: f64) requires(x > 9007199254740992.0) { assert(x > 9007199254740992.0); } fn main() { g(9007199254740994); }"),
+            "an exactly-representable 2^53+2 arg is modeled precisely (float-form render) and still accepts"
+        );
+        // (FA33/34) an int STRUCT-FIELD / ARRAY-ELEMENT return is is_int_modelable but not const-foldable →
+        // fail closed (havoc) rather than passed through unmodeled.
+        assert!(
+            !discharged("struct S { v: i64 } fn f() -> f64 ensures(result > 9007199254740992) { let p = S { v: 9007199254740993 }; return p.v; }"),
+            "an int struct-field return at a rounding magnitude fails closed (not passed through unmodeled)"
+        );
+        assert!(
+            !discharged("fn f() -> f64 ensures(result > 9007199254740992) { let a = [9007199254740993]; return a[0]; }"),
+            "an int array-element return at a rounding magnitude fails closed"
+        );
+    }
+
+    #[test]
     fn phase3_divisor_gate_no_false_model_on_beyond_i64_divisor() {
         // SOUNDNESS (hunt a1250c79): `divisor_is_proven_nonzero` is consulted by the INTEGER `/`/`%` QF_BV
         // lane. An interim float-% cut added an f64-parse branch to it (to "prove" float divisors non-zero),
