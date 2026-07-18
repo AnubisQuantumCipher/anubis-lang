@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// A1 SOUNDNESS GATE (the ziros-flagged trap): the range-injection is gated on the RAW unsigned spelling
+// (`unsigned_mask_width` -> u8/u16/u32), NOT `normalize` (which collapses `int`/`i64`/all signed types to
+// `u32`). A SIGNED `int` parameter is NOT masked at runtime (a param holds any i64, e.g. -1), so its range
+// must NOT be injected. If it were, `check` would ACCEPT `result >= 0` while `run` returns -1 — the exact
+// false accept this language refuses. The correct behaviour is to REJECT: `int` keeps unbounded-i64
+// semantics, and a contract that needs non-negativity must state `requires(x >= 0)`.
+fn sn(x: int) -> int
+    ensures(result >= 0)
+{
+    return x;
+}
+fn main() {
+    let v = sn(7);
+}

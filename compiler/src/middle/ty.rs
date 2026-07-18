@@ -193,6 +193,30 @@ pub(crate) fn is_float(ty: &str) -> bool {
     matches!(normalize(inner).as_str(), "f32" | "f64" | "float")
 }
 
+/// The bit-width of a LITERALLY-UNSIGNED fixed-width integer annotation — `u8`→8, `u16`→16,
+/// `u32`→32 — for the A1 boundary-coercion lane, else `None`. Deliberately narrow. It checks the RAW
+/// spelling (unwrapping only a `tainted<>` qualifier), NOT [`normalize`], which collapses
+/// `int`/`i64`/all signed types to `u32` — so a signed/default integer is NEVER range-injected (that
+/// would be a false-accept: the runtime lets an `int` hold −1). It excludes `u64`, whose full range
+/// [0, 2^64) does not fit the non-negative signed i64 range, so its masked value could not be compared
+/// with the solver's SIGNED bv64 operators. Widths ≤ 32 land the masked value in [0, 2^32) ⊂ [0,
+/// 2^63), where `bvsge`/`bvsle` are exact. A `Some(w)` result means the runtime masks this value to
+/// [0, 2^w) at the param-entry boundary (`anubis_coerce_uint_param`), so the solver may soundly assume
+/// `0 ≤ v < 2^w` inside the callee and when substituting the arg into the callee's contract.
+pub(crate) fn unsigned_mask_width(ty: &str) -> Option<u32> {
+    let inner = ty.trim();
+    let inner = inner
+        .strip_prefix("tainted<")
+        .and_then(|r| r.strip_suffix('>'))
+        .unwrap_or(inner);
+    match inner.trim().to_ascii_lowercase().as_str() {
+        "u8" => Some(8),
+        "u16" => Some(16),
+        "u32" => Some(32),
+        _ => None,
+    }
+}
+
 /// True when `x as ty` cannot change the underlying i64 value, so the cast may be modeled as the
 /// identity in QF_BV.
 pub(crate) fn cast_preserves_i64(ty: &str) -> bool {

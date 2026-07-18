@@ -1,0 +1,21 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// A1 CALL-SITE COERCION SOUNDNESS (task #50): masking a u32 param at the runtime boundary changes the
+// param's value relative to the caller's argument. When a caller composes a u32 callee's `ensures` with
+// an OUT-OF-RANGE argument, the argument must be masked (the runtime masks it at the callee's entry:
+// `g(3*x)` binds `y = (3*x) mod 2^32`, not `3*x`). Without the call-site arg coercion this is a confirmed
+// check-accept / run-trap false accept: the composition would certify `result == 3*x + 1` while the
+// runtime returns `(3*x mod 2^32) + 1`. With the coercion, the composed postcondition is
+// `result == ((3*x) & 0xFFFFFFFF) + 1`, which the solver disproves against `3*x + 1` for large x. (The
+// dual — a bounded/in-range arg — still proves, because the mask is a no-op there.)
+fn g(y: u32) -> u32 ensures(result == y + 1) { return y + 1; }
+fn caller(x: u32) -> u32
+    requires(x < 3000000000)
+    ensures(result == 3 * x + 1)
+{
+    let r = g(3 * x);
+    return r;
+}
+fn main() {
+    let v = caller(2000000000);
+}

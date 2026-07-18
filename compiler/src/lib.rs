@@ -1281,18 +1281,22 @@ fn main() {
         assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; }"), "bounded x => x+1>x");
         assert!(discharged("fn dbl(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result >= x) { return x + x; }"), "bounded x => x+x >= x");
         assert!(discharged("fn f(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result > 0) { return x + 1; }"), "bounded x => x+1>0");
-        // Range-removal soundness (the false proof the sweep found): WITHOUT an upper bound, `x + 1`
-        // can wrap at i64::MAX, so `result > x` is genuinely violable and must NOT be proved. The old
-        // (unsound) `[0, 2^32-1]` param range let this pass; it must now be DISPROVED.
+        // A1 (task #50) makes the `[0, 2^32)` u32-param range SOUND — the runtime now MASKS a u32 param
+        // at the boundary (`anubis_coerce_uint_param`), so `x ∈ [0, 2^32)` is enforced, not assumed. Once
+        // enforced, `x + 1` for `x ∈ [1, 2^32)` lands in `[2, 2^32]` (< 2^63, no i64 wrap), so `result > x`
+        // is GENUINELY TRUE and now proves — WITHOUT an upper bound. (The OLD injection was unsound because
+        // it assumed the range without the runtime mask, letting `inc(i64::MAX)` wrap; verified sound at
+        // i64::MAX: the mask lands it at 2^32-1, and 2^32 > 2^32-1.) This is a completeness gain, not a
+        // regression: the earlier `!discharged` assertion held only while u32 was runtime-inert.
         assert!(
-            !discharged(
+            discharged(
                 "fn inc(x: u32) -> u32 requires(x > 0) ensures(result > x) { return x + 1; }"
             ),
-            "unbounded x+1>x can overflow: must be disproved"
+            "unbounded u32 x+1>x now proves (mask enforces x ∈ [0, 2^32); x+1 cannot wrap i64)"
         );
         assert!(
-            !discharged("fn dbl(x: u32) -> u32 ensures(result >= x) { return x + x; }"),
-            "unbounded x+x can overflow: must be disproved"
+            discharged("fn dbl(x: u32) -> u32 ensures(result >= x) { return x + x; }"),
+            "unbounded u32 x+x>=x now proves (x ∈ [0, 2^32) => 2x ∈ [0, 2^33) < 2^63, x>=0)"
         );
         // Violated postconditions are disproved.
         assert!(
@@ -1462,11 +1466,14 @@ fn main() {
             !discharged("fn ident8(x: u32) -> u32 ensures(result == x) { return x as u8; }"),
             "A: truncating cast must not be modeled as identity"
         );
-        // B — a parameter named like an SMT keyword (`model`) dropped from the SMT, z3 errored, the
-        // error was treated as fail-open. It must now be a real disproof (overflow at i64::MAX).
+        // B — a parameter named like an SMT keyword (`model`) must be modeled (not silently dropped): the
+        // keyword name is sanitized to `anb_model`, so it takes a real solver var. Under A1 (task #50) a
+        // u32 param is masked to [0, 2^32) at the runtime boundary, so `model + 1 > model` is GENUINELY
+        // true (model ∈ [0, 2^32) => model+1 ∈ [1, 2^32], no i64 wrap) and now proves — the point of the
+        // test (the keyword-named param is NOT dropped from the SMT) is preserved by discharging soundly.
         assert!(
-            !discharged("fn inc(model: u32) -> u32 ensures(result > model) { return model + 1; }"),
-            "B: keyword-named param must not fail open"
+            discharged("fn inc(model: u32) -> u32 ensures(result > model) { return model + 1; }"),
+            "B: keyword-named u32 param is modeled and proves soundly (mask enforces model ∈ [0, 2^32))"
         );
         // B (other direction) — a VALID contract with a keyword-named param must still PROVE.
         assert!(discharged("fn inc(model: u32) -> u32 requires(model > 0) requires(model < 100) ensures(result > model) { return model + 1; }"), "B: valid keyword-named contract still proves");
@@ -1683,15 +1690,18 @@ fn main() {
             ),
             "n > 5 excludes 0"
         );
+        // A NEGATIVE-exclusion guard needs a SIGNED param: under A1 (task #50) a `u32` is masked to
+        // [0, 2^32), so `requires(n < 0)` on a u32 is contradictory (unsatisfiable), not a divisor guard.
+        // The guard-recognizer itself is unchanged; these use `int` to exercise the negative form.
         assert!(
             discharged(
-                "fn f(n: u32) -> u32 requires(n < 0) ensures(result <= 6) { return 6 / n; }"
+                "fn f(n: int) -> int requires(n < 0) ensures(result <= 6) { return 6 / n; }"
             ),
             "n < 0 excludes 0 (negative divisor)"
         );
         assert!(
             discharged(
-                "fn f(n: u32) -> u32 requires(n <= -1) ensures(result <= 6) { return 6 / n; }"
+                "fn f(n: int) -> int requires(n <= -1) ensures(result <= 6) { return 6 / n; }"
             ),
             "n <= -1 excludes 0 (negative literal)"
         );
@@ -1756,11 +1766,19 @@ fn main() {
             ),
             "abs(x) == x for x >= 0"
         );
-        // ...but abs(x) >= 0 is FALSE unbounded (x = MIN wraps to MIN < 0): the model catches it, so a
-        // naive |x|>=0 model that ignored the wrap would be caught here.
+        // ...but abs(x) >= 0 is FALSE unbounded for a SIGNED param (x = i64::MIN wraps to MIN < 0): the
+        // model catches it, so a naive |x|>=0 model that ignored the wrap would be caught here. Uses `int`
+        // (not `u32`): under A1 (task #50) a `u32` param is masked to [0, 2^32) at the boundary, so its
+        // abs IS provably >= 0 (the assertion below documents that completeness gain) — only a signed
+        // `int` can reach the wrapping i64::MIN.
         assert!(
-            !discharged("fn f(x: u32) -> u32 ensures(result >= 0) { return abs(x); }"),
-            "abs(x) >= 0 is false at x = MIN (wrapping_abs)"
+            !discharged("fn f(x: int) -> int ensures(result >= 0) { return abs(x); }"),
+            "abs(x) >= 0 is false at x = i64::MIN (wrapping_abs) for a signed param"
+        );
+        // A1 completeness gain: a u32 param is non-negative (masked at the boundary), so its abs proves >= 0.
+        assert!(
+            discharged("fn f(x: u32) -> u32 ensures(result >= 0) { return abs(x); }"),
+            "abs of a u32 param proves >= 0 (the param is masked to [0, 2^32) at the boundary)"
         );
         // min/max are signed bvsle selects (matching anubis_value_cmp's i64 ordering).
         assert!(
@@ -2747,6 +2765,94 @@ fn main() {
         assert!(
             !discharged("fn f(a: u32, b: u32) -> u32 requires(a<1000) requires(b<1000) ensures(result >= a) { if a > b { b } else { a } } fn main() { let r = f(3,5); }"),
             "a min-like function claiming result>=a is still disproved (min can be < a)"
+        );
+    }
+
+    #[test]
+    fn phase3_unsigned_fixed_width_boundary_coercion() {
+        // A1 (task #50, ziros pack Task A): an unsigned fixed-width param (u8/u16/u32) is masked to
+        // [0, 2^w) at the runtime boundary (`anubis_coerce_uint_param`/`_ret`), so the checker may
+        // SOUNDLY inject that range — the `requires(x >= 0)` tax disappears. This is the integer twin
+        // of the int->f64 boundary coercion (task #34). The runtime differential (run.rs actually masks)
+        // is proven by the `unsigned_*` language fixtures; here we pin the CHECKER half.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // THE DEMONSTRATION (red baseline on HEAD — was REJECTED with counterexample x=-1): a bare u32
+        // param now proves `result >= 0` with NO manual `requires(x >= 0)`.
+        assert!(
+            discharged("fn nn(x: u32) -> u32 ensures(result >= 0) { return x; } fn main() { let r = nn(5); }"),
+            "a bare u32 param proves result>=0 without the requires(x>=0) tax (range injected)"
+        );
+        // The injected UPPER bound is available too: a u32 is provably < 2^32.
+        assert!(
+            discharged("fn nn(x: u32) -> u32 ensures(result < 4294967296) { return x; } fn main() { let r = nn(5); }"),
+            "a u32 param proves result < 2^32 (the injected upper bound)"
+        );
+        // u8 / u16 widths inject their own range.
+        assert!(
+            discharged("fn a(x: u8) -> u8 ensures(result >= 0) ensures(result < 256) { return x; } fn main() { let r = a(5); }"),
+            "u8 proves [0,256)"
+        );
+        assert!(
+            discharged("fn a(x: u16) -> u16 ensures(result >= 0) ensures(result < 65536) { return x; } fn main() { let r = a(5); }"),
+            "u16 proves [0,65536)"
+        );
+        // Straight-line unsigned arithmetic proves without the manual `>= 0` bound (bounded so no wrap).
+        assert!(
+            discharged("fn s(x: u32) -> u32 requires(x < 1000) ensures(result == 3*x) { return 3*x; } fn main() { let r = s(5); }"),
+            "bounded unsigned scale proves result==3x (no overflow, mask is a no-op in range)"
+        );
+
+        // ---- SOUNDNESS GATES (the ziros-flagged trap: range-inject WITHOUT the runtime half is a
+        // false accept). Each of these MUST still reject. ----
+
+        // A signed `int`/`i64` param is NOT masked at runtime, so its range must NOT be injected — else
+        // `check` would accept `result >= 0` while `run` returns -1. Gated on the RAW spelling
+        // (`unsigned_mask_width`), NOT `normalize` (which collapses int->u32). THE critical false-accept test.
+        assert!(
+            !discharged("fn sn(x: int) -> int ensures(result >= 0) { return x; } fn main() { let r = sn(5); }"),
+            "a signed int param still rejects result>=0 (int is unbounded at runtime; not masked)"
+        );
+        assert!(
+            !discharged("fn si(x: i64) -> i64 ensures(result >= 0) { return x; } fn main() { let r = si(5); }"),
+            "an i64 param still rejects result>=0 (signed, not masked)"
+        );
+        // u64 is NOT in the A1 lane (its [0,2^64) range cannot fit a non-negative i64), so it keeps the
+        // sound unbounded-i64 model and still needs the manual bound.
+        assert!(
+            !discharged("fn u(x: u64) -> u64 ensures(result >= 0) { return x; } fn main() { let r = u(5); }"),
+            "u64 stays unbounded-i64 (not masked); still rejects without a manual requires"
+        );
+        // CALL-SITE COERCION (the confirmed false accept A1's arg-masking closes): a caller composing a
+        // u32 callee's `ensures` with an OUT-OF-RANGE argument must see the MASKED arg — the runtime masks
+        // it at the callee's entry (`anubis_coerce_uint_param`), so `g(3*x)` binds `y = (3*x) mod 2^32`,
+        // not `3*x`. Without the coercion, the composition certifies `result == 3*x + 1` while the runtime
+        // returns `(3*x mod 2^32) + 1` — a check-accept / run-trap. With it, the composed ensures is
+        // `result == ((3*x) & 0xFFFFFFFF) + 1`, which z3 disproves against `3*x + 1` for large x.
+        assert!(
+            !discharged("fn g(y: u32) -> u32 ensures(result == y + 1) { return y + 1; } fn caller(x: u32) -> u32 requires(x < 3000000000) ensures(result == 3*x + 1) { let r = g(3*x); return r; } fn main() { let v = caller(5); }"),
+            "the call-site arg coercion rejects a composition that ignores the runtime param mask"
+        );
+        // The IN-RANGE composition still proves — the mask is a no-op for a bounded arg, so no over-rejection.
+        assert!(
+            discharged("fn g(y: u32) -> u32 ensures(result == y + 1) { return y + 1; } fn caller(x: u32) -> u32 requires(x < 100) ensures(result == 3*x + 1) { let r = g(3*x); return r; } fn main() { let v = caller(5); }"),
+            "an in-range composition still proves (arg coercion is a no-op for a bounded arg)"
+        );
+        // A false upper bound on a bare u32 return still rejects (x can be up to 2^32-1).
+        assert!(
+            !discharged("fn f(x: u32) -> u32 ensures(result < 100) { return x; } fn main() { let r = f(5); }"),
+            "a u32 param does not prove a tighter-than-range bound (x can be 2^32-1)"
+        );
+        // A u32 RETURN is NOT masked (only params are), so a `-> u32` body that returns a value the OLD
+        // inert-u32 semantics computed is unchanged — a signed-arithmetic return keeps i64 semantics.
+        assert!(
+            discharged("fn f() -> u32 ensures(result == 0 - 1) { return (0 - 7) % 3; } fn main() { let r = f(); }"),
+            "a u32 return keeps i64 semantics (-7 % 3 == -1); returns are not masked"
         );
     }
 

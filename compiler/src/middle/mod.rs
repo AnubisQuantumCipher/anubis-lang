@@ -1261,6 +1261,21 @@ fn analyze_function(
             if is_integer_ty(pty) {
                 ctx.solver_int_vars.insert(pname.clone());
                 ctx.symbolic_widths.insert(pname.clone(), 64);
+                // A1 (task #50): a LITERALLY-unsigned fixed-width param (u8/u16/u32) is now masked to
+                // [0, 2^w) at the runtime boundary (`anubis_coerce_uint_param`), so we may SOUNDLY
+                // assume that range here — dropping the `requires(x >= 0)` tax the comment above lamented.
+                // Gated on `unsigned_mask_width` (the RAW spelling), NOT `is_integer_ty`/`normalize`
+                // which collapse `int`/`i64` to `u32`: a signed/default int param is never masked at
+                // runtime, so injecting its range would be a false-accept (the runtime lets it hold −1).
+                // Widths ≤ 32 keep the value < 2^63, so the SIGNED `bvsge`/`bvsle` are exact. Landed in
+                // `assumptions` BEFORE `precondition_assumptions` is cloned (line ~1367), so early
+                // returns inherit it too.
+                if let Some(w) = ty::unsigned_mask_width(pty) {
+                    let v = smt_var(pname);
+                    let hi = (1i64 << w) - 1;
+                    assumptions.push(format!("(bvsge {v} (_ bv0 64))"));
+                    assumptions.push(format!("(bvsle {v} (_ bv{hi} 64))"));
+                }
             } else if is_float_ty(pty) {
                 // Phase-3 QF_FP: a float param is now solver-modelable — declared IEEE-754 Float64, so a
                 // float `ensures`/`assert` over `+ - *` and comparisons can be discharged (previously it
@@ -1730,6 +1745,11 @@ fn analyze_function(
         // function returns f64, model the coercion on each returned value via the shared helper before
         // discharging the postcondition (const-fold → rounded value; symbolic int → fresh-float havoc).
         let ret_is_f64 = ret.map(str::trim) == Some("f64");
+        // A1 (task #50): u32 RETURNS are NOT masked (only PARAMS are — see the param range injection
+        // above and `anubis_coerce_uint_param`). A `u32` return keeps the canonical unbounded-i64 model,
+        // so a body returning a negative/overflowing value from a `-> u32` function is unchanged. The
+        // caller side of soundness (a masked param seen through the callee's contract) is handled by the
+        // uint arg-coercion in `discharge_call_requires` and the ensures composition, not here.
         // Every value the body can yield at its tail (a bare tail `if`/`match`'s arms, a block tail, or `0`
         // when it falls off the end) is checked under the full body assumptions — PLUS (task B) the branch
         // GUARDS under which that tail value is the result, so a value-position `if`/`match` proves an
@@ -1965,6 +1985,11 @@ fn discharge_call_requires(
         let is_float_param = ptypes.get(i).map(|t| t == "f64").unwrap_or(false);
         let coerced = if is_float_param {
             coerce_int_into_float_slot(ctx, arg, &format!("p{i}"), &mut havoc_names)
+        } else if let Some(w) = ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
+            // A1 (task #50): the callee masks a u32 param to [0, 2^w) at runtime, so discharge its
+            // `requires` against the MASKED arg — else `g(3*x)` with `requires(y < 100)` would check
+            // the raw `3*x` while the runtime sees `(3*x) mod 2^32` (a mismatch when the arg overflows).
+            coerce_uint_arg(arg, w, &ctx.solver_int_vars)
         } else {
             arg.clone()
         };
@@ -3152,8 +3177,24 @@ fn analyze_stmts(
                     }
                     if let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
                         if pnames.len() == args.len() {
-                            let mut sub: BTreeMap<String, Expr> =
-                                pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                            // A1 (task #50): coerce a u32-param argument to `(arg & (2^w-1))` before
+                            // substituting it into the callee's `ensures`, mirroring the runtime param
+                            // mask (`anubis_coerce_uint_param`). Closes the confirmed false accept where
+                            // `let r = g(3*x)` with `g(y:u32) ensures(result==y+1)` composed `r==3*x+1`
+                            // while the runtime returns `(3*x mod 2^32)+1`. An in-range arg (a u32 param
+                            // pinned to [0,2^32)) simplifies `(arg & mask)==arg`, so valid compositions
+                            // still prove. Parity with the requires coercion in discharge_call_requires.
+                            let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
+                            let mut sub: BTreeMap<String, Expr> = pnames
+                                .iter()
+                                .cloned()
+                                .zip(args.iter().enumerate().map(|(i, a)| {
+                                    match ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
+                                        Some(w) => coerce_uint_arg(a, w, &ctx.solver_int_vars),
+                                        None => a.clone(),
+                                    }
+                                }))
+                                .collect();
                             // ASSUME the postcondition ONLY when every precondition was verifiable:
                             // the ensures holds only under the precondition, so assuming it when a
                             // `requires` was SKIPPED (a dynamic/unmodelable argument) would be an
@@ -6309,6 +6350,30 @@ fn coerce_int_into_float_slot(
         return Expr::Var(hv);
     }
     arg.clone()
+}
+
+/// A1 (task #50) — CALL-SITE argument coercion for an unsigned fixed-width param. When a caller's
+/// argument is substituted into a callee's `requires`/`ensures` during composition, model the runtime
+/// param mask (`anubis_coerce_uint_param`) by wrapping the arg in `arg & (2^w - 1)`. This closes a
+/// CONFIRMED false accept: `g(y: u32) ensures(result == y + 1)` composed at `let r = g(3*x)` would
+/// otherwise substitute the RAW `3*x` for `y`, certifying `r == 3*x + 1` while the runtime masks the
+/// arg (`y = (3*x) mod 2^32`) and returns `(3*x mod 2^32) + 1` — a check-accept / run-trap. Masking
+/// the arg makes the composed contract match the runtime. For an IN-RANGE arg (e.g. another u32 param,
+/// which the injected range pins to [0, 2^32)), z3 simplifies `(arg & mask) == arg`, so a valid
+/// composition (`advance_pc(pc)` with `pc` in range) still proves — no over-rejection. Only coerces an
+/// int-modelable arg (the encoder can express the `&`); an unmodelable arg is left as-is (the clause
+/// then fails to model and is skipped, exactly as before — no new deferral).
+fn coerce_uint_arg(arg: &Expr, width: u32, int_vars: &BTreeSet<String>) -> Expr {
+    if is_int_modelable(arg, int_vars) {
+        let mask = (1i64 << width) - 1;
+        Expr::Binary {
+            op: "&".to_string(),
+            lhs: Box::new(arg.clone()),
+            rhs: Box::new(Expr::Literal(mask.to_string())),
+        }
+    } else {
+        arg.clone()
+    }
 }
 
 fn is_genuinely_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {

@@ -1,0 +1,16 @@
+// EXPECT: PASS
+// A1 (task #50, ziros pack Task A): an unsigned fixed-width parameter (u8/u16/u32) is now masked to
+// [0, 2^w) at the runtime boundary (`anubis_coerce_uint_param`), so the checker may SOUNDLY inject the
+// range `0 <= x < 2^w`. A bare `u32` therefore proves `result >= 0` with NO hand-written
+// `requires(x >= 0)` — the day-one papercut the ziros pack flagged. This is the integer twin of the
+// int->f64 boundary coercion (task #34). Runtime differential (proven in the slice smoke): `nonneg(-1)`
+// returns 4294967295, `nonneg(5000000000)` returns 705032704 — the runtime enforces exactly [0, 2^32).
+fn nonneg(x: u32) -> u32
+    ensures(result >= 0)
+    ensures(result < 4294967296)
+{
+    return x;
+}
+fn main() {
+    let v = nonneg(42);
+}

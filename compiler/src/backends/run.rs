@@ -326,7 +326,16 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     // closed (ANUBIS_TYPE_VIOLATION) instead of taking a divergent runtime path that violates the
     // proven contract. Uses the SAME predicate the solver's param-modeling gate uses, so they align.
     for (p, ty) in def.params {
-        if crate::middle::ty::is_integer(ty) {
+        if let Some(w) = crate::middle::ty::unsigned_mask_width(ty) {
+            // A1 (task #50): an unsigned fixed-width param (u8/u16/u32) is masked to [0, 2^w) at
+            // entry, so the checker's injected range (`0 <= x < 2^w`) is genuinely what the runtime
+            // holds — the `requires(x >= 0)` tax disappears. Shadows the binding (mut for reassign).
+            let id = sanitize_ident(p)?;
+            body_src.push_str(&format!(
+                "    let mut {id} = anubis_coerce_uint_param({id}, {}, {w});\n",
+                rust_string_lit(p)?
+            ));
+        } else if crate::middle::ty::is_integer(ty) {
             let id = sanitize_ident(p)?;
             body_src.push_str(&format!(
                 "    anubis_require_int(&{id}, {});\n",
@@ -363,6 +372,12 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     // An INTEGER return guards fail-closed (anubis_require_int_ret); a FLOAT return COERCES an Int result
     // to a Float (anubis_coerce_float_ret — task #34 dual of the param coercion), so an f64-declared body
     // that yields `Int(7)` still binds a float at the call site and the checker's f64 model stays sound.
+    // A1 (task #50): a u32 RETURN is NOT masked at runtime — only unsigned PARAMS are boundary-coerced
+    // (that is where the `requires(x >= 0)` tax lives, and where the solver's injected range must be
+    // enforced). Returns/locals keep the canonical unbounded-i64 semantics (`u32` is Anubis's default
+    // integer spelling — `int`/`i64` normalize to it — so masking returns would silently change every
+    // program that returns a negative/overflowing value from a `-> u32` function). So a u32 return uses
+    // the plain integer guard `anubis_require_int_ret` (fail-closed on a non-integer, no mask).
     let ret_guard = def.ret_type.and_then(|t| {
         if crate::middle::ty::is_integer(t) {
             Some("anubis_require_int_ret")
@@ -1519,6 +1534,27 @@ fn anubis_coerce_float_ret(v: AnubisValue, name: &str) -> AnubisValue {
         AnubisValue::Int(n) => AnubisValue::Float(n as f64),
         AnubisValue::Float(_) => v,
         _ => panic!("ANUBIS_TYPE_VIOLATION: function `{}` declares a float return type but returned a non-numeric value at runtime; the checker models its result as an f64, so this is fail-closed rather than silently mis-proved", name),
+    }
+}
+// A1 (task #50) — UNSIGNED fixed-width PARAM boundary coercion. An `u8`/`u16`/`u32` parameter is made
+// a GENUINE [0, 2^w) value at entry, so the checker may soundly assume that range (dropping the
+// `requires(x >= 0)` tax). The mask `n & (2^w - 1)` is exactly the low-`w` bits: −1 → 2^w−1, an
+// oversized value → its value mod 2^w — always landing in [0, 2^w) ⊂ [0, 2^63), the non-negative
+// signed range the solver's `bvsge`/`bvsle` model. `width` is 8/16/32 (never 64: masking a u64 into
+// an i64 slot cannot represent [2^63, 2^64), so u64 keeps unbounded-i64 semantics). Fails closed on
+// a non-integer, exactly like `anubis_require_int`. The int→f64 boundary coercion (task #34) is the
+// float twin of this. Only PARAMS are masked (not returns/locals): that is where the tax lives, and
+// `u32` is Anubis's default integer spelling, so masking returns would change every program that
+// returns a negative/overflowing value from a `-> u32` function. A caller passing an out-of-range
+// argument is handled in the checker by masking the arg when it is substituted into the callee's
+// `requires`/`ensures` (so the composed contract matches this runtime mask — see mod.rs).
+fn anubis_coerce_uint_param(v: AnubisValue, name: &str, width: u32) -> AnubisValue {
+    match v {
+        AnubisValue::Int(n) => {
+            let mask: i64 = (1i64 << width) - 1;
+            AnubisValue::Int(n & mask)
+        }
+        _ => panic!("ANUBIS_TYPE_VIOLATION: unsigned parameter `{}` received a non-integer value at runtime; the checker models it as a [0, 2^{}) integer, so a float/string/other argument is fail-closed rather than silently mis-proved", name, width),
     }
 }
 // STRUCT-FIELD numeric-kind guards (task #34 dual, extended to the construction boundary). They are
