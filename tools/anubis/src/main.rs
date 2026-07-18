@@ -62,6 +62,13 @@ enum Commands {
         #[arg(long)]
         full_hybrid: bool,
 
+        /// Skip contract verification (requires/ensures). By default `build` fails closed on an
+        /// unproven obligation — the same check `anubis check` runs — so a false contract can never
+        /// slip into a build. Use this escape hatch to build an in-progress program whose contracts
+        /// are not yet provable.
+        #[arg(long)]
+        no_verify: bool,
+
         /// Output directory for artifacts / bundles
         #[arg(short, long, default_value = "out")]
         out: PathBuf,
@@ -1496,6 +1503,7 @@ fn main() -> Result<()> {
             evidence,
             bounty,
             full_hybrid,
+            no_verify,
             out,
         } => {
             let do_evidence = evidence || bounty;
@@ -1514,6 +1522,33 @@ fn main() -> Result<()> {
             let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
             let tainted = TaintPass::apply(typed.clone());
             let _constraints = SymbolicEngine::generate_constraints(&src);
+
+            // FAIL-CLOSED BY DEFAULT: verify every `requires`/`ensures`/`assert` contract obligation
+            // before emitting an artifact — the SAME solver pass `anubis check` runs. Without this a
+            // false contract slipped silently into a build ("build complete", no warning). `--no-verify`
+            // is the escape for an in-progress program. This mirrors the Check command's verdict exactly
+            // (a `FAIL` obligation = disproved by counterexample or undecided within budget).
+            if !no_verify {
+                let disproven: Vec<String> = SymbolicEngine::check_obligations(&tainted)
+                    .into_iter()
+                    .filter(|c| c.status == "FAIL")
+                    .map(|c| match &c.model {
+                        Some(m) => format!("{} (counterexample: {})", c.name, m),
+                        None => c.name.clone(),
+                    })
+                    .collect();
+                if !disproven.is_empty() {
+                    return Err(anyhow!(
+                        "ANUBIS_ASSERTION_UNPROVEN: refusing to build — the solver could not verify \
+                         {} contract obligation(s) (disproved with a counterexample, or undecided \
+                         within budget): {}. Fix the contract, or re-run with `--no-verify` to build \
+                         anyway (the program's proof surface will be unverified).",
+                        disproven.len(),
+                        disproven.join("; ")
+                    ));
+                }
+                println!("✓ contract obligations verified (fail-closed; pass --no-verify to skip)");
+            }
 
             std::fs::create_dir_all(&out)?;
 

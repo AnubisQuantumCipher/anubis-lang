@@ -27,11 +27,48 @@
 
 See `docs/spec.md`, `docs/APPLE_NATIVE.md`, `docs/language/POC_KIT.md`, `docs/adr/`, `examples/`, and run `cargo test -p anubis-compiler`.
 
+## Learn Anubis (Phase 7 — developer experience)
+
+Verification-first adoption path:
+
+| Tool | Purpose |
+|------|---------|
+| `anubis doc` | API docs with a **Contracts** section from source `requires`/`ensures` |
+| `anubis repl` | Check-first REPL (fast AST default; `--exact` = native `run` path) |
+| `anubis lsp` | Diagnostics from typecheck + obligations; contract hovers |
+| Editors | `editors/vscode-anubis` (TextMate + LSP), `editors/tree-sitter-anubis` |
+| Tutorial | [`docs/language/TUTORIAL.md`](docs/language/TUTORIAL.md) |
+| Reference | [`LANGUAGE.md`](LANGUAGE.md) · [`docs/language/SPEC.md`](docs/language/SPEC.md) |
+
+```bash
+cargo build --release -p anubis
+./target/release/anubis doc tests/fixtures/dx/contracts_doc.anb   # look for ### Contracts
+./target/release/anubis repl --eval '2 + 3'
+bash scripts/run_dx_gate.sh out/dx_gate   # DX_GATE: PASS
+```
+
+### Self-hosting (Phase 8 — Anubis-SH)
+
+The compiler subset that compiles itself lives in `selfhost/`. The gate runs a **real bootstrap** (stage0 host → stage1 → stage2 → stage3, `cmp` stage2/stage3), not host×2:
+
+```bash
+bash scripts/run_selfhost_gate.sh out/selfhost_gate   # SELFHOST_GATE: PASS (N/N)
+./target/release/anubis run selfhost/src/anubis_sh.anb --allow-research -- parse selfhost/corpus/ok_hello.anb
+```
+
+See `docs/language/SELFHOST.md` and `selfhost/SUBSET.md`.
+
 ## Quick Start
 ```bash
 cd anubis-lang
 cargo build
 cargo run -- --help
+
+# `check` is the primary verb: it runs the Z3 contract solver over every
+# requires/ensures/assert and prints a real counterexample for any it cannot prove.
+cargo run -- check examples/hello_normal.anb
+# `build` is fail-closed by default — it runs the SAME verification before emitting
+# an artifact and refuses on an unproven contract (use --no-verify to skip).
 cargo run -- build examples/research_poc.anubis --bounty
 cargo run -- verify <the-evidence-dir>
 cargo run -- report <the-evidence-dir>
