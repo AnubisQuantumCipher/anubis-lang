@@ -1730,18 +1730,28 @@ fn analyze_function(
         // function returns f64, model the coercion on each returned value via the shared helper before
         // discharging the postcondition (const-fold → rounded value; symbolic int → fresh-float havoc).
         let ret_is_f64 = ret.map(str::trim) == Some("f64");
-        // Every value the body can yield at its tail (a bare tail `if`/`match`'s arms, a block tail,
-        // or `0` when it falls off the end) is checked under the full body assumptions.
+        // Every value the body can yield at its tail (a bare tail `if`/`match`'s arms, a block tail, or `0`
+        // when it falls off the end) is checked under the full body assumptions — PLUS (task B) the branch
+        // GUARDS under which that tail value is the result, so a value-position `if`/`match` proves an
+        // `ensures` that depends on the arm (`max(a,b) >= a && >= b`). The guards are pushed as scoped
+        // path-condition premises (mirror 3c7075c: they also land in `active_branch_guards` → the
+        // obligation's `guard_assumptions` for the vacuity/dead-branch exclusion).
         let mut tail_vals = Vec::new();
-        tail_values(body, true, &mut tail_vals);
-        for (i, tv) in tail_vals.iter().enumerate() {
+        tail_values_guarded(body, true, &[], &mut tail_vals);
+        for (i, (tv, guards)) in tail_vals.iter().enumerate() {
             let mut hn = Vec::new();
             let rv = if ret_is_f64 {
                 coerce_int_into_float_slot(ctx, tv, &format!("rt{i}"), &mut hn)
             } else {
                 tv.clone()
             };
-            push_ensures_obligations(ctx, ensures, &rv, &assumptions, span);
+            let snap_g = ctx.active_branch_guards.len();
+            let mut asm = assumptions.clone();
+            for (cond, neg) in guards {
+                push_branch_path_condition(ctx, &mut asm, cond, *neg);
+            }
+            push_ensures_obligations(ctx, ensures, &rv, &asm, span);
+            ctx.active_branch_guards.truncate(snap_g);
             for h in hn {
                 ctx.solver_float_vars.remove(&h);
             }
@@ -7361,6 +7371,90 @@ fn expr_tail_values(e: &Expr, out: &mut Vec<Expr>) {
         // An explicit `return` in expression position is handled by the early-return scan.
         Expr::Call { callee, .. } if callee == "return" => {}
         other => out.push(other.clone()),
+    }
+}
+
+/// Task B (ziros completeness pack): the tail values a body can yield, EACH paired with the branch GUARDS
+/// (path conditions, as `(cond, negate)`) under which it is the function result. `if c { a } else { b }`
+/// yields `(a, [(c,false)])` and `(b, [(c,true)])`; a `match` arm carries its pattern fact + `if`-guard.
+/// Threading these into the `ensures` discharge lets a VALUE-POSITION branch prove `ensures` that depend on
+/// the arm — `max(a,b) >= a && >= b` proves because the arm returning `b` carries `!(a>b)` i.e. `b>=a`. This
+/// is the value-position twin of the statement-position branch-guard mechanism (commit 3c7075c); the guards
+/// are pushed via `push_branch_path_condition` (a no-op for a non-modelable guard → sound, incomplete) so
+/// they also land in `active_branch_guards` → the obligation's `guard_assumptions`, reusing the same
+/// vacuity/dead-branch exclusion. SOUND: a TRUE path-condition premise only removes models the solver would
+/// otherwise defeat — it can turn a REJECT into a PASS, never mask a genuinely-false contract.
+fn tail_values_guarded(
+    body: &[Stmt],
+    collect_tail_return: bool,
+    guards: &[(Expr, bool)],
+    out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
+) {
+    match body.last() {
+        None => out.push((zero_literal(), guards.to_vec())),
+        Some(Stmt::ExprStmt(Expr::Call { callee, args })) if callee == "return" => {
+            if collect_tail_return {
+                if let Some(e) = args.first() {
+                    expr_tail_values_guarded(e, guards, out);
+                }
+            }
+        }
+        Some(Stmt::ExprStmt(e)) => expr_tail_values_guarded(e, guards, out),
+        Some(Stmt::If { cond, then, else_ }) => {
+            let mut g_then = guards.to_vec();
+            g_then.push((cond.clone(), false));
+            tail_values_guarded(then, false, &g_then, out);
+            match else_ {
+                Some(e) => {
+                    let mut g_else = guards.to_vec();
+                    g_else.push((cond.clone(), true));
+                    tail_values_guarded(e, false, &g_else, out);
+                }
+                None => out.push((zero_literal(), guards.to_vec())),
+            }
+        }
+        Some(_) => out.push((zero_literal(), guards.to_vec())),
+    }
+}
+
+fn expr_tail_values_guarded(
+    e: &Expr,
+    guards: &[(Expr, bool)],
+    out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
+) {
+    match e {
+        Expr::If { cond, then, else_, .. } => {
+            let mut g_then = guards.to_vec();
+            g_then.push(((**cond).clone(), false));
+            expr_tail_values_guarded(then, &g_then, out);
+            let mut g_else = guards.to_vec();
+            g_else.push(((**cond).clone(), true));
+            expr_tail_values_guarded(else_, &g_else, out);
+        }
+        // An `if let` binds a pattern; the extracted-value fact is not a plain bool guard, so no premise is
+        // added (conservative — same as the ungated behavior, sound). A residual for a future slice.
+        Expr::IfLet { then, else_, .. } => {
+            expr_tail_values_guarded(then, guards, out);
+            expr_tail_values_guarded(else_, guards, out);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            for a in arms {
+                let mut g = guards.to_vec();
+                if let Some(fact) = match_arm_pattern_fact(scrutinee, &a.pattern) {
+                    g.push((fact, false));
+                }
+                if let Some(guard) = &a.guard {
+                    g.push((guard.clone(), false));
+                }
+                expr_tail_values_guarded(&a.body, &g, out);
+            }
+        }
+        Expr::Block { stmts, tail } => match tail {
+            Some(t) => expr_tail_values_guarded(t, guards, out),
+            None => tail_values_guarded(stmts, false, guards, out),
+        },
+        Expr::Call { callee, .. } if callee == "return" => {}
+        other => out.push((other.clone(), guards.to_vec())),
     }
 }
 

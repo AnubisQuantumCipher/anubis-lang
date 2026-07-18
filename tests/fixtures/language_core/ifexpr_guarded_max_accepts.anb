@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Task B (ziros completeness pack): a VALUE-POSITION `if`-expression now threads each arm's branch guard
+// into the `ensures` discharge, so `max(a,b) >= a && >= b` PROVES — the arm returning `b` carries the
+// guard `!(a > b)` (i.e. `b >= a`). Before, the arm value was discharged with no path condition and the
+// solver picked a=1,b=0 with result=b, failing `result >= a`. Sound: a true path-condition premise only
+// ever turns a REJECT into a PASS. This is the value-position twin of the statement-position 3c7075c gate.
+fn good_max(a: u32, b: u32) -> u32
+    ensures(result >= a)
+    ensures(result >= b)
+{
+    if a > b { a } else { b }
+}
+fn main() { let m = good_max(3, 5); }

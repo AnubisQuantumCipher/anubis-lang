@@ -2706,6 +2706,51 @@ fn main() {
     }
 
     #[test]
+    fn phase3_ifexpr_branch_guard_max() {
+        // COMPLETENESS (task B, ziros pack): a VALUE-POSITION `if`/`match` now threads each arm's branch
+        // GUARD into the `ensures` discharge, so `max(a,b) >= a && >= b` proves — the arm returning `b`
+        // carries `!(a>b)` (i.e. `b>=a`). Value-position twin of the statement-position 3c7075c mechanism.
+        // SOUND: a true path-condition premise only turns REJECT->PASS, never masks a false contract.
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
+        // max via an if-EXPRESSION proves — bounded AND unbounded (the guard makes the SIGNED max provable
+        // without needing a u32 range: result >= a and >= b hold for the signed max).
+        assert!(
+            discharged("fn m(a: u32, b: u32) -> u32 requires(a<1000) requires(b<1000) ensures(result >= a) ensures(result >= b) { if a > b { a } else { b } } fn main() { let r = m(3,5); }"),
+            "bounded max via if-expr proves (branch guard threaded into the result)"
+        );
+        assert!(
+            discharged("fn m(a: u32, b: u32) -> u32 ensures(result >= a) ensures(result >= b) { if a > b { a } else { b } } fn main() { let r = m(3,5); }"),
+            "UNBOUNDED signed max via if-expr proves (guard suffices; no u32 range needed)"
+        );
+        // min via an if-expr is the symmetric completeness gain.
+        assert!(
+            discharged("fn mn(a: u32, b: u32) -> u32 ensures(result <= a) ensures(result <= b) { if a > b { b } else { a } } fn main() { let r = mn(3,5); }"),
+            "min via if-expr proves (ensures result <= a && <= b)"
+        );
+        // A MATCH-expression arm inherits its pattern fact as a guard.
+        assert!(
+            discharged("fn sel(c: u32) -> u32 requires(c < 2) ensures(result >= 10) { match c { 0 => 10, _ => 20 } } fn main() { let r = sel(0); }"),
+            "a match-expression arm's value proves an ensures under its pattern fact"
+        );
+        // SOUNDNESS: a genuinely-FALSE branch contract is still DISPROVED — the guard cannot mask it.
+        assert!(
+            !discharged("fn bad(a: u32, b: u32) -> u32 requires(a<1000) requires(b<1000) ensures(result >= b) { if a > b { a } else { a } } fn main() { let r = bad(3,5); }"),
+            "a false branch contract (returns a, claims result>=b) is still disproved with a counterexample"
+        );
+        // SOUNDNESS: a min claiming result>=a is disproved (the guard is a true premise, not a false one).
+        assert!(
+            !discharged("fn f(a: u32, b: u32) -> u32 requires(a<1000) requires(b<1000) ensures(result >= a) { if a > b { b } else { a } } fn main() { let r = f(3,5); }"),
+            "a min-like function claiming result>=a is still disproved (min can be < a)"
+        );
+    }
+
+    #[test]
     fn phase3_for_range_loop_invariants_verify_inductively() {
         // Phase-3 (task #27): a `for i in start..end invariant(P) { body }` loop verifies its invariant by
         // desugaring to the exactly-equivalent `let i=start; while i<end invariant(P) { body; i=i+1 }` and
