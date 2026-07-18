@@ -120,6 +120,12 @@ struct ScopeBinding {
     /// Arity of the value when it is a closure / first-class function bound here (a lambda literal or
     /// a named-function reference); `None` when unknown. Used to arity-check direct closure calls.
     closure_arity: Option<usize>,
+    /// The LAMBDA LITERAL bound here (`let g = |x| body`), if any — pure analysis scratch (like `secret`,
+    /// no HIR/fixpoint surface). Task #47: a VAR-BOUND closure hides its body from the Safe-mode taint /
+    /// effect / capability enforcement — the #65 HOF descent only reaches an INLINE lambda. Storing the
+    /// lambda lets the enforcement descend into `g`'s body when `g` is applied (`g(0)`) or handed to a
+    /// higher-order builtin (`each([1], g)`), the same visit #65 does for an inline `|x| ...`.
+    closure_lambda: Option<Box<Expr>>,
     /// CONFIDENTIALITY label (Phase-2, the dual of `info.tainted` which is the INTEGRITY label): this
     /// binding holds PRIVATE data, seeded by `secret_source(..)` and propagated flow-sensitively
     /// (let/assign/branch-merge). Rides on ScopeBinding (NOT the serialized `BindingInfo`) so it is
@@ -1113,6 +1119,7 @@ fn analyze_function(
                             span: None,
                         },
                         closure_arity: None,
+                        closure_lambda: None,
                         secret: false,
                     },
                 )
@@ -1197,6 +1204,7 @@ fn analyze_function(
                 ScopeBinding {
                     info: info.clone(),
                     closure_arity: None,
+                    closure_lambda: None,
                     // A `secret<T>` param qualifier auto-labels the parameter as secret (the
                     // confidentiality dual of the `tainted<T>` param seeded above), so a secret
                     // arriving via a param needs no `secret_source(..)` call — an egress of it is
@@ -2857,11 +2865,21 @@ fn analyze_stmts(
                     effects.push("taint-propagate".into());
                 }
                 let ca = closure_arity_of(init, scope, ctx);
+                // Task #47: remember the LAMBDA LITERAL bound here (or propagate it through a `let g2 = g`
+                // alias) so the Safe-mode enforcement can later descend into `g`'s body at its application /
+                // higher-order-builtin site — a var-bound closure otherwise hides its egress from the taint /
+                // effect / capability checks (the #65 HOF descent reaches only an inline lambda).
+                let cl: Option<Box<Expr>> = match init {
+                    Expr::Lambda { .. } => Some(Box::new(init.clone())),
+                    Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                    _ => None,
+                };
                 scope.insert(
                     name.clone(),
                     ScopeBinding {
                         info: info.clone(),
                         closure_arity: ca,
+                        closure_lambda: cl,
                         secret: init_secret.is_some() || explicit_secret,
                     },
                 );
@@ -3734,8 +3752,16 @@ fn analyze_stmts(
                 if let Expr::Var(name) = target {
                     if scope.contains_key(name) {
                         let ca = closure_arity_of(value, scope, ctx);
+                        // Task #47: track the current lambda literal (or alias) so a later application
+                        // descends into the CURRENT closure body, not a stale one; clear it otherwise.
+                        let cl: Option<Box<Expr>> = match value {
+                            Expr::Lambda { .. } => Some(Box::new(value.clone())),
+                            Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                            _ => None,
+                        };
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
+                            b.closure_lambda = cl;
                         }
                     }
                 }
@@ -3941,6 +3967,7 @@ fn analyze_stmts(
                         ScopeBinding {
                             info,
                             closure_arity: None,
+                            closure_lambda: None,
                             secret: wl_secret,
                         },
                     );
@@ -4248,6 +4275,7 @@ fn analyze_stmts(
                     ScopeBinding {
                         info: info.clone(),
                         closure_arity: None,
+                        closure_lambda: None,
                         secret: secret_src,
                     },
                 );
@@ -4608,7 +4636,15 @@ fn analyze_expr_effect(
             // real builtin (not a local binding and not a user fn — which is analyzed on its own).
             if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
                 for &i in effects::higher_order_closure_args(callee) {
-                    if let Some(Expr::Lambda { params, body }) = args.get(i) {
+                    // Task #47: the closure arg is either an INLINE lambda (`each([1], |x| ...)`, the #65
+                    // case) or a VAR bound to a lambda (`let g = |x| ...; each([1], g)`) — resolve both so a
+                    // var-bound closure's body is enforced too (it otherwise laundered its taint/effect).
+                    let resolved: Option<&Expr> = match args.get(i) {
+                        Some(l @ Expr::Lambda { .. }) => Some(l),
+                        Some(Expr::Var(g)) => scope.get(g).and_then(|b| b.closure_lambda.as_deref()),
+                        _ => None,
+                    };
+                    if let Some(Expr::Lambda { params, body }) = resolved {
                         let mut local = scope.clone();
                         for p in params {
                             local.insert(
@@ -4624,12 +4660,44 @@ fn analyze_expr_effect(
                                         span: None,
                                     },
                                     closure_arity: None,
+                                    closure_lambda: None,
                                     secret: false,
                                 },
                             );
                         }
                         analyze_expr_effect(body, mode, &local, effects, ctx);
                     }
+                }
+            }
+            // Task #47: a DIRECT application of a VAR-BOUND closure `let g = |x| ...; g(0)` — the callee is a
+            // LOCAL binding (so the #65 builtin descent above skips it) and there is no source-level
+            // application node for its body, so its captured taint / effect / capability egress is otherwise
+            // never enforced. Descend into the stored lambda body here, params inserted as fresh unlabelled
+            // bindings (a param SHADOWS a same-named captured var), under a CLONE of the ambient scope so a
+            // captured tainted/secret binding is seen.
+            if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
+                if let Expr::Lambda { params, body } = lam.as_ref() {
+                    let mut local = scope.clone();
+                    for p in params {
+                        local.insert(
+                            p.clone(),
+                            ScopeBinding {
+                                info: BindingInfo {
+                                    name: p.clone(),
+                                    ty: None,
+                                    mode: String::new(),
+                                    tainted: false,
+                                    taint_source: None,
+                                    declassified: false,
+                                    span: None,
+                                },
+                                closure_arity: None,
+                                closure_lambda: None,
+                                secret: false,
+                            },
+                        );
+                    }
+                    analyze_expr_effect(body, mode, &local, effects, ctx);
                 }
             }
         }
@@ -4978,6 +5046,19 @@ fn walk_block_effects(
                     &ctx.method_tainting_fns,
                     &ctx.method_secret_fns,
                 );
+                // Task #47: track a block-level closure binding (this is the expression-block `let` path,
+                // distinct from the statement `let` handler) so a NESTED closure applied inside a descended
+                // body is enforced too — `let g = |x| { let inner = |y| write_file(t); inner(0); }; g(0)`.
+                let cl: Option<Box<Expr>> = match init {
+                    Expr::Lambda { .. } => Some(Box::new(init.clone())),
+                    Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                    _ => None,
+                };
+                if cl.is_some() {
+                    if let Some(b) = scope.get_mut(name) {
+                        b.closure_lambda = cl;
+                    }
+                }
             }
             Stmt::LetPattern { pattern, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
@@ -10380,6 +10461,7 @@ fn walk_block_taint(
                             span: None,
                         },
                         closure_arity: None,
+                        closure_lambda: None,
                         secret: false,
                     },
                 );
@@ -10491,6 +10573,7 @@ fn walk_block_secret(
                             span: None,
                         },
                         closure_arity: None,
+                        closure_lambda: None,
                         secret: secret_src,
                     },
                 );
@@ -10942,6 +11025,7 @@ fn seed_one_let(
                 span: None,
             },
             closure_arity: None,
+            closure_lambda: None,
             // This scope feeds the INTEGRITY return summary only; secrecy has its own parallel
             // seeder (`seed_one_let_secret`, feeding `compute_secret_fns`), so it is not seeded here.
             secret: false,
@@ -10975,6 +11059,7 @@ fn seed_taint_pattern(
                     span: None,
                 },
                 closure_arity: None,
+                closure_lambda: None,
                 secret: false,
             },
         );
@@ -11032,6 +11117,7 @@ fn seed_effect_let(
                 span: None,
             },
             closure_arity: None,
+            closure_lambda: None,
             secret: init_secret || explicit_secret,
         },
     );
@@ -11061,6 +11147,7 @@ fn seed_effect_pattern(
                     span: None,
                 },
                 closure_arity: None,
+                closure_lambda: None,
                 secret,
             },
         );
@@ -11207,6 +11294,7 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                         span: None,
                     },
                     closure_arity: None,
+                    closure_lambda: None,
                     secret,
                 },
             );
@@ -11337,6 +11425,7 @@ fn seed_one_let_secret(
                 span: None,
             },
             closure_arity: None,
+            closure_lambda: None,
             secret,
         },
     );
@@ -11364,6 +11453,7 @@ fn seed_secret_pattern(
                     span: None,
                 },
                 closure_arity: None,
+                closure_lambda: None,
                 secret,
             },
         );

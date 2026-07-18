@@ -5621,6 +5621,77 @@ fn main() {
     }
 
     #[test]
+    fn var_bound_closure_does_not_launder_taint_or_effect_via_hof_or_application() {
+        // SECURITY (task #47, broad hunt wf_bf84c047 FP3/FP4): a closure bound to a VARIABLE hid its body
+        // from the Safe-mode taint/effect/capability enforcement — the #65 fix descends only into an INLINE
+        // lambda at a higher-order-builtin position, so `let g = |x| ...; each([1], g)` (var-bound) and
+        // `let g = |x| ...; g(0)` (direct application) laundered the closure's egress. Now the lambda is
+        // stored in the binding (`closure_lambda`) and descended at both application sites.
+        // FP3: a var-bound closure captures a tainted value and reaches a sink through a HOF.
+        let taint_via_hof = r#"
+fn main() {
+    let t: tainted<u32> = symbolic();
+    let g = |x| sink(t);
+    each([1], g);
+}
+"#;
+        let err = tc_ok(taint_via_hof)
+            .expect_err("a var-bound closure capturing taint into a sink via a HOF must be rejected");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // The DIRECT-application twin (`g(0)`, no HOF) must also be caught.
+        let taint_via_direct = r#"
+fn main() {
+    let t: tainted<u32> = symbolic();
+    let g = |x| sink(t);
+    g(0);
+}
+"#;
+        let err = tc_ok(taint_via_direct)
+            .expect_err("a var-bound closure capturing taint into a sink, applied directly, must be rejected");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // FP4: the EFFECT dual — a var-bound closure performs an fs.write with NO `uses(fs.write)`, laundered
+        // through `each`. Descending charges the effect to main(), which is undeclared → forbidden.
+        let effect_via_hof = r#"
+fn main() {
+    let g = |x| write_file("o", "d");
+    each([1], g);
+}
+"#;
+        let err = tc_ok(effect_via_hof)
+            .expect_err("a var-bound closure's undeclared fs.write laundered through a HOF must be rejected");
+        assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN"), "got: {err}");
+
+        // NESTED closure: the descent recurses — an inner closure defined and applied inside the outer
+        // (var-bound) closure's body is also enforced (the expression-block `let` path tracks it too).
+        let nested = r#"
+fn main() {
+    let t: tainted<u32> = symbolic();
+    let g = |x| { let inner = |y| sink(t); inner(0); };
+    g(0);
+}
+"#;
+        let err = tc_ok(nested)
+            .expect_err("a nested closure inside a descended var-bound closure body must also be enforced");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // ALIAS chain and REASSIGN both propagate the closure body to the application site.
+        let err = tc_ok("fn main() { let t: tainted<u32> = symbolic(); let g = |x| sink(t); let h = g; each([1], h); }")
+            .expect_err("an alias of a var-bound closure still enforces its captured taint");
+        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+
+        // NON-REGRESSION: a clean var-bound closure (via HOF and directly), and a closure whose effect IS
+        // declared, must all still be ACCEPTED (the descent enforces, it does not over-reject).
+        tc_ok("fn main() { let g = |x| 1; each([1], g); }")
+            .expect("a clean var-bound closure via a HOF is accepted");
+        tc_ok("fn main() { let g = |x| 1; g(0); }")
+            .expect("a clean var-bound closure applied directly is accepted");
+        tc_ok(r#"fn main() uses(fs.write) { let g = |x| write_file("o", "d"); g(0); }"#)
+            .expect("a var-bound closure whose fs.write IS declared is accepted");
+    }
+
+    #[test]
     fn is_tainted_detects_qualifier_nested_in_a_container_annotation() {
         // Regression for a false negative an adversarial workflow found in the first version of this
         // slice: `ty::is_tainted` initially delegated to `tainted_inner`'s anchored "whole-string"
