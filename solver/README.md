@@ -10,11 +10,17 @@ decision procedure for the bit-vector (integer) fragment, with **zero external s
 ## What it decides
 
 The integer lane: fixed-width bit-vectors (`QF_BV`), which is what dominates real contract obligations
-(`x + 1 > x`, `abs(x) < 100`, the u32-mask range facts, comparisons, wrapping arithmetic). Plus the
-**float comparison** subset of `QF_FP`: a `Float64` is a `BitVec 64`, so `fp.lt/leq/gt/geq/eq` and the
-`isNaN/isInfinite/isZero` classifiers are *lowered* to bit-vector formulas (`fp.rs`, the monotonic-key
-transform) and decided by the same BV pipeline — no rounding, no new gates. Float **arithmetic**
-(`fp.add/mul/div/…`, which rounds), strings, and arrays are declined and fall back to z3.
+(`x + 1 > x`, `abs(x) < 100`, the u32-mask range facts, comparisons, wrapping arithmetic). Plus two
+theories that *lower to that same BV pipeline* — no new gates:
+
+- the **float comparison** subset of `QF_FP`: a `Float64` is a `BitVec 64`, so `fp.lt/leq/gt/geq/eq`,
+  the `isNaN/isInfinite/isZero` classifiers, and exact `fp.neg/abs` are lowered via the monotonic-key
+  transform (`fp.rs`). Float **arithmetic** (`fp.add/mul/div/…`, which rounds) is declined.
+- the **string equality** subset of `QF_S`: string-equality is equality logic, so each distinct string
+  literal interns to a distinct constant and each `String` var becomes a free bit-vector, with `=` as
+  BV equality (`parse.rs`, 32-bit ids). String **operations** (`str.len/++/contains/…`) are declined.
+
+Arrays, float arithmetic, and non-equality string ops fall back to z3.
 
 ## Pipeline
 

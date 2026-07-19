@@ -7,6 +7,74 @@
 
 use crate::bv::{Formula, Pred, Term};
 use crate::fp;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+/// String terms are decided as EQUALITY LOGIC lowered to fixed-width bit-vectors: each DISTINCT string
+/// literal becomes a distinct constant, each `String` variable a free bit-vector, and `=` is bit-vector
+/// equality. 32 bits gives 2^32 possible values — vastly more than the number of string terms in any
+/// obligation — so a variable can always take any literal's id OR a fresh value (a string not among the
+/// literals), which is exactly string-equality satisfiability. Only `=` is supported; any `str.*`
+/// operation is out of fragment (declines to z3). A native bug here cannot cause a false *proof* as
+/// long as the domain exceeds the term count, which `MAX_STR_TERMS` enforces (else decline).
+const STR_W: u32 = 32;
+const MAX_STR_TERMS: usize = 1 << 20; // 2^32 domain ≫ this ⇒ vars can always be forced pairwise-distinct
+
+#[derive(Default)]
+struct StrInterner {
+    ids: HashMap<String, u128>,
+}
+impl StrInterner {
+    /// Assign (or look up) a stable distinct id for a decoded string.
+    fn intern(&mut self, s: String) -> u128 {
+        let n = self.ids.len() as u128;
+        *self.ids.entry(s).or_insert(n)
+    }
+}
+
+/// Turn an SMT-LIB string literal atom (including its surrounding quotes) into its canonical character
+/// content, so two spellings of the same string intern to the same id and match z3's equality. SMT-LIB
+/// escapes: a doubled quote `""` is one `"`, and `\u{H..}` / `\uHHHH` are code points; every other
+/// character is literal.
+fn unquote_and_decode(atom: &str) -> Option<String> {
+    let inner = atom.strip_prefix('"')?.strip_suffix('"')?;
+    let cs: Vec<char> = inner.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] == '"' {
+            // A `""` inside the literal is one quote character; a lone `"` shouldn't occur here.
+            if cs.get(i + 1) == Some(&'"') {
+                out.push('"');
+                i += 2;
+                continue;
+            }
+            return None;
+        }
+        if cs[i] == '\\' && cs.get(i + 1) == Some(&'u') {
+            if cs.get(i + 2) == Some(&'{') {
+                if let Some(rel) = cs[i + 3..].iter().position(|&c| c == '}') {
+                    let hex: String = cs[i + 3..i + 3 + rel].iter().collect();
+                    if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(c);
+                        i += 3 + rel + 1;
+                        continue;
+                    }
+                }
+            } else if i + 6 <= cs.len() {
+                let hex: String = cs[i + 2..i + 6].iter().collect();
+                if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    out.push(c);
+                    i += 6;
+                    continue;
+                }
+            }
+        }
+        out.push(cs[i]);
+        i += 1;
+    }
+    Some(out)
+}
 
 /// Parse an SMT-LIB2 script into a QF_BV `Formula`, or `None` if it is outside the supported fragment.
 pub fn parse_smt2(input: &str) -> Option<Formula> {
@@ -14,16 +82,19 @@ pub fn parse_smt2(input: &str) -> Option<Formula> {
     let mut bv_vars: Vec<(String, u32)> = Vec::new();
     let mut bool_vars: Vec<String> = Vec::new();
     let mut asserts: Vec<Pred> = Vec::new();
+    let strings: RefCell<StrInterner> = RefCell::new(StrInterner::default());
+    let mut str_var_count = 0usize;
 
     for cmd in &sexps {
         let list = cmd.as_list()?;
         let head = list.first()?.as_atom()?;
         match head {
             "set-logic" => {
-                // Bit-vector logics, plus QF_FP (Float64 is lowered to BitVec 64 — see `fp.rs`).
-                // Everything else (strings, arrays, reals, UF beyond QF_UFBV) is out of fragment.
+                // Bit-vector logics, plus QF_FP (Float64 lowered to BitVec 64 — see `fp.rs`) and QF_S
+                // (string EQUALITY lowered to bit-vectors by interning — see `unquote_and_decode`).
+                // Everything else (arrays, reals, UF beyond QF_UFBV) is out of fragment.
                 let logic = list.get(1)?.as_atom()?;
-                if !matches!(logic, "QF_BV" | "BV" | "QF_UFBV" | "QF_FP") {
+                if !matches!(logic, "QF_BV" | "BV" | "QF_UFBV" | "QF_FP" | "QF_S") {
                     return None;
                 }
             }
@@ -33,6 +104,10 @@ pub fn parse_smt2(input: &str) -> Option<Formula> {
                 match parse_sort(sort)? {
                     Sort::Bv(w) => bv_vars.push((name, w)),
                     Sort::Bool => bool_vars.push(name),
+                    Sort::Str => {
+                        bv_vars.push((name, STR_W));
+                        str_var_count += 1;
+                    }
                 }
             }
             "declare-fun" => {
@@ -44,12 +119,17 @@ pub fn parse_smt2(input: &str) -> Option<Formula> {
                 match parse_sort(list.get(3)?)? {
                     Sort::Bv(w) => bv_vars.push((name, w)),
                     Sort::Bool => bool_vars.push(name),
+                    Sort::Str => {
+                        bv_vars.push((name, STR_W));
+                        str_var_count += 1;
+                    }
                 }
             }
             "assert" => {
                 let ctx = Ctx {
                     bv_vars: &bv_vars,
                     bool_vars: &bool_vars,
+                    strings: &strings,
                 };
                 asserts.push(parse_pred(list.get(1)?, &ctx)?);
             }
@@ -59,6 +139,13 @@ pub fn parse_smt2(input: &str) -> Option<Formula> {
             // An unknown command is out-of-fragment.
             _ => return None,
         }
+    }
+    // Soundness guard for the string-equality encoding: the BV domain (2^STR_W) must exceed the number
+    // of string TERMS so that variables can always be forced pairwise-distinct (else BV could be
+    // spuriously UNSAT — a false proof). With STR_W = 32 this bound is astronomically slack; if it is
+    // ever exceeded, decline to z3 rather than risk it.
+    if strings.borrow().ids.len() + str_var_count > MAX_STR_TERMS {
+        return None;
     }
     Some(Formula {
         bv_vars,
@@ -70,11 +157,13 @@ pub fn parse_smt2(input: &str) -> Option<Formula> {
 enum Sort {
     Bv(u32),
     Bool,
+    Str,
 }
 
 fn parse_sort(s: &Sexp) -> Option<Sort> {
     match s {
         Sexp::Atom(a) if a == "Bool" => Some(Sort::Bool),
+        Sexp::Atom(a) if a == "String" => Some(Sort::Str),
         Sexp::List(items) => {
             let head = items.first()?.as_atom()?;
             // (_ BitVec w)
@@ -107,6 +196,7 @@ fn parse_sort(s: &Sexp) -> Option<Sort> {
 struct Ctx<'a> {
     bv_vars: &'a [(String, u32)],
     bool_vars: &'a [String],
+    strings: &'a RefCell<StrInterner>,
 }
 
 impl<'a> Ctx<'a> {
@@ -204,13 +294,18 @@ fn bin_pred(args: &[Sexp], ctx: &Ctx, f: fn(Term, Term) -> Pred) -> Option<Pred>
 fn parse_term(s: &Sexp, ctx: &Ctx) -> Option<Term> {
     match s {
         Sexp::Atom(a) => {
-            // #xHEX / #bBIN literals, or a declared BV var.
+            // #xHEX / #bBIN literals, a string literal, or a declared BV/String var.
             if let Some(hex) = a.strip_prefix("#x") {
                 let v = u128::from_str_radix(hex, 16).ok()?;
                 Some(Term::Const(v, (hex.len() as u32) * 4))
             } else if let Some(bin) = a.strip_prefix("#b") {
                 let v = u128::from_str_radix(bin, 2).ok()?;
                 Some(Term::Const(v, bin.len() as u32))
+            } else if a.starts_with('"') {
+                // A string literal: intern its decoded content to a distinct id (see STR_W).
+                let decoded = unquote_and_decode(a)?;
+                let id = ctx.strings.borrow_mut().intern(decoded);
+                Some(Term::Const(id, STR_W))
             } else {
                 ctx.bv_width(a).map(|w| Term::Var(a.to_string(), w))
             }
@@ -437,15 +532,25 @@ fn read_atom(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
         }
         return s;
     }
-    // "string literal" — kept verbatim (BV fragment shouldn't contain these; parse_term ignores them)
+    // "string literal" — a doubled quote `""` is an escaped quote (SMT-LIB), NOT the terminator, so it
+    // is kept in the atom text (verbatim, both quotes) and collapsed later by `unquote_and_decode`.
     if chars.peek() == Some(&'"') {
         s.push('"');
         chars.next();
-        while let Some(&c) = chars.peek() {
-            s.push(c);
-            chars.next();
-            if c == '"' {
-                break;
+        loop {
+            match chars.next() {
+                None => break, // unterminated — best effort; downstream parse will decline
+                Some('"') => {
+                    if chars.peek() == Some(&'"') {
+                        s.push('"');
+                        s.push('"');
+                        chars.next();
+                    } else {
+                        s.push('"'); // closing quote
+                        break;
+                    }
+                }
+                Some(c) => s.push(c),
             }
         }
         return s;
@@ -475,8 +580,23 @@ mod tests {
     }
 
     #[test]
-    fn declines_string_theory() {
-        assert!(parse_smt2("(set-logic QF_S)\n(declare-const s String)\n(check-sat)\n").is_none());
+    fn string_equality_parses() {
+        // Pure string equality is in-fragment (lowered to bit-vectors by interning).
+        let f = parse_smt2(
+            "(set-logic QF_S)\n(declare-const s String)\n(assert (= s \"a\"))\n(check-sat)\n",
+        )
+        .unwrap();
+        assert_eq!(f.bv_vars, vec![("s".to_string(), STR_W)]);
+        assert_eq!(f.asserts.len(), 1);
+    }
+
+    #[test]
+    fn declines_string_operations() {
+        // A non-equality string OPERATION (str.++/contains/len/…) is out of fragment → decline.
+        assert!(parse_smt2(
+            "(set-logic QF_S)\n(declare-const s String)\n(assert (= (str.++ s \"x\") \"ax\"))\n(check-sat)\n"
+        )
+        .is_none());
     }
 
     #[test]

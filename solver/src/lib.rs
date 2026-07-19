@@ -141,9 +141,29 @@ mod tests {
 
     #[test]
     fn out_of_fragment_defers() {
-        // A string-theory obligation is not QF_BV — decline (None → z3).
-        let smt = "(set-logic QF_S)\n(declare-const s String)\n(assert (= s \"hi\"))\n(check-sat)\n";
+        // A string OPERATION (str.len, not just equality) is out of the supported fragment → decline.
+        let smt = "(set-logic QF_S)\n(declare-const s String)\n\
+                   (assert (= (str.len s) 3))\n(check-sat)\n";
         assert_eq!(native_check_sat(smt), None);
+    }
+
+    #[test]
+    fn string_equality_is_decided() {
+        // s == "a" is satisfiable; s == "a" AND s == "b" is not (distinct literals ⇒ distinct ids).
+        let sat = "(set-logic QF_S)\n(declare-const s String)\n(assert (= s \"a\"))\n(check-sat)\n";
+        assert_eq!(native_check_sat(sat), Some(true));
+        let unsat = "(set-logic QF_S)\n(declare-const s String)\n\
+                     (assert (= s \"a\"))\n(assert (= s \"b\"))\n(check-sat)\n";
+        assert_eq!(native_check_sat(unsat), Some(false));
+        // A literal tautology and contradiction.
+        assert_eq!(
+            native_check_sat("(set-logic QF_S)\n(assert (not (= \"a\" \"a\")))\n(check-sat)\n"),
+            Some(false)
+        );
+        assert_eq!(
+            native_check_sat("(set-logic QF_S)\n(assert (not (= \"a\" \"b\")))\n(check-sat)\n"),
+            Some(true)
+        );
     }
 
     #[test]
