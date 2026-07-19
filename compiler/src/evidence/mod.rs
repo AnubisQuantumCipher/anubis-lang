@@ -124,7 +124,14 @@ pub fn build_evidence_bundle_tree(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let source_hash = crate::package::merkle::merkle_root(files.to_vec());
-    // Primary source body for re-derive: first leaf named source.anubis, else concat.
+    // Primary source body for re-derive: first leaf named source.anubis, else concat the SOURCE
+    // leaves. The concat fallback filters to leaves that are valid UTF-8 text and free of NUL bytes —
+    // a build artifact (Mach-O / ELF) is neither, so it can never be appended into the `source.anubis`
+    // snapshot. Defense-in-depth: without this, a caller that passes a binary leaf (e.g. a native
+    // artifact that slipped into the collected file tree) would inflate `source.anubis` with the
+    // artifact's bytes, making `anubis report` fail to parse it. The merkle `source_hash` above is
+    // still taken over ALL leaves, so bundle integrity is unchanged — only the human/parser-facing
+    // snapshot is kept clean.
     let source = files
         .iter()
         .find(|(p, _)| p == "source.anubis" || p.ends_with("/source.anubis"))
@@ -132,6 +139,7 @@ pub fn build_evidence_bundle_tree(
         .unwrap_or_else(|| {
             files
                 .iter()
+                .filter(|(_, b)| std::str::from_utf8(b).is_ok() && !b.contains(&0))
                 .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -1264,6 +1272,44 @@ mod pca_tests {
         // ...but re-deriving the claim from the source catches the lie and fails closed.
         assert!(!verify_pca(&bundle.dir).unwrap());
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn source_snapshot_never_absorbs_a_binary_leaf() {
+        // Regression (evidence-pipeline corruption): a native build artifact (Mach-O/ELF) that slips
+        // into the collected file tree must NOT be concatenated into the `source.anubis` snapshot.
+        // Before the fix, a tree with no leaf literally named `source.anubis` concatenated EVERY leaf
+        // — appending the artifact's bytes, inflating a tiny source to hundreds of KB and making
+        // `anubis report`'s parse stage emit thousands of errors (verdict FAIL though `check` passed).
+        let base = unique_dir("binary-leaf");
+        let text = "fn main() { let x = 1; }";
+        let mut binary = vec![0xcfu8, 0xfa, 0xed, 0xfe]; // Mach-O 64 magic
+        binary.extend_from_slice(&[0u8, 1, 2, 0, 255, 0]); // NUL bytes + non-UTF-8
+        binary.extend(std::iter::repeat(0xABu8).take(4096));
+        let files = vec![
+            ("main.anb".to_string(), text.as_bytes().to_vec()),
+            ("anubis_out".to_string(), binary.clone()),
+        ];
+        let bundle =
+            build_evidence_bundle_tree(&files, "safe", None, vec![], &base, None, None, None)
+                .unwrap();
+        let snap = std::fs::read(bundle.dir.join("source.anubis")).unwrap();
+        assert!(!snap.contains(&0u8), "source.anubis must contain no NUL byte");
+        assert!(
+            std::str::from_utf8(&snap)
+                .map(|s| s.contains("fn main"))
+                .unwrap_or(false),
+            "source.anubis must retain the real source text"
+        );
+        assert!(
+            snap.len() < text.len() + 64,
+            "source.anubis must not be inflated by the {}-byte artifact (got {} bytes)",
+            binary.len(),
+            snap.len()
+        );
+        // The merkle source_hash still covers BOTH leaves — the integrity anchor is unchanged.
+        assert!(validate_bundle(&bundle.dir).unwrap());
         let _ = std::fs::remove_dir_all(&base);
     }
 

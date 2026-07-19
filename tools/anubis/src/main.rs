@@ -1588,10 +1588,27 @@ fn main() -> Result<()> {
                 let closure = ws.as_ref().map(dep_closure_json);
                 // Multi-file merkle when project has more than the entry body.
                 let bundle = if let Ok(layout) = ProjectLayout::discover(&input) {
-                    let tree = anubis_compiler::package::merkle::collect_tree_files(&layout.src_root)
-                        .unwrap_or_else(|_| {
-                            vec![("source.anubis".into(), src.as_bytes().to_vec())]
-                        });
+                    // A package's evidence SOURCE tree is its Anubis source files — never build
+                    // artifacts. `collect_tree_files` walks `src_root` and (aside from out/target/.git)
+                    // grabs anything present, so a native artifact emitted under `src_root` (e.g.
+                    // `anubis build prog.anb --evidence --out prog_build/`, a dir name `collect_walk`
+                    // does not skip) would enter the merkle as a leaf. With no leaf literally named
+                    // `source.anubis`, `build_evidence_bundle_tree` then CONCATENATES every leaf into
+                    // the `source.anubis` snapshot — appending the Mach-O bytes and inflating a ~500 B
+                    // source to hundreds of KB, so `anubis report` reports thousands of parse errors and
+                    // the verdict flips to FAIL even though `check` passed. Filtering to `.anb`/`.anubis`
+                    // leaves keeps the source snapshot (and the source_hash) faithful to the real source.
+                    let tree: Vec<(String, Vec<u8>)> =
+                        anubis_compiler::package::merkle::collect_tree_files(&layout.src_root)
+                            .unwrap_or_else(|_| {
+                                vec![("source.anubis".into(), src.as_bytes().to_vec())]
+                            })
+                            .into_iter()
+                            .filter(|(p, _)| {
+                                let lp = p.to_ascii_lowercase();
+                                lp.ends_with(".anb") || lp.ends_with(".anubis")
+                            })
+                            .collect();
                     let files = if tree.is_empty() {
                         vec![("source.anubis".into(), src.as_bytes().to_vec())]
                     } else if tree.len() == 1 {
