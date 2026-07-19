@@ -169,3 +169,81 @@ theorem ult_correct (a b : List Bool) (h : a.length = b.length) :
     have hge : ¬ bitsToNat a < bitsToNat b := by omega
     simp only [Bool.not_true]
     simpa using hge
+
+/-! ### Signed comparator
+
+`blast.rs::slt(a,b)` flips the sign bit (the last/MSB entry of the LSB-first list) of BOTH operands
+then does an unsigned compare — the textbook "offset binary" trick. We mechanize that this exactly
+computes the two's-complement signed `<`, chaining off `ult_correct`. -/
+
+/-- Toggle the sign bit (the LAST/MSB entry of the LSB-first list) — the flip `blast.rs::slt` does. -/
+def flipMsb : List Bool → List Bool
+  | [] => []
+  | [b] => [!b]
+  | b :: bs => b :: flipMsb bs
+
+/-- Two's-complement (signed) value of an LSB-first bit list: the top bit carries the sign
+    (`[b]` = a lone sign bit worth `-b`; a longer list adds `2 ·` the signed value of the rest). -/
+def toIntW : List Bool → Int
+  | [] => 0
+  | [b] => -(b.toNat : Int)
+  | b :: bs => (b.toNat : Int) + 2 * toIntW bs
+
+/-- Flipping the sign bit preserves width. -/
+theorem flipMsb_length : ∀ a : List Bool, (flipMsb a).length = a.length := by
+  intro a
+  induction a with
+  | nil => rfl
+  | cons b bs ih =>
+      cases bs with
+      | nil => rfl
+      | cons c cs => simp only [flipMsb, List.length_cons, ih]
+
+/-- **Offset-binary identity.** For a nonempty list, the UNSIGNED value after flipping the sign bit is
+    the SIGNED value shifted up by `2^(w-1)`: `⟦flipMsb a⟧ = toIntW a + 2^(w-1)`. This is the whole
+    reason "flip sign bit, then unsigned-compare" computes signed `<`. -/
+theorem flipMsb_val : ∀ a : List Bool, a ≠ [] →
+    (bitsToNat (flipMsb a) : Int) = toIntW a + ((2 ^ (a.length - 1) : Nat) : Int) := by
+  intro a
+  induction a with
+  | nil => intro h; exact absurd rfl h
+  | cons b bs ih =>
+      intro _
+      cases bs with
+      | nil =>
+          simp only [flipMsb, toIntW, bitsToNat, List.length_cons, List.length_nil,
+            Nat.add_sub_cancel]
+          cases b <;> decide
+      | cons c cs =>
+          have ihb := ih (by simp)
+          have hnat : 2 ^ ((b :: c :: cs).length - 1) = 2 * 2 ^ ((c :: cs).length - 1) := by
+            simp only [List.length_cons, Nat.add_sub_cancel]
+            rw [Nat.pow_succ]; omega
+          simp only [flipMsb, toIntW, bitsToNat]
+          rw [hnat]
+          -- All atoms now linear: omega handles the Nat→Int casts of `+`/`·2` and treats `2^…` as an
+          -- opaque atom; combined with ihb (`↑⟦flipMsb (c::cs)⟧ = toIntW (c::cs) + ↑2^…`) it closes.
+          omega
+
+/-- Signed less-than exactly as `blast.rs::slt`: flip both sign bits, then `ult`. -/
+def slt (a b : List Bool) : Bool := ult (flipMsb a) (flipMsb b)
+
+/-- **Signed comparator correctness (fully mechanized).** For equal-length nonempty operands,
+    `slt a b = true ↔ toIntW a < toIntW b`. Proof: `slt = ult ∘ flipMsb`, so `ult_correct` (widths
+    preserved by `flipMsb_length`) reduces it to `⟦flipMsb a⟧ < ⟦flipMsb b⟧` (unsigned); `flipMsb_val`
+    rewrites each side to `toIntW · + 2^(w-1)` with the SAME offset (equal lengths), which cancels.
+    The signed `≤`/`>`/`≥` the blaster emits are `slt` negated/swapped, so they inherit this. -/
+theorem slt_correct (a b : List Bool) (hlen : a.length = b.length) (hne : a ≠ []) :
+    (slt a b = true) ↔ (toIntW a < toIntW b) := by
+  have hbne : b ≠ [] := by
+    intro h; subst h; simp only [List.length_nil] at hlen
+    cases a with
+    | nil => exact hne rfl
+    | cons _ _ => simp at hlen
+  have hfl : (flipMsb a).length = (flipMsb b).length := by
+    rw [flipMsb_length, flipMsb_length, hlen]
+  have hcast : ∀ m n : Nat, (m < n) ↔ ((m : Int) < (n : Int)) := fun m n => by omega
+  rw [slt, ult_correct (flipMsb a) (flipMsb b) hfl,
+      hcast (bitsToNat (flipMsb a)) (bitsToNat (flipMsb b)),
+      flipMsb_val a hne, flipMsb_val b hbne, hlen]
+  omega

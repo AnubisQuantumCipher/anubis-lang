@@ -63,10 +63,12 @@ also give — *provided the bit-blaster is correct*, which is what the validatio
    (what real `u32` obligations compile to) is fully *decided*, not deferred.
 3. **Machine-checked core.** `formal/Anubis/BitBlast.lean` proves the ripple-carry adder — from which
    every `bvadd`, and via two's complement every `bvsub`/`bvneg`, is built — computes *true integer
-   addition* (`rippleCarry_spec`), chaining to `Encoding.lean` (bvadd = `wrapping_add` = runtime); and
-   proves the unsigned comparator the blaster emits is exactly `<` (`ult_correct`:
-   `ult a b = true ↔ ⟦a⟧ < ⟦b⟧`, via the subtractor's carry-out). Both depend only on the three
-   standard Lean core axioms — no `sorry`/`admit`/`native_decide`.
+   addition* (`rippleCarry_spec`), chaining to `Encoding.lean` (bvadd = `wrapping_add` = runtime); the
+   unsigned comparator the blaster emits is exactly `<` (`ult_correct`: `ult a b = true ↔ ⟦a⟧ < ⟦b⟧`,
+   via the subtractor's carry-out); and the **signed** comparator's flip-MSB-then-unsigned trick is
+   exactly two's-complement signed `<` (`slt_correct`: `slt a b = true ↔ toIntW a < toIntW b`, via the
+   offset-binary identity `flipMsb_val`). All depend only on the three standard Lean core axioms — no
+   `sorry`/`admit`/`native_decide`.
 
 Only once the cross-check gate is sustained at zero disagreements **and** the bit-blaster is fully
 mechanized does the compiler flip to native-authoritative, dropping z3 from the trusted base for the
