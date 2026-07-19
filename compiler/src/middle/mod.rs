@@ -11264,6 +11264,65 @@ fn check_expr_semantics(
                         span: None,
                     });
                 }
+                // A+ maturity: validate each field VALUE against the field's DECLARED type, exactly
+                // like a call argument against a parameter type (same `types_assignable` /
+                // `check_mismatch_scoped` two-tier check). Gated to fire ONLY when the declared field
+                // type is a concrete primitive (int/float/string/bool) — the unambiguous zone
+                // `assignable` is well-tested on. A struct/enum/list/map/generic/Option/Result field
+                // type is skipped (accept), so no valid program — including a generic struct
+                // `Box<T> { v: T }` — can false-reject. Catches `Rec { name: 5 }` (string←int) and
+                // `Rec { id: "x" }` (u32←string), which previously constructed silently.
+                // Both the declared field type AND the value's synthesized type must be concrete
+                // SCALAR primitives (int/float/string/bool) for the mismatch to fire. Requiring the
+                // GOT side to be scalar too is load-bearing: the parser currently stores a list field
+                // type `[int]` as the bare element `"int"` (a known `collect_type_until` limitation —
+                // the `[`/`]` are dropped), so a correct list value (`log: []`, `log: some_vec`)
+                // synthesizes to `"list"` and would otherwise spuriously mismatch a field whose stored
+                // type reads `"int"`. Gating on a scalar GOT skips every container value, so no valid
+                // program false-rejects; the check still catches the real scalar cross-category lies
+                // (`name: string` given an int, `id: u32` given a string). See follow-up: fix
+                // `collect_type_until` to preserve `[...]` so list fields carry their true type.
+                let is_scalar_prim = |t: &str| {
+                    ty::is_numeric(t) || matches!(ty::normalize(t).as_str(), "string" | "bool")
+                };
+                let declared = ctx.struct_fields.get(name).and_then(|m| m.get(fname)).cloned();
+                if let Some(declared) = declared {
+                    if is_scalar_prim(&declared) {
+                        if let Some(got) = infer_expr_type_scoped(fexpr, scope) {
+                            if is_scalar_prim(&got) && !types_assignable(&declared, &got) {
+                                ctx.diagnostics.push(SemanticDiagnostic {
+                                    code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                    message: format!(
+                                        "type mismatch: field `{}` of `{}` expects `{}`, got `{}`",
+                                        fname, name, declared, got
+                                    ),
+                                    span: None,
+                                });
+                            }
+                        } else if let Some(got) =
+                            check_mismatch_scoped(fexpr, &declared, scope, ctx)
+                        {
+                            // The bidirectional core types a `Call`/`Index`/`FieldAccess` field value
+                            // the flat inference returned `None` for (e.g. `Rec { id: get_name() }`
+                            // where `get_name() -> string`). Enforcing (`shadow_gated=false`) — mirrors
+                            // the promoted call-argument check. Same scalar-GOT guard so a call
+                            // returning a container never drives a spurious mismatch.
+                            if is_scalar_prim(&got) {
+                                ctx.emit(
+                                    SemanticDiagnostic {
+                                        code: Some("ANUBIS_TYPE_MISMATCH".into()),
+                                        message: format!(
+                                            "type mismatch: field `{}` of `{}` expects `{}`, got `{}`",
+                                            fname, name, declared, got
+                                        ),
+                                        span: None,
+                                    },
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                }
                 check_expr_semantics(fexpr, scope, ctx);
             }
         }

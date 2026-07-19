@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_MISMATCH|type mismatch
+// A+ maturity: a struct literal that supplies a wrong-typed value for a concrete-primitive field is a
+// genuine construction-site type error — `name: string` given an int, `id: u32` given a string. The
+// contract lane already treats struct fields as opaque signed values (no false accept); this closes
+// the TYPE-SAFETY gap where such a literal previously compiled silently.
+struct Rec { name: string, id: u32 }
+fn use_rec(r: Rec) -> u32 { return r.id; }
+fn main() -> u32 {
+    return use_rec(Rec { name: 5, id: "x" });
+}
