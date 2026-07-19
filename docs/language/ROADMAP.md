@@ -12,7 +12,9 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 
 ---
 
-## STATUS — as of 2026-07-19 (branch `a-plus-maturity/20260705-1649`, HEAD `92abbbd`)
+## STATUS — as of 2026-07-19 (branch `a-plus-maturity/20260705-1649`, HEAD `0fdf6a4`)
+
+> **Soundness hunt 2026-07-19 (`0fdf6a4`, VM-sealed):** a 15-surface adversarial hunt (discriminator-verified, 41 agents) found and closed **5 false accepts** — (A) a `break` embedded in a struct-literal field or map-literal entry evaded `expr_escapes_loop`, so the loop-invariant engine proved a false post-loop fact; (B) a secret/tainted-capturing closure stored in a struct field or list element, applied via `b.f(0)`/`arr[0](0)`, laundered its label past `ANUBIS_SECRET_EXFILTRATION`/`ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` (the source analyzers never marked the application *result*). Full-corpus verdict-diff 0 flips; fixpoint dc680001 held. 21 fail-open completeness gaps recorded (safe-direction, none soundness-critical).
 
 | Phase | State | Evidence / residuals |
 |---|---|---|
