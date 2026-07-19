@@ -137,7 +137,7 @@ fn gen_term(rng: &mut Rng, w: u32, depth: u32) -> Term {
     } else {
         let a = Box::new(gen_term(rng, w, depth - 1));
         let b = Box::new(gen_term(rng, w, depth - 1));
-        match rng.below(11) {
+        match rng.below(14) {
             0 => Term::Add(a, b),
             1 => Term::Sub(a, b),
             2 => Term::And(a, b),
@@ -149,7 +149,12 @@ fn gen_term(rng: &mut Rng, w: u32, depth: u32) -> Term {
             8 => Term::Lshr(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
             9 => Term::Ashr(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
             // Constant-multiplier multiply: `x * c` (native decides via shift-and-add; z3 checks).
-            _ => Term::Mul(a, Box::new(Term::Const((rng.next() as u128) & ((1u128 << w) - 1), w))),
+            10 => Term::Mul(a, Box::new(Term::Const((rng.next() as u128) & ((1u128 << w) - 1), w))),
+            // VARIABLE-amount shifts: b is a full sub-term, exercising the barrel shifter (incl. the
+            // shift-≥-width ⇒ 0 / all-sign path when b's value is large).
+            11 => Term::Shl(a, b),
+            12 => Term::Lshr(a, b),
+            _ => Term::Ashr(a, b),
         }
     }
 }

@@ -269,9 +269,16 @@ impl<'a> Blaster<'a> {
                 out.extend(std::iter::repeat_n(sign, *n as usize));
                 Some(out)
             }
-            Term::Shl(a, b) => self.const_shift(a, b, ShiftKind::Left),
-            Term::Lshr(a, b) => self.const_shift(a, b, ShiftKind::LogicalRight),
-            Term::Ashr(a, b) => self.const_shift(a, b, ShiftKind::ArithRight),
+            // Constant shift amount → cheap direct wiring; variable amount → barrel shifter.
+            Term::Shl(a, b) => self
+                .const_shift(a, b, ShiftKind::Left)
+                .or_else(|| self.var_shift(a, b, ShiftKind::Left)),
+            Term::Lshr(a, b) => self
+                .const_shift(a, b, ShiftKind::LogicalRight)
+                .or_else(|| self.var_shift(a, b, ShiftKind::LogicalRight)),
+            Term::Ashr(a, b) => self
+                .const_shift(a, b, ShiftKind::ArithRight)
+                .or_else(|| self.var_shift(a, b, ShiftKind::ArithRight)),
             Term::Ite(p, a, b) => {
                 let sel = self.blast_pred(p)?;
                 let (av, bv) = (self.blast_term(a)?, self.blast_term(b)?);
@@ -337,6 +344,54 @@ impl<'a> Blaster<'a> {
             };
         }
         Some(out)
+    }
+
+    /// Shift by a VARIABLE amount via a log-depth barrel shifter: for each bit `k` of the amount `b`,
+    /// conditionally shift the running value by `2^k` (a `mux` on bit `k`). This matches SMT-LIB
+    /// `bvshl`/`bvlshr`/`bvashr` — including "shift ≥ width ⇒ 0 (or all-sign, arithmetic)", because a
+    /// layer whose `2^k ≥ w` shifts every bit out, and any set amount-bit at position `≥ log2 w` (up to
+    /// bit w-1) selects that all-out layer. Every gate is the already-proven `mux`.
+    fn var_shift(&mut self, a: &Term, b: &Term, kind: ShiftKind) -> Option<Vec<Lit>> {
+        let av = self.blast_term(a)?;
+        let bv = self.blast_term(b)?;
+        let w = av.len();
+        if bv.len() != w {
+            return None;
+        }
+        let ff = self.ff();
+        let mut cur = av;
+        for (k, &bk) in bv.iter().enumerate() {
+            if k >= usize::BITS as usize {
+                break; // 2^k unrepresentable; unreachable for the ≤64-bit widths this system emits
+            }
+            let amount = 1usize << k;
+            // For arithmetic right, fill with the sign bit — right-shifting preserves the MSB, so the
+            // running value's MSB is still the original sign at every layer.
+            let fill = match kind {
+                ShiftKind::ArithRight => *cur.last()?,
+                _ => ff,
+            };
+            let shifted: Vec<Lit> = (0..w)
+                .map(|i| match kind {
+                    ShiftKind::Left => {
+                        if i >= amount {
+                            cur[i - amount]
+                        } else {
+                            ff
+                        }
+                    }
+                    ShiftKind::LogicalRight | ShiftKind::ArithRight => {
+                        if i + amount < w {
+                            cur[i + amount]
+                        } else {
+                            fill
+                        }
+                    }
+                })
+                .collect();
+            cur = (0..w).map(|i| self.mux(bk, shifted[i], cur[i])).collect();
+        }
+        Some(cur)
     }
 
     // ---- Predicates → one literal (true iff the predicate holds) ----

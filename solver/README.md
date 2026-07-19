@@ -28,9 +28,10 @@ SMT-LIB2 text ──parse──▶ bv::Formula ──bit-blast──▶ CNF ─�
 - **`blast.rs`** — a Tseitin bit-blaster. Each term becomes a `Vec<Lit>` (LSB first), each predicate a
   single `Lit`. Supported: `const`/`var`, `and`/`or`/`xor`/`not`, `neg`, ripple-carry `add`/`sub`,
   **constant-multiplier `mul`** (`x * c` = shift-and-add over c's set bits, mod 2^w), all eight
-  signed+unsigned comparisons, `=`, `extract`/`concat`/`{zero,sign}_extend`, `ite`, and **constant**
-  shifts. Gate semantics match `run.rs` and `formal/Anubis/Encoding.lean`. **Variable × variable**
-  `mul`, `div`/`rem`, and **variable** shifts are declined (→ `None` → z3).
+  signed+unsigned comparisons, `=`, `extract`/`concat`/`{zero,sign}_extend`, `ite`, and shifts by
+  **any** amount — constant (direct wiring) or **variable** (a log-depth barrel shifter of `mux`es).
+  Gate semantics match `run.rs` and `formal/Anubis/Encoding.lean`. Only **variable × variable** `mul`
+  and `div`/`rem` are still declined (→ `None` → z3).
 - **`sat.rs`** — a **CDCL** SAT engine (watched literals, 1-UIP clause learning, VSIDS, Luby restarts)
   bounded by a *conflict* budget; over budget → `Unknown` (decline). `Unsat` is only ever returned via a
   conflict at decision level 0 (a root refutation), so a "proof" is sound by construction.
