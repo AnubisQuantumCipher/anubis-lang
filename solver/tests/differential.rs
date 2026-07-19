@@ -137,7 +137,7 @@ fn gen_term(rng: &mut Rng, w: u32, depth: u32) -> Term {
     } else {
         let a = Box::new(gen_term(rng, w, depth - 1));
         let b = Box::new(gen_term(rng, w, depth - 1));
-        match rng.below(10) {
+        match rng.below(11) {
             0 => Term::Add(a, b),
             1 => Term::Sub(a, b),
             2 => Term::And(a, b),
@@ -147,7 +147,9 @@ fn gen_term(rng: &mut Rng, w: u32, depth: u32) -> Term {
             6 => Term::Neg(a),
             7 => Term::Shl(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
             8 => Term::Lshr(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
-            _ => Term::Ashr(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
+            9 => Term::Ashr(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
+            // Constant-multiplier multiply: `x * c` (native decides via shift-and-add; z3 checks).
+            _ => Term::Mul(a, Box::new(Term::Const((rng.next() as u128) & ((1u128 << w) - 1), w))),
         }
     }
 }
@@ -214,6 +216,14 @@ fn native_agrees_with_z3_on_64bit_edge_cases() {
         "(assert (bvslt ((_ sign_extend 32) (_ bv4294967295 32)) (_ bv0 64)))",
         // 2^53+1 rounding has nothing to do with BV — but 2^53+1 > 2^53 in BV is true.
         "(assert (bvugt (_ bv9007199254740993 64) (_ bv9007199254740992 64)))",
+        // const-multiply = shift-and-add: for all x, x*8 == x<<3 ⇒ the negation is unsat.
+        "(declare-const x (_ BitVec 64))(assert (not (= (bvmul x (_ bv8 64)) (bvshl x (_ bv3 64)))))",
+        // const-multiply wraps mod 2^64: 2^63 * 2 == 0. SAT (it's a closed truth ⇒ its assertion holds).
+        "(assert (= (bvmul (_ bv9223372036854775808 64) (_ bv2 64)) (_ bv0 64)))",
+        // const-multiply distributes: for all x, x*3 == x + x + x ⇒ negation unsat.
+        "(declare-const x (_ BitVec 64))(assert (not (= (bvmul x (_ bv3 64)) (bvadd (bvadd x x) x))))",
+        // commutativity of the const operand: 5*x == x*5 for all x ⇒ negation unsat.
+        "(declare-const x (_ BitVec 64))(assert (not (= (bvmul (_ bv5 64) x) (bvmul x (_ bv5 64)))))",
     ];
     for smt in cases {
         let full = format!("(set-logic QF_BV)\n{}\n(check-sat)\n", smt);

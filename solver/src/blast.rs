@@ -128,6 +128,35 @@ impl<'a> Blaster<'a> {
         self.add_carry(a, b, ff).0
     }
 
+    /// Multiply by a CONSTANT multiplier: `x * c = Σ_{i : bit i of c set} (x << i)`, accumulated with
+    /// the ripple adder (so the result is taken mod 2^w — exactly bit-vector multiply). One operand
+    /// must be a literal `Const`; multiplication is commutative and both-const folds through the same
+    /// path (the const operand is blasted to bits and shift-added). Variable × variable needs a full
+    /// multiplier array and is deferred (→ `None` → z3). Every gate used here — the shift (wire
+    /// re-indexing) and the ripple `add` — is already machine-checked in `formal/Anubis/BitBlast.lean`.
+    fn const_mul(&mut self, a: &Term, b: &Term) -> Option<Vec<Lit>> {
+        let (x_term, c, w) = match (a, b) {
+            (_, Term::Const(c, w)) => (a, *c, *w as usize),
+            (Term::Const(c, w), _) => (b, *c, *w as usize),
+            _ => return None, // variable × variable → defer
+        };
+        let x = self.blast_term(x_term)?;
+        if x.len() != w {
+            return None;
+        }
+        let ff = self.ff();
+        let mut acc = vec![ff; w];
+        for i in 0..w {
+            if (c >> i) & 1 == 1 {
+                // x << i, truncated to w bits (LSB-first): bits [i..w) = x[0..w-i], low i bits zero.
+                let mut shifted = vec![ff; w];
+                shifted[i..].copy_from_slice(&x[..w - i]);
+                acc = self.add(&acc, &shifted);
+            }
+        }
+        Some(acc)
+    }
+
     /// a - b = a + ~b + 1. Returns (diff, carry-out); carry-out = 1 iff a >= b (unsigned).
     fn sub_carry(&mut self, a: &[Lit], b: &[Lit]) -> (Vec<Lit>, Lit) {
         let nb: Vec<Lit> = b.iter().map(|l| l.negate()).collect();
@@ -251,8 +280,11 @@ impl<'a> Blaster<'a> {
                 }
                 Some((0..av.len()).map(|i| self.mux(sel, av[i], bv[i])).collect())
             }
-            // Unsupported in slice 1 → defer to z3.
-            Term::Mul(..) | Term::Udiv(..) | Term::Urem(..) | Term::Sdiv(..) | Term::Srem(..) => {
+            // Constant-multiplier multiply (one operand a literal): x * c = Σ (x << i) over the set
+            // bits i of c, accumulated mod 2^w. Variable × variable needs a full multiplier array and
+            // is still deferred. Division / remainder are still deferred to z3.
+            Term::Mul(a, b) => self.const_mul(a, b),
+            Term::Udiv(..) | Term::Urem(..) | Term::Sdiv(..) | Term::Srem(..) => {
                 let _ = w;
                 None
             }
