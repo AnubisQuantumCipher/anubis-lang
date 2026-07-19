@@ -1,0 +1,75 @@
+# anubis-solver — a native SMT decision procedure
+
+**Purpose.** Anubis's contract checker proves `requires`/`ensures`/`assert` obligations with an SMT
+solver. Until now that solver was **z3** — the single largest *trusted third party* in the whole
+system. If z3 ever answered `unsat` (i.e. "your obligation is proven") incorrectly, Anubis would
+certify a false contract. This crate exists to **remove that trust**: it is a from-scratch SMT
+decision procedure for the bit-vector (integer) fragment, with **zero external solver dependency**
+(std only). It is Phase 7 of the roadmap — *minimize the Trusted Computing Base*.
+
+## What it decides
+
+The integer lane: fixed-width bit-vectors (`QF_BV`), which is what dominates real contract obligations
+(`x + 1 > x`, `abs(x) < 100`, the u32-mask range facts, comparisons, wrapping arithmetic). Floats,
+strings, and arrays are **not** handled here yet — those obligations are declined and fall back to z3.
+
+## Pipeline
+
+```
+SMT-LIB2 text ──parse──▶ bv::Formula ──bit-blast──▶ CNF ──SAT──▶ verdict
+   parse.rs               bv.rs           blast.rs      sat.rs
+```
+
+- **`parse.rs`** — a deliberately *conservative* SMT-LIB2 reader for exactly the fragment
+  `compiler/src/middle/mod.rs` emits. Any non-BV sort, unsupported op, or malformed input makes the
+  whole parse return `None`. It never guesses.
+- **`bv.rs`** — the QF_BV formula AST: bit-vector `Term`s and boolean `Pred`s, with a structural
+  `Term::width`.
+- **`blast.rs`** — a Tseitin bit-blaster. Each term becomes a `Vec<Lit>` (LSB first), each predicate a
+  single `Lit`. Supported: `const`/`var`, `and`/`or`/`xor`/`not`, `neg`, ripple-carry `add`/`sub`, all
+  eight signed+unsigned comparisons, `=`, `extract`/`concat`/`{zero,sign}_extend`, `ite`, and
+  **constant** shifts. Gate semantics match `run.rs` and `formal/Anubis/Encoding.lean`. `mul`,
+  `div`/`rem`, and **variable** shifts are declined (→ `None` → z3).
+- **`sat.rs`** — a CNF SAT engine bounded by a decision budget; over budget → `Unknown` (decline).
+
+## The one entry point
+
+```rust
+anubis_solver::native_check_sat(smt: &str) -> Option<bool>
+```
+
+- `Some(true)`  — **SAT**: a model of `assumptions ∧ ¬property` exists → the property is **not** proven
+  (a counterexample). Same meaning as z3 answering `sat`.
+- `Some(false)` — **UNSAT**: no model → the property is **proven**. Same as z3 `unsat`.
+- `None`        — the solver **declines**: out-of-fragment, or undecided within budget → defer to z3.
+
+**Soundness is structural.** A definite verdict is returned *only* when the input parsed as pure
+QF_BV, every term bit-blasted with a supported gate, and the SAT engine actually decided the CNF.
+Anything else is `None`. So this can sit in front of z3 without ever changing a verdict z3 would not
+also give — *provided the bit-blaster is correct*, which is what the validation below establishes.
+
+## How we know it's correct (and why it can't cause a false accept)
+
+1. **Shadow, don't trust.** In the compiler, `native_check_sat` runs *alongside* z3 on every
+   obligation (`ANUBIS_NATIVE_SHADOW=1`). **z3 stays the authority** — its verdict is what the checker
+   uses. The native answer is only *compared*, and any disagreement fails the cross-check gate
+   (`scripts/run_native_shadow_gate.sh`). So during rollout a native bug is *caught*, never *trusted*.
+2. **Differential vs z3.** `tests/differential.rs` runs thousands of random QF_BV formulas plus
+   hand-crafted 64-bit edge cases (wrapping overflow, signed `MIN`, the u32 mask, extract, sign-extend)
+   through both native and z3 and asserts they agree wherever native decides. Current: **0
+   disagreements**.
+3. **Machine-checked core.** `formal/Anubis/BitBlast.lean` proves the ripple-carry adder — from which
+   every `bvadd`, and via two's complement every `bvsub`/`bvneg`, and via the borrow every comparator,
+   is built — computes *true integer addition*, chaining to `Encoding.lean` (bvadd = `wrapping_add` =
+   runtime).
+
+Only once the cross-check gate is sustained at zero disagreements **and** the bit-blaster is fully
+mechanized does the compiler flip to native-authoritative, dropping z3 from the trusted base for the
+integer lane.
+
+## Status / next
+
+- ✅ parser, bit-blaster, bounded SAT, `native_check_sat`, differential + corpus shadow, adder proof.
+- ⏳ a CDCL engine (watched literals + clause learning) so hard/large formulas decide in real time
+  rather than deferring.
+- ⬜ native lanes for floats / strings / arrays; the z3-authoritative flip; a mechanized `ult_correct`.
