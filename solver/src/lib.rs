@@ -38,13 +38,77 @@ pub fn native_check_sat(smt: &str) -> Option<bool> {
 
 /// As [`native_check_sat`] but with an explicit decision budget (used by the differential gate).
 pub fn native_check_sat_budget(smt: &str, budget: u64) -> Option<bool> {
+    native_check_sat_model_budget(smt, budget).map(|v| matches!(v, NativeVerdict::Sat(_)))
+}
+
+/// A definite native verdict, carrying the reconstructed model on SAT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeVerdict {
+    /// No model exists — the obligation's property is PROVEN.
+    Unsat,
+    /// A model exists — `(name, value, width)` for every declared bit-vector variable, LSB-verified.
+    /// The model has ALREADY been re-checked by the independent `bv::Formula::eval` replay: this
+    /// variant is returned only when the assignment concretely satisfies every assertion.
+    Sat(Vec<(String, u128, u32)>),
+}
+
+/// As [`native_check_sat`], additionally reconstructing the SMT-level model on SAT.
+///
+/// The model is read out of the CDCL assignment via the bit-blaster's variable→literal map, then
+/// REPLAYED through the independent concrete evaluator (`bv::Formula::eval` — a straight-line
+/// interpreter sharing no code with the bit-blaster or the SAT engine). If the replay does not
+/// re-satisfy the formula — which would mean a solver defect — this returns `None` (defer), so a
+/// broken model can never be presented as a counterexample. UNSAT needs no model.
+pub fn native_check_sat_model(smt: &str) -> Option<NativeVerdict> {
+    native_check_sat_model_budget(smt, DEFAULT_BUDGET)
+}
+
+/// As [`native_check_sat_model`] with an explicit budget.
+pub fn native_check_sat_model_budget(smt: &str, budget: u64) -> Option<NativeVerdict> {
     let formula = parse::parse_smt2(smt)?;
     let mut cnf = Cnf::new();
-    blast::blast(&formula, &mut cnf)?;
+    let map = blast::blast_with_map(&formula, &mut cnf)?;
     match cnf.solve(budget) {
-        SatResult::Sat(_) => Some(true),
-        SatResult::Unsat => Some(false),
+        SatResult::Unsat => Some(NativeVerdict::Unsat),
         SatResult::Unknown => None,
+        SatResult::Sat(assign) => {
+            // Read each declared bit-vector's value out of the assignment (LSB first). A variable
+            // absent from the map or a literal beyond the assignment is unconstrained — 0 is a model.
+            let read_lit = |l: &sat::Lit| -> bool {
+                let v = assign.get(l.var()).copied().unwrap_or(false);
+                if l.is_neg() {
+                    !v
+                } else {
+                    v
+                }
+            };
+            let mut model = Vec::new();
+            let mut env = std::collections::HashMap::new();
+            for (name, w) in &formula.bv_vars {
+                let value = match map.bv.get(name) {
+                    Some(bits) => bits
+                        .iter()
+                        .enumerate()
+                        .fold(0u128, |acc, (i, l)| acc | ((read_lit(l) as u128) << i)),
+                    None => 0,
+                };
+                env.insert(name.clone(), value);
+                model.push((name.clone(), value, *w));
+            }
+            let mut bool_env = std::collections::HashMap::new();
+            for name in &formula.bool_vars {
+                bool_env.insert(
+                    name.clone(),
+                    map.bools.get(name).map(&read_lit).unwrap_or(false),
+                );
+            }
+            // The native replay: the model must concretely satisfy every assertion under the
+            // independent evaluator, or we refuse to certify the SAT (defer to z3).
+            if formula.eval(&env, &bool_env) != Some(true) {
+                return None;
+            }
+            Some(NativeVerdict::Sat(model))
+        }
     }
 }
 
@@ -79,5 +143,22 @@ mod tests {
         // A string-theory obligation is not QF_BV — decline (None → z3).
         let smt = "(set-logic QF_S)\n(declare-const s String)\n(assert (= s \"hi\"))\n(check-sat)\n";
         assert_eq!(native_check_sat(smt), None);
+    }
+
+    #[test]
+    fn sat_model_is_concrete_and_replayed() {
+        // exists x. x + 1 == 3 — the ONLY model is x = 2; the extracted model must say so.
+        let smt = "(set-logic QF_BV)\n(declare-const x (_ BitVec 64))\n\
+                   (assert (= (bvadd x (_ bv1 64)) (_ bv3 64)))\n(check-sat)\n(get-model)\n";
+        match native_check_sat_model(smt) {
+            Some(NativeVerdict::Sat(model)) => {
+                assert_eq!(model, vec![("x".to_string(), 2u128, 64u32)]);
+            }
+            other => panic!("expected Sat with x=2, got {:?}", other),
+        }
+        // And a proven obligation yields Unsat with no model needed.
+        let proven = "(set-logic QF_BV)\n(declare-const x (_ BitVec 64))\n\
+                      (assert (not (bvule x x)))\n(check-sat)\n";
+        assert_eq!(native_check_sat_model(proven), Some(NativeVerdict::Unsat));
     }
 }

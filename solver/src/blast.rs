@@ -13,6 +13,18 @@ use crate::sat::{Cnf, Lit, Var};
 use std::collections::HashMap;
 
 pub fn blast(f: &Formula, cnf: &mut Cnf) -> Option<()> {
+    blast_with_map(f, cnf).map(|_| ())
+}
+
+/// The variable→literal correspondence produced by a successful blast: which CNF literal carries each
+/// bit of each declared bit-vector (LSB first), and each boolean. Reading these literals out of a SAT
+/// assignment reconstructs a concrete SMT-level model (see `lib.rs::native_check_sat_model`).
+pub struct BlastMap {
+    pub bv: HashMap<String, Vec<Lit>>,
+    pub bools: HashMap<String, Lit>,
+}
+
+pub fn blast_with_map(f: &Formula, cnf: &mut Cnf) -> Option<BlastMap> {
     let mut b = Blaster::new(cnf);
     // Declare bit-vars for every symbolic constant.
     for (name, w) in &f.bv_vars {
@@ -27,7 +39,10 @@ pub fn blast(f: &Formula, cnf: &mut Cnf) -> Option<()> {
         let l = b.blast_pred(p)?;
         b.cnf.add_clause(vec![l]);
     }
-    Some(())
+    Some(BlastMap {
+        bv: b.vars,
+        bools: b.bool_vars,
+    })
 }
 
 struct Blaster<'a> {

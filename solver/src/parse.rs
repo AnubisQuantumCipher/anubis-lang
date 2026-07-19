@@ -86,7 +86,13 @@ fn parse_sort(s: &Sexp) -> Option<Sort> {
                 && items[0].as_atom()? == "_"
                 && items[1].as_atom()? == "BitVec"
             {
-                Some(Sort::Bv(items[2].as_atom()?.parse().ok()?))
+                let w: u32 = items[2].as_atom()?.parse().ok()?;
+                // Width 0 is degenerate (no sign bit, no value bits) and width > 128 exceeds the
+                // evaluator's u128 model values — both out of the supported fragment.
+                if w == 0 || w > 128 {
+                    return None;
+                }
+                Some(Sort::Bv(w))
             } else {
                 None
             }

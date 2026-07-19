@@ -5694,20 +5694,41 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     }
     smt.push_str(&body);
     smt.push_str("(check-sat)\n");
-    let out = Command::new("z3")
-        .args(Z3_ARGS)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()
-        .and_then(|mut child| {
-            child.stdin.as_mut()?.write_all(smt.as_bytes()).ok()?;
-            child.wait_with_output().ok()
-        })?;
-    match String::from_utf8_lossy(&out.stdout).lines().next()?.trim() {
-        "sat" => Some(true),
-        "unsat" => Some(false),
+    // Phase-7 authoritative mode: native answers the vacuity query when it can. The danger direction
+    // HERE is `Some(true)` (premises satisfiable → guard doesn't fire): wrongly claiming
+    // satisfiability would let a vacuous proof through. A native `sat` is model-backed (the CDCL
+    // assignment is re-verified by the independent evaluator before the verdict is returned), so it
+    // is trustworthy; still, while z3 is present we cross-check, and a disagreement fails CLOSED by
+    // reporting the premises as vacuous (`Some(false)` flips the obligation to FAIL — reject).
+    if native_authoritative() {
+        if let Some(nat) = anubis_solver::native_check_sat(&smt) {
+            if let Some(z) = z3_spawn_first_line(&smt) {
+                let zb = match z.as_str() {
+                    "sat" => Some(true),
+                    "unsat" => Some(false),
+                    _ => None,
+                };
+                if let Some(zb) = zb {
+                    if zb != nat {
+                        eprintln!(
+                            "ANUBIS_NATIVE_DISAGREE(vacuity): native={} z3={} — failing closed \
+                             (reporting the premises as vacuous); smt=<<{}>>",
+                            if nat { "sat" } else { "unsat" },
+                            if zb { "sat" } else { "unsat" },
+                            smt.replace('\n', " ")
+                        );
+                        return Some(false);
+                    }
+                }
+            }
+            return Some(nat);
+        }
+    }
+    let ans = z3_spawn_first_line(&smt);
+    native_shadow_compare(&smt, ans.as_deref());
+    match ans.as_deref() {
+        Some("sat") => Some(true),
+        Some("unsat") => Some(false),
         _ => None,
     }
 }
@@ -5718,6 +5739,93 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     if std::env::var_os("ANUBIS_DUMP_SMT").is_some() {
         let path = std::env::temp_dir().join(format!("anubis_solver_{}.smt2", std::process::id()));
         let _ = std::fs::write(path, &smt);
+    }
+    // Phase-7 z3-authoritative flip (opt-in): the native QF_BV solver decides the PRIMARY obligation
+    // when it can. UNSAT (proven) is the trust-critical direction — it is backed by the machine-
+    // checked bit-blaster (BitBlast.lean: adder + all 8 comparators), the CDCL engine's
+    // sound-by-construction UNSAT (level-0 refutation only), and the standing differential/corpus
+    // gates. SAT (counterexample) is the reject direction and its model is re-verified by the
+    // solver's OWN independent evaluator before it is ever returned (the native replay). While z3 is
+    // on PATH every native verdict is additionally cross-checked and a disagreement fails CLOSED.
+    // Native declines (float/string/array obligations, over-budget) fall through to z3 unchanged.
+    if native_authoritative() {
+        match anubis_solver::native_check_sat_model(&smt) {
+            Some(anubis_solver::NativeVerdict::Unsat) => {
+                if let Some(z) = z3_spawn_first_line(&smt) {
+                    if z == "sat" {
+                        eprintln!(
+                            "ANUBIS_NATIVE_DISAGREE(primary): native=unsat z3=sat — failing \
+                             closed; smt=<<{}>>",
+                            smt.replace('\n', " ")
+                        );
+                        return SolverCheck {
+                            name: obligation.name.clone(),
+                            status: "FAIL".into(),
+                            detail: "ANUBIS_NATIVE_DISAGREEMENT: the native solver proved this \
+                                     obligation but z3 found it satisfiable — cross-check \
+                                     soundness alarm; failing closed"
+                                .into(),
+                            model: None,
+                            smt,
+                        };
+                    }
+                }
+                return SolverCheck {
+                    name: obligation.name.clone(),
+                    status: "PASS".into(),
+                    detail: "assertion proved: assumptions imply assertion (native QF_BV solver; \
+                             machine-checked bit-blaster)"
+                        .into(),
+                    model: None,
+                    smt,
+                };
+            }
+            Some(anubis_solver::NativeVerdict::Sat(native_model)) => {
+                if let Some(z) = z3_spawn_first_line(&smt) {
+                    if z == "unsat" {
+                        eprintln!(
+                            "ANUBIS_NATIVE_DISAGREE(primary): native=sat z3=unsat — failing \
+                             closed; smt=<<{}>>",
+                            smt.replace('\n', " ")
+                        );
+                        return SolverCheck {
+                            name: obligation.name.clone(),
+                            status: "FAIL".into(),
+                            detail: "ANUBIS_NATIVE_DISAGREEMENT: the native solver found a \
+                                     counterexample but z3 proved the obligation — cross-check \
+                                     soundness alarm; failing closed"
+                                .into(),
+                            model: None,
+                            smt,
+                        };
+                    }
+                    // Both say sat → fall through to the z3 path below for its model + replay
+                    // diagnostics (identical user-facing output during the soak).
+                } else {
+                    // z3 absent: the native model carries the counterexample. It was already
+                    // re-verified by the solver's independent evaluator (the native replay), which
+                    // is the same guarantee the z3 path gets from `replay_counterexample`.
+                    let mut rendered = String::from("sat\n(\n");
+                    for (name, value, width) in &native_model {
+                        rendered.push_str(&format!(
+                            "  (define-fun {} () (_ BitVec {}) (_ bv{} {}))\n",
+                            name, width, value, width
+                        ));
+                    }
+                    rendered.push_str(")\n");
+                    return SolverCheck {
+                        name: obligation.name.clone(),
+                        status: "FAIL".into(),
+                        detail: "counterexample satisfies assumptions and negates assertion \
+                                 (native model, independently re-evaluated)"
+                            .into(),
+                        model: Some(rendered),
+                        smt,
+                    };
+                }
+            }
+            None => {} // out of fragment / undecided → z3 exactly as before
+        }
     }
     let mut child = match Command::new("z3")
         .args(Z3_ARGS)
@@ -5765,6 +5873,10 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let first = stdout.lines().next().unwrap_or("").trim();
+    // Shadow the PRIMARY obligation stream too (not just the replay/raw queries): under
+    // `ANUBIS_NATIVE_SHADOW=1` the native verdict is compared against z3's right here, where the
+    // real proof/counterexample decisions are made. z3's verdict below is returned unchanged.
+    native_shadow_compare(&smt, Some(first));
     match first {
         "unsat" => SolverCheck {
             name: obligation.name.clone(),
@@ -5884,9 +5996,19 @@ fn parse_z3_model(model: &str) -> BTreeMap<String, String> {
     bindings
 }
 
-/// Runs `smt` through z3 and returns the first line of its stdout (`sat`/`unsat`/`unknown`),
-/// or `None` if z3 could not be spawned or its output could not be read.
-fn z3_check_sat_raw(smt: &str) -> Option<String> {
+/// Phase-7 z3-authoritative flip (opt-in, `ANUBIS_NATIVE_AUTHORITATIVE=1`): when set, any obligation
+/// the native QF_BV solver fully decides uses the NATIVE verdict. While z3 is still on PATH it is run
+/// as a cross-check and any disagreement fails CLOSED (reject + loud alarm) — so the soak period has
+/// no unchecked trust. When z3 is absent, the native verdict alone carries the integer lane: that is
+/// the TCB drop this whole phase builds toward. Off by default — the stock pipeline is unchanged.
+fn native_authoritative() -> bool {
+    std::env::var("ANUBIS_NATIVE_AUTHORITATIVE").as_deref() == Ok("1")
+}
+
+/// Bare z3 spawn returning the trimmed first line of stdout (`sat`/`unsat`/`unknown`/`(error…`), or
+/// `None` if z3 could not be spawned or read. No native-solver logic here — this is both the z3 leg
+/// of `z3_check_sat_raw` and the cross-check partner inside the native-authoritative paths.
+fn z3_spawn_first_line(smt: &str) -> Option<String> {
     let mut child = Command::new("z3")
         .args(Z3_ARGS)
         .stdin(Stdio::piped())
@@ -5896,10 +6018,41 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
         .ok()?;
     child.stdin.as_mut()?.write_all(smt.as_bytes()).ok()?;
     let output = child.wait_with_output().ok()?;
-    let ans = String::from_utf8_lossy(&output.stdout)
+    String::from_utf8_lossy(&output.stdout)
         .lines()
         .next()
-        .map(|l| l.trim().to_string());
+        .map(|l| l.trim().to_string())
+}
+
+/// Runs `smt` and returns the first verdict line (`sat`/`unsat`/`unknown`), or `None` if no solver
+/// could decide it.
+///
+/// Under `ANUBIS_NATIVE_AUTHORITATIVE=1`, the native QF_BV solver answers first; if it decides, its
+/// verdict is returned — after a fail-closed cross-check against z3 when z3 is present (a
+/// disagreement returns a sentinel that no caller accepts as `sat` OR `unsat`, so both the replay
+/// path and any verdict matcher treat it as undecided/failed — the reject direction). If native
+/// declines, or in the default mode, z3 answers as before (with the shadow comparison when enabled).
+fn z3_check_sat_raw(smt: &str) -> Option<String> {
+    if native_authoritative() {
+        if let Some(nat) = anubis_solver::native_check_sat(smt) {
+            let nat_str = if nat { "sat" } else { "unsat" };
+            if let Some(z) = z3_spawn_first_line(smt) {
+                if (z == "sat" || z == "unsat") && z != nat_str {
+                    eprintln!(
+                        "ANUBIS_NATIVE_DISAGREE(authoritative): native={} z3={} — failing closed; \
+                         smt=<<{}>>",
+                        nat_str,
+                        z,
+                        smt.replace('\n', " ")
+                    );
+                    return Some("native-z3-disagreement".to_string());
+                }
+            }
+            return Some(nat_str.to_string());
+        }
+        // Native declined (out-of-fragment / over budget) → z3 exactly as before.
+    }
+    let ans = z3_spawn_first_line(smt);
     // Phase-7 TCB minimization: shadow the native QF_BV solver against z3 on every real obligation.
     // z3 stays the AUTHORITY (its `ans` is returned unchanged) — the native answer is only compared,
     // so a native bug can never change a verdict. `ANUBIS_NATIVE_SHADOW=1` enables the comparison; the

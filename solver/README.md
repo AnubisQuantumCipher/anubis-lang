@@ -52,12 +52,32 @@ QF_BV, every term bit-blasted with a supported gate, and the SAT engine actually
 Anything else is `None`. So this can sit in front of z3 without ever changing a verdict z3 would not
 also give — *provided the bit-blaster is correct*, which is what the validation below establishes.
 
+## Rollout: shadow → opt-in authoritative → default flip
+
+There are three compiler modes, each a strictly bolder step, all gated:
+
+- **Default (shadow off):** z3 decides everything; the stock pipeline, unchanged.
+- **`ANUBIS_NATIVE_SHADOW=1`:** native runs *alongside* z3 on every obligation (now including the
+  primary proof stream), z3 stays authoritative, disagreements fail `scripts/run_native_shadow_gate.sh`.
+  Current: **243/293 real obligations decided by native, 0 disagreements** (the 50 deferrals are the
+  non-BV float/string/array obligations).
+- **`ANUBIS_NATIVE_AUTHORITATIVE=1` (opt-in):** native *decides* every QF_BV obligation it can, and z3
+  is consulted only as a fail-closed cross-check while present. With z3 **absent**, native alone
+  carries the integer lane — the actual TCB drop. `scripts/run_native_authoritative_gate.sh` proves
+  this is safe: **verdict-equivalent to z3 over the whole corpus (326 files, 0 mismatches, 0
+  disagreements)**, and native alone (z3 hidden) proves the passing int fixture and rejects the
+  violating one, while the default mode without z3 fails (z3 was load-bearing). The default flip
+  follows after soak.
+
 ## How we know it's correct (and why it can't cause a false accept)
 
-1. **Shadow, don't trust.** In the compiler, `native_check_sat` runs *alongside* z3 on every
-   obligation (`ANUBIS_NATIVE_SHADOW=1`). **z3 stays the authority** — its verdict is what the checker
-   uses. The native answer is only *compared*, and any disagreement fails the cross-check gate
-   (`scripts/run_native_shadow_gate.sh`). So during rollout a native bug is *caught*, never *trusted*.
+1. **Shadow, don't trust.** During rollout **z3 stays the authority** — the native answer is only
+   *compared*, and any disagreement fails the cross-check gate. In authoritative mode native's verdict
+   is used but every one is still cross-checked against z3 while it is present (a disagreement fails
+   *closed* — reject). A native bug is *caught*, never silently *trusted*.
+   - **SAT is self-replayed.** A native `sat` (counterexample) is returned only after the reconstructed
+     model is re-verified by an *independent* concrete evaluator (`bv::Formula::eval`, sharing no code
+     with the bit-blaster or SAT engine) — the native equivalent of the z3 counterexample replay.
 2. **Differential vs z3.** `tests/differential.rs` runs thousands of random QF_BV formulas plus
    hand-crafted 64-bit edge cases (wrapping overflow, signed `MIN`, the u32 mask, extract, sign-extend)
    through both native and z3 and asserts they agree wherever native decides. Current: **2000 small +
