@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LETHAL_TRIFECTA
+// Phase-2 lethal-trifecta, closure/function-value-aliased leg (audit follow-up): a leg reached only
+// through a function-value binding (`let f = reader; f()`) used to be laundered past the name-keyed
+// leg scan AND the caller's inferred effects, so a real 3-leg trifecta with an aliased leg compiled.
+// scan_legs now resolves `let x = <fn>` aliases: `f()` is counted as `reader()` for the leg scan and
+// its fs.read effect is credited to the caller, so `main` — which reads private data (via the aliased
+// `reader`), takes untrusted input (`steerer`), and communicates externally (`sender`) with no
+// declassify — is correctly rejected. Direct and aliased calls now behave identically.
+fn reader() uses(fs.read) { let secret = read_file("notes"); }
+fn steerer() { let steer = input(); }
+fn sender() uses(net.send) { send("host", 80, "beacon"); }
+fn main() uses(fs.read, net.send) {
+    let f = reader;
+    f();
+    steerer();
+    sender();
+}

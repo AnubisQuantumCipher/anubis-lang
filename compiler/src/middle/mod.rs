@@ -1713,10 +1713,29 @@ fn analyze_function(
     // both RE-FORMS the trifecta — the diagnostic says so honestly); leg 1/2 helpers are keyed by
     // callee NAME (method/closure-valued calls are a further increment).
     if mode == Mode::Safe || ctx.verified {
+        // Function-value aliases (`let f = reader; f()`) hide the callee's legs from the name-keyed
+        // leg scan AND from the caller's inferred effects. `scan_legs` resolves them and reports the
+        // aliased callees' capability effects, which we union into the caller's leg-1 (fs.read) and
+        // leg-3 (net.send / shell) below (audit follow-up: closure/function-value-aliased legs).
+        let fn_effects: BTreeMap<String, BTreeSet<String>> = ctx
+            .fn_effect_rows
+            .iter()
+            .map(|(k, v)| (k.clone(), v.effects.clone()))
+            .collect();
+        let legs = trifecta::scan_legs(
+            body,
+            params,
+            &ctx.secret_fns,
+            &ctx.leg2_fns,
+            &ctx.all_fns,
+            &fn_effects,
+        );
         let (has_fs_read, has_net_send, has_shell) = {
             let row = ctx.fn_effect_rows.get(name);
             let held = |cap: &str| {
-                caps_used.contains(cap) || row.is_some_and(|r| r.effects.contains(cap))
+                caps_used.contains(cap)
+                    || row.is_some_and(|r| r.effects.contains(cap))
+                    || legs.aliased_effects.contains(cap)
             };
             (held("fs.read"), held("net.send"), held("shell"))
         };
@@ -1731,7 +1750,8 @@ fn analyze_function(
             (false, false) => None,
         };
         if let Some(egress) = egress {
-            let legs = trifecta::scan_legs(body, params, &ctx.secret_fns, &ctx.leg2_fns);
+            // `legs` (with alias resolution) was computed above so its `aliased_effects` could feed
+            // the leg-1/leg-3 capability determination.
             // Leg 1 — private-data access — is `fs.read` (a file was read: coarse over-approximating
             // proxy) OR an explicit `secret_source(..)` confidentiality label (precise). The label
             // closes the gap that a secret held in memory — not from a file — was invisible to fs.read.
@@ -1756,7 +1776,7 @@ fn analyze_function(
                         SemanticDiagnostic {
                             code: Some("ANUBIS_LETHAL_TRIFECTA".into()),
                             message: format!(
-                                "function `{name}` forms the lethal trifecta — it accesses private data (`{leg1}`), is exposed to untrusted input (`{leg2}`), and communicates externally (`{egress}`) with no declassify barrier. An injection in the untrusted input can steer the private read and the egress even with no direct read→send data flow. To fix: interpose a well-formed `declassify(value, policy, reason)` on the outbound value, drop the external channel or the private-data access, or move the untrusted-input path so it no longer coexists with the private read+egress under this function. (This detector keys legs by directly-named calls and inferred effects; a leg reached only through a function-valued binding or method-valued call may not be flagged — treat a clean result as best-effort, not a completeness guarantee.)"
+                                "function `{name}` forms the lethal trifecta — it accesses private data (`{leg1}`), is exposed to untrusted input (`{leg2}`), and communicates externally (`{egress}`) with no declassify barrier. An injection in the untrusted input can steer the private read and the egress even with no direct read→send data flow. To fix: interpose a well-formed `declassify(value, policy, reason)` on the outbound value, drop the external channel or the private-data access, or move the untrusted-input path so it no longer coexists with the private read+egress under this function. (This detector resolves directly-named calls, inferred effects, and simple function-value aliases (`let f = reader; f()`); a leg reached only through a method-valued or higher-order call may still not be flagged — treat a clean result as best-effort, not a completeness guarantee.)"
                             ),
                             span: Some((span.start, span.end)),
                         },

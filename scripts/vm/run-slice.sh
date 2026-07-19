@@ -94,6 +94,12 @@ run cargo-test bash -c 'mkdir -p .ammit; cargo test -p anubis-compiler --lib -- 
 # (anbp_blob_roundtrip_header, journal_named_fields_decode, …) instead of staying unverifiable.
 run tool-test bash -c 'cargo test -p anubis -- -Z unstable-options --format json 1>>.ammit/cargo-test.json 2>>.ammit/cargo-test.stderr.log; rc=$?; tail -2 .ammit/cargo-test.json; exit $rc'
 run clippy     cargo clippy -p anubis-compiler -- -D warnings
+# Build the RELEASE `anubis` binary from the rsync'd source BEFORE the fixture gates. Gates that
+# resolve `./target/release/anubis` (e.g. run_security_fixtures.sh) would otherwise run the STALE
+# release binary baked into the golden image — silently validating old code (a fresh security
+# fixture that needs current behaviour would spuriously fail). The `cargo run`-based gates (language)
+# were already fresh; this makes the release-binary gates fresh too.
+run build-rel  cargo build --release -p anubis
 run language   bash scripts/run_language_fixtures.sh
 run turing     bash scripts/run_turing_core_fixtures.sh
 run security   bash scripts/run_security_fixtures.sh

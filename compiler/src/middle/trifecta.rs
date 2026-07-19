@@ -35,6 +35,10 @@ pub(crate) struct TrifectaLegs {
     /// A `secret_source(..)` value appears in the body — leg 1 (private-data access) via the
     /// explicit confidentiality label, independent of any `fs.read`.
     pub secret_present: bool,
+    /// Capability effects of functions CALLED THROUGH a function-value alias (`let f = reader; f()`).
+    /// The name-keyed leg scan and the caller's inferred effects both miss such an aliased call, so
+    /// these are unioned into the caller's leg-1/leg-3 (fs.read / net.send / shell) at the check site.
+    pub aliased_effects: std::collections::BTreeSet<String>,
 }
 
 /// Interprocedural summaries consulted by the walk (both the confidentiality dual of `tainting_fns`
@@ -46,6 +50,53 @@ pub(crate) struct ScanCtx<'a> {
     pub secret_fns: &'a std::collections::BTreeSet<String>,
     /// Functions whose body exposes an untrusted steering channel — a call to one is leg 2.
     pub leg2_fns: &'a std::collections::BTreeSet<String>,
+    /// `let x = <known fn>` function-value aliases in this body: `x` → the function it names. A call
+    /// `x()` is resolved through this so an aliased leg is detected (audit follow-up `task_fdb35824`).
+    pub fn_aliases: &'a std::collections::BTreeMap<String, String>,
+    /// Per-function transitive capability effects (name → {fs.read, net.send, shell, …}), so a call
+    /// through an alias contributes the aliased function's effects to `aliased_effects`.
+    pub fn_effects: &'a std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+/// Collect `let x = <known function name>` function-value aliases (recursively through nested bodies),
+/// mapping the alias variable to the function it names; a chain `let g = f` resolves to `f`'s target.
+fn collect_fn_aliases(
+    stmts: &[Stmt],
+    all_fns: &std::collections::BTreeSet<String>,
+    out: &mut std::collections::BTreeMap<String, String>,
+) {
+    for s in stmts {
+        if let Stmt::Let {
+            name, init: Expr::Var(v), ..
+        } = s
+        {
+            if all_fns.contains(v) {
+                out.insert(name.clone(), v.clone());
+            } else if let Some(t) = out.get(v).cloned() {
+                out.insert(name.clone(), t);
+            }
+        }
+        match s {
+            Stmt::WhileLet { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => collect_fn_aliases(body, all_fns, out),
+            Stmt::If { then, else_, .. } => {
+                collect_fn_aliases(then, all_fns, out);
+                if let Some(e) = else_ {
+                    collect_fn_aliases(e, all_fns, out);
+                }
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                for b in [gpu, cpu, prove].into_iter().flatten() {
+                    collect_fn_aliases(b, all_fns, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Scan one function body + its parameters for the body-side trifecta signals. `secret_fns`/`leg2_fns`
@@ -57,8 +108,17 @@ pub(crate) fn scan_legs(
     params: &[(String, String)],
     secret_fns: &std::collections::BTreeSet<String>,
     leg2_fns: &std::collections::BTreeSet<String>,
+    all_fns: &std::collections::BTreeSet<String>,
+    fn_effects: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 ) -> TrifectaLegs {
-    let sc = ScanCtx { secret_fns, leg2_fns };
+    let mut fn_aliases = std::collections::BTreeMap::new();
+    collect_fn_aliases(body, all_fns, &mut fn_aliases);
+    let sc = ScanCtx {
+        secret_fns,
+        leg2_fns,
+        fn_aliases: &fn_aliases,
+        fn_effects,
+    };
     let mut legs = TrifectaLegs::default();
     // A `tainted<T>` parameter is untrusted input arriving directly as an argument — a leg-2 channel.
     // (This param-side signal is DELIBERATELY not part of `compute_leg2_fns`: a function that RECEIVES
@@ -91,14 +151,20 @@ pub(crate) fn compute_leg2_fns(items: &[crate::frontend::Item]) -> std::collecti
     let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
     super::collect_fn_params_bodies(items, &mut fns);
     let empty_secret = std::collections::BTreeSet::new();
+    let empty_aliases = std::collections::BTreeMap::new();
+    let empty_effects = std::collections::BTreeMap::new();
     let mut leg2: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     loop {
         let mut newly: Vec<String> = Vec::new();
         for (name, _params, body) in &fns {
             if !leg2.contains(name) {
+                // The leg-2 fixpoint uses direct names only; an interprocedural alias chain is a
+                // further increment (its omission only under-detects, never a false positive).
                 let sc = ScanCtx {
                     secret_fns: &empty_secret,
                     leg2_fns: &leg2,
+                    fn_aliases: &empty_aliases,
+                    fn_effects: &empty_effects,
                 };
                 // Body-only walk (no param check) — a returned/param-received taint is not a SOURCE.
                 let mut legs = TrifectaLegs::default();
@@ -209,24 +275,54 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs, sc: &ScanCtx) {
                 .get_or_insert_with(|| format!("taint_source(\"{label}\")"));
         }
         Expr::Call { callee, args } => {
+            // A call `x()` whose name is a function-value alias (`let x = reader`) is resolved to the
+            // aliased function for leg detection — otherwise the leg is laundered through the binding
+            // (audit follow-up: closure/function-value-aliased legs). `resolved` is the effective
+            // callee name; its effects are also credited so leg-1 fs.read / leg-3 egress are counted.
+            let resolved: &str = sc.fn_aliases.get(callee).map(String::as_str).unwrap_or(callee);
+            if sc.fn_aliases.contains_key(callee) {
+                if let Some(eff) = sc.fn_effects.get(resolved) {
+                    legs.aliased_effects.extend(eff.iter().cloned());
+                }
+            }
             // Leg 1 (private data): a direct `secret_source(..)` OR a call to a helper whose return
             // carries a secret (interprocedural `secret_fns`).
-            if callee == SECRET_SOURCE || sc.secret_fns.contains(callee) {
+            if resolved == SECRET_SOURCE || sc.secret_fns.contains(resolved) {
                 legs.secret_present = true;
             }
             // Leg 2 (untrusted steering): a direct steering source OR a call to a helper that
             // transitively sources untrusted input (interprocedural `leg2_fns`).
-            if is_leg2_source(callee) {
-                legs.leg2_untrusted.get_or_insert_with(|| callee.clone());
-            } else if sc.leg2_fns.contains(callee) {
+            if is_leg2_source(resolved) {
+                legs.leg2_untrusted.get_or_insert_with(|| resolved.to_string());
+            } else if sc.leg2_fns.contains(resolved) {
                 legs.leg2_untrusted
-                    .get_or_insert_with(|| format!("{callee}() (exposes untrusted input)"));
+                    .get_or_insert_with(|| format!("{resolved}() (exposes untrusted input)"));
             }
             for a in args {
                 walk_expr(a, legs, sc);
             }
         }
         Expr::CallExpr { callee, args } => {
+            // Resolve a function-value alias (`let f = reader; f()`): a leg reached through the alias
+            // is counted as if the aliased function were called by name — for the leg-1 (secret) and
+            // leg-2 (untrusted) NAME scan, and for the aliased function's effects (leg-1 fs.read /
+            // leg-3 egress), which the caller's inferred capabilities otherwise miss.
+            if let Expr::Var(v) = callee.as_ref() {
+                if let Some(target) = sc.fn_aliases.get(v) {
+                    if target == SECRET_SOURCE || sc.secret_fns.contains(target) {
+                        legs.secret_present = true;
+                    }
+                    if is_leg2_source(target) {
+                        legs.leg2_untrusted.get_or_insert_with(|| target.clone());
+                    } else if sc.leg2_fns.contains(target) {
+                        legs.leg2_untrusted
+                            .get_or_insert_with(|| format!("{target}() (exposes untrusted input)"));
+                    }
+                    if let Some(eff) = sc.fn_effects.get(target) {
+                        legs.aliased_effects.extend(eff.iter().cloned());
+                    }
+                }
+            }
             walk_expr(callee, legs, sc);
             for a in args {
                 walk_expr(a, legs, sc);
@@ -350,7 +446,16 @@ mod tests {
             } = item
             {
                 if name == "agent" {
-                    return scan_legs(body, params, secret_fns, leg2_fns);
+                    // Existing tests exercise direct-name legs; alias resolution (empty here) is
+                    // covered by the dedicated closure-aliased-leg fixture.
+                    return scan_legs(
+                        body,
+                        params,
+                        secret_fns,
+                        leg2_fns,
+                        &BTreeSet::new(),
+                        &std::collections::BTreeMap::new(),
+                    );
                 }
             }
         }
