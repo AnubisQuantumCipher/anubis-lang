@@ -5896,10 +5896,52 @@ fn z3_check_sat_raw(smt: &str) -> Option<String> {
         .ok()?;
     child.stdin.as_mut()?.write_all(smt.as_bytes()).ok()?;
     let output = child.wait_with_output().ok()?;
-    String::from_utf8_lossy(&output.stdout)
+    let ans = String::from_utf8_lossy(&output.stdout)
         .lines()
         .next()
-        .map(|l| l.trim().to_string())
+        .map(|l| l.trim().to_string());
+    // Phase-7 TCB minimization: shadow the native QF_BV solver against z3 on every real obligation.
+    // z3 stays the AUTHORITY (its `ans` is returned unchanged) — the native answer is only compared,
+    // so a native bug can never change a verdict. `ANUBIS_NATIVE_SHADOW=1` enables the comparison; the
+    // cross-check gate runs the corpus with it on and fails closed on any DISAGREE. Off by default,
+    // so normal builds pay nothing and the compiler fixpoint is unaffected.
+    native_shadow_compare(smt, ans.as_deref());
+    ans
+}
+
+/// Compare `anubis_solver::native_check_sat` to z3's verdict for one obligation and record the
+/// outcome (AGREE / DISAGREE / DEFER / NATIVE_ONLY). A DISAGREE is printed loudly and counted; the
+/// gate requires zero. Sound-by-construction: this never influences the returned verdict.
+fn native_shadow_compare(smt: &str, z3_ans: Option<&str>) {
+    if std::env::var("ANUBIS_NATIVE_SHADOW").as_deref() != Ok("1") {
+        return;
+    }
+    let native = anubis_solver::native_check_sat(smt);
+    let z = match z3_ans {
+        Some("sat") => Some(true),
+        Some("unsat") => Some(false),
+        _ => None,
+    };
+    let outcome = match (native, z) {
+        (None, _) => "DEFER",
+        (Some(_), None) => "NATIVE_ONLY",
+        (Some(n), Some(zz)) if n == zz => "AGREE",
+        (Some(n), Some(zz)) => {
+            eprintln!(
+                "ANUBIS_NATIVE_DISAGREE native={} z3={} smt=<<{}>>",
+                n,
+                zz,
+                smt.replace('\n', " ")
+            );
+            "DISAGREE"
+        }
+    };
+    if let Ok(path) = std::env::var("ANUBIS_NATIVE_SHADOW_LOG") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{outcome}");
+        }
+    }
 }
 
 /// Real counterexample replay: independent re-verification of a `sat` result, not a trust-the-model
