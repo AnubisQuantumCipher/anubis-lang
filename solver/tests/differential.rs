@@ -6,7 +6,7 @@
 //! Skipped automatically if z3 is not on PATH (so CI without z3 still builds).
 
 use anubis_solver::bv::{Formula, Pred, Term};
-use anubis_solver::native_check_sat_budget;
+use anubis_solver::{native_check_sat_budget, native_check_sat_model_budget, NativeVerdict};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -337,4 +337,56 @@ fn native_agrees_with_z3_on_wide_battery() {
         "CDCL still defers most wide formulas (decided={decided} deferred={deferred}) — \
          the engine is not carrying its weight"
     );
+}
+
+/// Validates the z3-authoritative flip's newest, load-bearing machinery: the SAT MODEL that
+/// `native_check_sat_model` reconstructs from the CDCL assignment and re-verifies with its own
+/// independent evaluator (`bv::Formula::eval`) must be a REAL model — one z3 also accepts. For every
+/// random formula native calls SAT, we pin its model back as equality constraints and require z3 to
+/// find the pinned formula SAT. A native model that z3 rejects would be a reconstruction/evaluator
+/// bug that could present a bogus counterexample under `ANUBIS_NATIVE_AUTHORITATIVE=1` with z3 absent.
+#[test]
+fn native_sat_models_are_accepted_by_z3() {
+    if !z3_available() {
+        eprintln!("z3 not on PATH — skipping model-validation test");
+        return;
+    }
+    let mut rng = Rng(0x2545F4914F6CDD1D);
+    let (mut checked, mut bad) = (0u64, 0u64);
+    let mut first_bad: Option<String> = None;
+    for _ in 0..1500 {
+        let f = gen_formula_w(&mut rng, &[4, 6, 8, 16]);
+        let smt = serialize(&f);
+        if let Some(NativeVerdict::Sat(model)) = native_check_sat_model_budget(&smt, 2_000_000) {
+            // Rebuild the formula's SMT, then pin every model variable to its value and ask z3.
+            let mut pinned = String::from("(set-logic QF_BV)\n");
+            for (n, w) in &f.bv_vars {
+                pinned.push_str(&format!("(declare-const {} (_ BitVec {}))\n", n, w));
+            }
+            for n in &f.bool_vars {
+                pinned.push_str(&format!("(declare-const {} Bool)\n", n));
+            }
+            for a in &f.asserts {
+                pinned.push_str(&format!("(assert {})\n", ser_pred(a)));
+            }
+            for (name, value, width) in &model {
+                pinned.push_str(&format!("(assert (= {} (_ bv{} {})))\n", name, value, width));
+            }
+            pinned.push_str("(check-sat)\n");
+            checked += 1;
+            if z3(&pinned) != Some(true) {
+                bad += 1;
+                if first_bad.is_none() {
+                    first_bad = Some(format!("native model {:?} rejected by z3 on:\n{}", model, smt));
+                }
+            }
+        }
+    }
+    eprintln!("native-model validation: checked={} rejected_by_z3={}", checked, bad);
+    assert_eq!(
+        bad, 0,
+        "z3 rejected a native SAT model (reconstruction/evaluator bug).\nFirst: {}",
+        first_bad.unwrap_or_default()
+    );
+    assert!(checked > 50, "too few SAT models exercised ({checked}) — generator sanity");
 }
