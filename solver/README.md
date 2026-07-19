@@ -59,9 +59,11 @@ also give — *provided the bit-blaster is correct*, which is what the validatio
    through both native and z3 and asserts they agree wherever native decides. Current: **0
    disagreements**.
 3. **Machine-checked core.** `formal/Anubis/BitBlast.lean` proves the ripple-carry adder — from which
-   every `bvadd`, and via two's complement every `bvsub`/`bvneg`, and via the borrow every comparator,
-   is built — computes *true integer addition*, chaining to `Encoding.lean` (bvadd = `wrapping_add` =
-   runtime).
+   every `bvadd`, and via two's complement every `bvsub`/`bvneg`, is built — computes *true integer
+   addition* (`rippleCarry_spec`), chaining to `Encoding.lean` (bvadd = `wrapping_add` = runtime); and
+   proves the unsigned comparator the blaster emits is exactly `<` (`ult_correct`:
+   `ult a b = true ↔ ⟦a⟧ < ⟦b⟧`, via the subtractor's carry-out). Both depend only on the three
+   standard Lean core axioms — no `sorry`/`admit`/`native_decide`.
 
 Only once the cross-check gate is sustained at zero disagreements **and** the bit-blaster is fully
 mechanized does the compiler flip to native-authoritative, dropping z3 from the trusted base for the
@@ -69,7 +71,8 @@ integer lane.
 
 ## Status / next
 
-- ✅ parser, bit-blaster, bounded SAT, `native_check_sat`, differential + corpus shadow, adder proof.
+- ✅ parser, bit-blaster, bounded SAT, `native_check_sat`, differential + corpus shadow.
+- ✅ adder **and** comparator machine-checked in Lean (`rippleCarry_spec`, `ult_correct`).
 - ⏳ a CDCL engine (watched literals + clause learning) so hard/large formulas decide in real time
   rather than deferring.
-- ⬜ native lanes for floats / strings / arrays; the z3-authoritative flip; a mechanized `ult_correct`.
+- ⬜ native lanes for floats / strings / arrays; the z3-authoritative flip.

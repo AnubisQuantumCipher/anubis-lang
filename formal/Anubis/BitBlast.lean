@@ -106,6 +106,17 @@ theorem bitsToNat_not : ∀ bs : List Bool,
       simp only [List.map_cons, bitsToNat, List.length_cons, Nat.pow_succ]
       cases b <;> simp_all <;> omega
 
+/-- Complement identity in ADDITION form (no truncated subtraction — omega-friendly):
+    `⟦~bs⟧ + ⟦bs⟧ + 1 = 2^w`. This is what the two's-complement subtractor rests on. -/
+theorem bitsToNat_not_add : ∀ bs : List Bool,
+    bitsToNat (bs.map (fun x => !x)) + bitsToNat bs + 1 = 2 ^ bs.length := by
+  intro bs
+  induction bs with
+  | nil => simp [bitsToNat]
+  | cons b bs ih =>
+      simp only [List.map_cons, bitsToNat, List.length_cons, Nat.pow_succ]
+      cases b <;> simp_all <;> omega
+
 /-- The ripple-carry sum has the width of its (equal-length) operands. -/
 theorem rippleCarry_length : ∀ (a b : List Bool) (c : Bool), a.length = b.length →
     (rippleCarry a b c).1.length = a.length := by
@@ -122,17 +133,39 @@ theorem rippleCarry_length : ∀ (a b : List Bool) (c : Bool), a.length = b.leng
           rw [ih ys (fullAdder x y c).2 hlen]
 
 /-- The unsigned comparator the bit-blaster emits: `ult a b = ¬(carry-out of a + ~b + 1)`
-    (`solver/src/blast.rs::ult`). Its correctness — `ult a b = true ↔ ⟦a⟧ < ⟦b⟧` — follows from
-    `rippleCarry_spec` (the subtractor's carry-out is 1 iff `a ≥ b`, via `bitsToNat_not`); it is
-    exercised end-to-end by the crate's differential test against z3 (2000+ formulas, 0 disagreements).
-    A fully mechanized `ult_correct` is a stated follow-up (the omega handling of `2^w` in the Nat
-    subtraction of `bitsToNat_not` needs a manual bound-discharge). -/
+    (`solver/src/blast.rs::ult`). The two's-complement subtractor `a - b = a + ~b + 1` overflows
+    (carry-out = 1) exactly when `a ≥ b`, so `¬carry` is `a < b`. -/
 def ult (a b : List Bool) : Bool :=
   !(rippleCarry a (b.map (fun x => !x)) true).2
 
-/-- A concrete sanity instance of the comparator matching the runtime (proven by evaluation): on 4-bit
-    values, `ult` agrees with the numeric `<`. (The general theorem is exercised by the differential.) -/
-theorem ult_sanity :
-    ult [true, false, false, false] [false, true, false, false] = true
-      ∧ bitsToNat [true, false, false, false] < bitsToNat [false, true, false, false] := by
-  decide
+/-- **Unsigned comparator correctness (fully mechanized).** For equal-length operands,
+    `ult a b = true ↔ ⟦a⟧ < ⟦b⟧`. Proof: the subtractor spec (`rippleCarry_spec` on `a`, `~b`,
+    carry-in 1) gives `⟦sum⟧ + 2^w·cout = ⟦a⟧ + ⟦~b⟧ + 1`, and the ADDITION-form complement identity
+    (`bitsToNat_not_add`) gives `⟦~b⟧ + ⟦b⟧ + 1 = 2^w`. Casing on the carry-out `cout` and feeding both
+    equations (no truncated subtraction anywhere) to omega, together with the range bounds, decides it.
+    Chains to the runtime: the native `ult` gate = unsigned `<` = `run.rs` comparison. -/
+theorem ult_correct (a b : List Bool) (h : a.length = b.length) :
+    (ult a b = true) ↔ (bitsToNat a < bitsToNat b) := by
+  have hlen : a.length = (b.map (fun x => !x)).length := by
+    simpa [List.length_map] using h
+  have hspec := rippleCarry_spec a (b.map (fun x => !x)) true hlen
+  have hnadd := bitsToNat_not_add b
+  have hla := bitsToNat_lt a
+  have hlb := bitsToNat_lt b
+  have hsumlt := bitsToNat_lt (rippleCarry a (b.map (fun x => !x)) true).1
+  rw [rippleCarry_length a (b.map (fun x => !x)) true hlen] at hsumlt
+  -- Normalise every power/length to `2 ^ b.length` so omega sees ONE opaque nonneg atom (not two).
+  rw [h] at hla hsumlt hspec
+  simp only [Bool.toNat_true] at hspec
+  unfold ult
+  -- Case on the subtractor's carry-out. Each branch feeds omega the ADDITION-form facts
+  --   hspec (sum), hnadd (⟦~b⟧+⟦b⟧+1 = 2^w), and the range bounds — all linear, no truncated sub.
+  cases hco : (rippleCarry a (b.map (fun x => !x)) true).2
+  · simp only [hco, Bool.toNat_false, Nat.mul_zero, Nat.add_zero] at hspec
+    have hlt : bitsToNat a < bitsToNat b := by omega
+    simp only [Bool.not_false]
+    simpa using hlt
+  · simp only [hco, Bool.toNat_true, Nat.mul_one] at hspec
+    have hge : ¬ bitsToNat a < bitsToNat b := by omega
+    simp only [Bool.not_true]
+    simpa using hge
