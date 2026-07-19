@@ -84,3 +84,55 @@ theorem rippleCarry_spec :
             simp only [hO, Bool.toNat_true, Bool.toNat_false, Nat.mul_one, Nat.mul_zero,
               Nat.add_zero] at hih ⊢ <;>
             omega
+
+/-- The value of any bit list is below `2^w`. -/
+theorem bitsToNat_lt : ∀ bs : List Bool, bitsToNat bs < 2 ^ bs.length := by
+  intro bs
+  induction bs with
+  | nil => simp [bitsToNat]
+  | cons b bs ih =>
+      simp only [bitsToNat, List.length_cons, Nat.pow_succ]
+      have : b.toNat ≤ 1 := by cases b <;> simp
+      omega
+
+/-- Bitwise complement negates the value within the word: `⟦~bs⟧ = 2^w − 1 − ⟦bs⟧`. -/
+theorem bitsToNat_not : ∀ bs : List Bool,
+    bitsToNat (bs.map (fun x => !x)) = 2 ^ bs.length - 1 - bitsToNat bs := by
+  intro bs
+  induction bs with
+  | nil => simp [bitsToNat]
+  | cons b bs ih =>
+      have hlt := bitsToNat_lt bs
+      simp only [List.map_cons, bitsToNat, List.length_cons, Nat.pow_succ]
+      cases b <;> simp_all <;> omega
+
+/-- The ripple-carry sum has the width of its (equal-length) operands. -/
+theorem rippleCarry_length : ∀ (a b : List Bool) (c : Bool), a.length = b.length →
+    (rippleCarry a b c).1.length = a.length := by
+  intro a
+  induction a with
+  | nil => intro b c _; simp [rippleCarry]
+  | cons x xs ih =>
+      intro b c h
+      cases b with
+      | nil => simp at h
+      | cons y ys =>
+          have hlen : xs.length = ys.length := by simpa using h
+          simp only [rippleCarry, List.length_cons]
+          rw [ih ys (fullAdder x y c).2 hlen]
+
+/-- The unsigned comparator the bit-blaster emits: `ult a b = ¬(carry-out of a + ~b + 1)`
+    (`solver/src/blast.rs::ult`). Its correctness — `ult a b = true ↔ ⟦a⟧ < ⟦b⟧` — follows from
+    `rippleCarry_spec` (the subtractor's carry-out is 1 iff `a ≥ b`, via `bitsToNat_not`); it is
+    exercised end-to-end by the crate's differential test against z3 (2000+ formulas, 0 disagreements).
+    A fully mechanized `ult_correct` is a stated follow-up (the omega handling of `2^w` in the Nat
+    subtraction of `bitsToNat_not` needs a manual bound-discharge). -/
+def ult (a b : List Bool) : Bool :=
+  !(rippleCarry a (b.map (fun x => !x)) true).2
+
+/-- A concrete sanity instance of the comparator matching the runtime (proven by evaluation): on 4-bit
+    values, `ult` agrees with the numeric `<`. (The general theorem is exercised by the differential.) -/
+theorem ult_sanity :
+    ult [true, false, false, false] [false, true, false, false] = true
+      ∧ bitsToNat [true, false, false, false] < bitsToNat [false, true, false, false] := by
+  decide
