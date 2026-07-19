@@ -6,6 +6,7 @@
 //! formula we fully understood.
 
 use crate::bv::{Formula, Pred, Term};
+use crate::fp;
 
 /// Parse an SMT-LIB2 script into a QF_BV `Formula`, or `None` if it is outside the supported fragment.
 pub fn parse_smt2(input: &str) -> Option<Formula> {
@@ -19,17 +20,11 @@ pub fn parse_smt2(input: &str) -> Option<Formula> {
         let head = list.first()?.as_atom()?;
         match head {
             "set-logic" => {
+                // Bit-vector logics, plus QF_FP (Float64 is lowered to BitVec 64 — see `fp.rs`).
+                // Everything else (strings, arrays, reals, UF beyond QF_UFBV) is out of fragment.
                 let logic = list.get(1)?.as_atom()?;
-                // Accept only pure bit-vector logics. Anything mentioning FP/strings/arrays/UF is out.
-                if !logic.contains("BV")
-                    || logic.contains("FP")
-                    || logic.contains("F")
-                    || logic.contains('S') && logic != "QF_BV"
-                {
-                    // conservative: only QF_BV (and BV-only variants without F/S) are in-fragment
-                    if logic != "QF_BV" && logic != "BV" && logic != "QF_UFBV" {
-                        return None;
-                    }
+                if !matches!(logic, "QF_BV" | "BV" | "QF_UFBV" | "QF_FP") {
+                    return None;
                 }
             }
             "declare-const" => {
@@ -80,23 +75,31 @@ enum Sort {
 fn parse_sort(s: &Sexp) -> Option<Sort> {
     match s {
         Sexp::Atom(a) if a == "Bool" => Some(Sort::Bool),
-        // (_ BitVec w)
         Sexp::List(items) => {
-            if items.len() == 3
-                && items[0].as_atom()? == "_"
-                && items[1].as_atom()? == "BitVec"
-            {
+            let head = items.first()?.as_atom()?;
+            // (_ BitVec w)
+            if items.len() == 3 && head == "_" && items[1].as_atom()? == "BitVec" {
                 let w: u32 = items[2].as_atom()?.parse().ok()?;
                 // Width 0 is degenerate (no sign bit, no value bits) and width > 128 exceeds the
                 // evaluator's u128 model values — both out of the supported fragment.
                 if w == 0 || w > 128 {
                     return None;
                 }
-                Some(Sort::Bv(w))
-            } else {
-                None
+                return Some(Sort::Bv(w));
             }
+            // (_ FloatingPoint 11 53) — Float64 only; lowered to a 64-bit bit-vector (see fp.rs).
+            if items.len() == 4
+                && head == "_"
+                && items[1].as_atom()? == "FloatingPoint"
+                && items[2].as_atom()? == "11"
+                && items[3].as_atom()? == "53"
+            {
+                return Some(Sort::Bv(fp::W));
+            }
+            None
         }
+        // `Float64` is an alias some frontends emit for `(_ FloatingPoint 11 53)`.
+        Sexp::Atom(a) if a == "Float64" => Some(Sort::Bv(fp::W)),
         _ => None,
     }
 }
@@ -152,6 +155,32 @@ fn parse_pred(s: &Sexp, ctx: &Ctx) -> Option<Pred> {
                 "bvsle" if args.len() == 2 => bin_pred(args, ctx, Pred::Sle),
                 "bvsgt" if args.len() == 2 => bin_pred(args, ctx, Pred::Sgt),
                 "bvsge" if args.len() == 2 => bin_pred(args, ctx, Pred::Sge),
+                // Floating-point comparisons, lowered to BV via the monotonic-key transform (fp.rs).
+                // Operands parse as ordinary 64-bit BV terms (an fp var/const IS a BitVec 64); an fp
+                // arithmetic subterm parses to None here, declining the whole predicate → defer to z3.
+                "fp.lt" if args.len() == 2 => Some(fp::fp_lt(
+                    &parse_term(&args[0], ctx)?,
+                    &parse_term(&args[1], ctx)?,
+                )),
+                "fp.leq" if args.len() == 2 => Some(fp::fp_leq(
+                    &parse_term(&args[0], ctx)?,
+                    &parse_term(&args[1], ctx)?,
+                )),
+                "fp.gt" if args.len() == 2 => Some(fp::fp_gt(
+                    &parse_term(&args[0], ctx)?,
+                    &parse_term(&args[1], ctx)?,
+                )),
+                "fp.geq" if args.len() == 2 => Some(fp::fp_geq(
+                    &parse_term(&args[0], ctx)?,
+                    &parse_term(&args[1], ctx)?,
+                )),
+                "fp.eq" if args.len() == 2 => Some(fp::fp_eq(
+                    &parse_term(&args[0], ctx)?,
+                    &parse_term(&args[1], ctx)?,
+                )),
+                "fp.isNaN" if args.len() == 1 => Some(fp::is_nan(&parse_term(&args[0], ctx)?)),
+                "fp.isInfinite" if args.len() == 1 => Some(fp::is_inf(&parse_term(&args[0], ctx)?)),
+                "fp.isZero" if args.len() == 1 => Some(fp::is_zero(&parse_term(&args[0], ctx)?)),
                 "ite" if args.len() == 3 => {
                     // boolean ite → (c∧t)∨(¬c∧e)
                     let c = parse_pred(&args[0], ctx)?;
@@ -206,19 +235,72 @@ fn parse_term(s: &Sexp, ctx: &Ctx) -> Option<Term> {
                         let n: u32 = op.get(2)?.as_atom()?.parse().ok()?;
                         Some(Term::SignExtend(n, Box::new(parse_term(args.first()?, ctx)?)))
                     }
+                    // ((_ to_fp 11 53) <rounding> <decimal>) — a Float64 literal. The rounding mode is
+                    // irrelevant for a decimal (Rust's f64 parse is round-to-nearest-even, matching
+                    // RNE). Only Float64 and a plain (or negated) decimal literal are accepted.
+                    "to_fp"
+                        if op.get(2)?.as_atom()? == "11" && op.get(3)?.as_atom()? == "53" =>
+                    {
+                        let lit = args.get(1)?;
+                        let bits = match lit {
+                            Sexp::Atom(a) => fp::decimal_to_bits(a)?,
+                            // (- 4.0) — a negated decimal literal.
+                            Sexp::List(neg)
+                                if neg.len() == 2 && neg[0].as_atom()? == "-" =>
+                            {
+                                let m = fp::decimal_to_bits(neg[1].as_atom()?)?;
+                                m ^ 0x8000_0000_0000_0000 // flip the sign bit
+                            }
+                            _ => return None,
+                        };
+                        Some(Term::Const(bits, fp::W))
+                    }
                     _ => None,
                 };
             }
             let head = items.first()?.as_atom()?;
             match head {
-                // (_ bvN w)
+                // (_ bvN w) bit-vector literal, or a Float64 special value (_ +oo 11 53) etc.
                 "_" => {
                     let lit = args.first()?.as_atom()?;
-                    let val = lit.strip_prefix("bv")?;
-                    let v: u128 = val.parse().ok()?;
-                    let w: u32 = args.get(1)?.as_atom()?.parse().ok()?;
-                    Some(Term::Const(v, w))
+                    if let Some(val) = lit.strip_prefix("bv") {
+                        let v: u128 = val.parse().ok()?;
+                        let w: u32 = args.get(1)?.as_atom()?.parse().ok()?;
+                        return Some(Term::Const(v, w));
+                    }
+                    // Float64 special values (11-bit exp, 53-bit significand tag).
+                    if args.get(1)?.as_atom()? == "11" && args.get(2)?.as_atom()? == "53" {
+                        let bits = match lit {
+                            "+oo" => fp::plus_inf(),
+                            "-oo" => fp::minus_inf(),
+                            "+zero" => fp::plus_zero(),
+                            "-zero" => fp::minus_zero(),
+                            "NaN" => fp::nan(),
+                            _ => return None,
+                        };
+                        return Some(Term::Const(bits, fp::W));
+                    }
+                    None
                 }
+                // (fp #b<sign,1> #b<exp,11> #b<significand,52>) — a Float64 literal from three
+                // bit-vector fields; concatenated into the 64-bit pattern.
+                "fp" if args.len() == 3 => {
+                    let s = bv_lit_value(&args[0])?;
+                    let e = bv_lit_value(&args[1])?;
+                    let m = bv_lit_value(&args[2])?;
+                    Some(Term::Const((s << 63) | (e << 52) | m, fp::W))
+                }
+                // fp.neg / fp.abs are EXACT sign-bit operations (no rounding), so they lower to bvxor
+                // / bvand with the sign mask — flipping/clearing bit 63. (NaN stays NaN, ±0 flip.) All
+                // other fp arithmetic rounds and is declined (falls through to `_ => None`).
+                "fp.neg" if args.len() == 1 => Some(Term::Xor(
+                    Box::new(parse_term(&args[0], ctx)?),
+                    Box::new(Term::Const(0x8000_0000_0000_0000, fp::W)),
+                )),
+                "fp.abs" if args.len() == 1 => Some(Term::And(
+                    Box::new(parse_term(&args[0], ctx)?),
+                    Box::new(Term::Const(0x7FFF_FFFF_FFFF_FFFF, fp::W)),
+                )),
                 "bvadd" => bin_term(args, ctx, Term::Add),
                 "bvsub" => bin_term(args, ctx, Term::Sub),
                 "bvmul" => bin_term(args, ctx, Term::Mul),
@@ -244,6 +326,18 @@ fn parse_term(s: &Sexp, ctx: &Ctx) -> Option<Term> {
                 _ => None,
             }
         }
+    }
+}
+
+/// Parse a `#x…` / `#b…` bit-vector literal atom to its numeric value (ignoring width).
+fn bv_lit_value(s: &Sexp) -> Option<u128> {
+    let a = s.as_atom()?;
+    if let Some(hex) = a.strip_prefix("#x") {
+        u128::from_str_radix(hex, 16).ok()
+    } else if let Some(bin) = a.strip_prefix("#b") {
+        u128::from_str_radix(bin, 2).ok()
+    } else {
+        None
     }
 }
 

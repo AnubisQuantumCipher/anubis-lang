@@ -10,8 +10,11 @@ decision procedure for the bit-vector (integer) fragment, with **zero external s
 ## What it decides
 
 The integer lane: fixed-width bit-vectors (`QF_BV`), which is what dominates real contract obligations
-(`x + 1 > x`, `abs(x) < 100`, the u32-mask range facts, comparisons, wrapping arithmetic). Floats,
-strings, and arrays are **not** handled here yet — those obligations are declined and fall back to z3.
+(`x + 1 > x`, `abs(x) < 100`, the u32-mask range facts, comparisons, wrapping arithmetic). Plus the
+**float comparison** subset of `QF_FP`: a `Float64` is a `BitVec 64`, so `fp.lt/leq/gt/geq/eq` and the
+`isNaN/isInfinite/isZero` classifiers are *lowered* to bit-vector formulas (`fp.rs`, the monotonic-key
+transform) and decided by the same BV pipeline — no rounding, no new gates. Float **arithmetic**
+(`fp.add/mul/div/…`, which rounds), strings, and arrays are declined and fall back to z3.
 
 ## Pipeline
 
@@ -24,7 +27,10 @@ SMT-LIB2 text ──parse──▶ bv::Formula ──bit-blast──▶ CNF ─�
   `compiler/src/middle/mod.rs` emits. Any non-BV sort, unsupported op, or malformed input makes the
   whole parse return `None`. It never guesses.
 - **`bv.rs`** — the QF_BV formula AST: bit-vector `Term`s and boolean `Pred`s, with a structural
-  `Term::width`.
+  `Term::width` and an independent concrete evaluator (`eval`) used for the SAT-model replay.
+- **`fp.rs`** — IEEE-754 `Float64 → QF_BV` lowering for the comparison subset: the monotonic
+  ordering-key transform (`sign ? ~x : x^0x8000…0`) plus NaN/±0 special-casing, so unsigned BV `<` on
+  the key equals IEEE `<`. Produces ordinary `bv` terms/preds — nothing new for the blaster to trust.
 - **`blast.rs`** — a Tseitin bit-blaster. Each term becomes a `Vec<Lit>` (LSB first), each predicate a
   single `Lit`. Supported: `const`/`var`, `and`/`or`/`xor`/`not`, `neg`, ripple-carry `add`/`sub`,
   **constant-multiplier `mul`** (`x * c` = shift-and-add over c's set bits, mod 2^w), all eight

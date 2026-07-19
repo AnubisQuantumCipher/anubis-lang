@@ -9,6 +9,7 @@
 
 pub mod blast;
 pub mod bv;
+pub mod fp;
 pub mod parse;
 pub mod sat;
 
