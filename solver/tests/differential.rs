@@ -168,11 +168,12 @@ fn gen_pred(rng: &mut Rng, w: u32) -> Pred {
     }
 }
 
-fn gen_formula(rng: &mut Rng) -> Formula {
-    // Small widths keep the slice-1 DPLL fast; the bit-blast logic (full adder, comparators) is
-    // per-bit and width-generic, so a 4–8-bit adder exercises the same gates as 64-bit. Larger widths
-    // wait for the CDCL engine (slice 2). Hand-crafted 64-bit edge cases live in `edge_cases`.
-    let w = [4u32, 6, 8][rng.below(3) as usize];
+fn gen_formula_w(rng: &mut Rng, widths: &[u32]) -> Formula {
+    // The bit-blast logic (full adder, comparators) is per-bit and width-generic, so the same gates
+    // are exercised at any width; `widths` lets a caller pick the regime (small for the historical
+    // DPLL parity test, wide for the CDCL stress test). Hand-crafted 64-bit edge cases live in
+    // `edge_cases`.
+    let w = widths[rng.below(widths.len() as u64) as usize];
     let nasserts = 1 + rng.below(2);
     let asserts: Vec<Pred> = (0..nasserts)
         .map(|_| {
@@ -236,7 +237,7 @@ fn native_agrees_with_z3_on_random_battery() {
     let (mut decided, mut deferred, mut disagreements) = (0u64, 0u64, 0u64);
     let mut first_bad: Option<String> = None;
     for _ in 0..2000 {
-        let f = gen_formula(&mut rng);
+        let f = gen_formula_w(&mut rng, &[4, 6, 8]);
         let smt = serialize(&f);
         let native = native_check_sat_budget(&smt, 60_000);
         match native {
@@ -269,4 +270,56 @@ fn native_agrees_with_z3_on_random_battery() {
         first_bad.unwrap_or_default()
     );
     assert!(decided > 100, "native decided too few ({decided}) — sanity");
+}
+
+/// CDCL stress: WIDE bit-vectors (16/24/32-bit) at a full conflict budget. The historical DPLL
+/// choked on these (each decision re-scanned every clause), so the small-width battery above was all
+/// it could sustain. With the CDCL engine (watched literals + clause learning), the native solver
+/// must now DECIDE most wide instances — not defer them — and still agree with z3 on every verdict.
+/// This is the evidence that the CDCL engine is real: it proves/refutes 32-bit adder+comparator
+/// formulas in-budget, which is the regime the real compiler emits (`u32` obligations are 32-bit).
+#[test]
+fn native_agrees_with_z3_on_wide_battery() {
+    if !z3_available() {
+        eprintln!("z3 not on PATH — skipping wide differential test");
+        return;
+    }
+    let mut rng = Rng(0xD1B54A32D192ED03);
+    let (mut decided, mut deferred, mut disagreements) = (0u64, 0u64, 0u64);
+    let mut first_bad: Option<String> = None;
+    for _ in 0..600 {
+        let f = gen_formula_w(&mut rng, &[16, 24, 32]);
+        let smt = serialize(&f);
+        let native = native_check_sat_budget(&smt, 2_000_000);
+        match native {
+            None => deferred += 1,
+            Some(nat) => {
+                if let Some(zv) = z3(&smt) {
+                    if nat != zv {
+                        disagreements += 1;
+                        if first_bad.is_none() {
+                            first_bad = Some(format!("native={} z3={} on:\n{}", nat, zv, smt));
+                        }
+                    } else {
+                        decided += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "wide differential: decided-agree={} deferred={} DISAGREEMENTS={}",
+        decided, deferred, disagreements
+    );
+    assert_eq!(
+        disagreements, 0,
+        "native disagreed with z3 on a wide formula.\nFirst: {}",
+        first_bad.unwrap_or_default()
+    );
+    // The whole point of CDCL: the wide regime is now decided, not deferred.
+    assert!(
+        decided > deferred,
+        "CDCL still defers most wide formulas (decided={decided} deferred={deferred}) — \
+         the engine is not carrying its weight"
+    );
 }

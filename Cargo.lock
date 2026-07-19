@@ -185,6 +185,7 @@ dependencies = [
 name = "anubis-compiler"
 version = "0.1.0"
 dependencies = [
+ "anubis-solver",
  "anyhow",
  "ariadne",
  "chrono",
@@ -201,6 +202,10 @@ dependencies = [
  "toml",
  "tracing",
 ]
+
+[[package]]
+name = "anubis-solver"
+version = "0.1.0"
 
 [[package]]
 name = "anyhow"

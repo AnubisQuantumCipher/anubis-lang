@@ -30,7 +30,9 @@ SMT-LIB2 text ──parse──▶ bv::Formula ──bit-blast──▶ CNF ─�
   eight signed+unsigned comparisons, `=`, `extract`/`concat`/`{zero,sign}_extend`, `ite`, and
   **constant** shifts. Gate semantics match `run.rs` and `formal/Anubis/Encoding.lean`. `mul`,
   `div`/`rem`, and **variable** shifts are declined (→ `None` → z3).
-- **`sat.rs`** — a CNF SAT engine bounded by a decision budget; over budget → `Unknown` (decline).
+- **`sat.rs`** — a **CDCL** SAT engine (watched literals, 1-UIP clause learning, VSIDS, Luby restarts)
+  bounded by a *conflict* budget; over budget → `Unknown` (decline). `Unsat` is only ever returned via a
+  conflict at decision level 0 (a root refutation), so a "proof" is sound by construction.
 
 ## The one entry point
 
@@ -56,8 +58,9 @@ also give — *provided the bit-blaster is correct*, which is what the validatio
    (`scripts/run_native_shadow_gate.sh`). So during rollout a native bug is *caught*, never *trusted*.
 2. **Differential vs z3.** `tests/differential.rs` runs thousands of random QF_BV formulas plus
    hand-crafted 64-bit edge cases (wrapping overflow, signed `MIN`, the u32 mask, extract, sign-extend)
-   through both native and z3 and asserts they agree wherever native decides. Current: **0
-   disagreements**.
+   through both native and z3 and asserts they agree wherever native decides. Current: **2000 small +
+   600 wide (16/24/32-bit) + 7 edge = 0 disagreements, 0 deferred** — with CDCL the wide 32-bit regime
+   (what real `u32` obligations compile to) is fully *decided*, not deferred.
 3. **Machine-checked core.** `formal/Anubis/BitBlast.lean` proves the ripple-carry adder — from which
    every `bvadd`, and via two's complement every `bvsub`/`bvneg`, is built — computes *true integer
    addition* (`rippleCarry_spec`), chaining to `Encoding.lean` (bvadd = `wrapping_add` = runtime); and
@@ -71,8 +74,8 @@ integer lane.
 
 ## Status / next
 
-- ✅ parser, bit-blaster, bounded SAT, `native_check_sat`, differential + corpus shadow.
+- ✅ parser, bit-blaster, `native_check_sat`, differential + corpus shadow.
 - ✅ adder **and** comparator machine-checked in Lean (`rippleCarry_spec`, `ult_correct`).
-- ⏳ a CDCL engine (watched literals + clause learning) so hard/large formulas decide in real time
-  rather than deferring.
+- ✅ CDCL engine (watched literals, 1-UIP learning, VSIDS, Luby restarts) — wide 32-bit formulas
+  decide in-budget (600/600, 0 deferred).
 - ⬜ native lanes for floats / strings / arrays; the z3-authoritative flip.
