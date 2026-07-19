@@ -1,0 +1,12 @@
+[package]
+name = "anubis-solver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Anubis native SMT decision procedure — a from-scratch QF_BV solver (bit-blast + CDCL SAT) that replaces the z3 third party for the integer contract lane. No external solver dependency; z3 is used only as a shadow cross-check during rollout."
+
+# ZERO third-party solver dependencies — that is the entire point. std only.
+[dependencies]
+
+[dev-dependencies]

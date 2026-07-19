@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "compiler",
     "tools/anubis",
+    "solver",
 ]
 
 # For RISC0 receipt (Gate 10+) on Apple Silicon: use the in-repo vendored
