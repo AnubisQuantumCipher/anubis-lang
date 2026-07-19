@@ -3472,6 +3472,27 @@ fn analyze_stmts(
                 // any other value is left to the runtime `assert` — the checker must not fabricate
                 // a bit-vector counterexample and "disprove" a statement it cannot faithfully model
                 // (that would make `check` unsound, e.g. disproving `assert(true)`).
+                //
+                // MIXED-THEORY DECOMPOSITION: if the WHOLE assert fits no single lane but is a
+                // top-level conjunction, discharge each conjunct in its own lane (`assert(A && B)` iff
+                // `assert(A)` ∧ `assert(B)`). Without this a conjunction spanning lanes — `s == "a" &&
+                // n == 5`, or the fail-open `s == "a" && 1 == 2` — matched nothing and passed vacuously.
+                // Splitting only ADDS obligations, so it can never introduce a false accept.
+                let whole: &Expr = expr;
+                let whole_fits_one_lane = is_bool_modelable(whole, &ctx.solver_int_vars)
+                    || is_bool_modelable_float(whole, &ctx.solver_float_vars)
+                    || is_bool_modelable_string(
+                        whole,
+                        &ctx.solver_string_vars,
+                        &ctx.shadowed_string_preds,
+                    )
+                    || is_bool_modelable_strlen(whole, &ctx.solver_string_vars);
+                let conjuncts: Vec<&Expr> = if whole_fits_one_lane {
+                    vec![whole]
+                } else {
+                    split_top_level_conjuncts(whole)
+                };
+                for expr in conjuncts {
                 if is_bool_modelable(expr, &ctx.solver_int_vars) {
                     let smt = expr_to_smt(expr, &ctx.symbolic_widths);
                     ctx.constraints.push(format!("(assert {})", smt));
@@ -3603,6 +3624,7 @@ fn analyze_stmts(
                         });
                     }
                 }
+                } // end per-conjunct decomposition loop
                 // A write embedded in the asserted expression escapes the statement sweep; invalidate it
                 // AFTER building this obligation (the obligation is over the pre-write value).
                 invalidate_embedded_writes(ctx, assumptions, expr);
@@ -6543,6 +6565,23 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
 /// comparison of integer-modelable terms, or a boolean combination of such. A bare variable, a
 /// string comparison, or anything else is NOT modelable — the checker must decline to prove or
 /// disprove it (it is still enforced at runtime) rather than fabricate a bit-vector counterexample.
+/// Flatten a top-level `&&` chain into its conjuncts (`A && B && C` → `[A, B, C]`); a non-conjunction
+/// is a single element. Used to decompose a mixed-theory `assert` so each conjunct is discharged in
+/// its own solver lane: `assert(A && B)` holds iff both hold, so splitting only ever ADDS obligations
+/// (it can never mis-prove one — no false accept) while closing the fail-open where a conjunction
+/// spanning lanes (e.g. a string `==` and an int `==`) matched no single lane and was deferred
+/// wholesale, letting even a modelable-FALSE conjunct like `1 == 2` slip past `check`.
+fn split_top_level_conjuncts(e: &Expr) -> Vec<&Expr> {
+    match e {
+        Expr::Binary { op, lhs, rhs } if op == "&&" => {
+            let mut v = split_top_level_conjuncts(lhs);
+            v.extend(split_top_level_conjuncts(rhs));
+            v
+        }
+        _ => vec![e],
+    }
+}
+
 fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
     match e {
         Expr::Literal(l) => l == "true" || l == "false",

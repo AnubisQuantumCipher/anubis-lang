@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// Mixed-theory assert decomposition: a conjunction `A && B` whose conjuncts live in DIFFERENT solver
+// lanes (a string equality `s == "a"` and an integer equality `1 == 2`) used to match no single lane
+// and pass vacuously (deferred wholesale to the runtime) — a fail-open where even a modelable-FALSE
+// conjunct slipped past `check`. The assert is now DECOMPOSED and each conjunct discharged in its own
+// lane (`assert(A && B)` iff `assert(A)` ∧ `assert(B)`), so the provably-false `1 == 2` conjunct is
+// disproved at compile time and the check rejects. Splitting only adds obligations, so it can never
+// introduce a false accept.
+fn f(s: string) requires(s == "a") {
+    assert(s == "a" && 1 == 2);
+}
+fn main() { f("a"); }
