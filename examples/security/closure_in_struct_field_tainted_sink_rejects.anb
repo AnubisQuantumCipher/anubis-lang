@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness hunt 2026-07-19 (#48-h, integrity twin): a closure capturing an untrusted (tainted) value,
+// stored in a struct field and applied via `b.f(0)`, carries taint to the sink. Fixed symmetrically in
+// `expr_taint_source_m`'s CallExpr arm.
+struct Box { f: u64 }
+fn main() { let t = input(); let b = Box { f: |x| t }; sink(b.f(0)); }

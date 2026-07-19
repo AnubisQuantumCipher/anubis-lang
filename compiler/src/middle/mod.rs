@@ -9614,6 +9614,17 @@ fn expr_escapes_loop(e: &Expr) -> bool {
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_escapes_loop(inner),
         Expr::ArrayLiteral { elements } => elements.iter().any(expr_escapes_loop),
         Expr::EnumConstruct { fields, .. } => fields.iter().any(expr_escapes_loop),
+        // A `break`/`continue`/`return` embedded in a struct-literal field value (`let s = Box { v:
+        // break };`) or a map-literal entry (`let m = { "k": break };`) escapes the loop exactly like
+        // one in an array element — the loop can exit while its guard is still true, so the post-loop
+        // `¬cond` assumption would be unsound. Without these arms the escape scan fell through to
+        // `_ => false`, and the loop-invariant engine proved a false post-loop fact (soundness hunt
+        // 2026-07-19: `Box { v: break }` / `{ "k": break }` both certified `x == 10` after a loop that
+        // actually exits at `x == 0`). Struct fields are `Box<Expr>`; map entries are key/value pairs.
+        Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, e)| expr_escapes_loop(e)),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .any(|(k, v)| expr_escapes_loop(k) || expr_escapes_loop(v)),
         Expr::Index { base, index } => expr_escapes_loop(base) || expr_escapes_loop(index),
         Expr::FieldAccess { base, .. } => expr_escapes_loop(base),
         _ => false,
@@ -11984,6 +11995,38 @@ fn expr_taint_source_m(
         // intra-procedural twin of the `CallExpr` arm in `expr_param_return_flow`, so `s.clone()` does
         // not launder a tainted value).
         Expr::CallExpr { callee, args } => {
+            // Soundness hunt 2026-07-19 (#48-h, integrity twin of the secrecy dual): a closure stored
+            // in a struct FIELD (`b.f(0)`) or LIST ELEMENT (`arr[0](0)`) carries the TAINT of its
+            // body's returned value when applied. `let b = Box { f: |x| t }; sink(b.f(0))` otherwise
+            // laundered the captured tainted value past ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY. Resolve
+            // the stored lambda from the base binding's `field_closures` and read its tail values in
+            // the caller scope minus the lambda params.
+            let stored_closure = match callee.as_ref() {
+                Expr::FieldAccess { base, field, .. } => match base.as_ref() {
+                    Expr::Var(bn) => scope.get(bn).and_then(|b| b.field_closures.get(field).cloned()),
+                    _ => None,
+                },
+                Expr::Index { base, index } => match (base.as_ref(), index.as_ref()) {
+                    (Expr::Var(bn), Expr::Literal(idx)) => {
+                        scope.get(bn).and_then(|b| b.field_closures.get(idx.trim()).cloned())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
+                let mut inner = scope.clone();
+                for p in params {
+                    inner.remove(p);
+                }
+                let mut tails = Vec::new();
+                expr_tail_values(body, &mut tails);
+                if let Some(s) = tails.iter().find_map(|t| {
+                    expr_taint_source_m(t, &inner, tainting_fns, param_return_taint, method_tainting_fns)
+                }) {
+                    return Some(s);
+                }
+            }
             // #67: an impl method whose RETURN carries internally-minted taint makes
             // `r.tag()` a taint source. Bare-name keyed; inert when method_tainting_fns is empty.
             if let Expr::FieldAccess { field, .. } = callee.as_ref() {
@@ -12194,6 +12237,41 @@ fn expr_secret_source_m(
         // A method/closure application on a secret (`s.clone()`) may carry the secret — conservatively
         // surface the first secret sub-expression (twin of the `expr_taint_source` CallExpr arm).
         Expr::CallExpr { callee, args } => {
+            // Soundness hunt 2026-07-19 (#48-h, secret dual): a closure stored in a struct FIELD,
+            // applied via `b.f(0)`, or in a LIST ELEMENT, applied via `arr[0](0)`, carries the secrecy
+            // of its body's RETURNED value — the aggregate-container twin of the var-bound closure rule
+            // in the `Expr::Call` arm. `let g = |x| k; let b = Box { f: g }; send(h, p, b.f(0))`
+            // otherwise laundered the captured secret `k` past ANUBIS_SECRET_EXFILTRATION (the effect
+            // descent at the CallExpr application site charged the body's own effects but never marked
+            // the RESULT secret). Resolve the stored lambda from the base binding's `field_closures`
+            // (field name, or literal element index), then read its tail values in the caller scope
+            // MINUS the lambda params (so a captured secret is seen, a shadowing param is not).
+            let stored_closure = match callee.as_ref() {
+                Expr::FieldAccess { base, field, .. } => match base.as_ref() {
+                    Expr::Var(bn) => scope.get(bn).and_then(|b| b.field_closures.get(field).cloned()),
+                    _ => None,
+                },
+                Expr::Index { base, index } => match (base.as_ref(), index.as_ref()) {
+                    (Expr::Var(bn), Expr::Literal(idx)) => {
+                        scope.get(bn).and_then(|b| b.field_closures.get(idx.trim()).cloned())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
+                let mut inner = scope.clone();
+                for p in params {
+                    inner.remove(p);
+                }
+                let mut tails = Vec::new();
+                expr_tail_values(body, &mut tails);
+                if let Some(s) = tails.iter().find_map(|t| {
+                    expr_secret_source_m(t, &inner, secret_fns, param_return_taint, method_secret_fns)
+                }) {
+                    return Some(s);
+                }
+            }
             // #67: an impl method whose RETURN carries an internally-minted secret makes
             // `v.key()` a secret source (the getter/accessor exfil). Bare-name keyed, so
             // fires before the receiver/arg recursion; inert when method_secret_fns is empty.

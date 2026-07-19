@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LOOP_INVARIANT_UNVERIFIABLE|ANUBIS_ASSERTION_UNPROVEN
+// Soundness (hunt 2026-07-19): a `break` embedded in a struct-literal field value must be visible to
+// the loop-invariant escape scan. Without the StructLiteral arm in `expr_escapes_loop`, the loop was
+// modeled as running to completion and `assert(x == 10)` was falsely proven, though the `break` exits
+// on iteration 1 with x == 0. The runtime value is 0, so certifying x == 10 is a false accept.
+struct Box { v: u32 }
+fn main() {
+    let mut x = 0;
+    while x < 10 invariant(x <= 10) {
+        let s = Box { v: break };
+        x = x + 1;
+    }
+    assert(x == 10);
+}

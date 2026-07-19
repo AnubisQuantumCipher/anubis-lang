@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Over-rejection guard for #48-h: a field-stored secret-capturing closure whose application result is
+// DECLASSIFIED before egress must still compile — declassify is the sanctioned release, so the new
+// field-closure secret-source rule must not fire through it.
+struct Box { f: u64 }
+fn run(k: secret<u64>) uses(net.send) {
+    let g = |x| k;
+    let b = Box { f: g };
+    send("host", 80, declassify(b.f(0), "release-policy", "audited"));
+}
+fn main() { }
