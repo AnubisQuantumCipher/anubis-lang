@@ -760,14 +760,62 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 {
                     let mut tv = Vec::new();
                     tail_values(body, true, &mut tv);
-                    if tv.len() == 1 {
-                        if let Expr::Lambda { .. } = &tv[0] {
+                    // The candidate returned lambda: the straight-line tail return (above), OR — when the
+                    // tail is not a lambda — a `return <lambda>` inside a conditional/block, provided it is
+                    // the function's SOLE return (soundness hunt2 [05]: `fn mk(k){ if true { return |x| k;
+                    // } }` laundered because `tail_values` yields the `if`'s `0` fallback, not the return).
+                    // Restricting to exactly-one return keeps it conservative (two divergent returns can't
+                    // be one recorded lambda) — a skipped multi-return case under-approximates, never
+                    // false-rejects.
+                    let cand: Option<Expr> = if tv.len() == 1
+                        && matches!(&tv[0], Expr::Lambda { .. })
+                    {
+                        Some(tv[0].clone())
+                    } else {
+                        let mut rets = Vec::new();
+                        for st in body {
+                            collect_returns_in_stmt(st, &mut rets);
+                        }
+                        if rets.len() == 1 && matches!(&rets[0], Expr::Lambda { .. }) {
+                            Some(rets.remove(0))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(Expr::Lambda { params: lparams, body: lbody }) = cand.as_ref() {
+                            // Inline the function's leading STRAIGHT-LINE `let`s into the returned lambda
+                            // body, so a closure capturing a LOCAL that aliases a secret/tainted param
+                            // (`fn mk(k){ let s = k; return |x| s; }`) carries that label when applied at
+                            // the caller (the call-site substitution replaces only PARAMS, not locals) —
+                            // soundness hunt2 [04]. Conservative: stop at the first non-`let` statement or
+                            // the return (a branch/loop before the return breaks the straight-line
+                            // assumption); the lambda's own params shadow and are not substituted. Under-
+                            // approximates (a missed capture never false-rejects).
+                            let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+                            for st in body {
+                                match st {
+                                    Stmt::Let { name: ln, init, .. } => {
+                                        let resolved = substitute_vars(init, &sub);
+                                        sub.insert(ln.clone(), resolved);
+                                    }
+                                    Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => {
+                                        break
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            for lp in lparams {
+                                sub.remove(lp);
+                            }
+                            let recorded = Expr::Lambda {
+                                params: lparams.clone(),
+                                body: Box::new(substitute_vars(lbody, &sub)),
+                            };
                             ctx.fn_returns_lambda.insert(
                                 name.clone(),
-                                (params.iter().map(|(n, _)| n.clone()).collect(), tv[0].clone()),
+                                (params.iter().map(|(n, _)| n.clone()).collect(), recorded),
                             );
                         }
-                    }
                 }
                 // Task #48-A / #48 transitive: record which param positions this fn APPLIES directly at
                 // its own level (`p(...)` or a HOF-forward `each([1],p)`, NOT inside a deferred lambda)

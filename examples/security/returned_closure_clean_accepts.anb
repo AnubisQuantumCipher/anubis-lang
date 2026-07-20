@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Over-rejection guard: a returned closure capturing no secret (a constant) must still compile.
+fn make(k: secret<u64>) { let s = 42; return |x| s; }
+fn run(k: secret<u64>) uses(net.send) { let g = make(k); send("host", 80, g(0)); }
+fn main() { }
