@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (hunt residual 2026-07-20): a helper that CONDITIONALLY returns a secret-capturing closure
+// (`fn mk(c){ if c>0 { return |x| k; } return |x| 0; }`) laundered it — fn_returns_lambda recorded the
+// WRONG (non-secret tail) lambda as g.closure_lambda, and reading that clean body SHADOWED g's own
+// secret label (mk is in secret_fns). FIX: the closure-body read falls through to the binding's label.
+fn mk(c: i64) {
+    let k = secret_source("api_key");
+    if c > 0 { return |x| { k }; }
+    return |x| { 0 };
+}
+fn main() uses(net.send) { let g = mk(1); send("host", 80, g(0)); }

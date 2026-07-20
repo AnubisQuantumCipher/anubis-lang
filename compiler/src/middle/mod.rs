@@ -12695,11 +12695,20 @@ fn expr_taint_source_m(
                 } else {
                     None
                 };
-                capture_taint.or_else(|| {
-                    args.iter().find_map(|arg| {
-                        expr_taint_source_m(arg, scope, tainting_fns, param_return_taint, method_tainting_fns)
+                capture_taint
+                    // The resolved closure body reading clean must not SHADOW the binding's own taint
+                    // label (integrity dual — conditionally-returned tainted-capturing closure).
+                    .or_else(|| {
+                        scope
+                            .get(callee)
+                            .filter(|b| b.info.tainted)
+                            .and_then(|b| b.info.taint_source.clone())
                     })
-                })
+                    .or_else(|| {
+                        args.iter().find_map(|arg| {
+                            expr_taint_source_m(arg, scope, tainting_fns, param_return_taint, method_tainting_fns)
+                        })
+                    })
             } else if scope.get(callee).is_some_and(|b| b.info.tainted) {
                 // Applying a TAINTED-VALUED binding exposes its capture (integrity dual of the secret
                 // apply rule) — `let g = fwd(|x| input()); g(0)`, or a call returning a tainted-
@@ -12983,11 +12992,23 @@ fn expr_secret_source_m(
                 } else {
                     None
                 };
-                capture_secret.or_else(|| {
-                    args.iter().find_map(|a| {
-                        expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns)
+                capture_secret
+                    // Even when the RESOLVED closure body reads clean, a binding marked secret by the
+                    // fn-return summary still exposes its capture — the closure_lambda read must not
+                    // SHADOW the binding's own label (soundness hunt2 residual: `fn mk(c){ if c>0 {
+                    // return |x| k; } return |x| 0; }` — fn_returns_lambda records the WRONG non-secret
+                    // tail lambda, but `mk` is in `secret_fns`, so `g = mk(); g(0)` must read secret).
+                    .or_else(|| {
+                        scope
+                            .get(callee)
+                            .filter(|b| b.secret)
+                            .map(|_| format!("captured secret in closure `{callee}`"))
                     })
-                })
+                    .or_else(|| {
+                        args.iter().find_map(|a| {
+                            expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns)
+                        })
+                    })
             } else if scope.get(callee).is_some_and(|b| b.secret) {
                 // Applying a SECRET-VALUED binding exposes its capture — a var bound to a capturing
                 // closure, or to a call that RETURNS one (`let g = fwd(|x| k); g(0)`, or `let g =

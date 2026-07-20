@@ -55,14 +55,25 @@ itself treated as a labelled value, so the ordinary value-flow tracks it through
 maps, function parameters and returns, aliases and (beta-substituted) forwarding: `let s = Box{cb: |x|
 k}; run(s.cb)`, `let g = fwd(|x| k); g(0)`, `run(mk(k))` and the like are all caught.
 
-**Honest boundary (known residuals under active work).** A handful of deep higher-order shapes are not
-yet tracked and can currently compile a leak: a closure applied through *another* closure nested inside
-a function body (`|y| { let inner = |x| k; inner(0) }`); a closure returned *conditionally* from a
-helper (`fn mk(c){ if c>0 { return |x| k; } … }`); and a closure captured through a symbolic map key.
-These are enumerated with reproducers in the soundness-hunt notes and are being closed. Until then, for
-a program that dispatches secret/tainted-capturing closures through those specific shapes, prefer the
-`--verified` effect-row analysis, which covers them. This section states exactly what is and is not
-covered rather than overclaiming.
+**Honest boundary (known residuals under active work).** A couple of deep higher-order shapes are not
+yet tracked by the Safe-mode flow analysis and can currently compile a leak: a closure applied through
+*another* closure nested inside a function body (`|y| { let inner = |x| k; inner(0) }`), and a closure
+captured through a *symbolic* map key. These are enumerated with reproducers in the soundness-hunt notes
+and are being closed.
+
+**How `--verified` relates (stated precisely — it is NOT a stronger taint tracer).** The `--verified`
+lane runs the *same* information-flow analysis as Safe mode, so it shares these residuals. What it adds
+is a strict **capability discipline**: every effect (network send, file write, shell, …) must be
+explicitly authorized, and an effect that flows through indirect dispatch the compiler cannot statically
+account for is **refused** — `ANUBIS_EFFECT_OPEN_IN_VERIFIED` / `ANUBIS_EFFECT_UNAUTHORIZED`. So a leak
+through an un-analyzable closure is foreclosed not by *tracing the secret* but by *refusing the egress*:
+I/O cannot happen on a path the compiler could not verify. This is a genuine, valuable guarantee — but a
+CAPABILITY-safety one, not a taint one. It is also strict enough that it currently refuses effects that
+lack an explicit capability acquisition (even a plain `send(constant)`), so it is a mode for code
+written to that discipline, not a drop-in "catch every leak" switch. Do not describe `--verified` as
+mathematically proving no indirect-dispatch data leak via taint analysis — that would overstate the
+mechanism. The accurate claim: *in verified mode, code cannot perform I/O through any dispatch path the
+compiler cannot statically authorize.*
 
 ## The one release valve
 
