@@ -1,0 +1,231 @@
+//! Proof-backed fragment gate for the native-authoritative lane.
+//!
+//! When the compiler runs the native solver as the AUTHORITY (`ANUBIS_NATIVE_AUTHORITATIVE=1`, and in
+//! particular the z3-absent window where no cross-check fires), a native `Unsat` is a PROOF — and a
+//! proof is only as sound as the bit-blast that produced it. This module restricts the authoritative
+//! lane to the sub-language whose bit-blast wiring is MACHINE-CHECKED in `formal/Anubis/BitBlast.lean`.
+//! If an obligation touches any operation whose wiring is not proven, [`is_proven_authoritative`]
+//! returns `false` and the caller declines (`None` → defer to z3).
+//!
+//! Deferring is ALWAYS sound: the gate only ever SHRINKS what native decides — it never changes a
+//! verdict native would have returned, it only turns some `Some` into `None`. So wiring it in front of
+//! the blaster cannot introduce a false accept; it can only remove a native decision that rested on an
+//! unproven blast.
+//!
+//! The walk is TOTAL and CONSERVATIVE:
+//! * an explicit per-constructor match with **no wildcard arm**, so a newly added `Term`/`Pred` variant
+//!   fails to COMPILE here rather than silently riding as authoritative (fail-closed against drift);
+//! * every child of every allowed constructor is recursed into, so a danger op nested inside an allowed
+//!   one — `bvslt (bvashr x k) y`, an unproven op in a shift AMOUNT or a non-const MULTIPLIER, an `Eq`
+//!   buried in an `And` vector — forces a decline.
+//!
+//! Admission tiers:
+//! * **TIER-1 (proven wiring — a `*_correct` theorem in BitBlast.lean):** `Add` (rippleCarry_spec),
+//!   constant `Mul` (mulConst_correct), `Shl`/`Lshr` const+barrel (shlConst/shrConstL/barrelShl/
+//!   barrelLshr_correct), `Not` (bitsToNat_not), `Concat` (bitsToNat_append_list), `Extract`
+//!   (bitsToNat_extract), `ZeroExtend` (bitsToNat_append_replicate_false), all eight comparators via
+//!   `ult`/`slt`/`ule`/`sle_correct` (`>`/`≥` are these on swapped operands), and equality `Eq` via
+//!   `eqBits_correct` (backed by `bitsToNat_inj`).
+//! * **TIER-0 (trusted propositional base):** the SAT literals and the Tseitin clauses for `And`/`Or`/
+//!   `Not` OVER PREDICATES. These carry no `_correct` theorem because they ARE the base every proven
+//!   gate is built on — the proven adder's own internal and/or/xor gates rely on the identical Tseitin
+//!   translation, and the CDCL engine consumes the same clauses. Admitting them adds no trust beyond
+//!   what TIER-1 already requires.
+//! * **DEFERRED (unproven wiring → z3):** `Sub`, `Neg`, bitwise `And`/`Or`/`Xor`, `Ashr`, `SignExtend`,
+//!   `Udiv`/`Urem`/`Sdiv`/`Srem`, `Ite`, and variable×variable `Mul`. Each is a named follow-up proof;
+//!   until its `*_correct` theorem lands, z3 decides those obligations.
+
+use crate::bv::{Formula, Pred, Term};
+
+/// True iff every assertion in `f` lies entirely within the machine-checked native-authoritative
+/// fragment. A `false` result means the caller must decline (`None`) and defer to z3.
+pub fn is_proven_authoritative(f: &Formula) -> bool {
+    f.asserts.iter().all(pred_ok)
+}
+
+/// The set of operation tags admitted as native-authoritative, as stable strings. This is the
+/// machine-readable mirror of the match arms below — the drift gate
+/// (`scripts/run_native_authoritative_gate.sh`) checks it against the set of ops carrying a live
+/// `*_correct`/value-lemma marker in `BitBlast.lean`, so an op cannot be admitted here without a green
+/// proof, nor a proof silently dropped while its op stays admitted.
+pub const PROVEN_OP_TAGS: &[&str] = &[
+    // TIER-1 term wiring
+    "Add", "MulConst", "Shl", "Lshr", "Not", "Concat", "Extract", "ZeroExtend",
+    // TIER-1 comparators (all eight) + equality
+    "Ult", "Ule", "Ugt", "Uge", "Slt", "Sle", "Sgt", "Sge", "Eq",
+    // TIER-0 propositional base
+    "PredConst", "BoolVar", "PredNot", "PredAnd", "PredOr",
+];
+
+fn pred_ok(p: &Pred) -> bool {
+    match p {
+        // TIER-0 propositional base (trusted Tseitin core, shared with every proven gate).
+        Pred::Const(_) | Pred::BoolVar(_) => true,
+        Pred::Not(q) => pred_ok(q),
+        Pred::And(qs) | Pred::Or(qs) => qs.iter().all(pred_ok),
+        // TIER-1 comparators — all eight proven (ult/slt/ule/sle_correct; gt/ge are operand swaps).
+        // Recurse into BOTH operands: a danger op may hide in either side.
+        Pred::Ult(a, b)
+        | Pred::Ule(a, b)
+        | Pred::Ugt(a, b)
+        | Pred::Uge(a, b)
+        | Pred::Slt(a, b)
+        | Pred::Sle(a, b)
+        | Pred::Sgt(a, b)
+        | Pred::Sge(a, b)
+        // Equality: eqBits_correct (bitsToNat_inj) proves eq_bits decides value equality. Recurse both.
+        | Pred::Eq(a, b) => term_ok(a) && term_ok(b),
+    }
+}
+
+fn term_ok(t: &Term) -> bool {
+    match t {
+        // Leaves.
+        Term::Const(_, _) | Term::Var(_, _) => true,
+        // TIER-1 proven arithmetic — recurse into EVERY child.
+        Term::Add(a, b) => term_ok(a) && term_ok(b),
+        // Multiply is proven only for a CONSTANT multiplier (mulConst_correct); the blaster defers
+        // variable×variable. Require one operand constant AND — critically, not short-circuiting on the
+        // const check — the OTHER operand also proven (it may itself be a danger op).
+        Term::Mul(a, b) => {
+            (matches!(**a, Term::Const(_, _)) || matches!(**b, Term::Const(_, _)))
+                && term_ok(a)
+                && term_ok(b)
+        }
+        // Shifts: proven for constant (shlConst/shrConstL) AND variable (barrel) amounts. BOTH the
+        // shifted value AND the amount must be proven — a danger op frequently hides in the amount
+        // (e.g. the runtime wraps it as `bvurem r 64`, which is DEFERRED, so real shifts defer here).
+        Term::Shl(a, b) | Term::Lshr(a, b) => term_ok(a) && term_ok(b),
+        // Structural — proven value lemmas; recurse the inner term(s).
+        Term::Not(a) => term_ok(a),
+        Term::Concat(a, b) => term_ok(a) && term_ok(b),
+        Term::Extract(_, _, a) => term_ok(a),
+        Term::ZeroExtend(_, a) => term_ok(a),
+        // DEFERRED — unproven wiring; native declines and z3 decides. Listed explicitly (no wildcard)
+        // so adding a new `Term` variant is a compile error here, not a silent authoritative admission.
+        Term::Sub(_, _)
+        | Term::Neg(_)
+        | Term::And(_, _)
+        | Term::Or(_, _)
+        | Term::Xor(_, _)
+        | Term::Ashr(_, _)
+        | Term::SignExtend(_, _)
+        | Term::Udiv(_, _)
+        | Term::Urem(_, _)
+        | Term::Sdiv(_, _)
+        | Term::Srem(_, _)
+        | Term::Ite(_, _, _) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::parse_smt2;
+
+    fn gate(smt: &str) -> bool {
+        is_proven_authoritative(&parse_smt2(smt).expect("parse"))
+    }
+
+    // ---- Positive: obligations built ONLY from proven-fragment ops are admitted. ----
+
+    #[test]
+    fn admits_add_and_comparators() {
+        // The shape of a real uN body obligation: range assumptions (bvsge/bvsle) + bvadd + ensures.
+        let smt = "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
+                   (assert (bvsle x (_ bv1000 64)))(assert (bvsge x (_ bv0 64)))\
+                   (assert (not (bvsge (bvadd x y) x)))(check-sat)";
+        assert!(gate(smt), "add + comparators must be authoritative");
+    }
+
+    #[test]
+    fn admits_const_mul_shift_structural() {
+        let smt = "(declare-const x (_ BitVec 64))\
+                   (assert (bvult (bvmul x (_ bv4 64)) (bvshl x (_ bv3 64))))\
+                   (assert (bvule ((_ extract 31 0) x) ((_ zero_extend 0) x)))(check-sat)";
+        assert!(gate(smt), "const-mul, const-shift, extract, zero_extend must be authoritative");
+    }
+
+    #[test]
+    fn admits_propositional_structure() {
+        let smt = "(declare-const x (_ BitVec 64))\
+                   (assert (and (bvslt x (_ bv5 64)) (not (bvsgt x (_ bv0 64)))))(check-sat)";
+        assert!(gate(smt), "And/Or/Not over proven comparators must be authoritative");
+    }
+
+    // ---- Negative: a danger op ANYWHERE forces a decline. This is the soundness core. ----
+
+    #[test]
+    fn admits_equality() {
+        // Eq is proof-backed (eqBits_correct / bitsToNat_inj), so ground + symbolic equality over
+        // proven operands stays native-authoritative (the string-equality lane depends on this).
+        assert!(gate("(declare-const x (_ BitVec 64))(assert (= (bvadd x (_ bv1 64)) (_ bv3 64)))(check-sat)"));
+        assert!(gate("(assert (= (_ bv5 64) (_ bv5 64)))(check-sat)"));
+    }
+
+    #[test]
+    fn declines_top_level_danger_ops() {
+        for smt in [
+            // Sub
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvsub x (_ bv1 64)) x))(check-sat)",
+            // Neg
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvneg x) x))(check-sat)",
+            // bitwise And / Or / Xor
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvand x (_ bv7 64)) x))(check-sat)",
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvor x (_ bv7 64)) x))(check-sat)",
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvxor x (_ bv7 64)) x))(check-sat)",
+            // Ashr (arithmetic right shift — NOT proven)
+            "(declare-const x (_ BitVec 64))(assert (bvsge (bvashr x (_ bv1 64)) (_ bv0 64)))(check-sat)",
+            // sign_extend
+            "(declare-const x (_ BitVec 32))(assert (bvsge ((_ sign_extend 32) x) (_ bv0 64)))(check-sat)",
+            // division / remainder
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvsdiv x (_ bv2 64)) x))(check-sat)",
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvurem x (_ bv2 64)) x))(check-sat)",
+            // Ite
+            "(declare-const x (_ BitVec 64))(assert (bvsge (ite (bvslt x (_ bv0 64)) (bvneg x) x) (_ bv0 64)))(check-sat)",
+        ] {
+            assert!(!gate(smt), "danger op must force decline: {smt}");
+        }
+    }
+
+    // ---- The load-bearing case: a danger op NESTED inside an allowed constructor (walker
+    // completeness — the recurring Anubis "N walkers, one missed child" defect class). ----
+
+    #[test]
+    fn declines_danger_nested_in_allowed() {
+        for smt in [
+            // danger in a comparator operand
+            "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
+             (assert (bvslt (bvashr x (_ bv1 64)) y))(check-sat)",
+            // danger in a shift AMOUNT
+            "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
+             (assert (bvult (bvshl x (bvsub y (_ bv1 64))) x))(check-sat)",
+            // danger in the NON-CONST multiplier operand
+            "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
+             (assert (bvult (bvmul (_ bv2 64) (bvsub x y)) x))(check-sat)",
+            // danger inside an Extract inner term
+            "(declare-const x (_ BitVec 64))\
+             (assert (bvult ((_ extract 31 0) (bvneg x)) x))(check-sat)",
+            // danger inside a Concat inner term
+            "(declare-const x (_ BitVec 32))(declare-const y (_ BitVec 32))\
+             (assert (bvult (concat (bvsub x y) y) (_ bv0 64)))(check-sat)",
+            // danger (Sub) buried in an Eq operand inside an And vector, after a proven conjunct
+            "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
+             (assert (and (bvslt x y) (= y (bvsub x (_ bv1 64)))))(check-sat)",
+            // danger inside a Not-wrapped predicate (Neg under the comparator under Not)
+            "(declare-const x (_ BitVec 64))\
+             (assert (not (bvsle (bvneg x) x)))(check-sat)",
+        ] {
+            assert!(!gate(smt), "danger op nested in an allowed constructor must force decline: {smt}");
+        }
+    }
+
+    // Mul must not short-circuit: `2 * x` is fine, but `2 * (danger)` is not (covered above); and a
+    // var×var multiply (neither operand constant) is declined even though both operands are leaves.
+    #[test]
+    fn declines_var_times_var_mul() {
+        let smt = "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
+                   (assert (bvult (bvmul x y) x))(check-sat)";
+        assert!(!gate(smt), "variable×variable multiply must be declined");
+    }
+}

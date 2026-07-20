@@ -10,6 +10,7 @@
 pub mod blast;
 pub mod bv;
 pub mod fp;
+pub mod fragment;
 pub mod parse;
 pub mod sat;
 
@@ -42,6 +43,13 @@ pub fn native_check_sat_budget(smt: &str, budget: u64) -> Option<bool> {
     native_check_sat_model_budget(smt, budget).map(|v| matches!(v, NativeVerdict::Sat(_)))
 }
 
+/// AUTHORITATIVE boolean verdict (Phase-7): as [`native_check_sat`] but fragment-gated (see
+/// [`native_check_sat_model_authoritative`]). Returns `None` (defer to z3) unless every op is
+/// machine-checked. The compiler uses this wherever native may be the sole authority.
+pub fn native_check_sat_authoritative(smt: &str) -> Option<bool> {
+    native_check_sat_model_authoritative(smt).map(|v| matches!(v, NativeVerdict::Sat(_)))
+}
+
 /// A definite native verdict, carrying the reconstructed model on SAT.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeVerdict {
@@ -61,6 +69,25 @@ pub enum NativeVerdict {
 /// re-satisfy the formula — which would mean a solver defect — this returns `None` (defer), so a
 /// broken model can never be presented as a counterexample. UNSAT needs no model.
 pub fn native_check_sat_model(smt: &str) -> Option<NativeVerdict> {
+    native_check_sat_model_budget(smt, DEFAULT_BUDGET)
+}
+
+/// AUTHORITATIVE verdict (Phase-7 TCB minimization). Identical to [`native_check_sat_model`] EXCEPT it
+/// first applies the proof-backed fragment gate ([`fragment::is_proven_authoritative`]): if the
+/// obligation touches any op whose bit-blast is not machine-checked in `formal/Anubis/BitBlast.lean`
+/// (`Sub`/`Neg`/bitwise/`Ashr`/`SignExtend`/div-rem/`Ite`/var×var-`Mul`), it returns `None` (defer)
+/// rather than a native verdict.
+///
+/// The compiler uses THIS on the native-authoritative path, where — in the z3-absent window — a native
+/// `Unsat` is trusted as a proof with no cross-check. The gate guarantees that trust rests only on a
+/// PROVEN blast. The un-gated [`native_check_sat_model`] stays available for SHADOW mode (every verdict
+/// there is cross-checked against z3 and fails closed on disagreement), so the full blaster keeps its
+/// differential coverage. Gating is always sound: it only ever turns a `Some` into `None`.
+pub fn native_check_sat_model_authoritative(smt: &str) -> Option<NativeVerdict> {
+    let formula = parse::parse_smt2(smt)?;
+    if !fragment::is_proven_authoritative(&formula) {
+        return None;
+    }
     native_check_sat_model_budget(smt, DEFAULT_BUDGET)
 }
 

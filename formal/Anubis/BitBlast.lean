@@ -290,6 +290,53 @@ theorem sle_correct (a b : List Bool) (hlen : a.length = b.length) (hne : a ≠ 
   rw [hb, key]
   omega
 
+/-! ### Equality (`bveq`)
+
+`blast.rs::eq_bits` ANDs the per-bit XNORs, so its literal is true iff every corresponding bit matches
+— which for equal-length lists is exactly `a = b`. Correctness (bitwise equality decides VALUE equality)
+is the INJECTIVITY of `bitsToNat` on a fixed width: two equal-length bit lists with the same value ARE
+the same list (the forward direction is trivial congruence). This is the proof backing that lets the
+fragment gate (`solver/src/fragment.rs`) admit `Pred::Eq` as native-authoritative rather than defer it. -/
+
+/-- **`bitsToNat` is injective on equal-length bit lists.** Same width + same value ⇒ same bits. The
+    low bit is the value's parity (so it is forced by the value), and halving recurses on the rest. -/
+theorem bitsToNat_inj : ∀ (a b : List Bool), a.length = b.length →
+    bitsToNat a = bitsToNat b → a = b := by
+  intro a
+  induction a with
+  | nil =>
+      intro b hlen _
+      cases b with
+      | nil => rfl
+      | cons _ _ => simp at hlen
+  | cons x xs ih =>
+      intro b hlen hval
+      cases b with
+      | nil => simp at hlen
+      | cons y ys =>
+          have hlen' : xs.length = ys.length := by
+            simp only [List.length_cons] at hlen; omega
+          simp only [bitsToNat] at hval
+          have hx : x.toNat ≤ 1 := by cases x <;> simp
+          have hy : y.toNat ≤ 1 := by cases y <;> simp
+          have hxy : x.toNat = y.toNat := by omega
+          have hrest : bitsToNat xs = bitsToNat ys := by omega
+          have hxe : x = y := by cases x <;> cases y <;> simp_all [Bool.toNat]
+          rw [hxe, ih ys hlen' hrest]
+
+/-- Abstract model of `blast.rs::eq_bits` for equal-width operands: all bits match ⇔ the lists match. -/
+def eqBits (a b : List Bool) : Bool := decide (a = b)
+
+/-- **Equality comparator correctness.** For equal-length operands, `eqBits a b = true ↔ ⟦a⟧ = ⟦b⟧`.
+    Forward is congruence on `bitsToNat`; backward is `bitsToNat_inj`. -/
+theorem eqBits_correct (a b : List Bool) (h : a.length = b.length) :
+    (eqBits a b = true) ↔ (bitsToNat a = bitsToNat b) := by
+  unfold eqBits
+  rw [decide_eq_true_eq]
+  constructor
+  · intro hab; rw [hab]
+  · intro hval; exact bitsToNat_inj a b h hval
+
 /-! ### Constant left shift
 
 `blast.rs::const_shift(_, Const k, Left)` wires `out[i] = if i ≥ k then a[i−k] else 0`, capped to the

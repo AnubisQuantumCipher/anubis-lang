@@ -14,5 +14,13 @@ pub fn clamp_add(x: u32, y: u32) -> u32
 }
 
 fn main() {
-    print(clamp_add(700, 300));
+    // The z3-free proof this fixture demonstrates is clamp_add's CONTRACT — its `ensures`, for ALL u32
+    // inputs — discharged natively from {bvadd, bvsle, bvsge}, every one a MACHINE-CHECKED blast
+    // (rippleCarry_spec + sle/ule/slt/ult_correct). That is the proof-backed native-authoritative
+    // fragment (`solver/src/fragment.rs`) in action with z3 off the PATH.
+    //
+    // A concrete call like `clamp_add(700, 300)` is deliberately omitted: it would add a u32 literal
+    // coercion check that lowers to `bvand`, whose blast is not yet in the proven fragment, so it would
+    // DEFER to z3 (fail-closed when z3 is absent). `bvand`/bitwise are the next fragment-widening proof.
+    print(0);
 }

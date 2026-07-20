@@ -50,6 +50,8 @@ rm -f "$DISAGREE_LOG"
 # ---- TCB-drop demo: z3 hidden from PATH ----
 PASS_FIX=tests/fixtures/native_authoritative/int_contract_proves.anb
 FAIL_FIX=tests/fixtures/native_authoritative/int_contract_violates.anb
+# Phase-7 fragment gate: a TRUE property built from an UNPROVEN op (bvashr) must FAIL CLOSED z3-free.
+DANGER_FIX=tests/fixtures/native_authoritative/int_contract_danger_defers.anb
 demo_fail=0
 
 set +e
@@ -60,10 +62,35 @@ PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=1 "$BIN" check "$FAIL_FIX" >/dev/n
 # Control: without the flag, a z3-less check of the SAME green fixture must fail — z3 was load-bearing.
 PATH=/nonexistent "$BIN" check "$PASS_FIX" >/dev/null 2>&1
 [ $? -ne 0 ] || { echo "DEMO FAIL: default mode passed WITHOUT z3 — control invalid (z3 not load-bearing?)"; demo_fail=1; }
+# FRAGMENT-GATE SOUNDNESS: the danger fixture's property is TRUE (so it PASSES with z3), but its op is
+# unproven, so z3-free + authoritative it must FAIL CLOSED (native declines, no z3 to defer to). This is
+# what proves native's z3-free authority is bounded to the machine-checked fragment, not the full blaster.
+"$BIN" check "$DANGER_FIX" >/dev/null 2>&1
+[ $? -eq 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX should PASS with z3 present (property is true)"; demo_fail=1; }
+PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=1 "$BIN" check "$DANGER_FIX" >/dev/null 2>&1
+[ $? -ne 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX proved z3-free on an UNPROVEN blast — the fragment gate did not fire"; demo_fail=1; }
 set -e
 
-if [ "$mismatches" = 0 ] && [ "$disagreements" = 0 ] && [ "$demo_fail" = 0 ]; then
-  echo "NATIVE_AUTHORITATIVE_GATE: PASS (verdict-equivalent on $n files; native alone proves+rejects the int fixtures with z3 hidden)"
+# ---- Drift check: the Rust allow-list (fragment.rs PROVEN_OP_TAGS) must be backed by live Lean proofs,
+# and must NOT admit any deferred op. Ties the authoritative fragment to formal/Anubis/BitBlast.lean so
+# an op cannot ride as authoritative without a green *_correct/value-lemma theorem. ----
+drift_fail=0
+LEAN=formal/Anubis/BitBlast.lean
+FRAG=solver/src/fragment.rs
+# Every admitted op's backing theorem/lemma must exist in BitBlast.lean.
+for thm in rippleCarry_spec ult_correct slt_correct ule_correct sle_correct eqBits_correct \
+           mulConst_correct shlConst_correct barrelShl_correct shrConstL_correct barrelLshr_correct \
+           bitsToNat_not bitsToNat_append_list bitsToNat_extract bitsToNat_append_replicate_false; do
+  grep -q "\b$thm\b" "$LEAN" || { echo "DRIFT: fragment admits an op but its backing '$thm' is MISSING from $LEAN"; drift_fail=1; }
+done
+# No DEFERRED op name may appear in PROVEN_OP_TAGS (guards accidental admission of unproven wiring).
+TAGS=$(sed -n '/PROVEN_OP_TAGS/,/];/p' "$FRAG")
+for deferred in Sub Neg Xor Ashr SignExtend Udiv Urem Sdiv Srem Ite; do
+  echo "$TAGS" | grep -qw "\"$deferred\"" && { echo "DRIFT: deferred op '$deferred' is listed in PROVEN_OP_TAGS (unproven wiring admitted)"; drift_fail=1; }
+done
+
+if [ "$mismatches" = 0 ] && [ "$disagreements" = 0 ] && [ "$demo_fail" = 0 ] && [ "$drift_fail" = 0 ]; then
+  echo "NATIVE_AUTHORITATIVE_GATE: PASS (verdict-equivalent on $n files; native alone proves+rejects the int fixtures with z3 hidden; fragment gate fails closed on an unproven op; allow-list ↔ Lean proofs in sync)"
   exit 0
 fi
 echo "NATIVE_AUTHORITATIVE_GATE: FAIL"

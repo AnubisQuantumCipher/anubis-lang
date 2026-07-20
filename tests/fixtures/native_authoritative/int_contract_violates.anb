@@ -13,5 +13,8 @@ pub fn bad_gain(x: u32, y: u32) -> u32
 }
 
 fn main() {
-    print(bad_gain(1, 2));
+    // No concrete call: the reject this fixture demonstrates is bad_gain's own false `ensures`, which
+    // native DISPROVES z3-free (counterexample x=1000,y=0 over {bvadd, comparators} — all proven). A
+    // literal-arg call would add a `bvand` coercion check that defers, muddying the demo.
+    print(0);
 }

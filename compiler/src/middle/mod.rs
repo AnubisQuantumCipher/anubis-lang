@@ -6683,7 +6683,7 @@ fn assumptions_satisfiable(obl: &SolverObligation) -> Option<bool> {
     // is trustworthy; still, while z3 is present we cross-check, and a disagreement fails CLOSED by
     // reporting the premises as vacuous (`Some(false)` flips the obligation to FAIL — reject).
     if native_authoritative() {
-        if let Some(nat) = anubis_solver::native_check_sat(&smt) {
+        if let Some(nat) = anubis_solver::native_check_sat_authoritative(&smt) {
             if let Some(z) = z3_spawn_first_line(&smt) {
                 let zb = match z.as_str() {
                     "sat" => Some(true),
@@ -6723,15 +6723,19 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
         let _ = std::fs::write(path, &smt);
     }
     // Phase-7 z3-authoritative flip (opt-in): the native QF_BV solver decides the PRIMARY obligation
-    // when it can. UNSAT (proven) is the trust-critical direction — it is backed by the machine-
-    // checked bit-blaster (BitBlast.lean: adder + all 8 comparators), the CDCL engine's
-    // sound-by-construction UNSAT (level-0 refutation only), and the standing differential/corpus
-    // gates. SAT (counterexample) is the reject direction and its model is re-verified by the
-    // solver's OWN independent evaluator before it is ever returned (the native replay). While z3 is
-    // on PATH every native verdict is additionally cross-checked and a disagreement fails CLOSED.
-    // Native declines (float/string/array obligations, over-budget) fall through to z3 unchanged.
+    // when it can — but ONLY over the PROOF-BACKED FRAGMENT. `native_check_sat_model_authoritative`
+    // applies `fragment::is_proven_authoritative`, so a native verdict is returned only when EVERY op
+    // has a machine-checked bit-blast in BitBlast.lean (adder; const-mul; const+barrel shl/lshr; not,
+    // concat, extract, zero_extend; all eight comparators via ult/slt/ule/sle_correct; equality via
+    // eqBits_correct). Unproven ops (Sub/Neg/bitwise/Ashr/SignExtend/div-rem/Ite/var×var-Mul) DEFER to
+    // z3. So UNSAT (proven) — the trust-critical direction, especially in the z3-absent window where it
+    // is uncross-checked — rests only on a proven blast plus the CDCL engine's sound-by-construction
+    // UNSAT (level-0 refutation). SAT (counterexample) is the reject direction and its model is
+    // re-verified by the solver's OWN independent evaluator before return (the native replay). While z3
+    // is on PATH every native verdict is additionally cross-checked and a disagreement fails CLOSED.
+    // Native declines (out-of-fragment, float/string/array, over-budget) fall through to z3 unchanged.
     if native_authoritative() {
-        match anubis_solver::native_check_sat_model(&smt) {
+        match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
                 if let Some(z) = z3_spawn_first_line(&smt) {
                     if z == "sat" {
@@ -7016,7 +7020,7 @@ fn z3_spawn_first_line(smt: &str) -> Option<String> {
 /// declines, or in the default mode, z3 answers as before (with the shadow comparison when enabled).
 fn z3_check_sat_raw(smt: &str) -> Option<String> {
     if native_authoritative() {
-        if let Some(nat) = anubis_solver::native_check_sat(smt) {
+        if let Some(nat) = anubis_solver::native_check_sat_authoritative(smt) {
             let nat_str = if nat { "sat" } else { "unsat" };
             if let Some(z) = z3_spawn_first_line(smt) {
                 if (z == "sat" || z == "unsat") && z != nat_str {
