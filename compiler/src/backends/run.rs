@@ -2494,6 +2494,13 @@ fn is_non_run_builtin(callee: &str) -> bool {
             | "system"
             | "memcpy"
             | "sql"
+            // `http_get`/`http_post` are checker-recognized network egress with NO runtime lowering
+            // (only raw `send`/`connect` have `anubis_net_*` helpers), exactly like `shell`/`exec` —
+            // so the unknown-call gate accepts them, they carry the `net.send` effect + the trifecta
+            // leg-3 + the `is_egress_sink` value-flow, and `run` refuses them as unsupported native
+            // lowering. Executing an http egress is a documented later (runtime-networking) concern.
+            | "http_get"
+            | "http_post"
     )
 }
 

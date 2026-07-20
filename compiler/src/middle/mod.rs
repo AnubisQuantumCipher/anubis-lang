@@ -2014,9 +2014,9 @@ fn analyze_function(
     // the qualifier — see `scan_legs`), but an unannotated `getenv`/`env` value is deliberately NOT
     // auto-secreted (env is untrusted INPUT, an integrity taint source — conflating it with secret
     // OUTPUT would false-positive on non-secret config egressed to an egress-only sink); leg 3 =
-    // net.send or a shell-out — `http_get`/`http_post` are NOT yet
-    // classified as a net.send effect (so an http constant-beacon exfil under-fires — a leg-3
-    // completeness residual alongside the deferred `sql` egress); the declassify hatch is coarse
+    // net.send or a shell-out — `http_get`/`http_post` are now classified as a net.send effect
+    // (`effects::builtin_effect_of` + the Safe-mode arm), so an http constant-beacon exfil IS
+    // leg-3 (the `sql` local-injection egress remains a deferred residual); the declassify hatch is coarse
     // (function-level, not tied to the specific outbound value — so on a constant beacon a
     // developer-attested `declassify` is the relief); leg-isolation only relieves when the
     // untrusted-input path and the read+egress path share NO transitive caller (a lone `main` calling
@@ -5449,7 +5449,12 @@ fn analyze_expr_effect(
                     });
                 }
             }
-            if callee.contains("network") || callee == "send" || callee == "connect" {
+            if callee.contains("network")
+                || callee == "send"
+                || callee == "connect"
+                || callee == "http_get"
+                || callee == "http_post"
+            {
                 effects.push("network".to_string());
                 // Safe: authorized when `uses(net.send)` (or net.connect) is declared.
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "net.send") {
@@ -13358,8 +13363,9 @@ const SECRET_SOURCE_NAME: &str = "secret_source";
 /// (`write_file`/`memcpy`) is out of scope for this slice (a named boundary — local persistence is a
 /// weaker leak than network/shell egress, and folding it in would newly reject more corpus shapes).
 /// This is a SUPERSET of the lethal-trifecta leg-3 egress: leg-3 reads `net.send`/`shell` off the
-/// effect row (so `http_get`/`http_post`, present here, are NOT yet leg-3 — a named leg-3 residual),
-/// whereas this value-flow egress set includes them.
+/// effect row. As of 2026-07-20 `http_get`/`http_post` are classified as a `net.send` effect
+/// (`effects::builtin_effect_of` + the Safe-mode arm), so they ARE leg-3 now; this value-flow egress
+/// set still additionally includes `print`/`println` (stdout), which are egress but not a net.send effect.
 /// A `declassify(value, policy, reason)` is WELL-FORMED — it RELEASES the confidentiality/integrity label
 /// — only when BOTH policy and reason are present AND non-empty (after trimming whitespace).
 /// `declassify(secret, "", "")` is NOT a release; it is a syntactic no-op that must keep the label

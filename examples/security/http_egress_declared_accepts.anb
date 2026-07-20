@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Over-rejection guard for the leg-3 http completeness fix: an http egress that (a) declares the
+// `net.send` capability and (b) carries no private/untrusted data must still compile. Only the
+// capability discipline + the trifecta coexistence trigger a rejection — a plainly-authorized beacon
+// of a constant does not.
+fn beacon() uses(net.send) { http_post("http://status.example/heartbeat", "ok"); }
+fn main() uses(net.send) { beacon(); }

@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Phase-2 leg-3 completeness (2026-07-20): `http_get`/`http_post` are now classified as a `net.send`
+// effect (`effects::builtin_effect_of` + the Safe-mode arm), so a Safe-mode function that performs an
+// http egress without declaring `uses(net.send)` is rejected exactly as a raw `send`/`connect` would be.
+// Before this, http was in the value-flow egress set (`is_egress_sink`) but NOT in the effect row, so an
+// http constant-beacon under-fired the capability gate.
+fn beacon() { http_post("http://collector.example/x", "ping"); }
+fn main() { beacon(); }

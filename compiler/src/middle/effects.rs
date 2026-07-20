@@ -54,7 +54,12 @@ pub(crate) fn builtin_effect_of(callee: &str) -> Option<&'static str> {
     if callee == "write_file" || callee == "write" || callee == "append_file" {
         return Some("fs.write");
     }
-    if callee.contains("network") || callee == "send" || callee == "connect" {
+    if callee.contains("network")
+        || callee == "send"
+        || callee == "connect"
+        || callee == "http_get"
+        || callee == "http_post"
+    {
         return Some("net.send");
     }
     if matches!(callee, "time" | "time_now" | "now") {
@@ -487,7 +492,7 @@ mod tests {
         // Pins the mirror against the exact name table of the inline arms in `analyze_stmts`
         // (`middle/mod.rs` Expr::Call handling). If an inline arm gains/loses a name, this table
         // must be updated in the same change — that is the point.
-        let table: [(&str, Option<&str>); 20] = [
+        let table: [(&str, Option<&str>); 22] = [
             ("shell", Some("shell")),
             ("exec", Some("shell")),
             ("system", Some("shell")),
@@ -500,6 +505,8 @@ mod tests {
             ("send", Some("net.send")),
             ("connect", Some("net.send")),
             ("network_send", Some("net.send")),
+            ("http_get", Some("net.send")),
+            ("http_post", Some("net.send")),
             ("time", Some("time.now")),
             ("time_now", Some("time.now")),
             ("now", Some("time.now")),
