@@ -6383,6 +6383,30 @@ fn walk_block_effects(
             }
             Stmt::ExprStmt(e) => analyze_expr_effect(e, mode, scope, effects, ctx),
             Stmt::If { cond, then, else_ } => {
+                // Implicit-flow WARNING inside descended closure bodies (mirrors the
+                // analyze_stmts Stmt::If handler at L4651 — that path only fires for
+                // top-level function bodies; this path fires for lambda bodies reached
+                // via the #65 HOF descent / #47 var-bound closure descent).
+                if mode == Mode::Safe
+                    && expr_secret_source_m(cond, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some()
+                {
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(then, &mut assigned);
+                    if let Some(eb) = else_ {
+                        collect_assigned_roots(eb, &mut assigned);
+                    }
+                    for v in &assigned {
+                        if !scope.get(v.as_str()).map(|b| b.secret).unwrap_or(false) {
+                            ctx.warnings.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_IMPLICIT_FLOW_WARNING".into()),
+                                message: format!(
+                                    "implicit information flow: `{v}` is assigned inside a branch guarded by a secret condition. secret<T> tracks EXPLICIT data flow only, so a value conditioned on a secret can encode secret bits — if `{v}` is later observed (print/send), it leaks (the binary-extraction attack). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
+                                ),
+                                span: None,
+                            });
+                        }
+                    }
+                }
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 let snap = scope.clone();
                 walk_block_effects(then, None, mode, scope, effects, ctx);
