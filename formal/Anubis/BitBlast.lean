@@ -387,3 +387,90 @@ theorem mulConst_correct (x : List Bool) (c : Nat) :
     bitsToNat (mulConst x c) = bitsToNat x * c % 2 ^ x.length := by
   unfold mulConst
   rw [(mulConst_aux x c x.length).2, Nat.mul_mod, Nat.mod_mod, ← Nat.mul_mod]
+
+/-! ### Variable (barrel) shift — left
+
+`blast.rs::var_shift(_, _, Left)` is a log-depth barrel shifter: for each bit `k` of the amount, it
+conditionally shifts the running value left by `2^k` positions (`cur := mux(bit k, cur << 2^k, cur)`).
+Since the per-bit mux uses the SAME selector `bit k` for every lane, the layer is exactly
+`if bit k then (cur << 2^k) else cur`, and `cur << 2^k` is the already-proven `shlConst`. We mechanize
+`⟦barrelShl a b⟧ = (⟦a⟧ · 2^⟦b⟧) mod 2^w` (SMT `bvshl`, incl. "amount ≥ width ⇒ 0" since ⟦b⟧ can reach
+that and the layered shifts flush every bit). -/
+
+/-- Appending one high bit `x`: `⟦l ++ [x]⟧ = ⟦l⟧ + 2^|l|·x`. -/
+theorem bitsToNat_append (l : List Bool) (x : Bool) :
+    bitsToNat (l ++ [x]) = bitsToNat l + 2 ^ l.length * x.toNat := by
+  induction l with
+  | nil => simp [bitsToNat, Nat.pow_zero, Nat.one_mul]
+  | cons b bs ih =>
+      have hp : (2 : Nat) ^ (bs.length + 1) = 2 * 2 ^ bs.length := by rw [Nat.pow_succ]; omega
+      simp only [List.cons_append, bitsToNat, List.length_cons, ih, hp]
+      rw [Nat.mul_add, ← Nat.mul_assoc]
+      omega
+
+/-- Low-bit peel for `take`: `⟦b.take (m+1)⟧ = ⟦b.take m⟧ + 2^m · (bit m of b)`. Holds unconditionally:
+    past the end `getD` is `false` (adds 0) and `take` saturates (`b.take (m+1) = b.take m = b`). -/
+theorem bitsToNat_take_succ (b : List Bool) (m : Nat) :
+    bitsToNat (b.take (m + 1)) = bitsToNat (b.take m) + 2 ^ m * (b.getD m false).toNat := by
+  induction b generalizing m with
+  | nil => simp [bitsToNat, List.getD]
+  | cons c cs ih =>
+      cases m with
+      | zero => simp [bitsToNat, List.getD]
+      | succ m =>
+          have hp : (2 : Nat) ^ (m + 1) = 2 * 2 ^ m := by rw [Nat.pow_succ]; omega
+          simp only [List.take_succ_cons, bitsToNat, List.getD_cons_succ, ih m, hp]
+          rw [Nat.mul_add, ← Nat.mul_assoc]
+          omega
+
+/-- Left barrel shift, as `blast.rs::var_shift(_, _, Left)`: fold over amount bits `k`, conditionally
+    shifting the running value left by `2^k` (the constant shift `shlConst`) iff bit `k` of `b` is set. -/
+def barrelShl (a b : List Bool) : List Bool :=
+  (List.range b.length).foldl
+    (fun cur k => if b.getD k false = true then shlConst cur (2 ^ k) else cur) a
+
+/-- `(A % n) * B % n = A * B % n` — the running truncation may be pushed through a multiply. -/
+private theorem mul_mod_left_eq (A B n : Nat) : A % n * B % n = A * B % n := by
+  rw [Nat.mul_mod (A % n) B n, Nat.mod_mod, ← Nat.mul_mod]
+
+/-- Accumulation invariant: after folding amount bits `0 .. m-1`, the running value is
+    `(⟦a⟧ · 2^⟦b.take m⟧) mod 2^w` — `a` left-shifted by the low `m` bits of the amount. -/
+theorem barrelShl_aux (a b : List Bool) : ∀ m,
+    ((List.range m).foldl
+        (fun cur k => if b.getD k false = true then shlConst cur (2 ^ k) else cur) a).length
+      = a.length
+    ∧ bitsToNat ((List.range m).foldl
+        (fun cur k => if b.getD k false = true then shlConst cur (2 ^ k) else cur) a)
+      = bitsToNat a * 2 ^ bitsToNat (b.take m) % 2 ^ a.length := by
+  intro m
+  induction m with
+  | zero =>
+      refine ⟨by simp, ?_⟩
+      have hlt := bitsToNat_lt a
+      simp only [List.range_zero, List.foldl_nil, List.take_zero, bitsToNat, Nat.pow_zero,
+        Nat.mul_one]
+      exact (Nat.mod_eq_of_lt hlt).symm
+  | succ m ih =>
+      obtain ⟨hlen, hval⟩ := ih
+      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+      revert hlen hval
+      generalize (List.range m).foldl
+        (fun cur k => if b.getD k false = true then shlConst cur (2 ^ k) else cur) a = cur
+      intro hlen hval
+      by_cases hb : b.getD m false = true
+      · rw [if_pos hb]
+        refine ⟨by rw [shlConst_length]; exact hlen, ?_⟩
+        rw [shlConst_correct, hlen, hval, bitsToNat_take_succ, hb, Bool.toNat_true, Nat.mul_one,
+          Nat.pow_add, ← Nat.mul_assoc, mul_mod_left_eq]
+      · rw [if_neg hb]
+        refine ⟨hlen, ?_⟩
+        simp only [Bool.not_eq_true] at hb
+        rw [hval, bitsToNat_take_succ, hb, Bool.toNat_false, Nat.mul_zero, Nat.add_zero]
+
+/-- **Left barrel-shift correctness (fully mechanized).** `⟦barrelShl a b⟧ = (⟦a⟧ · 2^⟦b⟧) mod 2^w` —
+    SMT `bvshl` by a variable amount, matching the runtime `wrapping_shl` (incl. "amount ≥ width ⇒ 0",
+    since `⟦b⟧` can reach `w` and the layered shifts flush every bit). From the invariant at `m = |b|`. -/
+theorem barrelShl_correct (a b : List Bool) :
+    bitsToNat (barrelShl a b) = bitsToNat a * 2 ^ bitsToNat b % 2 ^ a.length := by
+  unfold barrelShl
+  rw [(barrelShl_aux a b b.length).2, List.take_length]
