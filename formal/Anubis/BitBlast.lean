@@ -248,6 +248,48 @@ theorem slt_correct (a b : List Bool) (hlen : a.length = b.length) (hne : a ≠ 
       flipMsb_val a hne, flipMsb_val b hbne, hlen]
   omega
 
+/-! ### Derived comparators (`≤` both signedness, and by operand-swap `>`/`≥`)
+
+`blast.rs::cmp` computes the two remaining primitives as the NEGATION of the strict compare on SWAPPED
+operands: `ule a b = !(ult b a)` and `sle a b = !(slt b a)` — the textbook `a ≤ b ≡ ¬(b < a)`. The four
+`>`/`≥` predicates the blaster emits are then just `ult`/`ule`/`slt`/`sle` applied to swapped operands
+(`blast_pred`: `Ugt a b → cmp b a Ult`, `Uge a b → cmp b a Ule`, `Sgt/Sge` likewise). So proving these
+two theorems, on top of `ult_correct`/`slt_correct`, mechanizes ALL EIGHT comparators the native lane
+decides — closing the gap the earlier prose ("inherit this") merely asserted. The proof-backed FRAGMENT
+GATE (`solver/src/fragment.rs`) admits a comparator as native-authoritative only because of these. -/
+
+/-- Unsigned `≤` exactly as `blast.rs::cmp Ule`: negate the strict compare on swapped operands. -/
+def ule (a b : List Bool) : Bool := !(ult b a)
+
+/-- Signed `≤` exactly as `blast.rs::cmp Sle`: negate the signed strict compare on swapped operands. -/
+def sle (a b : List Bool) : Bool := !(slt b a)
+
+/-- **Unsigned `≤` correctness.** `ule a b = true ↔ ⟦a⟧ ≤ ⟦b⟧`. Direct corollary of `ult_correct`
+    (on `b, a`) and `Nat`-order totality (`¬(⟦b⟧ < ⟦a⟧) ↔ ⟦a⟧ ≤ ⟦b⟧`). -/
+theorem ule_correct (a b : List Bool) (h : a.length = b.length) :
+    (ule a b = true) ↔ (bitsToNat a ≤ bitsToNat b) := by
+  have key := ult_correct b a h.symm
+  have hb : (ule a b = true) ↔ ¬ (ult b a = true) := by
+    unfold ule; cases ult b a <;> simp
+  rw [hb, key]
+  omega
+
+/-- **Signed `≤` correctness.** `sle a b = true ↔ toIntW a ≤ toIntW b`. Direct corollary of
+    `slt_correct` (on `b, a`) and `Int`-order totality. Needs the same width/nonempty side conditions
+    as `slt_correct`; `b ≠ []` follows from `a ≠ []` and equal lengths. -/
+theorem sle_correct (a b : List Bool) (hlen : a.length = b.length) (hne : a ≠ []) :
+    (sle a b = true) ↔ (toIntW a ≤ toIntW b) := by
+  have hbne : b ≠ [] := by
+    intro h; subst h; simp only [List.length_nil] at hlen
+    cases a with
+    | nil => exact hne rfl
+    | cons _ _ => simp at hlen
+  have key := slt_correct b a hlen.symm hbne
+  have hb : (sle a b = true) ↔ ¬ (slt b a = true) := by
+    unfold sle; cases slt b a <;> simp
+  rw [hb, key]
+  omega
+
 /-! ### Constant left shift
 
 `blast.rs::const_shift(_, Const k, Left)` wires `out[i] = if i ≥ k then a[i−k] else 0`, capped to the
