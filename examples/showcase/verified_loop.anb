@@ -1,0 +1,19 @@
+// ...and the same solver proves your LOOPS. Write an invariant, and Anubis checks
+// that it holds on entry, is preserved by every iteration, and — with the loop
+// guard false at exit — establishes your postcondition. No runtime cost; a proof.
+//
+//   $ anubis check examples/showcase/verified_loop.anb   →   check passed
+//
+// count_down proves it always returns 0. Flip the invariant to something false and
+// the solver rejects with a counterexample — try `invariant(x >= 5)`.
+fn count_down(n: i64) -> i64
+    requires(n >= 0)
+    ensures(result == 0)
+{
+    let mut x = n;
+    while x > 0 invariant(x >= 0) {
+        x = x - 1;
+    }
+    return x;
+}
+fn main() {}
