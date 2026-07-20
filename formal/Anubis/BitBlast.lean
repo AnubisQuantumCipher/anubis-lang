@@ -297,3 +297,93 @@ theorem shlConst_correct (a : List Bool) (k : Nat) :
     bitsToNat (shlConst a k) = (bitsToNat a * 2 ^ k) % 2 ^ a.length := by
   unfold shlConst
   rw [bitsToNat_take, bitsToNat_replicate_false_append, Nat.mul_comm]
+
+/-! ### Constant multiply
+
+`blast.rs::const_mul` computes `x * c` for a CONSTANT `c` as `Σ_{i : bit i of c set} (x << i)`, accumulated
+LSB-first with the ripple adder (so mod `2^w`). We mechanize `⟦mulConst x c⟧ = (⟦x⟧ · c) mod 2^w`, reusing
+`shlConst_correct` (the partial products) and `rippleCarry_spec` (the adder). Variable × variable is
+deferred to z3, so it needs no proof. -/
+
+/-- The bit-blaster's `add` (LSB-first, carry-in 0) as a value function: `(rippleCarry a b false).1`. -/
+def addBits (a b : List Bool) : List Bool := (rippleCarry a b false).1
+
+/-- **Adder computes wrapping addition.** Corollary of `rippleCarry_spec`: the low `w` bits are
+    `(⟦a⟧ + ⟦b⟧) mod 2^w` (the discarded carry-out is the overflow). -/
+theorem addBits_correct (a b : List Bool) (h : a.length = b.length) :
+    bitsToNat (addBits a b) = (bitsToNat a + bitsToNat b) % 2 ^ a.length := by
+  have hspec := rippleCarry_spec a b false h
+  have hlt := bitsToNat_lt (rippleCarry a b false).1
+  rw [rippleCarry_length a b false h] at hlt
+  simp only [Bool.toNat_false, Nat.add_zero] at hspec
+  unfold addBits
+  rw [← hspec, Nat.add_mul_mod_self_left, Nat.mod_eq_of_lt hlt]
+
+/-- **Low-bit peel for `mod 2^(k+1)`.** `c mod 2^(k+1) = c mod 2^k + 2^k · (bit k of c)`, where bit k is
+    `(c / 2^k) mod 2` — the `(c >> i) & 1` the multiplier tests. -/
+theorem mod_two_pow_succ (c k : Nat) :
+    c % 2 ^ (k + 1) = c % 2 ^ k + 2 ^ k * (c / 2 ^ k % 2) := by
+  rw [Nat.pow_succ, Nat.mod_mul]
+
+/-- Zero bits have value zero. -/
+theorem bitsToNat_replicate_false (k : Nat) : bitsToNat (List.replicate k false) = 0 := by
+  induction k with
+  | zero => simp [bitsToNat]
+  | succ k ih => simp [List.replicate_succ, bitsToNat, ih]
+
+/-- The constant left shift preserves the operand width. -/
+theorem shlConst_length (x : List Bool) (k : Nat) : (shlConst x k).length = x.length := by
+  unfold shlConst
+  rw [List.length_take, List.length_append, List.length_replicate]
+  omega
+
+/-- One fold step of the constant multiplier: add the partial product `x << i` iff bit `i` of `c` is set
+    (`(c / 2^i) mod 2 = 1`, i.e. the `(c >> i) & 1` the blaster tests). -/
+def mulStep (x : List Bool) (c : Nat) (acc : List Bool) (i : Nat) : List Bool :=
+  if c / 2 ^ i % 2 = 1 then addBits acc (shlConst x i) else acc
+
+/-- Constant multiply, exactly as `blast.rs::const_mul`: fold the partial products over the bit indices
+    `0 .. w-1`, starting from the `w`-bit zero. -/
+def mulConst (x : List Bool) (c : Nat) : List Bool :=
+  (List.range x.length).foldl (mulStep x c) (List.replicate x.length false)
+
+/-- Accumulation invariant: after folding bits `0 .. n-1`, the accumulator has width `w` and value
+    `(⟦x⟧ · (c mod 2^n)) mod 2^w`. -/
+theorem mulConst_aux (x : List Bool) (c : Nat) : ∀ n,
+    ((List.range n).foldl (mulStep x c) (List.replicate x.length false)).length = x.length
+    ∧ bitsToNat ((List.range n).foldl (mulStep x c) (List.replicate x.length false))
+        = bitsToNat x * (c % 2 ^ n) % 2 ^ x.length := by
+  intro n
+  induction n with
+  | zero =>
+      refine ⟨?_, ?_⟩
+      · simp [List.range_zero, List.foldl_nil, List.length_replicate]
+      · simp [List.range_zero, List.foldl_nil, bitsToNat_replicate_false, Nat.mod_one,
+          Nat.mul_zero, Nat.zero_mod]
+  | succ n ih =>
+      obtain ⟨hlen, hval⟩ := ih
+      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+      have hsl : (shlConst x n).length = x.length := shlConst_length x n
+      revert hlen hval
+      generalize (List.range n).foldl (mulStep x c) (List.replicate x.length false) = acc
+      intro hlen hval
+      unfold mulStep
+      by_cases hc : c / 2 ^ n % 2 = 1
+      · rw [if_pos hc]
+        refine ⟨?_, ?_⟩
+        · rw [addBits, rippleCarry_length acc (shlConst x n) false (by rw [hlen, hsl])]
+          exact hlen
+        · rw [addBits_correct acc (shlConst x n) (by rw [hlen, hsl]), hlen, hval, shlConst_correct,
+            ← Nat.add_mod, ← Nat.mul_add, mod_two_pow_succ, hc, Nat.mul_one]
+      · rw [if_neg hc]
+        refine ⟨hlen, ?_⟩
+        have h0 : c / 2 ^ n % 2 = 0 := by omega
+        rw [hval, mod_two_pow_succ, h0, Nat.mul_zero, Nat.add_zero]
+
+/-- **Constant-multiply correctness (fully mechanized).** `⟦mulConst x c⟧ = (⟦x⟧ · c) mod 2^w` — SMT
+    `bvmul` by a constant, matching the runtime `wrapping_mul`. From the accumulation invariant at
+    `n = w` (`c mod 2^w ≡ c` under the outer mod). -/
+theorem mulConst_correct (x : List Bool) (c : Nat) :
+    bitsToNat (mulConst x c) = bitsToNat x * c % 2 ^ x.length := by
+  unfold mulConst
+  rw [(mulConst_aux x c x.length).2, Nat.mul_mod, Nat.mod_mod, ← Nat.mul_mod]
