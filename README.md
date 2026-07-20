@@ -2,6 +2,34 @@
 
 **Anubis** is being built as an evidence-native dual-use systems language for professional bug bounty hunters (Sicarii) and builders of sovereign, high-assurance systems. The core bet: **a green `anubis check` must never certify a contract the runtime `anubis run` violates** — soundness is the product, and every claim below is checkable, not just asserted.
 
+## The solver finds the bug you didn't know you had
+
+Every language has contracts. What Anubis does that a type system cannot: it hands you the **exact program state** that breaks your invariant — before you ship.
+
+A ring buffer's slots-in-use is `tail - head`. Correct in mathematics; a bug in fixed-width code — when the buffer has wrapped and `tail < head`, the count goes negative. So you say a count is never negative:
+
+```rust
+fn ring_used(head: u32, tail: u32) -> u32
+    ensures(result >= 0)
+{
+    return tail - head;
+}
+```
+
+`anubis check` doesn't shrug and say "unproven". It **disproves** the claim with a counterexample — the wraparound state your tests never hit:
+
+```
+$ anubis check examples/showcase/ring_buffer_underflow.anb
+ANUBIS_ASSERTION_UNPROVEN: ensures:(bvsge (bvsub anb_tail anb_head) 0)
+  counterexample:
+    anb_head = 0x00000000c0000000     # 3_221_225_472
+    anb_tail = 0x0000000000000000     # 0   →  tail - head is negative
+```
+
+Fix it — subtract only where it can't underflow — and the **same solver proves the fix correct** (`ring_used_fixed` in that file: `ensures(result >= 0)` discharged on both branches). That counterexample is worth more than a thousand type annotations. Run it yourself: [`examples/showcase/ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb).
+
+> Honest boundary: Anubis's `u32` is a bounded 64-bit integer with **signed** arithmetic, so the failure it proves is "the count goes below zero", not "wraps to 4 billion" — the bug is the same, stated in the language's real semantics. Nothing here is dramatized past what the solver actually decides.
+
 ## Where Anubis is — honest phase status
 
 Anubis follows an 11-phase maturity arc; the canonical source of truth is

@@ -1,0 +1,50 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  THE HERO DEMO — the solver finds the bug you didn't know you had.
+//
+//  Every language has contracts. What Anubis does that a type system cannot: it
+//  hands you the EXACT program state that breaks your invariant, before you ship.
+//
+//  A ring buffer tracks a read cursor `head` and a write cursor `tail`. The number
+//  of slots in use is `tail - head`. That is correct in mathematics. It is a bug in
+//  fixed-width code: when the buffer has wrapped and `tail < head`, the subtraction
+//  goes BELOW ZERO — an underflow. A count is never negative, so we say so:
+//
+//      ensures(result >= 0)
+//
+//  `anubis check` does not shrug and say "unproven". It DISPROVES the claim with a
+//  concrete counterexample — a `head`/`tail` pair that drives the count negative:
+//
+//      $ anubis check examples/showcase/ring_buffer_underflow.anb
+//      ANUBIS_ASSERTION_UNPROVEN: ensures:(bvsge (bvsub anb_tail anb_head) 0)
+//        counterexample:
+//          anb_head = 0x00000000c0000000
+//          anb_tail = 0x0000000000000000
+//
+//  head = 3_221_225_472, tail = 0  →  tail - head is negative. There it is: the
+//  wraparound state your tests never hit. That counterexample is worth more than a
+//  thousand type annotations.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// BUGGY: `tail - head` underflows below zero when the buffer has wrapped.
+fn ring_used(head: u32, tail: u32) -> u32
+    ensures(result >= 0)
+{
+    return tail - head;
+}
+
+// FIXED: subtract only on the branch where it cannot underflow; the wrapped branch
+// adds a full lap first. The SAME solver PROVES `result >= 0` on both paths — the
+// counterexample is gone. (Uses path-sensitivity: each `return` carries its guard.)
+fn ring_used_fixed(head: u32, tail: u32, capacity: u32) -> u32
+    requires(capacity > 0)
+    requires(head < capacity)
+    requires(tail < capacity)
+    ensures(result >= 0)
+{
+    if tail >= head {
+        return tail - head;
+    }
+    return capacity - head + tail;
+}
+
+fn main() {}
