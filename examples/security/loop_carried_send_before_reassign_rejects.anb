@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (convergence hunt wf_095bd48b): the ENFORCING pass walks a loop body ONCE, so a sink that
+// reads a var BEFORE a same-body reassignment misses the value carried on the next iteration
+// (`while { send(a); a=b }` sends the secret on iteration 2). Fixed: seed_loop_carried_labels runs a
+// monotone label fixpoint (walk_block_taint/secret) before the body sink check.
+fn main() uses(net.send) {
+    let mut a = 0;
+    let b = secret_source("k");
+    let mut i = 0;
+    while i < 2 { send("h", 80, a); a = b; i = i + 1; }
+}

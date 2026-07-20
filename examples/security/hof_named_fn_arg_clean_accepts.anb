@@ -1,0 +1,4 @@
+// EXPECT: PASS
+// Precision guard: a HOF over a clean list with a named egress fn must still compile.
+fn snd(x) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { each([1, 2], snd); }

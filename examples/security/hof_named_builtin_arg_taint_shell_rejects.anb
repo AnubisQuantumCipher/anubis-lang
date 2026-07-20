@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (wf_095bd48b): `each([input()], shell)` — a builtin sink passed as the HOF closure — was
+// command injection accepted. The named-fn descent now flows the element into the builtin sink.
+fn main() uses(shell, io.read) { each([input()], shell); }

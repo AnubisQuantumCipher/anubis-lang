@@ -4745,6 +4745,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
+                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -4850,6 +4851,7 @@ fn analyze_stmts(
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
                 havoc_loop_written(ctx, assumptions, body);
+                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -4879,6 +4881,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
+                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -5159,6 +5162,7 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 invalidate_binding_facts(ctx, assumptions, var);
                 havoc_loop_written(ctx, assumptions, body);
+                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -5655,6 +5659,23 @@ fn analyze_expr_effect(
             // real builtin (not a local binding and not a user fn — which is analyzed on its own).
             if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
                 for &i in effects::higher_order_closure_args(callee) {
+                    // The closure param(s) stand for the COLLECTION ELEMENT the builtin binds to them
+                    // (`each([input()], |x| shell(x))` runs with x = the tainted element). Compute the
+                    // element's label once = union of the taint/secret of every NON-closure argument (the
+                    // data/collection/init operands) — over-approximation, fail-closed.
+                    let mut elem_taint: Option<String> = None;
+                    let mut elem_secret = false;
+                    for (j, a) in args.iter().enumerate() {
+                        if j == i {
+                            continue;
+                        }
+                        if elem_taint.is_none() {
+                            elem_taint = expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
+                        }
+                        if expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some() {
+                            elem_secret = true;
+                        }
+                    }
                     // Task #47: the closure arg is either an INLINE lambda (`each([1], |x| ...)`, the #65
                     // case) or a VAR bound to a lambda (`let g = |x| ...; each([1], g)`) — resolve both so a
                     // var-bound closure's body is enforced too (it otherwise laundered its taint/effect).
@@ -5664,26 +5685,6 @@ fn analyze_expr_effect(
                         _ => None,
                     };
                     if let Some(Expr::Lambda { params, body }) = resolved {
-                        // The closure param stands for the COLLECTION ELEMENT the builtin binds to it
-                        // (`each([input()], |x| shell(x))` runs with x = the tainted element). Carry the
-                        // element's label onto the param: union the taint/secret of every NON-closure
-                        // argument (the data/collection/init operands) — over-approximation, fail-closed
-                        // (an extra-labelled param is at worst an over-reject, never a missed leak). Without
-                        // this the param was fresh-UNLABELLED and the element's secret/taint was laundered
-                        // through the HOF (soundness hunt `wf_5b2a1bcc`).
-                        let mut elem_taint: Option<String> = None;
-                        let mut elem_secret = false;
-                        for (j, a) in args.iter().enumerate() {
-                            if j == i {
-                                continue;
-                            }
-                            if elem_taint.is_none() {
-                                elem_taint = expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
-                            }
-                            if expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some() {
-                                elem_secret = true;
-                            }
-                        }
                         let mut local = scope.clone();
                         for p in params {
                             local.insert(
@@ -5692,6 +5693,58 @@ fn analyze_expr_effect(
                             );
                         }
                         analyze_expr_effect(body, mode, &local, effects, ctx);
+                    } else if let Some(Expr::Var(fname)) = args.get(i) {
+                        // The closure arg is a NAMED function / builtin (`each(xs, shell)`, `apply(store, t)`,
+                        // `map(xs, snd)`) — the builtin applies it to each element, so the ELEMENT flows to
+                        // `fname`'s parameter. This is the named-fn analog of the lambda descent (convergence
+                        // hunt `wf_095bd48b`: `each([input()], shell)` was command injection accepted). Only
+                        // fires when `fname` is NOT a local binding (a real named fn / builtin — a local
+                        // closure var was resolved above). Fail-closed over-approximation: if `fname` sinks or
+                        // egresses ANY parameter and the element is labelled, the element may reach it.
+                        if !scope.contains_key(fname.as_str()) {
+                            if mode == Mode::Safe && is_egress_sink(fname) && elem_secret {
+                                ctx.emit(
+                                    SemanticDiagnostic {
+                                        code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
+                                        message: format!("safe mode confidentiality violation: a secret element flows through `{callee}` into egress `{fname}` without declassify"),
+                                        span: None,
+                                    },
+                                    false,
+                                );
+                            }
+                            if mode == Mode::Safe && is_sink(fname) {
+                                if let Some(src) = &elem_taint {
+                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                        code: Some("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY".into()),
+                                        message: format!("safe mode tainted flow from `{src}` through `{callee}` into sink `{fname}` without declassify"),
+                                        span: None,
+                                    });
+                                }
+                            }
+                            if mode == Mode::Safe && elem_secret
+                                && ctx.param_egress.get(fname).is_some_and(|s| !s.is_empty())
+                            {
+                                ctx.emit(
+                                    SemanticDiagnostic {
+                                        code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                                        message: format!("safe mode confidentiality violation: a secret element flows through `{callee}` into `{fname}`, which reaches an egress without declassify"),
+                                        span: None,
+                                    },
+                                    false,
+                                );
+                            }
+                            if mode == Mode::Safe
+                                && ctx.param_sinks.get(fname).is_some_and(|s| !s.is_empty())
+                            {
+                                if let Some(src) = &elem_taint {
+                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                        code: Some("ANUBIS_INTERPROC_SINK".into()),
+                                        message: format!("safe mode tainted flow from `{src}` through `{callee}` into `{fname}`, which reaches a sink without declassify"),
+                                        span: None,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -12588,6 +12641,54 @@ fn declassify_source(
 /// assign, `match`/`if let`/`@research`/`@exploit` used as a STATEMENT, and cross-iteration loop carry
 /// stay named residuals — each SHARED with the enforcing pass, so ignoring them keeps parity (never
 /// stricter → no new false positive).
+/// Seed a loop's carried taint/secret labels into `scope` to a MONOTONE fixpoint BEFORE the enforcing body
+/// pass checks its sinks. The enforcing `analyze_stmts` walks a loop body once in straight-line order, so a
+/// sink that reads a variable BEFORE a same-body reassignment (`while { send(a); a=b; }`) or through a
+/// multi-hop carry (`{ a=b; b=c }`) never sees the value the reassignment carries on the NEXT iteration
+/// (convergence hunt `wf_095bd48b`). Run the label-only walkers (`walk_block_taint`/`_secret`) over the
+/// body repeatedly, OR-ing any newly-labelled variable into `scope` (labels only grow → converges), so the
+/// body pass sees every may-carried label. Fail-closed over-approximation (a var labelled on SOME iteration
+/// is treated as labelled throughout). Bounded by name count (max carry-chain length).
+fn seed_loop_carried_labels(
+    body: &[Stmt],
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+    secret_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_tainting_fns: &BTreeSet<String>,
+    method_secret_fns: &BTreeSet<String>,
+) {
+    let bound = scope.len() + 2;
+    for _ in 0..bound {
+        let mut c = scope.clone();
+        walk_block_taint(body, &mut c, tainting_fns, param_return_taint, method_tainting_fns);
+        walk_block_secret(body, &mut c, secret_fns, param_return_taint, method_secret_fns);
+        let mut changed = false;
+        let names: Vec<String> = c.keys().cloned().collect();
+        for n in names {
+            let (ct, cs, csrc) = c
+                .get(&n)
+                .map(|b| (b.info.tainted, b.secret, b.info.taint_source.clone()))
+                .unwrap_or((false, false, None));
+            if let Some(sb) = scope.get_mut(&n) {
+                if ct && !sb.info.tainted {
+                    sb.info.tainted = true;
+                    sb.info.taint_source = csrc;
+                    sb.info.declassified = false;
+                    changed = true;
+                }
+                if cs && !sb.secret {
+                    sb.secret = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 fn walk_block_taint(
     stmts: &[Stmt],
     local: &mut BTreeMap<String, ScopeBinding>,

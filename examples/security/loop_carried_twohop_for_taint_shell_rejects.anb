@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (wf_095bd48b): a two-hop loop-carry (a=b; b=c) reaches a=tainted only on iteration 2; the
+// single-pass enforcing walk missed it. seed_loop_carried_labels closes it for for-collection loops too.
+fn main() uses(shell, io.read) {
+    let mut a = "x";
+    let mut b = "y";
+    let c = input();
+    for x in [1, 2] { a = b; b = c; }
+    shell(a);
+}

@@ -1,0 +1,3 @@
+// EXPECT: PASS
+// Precision guard: a loop that reassigns a var to a CLEAN value before the sink must still compile.
+fn main() uses(net.send) { let mut a = 0; let mut i = 0; while i < 2 { send("h", 80, a); a = 5; i = i + 1; } }
