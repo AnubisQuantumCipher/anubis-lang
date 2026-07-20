@@ -8,6 +8,7 @@ import Anubis.PathCondition
 import Anubis.ArrayEncoding
 import Anubis.Capability
 import Anubis.CompareUnary
+import Anubis.DeclassifyWellFormed
 import Anubis.EffectSoundness
 import Anubis.IntSigned
 import Anubis.NonInterference
