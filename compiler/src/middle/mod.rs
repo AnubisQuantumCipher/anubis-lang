@@ -7449,6 +7449,18 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
                 _ => false,
             }
         }
+        // `-9223372036854775808` is i64::MIN — a valid i64, evaluated as such at runtime (verified:
+        // it is `< 0` and `+1 == -9223372036854775807`) — even though its magnitude 2^63 does NOT fit
+        // i64 on its own (standalone `9223372036854775808` runs as f64). The encoder emits it as
+        // `(bvneg (_ bv9223372036854775808 64))` = i64::MIN, which models exactly; without this arm the
+        // recursive `is_int_modelable` on the 2^63 magnitude wrongly reported the whole literal
+        // unmodelable, so an assert over i64::MIN was silently DROPPED (a value certified `!= itself`).
+        // Magnitudes STRICTLY above 2^63 stay unmodelable (genuinely f64 at runtime → fail-open).
+        Expr::Unary { op, expr }
+            if op == "-" && matches!(expr.as_ref(), Expr::Literal(l) if l == "9223372036854775808") =>
+        {
+            true
+        }
         // Unary negation (`-`) and bitwise NOT (`~`, i.e. `!v` on i64 = -v-1) model exactly.
         Expr::Unary { op, expr } => (op == "-" || op == "~") && is_int_modelable(expr, int_vars),
         // A cast is modelable only when it cannot change the i64 value. `x as u8`/`u16`/`u32` truncate

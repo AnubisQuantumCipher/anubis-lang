@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// Regression (hunt wf_7451545b): `-9223372036854775808` is i64::MIN — a valid i64, evaluated as such
+// at runtime (verified: it is `< 0` and `+ 1 == -9223372036854775807`). Its magnitude 2^63 does NOT
+// fit i64 on its own (standalone `9223372036854775808` runs as f64), which formerly made
+// `is_int_modelable` report the whole literal unmodelable, so this assert was SILENTLY DROPPED —
+// `check` certified `i64::MIN != i64::MIN` (a value certified `!=` itself) while `run` traps. The
+// encoder always emitted it correctly as `(bvneg (_ bv9223372036854775808 64))` = i64::MIN, so the fix
+// is purely in the modelability gate: the false assert is now MODELED and correctly REJECTED.
+pub fn imin_neq_itself() {
+    assert(-9223372036854775808 != -9223372036854775808);
+}
+
+fn main() {
+    imin_neq_itself();
+}
