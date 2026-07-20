@@ -8,10 +8,175 @@
 //! summary is re-derived and byte-compared on verify, and the source merkle covers the contract
 //! text), and is the prerequisite for cross-package call-site requires-discharge (follow-up).
 
-use crate::frontend::{parse_source, Item, Visibility};
+use crate::frontend::{parse_source, Expr, Item, Stmt, Visibility};
 use crate::package::merkle;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+pub const DECLASSIFY_AUDIT_FILENAME: &str = "declassify_audit.json";
+pub const DECLASSIFY_AUDIT_SCHEMA: &str = "anubis.declassify_audit.v1";
+
+/// One `declassify(value, policy, reason)` call site — the compliance-ready declassification log
+/// (operator directive 2026-07-20). An auditor can open the bundle and see EVERY place a developer
+/// deliberately released private data, the policy they cited, and the reason — GDPR/SOC2 material. A
+/// malformed (empty policy/reason) declassify is recorded with `well_formed: false` (it does NOT
+/// release the label; see `declassify_wellformed` in the checker).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeclassifyRecord {
+    pub function: String,
+    pub policy: String,
+    pub reason: String,
+    pub well_formed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeclassifyAudit {
+    pub schema: String,
+    pub package: String,
+    pub version: String,
+    pub source_merkle: String,
+    pub declassifications: Vec<DeclassifyRecord>,
+}
+
+/// Walk the sealed source for every `declassify` call, per enclosing function — the declassification
+/// audit trail. (Line precision needs an AST span on `Expr::Declassify`, a follow-up; policy/reason/
+/// function is the compliance-material core.)
+pub fn extract_declassify_audit(
+    package: &str,
+    version: &str,
+    source: &str,
+) -> Result<DeclassifyAudit, String> {
+    let source_merkle = merkle::sha256_hex(source.as_bytes());
+    let ast = parse_source(source)
+        .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: declassify audit parse failed: {e}"))?;
+    let mut records = Vec::new();
+    collect_declassify(&ast.items, &mut records);
+    Ok(DeclassifyAudit {
+        schema: DECLASSIFY_AUDIT_SCHEMA.into(),
+        package: package.to_string(),
+        version: version.to_string(),
+        source_merkle,
+        declassifications: records,
+    })
+}
+
+pub fn write_audit_to_evidence_dir(dir: &Path, audit: &DeclassifyAudit) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(audit).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(DECLASSIFY_AUDIT_FILENAME), json).map_err(|e| e.to_string())
+}
+
+fn collect_declassify(items: &[Item], out: &mut Vec<DeclassifyRecord>) {
+    for it in items {
+        match it {
+            Item::Fn { name, body, .. } => {
+                for s in body {
+                    walk_stmt_dcl(s, name, out);
+                }
+            }
+            Item::Module { items, .. } => collect_declassify(items, out),
+            _ => {}
+        }
+    }
+}
+
+fn walk_stmt_dcl(s: &Stmt, fname: &str, out: &mut Vec<DeclassifyRecord>) {
+    match s {
+        Stmt::Let { init, .. } => walk_expr_dcl(init, fname, out),
+        Stmt::LetPattern { init, .. } => walk_expr_dcl(init, fname, out),
+        Stmt::Assign { target, value } => {
+            walk_expr_dcl(target, fname, out);
+            walk_expr_dcl(value, fname, out);
+        }
+        Stmt::If { cond, then, else_ } => {
+            walk_expr_dcl(cond, fname, out);
+            then.iter().for_each(|s| walk_stmt_dcl(s, fname, out));
+            if let Some(e) = else_ {
+                e.iter().for_each(|s| walk_stmt_dcl(s, fname, out));
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            walk_expr_dcl(cond, fname, out);
+            body.iter().for_each(|s| walk_stmt_dcl(s, fname, out));
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            walk_expr_dcl(expr, fname, out);
+            body.iter().for_each(|s| walk_stmt_dcl(s, fname, out));
+        }
+        Stmt::For { body, .. } | Stmt::Loop { body, .. } => {
+            body.iter().for_each(|s| walk_stmt_dcl(s, fname, out));
+        }
+        Stmt::ExprStmt(e) => walk_expr_dcl(e, fname, out),
+        _ => {}
+    }
+}
+
+fn walk_expr_dcl(e: &Expr, fname: &str, out: &mut Vec<DeclassifyRecord>) {
+    match e {
+        Expr::Declassify { inner, policy, reason } => {
+            let p = policy.clone().unwrap_or_default();
+            let r = reason.clone().unwrap_or_default();
+            let well_formed = !p.trim().is_empty() && !r.trim().is_empty();
+            out.push(DeclassifyRecord {
+                function: fname.to_string(),
+                policy: p,
+                reason: r,
+                well_formed,
+            });
+            walk_expr_dcl(inner, fname, out);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            walk_expr_dcl(lhs, fname, out);
+            walk_expr_dcl(rhs, fname, out);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Try(expr) => walk_expr_dcl(expr, fname, out),
+        Expr::Tainted { inner, .. } => walk_expr_dcl(inner, fname, out),
+        Expr::Call { args, .. } => args.iter().for_each(|a| walk_expr_dcl(a, fname, out)),
+        Expr::CallExpr { callee, args } => {
+            walk_expr_dcl(callee, fname, out);
+            args.iter().for_each(|a| walk_expr_dcl(a, fname, out));
+        }
+        Expr::Index { base, index } => {
+            walk_expr_dcl(base, fname, out);
+            walk_expr_dcl(index, fname, out);
+        }
+        Expr::FieldAccess { base, .. } => walk_expr_dcl(base, fname, out),
+        Expr::ArrayLiteral { elements } => elements.iter().for_each(|x| walk_expr_dcl(x, fname, out)),
+        Expr::StructLiteral { fields, .. } => {
+            fields.iter().for_each(|(_, x)| walk_expr_dcl(x, fname, out))
+        }
+        Expr::EnumConstruct { fields, .. } => fields.iter().for_each(|x| walk_expr_dcl(x, fname, out)),
+        Expr::MapLiteral { entries, .. } => entries.iter().for_each(|(k, v)| {
+            walk_expr_dcl(k, fname, out);
+            walk_expr_dcl(v, fname, out);
+        }),
+        Expr::Match { scrutinee, arms, .. } => {
+            walk_expr_dcl(scrutinee, fname, out);
+            arms.iter().for_each(|a| walk_expr_dcl(&a.body, fname, out));
+        }
+        Expr::If { cond, then, else_, .. } => {
+            walk_expr_dcl(cond, fname, out);
+            walk_expr_dcl(then, fname, out);
+            walk_expr_dcl(else_, fname, out);
+        }
+        Expr::IfLet { scrutinee, then, else_, .. } => {
+            walk_expr_dcl(scrutinee, fname, out);
+            walk_expr_dcl(then, fname, out);
+            walk_expr_dcl(else_, fname, out);
+        }
+        Expr::Block { stmts, tail } => {
+            stmts.iter().for_each(|s| walk_stmt_dcl(s, fname, out));
+            if let Some(t) = tail {
+                walk_expr_dcl(t, fname, out);
+            }
+        }
+        Expr::Lambda { body, .. } => walk_expr_dcl(body, fname, out),
+        _ => {}
+    }
+}
 
 const MODULE_EXTS: &[&str] = &["anb", "anub", "anubis"];
 
@@ -30,6 +195,12 @@ pub struct PackageSummaries {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FnSummary {
     pub name: String,
+    /// Whether the function is part of the package's PUBLIC API surface (`pub fn`). ALL functions are
+    /// now sealed so a bundle reviewer can see every function's analyzed pre/postconditions and effects
+    /// (operator directive 2026-07-20 — the interproc analysis must be VISIBLE, not just the API). This
+    /// flag distinguishes the exported contract surface from internal helpers.
+    #[serde(default)]
+    pub public: bool,
     pub effects: Vec<String>,
     pub params: Vec<ParamSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,9 +335,7 @@ fn collect_fns(items: &[Item], out: &mut Vec<FnSummary>) {
                 ensures,
                 ..
             } => {
-                if !matches!(visibility, Visibility::Public) {
-                    continue;
-                }
+                let public = matches!(visibility, Visibility::Public);
                 let mut eff = effects.clone();
                 eff.sort();
                 eff.dedup();
@@ -201,6 +370,7 @@ fn collect_fns(items: &[Item], out: &mut Vec<FnSummary>) {
                     .unwrap_or(false);
                 out.push(FnSummary {
                     name: name.clone(),
+                    public,
                     effects: eff,
                     params,
                     ret: ret.clone(),
@@ -286,7 +456,12 @@ mod tests {
         let id = s.functions.iter().find(|f| f.name == "id").unwrap();
         assert!(id.params[0].tainted);
         assert!(id.returns_tainted);
-        assert!(!s.functions.iter().any(|f| f.name == "private"));
+        // ALL functions are now sealed (operator directive 2026-07-20): the interproc analysis must be
+        // visible, not just the API. `private` is included but marked non-public; `pub` fns are public.
+        let private = s.functions.iter().find(|f| f.name == "private").unwrap();
+        assert!(!private.public);
+        assert!(s.functions.iter().find(|f| f.name == "need_shell").unwrap().public);
+        assert!(id.public);
     }
 
     #[test]

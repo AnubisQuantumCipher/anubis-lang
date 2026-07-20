@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Operator item 7 (2026-07-20): field access in contracts. requires/ensures over a struct field is
+// modeled by the solver (mangle_field, tasks #19/#20) — real financial code has structs.
+struct Account { balance: i64, status: i64 }
+fn withdraw(a: Account, amt: i64) -> i64
+    requires(a.balance >= 0) requires(amt >= 0) requires(amt <= a.balance)
+    ensures(result >= 0)
+{
+    return a.balance - amt;
+}
+fn main() { let acct = Account { balance: 100, status: 1 }; let _ = withdraw(acct, 30); }

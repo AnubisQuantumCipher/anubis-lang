@@ -168,6 +168,14 @@ pub fn build_evidence_bundle_tree(
     {
         let _ = crate::package::summary::write_to_evidence_dir(&dir, &sum);
     }
+    // Declassification audit trail — every `declassify(value, policy, reason)` call, per function, with
+    // its well-formedness (operator directive 2026-07-20). A compliance-ready log of deliberate private-
+    // data releases: an auditor greps `declassify_audit.json` for every disclosure + cited policy + reason.
+    if let Ok(audit) =
+        crate::package::summary::extract_declassify_audit("package", "0.0.0", &source)
+    {
+        let _ = crate::package::summary::write_audit_to_evidence_dir(&dir, &audit);
+    }
     // Optional multi-leaf listing for re-verify of Merkle source_hash.
     if files.len() > 1 {
         let leaves: Vec<serde_json::Value> = files
@@ -505,6 +513,12 @@ pub struct ClaimBlock {
     pub taint_clean: bool,
     pub solver_obligations: usize,
     pub solver_all_discharged: bool,
+    /// The SMT solver in the trusted computing base that discharged the obligations. Stated explicitly
+    /// (operator directive 2026-07-20: TCB transparency — a bundle that says only `solver_all_discharged:
+    /// true` hides WHO proved it). Constant `"z3"` here (deterministic, so `verify` re-derivation still
+    /// byte-matches); the exact z3 VERSION is recorded in the manifest's non-deterministic `z3` field.
+    #[serde(default = "default_solver_backend")]
+    pub solver_backend: String,
     /// Whether a zero-knowledge receipt is bound to this claim. `false` when the bundle carries no
     /// genuine receipt — stated explicitly so the block never silently implies a ZK proof it does
     /// not carry.
@@ -524,6 +538,13 @@ pub struct ClaimBlock {
     pub zk_journal_sha256: Option<String>,
     pub verdict: String,
     pub tool: String,
+}
+
+/// The SMT solver in the TCB (constant — Anubis discharges via z3; the native solver lane cross-checks
+/// but z3 remains authoritative unless `ANUBIS_NATIVE_AUTHORITATIVE=1`). Deterministic so the PCA
+/// re-derivation byte-matches.
+fn default_solver_backend() -> String {
+    "z3".to_string()
 }
 
 /// Re-derive the claim block from source. Deterministic and side-effect free — the single source of
@@ -570,6 +591,7 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         taint_clean,
         solver_obligations,
         solver_all_discharged,
+        solver_backend: default_solver_backend(),
         zk_present: false,
         zk_image_id: None,
         zk_receipt_sha256: None,
