@@ -1,0 +1,3 @@
+// EXPECT: PASS
+// Precision guard: a higher-order builtin over a clean list must still compile.
+fn main() uses(net.send) { each([1, 2], |x| send("h", 80, x)); }

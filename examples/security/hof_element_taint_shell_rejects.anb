@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (hunt wf_5b2a1bcc): the HOF element->param laundering, integrity lane — command injection
+// via each([input()], |x| shell(x)).
+fn main() uses(shell) { each([input()], |x| shell(x)); }

@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (hunt wf_5b2a1bcc): a value migrating across loop iterations (a=b; b=c) reached the return
+// only after 2 passes; body_param_returns ran the body once. Fixed with a monotone bounded loop fixpoint.
+fn fwd(x: u64) -> u64 { let mut a = 0; let mut b = 0; let mut c = x; let mut i = 0; while i < 2 { a = b; b = c; c = 0; i = i + 1; } return a; }
+fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, fwd(k)); }

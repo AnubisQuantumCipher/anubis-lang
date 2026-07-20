@@ -1,0 +1,4 @@
+// EXPECT: PASS
+// Precision guard: a match that reassigns a NON-secret value must still compile.
+fn run(c: bool) uses(net.send) { let mut v = 0; match c { true => { v = 1; } false => { v = 2; } } send("h", 80, v); }
+fn main() {}

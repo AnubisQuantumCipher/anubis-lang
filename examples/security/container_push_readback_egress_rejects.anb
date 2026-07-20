@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (hunt wf_5b2a1bcc): push/insert in a LET initializer (`let n = push(xs, k)`) escaped the
+// ExprStmt-only container-taint handler, so xs[0] read back clean. Fixed via a shared
+// apply_container_mutation_taint called from both the ExprStmt and Let handlers.
+fn main() uses(net.send) { let xs = []; let n = push(xs, secret_source("k")); send("h", 80, xs[0]); }

@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_EXFILTRATION
+// Soundness (hunt wf_5b2a1bcc): a fn-value alias reassigned to a leaking fn inside a LOOP body was
+// dropped at the loop join (only If had the fn_alias merge). Fixed via merge_fn_alias_over on loops.
+fn leak(h: string, p: u32, x: u64) uses(net.send) { send(h, p, x); }
+fn safe(h: string, p: u32, x: u64) -> u64 { return x; }
+fn run(k: secret<u64>) uses(net.send) {
+    let f = safe;
+    while true { f = leak; }
+    f("h", 80, k);
+}
+fn main() {}

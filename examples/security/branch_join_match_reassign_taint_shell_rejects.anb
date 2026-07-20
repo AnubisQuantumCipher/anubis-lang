@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (hunt wf_5b2a1bcc): untrusted input() assigned in a match arm then shell(cmd) — command
+// injection laundered by the match join before the arm-body value-label merge.
+fn run(c: bool) uses(shell) {
+    let mut cmd = "ls";
+    match c { true => { cmd = input(); } false => {} }
+    shell(cmd);
+}
+fn main() {}
