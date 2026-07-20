@@ -1,17 +1,17 @@
 // EXPECT: PASS
-// Phase-7 fragment-gate soundness demo, the FAIL-CLOSED direction. This postcondition is TRUE — for a
-// nonnegative i64, an arithmetic right shift stays nonnegative — so with z3 present the check PASSES.
-// But the obligation lowers to `bvashr` (and a `bvurem` shift-amount wrap), whose bit-blasts are NOT in
-// the machine-checked fragment. So under `ANUBIS_NATIVE_AUTHORITATIVE=1` with z3 REMOVED from PATH, the
-// native lane DECLINES (fragment gate → defer) and, with no z3 to fall through to, the check FAILS
-// CLOSED rather than certify a property on an unproven blast. That is the whole point of the gate: a
-// z3-free native proof rests only on proven wiring. (Contrast int_contract_proves.anb, which proves
-// z3-free because every op it touches — bvadd + comparators — is machine-checked.)
-pub fn ashr_keeps_sign(x: i64) -> i64
+// Phase-7 fragment-gate soundness demo, the FAIL-CLOSED direction. This postcondition is TRUE — a
+// nonnegative integer divided by 2 stays nonnegative — so with z3 present the check PASSES. But the
+// obligation lowers to `bvsdiv`, whose bit-blast is NOT in the machine-checked fragment (division is
+// deferred BY DESIGN). So under `ANUBIS_NATIVE_AUTHORITATIVE=1` with z3 REMOVED from PATH, the native
+// lane DECLINES (fragment gate → defer) and, with no z3 to fall through to, the check FAILS CLOSED
+// rather than certify a property on an unproven blast. That is the whole point of the gate: a z3-free
+// native proof rests only on proven wiring. (Contrast int_contract_proves.anb, whose every op —
+// bvadd, comparators, bitwise, sub/neg, ite, and now both shifts — is machine-checked.)
+pub fn half_nonneg(x: int) -> int
     requires(x >= 0)
     ensures(result >= 0)
 {
-    return x >> 1;
+    return x / 2;
 }
 
 fn main() {

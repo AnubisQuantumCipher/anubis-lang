@@ -34,6 +34,17 @@ pub fn shl_bounded(x: u8, k: u8) -> int
     return (x as int) << (k as int);
 }
 
+// The arithmetic-right-shift lane: `>>` lowers (from PROVEN ops, no bvashr) to a sign-filled logical
+// shift — `ite(v<0, (v>>ᵤamt) | ~(allones>>ᵤamt), v>>ᵤamt)` — z3-proven identical to `bvashr`. A
+// nonnegative value right-shifted stays nonnegative (and no larger). Proves z3-free on proven blasts.
+pub fn shr_nonneg(x: u16, k: u8) -> int
+    requires(k <= 4)
+    ensures(result >= 0)
+    ensures(result <= x)
+{
+    return (x as int) >> (k as int);
+}
+
 fn main() {
     // BOTH halves of this file are now z3-free proofs over the MACHINE-CHECKED fragment
     // (`solver/src/fragment.rs`): clamp_add's ∀-input contract discharges from {bvadd, bvsle, bvsge}
