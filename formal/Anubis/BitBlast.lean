@@ -474,3 +474,99 @@ theorem barrelShl_correct (a b : List Bool) :
     bitsToNat (barrelShl a b) = bitsToNat a * 2 ^ bitsToNat b % 2 ^ a.length := by
   unfold barrelShl
   rw [(barrelShl_aux a b b.length).2, List.take_length]
+
+/-! ### Constant logical right shift
+
+`blast.rs::const_shift(_, Const k, LogicalRight)` wires `out[i] = if i+k < w then a[i+k] else 0` — drop the
+low `k` bits and zero-fill the high, keeping width `w`. We mechanize `⟦a >> k⟧ = ⟦a⟧ / 2^k` (SMT `bvlshr`
+by a constant / runtime `wrapping_shr`), the value dual of the left shift. -/
+
+/-- Appending HIGH zeros does not change the value. -/
+theorem bitsToNat_append_replicate_false (l : List Bool) (k : Nat) :
+    bitsToNat (l ++ List.replicate k false) = bitsToNat l := by
+  induction l with
+  | nil => simp [bitsToNat, bitsToNat_replicate_false]
+  | cons b bs ih => simp only [List.cons_append, bitsToNat, ih]
+
+/-- **Dropping low bits is integer division.** `⟦a.drop k⟧ = ⟦a⟧ / 2^k` — the value dual of
+    `bitsToNat_take` (which is mod). -/
+theorem bitsToNat_drop : ∀ (a : List Bool) (k : Nat), bitsToNat (a.drop k) = bitsToNat a / 2 ^ k := by
+  intro a
+  induction a with
+  | nil => intro k; simp [bitsToNat]
+  | cons c cs ih =>
+      intro k
+      cases k with
+      | zero => simp [bitsToNat]
+      | succ k =>
+          have hc : c.toNat < 2 := by cases c <;> decide
+          simp only [List.drop_succ_cons, bitsToNat, Nat.pow_succ, ih k,
+            Nat.mul_comm (2 ^ k) 2, ← Nat.div_div_eq_div_mul]
+          congr 1
+          omega
+
+/-- Constant logical right shift by `k`, as `const_shift … LogicalRight`: drop `k` low bits, high-fill 0. -/
+def shrConstL (a : List Bool) (k : Nat) : List Bool :=
+  a.drop k ++ List.replicate (min k a.length) false
+
+/-- **Constant logical-right-shift correctness (fully mechanized).** `⟦a >> k⟧ = ⟦a⟧ / 2^k`. -/
+theorem shrConstL_correct (a : List Bool) (k : Nat) :
+    bitsToNat (shrConstL a k) = bitsToNat a / 2 ^ k := by
+  unfold shrConstL
+  rw [bitsToNat_append_replicate_false, bitsToNat_drop]
+
+/-! ### Variable (barrel) logical right shift
+
+`blast.rs::var_shift(_, _, LogicalRight)`: the barrel dual of the left shift, conditionally shifting the
+running value RIGHT by `2^k` (`shrConstL`) for each set amount bit. We mechanize
+`⟦a >> b⟧ = ⟦a⟧ / 2^⟦b⟧` (SMT `bvlshr` by a variable amount). No truncation is needed — a right shift
+only removes bits, so the running value stays in range. -/
+
+/-- The constant logical right shift preserves the operand width. -/
+theorem shrConstL_length (a : List Bool) (k : Nat) : (shrConstL a k).length = a.length := by
+  unfold shrConstL
+  rw [List.length_append, List.length_drop, List.length_replicate]
+  omega
+
+/-- Barrel logical right shift, as `var_shift(_, _, LogicalRight)`. -/
+def barrelLshr (a b : List Bool) : List Bool :=
+  (List.range b.length).foldl
+    (fun cur k => if b.getD k false = true then shrConstL cur (2 ^ k) else cur) a
+
+/-- Accumulation invariant: after folding amount bits `0 .. m-1`, the running value is
+    `⟦a⟧ / 2^⟦b.take m⟧` — `a` right-shifted by the low `m` bits of the amount. -/
+theorem barrelLshr_aux (a b : List Bool) : ∀ m,
+    ((List.range m).foldl
+        (fun cur k => if b.getD k false = true then shrConstL cur (2 ^ k) else cur) a).length
+      = a.length
+    ∧ bitsToNat ((List.range m).foldl
+        (fun cur k => if b.getD k false = true then shrConstL cur (2 ^ k) else cur) a)
+      = bitsToNat a / 2 ^ bitsToNat (b.take m) := by
+  intro m
+  induction m with
+  | zero =>
+      refine ⟨by simp, ?_⟩
+      simp [List.range_zero, List.foldl_nil, List.take_zero, bitsToNat, Nat.pow_zero, Nat.div_one]
+  | succ m ih =>
+      obtain ⟨hlen, hval⟩ := ih
+      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+      revert hlen hval
+      generalize (List.range m).foldl
+        (fun cur k => if b.getD k false = true then shrConstL cur (2 ^ k) else cur) a = cur
+      intro hlen hval
+      by_cases hb : b.getD m false = true
+      · rw [if_pos hb]
+        refine ⟨by rw [shrConstL_length]; exact hlen, ?_⟩
+        rw [shrConstL_correct, hval, bitsToNat_take_succ, hb, Bool.toNat_true, Nat.mul_one,
+          Nat.pow_add, Nat.div_div_eq_div_mul]
+      · rw [if_neg hb]
+        refine ⟨hlen, ?_⟩
+        simp only [Bool.not_eq_true] at hb
+        rw [hval, bitsToNat_take_succ, hb, Bool.toNat_false, Nat.mul_zero, Nat.add_zero]
+
+/-- **Barrel logical-right-shift correctness (fully mechanized).** `⟦a >> b⟧ = ⟦a⟧ / 2^⟦b⟧` — SMT
+    `bvlshr` by a variable amount / runtime `wrapping_shr`. From the invariant at `m = |b|`. -/
+theorem barrelLshr_correct (a b : List Bool) :
+    bitsToNat (barrelLshr a b) = bitsToNat a / 2 ^ bitsToNat b := by
+  unfold barrelLshr
+  rw [(barrelLshr_aux a b b.length).2, List.take_length]
