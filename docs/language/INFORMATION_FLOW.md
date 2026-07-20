@@ -24,14 +24,51 @@ it hits a *local* interpreter or buffer (SQL, `memcpy`, file write); a secret is
 *leaves*. So:
 
 - integrity sinks = every egress (`send`, `connect`, `http_get`, `http_post`, `shell`, `system`, `exec`,
-  `target_run`, …) **plus** local-injection sinks (`sql`, `write`, `write_file`, `append_file`,
-  `memcpy`, `sink`);
+  `target_run`, `print`, `println`, `eprint`, `eprintln`) **plus** local-injection sinks (`sql`, `write`,
+  `write_file`, `append_file`, `memcpy`, `sink`);
 - confidentiality sinks = the egress set only (a secret into a local write stays inside the trust
   boundary).
+
+**`print` is an egress sink** (added 2026-07-20). Standard output is an observable channel, so a secret
+printed leaves the program exactly as `send` does — the binary-extraction attack encodes one secret bit
+per printed line. It was the one common I/O op left unguarded while `send`/`shell`/`write` were gated. If
+your program legitimately prints a value that carries a label (e.g. content it authored itself), release
+it first with `declassify(value, policy, reason)`.
 
 Before this change, `input() → shell(cmd)` — command injection — slipped through the taint lane because
 `shell` was an egress sink but not a taint sink. It is now caught. There is no sink a user could reach in
 one lane and miss in the other for the same threat.
+
+## `declassify` is a policy statement, not a syntactic escape hatch
+
+`declassify(value, policy, reason)` RELEASES a label only when BOTH `policy` and `reason` are present AND
+non-empty (after trimming). `declassify(secret, "", "")` does NOT release — it is a no-op that keeps the
+label (fixed 2026-07-20; an empty policy/reason was a silent bypass). Every declassify is thus an
+auditable statement of *which* policy authorised the release and *why*; a compliance reviewer can grep the
+evidence bundle for them.
+
+## Implicit flow is WARNED, not silently ignored
+
+`secret<T>` tracks **explicit** data flow — a secret directly passed, copied, computed on, contained,
+returned, or applied. It does **not** track **implicit** flow: a conditional that branches on a secret can
+encode secret bits in the value of a non-secret variable (`if balance > 200000 { bit = 1 }`), which then
+passes every egress check. This is the same trade-off Jif, FlowCaml, FlowDroid, and Joana make — full
+non-interference requires label propagation through control-flow joins and causes severe over-tainting.
+
+Anubis does not silently ignore it: when a branch guarded by a secret condition assigns to a non-secret
+variable, the checker emits a non-blocking **`ANUBIS_IMPLICIT_FLOW_WARNING`** (surfaced on stderr) naming
+the variable, so the developer knows `secret<T>` guards explicit flow only. It does not reject (that is the
+weeks-months implicit-label version). To close the implicit channel, interpose a `declassify` *before* any
+conditional that branches on the secret, or declare the assigned variable `secret<T>`.
+
+## Contracts over secrets: proved without leaking
+
+A `secret<T>`/`tainted<T>` parameter is a pure LABEL over a base value `T`, so a `requires`/`ensures`
+contract over a secret operand is discharged by the SMT solver as bit-exact `i64` while the confidentiality
+label is enforced separately (`ty::strip_flow_qualifier`). This is what lets one program carry BOTH
+contracts and secrets: the solver proves the secret satisfies its invariants (non-negative balance,
+bounded transfer) and the flow checker proves the secret never leaves — see
+`examples/showcase/verified_private_settlement.anb`.
 
 ## `--verified` is a different axis, not a third taint system
 

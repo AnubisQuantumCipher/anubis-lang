@@ -4640,17 +4640,19 @@ fn main() {
             &run_src,
             r#"
 import std.io;
-fn main() uses(fs.write, fs.read) {
+fn main() uses(fs.write, fs.read, io.print) {
     let p = "hello_phase5.txt";
     io::write_text(p, "x");
-    print(io::read_text(p));
+    let _ = io::read_text(p);
+    print("phase5-io-ok");
 }
 "#,
         )
         .unwrap();
         let items = resolve::combine_from_entry(&run_src).expect("combine run");
-        // Write-then-read of a constant we just wrote: return is still tainted by policy,
-        // but main does not sink it — check should accept.
+        // Write-then-read of a constant we just wrote: the read is tainted by policy but is NOT sunk
+        // (consumed by `let _`, since print() is now an egress sink — operator fix 2026-07-20). A
+        // constant status is printed so the run still produces observable output. Check must accept.
         typecheck(
             frontend::AST {
                 items: items.clone(),
@@ -4661,7 +4663,7 @@ fn main() uses(fs.write, fs.read) {
         .expect("run check");
         let out = backends::run::compile_and_run_items(&items, false, &[]).expect("run");
         assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "x");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "phase5-io-ok");
 
         // Clean check path: declassify before write (typecheck only; declassify is not in run).
         let clean = dir.join("clean.anb");
@@ -6241,7 +6243,7 @@ fn main() {
         // Phase-3 C5: in the verification lane, capability I/O without uses(...) is fail-closed.
         let src = r#"fn main() {
     let data = read_file("x.txt");
-    print(data);
+    let _ = data;
 }"#;
         let ast = parse_source(src).expect("parse");
         let err = typecheck_ex(ast, frontend::Mode::Safe, true)
@@ -6255,7 +6257,7 @@ fn main() {
     let cap = cap_acquire("fs.read");
     let data = read_file("x.txt");
     cap_use(cap);
-    print(len(data));
+    let _ = len(data);
 }"#;
         let ast = parse_source(ok).expect("parse");
         typecheck_ex(ast, frontend::Mode::Safe, true)
@@ -6309,7 +6311,7 @@ fn main() {
             r#"@verified
 fn main() {
     let d = read_file("x");
-    print(len(d));
+    let _ = len(d);
 }"#,
         )
         .expect_err("@verified without uses must reject");
@@ -6322,7 +6324,7 @@ fn main() uses(fs.read) {
     let cap = cap_acquire("fs.read");
     let d = read_file("x");
     cap_use(cap);
-    print(len(d));
+    let _ = len(d);
 }"#,
         )
         .expect("@verified + uses(fs.read) + acquired capability must accept");
@@ -6333,7 +6335,7 @@ fn main() uses(fs.read) {
     let cap = cap_acquire("fs.read");
     let d = read_file("x");
     cap_use(cap);
-    print(len(d));
+    let _ = len(d);
 }"#,
         )
         .expect("#[verified] + uses + acquired capability must accept");
@@ -6461,11 +6463,11 @@ fn main() uses(fs.read) { let d = read_file("y"); mid(); print(d); }"#,
         // Correctly declared: the transitive time.now is in the clause.
         tc_ok(
             r#"fn helper() { time_now(); }
-fn main() uses(fs.read, time.now) { let d = read_file("x"); helper(); print(d); }"#,
+fn main() uses(fs.read, time.now) { let d = read_file("x"); helper(); let _ = d; }"#,
         )
         .expect("declared transitive effects must accept");
         // Over-declared: declaring more than used is always legal (subset direction only).
-        tc_ok(r#"fn main() uses(fs.read, net.send) { let d = read_file("x"); print(d); }"#)
+        tc_ok(r#"fn main() uses(fs.read, net.send) { let d = read_file("x"); let _ = d; }"#)
             .expect("over-declaration must accept");
     }
 
@@ -6524,7 +6526,7 @@ fn main() uses(fs.read) {
         // only the transitive arm can flag `main` (the per-body verified rule flags `mid` one-hop).
         let src = r#"fn helper() uses(fs.read) { let d = read_file("x.txt"); return d; }
 fn mid() { return helper(); }
-fn main() { let d = mid(); print(d); }"#;
+fn main() { let d = mid(); let _ = d; }"#;
         let ast = parse_source(src).expect("parse");
         let err = typecheck_ex(ast, frontend::Mode::Safe, true)
             .expect_err("verified lane must see transitive fs.read");
@@ -9491,7 +9493,7 @@ fn main() { let s = taint_source("pw"); keep(s, 1); }"#,
             (
                 "callee never sinks",
                 r#"fn id(x: u32) -> u32 { return x; }
-fn main() { let s = taint_source("pw"); let y = id(s); print(y); }"#,
+fn main() { let s = taint_source("pw"); let y = id(s); let _ = y; }"#,
             ),
         ] {
             tc_ok(src)
@@ -9514,7 +9516,7 @@ fn main() { let s = taint_source("pw"); let y = id(s); print(y); }"#,
                 "if-then shadow does not taint outer",
                 r#"fn main() {
     let x = 5;
-    if true { let x = taint_source("s"); print(x); }
+    if true { let x = taint_source("s"); let _ = x; }
     sink(x);
 }"#,
             ),
@@ -9522,7 +9524,7 @@ fn main() { let s = taint_source("pw"); let y = id(s); print(y); }"#,
                 "if-else shadow does not taint outer",
                 r#"fn main() {
     let x = 5;
-    if false { let x = taint_source("s"); print(x); } else { let x = taint_source("t"); print(x); }
+    if false { let x = taint_source("s"); let _ = x; } else { let x = taint_source("t"); let _ = x; }
     sink(x);
 }"#,
             ),
@@ -9531,7 +9533,7 @@ fn main() { let s = taint_source("pw"); let y = id(s); print(y); }"#,
                 r#"fn main() {
     let x = 5;
     let mut i = 0;
-    while i < 1 { let x = taint_source("s"); print(x); i = i + 1; }
+    while i < 1 { let x = taint_source("s"); let _ = x; i = i + 1; }
     sink(x);
 }"#,
             ),
@@ -9539,7 +9541,7 @@ fn main() { let s = taint_source("pw"); let y = id(s); print(y); }"#,
                 "for-body shadow does not taint outer",
                 r#"fn main() {
     let x = 5;
-    for i in 0..1 { let x = taint_source("s"); print(x); }
+    for i in 0..1 { let x = taint_source("s"); let _ = x; }
     sink(x);
 }"#,
             ),
@@ -9646,7 +9648,7 @@ fn main() { sink(f()); }"#,
                 // scope. An inner block-scoped `let x` shadowing a clean outer `let x` must NOT make
                 // the function return-tainting when it returns the OUTER (clean) binding.
                 "block-scoped shadowing, returns outer clean",
-                r#"fn f(cond: bool) -> u32 { let x = 5; if cond { let x = taint_source("s"); print(x); } return x; }
+                r#"fn f(cond: bool) -> u32 { let x = 5; if cond { let x = taint_source("s"); let _ = x; } return x; }
 fn main() { sink(f(false)); }"#,
             ),
         ] {

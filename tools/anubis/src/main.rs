@@ -1741,6 +1741,18 @@ fn main() -> Result<()> {
 
             let tainted = typed.as_ref().map(|t| TaintPass::apply(t.clone()));
 
+            // Non-blocking warnings (implicit-flow, …): surface to stderr so the developer sees them
+            // without failing the check (operator directive 2026-07-20).
+            if let Some(t) = &typed {
+                for w in &t.warnings {
+                    eprintln!(
+                        "warning[{}]: {}",
+                        w.code.as_deref().unwrap_or("ANUBIS_WARNING"),
+                        w.message
+                    );
+                }
+            }
+
             // Proof-carrying gate: an assertion the solver DISPROVES (e.g. `assume(x < 10);
             // assert(x > 20)`) must fail the check — a proof-carrying language does not accept a
             // program whose own asserted proof is false. The evidence bundle already recorded this;
@@ -5990,10 +6002,12 @@ research fn main() {
 
     #[test]
     fn run_unsupported_safe_construct_fails_closed() {
+        // `taint_source` is itself the unsupported-in-`run` (research/symbolic) construct; consume it
+        // WITHOUT sinking (print is now an egress sink, so `print(data)` would fail at CHECK, not run).
         let source = r#"
 fn main() {
     let data = taint_source("user");
-    print(data);
+    let _ = data;
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");

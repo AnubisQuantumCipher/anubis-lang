@@ -168,29 +168,32 @@ pub(crate) fn is_numeric(ty: &str) -> bool {
     )
 }
 
-/// An INTEGER type the solver may soundly model as a 64-bit bit-vector (matching the i64 runtime).
-/// Floats are deliberately excluded. `tainted<T>` is a qualifier — unwrap it first.
-pub(crate) fn is_integer(ty: &str) -> bool {
+/// Strip a `tainted<T>` OR `secret<T>` information-flow qualifier to the base type `T`. Both are
+/// pure LABELS — the underlying runtime value is `T` — so a `secret<i64>`/`tainted<i64>` param is a
+/// modelable integer for the SOLVER while its confidentiality/integrity label lives separately. This
+/// lets a contract be proved OVER secret data without leaking it (operator directive 2026-07-20: the
+/// contracts+secrets combined demo). Non-qualified types pass through unchanged.
+pub(crate) fn strip_flow_qualifier(ty: &str) -> &str {
     let inner = ty.trim();
-    let inner = if let Some(rest) = inner.strip_prefix("tainted<") {
-        rest.strip_suffix('>').unwrap_or(rest)
-    } else {
-        inner
-    };
-    matches!(normalize(inner).as_str(), "u8" | "u16" | "u32" | "u64")
+    for q in ["tainted<", "secret<"] {
+        if let Some(rest) = inner.strip_prefix(q) {
+            return rest.strip_suffix('>').unwrap_or(rest);
+        }
+    }
+    inner
+}
+
+/// An INTEGER type the solver may soundly model as a 64-bit bit-vector (matching the i64 runtime).
+/// Floats are deliberately excluded. `tainted<T>`/`secret<T>` are qualifiers — unwrap them first.
+pub(crate) fn is_integer(ty: &str) -> bool {
+    matches!(normalize(strip_flow_qualifier(ty)).as_str(), "u8" | "u16" | "u32" | "u64")
 }
 
 /// A FLOAT type (`f32`/`f64`/`float`) — the complement of [`is_integer`] within [`is_numeric`].
-/// Unwraps a `tainted<T>` qualifier first, exactly like [`is_integer`], so the two partition the
-/// numeric types identically regardless of the taint wrapper.
+/// Unwraps a `tainted<T>`/`secret<T>` qualifier first, exactly like [`is_integer`], so the two
+/// partition the numeric types identically regardless of the flow-label wrapper.
 pub(crate) fn is_float(ty: &str) -> bool {
-    let inner = ty.trim();
-    let inner = if let Some(rest) = inner.strip_prefix("tainted<") {
-        rest.strip_suffix('>').unwrap_or(rest)
-    } else {
-        inner
-    };
-    matches!(normalize(inner).as_str(), "f32" | "f64" | "float")
+    matches!(normalize(strip_flow_qualifier(ty)).as_str(), "f32" | "f64" | "float")
 }
 
 /// The bit-width of a LITERALLY-UNSIGNED fixed-width integer annotation — `u8`→8, `u16`→16,

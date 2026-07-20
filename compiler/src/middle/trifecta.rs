@@ -337,7 +337,10 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs, sc: &ScanCtx) {
             // reviewed sanitization barrier. A malformed `declassify(x)` does NOT discharge — that
             // was the forge the adversarial review caught (the "declassify" effect tag is pushed
             // even for malformed ones, so we must inspect the AST shape, not the tag).
-            if policy.is_some() && reason.is_some() {
+            // Well-formed = both present AND non-empty (operator security fix 2026-07-20:
+            // `declassify(x, "", "")` is a silent no-op, not a reviewed barrier).
+            if matches!((policy, reason), (Some(p), Some(r)) if !p.trim().is_empty() && !r.trim().is_empty())
+            {
                 legs.wellformed_declassify = true;
                 // A well-formed declassify RELEASES its inner value: a sanitized untrusted read is
                 // NOT a leg-2 steering channel and a sanitized secret is NOT leg 1, so do not descend

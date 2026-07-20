@@ -1,0 +1,3 @@
+// EXPECT: PASS
+// A well-formed declassify (non-empty policy AND reason) releases the secret — the sanctioned hatch.
+fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, declassify(k, "gdpr-art6", "authorized settlement disclosure")); }

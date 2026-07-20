@@ -1,0 +1,57 @@
+// VERIFIED PRIVATE SETTLEMENT — contracts + secrets + solver, in ONE program.
+// ===========================================================================
+// This is the demo that no other tool produces: the SMT solver PROVES that
+// operations on SECRET financial data satisfy their contracts (no negative
+// balance, bounded transfer), while the information-flow checker PROVES the
+// secret never leaves the program. Both lanes run together on the same code.
+//
+//   * secret<i64> balances/amounts — the confidentiality lane rejects any
+//     path that sends/prints/shells a private value (try the LEAK line below).
+//   * requires/ensures over those secrets — the solver discharges them as
+//     bit-exact i64 (the secret<T> label is orthogonal to the arithmetic).
+//   * only the PUBLIC settlement verdict is emitted.
+//
+//   anubis check examples/showcase/verified_private_settlement.anb   # PASS
+//   anubis run   examples/showcase/verified_private_settlement.anb
+
+// Debit `amt` from `bal`. The contract proves the result never goes negative
+// and stays in range — proved over SECRET operands by the solver.
+fn debit(bal: secret<i64>, amt: secret<i64>) -> secret<i64>
+    requires(bal >= 0) requires(bal < 1000000)
+    requires(amt >= 0) requires(amt <= bal)
+    ensures(result >= 0) ensures(result < 1000000)
+{
+    return bal - amt;
+}
+
+// Credit `amt` to `bal`. Proved to stay within the settlement ceiling.
+fn credit(bal: secret<i64>, amt: secret<i64>) -> secret<i64>
+    requires(bal >= 0) requires(bal < 500000)
+    requires(amt >= 0) requires(amt < 500000)
+    ensures(result >= 0) ensures(result < 1000000)
+{
+    return bal + amt;
+}
+
+fn main()
+    uses(io.print)
+{
+    // Private financial state — never leaves the program.
+    let buyer:  secret<i64> = 250000;
+    let seller: secret<i64> = 180000;
+    let amount: secret<i64> = 50000;
+
+    // The solver proves each contract over the secret operands: amount <= buyer,
+    // so buyer_after >= 0; both results stay < 1000000.
+    let buyer_after  = debit(buyer, amount);
+    let seller_after = credit(seller, amount);
+
+    // Only the PUBLIC verdict is observable — no secret reaches print().
+    let settlement_ok = 1;
+    print("settlement verified — balances proved non-negative, no private data leaked");
+
+    // LEAK (uncomment to see the confidentiality lane reject it):
+    //   print(buyer_after);   // ANUBIS_SECRET_EXFILTRATION
+
+    assert(settlement_ok == 1);
+}

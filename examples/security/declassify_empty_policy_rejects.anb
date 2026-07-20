@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Operator security fix: declassify(secret, "", "") is a silent bypass — empty policy/reason does NOT
+// release the label. A well-formed declassify needs a non-empty policy AND reason.
+fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, declassify(k, "", "")); }

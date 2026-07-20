@@ -110,6 +110,8 @@ pub struct TypedIR {
     pub taint_traces: Vec<TaintTrace>,
     pub solver_obligations: Vec<SolverObligation>,
     pub diagnostics: Vec<SemanticDiagnostic>,
+    /// Non-blocking warnings (implicit-flow, etc.) — informational, do not fail the check.
+    pub warnings: Vec<SemanticDiagnostic>,
     pub symbolic_defs: Vec<String>, // e.g. "(= result (bvadd ...))" for faithful binding
     pub symbolic_widths: BTreeMap<String, u32>, // var name -> bit width for faithful BV
 }
@@ -451,6 +453,11 @@ struct SemanticContext {
     taint_traces: Vec<TaintTrace>,
     solver_obligations: Vec<SolverObligation>,
     diagnostics: Vec<SemanticDiagnostic>,
+    /// NON-BLOCKING warnings (e.g. `ANUBIS_IMPLICIT_FLOW_WARNING`). Never feed the `diagnostics`
+    /// Err-gate — a warning informs the developer without failing the check. Surfaced on the CLI and in
+    /// the evidence bundle. Operator directive 2026-07-20: implicit information flow (a branch on a
+    /// secret assigning a non-secret var) is warned, not rejected.
+    warnings: Vec<SemanticDiagnostic>,
     /// Shadow-mode switch (set from `ANUBIS_SHADOW_TYPES=1`). When on, diagnostics emitted through
     /// `emit(.., shadow_gated=true)` are diverted to `shadow_diags` instead of `diagnostics`, so a
     /// NEW static check (the type-system phase: inference, generics, traits, typed `?`) can be
@@ -810,6 +817,7 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         taint_traces: ctx.taint_traces,
         solver_obligations: ctx.solver_obligations,
         diagnostics: vec![],
+        warnings: ctx.warnings,
         symbolic_defs: ctx.symbolic_defs,
         symbolic_widths: ctx.symbolic_widths,
     })
@@ -4641,6 +4649,33 @@ fn analyze_stmts(
                 }
             }
             Stmt::If { cond, then, else_ } => {
+                // Implicit-flow WARNING (operator directive 2026-07-20, non-blocking): a branch guarded by
+                // a SECRET condition that assigns to a NON-secret variable encodes secret bits in
+                // observable state — the classic implicit-flow / binary-extraction channel that explicit
+                // taint tracking (secret<T>) does not catch. Warn so the developer knows secret<T> guards
+                // EXPLICIT data flow only; do NOT reject (over-tainting the join is the weeks-months
+                // Jif/FlowCaml version). Fires once per guarded assignment; a var that IS already secret is
+                // fine (the label is preserved).
+                if mode == Mode::Safe
+                    && expr_secret_source_m(cond, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some()
+                {
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(then, &mut assigned);
+                    if let Some(eb) = else_ {
+                        collect_assigned_roots(eb, &mut assigned);
+                    }
+                    for v in assigned {
+                        if !scope.get(&v).map(|b| b.secret).unwrap_or(false) {
+                            ctx.warnings.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_IMPLICIT_FLOW_WARNING".into()),
+                                message: format!(
+                                    "implicit information flow: `{v}` is assigned inside a branch guarded by a secret condition. secret<T> tracks EXPLICIT data flow only, so a value conditioned on a secret can encode secret bits — if `{v}` is later observed (print/send), it leaks (the binary-extraction attack). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
+                                ),
+                                span: None,
+                            });
+                        }
+                    }
+                }
                 // CRYPTO_MISUSE / effect analysis must see the condition (fail-open if skipped:
                 // `if hmac_sha256(k,m) == tag { ... }` would otherwise pass).
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
@@ -5836,7 +5871,7 @@ fn analyze_expr_effect(
                 if let Some(r) = reason {
                     steps.push(format!("reason={}", r));
                 }
-                let has_policy = policy.is_some() && reason.is_some();
+                let has_policy = declassify_wellformed(policy, reason);
                 ctx.taint_traces.push(TaintTrace {
                     source: source.clone(),
                     sink: None,
@@ -12619,7 +12654,7 @@ fn declassify_source(
             policy,
             reason,
             ..
-        } if policy.is_some() && reason.is_some() => {
+        } if declassify_wellformed(policy, reason) => {
             expr_taint_source(inner, scope, tainting_fns, param_return_taint)
         }
         _ => None,
@@ -13145,7 +13180,7 @@ fn expr_taint_source_m(
             reason,
             ..
         } => {
-            if policy.is_some() && reason.is_some() {
+            if declassify_wellformed(policy, reason) {
                 None // cleared
             } else {
                 expr_taint_source_m(inner, scope, tainting_fns, param_return_taint, method_tainting_fns)
@@ -13325,9 +13360,22 @@ const SECRET_SOURCE_NAME: &str = "secret_source";
 /// This is a SUPERSET of the lethal-trifecta leg-3 egress: leg-3 reads `net.send`/`shell` off the
 /// effect row (so `http_get`/`http_post`, present here, are NOT yet leg-3 — a named leg-3 residual),
 /// whereas this value-flow egress set includes them.
+/// A `declassify(value, policy, reason)` is WELL-FORMED — it RELEASES the confidentiality/integrity label
+/// — only when BOTH policy and reason are present AND non-empty (after trimming whitespace).
+/// `declassify(secret, "", "")` is NOT a release; it is a syntactic no-op that must keep the label
+/// (operator security fix 2026-07-20: an empty policy/reason was a silent bypass with no auditable
+/// justification — declassify must be a policy statement, not a syntactic escape hatch).
+fn declassify_wellformed(policy: &Option<String>, reason: &Option<String>) -> bool {
+    matches!((policy, reason), (Some(p), Some(r)) if !p.trim().is_empty() && !r.trim().is_empty())
+}
+
 fn is_egress_sink(callee: &str) -> bool {
     // Exact-match only (like `is_sink`) — a substring rule would false-positive on a user function
-    // such as `compute_network_stats`. `net.send` builtins ∪ shell builtins = the leg-3 egress set.
+    // such as `compute_network_stats`. `net.send` builtins ∪ shell builtins ∪ stdout = the leg-3 egress
+    // set. `print`/`println`/`eprint`/`eprintln` ARE egress (operator security fix 2026-07-20): stdout is
+    // an observable channel, so a secret printed IS exfiltration (the binary-extraction attack prints
+    // one secret bit per line). It was the one common I/O op left unguarded while send/shell/write were
+    // gated. Since `is_sink` ⊇ `is_egress_sink`, printing untrusted input is also a taint sink now.
     matches!(
         callee,
         "send"
@@ -13339,6 +13387,10 @@ fn is_egress_sink(callee: &str) -> bool {
             | "exec"
             | "system"
             | "target_run"
+            | "print"
+            | "println"
+            | "eprint"
+            | "eprintln"
     )
 }
 
@@ -13463,7 +13515,7 @@ fn expr_secret_source_m(
             reason,
             ..
         } => {
-            if policy.is_some() && reason.is_some() {
+            if declassify_wellformed(policy, reason) {
                 None // released — dual of the taint declassify clear
             } else {
                 expr_secret_source_m(inner, scope, secret_fns, param_return_taint, method_secret_fns)
@@ -14477,7 +14529,7 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             reason,
             ..
         } => {
-            if policy.is_some() && reason.is_some() {
+            if declassify_wellformed(policy, reason) {
                 BTreeSet::new() // cleared
             } else {
                 expr_param_flow(inner, flow)
@@ -14683,11 +14735,7 @@ fn seed_param_flow_let(name: &str, init: &Expr, flow: &mut BTreeMap<String, BTre
     // Mirror declassify_source: a full declassify clears param provenance.
     let cleared = matches!(
         init,
-        Expr::Declassify {
-            policy: Some(_),
-            reason: Some(_),
-            ..
-        }
+        Expr::Declassify { policy, reason, .. } if declassify_wellformed(policy, reason)
     );
     if cleared {
         flow.insert(name.to_string(), BTreeSet::new());
@@ -15195,7 +15243,7 @@ fn expr_param_return_flow(
             reason,
             ..
         } => {
-            if policy.is_some() && reason.is_some() {
+            if declassify_wellformed(policy, reason) {
                 BTreeSet::new()
             } else {
                 expr_param_return_flow(inner, flow, known_param_return)
@@ -15400,11 +15448,7 @@ fn body_param_returns(
                 }
                 let cleared = matches!(
                     init,
-                    Expr::Declassify {
-                        policy: Some(_),
-                        reason: Some(_),
-                        ..
-                    }
+                    Expr::Declassify { policy, reason, .. } if declassify_wellformed(policy, reason)
                 );
                 if cleared {
                     flow.insert(name.clone(), BTreeSet::new());
@@ -15662,7 +15706,7 @@ fn compute_param_return_taint(items: &[Item], ctx: &mut SemanticContext) {
 
 fn expr_is_declassified(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> bool {
     match expr {
-        Expr::Declassify { policy, reason, .. } => policy.is_some() && reason.is_some(),
+        Expr::Declassify { policy, reason, .. } => declassify_wellformed(policy, reason),
         Expr::Var(name) => scope
             .get(name)
             .is_some_and(|binding| binding.info.declassified && !binding.info.tainted),
@@ -15831,6 +15875,7 @@ fn empty_ir() -> TypedIR {
         symbols: vec![],
         taint_traces: vec![],
         diagnostics: vec![],
+        warnings: vec![],
         symbolic_defs: vec![],
         symbolic_widths: BTreeMap::new(),
     }

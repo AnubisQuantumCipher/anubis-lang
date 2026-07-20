@@ -5,5 +5,5 @@ import io;
 fn main() uses(fs.write, fs.read) {
     write_file("/tmp/anubis_phase3_io.txt", "xyz");
     let d = io::load("/tmp/anubis_phase3_io.txt");
-    print(len(d));
+    print(declassify(len(d), "self-io", "length of a file this program just wrote"));
 }

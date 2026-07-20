@@ -1,0 +1,4 @@
+// EXPECT: PASS
+// Operator directive: an implicit flow (branch on a secret assigns a non-secret var) is WARNED
+// (ANUBIS_IMPLICIT_FLOW_WARNING) but NOT rejected — secret<T> guards explicit flows only.
+fn main() { let bal: secret<i64> = 250000; let mut b0 = 0; if bal > 200000 { b0 = 1; } }

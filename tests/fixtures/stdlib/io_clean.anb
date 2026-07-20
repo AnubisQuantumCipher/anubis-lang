@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// FEATURE: Phase-5 std.io write/read with uses(fs.*)
+import std.io;
+
+fn main() uses(fs.write, fs.read) {
+    let p = "tests/fixtures/stdlib/_scratch_clean.txt";
+    io::write_text(p, "ok");
+    print(declassify(io::read_text(p), "self-io", "content this program just wrote"));
+}

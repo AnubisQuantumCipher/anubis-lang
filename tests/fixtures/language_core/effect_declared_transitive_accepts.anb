@@ -8,5 +8,5 @@ fn helper() {
 fn main() uses(fs.read, time.now) {
     let d = read_file("x.txt");
     helper();
-    print(d);
+    print("done");
 }

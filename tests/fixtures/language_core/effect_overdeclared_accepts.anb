@@ -3,5 +3,5 @@
 // only (a function may declare more than it uses, never perform more than it declares).
 fn main() uses(fs.read, net.send) {
     let d = read_file("x.txt");
-    print(d);
+    print("done");
 }

@@ -1,0 +1,4 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Operator security fix: printing untrusted input is a taint sink (is_sink ⊇ is_egress_sink).
+fn main() uses(io.read, io.print) { print(input()); }
