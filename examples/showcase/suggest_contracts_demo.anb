@@ -1,0 +1,10 @@
+// SUGGEST-CONTRACTS DEMO (operator item 10) — run:
+//   anubis check examples/showcase/suggest_contracts_demo.anb --suggest-contracts
+// Anubis infers the obvious preconditions these functions already assume, as editable suggestions:
+//   fn get:   requires(i >= 0)      (i is used as an array index and compared >= 0)
+//   fn clamp: requires(v < 100)     (v is compared < 100)
+// A parameter you already constrained (fn already) is left alone.
+fn get(xs: list<i64>, i: i64) -> i64 { if i >= 0 { return xs[i]; } return 0; }
+fn clamp(v: i64) -> i64 { if v < 100 { return v; } return 100; }
+fn already(x: i64) -> i64 requires(x >= 0) { return x; }
+fn main() { }

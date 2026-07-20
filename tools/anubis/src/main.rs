@@ -395,6 +395,11 @@ enum Commands {
         /// declaration; undeclared effects fail closed (`ANUBIS_UNDECLARED_EFFECT`).
         #[arg(long)]
         verified: bool,
+
+        /// Infer and print SUGGESTED requires/ensures clauses (operator item 10) — assisted contract
+        /// authoring. Suggestions are editable and NOT auto-applied; the check still runs normally.
+        #[arg(long)]
+        suggest_contracts: bool,
     },
 
     /// Prove using a specific backend (e.g. risc0 for ZK receipt).
@@ -1683,6 +1688,7 @@ fn main() -> Result<()> {
             emit,
             out,
             verified,
+            suggest_contracts,
         } => {
             println!(
                 "anubis check {} (evidence={}, verified={})",
@@ -1728,6 +1734,25 @@ fn main() -> Result<()> {
             } else {
                 Mode::Safe
             };
+
+            // Operator item 10: assisted contract authoring. Infer and print SUGGESTED requires/ensures
+            // clauses — editable, never auto-applied; the check proceeds normally below.
+            if suggest_contracts {
+                if let Some(ref a) = ast {
+                    let suggestions = anubis_compiler::middle::suggest_contracts(&a.items);
+                    if suggestions.is_empty() {
+                        println!("suggest-contracts: no obvious contracts to infer");
+                    } else {
+                        println!("suggest-contracts: inferred clauses (edit + paste onto the fn signature):");
+                        for s in &suggestions {
+                            println!("  fn {}:", s.function);
+                            for c in &s.clauses {
+                                println!("      {c}");
+                            }
+                        }
+                    }
+                }
+            }
 
             let typed_res = if let Some(ref a) = ast {
                 typecheck_ex(a.clone(), mode, verified)

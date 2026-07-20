@@ -15880,3 +15880,196 @@ fn empty_ir() -> TypedIR {
         symbolic_widths: BTreeMap::new(),
     }
 }
+
+/// A per-function contract suggestion (operator directive 2026-07-20, item 10). `anubis check
+/// --suggest-contracts` infers the OBVIOUS clauses a developer would otherwise write by hand and emits
+/// them as EDITABLE suggestions — it never auto-applies. Turns "verbose and manual (42 clauses for 15
+/// functions)" into "assisted with an escape hatch".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractSuggestion {
+    pub function: String,
+    /// Suggested `requires(...)` / `ensures(...)` clauses in canonical source form.
+    pub clauses: Vec<String>,
+}
+
+/// Infer obvious contracts for every function in `items`:
+///   (a) an integer parameter used as an ARRAY INDEX, or compared `>= 0` / `> -1` in the body, but not
+///       already constrained by a `requires`, gets a suggested `requires(param >= 0)`;
+///   (b) an integer parameter compared `<= C` / `< C` gets the suggested upper bound.
+/// Under-approximate and conservative: it only suggests bounds the body already ASSUMES, so accepting a
+/// suggestion cannot make a passing program fail. The developer accepts or edits each suggestion.
+pub fn suggest_contracts(items: &[Item]) -> Vec<ContractSuggestion> {
+    let mut out = Vec::new();
+    for it in items {
+        match it {
+            Item::Fn { name, params, body, requires, .. } => {
+                let mut clauses = Vec::new();
+                for (pname, pty) in params {
+                    if !ty::is_integer(pty) {
+                        continue;
+                    }
+                    // Skip a param the author already constrained.
+                    if requires.iter().any(|r| expr_names_var(r, pname)) {
+                        continue;
+                    }
+                    let mut lower: Option<i64> = None;
+                    let mut upper_le: Option<i64> = None;
+                    let mut upper_lt: Option<i64> = None;
+                    let mut used_as_index = false;
+                    for s in body {
+                        scan_param_bounds_stmt(s, pname, &mut lower, &mut upper_le, &mut upper_lt, &mut used_as_index);
+                    }
+                    if used_as_index && lower.is_none() {
+                        lower = Some(0);
+                    }
+                    if let Some(l) = lower {
+                        clauses.push(format!("requires({pname} >= {l})"));
+                    }
+                    // Keep the tighter of the two upper-bound forms if both seen.
+                    match (upper_le, upper_lt) {
+                        (Some(le), _) => clauses.push(format!("requires({pname} <= {le})")),
+                        (None, Some(lt)) => clauses.push(format!("requires({pname} < {lt})")),
+                        (None, None) => {}
+                    }
+                }
+                if !clauses.is_empty() {
+                    out.push(ContractSuggestion { function: name.clone(), clauses });
+                }
+            }
+            Item::Module { items, .. } => out.extend(suggest_contracts(items)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether a (contract) expression names the variable `v` anywhere.
+fn expr_names_var(e: &Expr, v: &str) -> bool {
+    match e {
+        Expr::Var(n) => n == v,
+        Expr::Binary { lhs, rhs, .. } => expr_names_var(lhs, v) || expr_names_var(rhs, v),
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Assume(expr) | Expr::Assert(expr)
+        | Expr::Try(expr) => expr_names_var(expr, v),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_names_var(inner, v),
+        Expr::Call { args, .. } => args.iter().any(|a| expr_names_var(a, v)),
+        Expr::CallExpr { callee, args } => expr_names_var(callee, v) || args.iter().any(|a| expr_names_var(a, v)),
+        Expr::Index { base, index } => expr_names_var(base, v) || expr_names_var(index, v),
+        Expr::FieldAccess { base, .. } => expr_names_var(base, v),
+        _ => false,
+    }
+}
+
+fn parse_int_lit(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Literal(s) => s.trim().parse::<i64>().ok(),
+        Expr::Unary { op, expr } if op == "-" => parse_int_lit(expr).map(|n| -n),
+        _ => None,
+    }
+}
+
+fn scan_param_bounds_stmt(
+    s: &Stmt,
+    p: &str,
+    lower: &mut Option<i64>,
+    upper_le: &mut Option<i64>,
+    upper_lt: &mut Option<i64>,
+    idx: &mut bool,
+) {
+    match s {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+            scan_param_bounds_expr(init, p, lower, upper_le, upper_lt, idx)
+        }
+        Stmt::Assign { target, value } => {
+            scan_param_bounds_expr(target, p, lower, upper_le, upper_lt, idx);
+            scan_param_bounds_expr(value, p, lower, upper_le, upper_lt, idx);
+        }
+        Stmt::If { cond, then, else_ } => {
+            scan_param_bounds_expr(cond, p, lower, upper_le, upper_lt, idx);
+            then.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+            if let Some(e) = else_ {
+                e.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            scan_param_bounds_expr(cond, p, lower, upper_le, upper_lt, idx);
+            body.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+        }
+        Stmt::For { body, .. } | Stmt::Loop { body, .. } | Stmt::WhileLet { body, .. } => {
+            body.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+        }
+        Stmt::ExprStmt(e) => scan_param_bounds_expr(e, p, lower, upper_le, upper_lt, idx),
+        _ => {}
+    }
+}
+
+fn scan_param_bounds_expr(
+    e: &Expr,
+    p: &str,
+    lower: &mut Option<i64>,
+    upper_le: &mut Option<i64>,
+    upper_lt: &mut Option<i64>,
+    idx: &mut bool,
+) {
+    let is_p = |x: &Expr| matches!(x, Expr::Var(n) if n == p);
+    if let Expr::Binary { op, lhs, rhs } = e {
+        // p OP lit
+        if is_p(lhs) {
+            if let Some(n) = parse_int_lit(rhs) {
+                match op.as_str() {
+                    ">=" => *lower = Some(lower.map_or(n, |c| c.max(n))),
+                    ">" => *lower = Some(lower.map_or(n + 1, |c| c.max(n + 1))),
+                    "<=" => *upper_le = Some(upper_le.map_or(n, |c| c.min(n))),
+                    "<" => *upper_lt = Some(upper_lt.map_or(n, |c| c.min(n))),
+                    _ => {}
+                }
+            }
+        }
+        // lit OP p  (mirror)
+        if is_p(rhs) {
+            if let Some(n) = parse_int_lit(lhs) {
+                match op.as_str() {
+                    "<=" => *lower = Some(lower.map_or(n, |c| c.max(n))),
+                    "<" => *lower = Some(lower.map_or(n + 1, |c| c.max(n + 1))),
+                    ">=" => *upper_le = Some(upper_le.map_or(n, |c| c.min(n))),
+                    ">" => *upper_lt = Some(upper_lt.map_or(n, |c| c.min(n))),
+                    _ => {}
+                }
+            }
+        }
+        scan_param_bounds_expr(lhs, p, lower, upper_le, upper_lt, idx);
+        scan_param_bounds_expr(rhs, p, lower, upper_le, upper_lt, idx);
+        return;
+    }
+    match e {
+        Expr::Index { base, index } => {
+            if is_p(index) {
+                *idx = true;
+            }
+            scan_param_bounds_expr(base, p, lower, upper_le, upper_lt, idx);
+            scan_param_bounds_expr(index, p, lower, upper_le, upper_lt, idx);
+        }
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Assume(expr) | Expr::Assert(expr)
+        | Expr::Try(expr) => scan_param_bounds_expr(expr, p, lower, upper_le, upper_lt, idx),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            scan_param_bounds_expr(inner, p, lower, upper_le, upper_lt, idx)
+        }
+        Expr::Call { args, .. } => args.iter().for_each(|a| scan_param_bounds_expr(a, p, lower, upper_le, upper_lt, idx)),
+        Expr::CallExpr { callee, args } => {
+            scan_param_bounds_expr(callee, p, lower, upper_le, upper_lt, idx);
+            args.iter().for_each(|a| scan_param_bounds_expr(a, p, lower, upper_le, upper_lt, idx));
+        }
+        Expr::FieldAccess { base, .. } => scan_param_bounds_expr(base, p, lower, upper_le, upper_lt, idx),
+        Expr::Block { stmts, tail } => {
+            stmts.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+            if let Some(t) = tail {
+                scan_param_bounds_expr(t, p, lower, upper_le, upper_lt, idx);
+            }
+        }
+        Expr::If { cond, then, else_, .. } => {
+            scan_param_bounds_expr(cond, p, lower, upper_le, upper_lt, idx);
+            scan_param_bounds_expr(then, p, lower, upper_le, upper_lt, idx);
+            scan_param_bounds_expr(else_, p, lower, upper_le, upper_lt, idx);
+        }
+        _ => {}
+    }
+}
