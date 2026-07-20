@@ -328,6 +328,45 @@ fn closure_body_let_subst(body: &Expr) -> BTreeMap<String, Expr> {
     m
 }
 
+/// Seed a closure body's LOCAL lambda `let`s into `scope` as closure bindings, so an application of a
+/// NESTED closure inside the body resolves. `|y| { let inner = |x| k; inner(0) }` otherwise laundered
+/// the captured secret `k`: reading the outer body's return `inner(0)` found no binding for `inner`
+/// (it is local to the outer body, not in the caller scope). Seeding `inner`'s `closure_lambda` lets
+/// the existing var-bound-closure source rule descend into `|x| k`. A `let g = <var-closure>` alias is
+/// carried too. Soundness hunt residual 2026-07-20 (nested closures q5/s5).
+fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBinding>) {
+    if let Expr::Block { stmts, .. } = body {
+        for s in stmts {
+            if let Stmt::Let { name, init, .. } = s {
+                let lam: Option<Box<Expr>> = match init {
+                    Expr::Lambda { .. } => Some(Box::new(init.clone())),
+                    Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+                    _ => None,
+                };
+                if let Some(lam) = lam {
+                    let entry = scope.entry(name.clone()).or_insert_with(|| ScopeBinding {
+                        info: BindingInfo {
+                            name: name.clone(),
+                            ty: None,
+                            mode: String::new(),
+                            tainted: false,
+                            taint_source: None,
+                            declassified: false,
+                            span: None,
+                        },
+                        closure_arity: None,
+                        closure_lambda: None,
+                        field_closures: BTreeMap::new(),
+                        fn_alias: None,
+                        secret: false,
+                    });
+                    entry.closure_lambda = Some(lam);
+                }
+            }
+        }
+    }
+}
+
 fn symbolic_index_capturing_closure(
     init: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -348,6 +387,7 @@ fn symbolic_index_capturing_closure(
             for p in params {
                 inner.remove(p);
             }
+            seed_body_local_lambdas(body, &mut inner);
             let captures_secret = expr_secret_source_m(
                 body,
                 &inner,
@@ -12684,6 +12724,7 @@ fn expr_taint_source_m(
                     for p in params {
                         inner.remove(p);
                     }
+                    seed_body_local_lambdas(body, &mut inner);
                     let mut tails = Vec::new();
                     expr_tail_values(body, &mut tails);
                     // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
@@ -12790,6 +12831,7 @@ fn expr_taint_source_m(
             for p in params {
                 inner.remove(p);
             }
+            seed_body_local_lambdas(body, &mut inner);
             let subst = closure_body_let_subst(body);
             let mut tails = Vec::new();
             expr_tail_values(body, &mut tails);
@@ -12874,6 +12916,7 @@ fn expr_taint_source_m(
                 for p in params {
                     inner.remove(p);
                 }
+                seed_body_local_lambdas(body, &mut inner);
                 let mut tails = Vec::new();
                 expr_tail_values(body, &mut tails);
                 // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
@@ -12981,6 +13024,7 @@ fn expr_secret_source_m(
                     for p in params {
                         inner.remove(p);
                     }
+                    seed_body_local_lambdas(body, &mut inner);
                     let mut tails = Vec::new();
                     expr_tail_values(body, &mut tails);
                     // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
@@ -13084,6 +13128,7 @@ fn expr_secret_source_m(
             for p in params {
                 inner.remove(p);
             }
+            seed_body_local_lambdas(body, &mut inner);
             let subst = closure_body_let_subst(body);
             let mut tails = Vec::new();
             expr_tail_values(body, &mut tails);
@@ -13159,6 +13204,7 @@ fn expr_secret_source_m(
                 for p in params {
                     inner.remove(p);
                 }
+                seed_body_local_lambdas(body, &mut inner);
                 let mut tails = Vec::new();
                 expr_tail_values(body, &mut tails);
                 // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.

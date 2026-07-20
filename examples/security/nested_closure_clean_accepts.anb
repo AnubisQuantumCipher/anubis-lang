@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Guard: nested closures capturing nothing secret must still compile.
+fn main() uses(net.send) {
+    let g = |y| { let inner = |x| { 7 }; inner(0) };
+    send("host", 80, g(0));
+}

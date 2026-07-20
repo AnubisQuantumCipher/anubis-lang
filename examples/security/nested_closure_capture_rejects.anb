@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (hunt residual 2026-07-20): a closure applied through ANOTHER closure nested inside the
+// body (`|y| { let inner = |x| k; inner(0) }`) laundered the captured secret — reading the outer body's
+// return `inner(0)` found no binding for `inner` (local to the outer body). FIX: seed_body_local_lambdas
+// seeds the body's local lambda lets into the source-read scope so inner(0) resolves via closure_lambda
+// (recurses to arbitrary nesting depth).
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let g = |y| { let inner = |x| { k }; inner(0) };
+    send("host", 80, g(0));
+}
