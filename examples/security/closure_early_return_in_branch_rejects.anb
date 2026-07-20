@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (combined-surface hunt 2026-07-20): a closure whose secret is returned from a NON-TAIL
+// if-branch (`|x| { if x > 0 { return k; } return 0; }`), applied and egressed, laundered the secret —
+// expr_tail_values collected only the TAIL return (`0`), missing the early `return k`. Fixed by
+// collecting every return anywhere in a closure body (over-approx, fail-closed for taint/secret).
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let g = |x| { if x > 0 { return k; } return 0; };
+    send("host", 80, g(1));
+}

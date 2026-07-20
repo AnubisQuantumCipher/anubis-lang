@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Over-rejection guard: a closure with early returns of only non-secret values must still compile.
+fn main() uses(net.send) {
+    let g = |x| { if x > 0 { return 1; } return 0; };
+    send("host", 80, g(1));
+}

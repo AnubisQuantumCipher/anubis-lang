@@ -8389,16 +8389,25 @@ fn expr_tail_values(e: &Expr, out: &mut Vec<Expr>) {
                 expr_tail_values(&a.body, out);
             }
         }
-        Expr::Block { stmts, tail } => match tail {
-            Some(t) => expr_tail_values(t, out),
-            // Collect a trailing `return X` as a yielded value. `expr_tail_values` reads a CLOSURE
-            // body's result for the taint/secret source analyzers (the only callers); a closure has
-            // no separate early-return scan, so `let g = |x| { return k }; send(g(0))` otherwise
-            // laundered the captured secret (the `false` here dropped the return, contradicting the
-            // #48-g comment that claimed a block-body return was covered). Soundness (user-reported
-            // 2026-07-20). Monotone-safe: only ADDS the returned value to the scanned tail set.
-            None => tail_values(stmts, true, out),
-        },
+        Expr::Block { stmts, tail } => {
+            // EVERY `return X` anywhere in the block is a possible result of a CLOSURE body (the
+            // taint/secret source analyzers are `expr_tail_values`' only callers), not just the tail
+            // one — an EARLY return buried in a non-tail `if`/`while`/`match` counts too. Soundness
+            // hunt 2026-07-20: `|x| { if x > 0 { return k; } return 0; }` otherwise yielded only the
+            // trailing `0`, hiding the secret `k` and laundering `send(g(1))` past the egress check.
+            // `collect_returns_in_stmt` gathers them all (it does NOT descend into a nested lambda —
+            // that return belongs to the inner closure). Over-approx = fail-closed for taint/secret.
+            for s in stmts {
+                collect_returns_in_stmt(s, out);
+            }
+            // Plus the fall-off value: an explicit tail expression, else the last non-return
+            // statement's value. A bare trailing `return X` is already gathered above, so
+            // `collect_tail_return = false` here (avoids collecting it twice).
+            match tail {
+                Some(t) => expr_tail_values(t, out),
+                None => tail_values(stmts, false, out),
+            }
+        }
         // A bare `return X` in expression position (an if-arm tail without a semicolon) — unwrap it
         // so the returned value is scanned, same reason as the block-tail return above.
         Expr::Call { callee, args } if callee == "return" => {
