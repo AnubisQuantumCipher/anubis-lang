@@ -1,0 +1,10 @@
+// VZ CONFINEMENT DEMO — the language derives a hypervisor confinement policy from its own PROVEN
+// effect set. Run:  anubis vz confine examples/showcase/vz_confine_demo.anb
+// This program declares NO capabilities and provably uses none, so Anubis derives the MOST confined
+// posture: network:host-only (--net-host, no internet) + mount:none. If a future edit added an
+// undeclared network egress, the checker would reject it in Safe mode — and even a MISSED higher-order
+// flow would only make the guest MORE confined (fail-closed at the hypervisor). The manifest is sealed
+// + re-derived-on-verify in every `anubis build --evidence` bundle (confinement_manifest.json).
+fn scale(x: i64, factor: i64) -> i64 requires(factor >= 0) { return x * factor; }
+fn total(base: i64) -> i64 { return scale(base, 3) + scale(base, 2); }
+fn main() { let _ = total(7); }

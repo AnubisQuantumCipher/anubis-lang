@@ -5426,7 +5426,7 @@ fn run_risc0_prove_child(
     Ok(())
 }
 
-fn first_mode(items: &[Item]) -> Option<Mode> {
+pub(crate) fn first_mode(items: &[Item]) -> Option<Mode> {
     for item in items {
         match item {
             Item::Fn { mode, .. } => return Some(*mode),

@@ -445,6 +445,59 @@ pub(crate) fn compute_fn_effect_rows(
     rows
 }
 
+/// The whole-program capability set the checker PROVES a program uses, plus the `open` bit — the
+/// single source of truth for VZ confinement derivation (`package::confinement`). Unions every
+/// function's transitive effect row (the exact `compute_fn_effect_rows` fixpoint the checker runs)
+/// with every declared `uses(...)` capability, restricted to the six canonical `CAPABILITY_IDS`.
+///
+/// `open == true` when ANY row's open bit is set — a closure / parameter / unknown callee the effect
+/// walk could not resolve, i.e. the program "may use anything". A confinement derivation MUST treat
+/// `open` as unbounded and confine MOST restrictively (fail-closed), never permissively.
+///
+/// This is an over-approximation in the SAFE direction for confinement: a capability that is present
+/// but MISSED by the fixpoint (e.g. a higher-order residual) yields a MORE restrictive hypervisor
+/// grant, so a mis-analysed guest breaks rather than leaks. It reflects the DECLARED+inferred surface;
+/// the hypervisor boundary is the backstop precisely for undeclared/higher-order flows.
+pub(crate) fn program_capability_set(items: &[Item]) -> (BTreeSet<String>, bool) {
+    let mut all_fns: BTreeSet<String> = BTreeSet::new();
+    let mut declared: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
+    super::collect_fn_params_bodies(items, &mut fns);
+    for (name, _, _) in &fns {
+        all_fns.insert(name.clone());
+    }
+    for item in items {
+        if let Item::Fn { name, effects, .. } = item {
+            if !effects.is_empty() {
+                declared.insert(name.clone(), effects.clone());
+            }
+        }
+    }
+    let rows = compute_fn_effect_rows(items, &all_fns, &declared);
+    let mut caps: BTreeSet<String> = BTreeSet::new();
+    let mut open = false;
+    for row in rows.values() {
+        for e in &row.effects {
+            let canon = super::normalize_effect_name(e);
+            if is_capability_id(&canon) {
+                caps.insert(canon);
+            }
+        }
+        open |= row.open;
+    }
+    // Fold declared uses(...) directly too — defensive against a declared cap on a fn whose body is
+    // empty/opaque (declared ⊇ inferred is what the checker enforces; grant on the union either way).
+    for decls in declared.values() {
+        for d in decls {
+            let canon = super::normalize_effect_name(d);
+            if is_capability_id(&canon) {
+                caps.insert(canon);
+            }
+        }
+    }
+    (caps, open)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

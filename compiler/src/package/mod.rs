@@ -4,6 +4,7 @@
 //! content-addressed cache, verifies signed evidence, and mounts packages as modules.
 
 pub mod cache;
+pub mod confinement;
 pub mod lock;
 pub mod merkle;
 pub mod proof;

@@ -176,6 +176,15 @@ pub fn build_evidence_bundle_tree(
     {
         let _ = crate::package::summary::write_audit_to_evidence_dir(&dir, &audit);
     }
+    // VZ confinement manifest — the hypervisor confinement policy DERIVED from the program's proven
+    // capability set (the six canonical effects). A SECOND, independent boundary consistent-by-
+    // construction with what `anubis check` proved, sealed here (covered by MANIFEST.sha256 + pca.sig)
+    // and re-derived + byte-compared on verify (fail-closed on a forged/source-swapped grant). It maps
+    // each capability to a concrete Apple-Virtualization (tart) grant with honest tart_enforced /
+    // needs_human flags — never claiming an isolation tart cannot deliver.
+    if let Ok(cm) = crate::package::confinement::derive_confinement("package", "0.0.0", &source) {
+        let _ = crate::package::confinement::write_confinement_to_evidence_dir(&dir, &cm);
+    }
     // Optional multi-leaf listing for re-verify of Merkle source_hash.
     if files.len() > 1 {
         let leaves: Vec<serde_json::Value> = files
@@ -728,7 +737,35 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
         Some((ok, _signer)) => ok,
         None => true,
     };
-    Ok(hashes_ok && source_bound && sig_ok && claim_semantically_matches(&fresh, &recorded))
+    // VZ confinement cross-check (consistent-BY-CONSTRUCTION, not merely tamper-evident): if the
+    // bundle carries a confinement manifest, RE-DERIVE it from the bundle's own source and fail
+    // closed on any drift. A grant that contradicts the proven effect set — e.g. a hand-forged
+    // `network:host-only` over a source that provably uses `net.send` — cannot survive the re-derive
+    // (which is a pure function of the source), so a forged or source-swapped grant is rejected here.
+    let confine_ok = {
+        let cm_path = dir.join(crate::package::confinement::CONFINEMENT_FILENAME);
+        if cm_path.exists() {
+            match std::fs::read_to_string(&cm_path)
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    serde_json::from_str::<crate::package::confinement::ConfinementManifest>(&s)
+                        .map_err(|e| e.to_string())
+                }) {
+                Ok(sealed) => crate::package::confinement::verify_confinement_matches_source(
+                    &source, &sealed,
+                )
+                .is_ok(),
+                Err(_) => false, // a malformed sealed confinement manifest fails closed
+            }
+        } else {
+            true // legacy bundle without a confinement manifest
+        }
+    };
+    Ok(hashes_ok
+        && source_bound
+        && sig_ok
+        && confine_ok
+        && claim_semantically_matches(&fresh, &recorded))
 }
 
 /// The `pca.sig` sidecar: an Ed25519 signature over the PCA, written OUTSIDE `MANIFEST.sha256` (it

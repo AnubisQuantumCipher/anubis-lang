@@ -114,6 +114,18 @@ pub enum VzCmd {
         #[arg(long, default_value = "admin")]
         user: String,
     },
+    /// Derive the hypervisor CONFINEMENT policy from a program's PROVEN capability set (the six
+    /// canonical effects), and print it as JSON. Fails closed: a program that does not pass
+    /// `anubis check` has no proof to derive confinement from, so it is refused. The same manifest is
+    /// sealed + re-derivable in every `anubis build --evidence` bundle. This never boots a VM;
+    /// APPLYING the derived flags to a live guest is `vz exploit --confine` (a follow-up).
+    Confine {
+        /// The program `.anb` to derive confinement for.
+        program: String,
+        /// Write the manifest JSON to this path instead of stdout.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Fuzz a target in a DISPOSABLE guest (clone → boot → sync → `anubis fuzz` inside → discard).
     Fuzz {
         target: String,
@@ -343,6 +355,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 )
             })
         }
+        VzCmd::Confine { program, out } => run_confine(&program, out),
         VzCmd::Fuzz { target, iterations, base, keep, allow_research, user } => {
             if !allow_research {
                 bail!("ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz fuzz` runs offensive code — pass --allow-research.");
@@ -366,6 +379,67 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             })
         }
     }
+}
+
+/// Derive + print the hypervisor confinement manifest from a program's proven effect set. Fails
+/// closed: the program must PARSE and pass `anubis check` (there is no proof to confine from
+/// otherwise). Never boots a VM. The manifest is the same one auto-sealed into every evidence bundle.
+fn run_confine(program: &str, out: Option<String>) -> Result<()> {
+    let src = std::fs::read_to_string(program)
+        .with_context(|| format!("read program `{program}`"))?;
+    let ast = anubis_compiler::parse_source(&src)
+        .map_err(|e| anyhow!("ANUBIS_CONFINE_PARSE_FAILED: {e}"))?;
+    let mode = crate::first_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
+    // Fail closed: a program that does not typecheck has no PROVEN effect set to derive from.
+    anubis_compiler::typecheck(ast, mode).map_err(|e| {
+        anyhow!(
+            "ANUBIS_CONFINE_UNVERIFIED: refusing to derive a confinement policy from a program that \
+             does not pass `anubis check` — confinement is only meaningful as a consequence of a \
+             passing check: {e}"
+        )
+    })?;
+    let manifest =
+        anubis_compiler::package::confinement::derive_confinement("program", "0.0.0", &src)
+            .map_err(|e| anyhow!("{e}"))?;
+    let json = serde_json::to_string_pretty(&manifest).map_err(|e| anyhow!("{e}"))?;
+
+    eprintln!("[anubis vz confine] hypervisor confinement derived from the program's PROVEN effect set:");
+    eprintln!("  effects_bounded : {}", manifest.effects_bounded);
+    eprintln!(
+        "  capabilities    : {}",
+        if manifest.capabilities_present.is_empty() {
+            "(none proven — maximally confinable)".to_string()
+        } else {
+            manifest.capabilities_present.join(", ")
+        }
+    );
+    for g in &manifest.grants {
+        // Show the two hypervisor-relevant dimensions (network, mount) always; other caps only when present.
+        let relevant = g.hypervisor_grant.starts_with("network")
+            || g.hypervisor_grant.starts_with("mount")
+            || g.present;
+        if !relevant {
+            continue;
+        }
+        let mark = if g.tart_enforced { "tart-enforced" } else { "advisory/needs-human" };
+        let args = if g.tart_args.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", g.tart_args.join(" "))
+        };
+        eprintln!("  {:<9} -> {:<30} [{}]{}", g.capability, g.hypervisor_grant, mark, args);
+    }
+    eprintln!(
+        "  (sealed + re-derived-on-verify as confinement_manifest.json in every `anubis build --evidence` bundle)"
+    );
+
+    if let Some(path) = out {
+        std::fs::write(&path, &json).with_context(|| format!("write `{path}`"))?;
+        eprintln!("[anubis vz confine] wrote {path}");
+    } else {
+        println!("{json}");
+    }
+    Ok(())
 }
 
 /// Boot a VM headless in the background and poll for its IP (up to ~60s). Idempotent: if already
