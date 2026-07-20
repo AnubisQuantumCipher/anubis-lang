@@ -4,6 +4,7 @@ import Anubis.Encoding
 import Anubis.BitBlast
 import Anubis.ContractComposition
 import Anubis.LoopInvariant
+import Anubis.PathCondition
 import Anubis.ArrayEncoding
 import Anubis.Capability
 import Anubis.CompareUnary
