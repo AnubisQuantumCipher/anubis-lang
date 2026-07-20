@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Integrity twin [11]: untrusted input through a param whose sink is buried in a value-block while.
+fn go(cmd: u64) uses(net.send) {
+    let z = if true { let mut i = 0; while i < 1 { send("host", 80, cmd); i = i + 1; } 0 } else { 0 };
+}
+fn main() uses(net.send) { let t = input(); go(t); }

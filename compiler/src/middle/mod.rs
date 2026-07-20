@@ -13659,11 +13659,21 @@ fn collect_param_sinks_in_expr(
                     Stmt::ExprStmt(e) => {
                         collect_param_sinks_in_expr(e, &local, sink_pred, known_param_sinks, known_method_param_sinks, found)
                     }
-                    // Deep-nested control-flow STATEMENTS in a value block are covered for the
-                    // ENFORCING pass by walk_block_effects; here (a monotone, fail-open SUMMARY) the
-                    // common linear shapes suffice — a missed nested sink under-approximates the
-                    // param_sinks set (never a false interproc reject), a named residual.
-                    _ => {}
+                    // A control-flow STATEMENT inside a value block (`let z = if c { while … {
+                    // send(x) } … }`) is delegated to `body_param_sinks`, which descends into
+                    // if/while/for/loop bodies. Without this the nested sink/egress was DROPPED here,
+                    // under-approximating the param→sink / param→egress summary and letting an interproc
+                    // leak compile (soundness hunt2 [10,11]: a secret through a method/fn param whose
+                    // egress is buried in a value-position while-in-if block). Monotone add-only, so it
+                    // only ever adds param indices — never a false interproc reject.
+                    other => body_param_sinks(
+                        std::slice::from_ref(other),
+                        &mut local,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    ),
                 }
             }
             if let Some(t) = tail {

@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Over-rejection guard: a value-block egress of a CONSTANT (not the param) must still compile.
+fn go(cmd: u64) uses(net.send) {
+    let z = if true { let mut i = 0; while i < 1 { send("host", 80, 42); i = i + 1; } 0 } else { 0 };
+}
+fn run(k: secret<u64>) uses(net.send) { go(k); }
+fn main() { }
