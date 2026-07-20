@@ -2044,8 +2044,13 @@ fn analyze_function(
         for e in ensures {
             collect_expr_vars(e, &mut ensures_vars);
         }
-        let mut rebound = BTreeSet::new();
-        collect_assigned_roots(body, &mut rebound);
+        // `reassigned` = roots the body ASSIGNS to (`x = …`), distinct from `rebound` which also folds
+        // in `let`-bound names. A guard/escape path-condition is only sound if its variables have the
+        // SAME value at the guard point and at the obligation's discharge point — a REASSIGNMENT breaks
+        // that (a `let` does not: it introduces a fresh name, it does not mutate the guarded one).
+        let mut reassigned = BTreeSet::new();
+        collect_assigned_roots(body, &mut reassigned);
+        let mut rebound = reassigned.clone();
         collect_let_bound(body, &mut rebound);
         for p in ensures_vars.intersection(&param_names) {
             if rebound.contains(p) {
@@ -2100,7 +2105,17 @@ fn analyze_function(
             };
             let snap_g = ctx.active_branch_guards.len();
             let mut asm = assumptions.clone();
-            for (cond, neg) in guards.iter().chain(tail_escapes.iter()) {
+            // Tail-if `guards` are evaluated at the tail point (same point as the value) so they stay
+            // sound under reassignment; the guard-clause `tail_escapes` are about an EARLIER program
+            // point, so drop any whose variables the body reassigns (else a stale escape UNSATs the
+            // context and proves the ensures vacuously — soundness hunt 2026-07-20).
+            for (cond, neg) in guards.iter() {
+                push_branch_path_condition(ctx, &mut asm, cond, *neg);
+            }
+            for (cond, neg) in tail_escapes.iter() {
+                if cond_refs_reassigned(cond, &reassigned) {
+                    continue;
+                }
                 push_branch_path_condition(ctx, &mut asm, cond, *neg);
             }
             push_ensures_obligations(ctx, ensures, &rv, &asm, span);
@@ -2177,7 +2192,13 @@ fn analyze_function(
             // tail guards). Snapshot/restore `active_branch_guards` around the discharge (vacuity gate).
             let snap_g = ctx.active_branch_guards.len();
             let mut asm = precondition_assumptions.clone();
+            // An early return's guards are the enclosing-if conditions plus accumulated guard-clause
+            // escapes — BOTH about program points before a possible reassignment. Drop any whose
+            // variables the body reassigns (stale-guard-over-mutation false proof, hunt 2026-07-20).
             for (cond, neg) in guards {
+                if cond_refs_reassigned(cond, &reassigned) {
+                    continue;
+                }
                 push_branch_path_condition(ctx, &mut asm, cond, *neg);
             }
             push_ensures_obligations(ctx, ensures, &rv, &asm, span);
@@ -10881,6 +10902,24 @@ fn block_always_returns(stmts: &[Stmt]) -> bool {
 /// `fn clamp(x) ensures(result >= 0) { if x < 0 { return 0; } return x; }` proves — `return x` carries
 /// `!(x < 0)` i.e. `x >= 0`. Sound: `block_always_returns` is conservative, so `!cond` is only added
 /// when the `then` genuinely diverts every early path (a TRUE fact on the fall-through path).
+/// A path-condition guard is UNSOUND to thread into an obligation when any of its variables is
+/// REASSIGNED in the body: the guard was true at the guard point, but a later `x = …` changes the
+/// value while the SMT symbol is unversioned, so the guard fact (on the same symbol) contradicts the
+/// current value and the two together are UNSAT — discharging the postcondition VACUOUSLY (a false
+/// proof). Soundness hunt 2026-07-20: `if x >= 0 { return 0; } x = -5; return x;` was certified for
+/// `ensures(result >= 0)` though `run` returns -5, because the escape `x >= 0` and `x == -5` are UNSAT.
+/// A constant reassignment keeps `x` modeled (so the guard is not silently dropped by de-modeling —
+/// the earlier assumption to the contrary was wrong), hence this explicit filter. Fail-open on the
+/// GUARD (drop it) = the return must prove without that path fact = sound (a REJECT, never a false pass).
+fn cond_refs_reassigned(cond: &Expr, reassigned: &BTreeSet<String>) -> bool {
+    if reassigned.is_empty() {
+        return false;
+    }
+    let mut vs = BTreeSet::new();
+    collect_expr_vars(cond, &mut vs);
+    !vs.is_disjoint(reassigned)
+}
+
 fn guard_clause_escapes(body: &[Stmt]) -> Vec<(Expr, bool)> {
     let mut escapes = Vec::new();
     for s in body {

@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN|ANUBIS_CONTRACT_UNPROVABLE
+// Soundness regression (hunt 2026-07-20): the item-2 guard-clause escape was UNSOUND when the guard
+// variable is REASSIGNED after the guard. `if x < 0 { return 0; } x = 0 - 5; return x;` was falsely
+// certified for `ensures(result >= 0)` — the escape `x >= 0` and the live `x == -5` are UNSAT, so the
+// obligation discharged vacuously, while `run` returns -5. FIX: drop an escape/guard whose variables
+// the body reassigns (the SMT symbol is unversioned, so the stale guard cannot be trusted).
+fn f(x: i64) -> i64 ensures(result >= 0) {
+    if x < 0 { return 0; }
+    x = 0 - 5;
+    return x;
+}
+fn main() {}
