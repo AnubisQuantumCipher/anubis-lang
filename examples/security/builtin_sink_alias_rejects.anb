@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (indirection hunt 2026-07-20): a BUILTIN sink aliased to a local var
+// (`let f = shell; f(input())`) laundered untrusted input — command injection. fn_alias_of only
+// recorded user-fn aliases; the direct is_sink check keyed on the literal callee "f". FIX: fn_alias_of
+// records builtin sink/egress aliases + the direct sink/egress checks resolve the alias (sink_callee).
+fn main() uses(shell) {
+    let f = shell;
+    f(input());
+}

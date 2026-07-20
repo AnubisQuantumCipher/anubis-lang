@@ -180,7 +180,10 @@ fn fn_alias_of(
 ) -> Option<String> {
     match init {
         Expr::Var(n) => {
-            if ctx.fn_params.contains_key(n) {
+            // A user fn, a BUILTIN sink/egress (so `let f = shell; f(input())` resolves `f` back to
+            // `shell` at the direct is_sink / is_egress_sink check — soundness hunt 2026-07-20,
+            // taint_sinks builtin-alias), or a transitive alias chain.
+            if ctx.fn_params.contains_key(n) || is_sink(n) || is_egress_sink(n) {
                 Some(n.clone())
             } else {
                 scope.get(n).and_then(|b| b.fn_alias.clone())
@@ -305,6 +308,26 @@ fn flatten_access_path(e: &Expr) -> Option<(String, String)> {
 /// makes `g(...)` analysed as the leak it may be. Fires ONLY when such a closure is present, so a
 /// container of pure closures indexed symbolically is unaffected (no false reject). A literal index is
 /// resolved precisely by the `Expr::Index` arm of the `cl` computation, so this skips those.
+/// The substitution induced by a closure body's leading local `let`s, so that a closure-local ALIAS of
+/// a captured value is resolved when reading the body's returned value(s). `|x| { let y = k; return y;
+/// }` otherwise laundered the captured secret `k`: the source analyzer read `y` (unbound in the caller
+/// scope) instead of `k`. Chains resolve (`let a = k; let b = a` → both map to `k`) because each init
+/// is substituted through the map built so far. The lambda's own params are never added (only body
+/// `let`s are collected), so a param alias (`let y = x`) maps `y → x`, which the params-removed caller
+/// scope then reads as clean — correct. Soundness hunt 2026-07-20 (return_in_closure ×8, cross_surface).
+fn closure_body_let_subst(body: &Expr) -> BTreeMap<String, Expr> {
+    let mut m = BTreeMap::new();
+    if let Expr::Block { stmts, .. } = body {
+        for s in stmts {
+            if let Stmt::Let { name, init, .. } = s {
+                let resolved = substitute_vars(init, &m);
+                m.insert(name.clone(), resolved);
+            }
+        }
+    }
+    m
+}
+
 fn symbolic_index_capturing_closure(
     init: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -5174,8 +5197,16 @@ fn analyze_expr_effect(
                     apply_inherited_capability(raw, mode, effects, ctx);
                 }
             }
-            if is_sink(callee) {
-                effects.push(format!("sink:{}", callee));
+            // Resolve a function-value alias so a call THROUGH `let f = shell; f(x)` (a BUILTIN sink/
+            // egress aliased to a local) consults the real sink at the DIRECT checks too — the interproc
+            // checks already resolve aliases; this closes the same gap for the builtin-sink direct case
+            // (soundness hunt 2026-07-20). Non-alias calls are unaffected (`sink_callee == callee`).
+            let sink_callee: &str = scope
+                .get(callee)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(callee.as_str());
+            if is_sink(sink_callee) {
+                effects.push(format!("sink:{}", sink_callee));
                 for arg in args {
                     if let Some(source) =
                         expr_taint_source_m(arg, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns)
@@ -5207,7 +5238,7 @@ fn analyze_expr_effect(
             // `declassify(x, policy, reason)`, so the release hatch is built in (a MALFORMED declassify
             // does NOT hatch — AST-shape keyed, matching the taint side). Safe-mode; independent of
             // `is_sink` so it also covers egress builtins (`http_post`, `connect`) not in that set.
-            if mode == Mode::Safe && is_egress_sink(callee) {
+            if mode == Mode::Safe && is_egress_sink(sink_callee) {
                 for arg in args {
                     if let Some(source) =
                         expr_secret_source_m(arg, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
@@ -12645,6 +12676,9 @@ fn expr_taint_source_m(
                     }
                     let mut tails = Vec::new();
                     expr_tail_values(body, &mut tails);
+                    // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
+                    let __subst = closure_body_let_subst(body);
+                    let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
                     tails.iter().find_map(|t| {
                         expr_taint_source_m(t, &inner, tainting_fns, param_return_taint, method_tainting_fns)
                     })
@@ -12793,6 +12827,9 @@ fn expr_taint_source_m(
                 }
                 let mut tails = Vec::new();
                 expr_tail_values(body, &mut tails);
+                // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
+                let __subst = closure_body_let_subst(body);
+                let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
                 if let Some(s) = tails.iter().find_map(|t| {
                     expr_taint_source_m(t, &inner, tainting_fns, param_return_taint, method_tainting_fns)
                 }) {
@@ -12897,6 +12934,9 @@ fn expr_secret_source_m(
                     }
                     let mut tails = Vec::new();
                     expr_tail_values(body, &mut tails);
+                    // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
+                    let __subst = closure_body_let_subst(body);
+                    let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
                     tails.iter().find_map(|t| {
                         expr_secret_source_m(t, &inner, secret_fns, param_return_taint, method_secret_fns)
                     })
@@ -13027,6 +13067,9 @@ fn expr_secret_source_m(
                 }
                 let mut tails = Vec::new();
                 expr_tail_values(body, &mut tails);
+                // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
+                let __subst = closure_body_let_subst(body);
+                let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
                 if let Some(s) = tails.iter().find_map(|t| {
                     expr_secret_source_m(t, &inner, secret_fns, param_return_taint, method_secret_fns)
                 }) {

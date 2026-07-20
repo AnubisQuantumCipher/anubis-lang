@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (indirection hunt 2026-07-20, return_in_closure ×8): a closure-local `let` ALIASING the
+// captured secret, then returned (`|x| { let y = k; return y; }`), laundered it — the source analyzer
+// read `y` (unbound in the caller scope) instead of `k`. FIX: closure_body_let_subst resolves the
+// body's local lets before reading the return value.
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let g = |x| { let y = k; return y; };
+    send("host", 80, g(0));
+}

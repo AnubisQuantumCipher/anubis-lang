@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Guard: a closure-local let of a NON-secret constant must still compile.
+fn main() uses(net.send) {
+    let g = |x| { let y = 42; return y; };
+    send("host", 80, g(0));
+}
