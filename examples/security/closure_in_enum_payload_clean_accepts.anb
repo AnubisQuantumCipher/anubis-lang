@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Over-rejection guard: an enum-payload closure capturing no secret must still compile.
+fn run() uses(net.send) {
+    let g = |x| 42;
+    let e = Some(g);
+    match e {
+        Some(f) => { send("host", 80, f(0)); }
+        None => { }
+    }
+}
+fn main() { }

@@ -228,6 +228,14 @@ fn collect_container_closures(
                 _ => None,
             })
             .collect(),
+        // Enum payloads (`Some(g)`, `Err(g)`, `V(g)`) key the positional fields the same way as a list,
+        // so a closure pattern-bound out of the payload (`match e { Some(f) => f(0) }`) can resolve to
+        // g's body (soundness hunt2 [03]).
+        Expr::EnumConstruct { fields, .. } => fields
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (mk(&i.to_string()), e))
+            .collect(),
         _ => return,
     };
     for (segkey, val) in entries {
@@ -5210,6 +5218,7 @@ fn analyze_expr_effect(
             for arm in arms {
                 let mut local = scope.clone();
                 seed_effect_pattern(&mut local, &arm.pattern, &st, ss);
+                propagate_pattern_closures(&mut local, scrutinee, &arm.pattern);
                 if let Some(guard) = &arm.guard {
                     analyze_expr_effect(guard, mode, &local, effects, ctx);
                 }
@@ -5229,6 +5238,7 @@ fn analyze_expr_effect(
                 .is_some();
             let mut local = scope.clone();
             seed_effect_pattern(&mut local, pattern, &st, ss);
+            propagate_pattern_closures(&mut local, scrutinee, pattern);
             analyze_expr_effect(then, mode, &local, effects, ctx);
             analyze_expr_effect(else_, mode, scope, effects, ctx);
         }
@@ -12581,6 +12591,38 @@ fn seed_taint_pattern(
                 secret: false,
             },
         );
+    }
+}
+
+/// After a `match`/`if let` arm binds its pattern, propagate a closure stored in the SCRUTINEE's
+/// enum/tuple payload to the bound variable, so `match Some(g) { Some(f) => f(0) }` sees `f` as `g`'s
+/// closure (and `f(0)` carries `g`'s captured secret/taint to an egress). The scrutinee's
+/// `field_closures` (populated by `collect_container_closures` for the `EnumConstruct`) are keyed by
+/// positional index; an `EnumVariant` pattern's positional `bindings[i]` binds payload field `i`.
+/// Closes soundness hunt2 [03]. Only a `Var` scrutinee with a positional `Binding` sub-pattern
+/// resolves — anything else is left as-is (no false labelling).
+fn propagate_pattern_closures(
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    scrutinee: &Expr,
+    pattern: &Pattern,
+) {
+    let Expr::Var(sv) = scrutinee else {
+        return;
+    };
+    let fclos = match scope.get(sv) {
+        Some(b) if !b.field_closures.is_empty() => b.field_closures.clone(),
+        _ => return,
+    };
+    if let Pattern::EnumVariant { bindings, .. } = pattern {
+        for (i, sub) in bindings.iter().enumerate() {
+            if let Pattern::Binding(name) = sub {
+                if let Some(lam) = fclos.get(&i.to_string()) {
+                    if let Some(b) = scope.get_mut(name) {
+                        b.closure_lambda = Some(lam.clone());
+                    }
+                }
+            }
+        }
     }
 }
 
