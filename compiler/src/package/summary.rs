@@ -6,7 +6,12 @@
 //! *proof-carrying claim* that the sealed package advertised those properties honestly. v2 adds
 //! contracts: sealing them makes a dependency's advertised pre/postconditions tamper-evident (the
 //! summary is re-derived and byte-compared on verify, and the source merkle covers the contract
-//! text), and is the prerequisite for cross-package call-site requires-discharge (follow-up).
+//! text). Cross-package call-site ENFORCEMENT is live (Phase-6 DoD, verified 2026-07-20): the
+//! consumer combines the (hash-pinned, evidence-verified) dependency source and re-typechecks it, so
+//! an imported fn's `requires` is DISCHARGED at the consumer's call site, its `ensures` is assumed,
+//! and its effects/taint are inherited — see `phase6_cross_module_summary_enforced_at_call_sites`.
+//! Re-proving the dep body in the same run also catches a dep that ADVERTISES a contract its body
+//! does not satisfy, so the sealed summary is a trusted-then-verified claim, not a trusted one.
 
 use crate::frontend::{parse_source, Expr, Item, Stmt, Visibility};
 use crate::package::merkle;

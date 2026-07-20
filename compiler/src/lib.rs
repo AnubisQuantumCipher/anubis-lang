@@ -4703,6 +4703,72 @@ fn main() uses(fs.read, fs.write) {
     }
 
     #[test]
+    fn phase6_cross_module_summary_enforced_at_call_sites() {
+        // Phase-6 DoD lock: a dependency's advertised surface is ENFORCED at the CONSUMER's call
+        // sites, via the source-combine + live re-typecheck of the (hash-pinned, evidence-verified)
+        // dependency. Covers all three summary dimensions across the module boundary: a `requires`
+        // discharged (and DISPROVED on a violating arg), an effect inherited, and taint inherited.
+        // The combine here is the same `combine_from_entry` the package-dependency build path uses
+        // (main.rs threads it through after `resolve_workspace` verifies the lock + evidence).
+        let dir = unique_test_dir("phase6-xpkg");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("dep.anb"),
+            "pub fn safe_div(n: i64, d: i64) -> i64 requires(d != 0) { return n / d; }\n\
+             pub fn beacon() uses(net.send) { send(\"h\", 80, \"x\"); }\n\
+             pub fn passthru(x: tainted<i64>) -> i64 { return x; }\n",
+        )
+        .unwrap();
+
+        // (a) requires DISCHARGE across the boundary: a violating call must be DISPROVED by the solver.
+        let bad = dir.join("bad.anb");
+        std::fs::write(&bad, "import dep;\nfn main() { let _ = dep::safe_div(10, 0); }\n").unwrap();
+        let items = resolve::combine_from_entry(&bad).expect("combine bad");
+        let ir = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("tc bad");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.name.contains("requires") && c.status == "FAIL"),
+            "imported requires(d != 0) must be discharged + disproved at the consumer call site: {checks:?}"
+        );
+
+        // (a') the SAME call with a valid arg must NOT be disproved.
+        let ok = dir.join("ok.anb");
+        std::fs::write(&ok, "import dep;\nfn main() { let _ = dep::safe_div(10, 2); }\n").unwrap();
+        let items = resolve::combine_from_entry(&ok).expect("combine ok");
+        let ir = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("tc ok");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            !checks.iter().any(|c| c.name.contains("requires") && c.status == "FAIL"),
+            "a valid imported call must not be disproved: {checks:?}"
+        );
+
+        // (b) effect inheritance: calling the dep's `uses(net.send)` fn without declaring it → rejected.
+        let eff = dir.join("eff.anb");
+        std::fs::write(&eff, "import dep;\nfn main() { dep::beacon(); }\n").unwrap();
+        let items = resolve::combine_from_entry(&eff).expect("combine eff");
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe)
+            .expect_err("inherited net.send effect must be enforced");
+        assert!(
+            err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"),
+            "inherited effect not enforced: {err}"
+        );
+
+        // (c) taint inheritance: the dep's tainted<T>→return, sunk in the consumer → rejected.
+        let tnt = dir.join("tnt.anb");
+        std::fs::write(
+            &tnt,
+            "import dep;\nfn main() { let u = input(); sink(dep::passthru(u)); }\n",
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&tnt).expect("combine tnt");
+        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe)
+            .expect_err("inherited taint must be enforced");
+        assert!(err.contains("TAINTED"), "inherited taint not enforced: {err}");
+    }
+
+    #[test]
     fn phase5_crypto_hmac_verify_ct_and_aead_roundtrip() {
         use backends::run::compile_and_run_items;
         let dir = unique_test_dir("phase5-crypto");
