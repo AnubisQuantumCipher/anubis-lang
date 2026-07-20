@@ -238,6 +238,13 @@ fn collect_container_closures(
             Expr::Var(v) => {
                 if let Some(l) = scope.get(v).and_then(|b| b.closure_lambda.clone()) {
                     out.insert(segkey, l);
+                } else {
+                    // A bare reference (`Box { f: leak }`) — record the `Var` itself so an application
+                    // `b.f(args)` can resolve it: if it names a free function with an interproc
+                    // egress/sink summary, the call-site check consults that summary (a Lambda descends
+                    // into its body; a Var is skipped by the closure-BODY consumers, which only match
+                    // `Expr::Lambda`). Closes the named-fn-in-aggregate laundering (soundness hunt2).
+                    out.insert(segkey, Box::new(Expr::Var(v.clone())));
                 }
             }
             Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
@@ -5241,6 +5248,72 @@ fn analyze_expr_effect(
         // higher-order boundary; the closure-application callee/args ARE concrete call-site exprs and
         // are walked via `CallExpr`).
         Expr::CallExpr { callee, args } => {
+            // A NAMED free function stored in a container field/element and applied via `b.f(args)` /
+            // `arr[0](args)` must consult its interproc egress/sink summary — the aggregate twin of the
+            // direct-call check in the `Expr::Call` arm. Resolve the field-stored `Var(fn)` via the
+            // dotted access path, then apply `param_egress` / `param_sinks` to the CALL ARGS. Soundness
+            // hunt2: `Box { f: leak }; b.f(h, p, k)` laundered a secret past ANUBIS_INTERPROC_EXFILTRATION.
+            let stored_fn: Option<String> = flatten_access_path(callee).and_then(|(root, path)| {
+                scope
+                    .get(&root)
+                    .and_then(|b| b.field_closures.get(&path))
+                    .and_then(|e| match e.as_ref() {
+                        Expr::Var(fname) => Some(fname.clone()),
+                        _ => None,
+                    })
+            });
+            if let Some(fname) = stored_fn {
+                if mode == Mode::Safe {
+                    if let Some(egress_params) = ctx.param_egress.get(&fname).cloned() {
+                        for i in egress_params {
+                            if let Some(arg) = args.get(i) {
+                                if let Some(source) = expr_secret_source_m(
+                                    arg,
+                                    scope,
+                                    &ctx.secret_fns,
+                                    &ctx.param_return_taint,
+                                    &ctx.method_secret_fns,
+                                ) {
+                                    ctx.emit(
+                                        SemanticDiagnostic {
+                                            code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                                            message: format!(
+                                                "safe mode confidentiality violation: secret `{source}` flows into parameter {i} of `{fname}` (a function stored in a container and applied), which reaches an egress without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program"
+                                            ),
+                                            span: None,
+                                        },
+                                        false,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(sink_params) = ctx.param_sinks.get(&fname).cloned() {
+                    for i in sink_params {
+                        if let Some(arg) = args.get(i) {
+                            if let Some(source) = expr_taint_source_m(
+                                arg,
+                                scope,
+                                &ctx.tainting_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_tainting_fns,
+                            ) {
+                                let declassified = expr_is_declassified(arg, scope);
+                                if mode == Mode::Safe && !declassified {
+                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                        code: Some("ANUBIS_INTERPROC_SINK".into()),
+                                        message: format!(
+                                            "safe mode tainted flow from `{source}` into parameter {i} of `{fname}` (a function stored in a container), which reaches a sink without declassify"
+                                        ),
+                                        span: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // Task #48-d: a closure stored in a LIST ELEMENT (`let arr = [|x| write_file(..)]`) applied
             // via `arr[0](0)` — a `CallExpr` on an `Index` — otherwise hides its body. Descend into the
             // stored element-closure (keyed by the concrete index in `field_closures`, populated at the
