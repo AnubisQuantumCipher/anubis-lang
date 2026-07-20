@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (user-reported 2026-07-20): a `return` inside a closure BODY laundered a captured secret.
+// `let g = |x| { return k }; send(g(0))` compiled because expr_tail_values' Block arm dropped the
+// trailing return (`tail_values(stmts, false)`) despite the #48-g comment claiming coverage. FIX:
+// collect a trailing return as a yielded value (only expr_tail_values callers are closure-body
+// source reads; a closure has no separate early-return scan) — monotone, verdict-diff 0 flips.
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let g = |x| { return k; };
+    send("host", 80, g(0));
+}

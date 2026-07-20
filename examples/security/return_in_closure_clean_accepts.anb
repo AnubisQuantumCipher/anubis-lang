@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Over-rejection guard: a closure whose body returns a non-secret constant must still compile.
+fn main() uses(net.send) {
+    let g = |x| { return 42; };
+    send("host", 80, g(0));
+}

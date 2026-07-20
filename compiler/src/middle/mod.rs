@@ -4872,11 +4872,23 @@ fn expr_is_password_secret_call(e: &Expr) -> bool {
 fn resolve_closure_arg(
     arg: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
+    fn_returns_lambda: &BTreeMap<String, (Vec<String>, Expr)>,
 ) -> Option<(Vec<String>, Expr)> {
     match arg {
         Expr::Lambda { params, body } => Some((params.clone(), (**body).clone())),
         Expr::Var(g) => match scope.get(g).and_then(|b| b.closure_lambda.as_deref()) {
             Some(Expr::Lambda { params, body }) => Some((params.clone(), (**body).clone())),
+            _ => None,
+        },
+        // A returned-closure passed INLINE (`run(mk())` where `fn mk(){ return |x| k; }`): resolve
+        // the callee's recorded returned lambda (its leading straight-line lets already inlined by
+        // the `fn_returns_lambda` recording, slice 6). The intermediate-binding form
+        // (`let g = mk(); run(g)`) already resolves via the `Var` arm above. Residual: substituting
+        // mk's OWN params by `mk(...)`'s args (a capture through mk's parameter) is not modelled.
+        Expr::Call { callee, .. } => match fn_returns_lambda.get(callee) {
+            Some((_pnames, Expr::Lambda { params, body })) => {
+                Some((params.clone(), (**body).clone()))
+            }
             _ => None,
         },
         _ => None,
@@ -5131,7 +5143,7 @@ fn analyze_expr_effect(
                                     span: None,
                                 });
                             }
-                        } else if let Some((params, body)) = resolve_closure_arg(arg, scope) {
+                        } else if let Some((params, body)) = resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda) {
                             // hunt2 [07]: the callee APPLIES-and-sinks this formal (a closure param),
                             // so a closure passed here leaks iff its BODY reads a tainted capture. The
                             // arg VALUE is a plain closure (no taint source) — inspect the body under a
@@ -5198,7 +5210,7 @@ fn analyze_expr_effect(
                                     },
                                     false,
                                 );
-                            } else if let Some((params, body)) = resolve_closure_arg(arg, scope) {
+                            } else if let Some((params, body)) = resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda) {
                                 // hunt2 [06]: the callee APPLIES-and-egresses this formal (a closure
                                 // param), so a closure passed here exfiltrates iff its BODY reads a
                                 // secret capture. The arg VALUE is a plain closure (no secret source)
@@ -8320,9 +8332,12 @@ fn tail_values(body: &[Stmt], collect_tail_return: bool, out: &mut Vec<Expr>) {
         }
         Some(Stmt::ExprStmt(e)) => expr_tail_values(e, out),
         Some(Stmt::If { then, else_, .. }) => {
-            tail_values(then, false, out);
+            // Thread `collect_tail_return` into the branches so a `return` at the tail of an
+            // if-arm inside a CLOSURE body is still collected (`|x| { if c { return a } else {
+            // return b } }`). For a fn-body read the flag is false, so behaviour is unchanged.
+            tail_values(then, collect_tail_return, out);
             match else_ {
-                Some(e) => tail_values(e, false, out),
+                Some(e) => tail_values(e, collect_tail_return, out),
                 None => out.push(zero_literal()),
             }
         }
@@ -8345,10 +8360,21 @@ fn expr_tail_values(e: &Expr, out: &mut Vec<Expr>) {
         }
         Expr::Block { stmts, tail } => match tail {
             Some(t) => expr_tail_values(t, out),
-            None => tail_values(stmts, false, out),
+            // Collect a trailing `return X` as a yielded value. `expr_tail_values` reads a CLOSURE
+            // body's result for the taint/secret source analyzers (the only callers); a closure has
+            // no separate early-return scan, so `let g = |x| { return k }; send(g(0))` otherwise
+            // laundered the captured secret (the `false` here dropped the return, contradicting the
+            // #48-g comment that claimed a block-body return was covered). Soundness (user-reported
+            // 2026-07-20). Monotone-safe: only ADDS the returned value to the scanned tail set.
+            None => tail_values(stmts, true, out),
         },
-        // An explicit `return` in expression position is handled by the early-return scan.
-        Expr::Call { callee, .. } if callee == "return" => {}
+        // A bare `return X` in expression position (an if-arm tail without a semicolon) — unwrap it
+        // so the returned value is scanned, same reason as the block-tail return above.
+        Expr::Call { callee, args } if callee == "return" => {
+            if let Some(e) = args.first() {
+                expr_tail_values(e, out);
+            }
+        }
         other => out.push(other.clone()),
     }
 }

@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Integrity twin of the return-in-closure bypass: untrusted `input()` returned from a closure body,
+// applied and sunk (`let g = |x| { return t }; send(g(0))`), must be caught.
+fn main() uses(net.send) {
+    let t = input();
+    let g = |x| { return t; };
+    send("host", 80, g(0));
+}
