@@ -13,6 +13,15 @@ pub fn clamp_add(x: u32, y: u32) -> u32
     return x + y;
 }
 
+// The ite lane: `max` lowers to `(ite (bvsle a b) b a)` — proof-backed since `iteBits_correct`
+// admitted the mux, so this ∀-input floor contract also proves z3-free on proven blasts only.
+pub fn floor0(x: int) -> int
+    ensures(result >= 0)
+    ensures(result >= x)
+{
+    return max(x, 0);
+}
+
 fn main() {
     // BOTH halves of this file are now z3-free proofs over the MACHINE-CHECKED fragment
     // (`solver/src/fragment.rs`): clamp_add's ∀-input contract discharges from {bvadd, bvsle, bvsge}

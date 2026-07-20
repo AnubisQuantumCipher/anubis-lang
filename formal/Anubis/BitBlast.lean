@@ -456,6 +456,25 @@ theorem subBits_correct (a b : List Bool) (h : a.length = b.length) :
     omega
   rw [key, Nat.add_mul_mod_self_left, Nat.mod_eq_of_lt hlt]
 
+/-! ### Conditional select (`ite` — the mux)
+
+`blast.rs::Term::Ite(p,a,b)` blasts the selector predicate to one literal `sel` and wires
+`out[i] = mux(sel, a[i], b[i])` — a per-bit 2:1 mux with the COMMON selector. With one shared selector,
+the elementwise select IS the list-level if-then-else, so the value law is `⟦ite s a b⟧ =
+if s then ⟦a⟧ else ⟦b⟧` — definitional, proved by cases. The per-bit `mux` gate itself
+(`sel → (c ↔ a); ¬sel → (c ↔ b)`, four clauses) is the same trusted Tseitin-core family as
+`and2`/`or2` (TIER-0 — shared with every proven blast, e.g. the adder's own gates). This admits
+`Term::Ite` into the native-authoritative fragment — un-deferring the `abs`/`min`/`max` contracts the
+encoder lowers to `(ite …)`. -/
+
+/-- Conditional select exactly as the blaster's common-selector per-bit mux row. -/
+def iteBits (s : Bool) (a b : List Bool) : List Bool := if s then a else b
+
+/-- **Mux/select correctness.** `⟦iteBits s a b⟧ = if s then ⟦a⟧ else ⟦b⟧`. -/
+theorem iteBits_correct (s : Bool) (a b : List Bool) :
+    bitsToNat (iteBits s a b) = if s then bitsToNat a else bitsToNat b := by
+  cases s <;> rfl
+
 /-- Negation exactly as `blast.rs::Term::Neg`: subtract from the all-zero word. -/
 def negBits (a : List Bool) : List Bool := subBits (List.replicate a.length false) a
 

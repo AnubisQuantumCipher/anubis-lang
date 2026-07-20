@@ -27,16 +27,19 @@
 //!   `ult`/`slt`/`ule`/`sle_correct` (`>`/`≥` are these on swapped operands), equality `Eq` via
 //!   `eqBits_correct` (backed by `bitsToNat_inj`), bitwise `And`/`Or`/`Xor` via
 //!   `andBits`/`orBits`/`xorBits_correct` (the `bitsToNat_testBit` bridge + core `Nat.testBit_*`),
-//!   and `Sub`/`Neg` via `subBits`/`negBits_correct` (the two's-complement subtractor —
-//!   `rippleCarry_spec` + the complement identity, the same circuit `ult` rests on).
+//!   `Sub`/`Neg` via `subBits`/`negBits_correct` (the two's-complement subtractor —
+//!   `rippleCarry_spec` + the complement identity, the same circuit `ult` rests on), and `Ite` via
+//!   `iteBits_correct` (a common-selector per-bit mux IS the list-level if-then-else; the mux gate's
+//!   four clauses are the TIER-0 Tseitin family).
 //! * **TIER-0 (trusted propositional base):** the SAT literals and the Tseitin clauses for `And`/`Or`/
 //!   `Not` OVER PREDICATES. These carry no `_correct` theorem because they ARE the base every proven
 //!   gate is built on — the proven adder's own internal and/or/xor gates rely on the identical Tseitin
 //!   translation, and the CDCL engine consumes the same clauses. Admitting them adds no trust beyond
 //!   what TIER-1 already requires.
-//! * **DEFERRED (unproven wiring → z3):** `Ashr`, `SignExtend`, `Udiv`/`Urem`/`Sdiv`/`Srem`, `Ite`,
-//!   and variable×variable `Mul`. Each is a named follow-up proof; until its `*_correct` theorem
-//!   lands, z3 decides those obligations.
+//! * **DEFERRED (unproven wiring → z3):** `Ashr`, `SignExtend`, `Udiv`/`Urem`/`Sdiv`/`Srem`, and
+//!   variable×variable `Mul`. Each is a named follow-up proof; until its `*_correct` theorem lands,
+//!   z3 decides those obligations. (NOTE: the encoder wraps every `>>`/`<<` shift AMOUNT in
+//!   `(bvurem r 64)`, so `>>` obligations defer via `Urem` regardless of `Ashr`'s own status.)
 
 use crate::bv::{Formula, Pred, Term};
 
@@ -54,7 +57,7 @@ pub fn is_proven_authoritative(f: &Formula) -> bool {
 pub const PROVEN_OP_TAGS: &[&str] = &[
     // TIER-1 term wiring
     "Add", "MulConst", "Shl", "Lshr", "Not", "Concat", "Extract", "ZeroExtend",
-    "And", "Or", "Xor", "Sub", "Neg",
+    "And", "Or", "Xor", "Sub", "Neg", "Ite",
     // TIER-1 comparators (all eight) + equality
     "Ult", "Ule", "Ugt", "Uge", "Slt", "Sle", "Sgt", "Sge", "Eq",
     // TIER-0 propositional base
@@ -104,6 +107,9 @@ fn term_ok(t: &Term) -> bool {
         Term::Shl(a, b) | Term::Lshr(a, b) => term_ok(a) && term_ok(b),
         // Bitwise: andBits/orBits/xorBits_correct (the bitsToNat_testBit bridge). Recurse both.
         Term::And(a, b) | Term::Or(a, b) | Term::Xor(a, b) => term_ok(a) && term_ok(b),
+        // Conditional select: iteBits_correct. The condition is a PRED child — recurse pred_ok into
+        // it (walker completeness: a danger op may hide in the selector as well as either branch).
+        Term::Ite(p, a, b) => pred_ok(p) && term_ok(a) && term_ok(b),
         // Structural — proven value lemmas; recurse the inner term(s).
         Term::Not(a) => term_ok(a),
         Term::Concat(a, b) => term_ok(a) && term_ok(b),
@@ -116,8 +122,7 @@ fn term_ok(t: &Term) -> bool {
         | Term::Udiv(_, _)
         | Term::Urem(_, _)
         | Term::Sdiv(_, _)
-        | Term::Srem(_, _)
-        | Term::Ite(_, _, _) => false,
+        | Term::Srem(_, _) => false,
     }
 }
 
@@ -184,6 +189,37 @@ mod tests {
     }
 
     #[test]
+    fn admits_ite() {
+        // Ite is proof-backed (iteBits_correct) — the abs/min/max patterns the encoder emits.
+        assert!(gate(
+            "(declare-const x (_ BitVec 64))\
+             (assert (bvsge (ite (bvslt x (_ bv0 64)) (bvneg x) x) x))(check-sat)"
+        ));
+        assert!(gate(
+            "(declare-const x (_ BitVec 64))\
+             (assert (bvsge (ite (bvsle x (_ bv0 64)) (_ bv0 64) x) (_ bv0 64)))(check-sat)"
+        ));
+    }
+
+    #[test]
+    fn declines_danger_in_any_ite_child() {
+        // Walker completeness for the THREE Ite children: selector (a Pred!), then, else.
+        for smt in [
+            // danger in the SELECTOR predicate
+            "(declare-const x (_ BitVec 64))\
+             (assert (bvsge (ite (bvslt (bvashr x (_ bv1 64)) (_ bv0 64)) x x) x))(check-sat)",
+            // danger in the THEN branch
+            "(declare-const x (_ BitVec 64))\
+             (assert (bvsge (ite (bvslt x (_ bv0 64)) (bvsdiv x (_ bv2 64)) x) x))(check-sat)",
+            // danger in the ELSE branch
+            "(declare-const x (_ BitVec 64))\
+             (assert (bvsge (ite (bvslt x (_ bv0 64)) x (bvurem x (_ bv2 64))) x))(check-sat)",
+        ] {
+            assert!(!gate(smt), "danger op in an Ite child must force decline: {smt}");
+        }
+    }
+
+    #[test]
     fn declines_top_level_danger_ops() {
         for smt in [
             // Ashr (arithmetic right shift — NOT proven)
@@ -193,8 +229,6 @@ mod tests {
             // division / remainder
             "(declare-const x (_ BitVec 64))(assert (bvsle (bvsdiv x (_ bv2 64)) x))(check-sat)",
             "(declare-const x (_ BitVec 64))(assert (bvsle (bvurem x (_ bv2 64)) x))(check-sat)",
-            // Ite
-            "(declare-const x (_ BitVec 64))(assert (bvsge (ite (bvslt x (_ bv0 64)) (bvneg x) x) (_ bv0 64)))(check-sat)",
         ] {
             assert!(!gate(smt), "danger op must force decline: {smt}");
         }
