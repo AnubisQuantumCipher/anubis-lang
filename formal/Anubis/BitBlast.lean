@@ -415,6 +415,60 @@ theorem xorBits_correct (a b : List Bool) (h : a.length = b.length) :
     bitsToNat (List.zipWith (· ^^ ·) a b) = bitsToNat a ^^^ bitsToNat b :=
   bitsToNat_zipWith (· ^^ ·) (· ^^^ ·) rfl Nat.testBit_xor a b h
 
+/-! ### Subtraction and negation (`bvsub`/`bvneg`)
+
+`blast.rs::sub_carry(a,b)` = `add_carry(a, ¬b, 1)` — the textbook two's-complement subtractor, and the
+SAME circuit `ult` is already built on. `Term::Neg(a)` is `sub_carry(zeros, a)`. So both correctness
+results are corollaries of `rippleCarry_spec` + the complement identity `bitsToNat_not_add`, in the
+wrapping (mod `2^w`) form matching `run.rs`'s `wrapping_sub`/`wrapping_neg`. These admit
+`Term::Sub`/`Term::Neg` into the native-authoritative fragment (`solver/src/fragment.rs`). -/
+
+/-- Zero bits have value zero. -/
+theorem bitsToNat_replicate_false (k : Nat) : bitsToNat (List.replicate k false) = 0 := by
+  induction k with
+  | zero => simp [bitsToNat]
+  | succ k ih => simp [List.replicate_succ, bitsToNat, ih]
+
+/-- Subtractor exactly as `blast.rs::sub_carry`: add the complement with carry-in 1, keep the sum. -/
+def subBits (a b : List Bool) : List Bool := (rippleCarry a (b.map (fun x => !x)) true).1
+
+/-- **Subtractor computes wrapping subtraction.** For equal-length operands,
+    `⟦subBits a b⟧ = (⟦a⟧ + 2^w − ⟦b⟧) mod 2^w` — Nat-safe wrapping form (`⟦b⟧ < 2^w`, so the borrow is
+    absorbed by the added `2^w`). Proof: `rippleCarry_spec` on `(a, ¬b, 1)` gives
+    `⟦sum⟧ + 2^w·cout = ⟦a⟧ + ⟦¬b⟧ + 1`; `bitsToNat_not_add` turns `⟦¬b⟧ + 1` into `2^w − ⟦b⟧`;
+    dropping the `2^w·cout` term mod `2^w` leaves the (in-range) sum. -/
+theorem subBits_correct (a b : List Bool) (h : a.length = b.length) :
+    bitsToNat (subBits a b) = (bitsToNat a + 2 ^ a.length - bitsToNat b) % 2 ^ a.length := by
+  have hlen : a.length = (b.map (fun x => !x)).length := by
+    simpa [List.length_map] using h
+  have hspec := rippleCarry_spec a (b.map (fun x => !x)) true hlen
+  have hnadd := bitsToNat_not_add b
+  have hlb := bitsToNat_lt b
+  have hlt := bitsToNat_lt (rippleCarry a (b.map (fun x => !x)) true).1
+  rw [rippleCarry_length a (b.map (fun x => !x)) true hlen] at hlt
+  simp only [Bool.toNat_true] at hspec
+  -- Normalise every power to `2 ^ b.length` so omega sees one opaque atom.
+  rw [h] at hlt hspec ⊢
+  unfold subBits
+  have key : bitsToNat a + 2 ^ b.length - bitsToNat b
+      = bitsToNat (rippleCarry a (b.map (fun x => !x)) true).1
+        + 2 ^ b.length * (rippleCarry a (b.map (fun x => !x)) true).2.toNat := by
+    omega
+  rw [key, Nat.add_mul_mod_self_left, Nat.mod_eq_of_lt hlt]
+
+/-- Negation exactly as `blast.rs::Term::Neg`: subtract from the all-zero word. -/
+def negBits (a : List Bool) : List Bool := subBits (List.replicate a.length false) a
+
+/-- **Negation computes the wrapping two's complement:** `⟦negBits a⟧ = (2^w − ⟦a⟧) mod 2^w`
+    (so `⟦−0⟧ = 0` and otherwise `2^w − ⟦a⟧` — exactly `wrapping_neg`). -/
+theorem negBits_correct (a : List Bool) :
+    bitsToNat (negBits a) = (2 ^ a.length - bitsToNat a) % 2 ^ a.length := by
+  have hlen : (List.replicate a.length false).length = a.length := by
+    simp
+  have hsub := subBits_correct (List.replicate a.length false) a hlen
+  rw [negBits, hsub]
+  simp [bitsToNat_replicate_false, hlen]
+
 /-! ### Constant left shift
 
 `blast.rs::const_shift(_, Const k, Left)` wires `out[i] = if i ≥ k then a[i−k] else 0`, capped to the
@@ -491,12 +545,6 @@ theorem addBits_correct (a b : List Bool) (h : a.length = b.length) :
 theorem mod_two_pow_succ (c k : Nat) :
     c % 2 ^ (k + 1) = c % 2 ^ k + 2 ^ k * (c / 2 ^ k % 2) := by
   rw [Nat.pow_succ, Nat.mod_mul]
-
-/-- Zero bits have value zero. -/
-theorem bitsToNat_replicate_false (k : Nat) : bitsToNat (List.replicate k false) = 0 := by
-  induction k with
-  | zero => simp [bitsToNat]
-  | succ k ih => simp [List.replicate_succ, bitsToNat, ih]
 
 /-- The constant left shift preserves the operand width. -/
 theorem shlConst_length (x : List Bool) (k : Nat) : (shlConst x k).length = x.length := by

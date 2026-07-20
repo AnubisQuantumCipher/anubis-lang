@@ -25,16 +25,18 @@
 //!   barrelLshr_correct), `Not` (bitsToNat_not), `Concat` (bitsToNat_append_list), `Extract`
 //!   (bitsToNat_extract), `ZeroExtend` (bitsToNat_append_replicate_false), all eight comparators via
 //!   `ult`/`slt`/`ule`/`sle_correct` (`>`/`≥` are these on swapped operands), equality `Eq` via
-//!   `eqBits_correct` (backed by `bitsToNat_inj`), and bitwise `And`/`Or`/`Xor` via
-//!   `andBits`/`orBits`/`xorBits_correct` (the `bitsToNat_testBit` bridge + core `Nat.testBit_*`).
+//!   `eqBits_correct` (backed by `bitsToNat_inj`), bitwise `And`/`Or`/`Xor` via
+//!   `andBits`/`orBits`/`xorBits_correct` (the `bitsToNat_testBit` bridge + core `Nat.testBit_*`),
+//!   and `Sub`/`Neg` via `subBits`/`negBits_correct` (the two's-complement subtractor —
+//!   `rippleCarry_spec` + the complement identity, the same circuit `ult` rests on).
 //! * **TIER-0 (trusted propositional base):** the SAT literals and the Tseitin clauses for `And`/`Or`/
 //!   `Not` OVER PREDICATES. These carry no `_correct` theorem because they ARE the base every proven
 //!   gate is built on — the proven adder's own internal and/or/xor gates rely on the identical Tseitin
 //!   translation, and the CDCL engine consumes the same clauses. Admitting them adds no trust beyond
 //!   what TIER-1 already requires.
-//! * **DEFERRED (unproven wiring → z3):** `Sub`, `Neg`, `Ashr`, `SignExtend`, `Udiv`/`Urem`/`Sdiv`/
-//!   `Srem`, `Ite`, and variable×variable `Mul`. Each is a named follow-up proof; until its
-//!   `*_correct` theorem lands, z3 decides those obligations.
+//! * **DEFERRED (unproven wiring → z3):** `Ashr`, `SignExtend`, `Udiv`/`Urem`/`Sdiv`/`Srem`, `Ite`,
+//!   and variable×variable `Mul`. Each is a named follow-up proof; until its `*_correct` theorem
+//!   lands, z3 decides those obligations.
 
 use crate::bv::{Formula, Pred, Term};
 
@@ -52,7 +54,7 @@ pub fn is_proven_authoritative(f: &Formula) -> bool {
 pub const PROVEN_OP_TAGS: &[&str] = &[
     // TIER-1 term wiring
     "Add", "MulConst", "Shl", "Lshr", "Not", "Concat", "Extract", "ZeroExtend",
-    "And", "Or", "Xor",
+    "And", "Or", "Xor", "Sub", "Neg",
     // TIER-1 comparators (all eight) + equality
     "Ult", "Ule", "Ugt", "Uge", "Slt", "Sle", "Sgt", "Sge", "Eq",
     // TIER-0 propositional base
@@ -84,8 +86,10 @@ fn term_ok(t: &Term) -> bool {
     match t {
         // Leaves.
         Term::Const(_, _) | Term::Var(_, _) => true,
-        // TIER-1 proven arithmetic — recurse into EVERY child.
-        Term::Add(a, b) => term_ok(a) && term_ok(b),
+        // TIER-1 proven arithmetic — recurse into EVERY child. Sub/Neg: subBits/negBits_correct
+        // (the two's-complement subtractor is the same circuit the proven ult rests on).
+        Term::Add(a, b) | Term::Sub(a, b) => term_ok(a) && term_ok(b),
+        Term::Neg(a) => term_ok(a),
         // Multiply is proven only for a CONSTANT multiplier (mulConst_correct); the blaster defers
         // variable×variable. Require one operand constant AND — critically, not short-circuiting on the
         // const check — the OTHER operand also proven (it may itself be a danger op).
@@ -107,9 +111,7 @@ fn term_ok(t: &Term) -> bool {
         Term::ZeroExtend(_, a) => term_ok(a),
         // DEFERRED — unproven wiring; native declines and z3 decides. Listed explicitly (no wildcard)
         // so adding a new `Term` variant is a compile error here, not a silent authoritative admission.
-        Term::Sub(_, _)
-        | Term::Neg(_)
-        | Term::Ashr(_, _)
+        Term::Ashr(_, _)
         | Term::SignExtend(_, _)
         | Term::Udiv(_, _)
         | Term::Urem(_, _)
@@ -175,12 +177,15 @@ mod tests {
     }
 
     #[test]
+    fn admits_sub_and_neg() {
+        // Sub/Neg are proof-backed (subBits/negBits_correct — the two's-complement subtractor).
+        assert!(gate("(declare-const x (_ BitVec 64))(assert (bvsle (bvsub x (_ bv1 64)) x))(check-sat)"));
+        assert!(gate("(declare-const x (_ BitVec 64))(assert (= (bvadd (bvneg x) x) (_ bv0 64)))(check-sat)"));
+    }
+
+    #[test]
     fn declines_top_level_danger_ops() {
         for smt in [
-            // Sub
-            "(declare-const x (_ BitVec 64))(assert (bvsle (bvsub x (_ bv1 64)) x))(check-sat)",
-            // Neg
-            "(declare-const x (_ BitVec 64))(assert (bvsle (bvneg x) x))(check-sat)",
             // Ashr (arithmetic right shift — NOT proven)
             "(declare-const x (_ BitVec 64))(assert (bvsge (bvashr x (_ bv1 64)) (_ bv0 64)))(check-sat)",
             // sign_extend
@@ -206,22 +211,22 @@ mod tests {
              (assert (bvslt (bvashr x (_ bv1 64)) y))(check-sat)",
             // danger in a shift AMOUNT
             "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
-             (assert (bvult (bvshl x (bvsub y (_ bv1 64))) x))(check-sat)",
+             (assert (bvult (bvshl x (bvashr y (_ bv1 64))) x))(check-sat)",
             // danger in the NON-CONST multiplier operand
             "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
-             (assert (bvult (bvmul (_ bv2 64) (bvsub x y)) x))(check-sat)",
+             (assert (bvult (bvmul (_ bv2 64) (bvashr x y)) x))(check-sat)",
             // danger inside an Extract inner term
             "(declare-const x (_ BitVec 64))\
-             (assert (bvult ((_ extract 31 0) (bvneg x)) x))(check-sat)",
+             (assert (bvult ((_ extract 31 0) (bvsdiv x (_ bv2 64))) x))(check-sat)",
             // danger inside a Concat inner term
             "(declare-const x (_ BitVec 32))(declare-const y (_ BitVec 32))\
-             (assert (bvult (concat (bvsub x y) y) (_ bv0 64)))(check-sat)",
-            // danger (Sub) buried in an Eq operand inside an And vector, after a proven conjunct
+             (assert (bvult (concat (bvashr x y) y) (_ bv0 64)))(check-sat)",
+            // danger (Srem) buried in an Eq operand inside an And vector, after a proven conjunct
             "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
-             (assert (and (bvslt x y) (= y (bvsub x (_ bv1 64)))))(check-sat)",
-            // danger inside a Not-wrapped predicate (Neg under the comparator under Not)
+             (assert (and (bvslt x y) (= y (bvsrem x (_ bv3 64)))))(check-sat)",
+            // danger inside a Not-wrapped predicate (Ashr under the comparator under Not)
             "(declare-const x (_ BitVec 64))\
-             (assert (not (bvsle (bvneg x) x)))(check-sat)",
+             (assert (not (bvsle (bvashr x (_ bv1 64)) x)))(check-sat)",
         ] {
             assert!(!gate(smt), "danger op nested in an allowed constructor must force decline: {smt}");
         }

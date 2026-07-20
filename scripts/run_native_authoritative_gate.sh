@@ -79,15 +79,16 @@ LEAN=formal/Anubis/BitBlast.lean
 FRAG=solver/src/fragment.rs
 # Every admitted op's backing theorem/lemma must exist in BitBlast.lean.
 for thm in rippleCarry_spec ult_correct slt_correct ule_correct sle_correct eqBits_correct \
-           andBits_correct orBits_correct xorBits_correct \
+           andBits_correct orBits_correct xorBits_correct subBits_correct negBits_correct \
            mulConst_correct shlConst_correct barrelShl_correct shrConstL_correct barrelLshr_correct \
            bitsToNat_not bitsToNat_append_list bitsToNat_extract bitsToNat_append_replicate_false; do
   grep -q "\b$thm\b" "$LEAN" || { echo "DRIFT: fragment admits an op but its backing '$thm' is MISSING from $LEAN"; drift_fail=1; }
 done
 # No DEFERRED op name may appear in PROVEN_OP_TAGS (guards accidental admission of unproven wiring).
-# (Xor left this list 2026-07-20 when xorBits_correct landed — the drift gate itself caught the move.)
+# (Xor left this list 2026-07-20 when xorBits_correct landed — the drift gate itself caught the move;
+#  Sub/Neg left the same day with subBits/negBits_correct.)
 TAGS=$(sed -n '/PROVEN_OP_TAGS/,/];/p' "$FRAG")
-for deferred in Sub Neg Ashr SignExtend Udiv Urem Sdiv Srem Ite; do
+for deferred in Ashr SignExtend Udiv Urem Sdiv Srem Ite; do
   echo "$TAGS" | grep -qw "\"$deferred\"" && { echo "DRIFT: deferred op '$deferred' is listed in PROVEN_OP_TAGS (unproven wiring admitted)"; drift_fail=1; }
 done
 
