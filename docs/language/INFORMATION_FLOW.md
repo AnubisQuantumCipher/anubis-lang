@@ -55,11 +55,23 @@ itself treated as a labelled value, so the ordinary value-flow tracks it through
 maps, function parameters and returns, aliases and (beta-substituted) forwarding: `let s = Box{cb: |x|
 k}; run(s.cb)`, `let g = fwd(|x| k); g(0)`, `run(mk(k))` and the like are all caught.
 
-**Honest boundary (known residuals under active work).** A couple of deep higher-order shapes are not
-yet tracked by the Safe-mode flow analysis and can currently compile a leak: a closure applied through
-*another* closure nested inside a function body (`|y| { let inner = |x| k; inner(0) }`), and a closure
-captured through a *symbolic* map key. These are enumerated with reproducers in the soundness-hunt notes
-and are being closed.
+The historically deep shapes are now covered too (closed 2026-07-20):
+
+- a closure applied through *another* closure nested inside a function body — `|y| { let inner = |x| k;
+  inner(0) }` — to arbitrary nesting depth (the outer body's local lambdas are seeded into the
+  source-read scope);
+- a closure that captures a **call-argument-bound** secret through a container **returned from** or
+  **sunk inside** a helper — `fn build(k){ return [|x| k] }; let m = build(secret); send(m[0](0))`, and
+  the sink-side dual `fn log(p) uses(net.send){ let c=[|x| p]; send(h,port,c[0](0)) }; log(secret)`. The
+  param→return and param→sink summaries descend into a returned/stored lambda body, so the captured
+  formal is carried to the call site (a lambda param that *shadows* the formal is correctly dropped, so
+  `[|k| k]` does not false-reject).
+
+Where a closure is selected from a container by a genuinely **symbolic** index or key, there is no
+residual gap because the analysis **fails closed**: if the container holds any secret/tainted-capturing
+closure, the indirect application is treated as the leak it may be — and precisely so, since the same
+shape with no capturing closure still compiles. Reproducers and the discriminating clean cases are in the
+soundness-hunt notes.
 
 **How `--verified` relates (stated precisely — it is NOT a stronger taint tracer).** The `--verified`
 lane runs the *same* information-flow analysis as Safe mode, so it shares these residuals. What it adds

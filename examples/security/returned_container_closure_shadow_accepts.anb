@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Precision guard: the returned closure's OWN param shadows the formal, so `[|k| k][0](0)` yields the
+// closure's argument (0), never the captured secret. The Lambda arm removes shadowed params from the
+// flow before descending, so this must NOT false-reject.
+fn build(k) { return [|k| k]; }
+fn main() uses(net.send) {
+    let s = secret_source("api_key");
+    let m = build(s);
+    send("host", 80, m[0](0));
+}

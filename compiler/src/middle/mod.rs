@@ -14164,6 +14164,22 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             }
             s
         }
+        // A closure that CAPTURES a formal param carries that param's flow: `let c = [|x| p]` stores a
+        // list whose element is a closure reading param `p`, so applying `c[0](0)` — or handing the
+        // container to a sink — is a use of `p`. Descend into the body with the lambda's OWN params
+        // removed from `flow` (they shadow the enclosing formals; a shadowed capture is dropped, an
+        // under-approximation that never false-marks). Without this arm a param captured in a closure
+        // that is then stored in a container and applied to a sink was invisible to the param→sink
+        // summary (`fn log(p) uses(net.send){ let c=[|x| p]; send(h,port,c[0](0)); }; log(secret)`
+        // compiled a leak — soundness residual 2026-07-20). The recursion handles closures nested in
+        // closure bodies. Mirrors the `Expr::Lambda` capture arm in `expr_secret_source_m`.
+        Expr::Lambda { params, body } => {
+            let mut inner = flow.clone();
+            for p in params {
+                inner.remove(p);
+            }
+            expr_param_flow(body, &inner)
+        }
         _ => BTreeSet::new(),
     }
 }
@@ -14687,14 +14703,30 @@ fn expr_param_return_flow(
         // callee expression or any argument — conservatively union them (a bare-name `f(a)` is
         // `Expr::Call`, handled precisely above via the return summary; this arm is only the
         // higher-order `CallExpr`). Without it, `fn fwd(x){ return x.clone(); }` summarized `{}` and a
-        // forwarded secret leaked. (Residual: a returned `Lambda` capturing a param — no downstream
-        // consumer models closure application, so a Lambda arm would only add over-rejections.)
+        // forwarded secret leaked.
         Expr::CallExpr { callee, args } => {
             let mut s = expr_param_return_flow(callee, flow, known_param_return);
             for a in args {
                 s.extend(expr_param_return_flow(a, flow, known_param_return));
             }
             s
+        }
+        // A RETURNED closure that captures a formal param carries that param to the caller: `fn build(k)
+        // { return { "a": |x| k } }` returns a container whose closure reads param `k`, so at the call
+        // site `let m = build(secret); send(h, port, m["a"](0))` the applied result is the secret. The
+        // stale note here previously skipped this arm claiming "no downstream consumer models closure
+        // application" — no longer true: fn_returns_lambda / resolve_closure_arg / container-closure
+        // flow all apply returned closures downstream, so the missing arm compiled a leak (residual
+        // 2026-07-20, cases B/D/E: returned list/struct/inline-map holding a param-capturing closure).
+        // Descend into the body with the lambda's OWN params removed (they shadow); under-approximates a
+        // shadowed capture so it never false-marks. Not an over-reject source: the result is only
+        // labelled when the call ARG is secret/tainted AND the applied result later reaches a sink.
+        Expr::Lambda { params, body } => {
+            let mut inner = flow.clone();
+            for p in params {
+                inner.remove(p);
+            }
+            expr_param_return_flow(body, &inner, known_param_return)
         }
         _ => BTreeSet::new(),
     }

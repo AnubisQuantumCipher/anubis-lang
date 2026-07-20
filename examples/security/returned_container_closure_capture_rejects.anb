@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (residual 2026-07-20): a helper returns a CONTAINER (list/map/struct) holding a closure
+// that captures a PARAM; the call site binds that param to a secret. `expr_param_return_flow` fell
+// through Expr::Lambda to the empty set, so `build`'s param->return summary never recorded the captured
+// param and `m[0](0)` sent the secret under a green check. FIX: a Lambda arm descends into the body
+// (own params removed as shadows) so the captured formal flows to the return and the call-site arg's
+// secret label reaches the applied result.
+fn build(k) { return [|x| k]; }
+fn main() uses(net.send) {
+    let s = secret_source("api_key");
+    let m = build(s);
+    send("host", 80, m[0](0));
+}
