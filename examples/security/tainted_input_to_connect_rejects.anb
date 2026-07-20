@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// SSRF: untrusted input choosing a connect() target. connect is an egress sink for the secret lane
+// but was not a taint sink — closed by is_sink ⊇ is_egress_sink.
+fn main() uses(net.send) {
+    let host = input();
+    connect(host);
+}

@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Command injection via system(): untrusted input to a shell interpreter, same taint-lane gap.
+fn main() uses(shell) {
+    let cmd = input();
+    system(cmd);
+}

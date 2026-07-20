@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Over-rejection guard: a sanitized (declassified) command is released to shell().
+fn main() uses(shell) {
+    let cmd = input();
+    shell(declassify(cmd, "sanitized", "validated against an allowlist"));
+}

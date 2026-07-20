@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (user-reported 2026-07-20, taint-lane sink-set gap): untrusted `input()` reaching
+// `shell()` is COMMAND INJECTION — the canonical attack class Safe mode claims to make a compile
+// error — but the taint lane's `is_sink` omitted shell/system/connect (only the SECRET lane's
+// `is_egress_sink` covered them). FIX: is_sink is now a superset of is_egress_sink, so every egress
+// point is a taint sink too (integrity ⊇ confidentiality on sinks).
+fn main() uses(shell) {
+    let cmd = input();
+    shell(cmd);
+}

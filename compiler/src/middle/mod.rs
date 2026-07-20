@@ -14446,23 +14446,25 @@ fn expr_is_declassified(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> 
 }
 
 fn is_sink(callee: &str) -> bool {
-    // Phase-3 C4: I/O write/send paths are sinks (so an undeclassified read→send is
-    // `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` via the existing machinery).
-    // Phase-5: `target_run` is a process-exec sink (payload is attacker-controlled input to a
-    // local binary — tracked the same way as write/send for dual-use discipline).
-    matches!(
-        callee,
-        "sink"
-            | "send"
-            | "network_send"
-            | "write"
-            | "write_file"
-            | "append_file"
-            | "memcpy"
-            | "exec"
-            | "sql"
-            | "target_run"
-    )
+    // The INTEGRITY (taint) sink set. Threat model: untrusted data is dangerous both when it LEAVES
+    // the program (every egress point) AND when it reaches a LOCAL interpreter/buffer/store (command
+    // shell, SQL, memory copy, file write). So the taint sink set is a SUPERSET of the confidentiality
+    // egress set (`is_egress_sink`) — every egress is also a taint sink — PLUS the local-injection
+    // sinks below. This closes a real command-injection / SSRF gap (user-reported 2026-07-20): before,
+    // `is_sink` omitted shell/system/connect/http_* while `is_egress_sink` covered them, so untrusted
+    // `input() -> shell(cmd)` (command injection — the canonical attack class Safe mode promises to
+    // make a compile error) and `input() -> connect(host)` (SSRF) silently `check passed`. The
+    // relationship is now explicit (integrity ⊇ confidentiality on sinks) so the two lanes cannot
+    // drift apart again. The CONFIDENTIALITY lane stays egress-only by design (a secret into a LOCAL
+    // write/sql stays inside the trust boundary — see `is_egress_sink`); only the SOURCE kind (tainted
+    // vs secret) and the emitted diagnostic differ.
+    //   - Phase-3 C4: I/O write/send paths are sinks (undeclassified read→send is a tainted flow).
+    //   - Phase-5: `target_run` is a process-exec sink (attacker-controlled input to a local binary).
+    is_egress_sink(callee)
+        || matches!(
+            callee,
+            "sink" | "network_send" | "write" | "write_file" | "append_file" | "memcpy" | "sql"
+        )
 }
 
 /// Phase-3 C4: I/O reads (and stdin) are taint sources — their return value is untrusted input.
