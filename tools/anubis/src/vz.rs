@@ -1,0 +1,466 @@
+//! `anubis vz` — the virtualization lifecycle, first-class in the Anubis toolchain.
+//!
+//! Anubis is a high-assurance systems language; a language that can PROVE things about code is far more
+//! useful when it can also run that code in an isolated, reproducible virtual machine on the same
+//! hardware it targets (Apple Silicon). This subcommand gives the complete VM lifecycle — create, boot,
+//! introspect, exec into, snapshot-by-clone, stop, delete — behind one CLI, so an operator never leaves
+//! the `anubis` tool to stand up a sealed environment (the exact pattern the project's own VM-seal
+//! battery uses).
+//!
+//! HONEST IMPLEMENTATION NOTE. The VMs are Apple Virtualization.framework guests, driven here through
+//! `tart` (Cirrus Labs' Virtualization.framework wrapper) — the same VZ layer the repo's
+//! `scripts/vm/run-slice.sh` already relies on. `tart` owns the entitlement + code-signing that
+//! Virtualization.framework requires; wrapping it keeps this integration real and testable today rather
+//! than shipping an unsigned native binding that cannot boot a guest. A native `objc2-virtualization`
+//! FFI backend (no `tart` dependency) is the documented next step; it needs the
+//! `com.apple.security.virtualization` entitlement and a signing identity, which is a human step
+//! ([NEEDS-HUMAN]). Every command below is a thin, auditable shell over `tart` — no hidden state.
+
+use anyhow::{anyhow, bail, Context, Result};
+use clap::Subcommand;
+use std::process::{Command, Stdio};
+
+#[derive(Subcommand, Debug)]
+pub enum VzCmd {
+    /// Report virtualization readiness: the VZ backend (tart), the host architecture, and current VMs.
+    Status {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the virtual machines known to the VZ backend.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create a VM by cloning a base image (an OCI image ref or a local VM name).
+    Create {
+        /// Name for the new VM.
+        name: String,
+        /// Base image to clone from (e.g. `ghcr.io/cirruslabs/macos-sonoma-base:latest` or a local VM).
+        #[arg(long)]
+        from: String,
+        /// vCPU count to pin (optional).
+        #[arg(long)]
+        cpu: Option<u32>,
+        /// Memory in MiB to pin (optional).
+        #[arg(long)]
+        memory: Option<u32>,
+    },
+    /// Boot a VM. Runs headless by default; blocks until the guest stops (use `--detach` to background).
+    Run {
+        name: String,
+        /// Run without a graphical window (headless).
+        #[arg(long, default_value_t = true)]
+        no_graphics: bool,
+        /// Detach — boot in the background and return immediately.
+        #[arg(long)]
+        detach: bool,
+        /// Bind-mount a host directory into the guest (`--dir name:/host/path`), repeatable.
+        #[arg(long)]
+        dir: Vec<String>,
+    },
+    /// Print the IP address of a running VM.
+    Ip { name: String },
+    /// Run a command inside a running VM over SSH.
+    Exec {
+        name: String,
+        /// SSH user in the guest.
+        #[arg(long, default_value = "admin")]
+        user: String,
+        /// The command (and args) to run, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Snapshot a VM by cloning it to a new name (VZ has no in-place snapshots; a clone is CoW-cheap).
+    Snapshot {
+        name: String,
+        /// Name of the snapshot clone.
+        to: String,
+    },
+    /// Stop a running VM.
+    Stop { name: String },
+    /// Delete a VM.
+    Delete {
+        name: String,
+        /// Do not prompt.
+        #[arg(long)]
+        force: bool,
+    },
+    /// rsync a host directory INTO a running guest (`--from ./x --to /Users/admin/x`).
+    Sync {
+        name: String,
+        #[arg(long, default_value = ".")]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long, default_value = "admin")]
+        user: String,
+    },
+    /// Run an Anubis PoC in a DISPOSABLE guest — clone → boot → sync PoC → `anubis run --allow-research`
+    /// inside → discard. Blast radius is the throwaway VM, never the host. Requires `--allow-research`.
+    Exploit {
+        /// The PoC `.anb` (relative to the host cwd).
+        poc: String,
+        /// Base image/VM to clone the disposable guest from (must have the anubis toolchain).
+        #[arg(long, default_value = "anubis-xcode")]
+        base: String,
+        /// Keep the guest afterwards for inspection instead of deleting it.
+        #[arg(long)]
+        keep: bool,
+        /// Acknowledge that this runs offensive code (gated, like every dangerous Anubis operation).
+        #[arg(long)]
+        allow_research: bool,
+        #[arg(long, default_value = "admin")]
+        user: String,
+    },
+    /// Fuzz a target in a DISPOSABLE guest (clone → boot → sync → `anubis fuzz` inside → discard).
+    Fuzz {
+        target: String,
+        #[arg(long, default_value_t = 1000)]
+        iterations: u64,
+        #[arg(long, default_value = "anubis-xcode")]
+        base: String,
+        #[arg(long)]
+        keep: bool,
+        #[arg(long)]
+        allow_research: bool,
+        #[arg(long, default_value = "admin")]
+        user: String,
+    },
+}
+
+/// Locate the VZ backend (`tart`) or fail with an actionable message.
+fn tart_bin() -> Result<&'static str> {
+    let ok = Command::new("tart")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        Ok("tart")
+    } else {
+        Err(anyhow!(
+            "ANUBIS_VZ_BACKEND_MISSING: the VZ backend `tart` (Apple Virtualization.framework wrapper) \
+             is not installed or not on PATH. Install it with `brew install cirruslabs/cli/tart`. \
+             Anubis VZ requires Apple Silicon macOS."
+        ))
+    }
+}
+
+/// Run `tart <args>`, streaming stdout/stderr, and map a non-zero exit to an error.
+fn tart_run(args: &[String]) -> Result<()> {
+    let bin = tart_bin()?;
+    let status = Command::new(bin)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to spawn `{bin} {}`", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!(
+            "ANUBIS_VZ_COMMAND_FAILED: `tart {}` exited with {}",
+            args.join(" "),
+            status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+        )
+    }
+}
+
+/// Run `tart <args>` and capture stdout (trimmed).
+fn tart_capture(args: &[String]) -> Result<String> {
+    let bin = tart_bin()?;
+    let out = Command::new(bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn `{bin} {}`", args.join(" ")))?;
+    if !out.status.success() {
+        bail!(
+            "ANUBIS_VZ_COMMAND_FAILED: `tart {}` exited non-zero: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn s(v: &str) -> String {
+    v.to_string()
+}
+
+pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
+    match action {
+        VzCmd::Status { json } => {
+            let backend_ok = tart_bin().is_ok();
+            let arch = std::env::consts::ARCH;
+            let apple_silicon = arch == "aarch64" && cfg!(target_os = "macos");
+            let vms = if backend_ok {
+                tart_capture(&[s("list")]).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if json {
+                println!(
+                    "{{\"backend\":\"tart\",\"backend_available\":{backend_ok},\"arch\":\"{arch}\",\"apple_silicon\":{apple_silicon},\"virtualization_framework\":{apple_silicon}}}"
+                );
+            } else {
+                println!("anubis vz — virtualization status");
+                println!(
+                    "  backend            : tart (Apple Virtualization.framework)  [{}]",
+                    if backend_ok { "available" } else { "MISSING — brew install cirruslabs/cli/tart" }
+                );
+                println!("  host arch          : {arch}");
+                println!(
+                    "  Virtualization.fwk : {}",
+                    if apple_silicon { "supported (Apple Silicon macOS)" } else { "NOT available on this host" }
+                );
+                if backend_ok {
+                    println!("\n  virtual machines:\n{}", indent(&vms));
+                }
+            }
+            Ok(())
+        }
+        VzCmd::List { json } => {
+            let out = tart_capture(&[s("list")])?;
+            if json {
+                // tart list has a --format json; pass through when asked.
+                let j = tart_capture(&[s("list"), s("--format"), s("json")]).unwrap_or(out);
+                println!("{j}");
+            } else {
+                println!("{out}");
+            }
+            Ok(())
+        }
+        VzCmd::Create { name, from, cpu, memory } => {
+            eprintln!("[anubis vz] cloning `{from}` -> `{name}`");
+            tart_run(&[s("clone"), from, name.clone()])?;
+            if cpu.is_some() || memory.is_some() {
+                let mut set = vec![s("set"), name.clone()];
+                if let Some(c) = cpu {
+                    set.push(s("--cpu"));
+                    set.push(c.to_string());
+                }
+                if let Some(m) = memory {
+                    set.push(s("--memory"));
+                    set.push(m.to_string());
+                }
+                tart_run(&set)?;
+            }
+            println!("created VM `{name}` (run it with `anubis vz run {name}`)");
+            Ok(())
+        }
+        VzCmd::Run { name, no_graphics, detach, dir } => {
+            let mut args = vec![s("run"), name.clone()];
+            if no_graphics {
+                args.push(s("--no-graphics"));
+            }
+            for d in &dir {
+                args.push(s("--dir"));
+                args.push(d.clone());
+            }
+            if detach {
+                // Background the guest; tart keeps it running until `vz stop`.
+                let bin = tart_bin()?;
+                Command::new(bin)
+                    .args(&args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .with_context(|| "failed to detach the VZ guest")?;
+                println!("booting `{name}` in the background (headless). `anubis vz ip {name}` when ready.");
+                Ok(())
+            } else {
+                eprintln!("[anubis vz] booting `{name}` (Ctrl-C to stop); the guest holds this terminal.");
+                tart_run(&args)
+            }
+        }
+        VzCmd::Ip { name } => {
+            let ip = tart_capture(&[s("ip"), name])?;
+            println!("{ip}");
+            Ok(())
+        }
+        VzCmd::Exec { name, user, command } => {
+            let ip = tart_capture(&[s("ip"), name.clone()])
+                .with_context(|| format!("VM `{name}` has no IP — is it running? (`anubis vz run {name} --detach`)"))?;
+            let target = format!("{user}@{ip}");
+            eprintln!("[anubis vz] ssh {target} -- {}", command.join(" "));
+            let status = Command::new("ssh")
+                .args([
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "UserKnownHostsFile=/dev/null",
+                    "-o",
+                    "LogLevel=ERROR",
+                    &target,
+                ])
+                .args(&command)
+                .status()
+                .with_context(|| "failed to spawn ssh")?;
+            if status.success() {
+                Ok(())
+            } else {
+                bail!(
+                    "ANUBIS_VZ_EXEC_FAILED: remote command exited with {}",
+                    status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+                )
+            }
+        }
+        VzCmd::Snapshot { name, to } => {
+            eprintln!("[anubis vz] snapshotting `{name}` -> `{to}` (APFS CoW clone)");
+            tart_run(&[s("clone"), name, to.clone()])?;
+            println!("snapshot `{to}` created");
+            Ok(())
+        }
+        VzCmd::Stop { name } => tart_run(&[s("stop"), name]),
+        VzCmd::Delete { name, force } => {
+            if !force {
+                eprintln!("[anubis vz] deleting `{name}` (pass --force to skip this notice)");
+            }
+            tart_run(&[s("delete"), name])
+        }
+        VzCmd::Sync { name, from, to, user } => {
+            let ip = wait_for_ip(&name)?;
+            rsync_into(&from, &format!("{user}@{ip}:{to}"))
+        }
+        VzCmd::Exploit { poc, base, keep, allow_research, user } => {
+            if !allow_research {
+                bail!(
+                    "ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz exploit` runs offensive code — pass \
+                     --allow-research to acknowledge. The blast radius is the disposable guest, not the host."
+                );
+            }
+            disposable(&base, keep, |name, ip| {
+                let dst = format!("{user}@{ip}:/tmp/anubis-poc.anb");
+                rsync_into(&poc, &dst)?;
+                eprintln!("[anubis vz] running `anubis run /tmp/anubis-poc.anb --allow-research` in disposable `{name}`");
+                ssh_exec(
+                    user,
+                    ip,
+                    &["anubis".into(), "run".into(), "/tmp/anubis-poc.anb".into(), "--allow-research".into()],
+                )
+            })
+        }
+        VzCmd::Fuzz { target, iterations, base, keep, allow_research, user } => {
+            if !allow_research {
+                bail!("ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz fuzz` runs offensive code — pass --allow-research.");
+            }
+            disposable(&base, keep, |name, ip| {
+                let dst = format!("{user}@{ip}:/tmp/anubis-fuzz.anb");
+                rsync_into(&target, &dst)?;
+                eprintln!("[anubis vz] fuzzing in disposable `{name}` ({iterations} iterations)");
+                ssh_exec(
+                    user,
+                    ip,
+                    &[
+                        "anubis".into(),
+                        "fuzz".into(),
+                        "/tmp/anubis-fuzz.anb".into(),
+                        "--iterations".into(),
+                        iterations.to_string(),
+                        "--allow-research".into(),
+                    ],
+                )
+            })
+        }
+    }
+}
+
+/// Boot a VM headless in the background and poll for its IP (up to ~60s). Idempotent: if already
+/// running, returns the current IP.
+fn wait_for_ip(name: &str) -> Result<String> {
+    // If it isn't running yet, kick it off headless in the background.
+    if tart_capture(&[s("ip"), name.into()]).is_err() {
+        let bin = tart_bin()?;
+        Command::new(bin)
+            .args(["run", name, "--no-graphics"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("failed to boot `{name}`"))?;
+    }
+    for _ in 0..30 {
+        if let Ok(ip) = tart_capture(&[s("ip"), name.into()]) {
+            if !ip.is_empty() {
+                return Ok(ip);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    bail!("ANUBIS_VZ_NO_IP: `{name}` did not report an IP within ~60s")
+}
+
+/// rsync a host path into a `user@ip:/dest` target over SSH (host-key checks relaxed for ephemeral IPs).
+fn rsync_into(from: &str, dst: &str) -> Result<()> {
+    let status = Command::new("rsync")
+        .args([
+            "-az",
+            "-e",
+            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
+            from,
+            dst,
+        ])
+        .status()
+        .with_context(|| "failed to spawn rsync (is it installed?)")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("ANUBIS_VZ_SYNC_FAILED: rsync `{from}` -> `{dst}` exited non-zero")
+    }
+}
+
+/// Run a command in a guest over SSH, streaming output; map non-zero to an error.
+fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
+    let target = format!("{user}@{ip}");
+    let status = Command::new("ssh")
+        .args([
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            &target,
+        ])
+        .args(command)
+        .status()
+        .with_context(|| "failed to spawn ssh")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!(
+            "ANUBIS_VZ_EXEC_FAILED: remote command exited with {}",
+            status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+        )
+    }
+}
+
+/// The disposable-guest pattern: clone an ephemeral CoW guest from `base`, boot it, run `body(name,
+/// ip)`, then DELETE the guest (unless `keep`) — even if the body errors. The blast radius of whatever
+/// ran inside is the throwaway VM, never the host. The clone name is derived from the base + pid so a
+/// caller need not manage names.
+fn disposable<F: FnOnce(&str, String) -> Result<()>>(base: &str, keep: bool, body: F) -> Result<()> {
+    let name = format!("anubis-vz-ephemeral-{}", std::process::id());
+    eprintln!("[anubis vz] cloning disposable guest `{name}` from `{base}` (APFS CoW)");
+    tart_run(&[s("clone"), base.into(), name.clone()])?;
+    let result = wait_for_ip(&name).and_then(|ip| body(&name, ip));
+    // Always tear down (best-effort) unless the operator asked to keep it.
+    if keep {
+        eprintln!("[anubis vz] keeping `{name}` (pass no --keep to auto-discard). Delete: anubis vz delete {name} --force");
+    } else {
+        let _ = tart_run(&[s("stop"), name.clone()]);
+        let _ = tart_run(&[s("delete"), name.clone()]);
+        eprintln!("[anubis vz] discarded disposable guest `{name}`");
+    }
+    result
+}
+
+fn indent(text: &str) -> String {
+    text.lines()
+        .map(|l| format!("    {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}

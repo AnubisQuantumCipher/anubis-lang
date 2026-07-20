@@ -35,7 +35,74 @@ Behavior:
 - All support --evidence --out where applicable.
 - Errors are human + include remediation where possible.
 
+## Phase 7 — Developer experience
+
+```bash
+anubis doc <path> [--format md|json] [--private] [--out FILE]
+anubis repl [--exact] [--allow-research] [--eval 'expr']
+anubis lsp   # stdio Language Server (diagnostics + contract hovers)
+```
+
+- **doc:** verification-first API docs; **Contracts** section from source `requires`/`ensures`.
+- **repl:** always typechecks (and discharges obligations) before eval; default = fast AST interpreter; `--exact` lowers via the same path as `anubis run`.
+- **lsp:** `publishDiagnostics` from parse/typecheck/obligations; hover shows signature + contracts.
+- Gate: `bash scripts/run_dx_gate.sh`
+- Editors: `editors/vscode-anubis`, `editors/tree-sitter-anubis`
+
+## Phase 6 — Packages + proof-carrying dependencies
+
+```bash
+anubis package lock --root .
+anubis package verify --root .
+anubis package publish --root . --key ./keys/signing.key
+anubis trust add-signer <hex-pk> --name alice
+anubis trust list
+anubis keygen --out ./keys
+anubis sign <evidence-dir> --key ./keys/signing.key
+```
+
+- `[dependencies]` in `Anubis.toml`: SemVer (local `~/.anubis/registry`), `{ path = ... }`, or
+  `{ git = ..., rev = ... }` (rev required).
+- `Anubis.lock` pins version + content Merkle hash. Cache: `~/.anubis/cache/<name>-<ver>-<sha>/`.
+- Every dependency must present signed `evidence/`; signer must be in `~/.anubis/trust/signers.toml`.
+- Unsigned deps only with **both** `--allow-unsigned-deps` and `ANUBIS_ALLOW_UNSIGNED_DEPS=1`.
+- `check` / `run` / `build` automatically resolve and proof-check deps when declared.
+- Full docs: `docs/language/PACKAGES.md`. Gate: `bash scripts/run_package_gate.sh`.
+
 See also: scripts/ for runners and gate verifiers.
+
+## Virtualization — `anubis vz` (Apple Virtualization.framework)
+
+The full VM lifecycle on Apple Silicon, behind one CLI — stand up an isolated, reproducible guest to
+run and seal code without leaving the `anubis` tool.
+
+```bash
+anubis vz status                                  # backend + Apple Silicon readiness + running VMs
+anubis vz list [--json]                           # list VMs
+anubis vz create dev --from ghcr.io/cirruslabs/macos-sonoma-base:latest --cpu 8 --memory 8192
+anubis vz run dev --detach                        # boot headless in the background
+anubis vz ip dev                                  # guest IP once booted
+anubis vz exec dev --user admin -- uname -a       # run a command in the guest over SSH
+anubis vz snapshot dev dev-clean                  # CoW clone as a snapshot
+anubis vz sync dev --from ./workspace --to /Users/admin/workspace
+anubis vz stop dev
+anubis vz delete dev --force
+```
+
+**Disposable offensive lifecycle** — run dangerous code where its blast radius is a throwaway VM, never
+the host. Gated behind `--allow-research`, like every dangerous Anubis operation; the guest is cloned
+CoW, booted, fed the code, and discarded (unless `--keep`):
+
+```bash
+anubis vz exploit poc.anb --allow-research           # clone → boot → sync → `anubis run --allow-research` → discard
+anubis vz fuzz target.anb --iterations 100000 --allow-research
+```
+
+- Backend: **tart** (Cirrus Labs' Virtualization.framework wrapper) — the same VZ layer the repo's
+  `scripts/vm/run-slice.sh` seal battery uses. Install: `brew install cirruslabs/cli/tart`.
+- Requires Apple Silicon macOS. A missing backend fails closed with `ANUBIS_VZ_BACKEND_MISSING`.
+- A native `objc2-virtualization` FFI backend (no `tart`) is the documented next step; it needs the
+  `com.apple.security.virtualization` entitlement + a signing identity (a human step).
 
 ## Gate 15 + Bounty-Grade PoC Kit
 
@@ -182,3 +249,14 @@ cargo run --release -p anubis -- verify-bundle out/.../evidence-*
 - `ANUBIS_RISC0_METAL_REFERENCE=PATH`
 - `Anubis.toml` (see `Anubis.toml.example`)
 - Evidence always records `config_source` + the exact `reference_path` used.
+
+## Phase 8 — Self-host
+
+```bash
+anubis selfhost dump-tokens <file>
+anubis selfhost dump-ast <file>
+# stage0: host interprets SH compiler
+anubis run selfhost/src/anubis_sh.anb --allow-research -- lex|parse|check|compile <file> [-o out.rs]
+# stage packages: rustc out.rs && ./out compile selfhost/src/anubis_sh.anb -o stage2.rs
+bash scripts/run_selfhost_gate.sh   # stage0→1→2→3 + cmp stage2/stage3
+```

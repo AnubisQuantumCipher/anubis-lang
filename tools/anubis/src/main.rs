@@ -4,6 +4,7 @@
 mod offensive;
 mod poc_kit;
 mod proof_input;
+mod vz;
 
 use anubis_compiler::{
     backends::native::lower_to_native,
@@ -292,6 +293,13 @@ enum Commands {
     Trust {
         #[command(subcommand)]
         action: TrustCmd,
+    },
+
+    /// Virtualization lifecycle on Apple Silicon (Virtualization.framework via tart): create, boot,
+    /// exec, snapshot, stop, delete — the whole VM lifecycle behind one CLI.
+    Vz {
+        #[command(subcommand)]
+        action: vz::VzCmd,
     },
 
     /// Phase 7: verification-first API docs (Contracts from requires/ensures).
@@ -1443,6 +1451,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Package { action } => run_package_cmd(action),
         Commands::Trust { action } => run_trust_cmd(action),
+        Commands::Vz { action } => vz::run_vz_cmd(action),
         Commands::Doc {
             path,
             format,
