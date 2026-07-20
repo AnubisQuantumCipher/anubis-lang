@@ -5,6 +5,7 @@ mod offensive;
 mod poc_kit;
 mod proof_input;
 mod vz;
+mod vz_native;
 
 use anubis_compiler::{
     backends::native::lower_to_native,

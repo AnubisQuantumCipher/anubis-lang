@@ -132,8 +132,12 @@ pub fn derive_confinement(
                                 .into(),
                         ],
                         vec![
-                            "a true zero-NIC air-gap for a proven-net-free program requires the native \
-                             objc2-virtualization FFI (tart has no zero-NIC flag)."
+                            "a true zero-NIC air-gap for a proven-net-free program is FULLY ENFORCED by \
+                             the native backend `anubis vz native-preflight` (objc2-virtualization, zero \
+                             network devices) on a binary signed with `scripts/build_signed_anubis.sh` — \
+                             an ad-hoc signature suffices for local use, so this is no longer [NEEDS-HUMAN] \
+                             (only notarization-for-distribution is). tart's `--net-host` (the enforced \
+                             grant here) is the host-only fallback where the native lane is unavailable."
                                 .into(),
                         ],
                     )
@@ -209,10 +213,12 @@ pub fn derive_confinement(
          (host-only / mount:none), so a mis-analysed guest breaks rather than leaks."
             .to_string(),
         "tart cannot give a guest zero network devices, cannot restrict egress by hostname (IPv4 CIDR \
-         only via Softnet), and cannot gate an in-guest shell. Grants with tart_enforced=false or a \
-         needs_human entry require the native objc2-virtualization FFI ([NEEDS-HUMAN]: \
-         com.apple.security.virtualization entitlement + signing identity) or an operator-supplied \
-         engagement scope."
+         only via Softnet), and cannot gate an in-guest shell. The native backend `anubis vz \
+         native-preflight` (objc2-virtualization) closes the first two: a proven-net-free program gets a \
+         real zero-NIC air-gap, and a net-using program gets a per-hostname egress substrate — on a \
+         binary signed with `scripts/build_signed_anubis.sh` (an ad-hoc signature suffices locally, so \
+         NOT [NEEDS-HUMAN]; only notarization-for-distribution is). An in-guest shell remains a \
+         full-OS-guest concern gated by the LANGUAGE checker, not the hypervisor."
             .to_string(),
     ];
     if open {

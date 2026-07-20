@@ -29,3 +29,12 @@ base64 = "0.22"
 rcgen = "0.13"
 risc0-zkvm = { version = "=3.0.5", features = ["prove", "std", "disable-dev-mode"] }
 risc0-circuit-rv32im = { version = "=4.0.4", features = ["prove"] }
+
+# Native Apple Virtualization.framework backend (`anubis vz native-preflight`). Apple Silicon macOS
+# only — a true zero-NIC air-gap + per-hostname egress substrate that tart cannot express. Boots a VM
+# only when the binary carries the com.apple.security.virtualization entitlement (scripts/build_signed_anubis.sh).
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-virtualization = "0.3"
+libc = "0.2"

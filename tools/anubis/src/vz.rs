@@ -7,14 +7,17 @@
 //! the `anubis` tool to stand up a sealed environment (the exact pattern the project's own VM-seal
 //! battery uses).
 //!
-//! HONEST IMPLEMENTATION NOTE. The VMs are Apple Virtualization.framework guests, driven here through
+//! HONEST IMPLEMENTATION NOTE. Most commands here drive Apple Virtualization.framework guests through
 //! `tart` (Cirrus Labs' Virtualization.framework wrapper) — the same VZ layer the repo's
-//! `scripts/vm/run-slice.sh` already relies on. `tart` owns the entitlement + code-signing that
-//! Virtualization.framework requires; wrapping it keeps this integration real and testable today rather
-//! than shipping an unsigned native binding that cannot boot a guest. A native `objc2-virtualization`
-//! FFI backend (no `tart` dependency) is the documented next step; it needs the
-//! `com.apple.security.virtualization` entitlement and a signing identity, which is a human step
-//! ([NEEDS-HUMAN]). Every command below is a thin, auditable shell over `tart` — no hidden state.
+//! `scripts/vm/run-slice.sh` already relies on. `tart` owns the entitlement + code-signing for the
+//! full guest lifecycle, so wrapping it keeps that integration real and testable. The `native-preflight`
+//! command (see `vz_native.rs`) is the NATIVE `objc2-virtualization` backend — NO `tart` — and it
+//! enforces the two confinements tart cannot (a true zero-NIC air-gap, a per-hostname egress
+//! substrate). Its `com.apple.security.virtualization` entitlement is NOT a Developer-portal step: a
+//! LOCAL ad-hoc signature (`scripts/build_signed_anubis.sh`) is sufficient to run it on your own Mac —
+//! only notarization-for-distribution is a human step. So the native lane is no longer `[NEEDS-HUMAN]`
+//! for local use. Every `tart`-backed command below is a thin, auditable shell over `tart` — no hidden
+//! state.
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Subcommand;
@@ -125,6 +128,19 @@ pub enum VzCmd {
         /// Write the manifest JSON to this path instead of stdout.
         #[arg(long)]
         out: Option<String>,
+    },
+    /// NATIVE backend (no tart): derive the hardware confinement posture from a program's PROVEN
+    /// effect set, build the exact `VZVirtualMachineConfiguration` it implies via
+    /// `objc2-virtualization`, and prove the `com.apple.security.virtualization` entitlement is
+    /// present by validating + instantiating it. Enforces the two confinements tart cannot: a true
+    /// zero-NIC air-gap (net-free programs) and a per-hostname egress substrate (net-using programs).
+    /// Never boots a guest. Requires a binary signed with `scripts/build_signed_anubis.sh`.
+    NativePreflight {
+        /// The program `.anb` to derive the native confinement for.
+        program: String,
+        /// Allow-list a hostname for egress (repeatable). Only meaningful for a net-using program.
+        #[arg(long = "allow-host")]
+        allow_host: Vec<String>,
     },
     /// Fuzz a target in a DISPOSABLE guest (clone → boot → sync → `anubis fuzz` inside → discard).
     Fuzz {
@@ -356,6 +372,9 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             })
         }
         VzCmd::Confine { program, out } => run_confine(&program, out),
+        VzCmd::NativePreflight { program, allow_host } => {
+            crate::vz_native::native_preflight(&program, &allow_host)
+        }
         VzCmd::Fuzz { target, iterations, base, keep, allow_research, user } => {
             if !allow_research {
                 bail!("ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz fuzz` runs offensive code — pass --allow-research.");
