@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Item 2 (path-sensitivity, user-requested 2026-07-20): a guard-clause early return now discharges a
+// postcondition that holds only on the fall-through path. `if x < 0 { return 0; } return x;` proves
+// `result >= 0` because the tail `return x` is reached only when `!(x < 0)` i.e. `x >= 0`. Before, this
+// required a branch-free rewrite (`let r = if x < 0 { 0 } else { x }; return r;`) — the expressiveness tax.
+fn clamp_low(x: i64) -> i64 ensures(result >= 0) {
+    if x < 0 { return 0; }
+    return x;
+}
+fn main() {}

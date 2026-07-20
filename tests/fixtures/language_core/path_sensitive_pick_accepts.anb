@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Item 2: an inner-branch early return carries its guard — `return a` under `a > b` proves `result >= a`.
+fn pick(a: i64, b: i64) -> i64 ensures(result >= a) {
+    if a > b { return a; }
+    return b;
+}
+fn main() {}

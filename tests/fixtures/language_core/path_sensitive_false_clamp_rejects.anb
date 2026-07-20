@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN|ANUBIS_CONTRACT_UNPROVABLE
+// Item 2 soundness discriminator: the guard `!(x < 0)` = `x >= 0` does NOT prove `result >= 1` (x could
+// be 0), so this MUST still reject — path-sensitivity adds a TRUE premise, never masks a false contract.
+fn bad(x: i64) -> i64 ensures(result >= 1) {
+    if x < 0 { return 0; }
+    return x;
+}
+fn main() {}

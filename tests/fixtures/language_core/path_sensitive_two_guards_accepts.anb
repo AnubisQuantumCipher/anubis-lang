@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Item 2: two guard clauses compose — the tail `return a` carries !(a<0) && !(a>100), proving result>=0.
+fn clamp(a: i64) -> i64 ensures(result >= 0) {
+    if a < 0 { return 0; }
+    if a > 100 { return 100; }
+    return a;
+}
+fn main() {}

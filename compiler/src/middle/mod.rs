@@ -2036,6 +2036,10 @@ fn analyze_function(
         // obligation's `guard_assumptions` for the vacuity/dead-branch exclusion).
         let mut tail_vals = Vec::new();
         tail_values_guarded(body, true, &[], &mut tail_vals);
+        // Item 2: a leading guard-clause `if cond { …return… }` means the tail is reached only when
+        // `!cond` — thread those escape negations into every tail obligation so a clamp/guard-clause
+        // pattern proves (`if x < 0 { return 0; } return x;` ⟹ `return x` carries `x >= 0`).
+        let tail_escapes = guard_clause_escapes(body);
         for (i, (tv, guards)) in tail_vals.iter().enumerate() {
             let mut hn = Vec::new();
             let rv = if ret_is_f64 {
@@ -2045,7 +2049,7 @@ fn analyze_function(
             };
             let snap_g = ctx.active_branch_guards.len();
             let mut asm = assumptions.clone();
-            for (cond, neg) in guards {
+            for (cond, neg) in guards.iter().chain(tail_escapes.iter()) {
                 push_branch_path_condition(ctx, &mut asm, cond, *neg);
             }
             push_ensures_obligations(ctx, ensures, &rv, &asm, span);
@@ -2054,14 +2058,30 @@ fn analyze_function(
                 ctx.solver_float_vars.remove(&h);
             }
         }
-        // Every explicit return except the tail return-call (the last statement).
+        // Every explicit return except the tail return-call (the last statement). Each return is paired
+        // with the branch guards routing control to it (item 2 / path-sensitivity), so a guard-clause
+        // early return can discharge a postcondition that holds only on its path.
         let n = body.len();
-        let mut early = Vec::new();
+        let mut early: Vec<(Expr, Vec<(Expr, bool)>)> = Vec::new();
+        // Accumulate guard-clause escape negations as we walk the top-level body, so an early return
+        // that FOLLOWS a `if cond { …return… }` also carries `!cond` (a second guard clause proves
+        // under the first's negation). Nested-branch returns get their own guards from the collector.
+        let mut escapes: Vec<(Expr, bool)> = Vec::new();
         for (i, s) in body.iter().enumerate() {
             let is_tail_ret = i + 1 == n
                 && matches!(s, Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return");
             if !is_tail_ret {
-                collect_returns_in_stmt(s, &mut early);
+                collect_returns_guarded(s, &escapes, &mut early);
+            }
+            if let Stmt::If {
+                cond,
+                then,
+                else_: None,
+            } = s
+            {
+                if block_always_returns(then) {
+                    escapes.push((cond.clone(), true));
+                }
             }
         }
         // SOUNDNESS: an EARLY return is discharged against `precondition_assumptions` — the FROZEN
@@ -2075,7 +2095,7 @@ fn analyze_function(
         let mutated_params: BTreeSet<String> =
             param_names.intersection(&rebound).cloned().collect();
         if !mutated_params.is_empty() {
-            for r in &early {
+            for (r, _) in &early {
                 let mut rv = BTreeSet::new();
                 collect_expr_vars(r, &mut rv);
                 if let Some(p) = rv.intersection(&mutated_params).next() {
@@ -2092,14 +2112,25 @@ fn analyze_function(
                 }
             }
         }
-        for (i, r) in early.iter().enumerate() {
+        for (i, (r, guards)) in early.iter().enumerate() {
             let mut hn = Vec::new();
             let rv = if ret_is_f64 {
                 coerce_int_into_float_slot(ctx, r, &format!("re{i}"), &mut hn)
             } else {
                 r.clone()
             };
-            push_ensures_obligations(ctx, ensures, &rv, &precondition_assumptions, span);
+            // Item 2 (path-sensitivity): push the branch guards routing control to THIS return as scoped
+            // path-condition premises on top of the frozen entry precondition. `push_branch_path_condition`
+            // no-ops a non-modelable guard, and a reassigned param/local is de-modeled so its guard drops —
+            // so this never introduces an unsound entry-vs-current aliasing (mirrors the value-position
+            // tail guards). Snapshot/restore `active_branch_guards` around the discharge (vacuity gate).
+            let snap_g = ctx.active_branch_guards.len();
+            let mut asm = precondition_assumptions.clone();
+            for (cond, neg) in guards {
+                push_branch_path_condition(ctx, &mut asm, cond, *neg);
+            }
+            push_ensures_obligations(ctx, ensures, &rv, &asm, span);
+            ctx.active_branch_guards.truncate(snap_g);
             for h in hn {
                 ctx.solver_float_vars.remove(&h);
             }
@@ -10735,6 +10766,137 @@ fn collect_returns_in_stmt(s: &Stmt, out: &mut Vec<Expr>) {
             for b in [gpu, cpu, prove].into_iter().flatten() {
                 for st in b {
                     collect_returns_in_stmt(st, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Conservatively true when EVERY control-flow path through `stmts` ends in a `return` — the last
+/// statement is a `return`, or an `if`/`else` whose BOTH arms always return. Under-approximating (a
+/// missed case just yields fewer path facts — sound, incomplete); a false POSITIVE would be unsound, so
+/// only these two shapes qualify. Used to recognise a guard-clause `if cond { …return… }`: everything
+/// AFTER it is reached only when `!cond` (item 2 escape negation).
+fn block_always_returns(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt::ExprStmt(Expr::Call { callee, .. })) if callee == "return" => true,
+        Some(Stmt::If {
+            then,
+            else_: Some(e),
+            ..
+        }) => block_always_returns(then) && block_always_returns(e),
+        _ => false,
+    }
+}
+
+/// The path negations a guard-clause prefix imposes on the code that FOLLOWS it: for each top-level
+/// `if cond { <always returns> }` (no else) in `body`, control reaches the rest of the body only when
+/// `!cond`, recorded as `(cond, true)`. Threaded into the tail return's `ensures` discharge so
+/// `fn clamp(x) ensures(result >= 0) { if x < 0 { return 0; } return x; }` proves — `return x` carries
+/// `!(x < 0)` i.e. `x >= 0`. Sound: `block_always_returns` is conservative, so `!cond` is only added
+/// when the `then` genuinely diverts every early path (a TRUE fact on the fall-through path).
+fn guard_clause_escapes(body: &[Stmt]) -> Vec<(Expr, bool)> {
+    let mut escapes = Vec::new();
+    for s in body {
+        if let Stmt::If {
+            cond,
+            then,
+            else_: None,
+        } = s
+        {
+            if block_always_returns(then) {
+                escapes.push((cond.clone(), true));
+            }
+        }
+    }
+    escapes
+}
+
+/// Path-sensitive twin of `collect_returns_in_stmt` (item 2, user-requested 2026-07-20): each early
+/// `return X` is paired with the BRANCH GUARDS (path conditions, as `(cond, negate)`) of the enclosing
+/// `if`s that route control to it. Threading those guards into the early-return `ensures` obligation
+/// lets a guard-clause prove a postcondition that holds only on that path — `fn pick(a,b) ensures(r>=a)
+/// { if a>b { return a; } return b; }` proves because `return b` carries `!(a>b)` i.e. `a<=b ⟹ b>=a`.
+/// This removes the "branch-free rewrite tax": before, an early return was discharged against the bare
+/// call-entry precondition (no guard), so the guarded fact was invisible and the user had to hoist the
+/// branch into a value-position `let r = if … ; return r;`. It MUST collect exactly the same set of
+/// returns as `collect_returns_in_stmt` (every return stays checked — soundness); it only ANNOTATES
+/// them. SOUND: `push_branch_path_condition` (the consumer) is a no-op for a non-modelable guard, and a
+/// reassigned param/local is removed from `int_vars` so its guard silently drops — a TRUE path premise
+/// can only turn a REJECT into a PASS, never mask a genuinely-false contract.
+fn collect_returns_guarded(
+    s: &Stmt,
+    guards: &[(Expr, bool)],
+    out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
+) {
+    fn push_expr(e: &Expr, g: &[(Expr, bool)], out: &mut Vec<(Expr, Vec<(Expr, bool)>)>) {
+        let mut rs = Vec::new();
+        expr_returns(e, &mut rs);
+        for r in rs {
+            out.push((r, g.to_vec()));
+        }
+    }
+    match s {
+        Stmt::ExprStmt(e) => push_expr(e, guards, out),
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => push_expr(init, guards, out),
+        Stmt::Assign { target, value } => {
+            push_expr(target, guards, out);
+            push_expr(value, guards, out);
+        }
+        Stmt::If { cond, then, else_ } => {
+            push_expr(cond, guards, out);
+            let mut g_then = guards.to_vec();
+            g_then.push((cond.clone(), false));
+            for st in then {
+                collect_returns_guarded(st, &g_then, out);
+            }
+            if let Some(e) = else_ {
+                let mut g_else = guards.to_vec();
+                g_else.push((cond.clone(), true));
+                for st in e {
+                    collect_returns_guarded(st, &g_else, out);
+                }
+            }
+        }
+        // A loop body can iterate, so its guard is not a clean per-return path condition — recurse with
+        // the guards accumulated OUTSIDE the loop (a loop-mutated var is de-modeled anyway, so its guard
+        // no-ops). Same set of returns as `collect_returns_in_stmt`.
+        Stmt::While { cond, body, .. } => {
+            push_expr(cond, guards, out);
+            for st in body {
+                collect_returns_guarded(st, guards, out);
+            }
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            push_expr(expr, guards, out);
+            for st in body {
+                collect_returns_guarded(st, guards, out);
+            }
+        }
+        Stmt::For { source, body, .. } => {
+            match source {
+                crate::frontend::ForSource::Range { start, end } => {
+                    push_expr(start, guards, out);
+                    push_expr(end, guards, out);
+                }
+                crate::frontend::ForSource::Collection { expr } => push_expr(expr, guards, out),
+            }
+            for st in body {
+                collect_returns_guarded(st, guards, out);
+            }
+        }
+        Stmt::Loop { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => {
+            for st in body {
+                collect_returns_guarded(st, guards, out);
+            }
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for b in [gpu, cpu, prove].into_iter().flatten() {
+                for st in b {
+                    collect_returns_guarded(st, guards, out);
                 }
             }
         }
