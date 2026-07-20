@@ -22,6 +22,18 @@ pub fn floor0(x: int) -> int
     return max(x, 0);
 }
 
+// The left-shift lane: `<<` lowers to `(bvshl v (zero_extend 58 (extract 5 0 amount)))` — the amount
+// mask `mod 64` spelled as the low-6-bits identity (z3-proven equal to `bvurem`), so the WHOLE shift
+// is built from proven blasts (bvshl + extract + zero_extend). A shift by a VARIABLE amount uses the
+// (proven) barrel shifter. This ∀-input contract proves z3-free on proven blasts only.
+pub fn shl_bounded(x: u8, k: u8) -> int
+    requires(x <= 15)
+    requires(k <= 3)
+    ensures(result >= 0)
+{
+    return (x as int) << (k as int);
+}
+
 fn main() {
     // BOTH halves of this file are now z3-free proofs over the MACHINE-CHECKED fragment
     // (`solver/src/fragment.rs`): clamp_add's ∀-input contract discharges from {bvadd, bvsle, bvsge}

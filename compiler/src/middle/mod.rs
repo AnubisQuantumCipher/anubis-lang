@@ -8530,12 +8530,18 @@ fn expr_to_smt_with_width(
                 "<=" => format!("(bvsle {} {})", l, r),
                 ">" => format!("(bvsgt {} {})", l, r),
                 ">=" => format!("(bvsge {} {})", l, r),
-                // Shifts mask the shift amount mod 64 (matching the runtime's `rem_euclid(64)`, which
-                // equals the low 6 bits via unsigned `bvurem`), and `>>` is ARITHMETIC — the runtime
-                // uses `i64::wrapping_shr`, which sign-extends. `bvlshr` (logical) would be UNSOUND
-                // (it would "prove" `(-8 >> 1) == 4` while the program computes -4).
-                "<<" => format!("(bvshl {} (bvurem {} (_ bv64 64)))", l, r),
-                ">>" => format!("(bvashr {} (bvurem {} (_ bv64 64)))", l, r),
+                // Shifts mask the shift amount mod 64 (matching the runtime's `rem_euclid(64)`), and
+                // `>>` is ARITHMETIC — the runtime uses `i64::wrapping_shr`, which sign-extends.
+                // `bvlshr` (logical) would be UNSOUND (it would "prove" `(-8 >> 1) == 4` while the
+                // program computes -4). The amount mask `r mod 64` is EXACTLY the low 6 bits of `r`, so
+                // we spell it `zero_extend(58, extract(5,0,r))` rather than `bvurem r 64`: it is the
+                // identical value (z3 agrees), but built from ops whose bit-blasts are machine-checked
+                // in `formal/Anubis/BitBlast.lean` (`bitsToNat_extract`, `bitsToNat_append_replicate_false`).
+                // So `<<` lands in the native-authoritative PROVEN FRAGMENT (bvshl is proven too),
+                // whereas `bvurem` would defer the whole shift to z3. (`>>` still defers on `bvashr`
+                // until that op is proven — but its amount is now proof-backed.)
+                "<<" => format!("(bvshl {} ((_ zero_extend 58) ((_ extract 5 0) {})))", l, r),
+                ">>" => format!("(bvashr {} ((_ zero_extend 58) ((_ extract 5 0) {})))", l, r),
                 // Division/modulo, reached only with a non-zero literal divisor (is_int_modelable).
                 // bvsdiv = truncated toward zero and bvsdiv(MIN,-1)=MIN, matching i64::wrapping_div;
                 // bvsrem takes the sign of the dividend, matching i64::wrapping_rem (NOT bvsmod,
