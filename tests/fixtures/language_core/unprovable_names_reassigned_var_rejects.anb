@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CONTRACT_UNPROVABLE
+// DX (user-requested 2026-07-20): the UNPROVABLE diagnostic must name the specific variable that the
+// solver stopped tracking (here `y`, reassigned so it is de-modeled — Anubis has no `old()`), not just
+// report a generic bail. The message now reads "the variable `y` is no longer tracked by the solver".
+fn g(a: i64) -> i64 ensures(result > a) {
+    let mut y = a;
+    y = y - 5;
+    return y;
+}
+fn main() {}

@@ -9151,13 +9151,39 @@ fn push_ensures_obligations(
                         .to_string()
                 }
                 _ => {
-                    "cannot verify this `ensures` postcondition: it is not statically \
-                     modelable (a float, a string/list, a truncating cast, an unmodeled or reassigned \
-                     variable, or a value from a call whose contract is not carried). Contracts are \
-                     compile-time only and are never checked at runtime, so an unprovable one is \
-                     rejected — restate it as a provable integer bound, or use a runtime `assert` in \
-                     the body instead"
-                        .to_string()
+                    // Name the specific variable(s) the solver stopped tracking — a param seeded at
+                    // entry then reassigned or modified in a loop is de-modeled (Anubis has no
+                    // `old()`), so an `ensures` over it is unprovable. Turns the generic bail into an
+                    // actionable pointer (user-requested, 2026-07-20).
+                    let untracked = untracked_vars_in(&concrete, &ctx.solver_int_vars);
+                    if untracked.is_empty() {
+                        "cannot verify this `ensures` postcondition: it is not statically \
+                         modelable (a float, a string/list, a truncating cast, or a value from a call \
+                         whose contract is not carried). Contracts are compile-time only and are never \
+                         checked at runtime, so an unprovable one is rejected — restate it as a \
+                         provable integer bound, or use a runtime `assert` in the body instead"
+                            .to_string()
+                    } else {
+                        let names = untracked
+                            .iter()
+                            .map(|v| format!("`{v}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let (subj, is_are) = if untracked.len() == 1 {
+                            ("variable", "is")
+                        } else {
+                            ("variables", "are")
+                        };
+                        format!(
+                            "cannot verify this `ensures` postcondition: the {subj} {names} {is_are} \
+                             no longer tracked by the solver — it was reassigned or modified in a loop \
+                             (Anubis has no `old()`, so a rebound/loop-mutated binding is de-modeled), \
+                             or bound to a value the solver cannot model (a float, string, list, or \
+                             opaque call result). Keep it a single-assignment integer and return a \
+                             fresh local (`let r = ...; return r;`), add a loop `invariant(...)` that \
+                             pins the fact, or restate the postcondition as a provable integer bound"
+                        )
+                    }
                 }
             };
             ctx.diagnostics.push(SemanticDiagnostic {
@@ -9233,6 +9259,21 @@ fn unmodelable_contract_code(e: &Expr, int_vars: &BTreeSet<String>) -> &'static 
         }
     }
     scan(e, int_vars).unwrap_or("ANUBIS_CONTRACT_UNPROVABLE")
+}
+
+/// The variables referenced by an unprovable integer contract that the solver is NOT tracking — i.e.
+/// present in the expression but absent from `int_vars` (a param seeded at entry then reassigned /
+/// loop-havoced / bound to a non-integer or opaque value is REMOVED from `int_vars` by
+/// `clear_binding_modelability` / `havoc_loop_written`). These are the concrete reason the obligation
+/// fell to the generic `ANUBIS_CONTRACT_UNPROVABLE`, so naming them turns "it bailed" into "it bailed
+/// because of `x`" (user-requested diagnostic, 2026-07-20). Diagnostic-only: does not change any
+/// verdict. Sorted+deduped (BTreeSet); `result` is already substituted away but guarded anyway.
+fn untracked_vars_in(e: &Expr, int_vars: &BTreeSet<String>) -> Vec<String> {
+    let mut vars = BTreeSet::new();
+    collect_expr_vars(e, &mut vars);
+    vars.into_iter()
+        .filter(|v| v != "result" && !int_vars.contains(v))
+        .collect()
 }
 
 /// True when `e` is a divisor the solver may use in `bvsdiv`/`bvsrem` (the INTEGER QF_BV lane) without
