@@ -1,0 +1,24 @@
+{
+  "name": "tree-sitter-anubis",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for Anubis",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "anubis"
+  ],
+  "license": "Apache-2.0 OR MIT",
+  "tree-sitter": [
+    {
+      "scope": "source.anubis",
+      "file-types": [
+        "anb",
+        "anubis",
+        "anub"
+      ]
+    }
+  ],
+  "dependencies": {
+    "tree-sitter-cli": "^0.26.10"
+  }
+}

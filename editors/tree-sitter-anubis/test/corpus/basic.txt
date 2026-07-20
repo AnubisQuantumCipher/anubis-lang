@@ -1,0 +1,52 @@
+==================
+function with contracts
+==================
+
+pub fn div(a: u32, b: u32) -> u32 requires(b != 0) ensures(result == a / b) {
+  return a / b;
+}
+
+---
+
+(source_file
+  (function_item
+    (identifier)
+    (parameters
+      (parameter (identifier) (identifier))
+      (parameter (identifier) (identifier)))
+    (identifier)
+    (contract_clause
+      (binary_expression
+        (identifier)
+        (number)))
+    (contract_clause
+      (binary_expression
+        (identifier)
+        (binary_expression
+          (identifier)
+          (identifier))))
+    (block
+      (return_statement
+        (binary_expression
+          (identifier)
+          (identifier))))))
+
+==================
+hello main
+==================
+
+fn main() {
+  print("hello, anubis");
+}
+
+---
+
+(source_file
+  (function_item
+    (identifier)
+    (parameters)
+    (block
+      (expression_statement
+        (call_expression
+          (identifier)
+          (string))))))

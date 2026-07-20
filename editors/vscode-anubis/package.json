@@ -1,0 +1,41 @@
+{
+  "name": "anubis",
+  "displayName": "Anubis",
+  "description": "Anubis language support — syntax highlighting + LSP (diagnostics + contract hovers)",
+  "version": "0.1.0",
+  "publisher": "anubis",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:anubis"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "anubis",
+        "aliases": ["Anubis", "anubis"],
+        "extensions": [".anb", ".anubis", ".anub"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "anubis",
+        "scopeName": "source.anubis",
+        "path": "./syntaxes/anubis.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Anubis",
+      "properties": {
+        "anubis.lspPath": {
+          "type": "string",
+          "default": "anubis",
+          "description": "Path to the anubis binary (must support `anubis lsp`)"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

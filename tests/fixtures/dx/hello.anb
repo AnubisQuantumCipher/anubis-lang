@@ -1,0 +1,4 @@
+// EXPECT: PASS
+fn main() {
+    print("hello, anubis");
+}

@@ -1,0 +1,50 @@
+{
+  "name": "Anubis",
+  "scopeName": "source.anubis",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#numbers" },
+    { "include": "#functions" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.anubis", "match": "//.*$" },
+        { "name": "comment.block.anubis", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.anubis",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.anubis", "match": "\\\\." }]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.anubis",
+          "match": "\\b(if|else|while|loop|for|break|continue|return|match|import|fn|let|mut|pub|struct|enum|impl|trait|module|requires|ensures|uses|true|false)\\b"
+        },
+        {
+          "name": "storage.type.anubis",
+          "match": "\\b(u8|u16|u32|u64|i32|i64|f32|f64|bool|string|str|tainted)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.anubis",
+      "match": "\\b\\d+(\\.\\d+)?\\b"
+    },
+    "functions": {
+      "name": "meta.function.anubis",
+      "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "beginCaptures": {
+        "1": { "name": "keyword.function.anubis" },
+        "2": { "name": "entity.name.function.anubis" }
+      },
+      "end": "\\{"
+    }
+  }
+}
