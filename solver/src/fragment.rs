@@ -24,16 +24,17 @@
 //!   constant `Mul` (mulConst_correct), `Shl`/`Lshr` const+barrel (shlConst/shrConstL/barrelShl/
 //!   barrelLshr_correct), `Not` (bitsToNat_not), `Concat` (bitsToNat_append_list), `Extract`
 //!   (bitsToNat_extract), `ZeroExtend` (bitsToNat_append_replicate_false), all eight comparators via
-//!   `ult`/`slt`/`ule`/`sle_correct` (`>`/`≥` are these on swapped operands), and equality `Eq` via
-//!   `eqBits_correct` (backed by `bitsToNat_inj`).
+//!   `ult`/`slt`/`ule`/`sle_correct` (`>`/`≥` are these on swapped operands), equality `Eq` via
+//!   `eqBits_correct` (backed by `bitsToNat_inj`), and bitwise `And`/`Or`/`Xor` via
+//!   `andBits`/`orBits`/`xorBits_correct` (the `bitsToNat_testBit` bridge + core `Nat.testBit_*`).
 //! * **TIER-0 (trusted propositional base):** the SAT literals and the Tseitin clauses for `And`/`Or`/
 //!   `Not` OVER PREDICATES. These carry no `_correct` theorem because they ARE the base every proven
 //!   gate is built on — the proven adder's own internal and/or/xor gates rely on the identical Tseitin
 //!   translation, and the CDCL engine consumes the same clauses. Admitting them adds no trust beyond
 //!   what TIER-1 already requires.
-//! * **DEFERRED (unproven wiring → z3):** `Sub`, `Neg`, bitwise `And`/`Or`/`Xor`, `Ashr`, `SignExtend`,
-//!   `Udiv`/`Urem`/`Sdiv`/`Srem`, `Ite`, and variable×variable `Mul`. Each is a named follow-up proof;
-//!   until its `*_correct` theorem lands, z3 decides those obligations.
+//! * **DEFERRED (unproven wiring → z3):** `Sub`, `Neg`, `Ashr`, `SignExtend`, `Udiv`/`Urem`/`Sdiv`/
+//!   `Srem`, `Ite`, and variable×variable `Mul`. Each is a named follow-up proof; until its
+//!   `*_correct` theorem lands, z3 decides those obligations.
 
 use crate::bv::{Formula, Pred, Term};
 
@@ -51,6 +52,7 @@ pub fn is_proven_authoritative(f: &Formula) -> bool {
 pub const PROVEN_OP_TAGS: &[&str] = &[
     // TIER-1 term wiring
     "Add", "MulConst", "Shl", "Lshr", "Not", "Concat", "Extract", "ZeroExtend",
+    "And", "Or", "Xor",
     // TIER-1 comparators (all eight) + equality
     "Ult", "Ule", "Ugt", "Uge", "Slt", "Sle", "Sgt", "Sge", "Eq",
     // TIER-0 propositional base
@@ -96,6 +98,8 @@ fn term_ok(t: &Term) -> bool {
         // shifted value AND the amount must be proven — a danger op frequently hides in the amount
         // (e.g. the runtime wraps it as `bvurem r 64`, which is DEFERRED, so real shifts defer here).
         Term::Shl(a, b) | Term::Lshr(a, b) => term_ok(a) && term_ok(b),
+        // Bitwise: andBits/orBits/xorBits_correct (the bitsToNat_testBit bridge). Recurse both.
+        Term::And(a, b) | Term::Or(a, b) | Term::Xor(a, b) => term_ok(a) && term_ok(b),
         // Structural — proven value lemmas; recurse the inner term(s).
         Term::Not(a) => term_ok(a),
         Term::Concat(a, b) => term_ok(a) && term_ok(b),
@@ -105,9 +109,6 @@ fn term_ok(t: &Term) -> bool {
         // so adding a new `Term` variant is a compile error here, not a silent authoritative admission.
         Term::Sub(_, _)
         | Term::Neg(_)
-        | Term::And(_, _)
-        | Term::Or(_, _)
-        | Term::Xor(_, _)
         | Term::Ashr(_, _)
         | Term::SignExtend(_, _)
         | Term::Udiv(_, _)
@@ -164,16 +165,22 @@ mod tests {
     }
 
     #[test]
+    fn admits_bitwise() {
+        // Bitwise is proof-backed (andBits/orBits/xorBits_correct via the bitsToNat_testBit bridge).
+        // The u32 literal-arg call-site coercion lowers to bvand, so this keeps concrete-call
+        // obligations native-authoritative z3-free.
+        assert!(gate("(declare-const x (_ BitVec 64))(assert (bvsle (bvand x (_ bv7 64)) x))(check-sat)"));
+        assert!(gate("(declare-const x (_ BitVec 64))(assert (bvule x (bvor x (_ bv7 64))))(check-sat)"));
+        assert!(gate("(declare-const x (_ BitVec 64))(assert (= (bvxor x x) (_ bv0 64)))(check-sat)"));
+    }
+
+    #[test]
     fn declines_top_level_danger_ops() {
         for smt in [
             // Sub
             "(declare-const x (_ BitVec 64))(assert (bvsle (bvsub x (_ bv1 64)) x))(check-sat)",
             // Neg
             "(declare-const x (_ BitVec 64))(assert (bvsle (bvneg x) x))(check-sat)",
-            // bitwise And / Or / Xor
-            "(declare-const x (_ BitVec 64))(assert (bvsle (bvand x (_ bv7 64)) x))(check-sat)",
-            "(declare-const x (_ BitVec 64))(assert (bvsle (bvor x (_ bv7 64)) x))(check-sat)",
-            "(declare-const x (_ BitVec 64))(assert (bvsle (bvxor x (_ bv7 64)) x))(check-sat)",
             // Ashr (arithmetic right shift — NOT proven)
             "(declare-const x (_ BitVec 64))(assert (bvsge (bvashr x (_ bv1 64)) (_ bv0 64)))(check-sat)",
             // sign_extend

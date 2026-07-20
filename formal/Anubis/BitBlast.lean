@@ -337,6 +337,84 @@ theorem eqBits_correct (a b : List Bool) (h : a.length = b.length) :
   · intro hab; rw [hab]
   · intro hval; exact bitsToNat_inj a b h hval
 
+/-! ### Bitwise AND / OR / XOR (`bvand`/`bvor`/`bvxor`)
+
+`blast.rs::bitwise` wires one gate per bit position — `out[i] = gate(a[i], b[i])` for equal-length
+operands (a width mismatch returns `None`). That is exactly `List.zipWith gate a b`. Correctness — the
+pointwise gates compute the arithmetic `Nat.land`/`lor`/`xor` of the values — goes through the testBit
+bridge: bit `i` of `⟦l⟧` IS `l.getD i false` (`bitsToNat_testBit`), and core's `Nat.testBit_and/or/xor`
+say the Nat ops are pointwise. These theorems admit `Term::And/Or/Xor` into the native-authoritative
+fragment (`solver/src/fragment.rs`) — the highest-value widening, since the u32 literal-arg call-site
+coercion lowers to `bvand`. -/
+
+/-- **The testBit bridge.** Bit `i` of the value of an LSB-first bit list is the list's `i`-th entry:
+    `(⟦l⟧).testBit i = l.getD i false`. The low bit is the value's parity; halving shifts the list. -/
+theorem bitsToNat_testBit : ∀ (l : List Bool) (i : Nat),
+    (bitsToNat l).testBit i = l.getD i false := by
+  intro l
+  induction l with
+  | nil =>
+      intro i
+      simp [bitsToNat, Nat.zero_testBit]
+  | cons b bs ih =>
+      intro i
+      cases i with
+      | zero =>
+          have hb : b.toNat ≤ 1 := by cases b <;> simp
+          rw [Nat.testBit_zero]
+          simp only [bitsToNat, List.getD_cons_zero]
+          cases b <;> simp <;> omega
+      | succ j =>
+          rw [Nat.testBit_succ]
+          have hdiv : (b.toNat + 2 * bitsToNat bs) / 2 = bitsToNat bs := by
+            have hb : b.toNat ≤ 1 := by cases b <;> simp
+            omega
+          simp only [bitsToNat, hdiv, List.getD_cons_succ]
+          exact ih j
+
+/-- Generic pointwise-gate value theorem: if the Bool gate `f` matches the Nat op `g` bit-by-bit
+    (`hg`) and maps double-false to false (`hf` — the out-of-range case), then the zipWith of `f`
+    computes `g` of the values, for equal-length operands. -/
+private theorem bitsToNat_zipWith (f : Bool → Bool → Bool) (g : Nat → Nat → Nat)
+    (hf : f false false = false)
+    (hg : ∀ m n i, (g m n).testBit i = f (m.testBit i) (n.testBit i)) :
+    ∀ (a b : List Bool), a.length = b.length →
+      bitsToNat (List.zipWith f a b) = g (bitsToNat a) (bitsToNat b) := by
+  intro a b h
+  apply Nat.eq_of_testBit_eq
+  intro i
+  rw [bitsToNat_testBit, hg, bitsToNat_testBit, bitsToNat_testBit]
+  -- Pointwise: (zipWith f a b).getD i false = f (a.getD i false) (b.getD i false).
+  induction a generalizing b i with
+  | nil =>
+      cases b with
+      | nil => simpa using hf.symm
+      | cons _ _ => simp at h
+  | cons x xs ih =>
+      cases b with
+      | nil => simp at h
+      | cons y ys =>
+          have h' : xs.length = ys.length := by
+            simp only [List.length_cons] at h; omega
+          cases i with
+          | zero => simp
+          | succ j => simpa using ih ys h' j
+
+/-- **Bitwise AND correctness.** `⟦zipWith (·&&·) a b⟧ = ⟦a⟧ &&& ⟦b⟧` (equal lengths). -/
+theorem andBits_correct (a b : List Bool) (h : a.length = b.length) :
+    bitsToNat (List.zipWith (· && ·) a b) = bitsToNat a &&& bitsToNat b :=
+  bitsToNat_zipWith (· && ·) (· &&& ·) rfl Nat.testBit_and a b h
+
+/-- **Bitwise OR correctness.** `⟦zipWith (·||·) a b⟧ = ⟦a⟧ ||| ⟦b⟧` (equal lengths). -/
+theorem orBits_correct (a b : List Bool) (h : a.length = b.length) :
+    bitsToNat (List.zipWith (· || ·) a b) = bitsToNat a ||| bitsToNat b :=
+  bitsToNat_zipWith (· || ·) (· ||| ·) rfl Nat.testBit_or a b h
+
+/-- **Bitwise XOR correctness.** `⟦zipWith xor a b⟧ = ⟦a⟧ ^^^ ⟦b⟧` (equal lengths). -/
+theorem xorBits_correct (a b : List Bool) (h : a.length = b.length) :
+    bitsToNat (List.zipWith (· ^^ ·) a b) = bitsToNat a ^^^ bitsToNat b :=
+  bitsToNat_zipWith (· ^^ ·) (· ^^^ ·) rfl Nat.testBit_xor a b h
+
 /-! ### Constant left shift
 
 `blast.rs::const_shift(_, Const k, Left)` wires `out[i] = if i ≥ k then a[i−k] else 0`, capped to the
