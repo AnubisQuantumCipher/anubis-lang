@@ -247,3 +247,53 @@ theorem slt_correct (a b : List Bool) (hlen : a.length = b.length) (hne : a ≠ 
       hcast (bitsToNat (flipMsb a)) (bitsToNat (flipMsb b)),
       flipMsb_val a hne, flipMsb_val b hbne, hlen]
   omega
+
+/-! ### Constant left shift
+
+`blast.rs::const_shift(_, Const k, Left)` wires `out[i] = if i ≥ k then a[i−k] else 0`, capped to the
+operand width `w` — equivalently, it PREPENDS `k` low zero bits and keeps the low `w` bits. We mechanize
+that this computes `(⟦a⟧ · 2^k) mod 2^w` (SMT `bvshl` by a constant literal). The truncation lemma
+`bitsToNat_take` (keeping the low `m` bits = value mod `2^m`) is the reusable core the constant multiply
+and the barrel shifter also rest on. -/
+
+/-- Prepending `k` false (low) bits multiplies the value by `2^k`. -/
+theorem bitsToNat_replicate_false_append (k : Nat) (xs : List Bool) :
+    bitsToNat (List.replicate k false ++ xs) = 2 ^ k * bitsToNat xs := by
+  induction k with
+  | zero => simp
+  | succ k ih =>
+      simp only [List.replicate_succ, List.cons_append, bitsToNat, Bool.toNat_false,
+        Nat.zero_add]
+      rw [ih, Nat.pow_succ, Nat.mul_comm (2 ^ k) 2, Nat.mul_assoc]
+
+/-- **Truncation is modulus.** Keeping the low `m` bits of a bit list computes its value mod `2^m`. -/
+theorem bitsToNat_take : ∀ (l : List Bool) (m : Nat),
+    bitsToNat (l.take m) = bitsToNat l % 2 ^ m := by
+  intro l
+  induction l with
+  | nil => intro m; simp [bitsToNat]
+  | cons b bs ih =>
+      intro m
+      cases m with
+      | zero => simp [bitsToNat, Nat.pow_zero, Nat.mod_one]
+      | succ m =>
+          have hpos : 0 < 2 ^ m := Nat.two_pow_pos m
+          have hb : b.toNat < 2 := by cases b <;> decide
+          have hrlt : bitsToNat bs % 2 ^ m < 2 ^ m := Nat.mod_lt _ hpos
+          simp only [List.take_succ_cons, bitsToNat, Nat.pow_succ]
+          rw [ih m, Nat.mul_comm (2 ^ m) 2, Nat.add_mod,
+            Nat.mul_mod_mul_left 2 (bitsToNat bs) (2 ^ m),
+            Nat.mod_eq_of_lt (show b.toNat < 2 * 2 ^ m by omega),
+            Nat.mod_eq_of_lt (show b.toNat + 2 * (bitsToNat bs % 2 ^ m) < 2 * 2 ^ m by omega)]
+
+/-- Constant left shift by `k`, exactly as `const_shift … Left`: prepend `k` low zeros, keep width `w`. -/
+def shlConst (a : List Bool) (k : Nat) : List Bool :=
+  (List.replicate k false ++ a).take a.length
+
+/-- **Constant left-shift correctness (fully mechanized).** `⟦a << k⟧ = (⟦a⟧ · 2^k) mod 2^w` — the SMT
+    `bvshl` semantics by a constant, matching the runtime `wrapping_shl`. Follows immediately from the
+    truncation lemma (`bitsToNat_take`) and the zero-prepend lemma (`bitsToNat_replicate_false_append`). -/
+theorem shlConst_correct (a : List Bool) (k : Nat) :
+    bitsToNat (shlConst a k) = (bitsToNat a * 2 ^ k) % 2 ^ a.length := by
+  unfold shlConst
+  rw [bitsToNat_take, bitsToNat_replicate_false_append, Nat.mul_comm]
