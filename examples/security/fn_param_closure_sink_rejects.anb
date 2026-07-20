@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Soundness hunt2 2026-07-19 [07] (integrity twin of [06]): a closure passed as a function PARAMETER
+// that the callee APPLIES and reaches a sink (`run(|x| t)` with `t = input()`) laundered untrusted
+// input past the interprocedural sink check. Same fix — an applied param is summarized in
+// `param_sinks`, and the call-site sink check inspects the closure arg's body for a tainted capture.
+fn run(cb) uses(net.send) { send("host", 80, cb(0)); }
+fn main() uses(net.send) {
+    let t = input();
+    run(|x| t);
+}

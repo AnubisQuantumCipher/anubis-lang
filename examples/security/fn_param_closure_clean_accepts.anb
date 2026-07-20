@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Over-rejection guard for hunt2 [06,07]: a closure passed to an applying-egressing param must still
+// compile when its body captures nothing secret/tainted (returns a constant). Also guards the Part-1
+// precision: a callee that does NOT egress the applied result never marks the param, so no false
+// reject even for a secret-capturing closure — but here the capture is a constant, doubly safe.
+fn run(cb) uses(net.send) { send("host", 80, cb(0)); }
+fn main() uses(net.send) { run(|x| 42); }

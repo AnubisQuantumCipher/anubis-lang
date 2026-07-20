@@ -4862,6 +4862,59 @@ fn expr_is_password_secret_call(e: &Expr) -> bool {
     )
 }
 
+/// Resolve a call ARGUMENT into a closure `(params, body)` when it is an inline lambda or a var
+/// bound to one (`let g = |x| ...; run(g)`). Used by the interproc egress/sink call-site checks:
+/// when the callee APPLIES-and-egresses/sinks a formal (per `param_egress`/`param_sinks`, made
+/// aware of applied params by `expr_param_flow`), a closure passed there leaks iff its BODY reads a
+/// secret/tainted capture — the arg VALUE itself is a plain closure (never a secret source), so the
+/// existing `expr_secret_source_m(arg)` check reads clean and the leak needs this body inspection
+/// (soundness hunt2 [06,07]). Returns cloned data so the caller can build a params-shadowed scope.
+fn resolve_closure_arg(
+    arg: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> Option<(Vec<String>, Expr)> {
+    match arg {
+        Expr::Lambda { params, body } => Some((params.clone(), (**body).clone())),
+        Expr::Var(g) => match scope.get(g).and_then(|b| b.closure_lambda.as_deref()) {
+            Some(Expr::Lambda { params, body }) => Some((params.clone(), (**body).clone())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Clone `scope` and insert `params` as fresh, unlabelled bindings so a closure body analyzed in the
+/// caller's scope sees captured secret/tainted vars but a same-named formal SHADOWS them (a param
+/// named `x` is not the captured `x`). Mirrors the param-insertion in the #47/#65 closure descents.
+fn scope_with_closure_params(
+    scope: &BTreeMap<String, ScopeBinding>,
+    params: &[String],
+) -> BTreeMap<String, ScopeBinding> {
+    let mut local = scope.clone();
+    for p in params {
+        local.insert(
+            p.clone(),
+            ScopeBinding {
+                info: BindingInfo {
+                    name: p.clone(),
+                    ty: None,
+                    mode: String::new(),
+                    tainted: false,
+                    taint_source: None,
+                    declassified: false,
+                    span: None,
+                },
+                closure_arity: None,
+                closure_lambda: None,
+                field_closures: BTreeMap::new(),
+                fn_alias: None,
+                secret: false,
+            },
+        );
+    }
+    local
+}
+
 fn analyze_expr_effect(
     expr: &Expr,
     mode: Mode,
@@ -5078,6 +5131,41 @@ fn analyze_expr_effect(
                                     span: None,
                                 });
                             }
+                        } else if let Some((params, body)) = resolve_closure_arg(arg, scope) {
+                            // hunt2 [07]: the callee APPLIES-and-sinks this formal (a closure param),
+                            // so a closure passed here leaks iff its BODY reads a tainted capture. The
+                            // arg VALUE is a plain closure (no taint source) — inspect the body under a
+                            // params-shadowed caller scope so a captured `t` is seen but the formal `x`
+                            // is not.
+                            let local = scope_with_closure_params(scope, &params);
+                            if let Some(source) = expr_taint_source_m(
+                                &body,
+                                &local,
+                                &ctx.tainting_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_tainting_fns,
+                            ) {
+                                let declassified = expr_is_declassified(&body, &local);
+                                ctx.taint_traces.push(TaintTrace {
+                                    source: source.clone(),
+                                    sink: Some(format!("{}(param {})", callee, i)),
+                                    steps: vec![format!(
+                                        "{} -> closure into `{}` param {} -> applied at sink",
+                                        source, callee, i
+                                    )],
+                                    declassified,
+                                });
+                                if mode == Mode::Safe && !declassified {
+                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                        code: Some("ANUBIS_INTERPROC_SINK".into()),
+                                        message: format!(
+                                            "safe mode tainted flow: a closure capturing `{}` is passed into parameter {} of `{}`, which applies it and reaches a sink without declassify",
+                                            source, i, callee
+                                        ),
+                                        span: None,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -5110,6 +5198,30 @@ fn analyze_expr_effect(
                                     },
                                     false,
                                 );
+                            } else if let Some((params, body)) = resolve_closure_arg(arg, scope) {
+                                // hunt2 [06]: the callee APPLIES-and-egresses this formal (a closure
+                                // param), so a closure passed here exfiltrates iff its BODY reads a
+                                // secret capture. The arg VALUE is a plain closure (no secret source)
+                                // — inspect the body under a params-shadowed caller scope.
+                                let local = scope_with_closure_params(scope, &params);
+                                if let Some(source) = expr_secret_source_m(
+                                    &body,
+                                    &local,
+                                    &ctx.secret_fns,
+                                    &ctx.param_return_taint,
+                                    &ctx.method_secret_fns,
+                                ) {
+                                    ctx.emit(
+                                        SemanticDiagnostic {
+                                            code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
+                                            message: format!(
+                                                "safe mode confidentiality violation: a closure capturing secret `{source}` flows into parameter {i} of `{callee}`, which applies it and reaches an egress without declassify — release a private value with declassify(value, policy=…, reason=…) before it leaves the program"
+                                            ),
+                                            span: None,
+                                        },
+                                        false,
+                                    );
+                                }
                             }
                         }
                     }
@@ -13395,13 +13507,25 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
                 expr_param_flow(inner, flow)
             }
         }
-        Expr::Call { args, .. } => {
+        Expr::Call { callee, args } => {
             // Union of arg flows (conservative over-approx of the call's value). Sink detection
             // for user callees is handled separately at call sites via `known_param_sinks`.
-            args.iter().fold(BTreeSet::new(), |mut acc, a| {
+            let mut acc = args.iter().fold(BTreeSet::new(), |mut acc, a| {
                 acc.extend(expr_param_flow(a, flow));
                 acc
-            })
+            });
+            // Applying a PARAM that is itself a closure (`cb(0)` where `cb` is a formal, in `flow`)
+            // yields a value derived from that closure's captures, so it carries the applied param's
+            // own flow. Without this, `fn run(cb) uses(net.send){ send(h,p,cb(0)); }` never marks
+            // `cb` in `param_egress`, and a secret-capturing closure passed at the call site
+            // (`run(|x| k)`) launders past ANUBIS_INTERPROC_EXFILTRATION (soundness hunt2 [06,07]).
+            // Only fires when `callee` is a param/param-alias (a user/builtin call name is never in
+            // `flow`), so ordinary calls are unaffected — the interproc summary path stays the
+            // authority for named callees.
+            if let Some(callee_flow) = flow.get(callee) {
+                acc.extend(callee_flow.iter().copied());
+            }
+            acc
         }
         Expr::Index { base, index } => {
             let mut s = expr_param_flow(base, flow);
