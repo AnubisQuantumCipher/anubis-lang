@@ -298,6 +298,57 @@ fn flatten_access_path(e: &Expr) -> Option<(String, String)> {
     }
 }
 
+/// j1 fail-closed backstop (soundness hunt 2026-07-20): `let g = container[i]` with a SYMBOLIC index
+/// cannot be resolved to a specific element, so a secret/tainted-capturing closure sitting in that
+/// container would launder through `g(...)`. If the container holds ANY closure whose body captures a
+/// secret/tainted value, return that capturing closure to bind `g` to — an over-approximation that
+/// makes `g(...)` analysed as the leak it may be. Fires ONLY when such a closure is present, so a
+/// container of pure closures indexed symbolically is unaffected (no false reject). A literal index is
+/// resolved precisely by the `Expr::Index` arm of the `cl` computation, so this skips those.
+fn symbolic_index_capturing_closure(
+    init: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<Box<Expr>> {
+    let (base, index) = match init {
+        Expr::Index { base, index } => (base, index),
+        _ => return None,
+    };
+    if matches!(index.as_ref(), Expr::StrLiteral(_) | Expr::Literal(_)) {
+        return None;
+    }
+    let (root, _) = flatten_access_path(base)?;
+    let b = scope.get(&root)?;
+    for lam in b.field_closures.values() {
+        if let Expr::Lambda { params, body } = lam.as_ref() {
+            let mut inner = scope.clone();
+            for p in params {
+                inner.remove(p);
+            }
+            let captures_secret = expr_secret_source_m(
+                body,
+                &inner,
+                &ctx.secret_fns,
+                &ctx.param_return_taint,
+                &ctx.method_secret_fns,
+            )
+            .is_some()
+                || expr_taint_source_m(
+                    body,
+                    &inner,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                )
+                .is_some();
+            if captures_secret {
+                return Some(lam.clone());
+            }
+        }
+    }
+    None
+}
+
 impl SemanticContext {
     /// The single diagnostic router for the type-system phase. New static checks (bidirectional
     /// inference, captured generics, trait coherence, typed `?`) emit through this with
@@ -3267,8 +3318,33 @@ fn analyze_stmts(
                             }
                         })
                     }
+                    // `let g = container[key]` — resolve the stored closure from the container's
+                    // `field_closures` so an INTERMEDIATE binding of a container closure
+                    // (`let g = m["a"]; g(0)`) descends the same as the direct `m["a"](0)`. The key is a
+                    // string literal (map) or an integer literal (list); a SYMBOLIC index is handled by
+                    // the fail-closed marking below (soundness hunt 2026-07-20 j1/j2).
+                    Expr::Index { base, index } => {
+                        let key = match index.as_ref() {
+                            Expr::StrLiteral(s) => Some(s.clone()),
+                            Expr::Literal(s) => Some(s.trim().to_string()),
+                            _ => None,
+                        };
+                        key.and_then(|k| {
+                            flatten_access_path(base).and_then(|(root, path)| {
+                                let full = if path.is_empty() {
+                                    k
+                                } else {
+                                    format!("{path}.{k}")
+                                };
+                                scope.get(&root).and_then(|b| b.field_closures.get(&full).cloned())
+                            })
+                        })
+                    }
                     _ => None,
                 };
+                // j1 backstop: a SYMBOLIC-index container binding whose container holds a
+                // secret/tainted-capturing closure binds `g` to a capturing element (fail-closed).
+                let cl = cl.or_else(|| symbolic_index_capturing_closure(init, scope, ctx));
                 // Task #48: closures stored in this binding's STRUCT FIELDS (`let b = S { f: |x| ... }`),
                 // keyed field → lambda, so `b.f(0)` can descend into the field-closure body. A field value
                 // that is an inline lambda, or a var bound to a closure, is recorded; an alias `let b2 = b`

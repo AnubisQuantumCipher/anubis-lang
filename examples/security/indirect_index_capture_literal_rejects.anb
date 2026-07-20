@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (indirection hunt 2026-07-20 j2): a secret-capturing closure in a map, bound through an
+// INTERMEDIATE let (`let g = m["a"]; g(0)`) — the literal key now resolves the stored closure onto g
+// (the direct `m["a"](0)` already rejected).
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let m = { "a": |x| k };
+    let g = m["a"];
+    send("host", 80, g(0));
+}

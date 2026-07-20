@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (indirection hunt 2026-07-20 j1): a closure that captures a secret, stored in an array and
+// selected by a SYMBOLIC index (`let g = fns[i]`), then applied and egressed. The index can't be
+// resolved to a specific element, so the fail-closed backstop binds g to a capturing element — the
+// exact "indirect call with tainted data flowing through it" a user testing safe mode would miss.
+fn pick(i: u64) uses(net.send) {
+    let k = secret_source("api_key");
+    let fns = [|x| k, |x| 0];
+    let g = fns[i];
+    send("host", 80, g(0));
+}
+fn main() {}

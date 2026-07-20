@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Over-rejection guard: symbolic-index selection from a container of PURE closures (no capture) must
+// still compile — the backstop fires only when a capturing closure is genuinely present.
+fn pick(i: u64) uses(net.send) {
+    let fns = [|x| x, |x| x + 1];
+    let g = fns[i];
+    send("host", 80, g(5));
+}
+fn main() {}
