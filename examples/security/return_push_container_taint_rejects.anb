@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (rehunt wf_e67160a7): a helper returns a container PUSHED a tainted value; the return-taint
+// summary body_returns_taint had no push/insert handling, so mk was not return-tainted.
+fn mk() -> list<u64> uses(io.read) { let xs = []; push(xs, input()); return xs; }
+fn main() uses(net.send, io.read) { let ys = mk(); send("h", 80, ys[0]); }

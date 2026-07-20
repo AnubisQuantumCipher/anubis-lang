@@ -1,0 +1,4 @@
+// EXPECT: PASS
+// Precision guard: extract over a clean value must still compile.
+fn extract(o) { match o { Some(x) => { return x; } None => { return 0; } } }
+fn main() uses(net.send) { send("h", 80, extract(Some(5))); }

@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (rehunt wf_e67160a7): a closure stored in a struct FIELD applied via b.f(input()) bound its
+// param UNLABELLED (the CallExpr analog of the direct-apply fix), laundering the tainted arg. Now the
+// field/index-stored closure descent binds each param to the applied arg label.
+struct Box { f: u64 }
+fn main() uses(io.read, shell) { let g = |x| shell(x); let b = Box { f: g }; b.f(input()); }

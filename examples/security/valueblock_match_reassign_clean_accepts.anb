@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Precision guard: a value-position block match reassigning a NON-secret must still compile.
+fn main() uses(net.send) {
+    let out = match true { true => { let mut y = 0; match true { true => { y = 5; } false => {} }; y } false => 0 };
+    send("h", 80, out);
+}

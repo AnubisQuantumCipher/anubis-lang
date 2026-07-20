@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (rehunt wf_e67160a7): a match arm returns a pattern binding carrying the param payload;
+// body_param_returns collected `return x` but never seeded the Some(x) binding with the scrutinee param
+// flow, so extract summarized no param->return. Now seeded.
+fn extract(o) { match o { Some(x) => { return x; } None => { return 0; } } }
+fn main() uses(shell, io.read) { let t = input(); shell(extract(Some(t))); }

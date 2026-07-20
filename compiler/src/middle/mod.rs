@@ -5946,26 +5946,18 @@ fn analyze_expr_effect(
                     {
                         if let Expr::Lambda { params, body } = lam.as_ref() {
                             let mut local = scope.clone();
-                            for p in params {
-                                local.insert(
-                                    p.clone(),
-                                    ScopeBinding {
-                                        info: BindingInfo {
-                                            name: p.clone(),
-                                            ty: None,
-                                            mode: String::new(),
-                                            tainted: false,
-                                            taint_source: None,
-                                            declassified: false,
-                                            span: None,
-                                        },
-                                        closure_arity: None,
-                                        closure_lambda: None,
-                                        field_closures: BTreeMap::new(),
-                                        fn_alias: None,
-                                        secret: false,
-                                    },
-                                );
+                            // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
+                            // arr[0](input())` runs with x = the tainted arg (else the arg's label was
+                            // dropped and the index-applied closure laundered it — hunt wf_e67160a7).
+                            for (j, p) in params.iter().enumerate() {
+                                let (pt, ps) = match args.get(j) {
+                                    Some(a) => (
+                                        expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns),
+                                        expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some(),
+                                    ),
+                                    None => (None, false),
+                                };
+                                local.insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                             }
                             analyze_expr_effect(body, mode, &local, effects, ctx);
                         }
@@ -6008,26 +6000,18 @@ fn analyze_expr_effect(
                     {
                         if let Expr::Lambda { params, body } = lam.as_ref() {
                             let mut local = scope.clone();
-                            for p in params {
-                                local.insert(
-                                    p.clone(),
-                                    ScopeBinding {
-                                        info: BindingInfo {
-                                            name: p.clone(),
-                                            ty: None,
-                                            mode: String::new(),
-                                            tainted: false,
-                                            taint_source: None,
-                                            declassified: false,
-                                            span: None,
-                                        },
-                                        closure_arity: None,
-                                        closure_lambda: None,
-                                        field_closures: BTreeMap::new(),
-                                        fn_alias: None,
-                                        secret: false,
-                                    },
-                                );
+                            // Bind each param to the applied ARGUMENT's label — `let g=|x| shell(x); let
+                            // b=Box{f:g}; b.f(input())` runs with x = the tainted arg (else the field-applied
+                            // closure laundered it — hunt wf_e67160a7).
+                            for (j, p) in params.iter().enumerate() {
+                                let (pt, ps) = match args.get(j) {
+                                    Some(a) => (
+                                        expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns),
+                                        expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some(),
+                                    ),
+                                    None => (None, false),
+                                };
+                                local.insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                             }
                             analyze_expr_effect(body, mode, &local, effects, ctx);
                         }
@@ -12719,6 +12703,56 @@ fn walk_block_taint(
                 walk_block_taint(body, &mut body_c, tainting_fns, param_return_taint, method_tainting_fns);
                 merge_taint_over(local, &[&snap, &body_c]);
             }
+            // A statement-position `match` / `if let` INSIDE a value-position block reassigning an outer
+            // var in an arm body — the value-block dual of the `analyze_stmts` `ExprStmt(Match/IfLet)` fix
+            // (hunt wf_5b2a1bcc). Without it, `let out = match s { _ => { let mut y=0; match i { _ => { y =
+            // input(); } }; y } }; sink(out)` laundered the taint (the arm reassignment was dropped by the
+            // former `_ => {}`). Arm bodies are Blocks; a bare-expr arm cannot reassign an outer var.
+            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+                let st = expr_taint_source_m(scrutinee, local, tainting_fns, param_return_taint, method_tainting_fns);
+                let mut arm_cs = Vec::new();
+                for arm in arms {
+                    let mut c = local.clone();
+                    seed_taint_pattern(&mut c, &arm.pattern, &st);
+                    if let Expr::Block { stmts, .. } = &arm.body {
+                        walk_block_taint(stmts, &mut c, tainting_fns, param_return_taint, method_tainting_fns);
+                    }
+                    arm_cs.push(c);
+                }
+                let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_cs.iter().collect();
+                merge_taint_over(local, &refs);
+            }
+            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+                let st = expr_taint_source_m(scrutinee, local, tainting_fns, param_return_taint, method_tainting_fns);
+                let mut then_c = local.clone();
+                seed_taint_pattern(&mut then_c, pattern, &st);
+                if let Expr::Block { stmts, .. } = then.as_ref() {
+                    walk_block_taint(stmts, &mut then_c, tainting_fns, param_return_taint, method_tainting_fns);
+                }
+                let mut else_c = local.clone();
+                if let Expr::Block { stmts, .. } = else_.as_ref() {
+                    walk_block_taint(stmts, &mut else_c, tainting_fns, param_return_taint, method_tainting_fns);
+                }
+                merge_taint_over(local, &[&then_c, &else_c]);
+            }
+            // `push`/`insert` inside a value block MAY-taints the container root (set-only) — the value-
+            // block dual of the statement-level container-mutation taint.
+            Stmt::ExprStmt(Expr::Call { callee, args })
+                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+            {
+                if let Some(root) = assign_target_root(&args[0]) {
+                    if let Some(src) = args[1..]
+                        .iter()
+                        .find_map(|a| expr_taint_source_m(a, local, tainting_fns, param_return_taint, method_tainting_fns))
+                    {
+                        if let Some(b) = local.get_mut(root) {
+                            b.info.tainted = true;
+                            b.info.taint_source = Some(src);
+                            b.info.declassified = false;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -12832,6 +12866,50 @@ fn walk_block_secret(
                 );
                 walk_block_secret(body, &mut body_c, secret_fns, param_return_taint, method_secret_fns);
                 merge_taint_over(local, &[&snap, &body_c]);
+            }
+            // Statement-position `match` / `if let` inside a value block reassigning an outer var in an arm
+            // — the confidentiality dual of the `walk_block_taint` arms (hunt wf_e67160a7).
+            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+                let ss = expr_secret_source_m(scrutinee, local, secret_fns, param_return_taint, method_secret_fns).is_some();
+                let mut arm_cs = Vec::new();
+                for arm in arms {
+                    let mut c = local.clone();
+                    seed_secret_pattern(&mut c, &arm.pattern, ss);
+                    if let Expr::Block { stmts, .. } = &arm.body {
+                        walk_block_secret(stmts, &mut c, secret_fns, param_return_taint, method_secret_fns);
+                    }
+                    arm_cs.push(c);
+                }
+                let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_cs.iter().collect();
+                merge_taint_over(local, &refs);
+            }
+            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+                let ss = expr_secret_source_m(scrutinee, local, secret_fns, param_return_taint, method_secret_fns).is_some();
+                let mut then_c = local.clone();
+                seed_secret_pattern(&mut then_c, pattern, ss);
+                if let Expr::Block { stmts, .. } = then.as_ref() {
+                    walk_block_secret(stmts, &mut then_c, secret_fns, param_return_taint, method_secret_fns);
+                }
+                let mut else_c = local.clone();
+                if let Expr::Block { stmts, .. } = else_.as_ref() {
+                    walk_block_secret(stmts, &mut else_c, secret_fns, param_return_taint, method_secret_fns);
+                }
+                merge_taint_over(local, &[&then_c, &else_c]);
+            }
+            // `push`/`insert` inside a value block MAY-secrets the container root (set-only).
+            Stmt::ExprStmt(Expr::Call { callee, args })
+                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+            {
+                if let Some(root) = assign_target_root(&args[0]) {
+                    if args[1..]
+                        .iter()
+                        .any(|a| expr_secret_source_m(a, local, secret_fns, param_return_taint, method_secret_fns).is_some())
+                    {
+                        if let Some(b) = local.get_mut(root) {
+                            b.secret = true;
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -13728,6 +13806,46 @@ fn body_returns_taint(
                     *scope = saved;
                 }
             }
+            // A reassignment updates a local's taint so a later `return name` sees it — `let mut xs=[];
+            // xs = [input()]; return xs` returns a tainted container (hunt wf_e67160a7 leak-return-side).
+            Stmt::Assign { target: Expr::Var(name), value } => {
+                let label = expr_taint_source_m(value, scope, tainting_fns, param_return_taint, method_tainting_fns);
+                if let Some(b) = scope.get_mut(name) {
+                    b.info.tainted = label.is_some();
+                    if label.is_some() {
+                        b.info.declassified = false;
+                    }
+                    b.info.taint_source = label;
+                }
+            }
+            Stmt::Assign { target, value } => {
+                if let Some(root) = assign_target_root(target) {
+                    if let Some(src) = expr_taint_source_m(value, scope, tainting_fns, param_return_taint, method_tainting_fns) {
+                        if let Some(b) = scope.get_mut(root) {
+                            b.info.tainted = true;
+                            b.info.taint_source = Some(src);
+                            b.info.declassified = false;
+                        }
+                    }
+                }
+            }
+            // `push`/`insert` taints the container so `push(xs, input()); return xs` is return-tainted.
+            Stmt::ExprStmt(Expr::Call { callee, args })
+                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+            {
+                if let Some(root) = assign_target_root(&args[0]) {
+                    if let Some(src) = args[1..]
+                        .iter()
+                        .find_map(|a| expr_taint_source_m(a, scope, tainting_fns, param_return_taint, method_tainting_fns))
+                    {
+                        if let Some(b) = scope.get_mut(root) {
+                            b.info.tainted = true;
+                            b.info.taint_source = Some(src);
+                            b.info.declassified = false;
+                        }
+                    }
+                }
+            }
             _ => {
                 // Explicit `return X` in this (non-block) statement — statement position or hidden in
                 // an expression (match/if arm) — checked against the CURRENT lexical scope.
@@ -14029,6 +14147,37 @@ fn body_returns_secret(
                         return true;
                     }
                     *scope = saved;
+                }
+            }
+            // Reassignment / container-mutation dual of `body_returns_taint` — `xs = [secret_source(..)];
+            // return xs` and `push(xs, secret_source(..)); return xs` are return-secret (hunt wf_e67160a7).
+            Stmt::Assign { target: Expr::Var(name), value } => {
+                let secret = expr_secret_source_m(value, scope, secret_fns, param_return_taint, method_secret_fns).is_some();
+                if let Some(b) = scope.get_mut(name) {
+                    b.secret = secret;
+                }
+            }
+            Stmt::Assign { target, value } => {
+                if let Some(root) = assign_target_root(target) {
+                    if expr_secret_source_m(value, scope, secret_fns, param_return_taint, method_secret_fns).is_some() {
+                        if let Some(b) = scope.get_mut(root) {
+                            b.secret = true;
+                        }
+                    }
+                }
+            }
+            Stmt::ExprStmt(Expr::Call { callee, args })
+                if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+            {
+                if let Some(root) = assign_target_root(&args[0]) {
+                    if args[1..]
+                        .iter()
+                        .any(|a| expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns).is_some())
+                    {
+                        if let Some(b) = scope.get_mut(root) {
+                            b.secret = true;
+                        }
+                    }
                 }
             }
             _ => {
@@ -14456,17 +14605,35 @@ fn body_param_sinks(
             }
             Stmt::While { body, cond, .. } => {
                 collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
-                let mut b = flow.clone();
-                body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
-                union_flow_into(flow, &b);
+                // Loop-carried fixpoint: a param can migrate across iterations before reaching a post-loop
+                // SINK (`while { a=b; b=c; c=0 } send(a)` needs 2 passes for x to reach a) — iterate the
+                // body to a fixpoint (monotone union → converges), the sink-side twin of the
+                // `body_param_returns` fixpoint (hunt wf_e67160a7 leak-to-sink loop-carry).
+                let bound = flow.len() + 1;
+                for _ in 0..bound {
+                    let mut b = flow.clone();
+                    body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    let before = flow.clone();
+                    union_flow_into(flow, &b);
+                    if *flow == before {
+                        break;
+                    }
+                }
             }
             Stmt::WhileLet { body, .. }
             | Stmt::Loop { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
-                let mut b = flow.clone();
-                body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
-                union_flow_into(flow, &b);
+                let bound = flow.len() + 1;
+                for _ in 0..bound {
+                    let mut b = flow.clone();
+                    body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    let before = flow.clone();
+                    union_flow_into(flow, &b);
+                    if *flow == before {
+                        break;
+                    }
+                }
             }
             Stmt::For {
                 body, source, var, ..
@@ -14480,10 +14647,17 @@ fn body_param_sinks(
                     }
                     crate::frontend::ForSource::Collection { expr } => expr_param_flow(expr, flow),
                 };
-                let mut b = flow.clone();
-                b.insert(var.clone(), src_flow);
-                body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
-                union_flow_into(flow, &b);
+                let bound = flow.len() + 1;
+                for _ in 0..bound {
+                    let mut b = flow.clone();
+                    b.insert(var.clone(), src_flow.clone());
+                    body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    let before = flow.clone();
+                    union_flow_into(flow, &b);
+                    if *flow == before {
+                        break;
+                    }
+                }
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
@@ -15157,6 +15331,50 @@ fn body_param_returns(
                     for a in &args[1..] {
                         let rhs = expr_param_return_flow(a, flow, known_param_return);
                         flow.entry(container.clone()).or_default().extend(rhs);
+                    }
+                }
+            }
+            // A statement-position `match`/`if let` that RETURNS a pattern binding — `fn extract(o){ match
+            // o { Some(x) => { return x; } None => { return 0; } } }` returns param `o`'s payload through
+            // the `Some(x)` binding, so `extract` must flow param 0 to its return. The `_ =>` arm below
+            // collects the `return x` but `x` is not in `flow` (it is pattern-bound), so the flow was lost
+            // (hunt wf_e67160a7). Seed each arm's pattern with the scrutinee's param-flow, then recurse.
+            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+                let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
+                for arm in arms {
+                    let mut c = flow.clone();
+                    seed_flow_pattern(&mut c, &arm.pattern, &scrut);
+                    match &arm.body {
+                        Expr::Block { stmts, tail } => {
+                            body_param_returns(stmts, &mut c, known_param_return, found, stmt_is_tail);
+                            if stmt_is_tail {
+                                if let Some(t) = tail {
+                                    found.extend(expr_param_return_flow(t, &c, known_param_return));
+                                }
+                            }
+                        }
+                        other => {
+                            if stmt_is_tail {
+                                found.extend(expr_param_return_flow(other, &c, known_param_return));
+                            }
+                        }
+                    }
+                }
+            }
+            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+                let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
+                let mut c = flow.clone();
+                seed_flow_pattern(&mut c, pattern, &scrut);
+                for (body, sc) in [(then.as_ref(), &mut c), (else_.as_ref(), &mut *flow)] {
+                    if let Expr::Block { stmts, tail } = body {
+                        body_param_returns(stmts, sc, known_param_return, found, stmt_is_tail);
+                        if stmt_is_tail {
+                            if let Some(t) = tail {
+                                found.extend(expr_param_return_flow(t, sc, known_param_return));
+                            }
+                        }
+                    } else if stmt_is_tail {
+                        found.extend(expr_param_return_flow(body, sc, known_param_return));
                     }
                 }
             }

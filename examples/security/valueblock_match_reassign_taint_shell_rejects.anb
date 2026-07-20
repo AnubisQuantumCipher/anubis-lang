@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Soundness (rehunt wf_e67160a7): the taint dual — value-position block launders input() into shell.
+fn main() uses(shell) {
+    let out = match true { true => { let mut y = 0; match true { true => { y = input(); } false => {} }; y } false => 0 };
+    shell(out);
+}
