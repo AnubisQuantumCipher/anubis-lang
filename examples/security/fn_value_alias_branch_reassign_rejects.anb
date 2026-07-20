@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_EXFILTRATION
+// Soundness hunt2 2026-07-19 [08]: a fn-value alias reassigned to a leaking function inside ONE
+// branch of an `if` was discarded at the branch-join (restore_block_scope), so `let f = safe; if c {
+// f = leak; } f(k)` resolved f to safe and laundered the secret. The analyze_stmts if-handler now
+// merges fn_alias across branches, keeping any branch's alias to a function with a NON-EMPTY
+// egress/sink summary (may-alias over-approximation, fail-closed).
+fn leak(h: string, p: u32, x: u64) uses(net.send) { send(h, p, x); }
+fn safe(h: string, p: u32, x: u64) -> u64 { return x; }
+fn run(c: bool, k: secret<u64>) uses(net.send) {
+    let f = safe;
+    if c { f = leak; }
+    f("host", 80, k);
+}
+fn main() { }

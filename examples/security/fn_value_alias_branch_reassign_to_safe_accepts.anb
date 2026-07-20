@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Over-rejection guard: if BOTH the branch and the fall-through resolve to non-leaking functions, a
+// secret argument must still compile — only a leaking alias on some path triggers the check.
+fn safe1(h: string, p: u32, x: u64) -> u64 { return x; }
+fn safe2(h: string, p: u32, x: u64) -> u64 { return x + 1; }
+fn run(c: bool, k: secret<u64>) uses(net.send) {
+    let f = safe1;
+    if c { f = safe2; }
+    let y = f("host", 80, k);
+}
+fn main() { }

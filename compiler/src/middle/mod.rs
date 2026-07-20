@@ -4249,6 +4249,44 @@ fn analyze_stmts(
                 // EITHER branch survives so a later sink sees it — closing the branch reassignment
                 // fail-open a bare restore left open.
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
+                // Fn-value-alias branch-merge (soundness hunt2 [08]): a reassignment `f = leak` inside
+                // a branch set `f`'s `fn_alias` on that branch's scope, which `restore_block_scope`
+                // discarded — so `let f = safe; if c { f = leak; } f(k)` resolved `f` to `safe` and
+                // laundered the secret past the interproc egress/sink check. If EITHER branch aliased a
+                // (span-identical) binding to a LEAKING free function — one with a NON-EMPTY egress/sink
+                // summary — keep that alias after the merge. May-alias over-approximation, fail-closed:
+                // it only ADDS a leaking resolution and fires only when the arg is actually secret/
+                // tainted, so a clean call never false-rejects. The NON-EMPTY filter is load-bearing:
+                // the summary maps hold an entry for EVERY fn (mostly empty), so `.keys()` alone would
+                // treat every alias as "leaking" and the first branch's (often safe) alias would win.
+                {
+                    let leaking: BTreeSet<&str> = ctx
+                        .param_egress
+                        .iter()
+                        .chain(ctx.param_sinks.iter())
+                        .filter(|(_, v)| !v.is_empty())
+                        .map(|(k, _)| k.as_str())
+                        .collect();
+                    let names: Vec<String> = scope.keys().cloned().collect();
+                    for name in names {
+                        let outer_span = scope.get(&name).and_then(|b| b.info.span);
+                        for pp in [&then_scope, &else_scope] {
+                            if let Some(pb) = pp.get(&name) {
+                                if pb.info.span != outer_span {
+                                    continue;
+                                }
+                                if let Some(a) = &pb.fn_alias {
+                                    if leaking.contains(a.as_str()) {
+                                        if let Some(b) = scope.get_mut(&name) {
+                                            b.fn_alias = Some(a.clone());
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
                 // Path conditions are scoped to the branches: restore the pre-`if` guard stack.
