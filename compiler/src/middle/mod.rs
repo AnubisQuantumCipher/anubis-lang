@@ -190,6 +190,99 @@ fn fn_alias_of(
     }
 }
 
+/// Recursively collect closures stored ANYWHERE inside a container literal, keyed by a dotted ACCESS
+/// PATH (struct field names, list indices, map string keys, joined by `.`): `Outer { inner: Inner {
+/// f: g } }` → `"inner.f"`; `[Box { f: g }]` → `"0.f"`; `{ "k": g }` → `"k"`; `Box { f: g }` → `"f"`.
+/// A value that is an inline lambda or a var bound to a closure is recorded; a nested container
+/// recurses; anything else is skipped. Generalizes the single-level #48 field-closure tracking so a
+/// closure applied through a NESTED / indexed / mapped access (`o.inner.f(0)`, `arr[0].f(0)`,
+/// `m["k"](0)`) still carries its captured secret/taint to the application result — soundness hunt2
+/// 2026-07-19 found each of those laundered a secret past the egress check. Single-level keys are
+/// unchanged (`"f"`, `"0"`), so the existing effect-descent consumers keep working.
+fn collect_container_closures(
+    init: &Expr,
+    prefix: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    out: &mut BTreeMap<String, Box<Expr>>,
+) {
+    let mk = |seg: &str| -> String {
+        if prefix.is_empty() {
+            seg.to_string()
+        } else {
+            format!("{}.{}", prefix, seg)
+        }
+    };
+    let entries: Vec<(String, &Expr)> = match init {
+        Expr::StructLiteral { fields, .. } => {
+            fields.iter().map(|(f, v)| (mk(f), v.as_ref())).collect()
+        }
+        Expr::ArrayLiteral { elements } => elements
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (mk(&i.to_string()), e))
+            .collect(),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .filter_map(|(k, v)| match k {
+                Expr::StrLiteral(s) => Some((mk(s), v)),
+                _ => None,
+            })
+            .collect(),
+        _ => return,
+    };
+    for (segkey, val) in entries {
+        match val {
+            Expr::Lambda { .. } => {
+                out.insert(segkey, Box::new(val.clone()));
+            }
+            Expr::Var(v) => {
+                if let Some(l) = scope.get(v).and_then(|b| b.closure_lambda.clone()) {
+                    out.insert(segkey, l);
+                }
+            }
+            Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+                collect_container_closures(val, &segkey, scope, out)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Flatten a container-access chain used as a CALL TARGET into `(root binding name, dotted access
+/// path)` matching [`collect_container_closures`]' keys: `o.inner.f` → `("o", "inner.f")`,
+/// `arr[0].f` → `("arr", "0.f")`, `m["k"]` → `("m", "k")`, `b.f` → `("b", "f")`. Only a chain
+/// grounded in a `Var` root with literal field / integer-index / string-key segments resolves;
+/// a call in the middle or a symbolic index yields `None`.
+fn flatten_access_path(e: &Expr) -> Option<(String, String)> {
+    match e {
+        Expr::Var(n) => Some((n.clone(), String::new())),
+        Expr::FieldAccess { base, field, .. } => {
+            let (root, path) = flatten_access_path(base)?;
+            let np = if path.is_empty() {
+                field.clone()
+            } else {
+                format!("{}.{}", path, field)
+            };
+            Some((root, np))
+        }
+        Expr::Index { base, index } => {
+            let seg = match index.as_ref() {
+                Expr::Literal(s) => s.trim().to_string(),
+                Expr::StrLiteral(s) => s.clone(),
+                _ => return None,
+            };
+            let (root, path) = flatten_access_path(base)?;
+            let np = if path.is_empty() {
+                seg
+            } else {
+                format!("{}.{}", path, seg)
+            };
+            Some((root, np))
+        }
+        _ => None,
+    }
+}
+
 impl SemanticContext {
     /// The single diagnostic router for the type-system phase. New static checks (bidirectional
     /// inference, captured generics, trait coherence, typed `?`) emit through this with
@@ -3088,34 +3181,19 @@ fn analyze_stmts(
                 // propagates b's field-closures. (Nested-struct fields / reassignment are residuals.)
                 // Also holds LIST-ELEMENT closures (`let arr = [|x| ...]`) keyed by the element index as
                 // a string, so `arr[0](0)` (a `CallExpr` on an `Index`) descends the same way (#48-d).
+                // Closures stored anywhere in this binding's container structure, keyed by dotted
+                // access path (`collect_container_closures`) so `b.f(0)` / `arr[0](0)` / `o.inner.f(0)`
+                // / `arr[0].f(0)` / `m["k"](0)` all descend into the stored closure body. An alias
+                // `let b2 = b` inherits b's paths.
                 let fclos: BTreeMap<String, Box<Expr>> = match init {
-                    Expr::StructLiteral { fields, .. } => fields
-                        .iter()
-                        .filter_map(|(fname, fval)| {
-                            let lam: Option<Box<Expr>> = match fval.as_ref() {
-                                Expr::Lambda { .. } => Some(fval.clone()),
-                                Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
-                                _ => None,
-                            };
-                            lam.map(|l| (fname.clone(), l))
-                        })
-                        .collect(),
-                    Expr::ArrayLiteral { elements } => elements
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, el)| {
-                            let lam: Option<Box<Expr>> = match el {
-                                Expr::Lambda { .. } => Some(Box::new(el.clone())),
-                                Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
-                                _ => None,
-                            };
-                            lam.map(|l| (i.to_string(), l))
-                        })
-                        .collect(),
                     Expr::Var(v) => {
                         scope.get(v).map(|b| b.field_closures.clone()).unwrap_or_default()
                     }
-                    _ => BTreeMap::new(),
+                    _ => {
+                        let mut m = BTreeMap::new();
+                        collect_container_closures(init, "", scope, &mut m);
+                        m
+                    }
                 };
                 let fal = fn_alias_of(init, scope, ctx);
                 scope.insert(
@@ -4047,10 +4125,25 @@ fn analyze_stmts(
                         // (to the new fn ref, or clears it for a non-fn value), so a call after the
                         // reassignment resolves through the CURRENT target — no stale-alias false reject.
                         let fal = fn_alias_of(value, scope, ctx);
+                        // Refresh the container-closure paths so a reassignment `b = Box { f: h }`
+                        // (h capturing a secret) is tracked — otherwise the stale field-closure of the
+                        // ORIGINAL container hid the new closure's captured secret from the egress check
+                        // (soundness hunt2: reassigned struct-field / list-element closure laundered a leak).
+                        let new_fclos: BTreeMap<String, Box<Expr>> = match value {
+                            Expr::Var(v) => {
+                                scope.get(v).map(|b| b.field_closures.clone()).unwrap_or_default()
+                            }
+                            _ => {
+                                let mut m = BTreeMap::new();
+                                collect_container_closures(value, "", scope, &mut m);
+                                m
+                            }
+                        };
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
                             b.closure_lambda = cl;
                             b.fn_alias = fal;
+                            b.field_closures = new_fclos;
                         }
                     }
                 }
@@ -12057,19 +12150,8 @@ fn expr_taint_source_m(
             // laundered the captured tainted value past ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY. Resolve
             // the stored lambda from the base binding's `field_closures` and read its tail values in
             // the caller scope minus the lambda params.
-            let stored_closure = match callee.as_ref() {
-                Expr::FieldAccess { base, field, .. } => match base.as_ref() {
-                    Expr::Var(bn) => scope.get(bn).and_then(|b| b.field_closures.get(field).cloned()),
-                    _ => None,
-                },
-                Expr::Index { base, index } => match (base.as_ref(), index.as_ref()) {
-                    (Expr::Var(bn), Expr::Literal(idx)) => {
-                        scope.get(bn).and_then(|b| b.field_closures.get(idx.trim()).cloned())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
+            let stored_closure = flatten_access_path(callee)
+                .and_then(|(root, path)| scope.get(&root).and_then(|b| b.field_closures.get(&path).cloned()));
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
                 for p in params {
@@ -12302,19 +12384,8 @@ fn expr_secret_source_m(
             // the RESULT secret). Resolve the stored lambda from the base binding's `field_closures`
             // (field name, or literal element index), then read its tail values in the caller scope
             // MINUS the lambda params (so a captured secret is seen, a shadowing param is not).
-            let stored_closure = match callee.as_ref() {
-                Expr::FieldAccess { base, field, .. } => match base.as_ref() {
-                    Expr::Var(bn) => scope.get(bn).and_then(|b| b.field_closures.get(field).cloned()),
-                    _ => None,
-                },
-                Expr::Index { base, index } => match (base.as_ref(), index.as_ref()) {
-                    (Expr::Var(bn), Expr::Literal(idx)) => {
-                        scope.get(bn).and_then(|b| b.field_closures.get(idx.trim()).cloned())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
+            let stored_closure = flatten_access_path(callee)
+                .and_then(|(root, path)| scope.get(&root).and_then(|b| b.field_closures.get(&path).cloned()));
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
                 for p in params {

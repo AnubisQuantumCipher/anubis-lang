@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Over-rejection guard: a nested-field closure that captures NO secret must still compile.
+struct Inner { f: u64 }
+struct Outer { inner: Inner }
+fn run() uses(net.send) {
+    let g = |x| 42;
+    let o = Outer { inner: Inner { f: g } };
+    send("host", 80, o.inner.f(0));
+}
+fn main() { }
