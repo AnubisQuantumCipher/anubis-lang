@@ -139,6 +139,13 @@ struct ScopeBinding {
     /// through a plain binding or a fn param, not through a struct field. Pure analysis scratch (like
     /// `closure_lambda`), no HIR/fixpoint surface. Empty for a non-struct or closure-free binding.
     field_closures: BTreeMap<String, Box<Expr>>,
+    /// Task (soundness hunt 2026-07-19): a VAR bound to a NAMED user function (`let f = leak`),
+    /// resolved to that function's name (transitively through `let g = f` chains). The interproc
+    /// param->sink / param->egress checks key on the callee NAME, so a call THROUGH a function-value
+    /// alias (`f(k)`) otherwise missed the summary and laundered a secret/tainted arg past
+    /// ANUBIS_INTERPROC_EXFILTRATION / ANUBIS_INTERPROC_SINK. Flow-sensitive (rides the scope, so a
+    /// later reassignment naturally overwrites it) => no false reject. Pure analysis scratch.
+    fn_alias: Option<String>,
 }
 
 /// Arity of an initializer if it is a closure or first-class function reference, else `None`.
@@ -156,6 +163,29 @@ fn closure_arity_of(
             .get(n)
             .map(|p| p.len())
             .or_else(|| scope.get(n).and_then(|b| b.closure_arity)),
+        _ => None,
+    }
+}
+
+/// The RESOLVED user-function name a `let` binding aliases, else `None`: `let f = leak` → `Some("leak")`
+/// when `leak` is a known free function (`ctx.fn_params`); a chain `let g = f` resolves transitively
+/// through the existing binding's `fn_alias`. Only a bare function reference is an alias — a lambda
+/// literal (handled by `closure_lambda`), a call, or any other initializer is not. Used so the
+/// interproc param→sink / param→egress checks see THROUGH a function-value alias at the call site
+/// (`f(k)` consults `leak`'s summary), closing the alias laundering the soundness hunt 2026-07-19 found.
+fn fn_alias_of(
+    init: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<String> {
+    match init {
+        Expr::Var(n) => {
+            if ctx.fn_params.contains_key(n) {
+                Some(n.clone())
+            } else {
+                scope.get(n).and_then(|b| b.fn_alias.clone())
+            }
+        }
         _ => None,
     }
 }
@@ -1208,6 +1238,7 @@ fn analyze_function(
                         closure_arity: None,
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
+                        fn_alias: None,
                         secret: false,
                     },
                 )
@@ -1294,6 +1325,7 @@ fn analyze_function(
                     closure_arity: None,
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
+                    fn_alias: None,
                     // A `secret<T>` param qualifier auto-labels the parameter as secret (the
                     // confidentiality dual of the `tainted<T>` param seeded above), so a secret
                     // arriving via a param needs no `secret_source(..)` call — an egress of it is
@@ -3085,6 +3117,7 @@ fn analyze_stmts(
                     }
                     _ => BTreeMap::new(),
                 };
+                let fal = fn_alias_of(init, scope, ctx);
                 scope.insert(
                     name.clone(),
                     ScopeBinding {
@@ -3092,6 +3125,7 @@ fn analyze_stmts(
                         closure_arity: ca,
                         closure_lambda: cl,
                         field_closures: fclos,
+                        fn_alias: fal,
                         secret: init_secret.is_some() || explicit_secret,
                     },
                 );
@@ -4009,9 +4043,14 @@ fn analyze_stmts(
                             Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
                             _ => None,
                         };
+                        // Flow-sensitive fn-alias update: a reassignment `f = safe` replaces the alias
+                        // (to the new fn ref, or clears it for a non-fn value), so a call after the
+                        // reassignment resolves through the CURRENT target — no stale-alias false reject.
+                        let fal = fn_alias_of(value, scope, ctx);
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
                             b.closure_lambda = cl;
+                            b.fn_alias = fal;
                         }
                     }
                 }
@@ -4219,6 +4258,7 @@ fn analyze_stmts(
                             closure_arity: None,
                             closure_lambda: None,
                             field_closures: BTreeMap::new(),
+                            fn_alias: None,
                             secret: wl_secret,
                         },
                     );
@@ -4528,6 +4568,7 @@ fn analyze_stmts(
                         closure_arity: None,
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
+                        fn_alias: None,
                         secret: secret_src,
                     },
                 );
@@ -4805,7 +4846,15 @@ fn analyze_expr_effect(
             // makes the call site a sink for argument N — even though the actual `sink(...)` is
             // inside the callee. Distinct code from the direct-sink check so callers can see
             // `ANUBIS_INTERPROC_SINK` (the leak is at the call boundary, not a local sink name).
-            if let Some(sink_params) = ctx.param_sinks.get(callee).cloned() {
+            // Resolve a function-value alias so a call THROUGH `let f = leak; f(k)` consults `leak`'s
+            // interproc summary, not the (absent) summary of the local var `f`. Direct calls are
+            // unaffected (no alias ⇒ `resolved_callee == callee`). Soundness hunt 2026-07-19: the alias
+            // laundered a secret/tainted argument past ANUBIS_INTERPROC_EXFILTRATION / _SINK.
+            let resolved_callee: &str = scope
+                .get(callee)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(callee.as_str());
+            if let Some(sink_params) = ctx.param_sinks.get(resolved_callee).cloned() {
                 for i in sink_params {
                     if let Some(arg) = args.get(i) {
                         if let Some(source) = expr_taint_source_m(
@@ -4847,7 +4896,7 @@ fn analyze_expr_effect(
             // itself be a secret-returning helper). Egress-only, so a secret into a LOCAL write is not
             // flagged. A well-formed declassify releases (via `expr_secret_source` → None). Safe-mode.
             if mode == Mode::Safe {
-                if let Some(egress_params) = ctx.param_egress.get(callee).cloned() {
+                if let Some(egress_params) = ctx.param_egress.get(resolved_callee).cloned() {
                     for i in egress_params {
                         if let Some(arg) = args.get(i) {
                             if let Some(source) = expr_secret_source_m(
@@ -4914,6 +4963,7 @@ fn analyze_expr_effect(
                                     closure_arity: None,
                                     closure_lambda: None,
                                     field_closures: BTreeMap::new(),
+                                    fn_alias: None,
                                     secret: false,
                                 },
                             );
@@ -4947,6 +4997,7 @@ fn analyze_expr_effect(
                                 closure_arity: None,
                                 closure_lambda: None,
                                 field_closures: BTreeMap::new(),
+                                fn_alias: None,
                                 secret: false,
                             },
                         );
@@ -4990,6 +5041,7 @@ fn analyze_expr_effect(
                                     closure_arity: None,
                                     closure_lambda: None,
                                     field_closures: BTreeMap::new(),
+                                    fn_alias: None,
                                     secret: false,
                                 },
                             );
@@ -5125,6 +5177,7 @@ fn analyze_expr_effect(
                                         closure_arity: None,
                                         closure_lambda: None,
                                         field_closures: BTreeMap::new(),
+                                        fn_alias: None,
                                         secret: false,
                                     },
                                 );
@@ -5186,6 +5239,7 @@ fn analyze_expr_effect(
                                         closure_arity: None,
                                         closure_lambda: None,
                                         field_closures: BTreeMap::new(),
+                                        fn_alias: None,
                                         secret: false,
                                     },
                                 );
@@ -11660,6 +11714,7 @@ fn walk_block_taint(
                         closure_arity: None,
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
+                        fn_alias: None,
                         secret: false,
                     },
                 );
@@ -11773,6 +11828,7 @@ fn walk_block_secret(
                         closure_arity: None,
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
+                        fn_alias: None,
                         secret: secret_src,
                     },
                 );
@@ -12341,6 +12397,7 @@ fn seed_one_let(
             closure_arity: None,
             closure_lambda: None,
             field_closures: BTreeMap::new(),
+            fn_alias: None,
             // This scope feeds the INTEGRITY return summary only; secrecy has its own parallel
             // seeder (`seed_one_let_secret`, feeding `compute_secret_fns`), so it is not seeded here.
             secret: false,
@@ -12376,6 +12433,7 @@ fn seed_taint_pattern(
                 closure_arity: None,
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
+                fn_alias: None,
                 secret: false,
             },
         );
@@ -12435,6 +12493,7 @@ fn seed_effect_let(
             closure_arity: None,
             closure_lambda: None,
             field_closures: BTreeMap::new(),
+            fn_alias: None,
             secret: init_secret || explicit_secret,
         },
     );
@@ -12466,6 +12525,7 @@ fn seed_effect_pattern(
                 closure_arity: None,
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
+                fn_alias: None,
                 secret,
             },
         );
@@ -12614,6 +12674,7 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                     closure_arity: None,
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
+                    fn_alias: None,
                     secret,
                 },
             );
@@ -12746,6 +12807,7 @@ fn seed_one_let_secret(
             closure_arity: None,
             closure_lambda: None,
             field_closures: BTreeMap::new(),
+            fn_alias: None,
             secret,
         },
     );
@@ -12775,6 +12837,7 @@ fn seed_secret_pattern(
                 closure_arity: None,
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
+                fn_alias: None,
                 secret,
             },
         );

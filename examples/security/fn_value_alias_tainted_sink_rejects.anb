@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Integrity twin: untrusted input through a function-value alias of a user sink function
+// (`let f = logsink; f(input())`) must reach the interproc sink check via the resolved alias.
+fn logsink(x: u64) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { let f = logsink; f(input()); }

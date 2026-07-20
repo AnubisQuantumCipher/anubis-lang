@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// Over-rejection guard: fn_alias is FLOW-SENSITIVE — reassigning the alias to a non-egress function
+// before the call must NOT reject (the call resolves through the CURRENT target, `safe`).
+fn leak(h: string, p: u32, x: u64) uses(net.send) { send(h, p, x); }
+fn safe(h: string, p: u32, x: u64) -> u64 { return x; }
+fn run(k: secret<u64>) uses(net.send) {
+    let f = leak;
+    f = safe;
+    let y = f("host", 80, k);
+}
+fn main() { }
