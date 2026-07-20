@@ -14437,21 +14437,7 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
         Expr::Block { stmts, tail } => {
             let mut local = flow.clone();
             for stmt in stmts {
-                match stmt {
-                    Stmt::Let { name, init, .. } => seed_param_flow_let(name, init, &mut local),
-                    Stmt::LetPattern { pattern, init, .. } => {
-                        let set = expr_param_flow(init, &local);
-                        seed_flow_pattern(&mut local, pattern, &set);
-                    }
-                    Stmt::Assign {
-                        target: Expr::Var(name),
-                        value,
-                    } => {
-                        let set = expr_param_flow(value, &local);
-                        local.insert(name.clone(), set);
-                    }
-                    _ => {}
-                }
+                apply_stmt_param_flow(stmt, &mut local);
             }
             tail.as_ref()
                 .map(|t| expr_param_flow(t, &local))
@@ -14520,6 +14506,74 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             expr_param_flow(body, &inner)
         }
         _ => BTreeSet::new(),
+    }
+}
+
+/// Apply one statement's scope effect to a value-position block's param-flow map `local` — the shared
+/// per-statement step of `expr_param_flow`'s `Block` arm. Handles straight-line `let`/`Assign` (incl.
+/// field/index write to the root) AND a NESTED statement-`match`/`if let`/`push` that reassigns an outer
+/// local (`{ let mut a=0; match c { _ => { a=p } }; a }`) — recursing so a param carried through a
+/// nested branch inside a value block reaches the block tail (audit after hunt wf_e67160a7).
+fn apply_stmt_param_flow(stmt: &Stmt, local: &mut BTreeMap<String, BTreeSet<usize>>) {
+    match stmt {
+        Stmt::Let { name, init, .. } => seed_param_flow_let(name, init, local),
+        Stmt::LetPattern { pattern, init, .. } => {
+            let set = expr_param_flow(init, local);
+            seed_flow_pattern(local, pattern, &set);
+        }
+        Stmt::Assign { target: Expr::Var(name), value } => {
+            let set = expr_param_flow(value, local);
+            local.insert(name.clone(), set);
+        }
+        Stmt::Assign { target, value } => {
+            if let Some(root) = assign_target_root(target) {
+                let rhs = expr_param_flow(value, local);
+                local.entry(root.to_string()).or_default().extend(rhs);
+            }
+        }
+        Stmt::ExprStmt(Expr::Call { callee, args })
+            if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+        {
+            if let Expr::Var(container) = &args[0] {
+                for a in &args[1..] {
+                    let rhs = expr_param_flow(a, local);
+                    local.entry(container.clone()).or_default().extend(rhs);
+                }
+            }
+        }
+        Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+            let scrut = expr_param_flow(scrutinee, local);
+            let base = local.clone();
+            for arm in arms {
+                let mut c = base.clone();
+                seed_flow_pattern(&mut c, &arm.pattern, &scrut);
+                if let Expr::Block { stmts, .. } = &arm.body {
+                    for s in stmts {
+                        apply_stmt_param_flow(s, &mut c);
+                    }
+                }
+                union_flow_into(local, &c);
+            }
+        }
+        Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+            let scrut = expr_param_flow(scrutinee, local);
+            let mut c = local.clone();
+            seed_flow_pattern(&mut c, pattern, &scrut);
+            if let Expr::Block { stmts, .. } = then.as_ref() {
+                for s in stmts {
+                    apply_stmt_param_flow(s, &mut c);
+                }
+            }
+            union_flow_into(local, &c);
+            let mut e = local.clone();
+            if let Expr::Block { stmts, .. } = else_.as_ref() {
+                for s in stmts {
+                    apply_stmt_param_flow(s, &mut e);
+                }
+            }
+            union_flow_into(local, &e);
+        }
+        _ => {}
     }
 }
 
@@ -14678,6 +14732,59 @@ fn body_param_sinks(
                     let rhs = expr_param_flow(value, flow);
                     flow.entry(root.to_string()).or_default().extend(rhs);
                 }
+            }
+            // A statement-position `match`/`if let` reassigning a param-carrying value in an arm body then
+            // reaching a post-join sink (`fn leak(p){ let mut a=0; match c { _ => { a=p } }; send(a) }`) —
+            // seed each arm's pattern with the scrutinee's param-flow, recurse into the arm body, and
+            // may-union the arm-end flow (the interproc-summary twin of the `analyze_stmts` Match handler;
+            // audit after hunt wf_e67160a7). Arm bodies are Blocks.
+            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+                collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                let scrut = expr_param_flow(scrutinee, flow);
+                for arm in arms {
+                    let mut c = flow.clone();
+                    seed_flow_pattern(&mut c, &arm.pattern, &scrut);
+                    match &arm.body {
+                        Expr::Block { stmts, tail } => {
+                            body_param_sinks(stmts, &mut c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                            if let Some(t) = tail {
+                                collect_param_sinks_in_expr(t, &c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                            }
+                        }
+                        // A BARE-expr arm (`_ => send(x)`) can itself be a sink of a param — collect it (this
+                        // is exactly the `buried_interproc_sink_through_match` case, which the former `_ =>`
+                        // fallthrough handled via `collect_returns_in_stmt` + the whole-expr walk).
+                        other => collect_param_sinks_in_expr(other, &c, sink_pred, known_param_sinks, known_method_param_sinks, found),
+                    }
+                    union_flow_into(flow, &c);
+                }
+            }
+            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+                collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                let scrut = expr_param_flow(scrutinee, flow);
+                let mut c = flow.clone();
+                seed_flow_pattern(&mut c, pattern, &scrut);
+                match then.as_ref() {
+                    Expr::Block { stmts, tail } => {
+                        body_param_sinks(stmts, &mut c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                        if let Some(t) = tail {
+                            collect_param_sinks_in_expr(t, &c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                        }
+                    }
+                    other => collect_param_sinks_in_expr(other, &c, sink_pred, known_param_sinks, known_method_param_sinks, found),
+                }
+                union_flow_into(flow, &c);
+                let mut e2 = flow.clone();
+                match else_.as_ref() {
+                    Expr::Block { stmts, tail } => {
+                        body_param_sinks(stmts, &mut e2, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                        if let Some(t) = tail {
+                            collect_param_sinks_in_expr(t, &e2, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                        }
+                    }
+                    other => collect_param_sinks_in_expr(other, &e2, sink_pred, known_param_sinks, known_method_param_sinks, found),
+                }
+                union_flow_into(flow, &e2);
             }
             Stmt::ExprStmt(e) => {
                 collect_param_sinks_in_expr(e, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
@@ -15359,24 +15466,40 @@ fn body_param_returns(
                             }
                         }
                     }
+                    // May-merge the arm-body reassignments back — a nested `match c { _ => { a = p } }`
+                    // (not in tail position) must propagate `a`'s new flow to the later block tail
+                    // (`let out = { let mut a=0; match c { _ => { a=p } }; a }`) — else the value-block
+                    // return laundered the param (audit after hunt wf_e67160a7).
+                    union_flow_into(flow, &c);
                 }
             }
             Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
                 let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
                 let mut c = flow.clone();
                 seed_flow_pattern(&mut c, pattern, &scrut);
-                for (body, sc) in [(then.as_ref(), &mut c), (else_.as_ref(), &mut *flow)] {
-                    if let Expr::Block { stmts, tail } = body {
-                        body_param_returns(stmts, sc, known_param_return, found, stmt_is_tail);
-                        if stmt_is_tail {
-                            if let Some(t) = tail {
-                                found.extend(expr_param_return_flow(t, sc, known_param_return));
-                            }
+                if let Expr::Block { stmts, tail } = then.as_ref() {
+                    body_param_returns(stmts, &mut c, known_param_return, found, stmt_is_tail);
+                    if stmt_is_tail {
+                        if let Some(t) = tail {
+                            found.extend(expr_param_return_flow(t, &c, known_param_return));
                         }
-                    } else if stmt_is_tail {
-                        found.extend(expr_param_return_flow(body, sc, known_param_return));
                     }
+                } else if stmt_is_tail {
+                    found.extend(expr_param_return_flow(then, &c, known_param_return));
                 }
+                let mut e = flow.clone();
+                if let Expr::Block { stmts, tail } = else_.as_ref() {
+                    body_param_returns(stmts, &mut e, known_param_return, found, stmt_is_tail);
+                    if stmt_is_tail {
+                        if let Some(t) = tail {
+                            found.extend(expr_param_return_flow(t, &e, known_param_return));
+                        }
+                    }
+                } else if stmt_is_tail {
+                    found.extend(expr_param_return_flow(else_, &e, known_param_return));
+                }
+                union_flow_into(flow, &c);
+                union_flow_into(flow, &e);
             }
             _ => {
                 let mut rets = Vec::new();

@@ -1,0 +1,4 @@
+// EXPECT: PASS
+// Precision guard: a match-arm reassign of a NON-secret param, summarized + sunk, must still compile.
+fn leak(p: u64) uses(net.send) { let mut a = 0; match true { true => { a = p; } false => {} } send("h", 80, a); }
+fn main() uses(net.send) { leak(5); }

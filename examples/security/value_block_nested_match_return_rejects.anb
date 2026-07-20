@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Soundness (walker audit): a param carried through a nested statement-match inside a value-position
+// block that is RETURNED (`let out = { let mut a=0; match c { _ => { a=p } }; a }; return out`) —
+// expr_param_return_flow Block/apply-stmt + body_param_returns Match union now propagate it.
+fn mk(p: u64) -> u64 { let out = match true { true => { let mut a = 0; match true { true => { a = p; } false => {} }; a } false => 0 }; return out; }
+fn main() uses(net.send) { let k = secret_source("k"); send("h", 80, mk(k)); }
