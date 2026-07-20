@@ -570,3 +570,28 @@ theorem barrelLshr_correct (a b : List Bool) :
     bitsToNat (barrelLshr a b) = bitsToNat a / 2 ^ bitsToNat b := by
   unfold barrelLshr
   rw [(barrelLshr_aux a b b.length).2, List.take_length]
+
+/-! ### Structural ops — concat and extract
+
+`blast.rs::blast_term` wires `Concat`, `Extract`, and the extends as pure list operations (append,
+slice) — no arithmetic gates. We mechanize their value semantics so the whole native-authoritative
+fragment (bar `ashr` and the CDCL engine) is value-checked. `ZeroExtend` is already covered by
+`bitsToNat_append_replicate_false` (high zeros preserve value). -/
+
+/-- **General concatenation value.** `⟦l₁ ++ l₂⟧ = ⟦l₁⟧ + 2^|l₁|·⟦l₂⟧` — appending a HIGH chunk `l₂`
+    shifts it up by `|l₁|`. This is `blast.rs::Concat` (result LSB-first = low-part ++ high-part). -/
+theorem bitsToNat_append_list (l₁ l₂ : List Bool) :
+    bitsToNat (l₁ ++ l₂) = bitsToNat l₁ + 2 ^ l₁.length * bitsToNat l₂ := by
+  induction l₁ with
+  | nil => simp [bitsToNat]
+  | cons b bs ih =>
+      simp only [List.cons_append, bitsToNat, List.length_cons, ih, Nat.pow_succ]
+      rw [Nat.mul_add, ← Nat.mul_assoc, Nat.mul_comm (2 ^ bs.length) 2, Nat.mul_assoc]
+      omega
+
+/-- **Extract value.** `blast.rs::Extract(hi, lo, a)` slices bits `[lo, hi]` (LSB-first
+    `a[lo..=hi]` = `(a.drop lo).take (hi+1-lo)`); its value is `(⟦a⟧ / 2^lo) mod 2^(hi+1-lo)` — the SMT
+    `(_ extract hi lo)` semantics. From `bitsToNat_take` (mod) ∘ `bitsToNat_drop` (div). -/
+theorem bitsToNat_extract (a : List Bool) (lo len : Nat) :
+    bitsToNat ((a.drop lo).take len) = bitsToNat a / 2 ^ lo % 2 ^ len := by
+  rw [bitsToNat_take, bitsToNat_drop]
