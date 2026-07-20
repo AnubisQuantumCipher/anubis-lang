@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_EXFILTRATION
+// Higher-order hunt closeout: a secret-capturing closure in a struct field, passed as a fn param and
+// dispatched in the callee (`let s = Box{cb: |x| k}; run(s.cb)` where run does send(cb(0))). Closed by
+// the general fix: a capturing closure is a first-class SECRET value the existing struct-field/param
+// flow tracks, so `s.cb` reads secret at the call site.
+struct Box { cb: u32 }
+fn run(cb) uses(net.send) { send("host", 80, cb(0)); }
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let s = Box { cb: |x| k };
+    run(s.cb);
+}

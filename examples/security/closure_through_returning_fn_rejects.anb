@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// A secret-capturing closure passed to a fn that RETURNS its param (`let g = fwd(|x| k); send(g(0))`).
+// The Lambda arm labels the closure secret; fwd's param_return_taint carries it to g; applying a
+// secret-valued binding (g(0)) exposes it (the apply-labeled-var rule).
+fn fwd(cb) { return cb; }
+fn main() uses(net.send) {
+    let k = secret_source("api_key");
+    let g = fwd(|x| k);
+    send("host", 80, g(0));
+}

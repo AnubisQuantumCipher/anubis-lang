@@ -5036,10 +5036,20 @@ fn resolve_closure_arg(
         // the `fn_returns_lambda` recording, slice 6). The intermediate-binding form
         // (`let g = mk(); run(g)`) already resolves via the `Var` arm above. Residual: substituting
         // mk's OWN params by `mk(...)`'s args (a capture through mk's parameter) is not modelled.
-        Expr::Call { callee, .. } => match fn_returns_lambda.get(callee) {
-            Some((_pnames, Expr::Lambda { params, body })) => {
-                Some((params.clone(), (**body).clone()))
+        Expr::Call { callee, args } => match fn_returns_lambda.get(callee) {
+            // Beta-substitute the callee's OWN params by the call args so a capture THROUGH the
+            // callee's parameter is resolved: `run(mk(k))` with `fn mk(p){ return |x| p; }` yields the
+            // lambda body `k` (the lambda's own params shadow). Closes the capture-through-callee-param
+            // residual (soundness hunt 2026-07-20, interproc run(mk(k))).
+            Some((pnames, Expr::Lambda { params, body })) if pnames.len() == args.len() => {
+                let mut sub: BTreeMap<String, Expr> =
+                    pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                for p in params {
+                    sub.remove(p);
+                }
+                Some((params.clone(), substitute_vars(body, &sub)))
             }
+            Some((_, Expr::Lambda { params, body })) => Some((params.clone(), (**body).clone())),
             _ => None,
         },
         _ => None,
@@ -12690,6 +12700,14 @@ fn expr_taint_source_m(
                         expr_taint_source_m(arg, scope, tainting_fns, param_return_taint, method_tainting_fns)
                     })
                 })
+            } else if scope.get(callee).is_some_and(|b| b.info.tainted) {
+                // Applying a TAINTED-VALUED binding exposes its capture (integrity dual of the secret
+                // apply rule) — `let g = fwd(|x| input()); g(0)`, or a call returning a tainted-
+                // capturing closure. Report the binding's recorded taint source.
+                scope
+                    .get(callee)
+                    .and_then(|b| b.info.taint_source.clone())
+                    .or_else(|| Some(format!("captured tainted value in closure `{callee}`")))
             } else {
                 // Builtin / not-yet-summarized: any tainted argument taints the call (conservative).
                 args.iter()
@@ -12754,6 +12772,28 @@ fn expr_taint_source_m(
             expr_taint_source_m(k, scope, tainting_fns, param_return_taint, method_tainting_fns)
                 .or_else(|| expr_taint_source_m(v, scope, tainting_fns, param_return_taint, method_tainting_fns))
         }),
+        // A capturing closure IS a tainted VALUE (integrity dual of the secret Lambda arm) — labeling
+        // the lambda literal lets the existing value-flow track it through struct fields, dicts, fn
+        // returns and nesting, closing the higher-order laundering class in one place. Non-capturing
+        // lambdas return None (no false reject). Soundness hunt 2026-07-20.
+        Expr::Lambda { params, body } => {
+            let mut inner = scope.clone();
+            for p in params {
+                inner.remove(p);
+            }
+            let subst = closure_body_let_subst(body);
+            let mut tails = Vec::new();
+            expr_tail_values(body, &mut tails);
+            tails.iter().find_map(|t| {
+                expr_taint_source_m(
+                    &substitute_vars(t, &subst),
+                    &inner,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                )
+            })
+        }
         // Control-flow value expressions (`match` / `if` / `if let` / block) — SCOPE-AWARE walk.
         // Each arm/branch/block extends a CLONE of the ambient scope: inner bindings (pattern vars,
         // block-local `let`s) SHADOW a same-named outer binding (no false positive — the exact
@@ -12948,6 +12988,13 @@ fn expr_secret_source_m(
                         expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns)
                     })
                 })
+            } else if scope.get(callee).is_some_and(|b| b.secret) {
+                // Applying a SECRET-VALUED binding exposes its capture — a var bound to a capturing
+                // closure, or to a call that RETURNS one (`let g = fwd(|x| k); g(0)`, or `let g =
+                // mk(); g(0)` where mk conditionally returns a secret-capturing closure so mk landed
+                // in `secret_fns`). This is the application dual of the Lambda-literal arm: labeling
+                // the closure value is only useful if applying it also carries the label.
+                Some(format!("captured secret in closure `{callee}`"))
             } else {
                 // Builtin / not-yet-summarized: any secret argument is conservative.
                 args.iter()
@@ -13003,6 +13050,32 @@ fn expr_secret_source_m(
             expr_secret_source_m(k, scope, secret_fns, param_return_taint, method_secret_fns)
                 .or_else(|| expr_secret_source_m(v, scope, secret_fns, param_return_taint, method_secret_fns))
         }),
+        // A capturing closure IS a secret VALUE — its captures hold the secret. Labeling a lambda
+        // literal itself makes the EXISTING container/field/param/return value-flow track it wherever
+        // it is dispatched-and-egressed, closing the higher-order laundering class in ONE place rather
+        // than per storage shape (soundness hunt 2026-07-20: closure in a struct-field param, a dict of
+        // closures, a fn that returns a closure, a nested/conditional closure — all reduce to "this
+        // value is secret"). Detect via the body's returned value(s), local-let aliases resolved, in
+        // the enclosing scope MINUS the lambda's own params (a param is an arg, not a capture). A
+        // non-capturing lambda returns None, so only capturing closures are labeled (no false reject).
+        Expr::Lambda { params, body } => {
+            let mut inner = scope.clone();
+            for p in params {
+                inner.remove(p);
+            }
+            let subst = closure_body_let_subst(body);
+            let mut tails = Vec::new();
+            expr_tail_values(body, &mut tails);
+            tails.iter().find_map(|t| {
+                expr_secret_source_m(
+                    &substitute_vars(t, &subst),
+                    &inner,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
+            })
+        }
         // Control-flow value exprs — SCOPE-AWARE walk, the exact confidentiality dual of the same
         // arms on `expr_taint_source` (see the full note there): clone-per-arm/block, inner
         // bindings shadow, pattern vars inherit the whole scrutinee's secrecy, straight-line block

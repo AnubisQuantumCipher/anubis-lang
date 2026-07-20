@@ -48,8 +48,21 @@ a map, an enum payload, one returned from a function, one aliased to a name, one
 one applied through an intermediate binding. When the target genuinely cannot be resolved — e.g. a
 closure selected from a container by a **symbolic index** — the analysis **fails closed**: if the
 container holds any secret/tainted-capturing closure, the indirect application is treated as the leak it
-may be, rather than silently accepted. So a green Safe-mode check is never quiet confidence about an
-un-analyzed indirect flow; either the flow is verified clean, or it is rejected.
+may be, rather than silently accepted.
+
+A **capturing closure** — a lambda whose body reads a secret/tainted value from the enclosing scope — is
+itself treated as a labelled value, so the ordinary value-flow tracks it through struct fields, lists,
+maps, function parameters and returns, aliases and (beta-substituted) forwarding: `let s = Box{cb: |x|
+k}; run(s.cb)`, `let g = fwd(|x| k); g(0)`, `run(mk(k))` and the like are all caught.
+
+**Honest boundary (known residuals under active work).** A handful of deep higher-order shapes are not
+yet tracked and can currently compile a leak: a closure applied through *another* closure nested inside
+a function body (`|y| { let inner = |x| k; inner(0) }`); a closure returned *conditionally* from a
+helper (`fn mk(c){ if c>0 { return |x| k; } … }`); and a closure captured through a symbolic map key.
+These are enumerated with reproducers in the soundness-hunt notes and are being closed. Until then, for
+a program that dispatches secret/tainted-capturing closures through those specific shapes, prefer the
+`--verified` effect-row analysis, which covers them. This section states exactly what is and is not
+covered rather than overclaiming.
 
 ## The one release valve
 
