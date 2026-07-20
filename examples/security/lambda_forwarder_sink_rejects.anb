@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_EXFILTRATION
+// Soundness hunt2 2026-07-19 [13]: a param captured by a LOCAL lambda whose body egresses, applied in
+// the same function (`fn leak(x){ let g = ||{ send(x) }; g(); }`), was invisible to the param->egress
+// summary walker. body_param_sinks now tracks local lambda lets and descends into the body at g().
+fn leak(x) uses(net.send) { let g = || { send("host", 80, x); }; g(); }
+fn main() uses(net.send) { leak(secret_source("api_key")); }

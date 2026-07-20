@@ -13550,12 +13550,20 @@ fn body_param_sinks(
     known_method_param_sinks: &BTreeMap<String, BTreeSet<usize>>,
     found: &mut BTreeSet<usize>,
 ) {
+    // Local lambda bindings in THIS block (`let g = |p| body`), so an application `g(args)` in the
+    // same block can descend into the closure body — the SUMMARY-side twin of the #47 enforcing
+    // closure descent. Without it, `fn leak(x){ let g = ||{send(x)}; g(); }` never marked param 0 in
+    // the param→egress summary and `leak(secret)` compiled (soundness hunt2 [13]).
+    let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
     for stmt in stmts {
         match stmt {
             Stmt::Let { name, init, .. } => {
                 // A sink can hide inside the initializer (e.g. `let _ = sink(x)`).
                 collect_param_sinks_in_expr(init, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
                 seed_param_flow_let(name, init, flow);
+                if matches!(init, Expr::Lambda { .. }) {
+                    lambdas.insert(name.clone(), init.clone());
+                }
             }
             Stmt::If {
                 then, else_, cond, ..
@@ -13619,6 +13627,22 @@ fn body_param_sinks(
             }
             Stmt::ExprStmt(e) => {
                 collect_param_sinks_in_expr(e, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                // Application of a LOCAL lambda (`g(args)`): descend into its body with the lambda's
+                // params bound to the args' param-flow, so a sink/egress buried in the closure body
+                // (`let g = ||{ send(x) }; g();`) is summarized to the enclosing param (hunt2 [13]).
+                if let Expr::Call { callee, args } = e {
+                    if let Some(Expr::Lambda { params: lp, body: lb }) = lambdas.get(callee) {
+                        let mut inner = flow.clone();
+                        for (i, p) in lp.iter().enumerate() {
+                            let af = args
+                                .get(i)
+                                .map(|a| expr_param_flow(a, flow))
+                                .unwrap_or_default();
+                            inner.insert(p.clone(), af);
+                        }
+                        collect_param_sinks_in_expr(lb, &inner, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    }
+                }
             }
             _ => {
                 // Best-effort: scan any nested expressions in other stmt forms for sink calls.
@@ -14028,6 +14052,32 @@ fn union_flow_into(
     }
 }
 
+/// The param→return-flow of an application `g(args)` where `g` is a LOCAL lambda in `lambdas`: the
+/// closure body's return-flow with the lambda's params bound to the args' param-flow, else `None`.
+/// Lets `fn fwd(x){ let g = || x; return g(); }` (and the `let r = g(); return r` form) summarize x to
+/// the return — soundness hunt2 [12].
+fn local_lambda_return_flow(
+    e: &Expr,
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+    lambdas: &BTreeMap<String, Expr>,
+    known: &BTreeMap<String, BTreeSet<usize>>,
+) -> Option<BTreeSet<usize>> {
+    if let Expr::Call { callee, args } = e {
+        if let Some(Expr::Lambda { params: lp, body: lb }) = lambdas.get(callee) {
+            let mut inner = flow.clone();
+            for (j, p) in lp.iter().enumerate() {
+                let af = args
+                    .get(j)
+                    .map(|a| expr_param_return_flow(a, flow, known))
+                    .unwrap_or_default();
+                inner.insert(p.clone(), af);
+            }
+            return Some(expr_param_return_flow(lb, &inner, known));
+        }
+    }
+    None
+}
+
 fn body_param_returns(
     stmts: &[Stmt],
     flow: &mut BTreeMap<String, BTreeSet<usize>>,
@@ -14036,6 +14086,12 @@ fn body_param_returns(
     tail: bool,
 ) {
     let n = stmts.len();
+    // Local lambda bindings in this block, so `return g()` / `let r = g()` where `g = |p| body`
+    // resolves to the closure body's return-flow — the param→return-taint twin of the value-block and
+    // returned-closure fixes (soundness hunt2 [12]: `fn fwd(x){ let g = || x; return g(); }` returned
+    // x through the local closure but the summary treated `g()` as opaque, so `send(fwd(secret))`
+    // compiled).
+    let mut lambdas: BTreeMap<String, Expr> = BTreeMap::new();
     for (i, stmt) in stmts.iter().enumerate() {
         let stmt_is_tail = tail && i + 1 == n;
         match stmt {
@@ -14045,6 +14101,9 @@ fn body_param_returns(
                 expr_returns(init, &mut rets);
                 for r in rets {
                     found.extend(expr_param_return_flow(&r, flow, known_param_return));
+                }
+                if matches!(init, Expr::Lambda { .. }) {
+                    lambdas.insert(name.clone(), init.clone());
                 }
                 let cleared = matches!(
                     init,
@@ -14057,10 +14116,9 @@ fn body_param_returns(
                 if cleared {
                     flow.insert(name.clone(), BTreeSet::new());
                 } else {
-                    flow.insert(
-                        name.clone(),
-                        expr_param_return_flow(init, flow, known_param_return),
-                    );
+                    let f = local_lambda_return_flow(init, flow, &lambdas, known_param_return)
+                        .unwrap_or_else(|| expr_param_return_flow(init, flow, known_param_return));
+                    flow.insert(name.clone(), f);
                 }
             }
             // A destructuring `let [a,b] = [x,0]; return a` propagates the init's param-flow to each
@@ -14174,11 +14232,19 @@ fn body_param_returns(
                 collect_returns_in_stmt(stmt, &mut rets);
                 for r in rets {
                     found.extend(expr_param_return_flow(&r, flow, known_param_return));
+                    if let Some(lf) = local_lambda_return_flow(&r, flow, &lambdas, known_param_return) {
+                        found.extend(lf);
+                    }
                 }
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
                         if !is_return_call(e) {
                             found.extend(expr_param_return_flow(e, flow, known_param_return));
+                            if let Some(lf) =
+                                local_lambda_return_flow(e, flow, &lambdas, known_param_return)
+                            {
+                                found.extend(lf);
+                            }
                         }
                     }
                 }

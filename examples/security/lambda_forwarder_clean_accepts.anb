@@ -1,0 +1,4 @@
+// EXPECT: PASS
+// Over-rejection guard: a local lambda that captures no param (returns a constant) must still compile.
+fn fwd(x) { let g = || 42; return g(); }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }
