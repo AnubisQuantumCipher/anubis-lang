@@ -1307,11 +1307,29 @@ fn main() {
             !discharged("fn same(x: u32) -> u32 ensures(result > x) { return x; }"),
             "x > x is false"
         );
-        // A plain function's parameter assertion keeps its prior param-opaque semantics (no contract
-        // means params are not modeled), so it is not newly disproved.
+        // Middle-option (design decision 2026-07-21, hunt wf_7451545b): a NON-contract function's
+        // in-body assert over an INTEGER parameter is now modeled and discharged — the param-opaque
+        // fail-open that let a green `check` certify a program `run` traps on (`fn g(x){assert(x>5)}`
+        // called `g(0)`) is closed. `assert(x > 5)` over a `u32` param (masked to [0, 2^32)) is NOT
+        // valid for every value (x = 0 fails), so it is now correctly DISPROVED instead of silently
+        // skipped. Stating the missing precondition (`requires(x > 5)`) is what discharges it.
         assert!(
-            discharged("fn g(x: u32) { assert(x > 5); }"),
-            "no-contract param assert stays skipped"
+            !discharged("fn g(x: u32) { assert(x > 5); }"),
+            "no-contract int-param assert is now modeled and disproved (middle-option)"
+        );
+        // ...but a genuinely PROVABLE non-contract param assert still discharges — the change must not
+        // degrade into a blanket reject. `x >= 0` holds for every masked u32 value; `y == y` is a
+        // tautology for any i64.
+        assert!(
+            discharged("fn g_ok(x: u32, y: int) { assert(x >= 0); assert(y == y); }"),
+            "provable non-contract int-param asserts still discharge"
+        );
+        // The middle-option is INTEGER-scoped: a FLOAT in-body assert in a non-contract function stays
+        // fail-open (runtime-enforced), so it is NOT statically disproved (its obligation set is empty).
+        // This locks the deliberate scope boundary — extending it to floats would flip this assertion.
+        assert!(
+            discharged("fn g_fp(x: f64) { assert(x > 0.0); }"),
+            "float non-contract param assert stays fail-open (integer-scoped middle-option)"
         );
         // EVERY return path is verified, not just the tail: an early return that violates the
         // postcondition is disproved (no false proof), while a multi-return function whose every
@@ -4384,9 +4402,11 @@ fn bad() {
             "a bounded float assert should discharge",
         );
         // …and a float assert that need not hold under its contract is disproved (not silently
-        // deferred). The function MUST declare a contract — a plain, contract-free function keeps its
-        // param-opaque semantics (identical to the integer lane), so `assert(x > 4.0)` there would
-        // correctly defer to runtime. Under `requires(x > 2.0)`, `x > 4.0` does not follow (x = 3).
+        // deferred). The function MUST declare a contract — a plain, contract-free FLOAT param keeps
+        // its param-opaque semantics, so `assert(x > 4.0)` there correctly defers to runtime. (The
+        // INTEGER lane no longer does — the 2026-07-21 middle-option models non-contract int params
+        // that a body asserts over; floats stay fail-open.) Under `requires(x > 2.0)`, `x > 4.0` does
+        // not follow (x = 3).
         assert!(
             !discharged(
                 "fn f(x: f64) requires(x > 2.0) { assert(x > 4.0); }\nfn main() { f(3.0); }"

@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Fresh soundness hunt 2026-07-21 (integrity twin of nested_lambda_body_secret_egress): untrusted
+// `input()` reaches a sink buried in a nested closure `h` applied inside the outer closure `g`. Same
+// param→sink summary miss (`collect_param_sinks_in_expr` Block arm carried no local-lambda env); same fix
+// (route the block through `body_param_sinks`). The `is_sink ⊇ is_egress_sink` sink predicate makes this
+// one traversal serve both the confidentiality (egress) and integrity (sink) summaries.
+fn run(cmd) uses(net.send) { let g = || { let h = || { send("host", 80, cmd); }; h(); }; g(); }
+fn main() uses(net.send) {
+    let t = input();
+    run(t);
+}

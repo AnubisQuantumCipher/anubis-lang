@@ -1,0 +1,15 @@
+// EXPECT: PASS
+// Scope BOUNDARY for the 2026-07-21 middle-option: it extends static discharge to INTEGER asserts
+// only. A FLOAT in-body `assert` in a NON-contract function stays FAIL-OPEN (runtime-enforced) — the
+// documented stance for genuinely-unmodelable asserts is deliberately UNCHANGED (floats/strings are
+// runtime checks outside a contract). So `x > 0.0` is not statically modeled and `check` passes even
+// though it is only a runtime backstop. This locks the boundary: if a future change extends param
+// modeling to floats, this fixture flips to FAIL and forces a conscious re-decision rather than a
+// silent stance drift.
+pub fn fp(x: f64) {
+    assert(x > 0.0);
+}
+
+fn main() {
+    fp(1.5);
+}

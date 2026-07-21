@@ -4054,6 +4054,19 @@ impl Parser {
                     depth -= 2;
                     ty.push_str(">>");
                 }
+                // A list type `[T]` — share the angle-bracket `depth` counter so a stop token (a `,`
+                // separating params/fields, a `;`) inside `[...]` does not end the type early. Without
+                // this the brackets fell into the `_ => {}` catch-all and a `[int]` field/param/return
+                // was stored as the bare element `"int"`, letting a list annotation be modeled as a
+                // scalar integer downstream (e.g. `s.log` on a `[int]` field synthesizing as `u32`).
+                Token::LBracket => {
+                    depth += 1;
+                    ty.push('[');
+                }
+                Token::RBracket => {
+                    depth -= 1;
+                    ty.push(']');
+                }
                 Token::Star => ty.push('*'),
                 Token::Amp => ty.push('&'),
                 // A comma inside generic arguments is part of the type; at depth 0 it is dropped
@@ -4378,5 +4391,95 @@ mod diagnostic_render_tests {
             assert!(rendered.contains("error:"));
             assert!(rendered.contains('^'));
         }
+    }
+}
+
+#[cfg(test)]
+mod list_type_annotation_tests {
+    use super::*;
+
+    fn struct_field_ty(src: &str, sname: &str, fname: &str) -> String {
+        let ast = parse_source(src).expect("parse");
+        for item in &ast.items {
+            if let Item::Struct { name, fields, .. } = item {
+                if name == sname {
+                    for (f, t) in fields {
+                        if f == fname {
+                            return t.clone();
+                        }
+                    }
+                }
+            }
+        }
+        panic!("field {sname}.{fname} not found");
+    }
+
+    fn fn_of<'a>(ast: &'a AST, fname: &str) -> &'a Item {
+        ast.items
+            .iter()
+            .find(|i| matches!(i, Item::Fn { name, .. } if name == fname))
+            .expect("fn not found")
+    }
+
+    #[test]
+    fn list_struct_field_type_keeps_its_brackets() {
+        // The regression: `[int]` was stored as the bare element `"int"`, letting a list field be
+        // modeled as a scalar integer downstream (`s.log` synthesizing as u32). It must round-trip.
+        assert_eq!(struct_field_ty("struct S { log: [int] }\n", "S", "log"), "[int]");
+        // A non-numeric element behaves the same — the bracket wrapper is what carries "this is a list".
+        assert_eq!(struct_field_ty("struct S { names: [string] }\n", "S", "names"), "[string]");
+    }
+
+    #[test]
+    fn list_param_and_return_types_keep_their_brackets() {
+        let ast = parse_source("fn f(xs: [int]) -> [int] { return xs; }\n").expect("parse");
+        let Item::Fn { params, ret, .. } = fn_of(&ast, "f") else {
+            unreachable!()
+        };
+        assert_eq!(params, &vec![("xs".to_string(), "[int]".to_string())]);
+        assert_eq!(ret.as_deref(), Some("[int]"));
+    }
+
+    #[test]
+    fn let_binding_list_type_keeps_its_brackets() {
+        let ast = parse_source("fn f() { let xs: [int] = []; }\n").expect("parse");
+        let Item::Fn { body, .. } = fn_of(&ast, "f") else {
+            unreachable!()
+        };
+        let tys: Vec<Option<String>> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Let { ty, .. } => Some(ty.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tys, vec![Some("[int]".to_string())]);
+    }
+
+    #[test]
+    fn stop_token_inside_brackets_does_not_end_the_type_early() {
+        // The `depth` counter must cover `[...]` too: the `,` separating the map's key/value sits
+        // INSIDE the list brackets and must be preserved, not treated as the param separator. If the
+        // bracket depth were not tracked, collection would stop at that inner comma and `next: int`
+        // would be swallowed / misparsed.
+        let ast =
+            parse_source("fn f(rows: [Map<int, string>], next: int) { return next; }\n").expect("parse");
+        let Item::Fn { params, .. } = fn_of(&ast, "f") else {
+            unreachable!()
+        };
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "rows");
+        assert_eq!(params[0].1, "[Map<int, string>]");
+        assert_eq!(params[1], ("next".to_string(), "int".to_string()));
+    }
+
+    #[test]
+    fn scalar_and_generic_annotations_are_unchanged() {
+        // Guard: the new bracket arms must not perturb the pre-existing scalar / angle-generic paths.
+        assert_eq!(struct_field_ty("struct S { id: u32 }\n", "S", "id"), "u32");
+        assert_eq!(
+            struct_field_ty("struct S { m: Map<int, string> }\n", "S", "m"),
+            "Map<int, string>"
+        );
     }
 }

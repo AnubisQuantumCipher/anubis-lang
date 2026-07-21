@@ -1621,19 +1621,33 @@ fn analyze_function(
     // B2 contracts: make integer parameters solver-modelable, assume each `requires` precondition,
     // then (after the body) assert each `ensures` postcondition at the tail return. The body plus
     // the precondition must PROVE the postcondition — discharged by the (now-sound i64) solver.
-    // Only functions that DECLARE a contract model their parameters symbolically, so a plain
-    // function's assertions keep their prior (param-opaque) semantics — no regression.
+    // A contract makes ALL of a function's integer parameters symbolic; a NON-contract function
+    // models its integer parameters too, but ONLY when its body asserts over them (the middle-option
+    // below), and it seeds NO `requires`, so those params are unconstrained i64. Float/string params
+    // are modeled symbolically only under a contract.
     let has_contract = !requires.is_empty() || !ensures.is_empty();
-    if has_contract {
-        // Make integer parameters solver-modelable. NOTE: a `u32`/`u8` annotation is INERT at
-        // runtime (a parameter holds any i64; the call boundary applies no width clamp), so we must
-        // NOT assume it lies in [0, 2^w-1] — doing so let the solver "prove" `x + 1 > x` while
-        // `f(i64::MAX)` wraps and violates it. A contract that needs bounds must state them via
-        // `requires`; unbounded i64 arithmetic that can overflow is (correctly) not provable.
+    // MIDDLE-OPTION (design decision 2026-07-21, hunt wf_7451545b): an in-body `assert(P)` where P is an
+    // integer formula over the function's integer PARAMS is modelable IN PRINCIPLE — the sole blocker was
+    // gating param modeling on `has_contract`. Left fail-open, a green `check` certified a program `run`
+    // traps on (`fn f(x:int){assert(x<0)}` called `f(5)` — exit 101). So model integer params for ANY
+    // function whose body asserts over them, not only contracted ones. SOUND (prime-directive direction):
+    // modeling a param as an unbounded i64 bit-vector (plus the A1 uN mask, itself runtime-enforced) only
+    // ADDS obligations — it can flip an accept to a reject, never a reject to an accept, so it cannot
+    // introduce a false accept. No `requires` is seeded here, so a non-contract param is an UNCONSTRAINED
+    // i64: an assert true only under a caller-guaranteed invariant the function never declared is
+    // (conservatively, correctly) rejected — the fix is to state it via `requires`. Float/string in-body
+    // asserts stay fail-open (runtime-enforced): this deliberately does NOT reverse the stance for
+    // genuinely-unmodelable asserts.
+    let model_int_params = has_contract || body_asserts_over_int_params(body, params);
+    // Make integer parameters solver-modelable. NOTE: a `u32`/`u8` annotation is INERT at
+    // runtime (a parameter holds any i64; the call boundary applies no width clamp), so we must
+    // NOT assume it lies in [0, 2^w-1] — doing so let the solver "prove" `x + 1 > x` while
+    // `f(i64::MAX)` wraps and violates it. A contract that needs bounds must state them via
+    // `requires`; unbounded i64 arithmetic that can overflow is (correctly) not provable.
+    if model_int_params {
         for (pname, pty) in params {
-            // Only INTEGER params are solver-modelable. A float param must NOT be modeled as an i64
-            // bit-vector (that "proved" `2*x != 1` for `x = 0.5`); an integer `ensures` that then
-            // references it becomes non-modelable and fails closed below.
+            // Only INTEGER params are modeled here. A float/string param is contract-only (below): its
+            // in-body assert stays runtime-enforced outside a contract, per the middle-option scope.
             if is_integer_ty(pty) {
                 ctx.solver_int_vars.insert(pname.clone());
                 ctx.symbolic_widths.insert(pname.clone(), 64);
@@ -1645,14 +1659,24 @@ fn analyze_function(
                 // runtime, so injecting its range would be a false-accept (the runtime lets it hold −1).
                 // Widths ≤ 32 keep the value < 2^63, so the SIGNED `bvsge`/`bvsle` are exact. Landed in
                 // `assumptions` BEFORE `precondition_assumptions` is cloned (line ~1367), so early
-                // returns inherit it too.
+                // returns inherit it too. Applies uniformly whether the modeling was triggered by a
+                // contract or by a bare in-body int assert — the runtime mask is unconditional either way.
                 if let Some(w) = ty::unsigned_mask_width(pty) {
                     let v = smt_var(pname);
                     let hi = (1i64 << w) - 1;
                     assumptions.push(format!("(bvsge {v} (_ bv0 64))"));
                     assumptions.push(format!("(bvsle {v} (_ bv{hi} 64))"));
                 }
-            } else if is_float_ty(pty) {
+            }
+        }
+    }
+    if has_contract {
+        // Float/string PARAM modeling stays CONTRACT-ONLY. The middle-option above extends static
+        // discharge to INTEGER asserts only; a float/string in-body assert remains runtime-enforced
+        // (fail-open) outside a contract — modeling those params for a bare assert would reverse that
+        // documented stance for genuinely-unmodelable asserts.
+        for (pname, pty) in params {
+            if is_float_ty(pty) {
                 // Phase-3 QF_FP: a float param is now solver-modelable — declared IEEE-754 Float64, so a
                 // float `ensures`/`assert` over `+ - *` and comparisons can be discharged (previously it
                 // fell through to ANUBIS_FLOAT_CONTRACT_UNMODELED). Kept OUT of `solver_int_vars` so it is
@@ -3101,8 +3125,170 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                 discharge_calls_in_expr(ctx, assumptions, v);
             }
         }
-        // Remaining CONDITIONAL / deferred positions: `match`-ARM bodies (handled above via scrutinee-only),
-        // `if let` branches, block/lambda bodies. Leaves (Var/Literal/Symbolic/…) hold no call. Undischarged.
+        // A BLOCK-bodied branch (`if c { let t = …; g(t) }` — a block is the `then`/`else_` of an `if`
+        // EXPRESSION, or a `match`-arm body). Previously in the `_ => {}` residual, so a contracted call in
+        // the block's TAIL or a statement-expr went UNDISCHARGED — a green `check` on a program the runtime
+        // traps (audit wf_e3f4fe9c: `let z = if true { let t = 0; g(t) } else { 5 };`, g `requires(x>=10)`,
+        // checks green / runs `ANUBIS_ASSERT_FAILED`). Descend: model the block's SIMPLE never-reassigned,
+        // never-shadowed `let` bindings as SCOPED defining facts (the same lanes as the statement-level let),
+        // then discharge every contracted call in a statement-expr / let-initializer / the tail under those
+        // facts + the inherited branch guard (the `Expr::If` arm already pushed the branch condition before
+        // recursing into this block). SOUNDNESS: (1) a never-reassigned, never-shadowed let's defining fact
+        // is EXACT and valid on every path (the exact argument the statement-level float/string defining-fact
+        // lanes at the `Stmt::Let` handler rely on), so a discharge over it is as sound as a direct call; (2)
+        // a call whose argument is UNmodeled (a dynamic/non-modelable let, or a var an enclosing
+        // `invalidate_embedded_writes` already de-modeled) makes its `requires` clause unmodelable →
+        // `discharge_call_requires` skips it → the pre-existing FAIL-OPEN, never a new over-rejection.
+        Expr::Block { stmts, tail } => {
+            // Shadow guard: if any name the block DIRECTLY binds already carries solver state (a param /
+            // outer modeled let of the same name), DEFER the whole block (fully fail-open, unchanged) rather
+            // than risk the shadow-conflation false accept (a body call `g(t)` discharging against the OUTER
+            // `t`'s facts while the runtime uses the block binding) or corrupting the outer binding's state.
+            // A block-let over a genuinely FRESH name is the closable case (the confirmed repro's `t`).
+            let mut bound: BTreeSet<String> = BTreeSet::new();
+            for s in stmts {
+                match s {
+                    Stmt::Let { name, .. } => {
+                        bound.insert(name.clone());
+                    }
+                    Stmt::LetPattern { pattern, .. } => {
+                        for n in pattern.bound_names() {
+                            bound.insert(n);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let shadows_existing = bound.iter().any(|n| {
+                ctx.solver_int_vars.contains(n)
+                    || ctx.solver_float_vars.contains(n)
+                    || ctx.solver_string_vars.contains(n)
+                    || ctx.symbolic_widths.contains_key(n)
+            });
+            if shadows_existing {
+                return;
+            }
+            // Scope every fact + solver-var/width entry we add to this block: restored on exit so nothing
+            // leaks to a sibling branch or to the code after the enclosing `if`.
+            let snap = assumptions.len();
+            let snap_g = ctx.active_branch_guards.len();
+            let mut added_int: Vec<String> = Vec::new();
+            let mut added_float: Vec<String> = Vec::new();
+            let mut added_string: Vec<String> = Vec::new();
+            let mut added_width: Vec<String> = Vec::new();
+            for s in stmts {
+                match s {
+                    Stmt::Let { name, ty, init, .. } => {
+                        // Discharge contracted calls in the initializer (evaluated unconditionally, before
+                        // the binding takes effect) — e.g. `let u = g(x) + 1;` in the block.
+                        discharge_calls_in_expr(ctx, assumptions, init);
+                        // Model the binding as a scoped defining fact only when it is never reassigned AND
+                        // never shadowed anywhere in the function — the SAME soundness boundary the
+                        // statement-level float/string defining-fact lanes use. No frame sweep runs in this
+                        // expression walker, so a reassigned binding (whose fact a sweep would have to drop)
+                        // must NOT be modeled here; leaving it unmodeled keeps a later body call over it at
+                        // the pre-existing fail-open.
+                        if ctx.reassigned_roots.contains(name) || ctx.shadowed_lets.contains(name) {
+                            continue;
+                        }
+                        let genuinely_float = !is_int_modelable(init, &ctx.solver_int_vars)
+                            && is_float_modelable(init, &ctx.solver_float_vars);
+                        let genuinely_string = !is_int_modelable(init, &ctx.solver_int_vars)
+                            && !is_float_modelable(init, &ctx.solver_float_vars)
+                            && is_string_modelable(init, &ctx.solver_string_vars);
+                        if genuinely_float {
+                            ctx.solver_float_vars.insert(name.clone());
+                            added_float.push(name.clone());
+                            assumptions
+                                .push(format!("(= {} {})", smt_var(name), float_expr_to_smt(init)));
+                        } else if genuinely_string {
+                            ctx.solver_string_vars.insert(name.clone());
+                            added_string.push(name.clone());
+                            assumptions
+                                .push(format!("(= {} {})", smt_var(name), string_expr_to_smt(init)));
+                        } else if !matches!(init, Expr::ArrayLiteral { .. })
+                            && is_int_modelable(init, &ctx.solver_int_vars)
+                        {
+                            // Only register the int binding when it yields an actual defining fact (a
+                            // Symbolic/non-modelable init yields None → left unmodeled → fail-open, never an
+                            // unconstrained free var that would fail closed and over-reject).
+                            if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
+                                // Width parity with the statement-level int let: a type annotation / symbolic
+                                // ty / binary-lhs inference, else 32. `expr_to_smt_value` gates a Var on width
+                                // membership, so registering the width lets a later block-let over this one
+                                // resolve, and keeps the obligation encoder consistent with the fact.
+                                let w = if let Some(t) = ty {
+                                    bitwidth_of(t)
+                                } else if let Expr::Symbolic { ty } = init {
+                                    bitwidth_of(ty)
+                                } else if let Expr::Binary { lhs, .. } = init {
+                                    if let Expr::Var(lv) = &**lhs {
+                                        *ctx.symbolic_widths.get(lv).unwrap_or(&32u32)
+                                    } else {
+                                        32u32
+                                    }
+                                } else {
+                                    32u32
+                                };
+                                ctx.symbolic_widths.insert(name.clone(), w);
+                                added_width.push(name.clone());
+                                ctx.solver_int_vars.insert(name.clone());
+                                added_int.push(name.clone());
+                                assumptions
+                                    .push(format!("(= {} {})", smt_var(name), init_smt));
+                            }
+                        }
+                    }
+                    Stmt::LetPattern { init, .. } => {
+                        discharge_calls_in_expr(ctx, assumptions, init);
+                    }
+                    Stmt::ExprStmt(e) => {
+                        discharge_calls_in_expr(ctx, assumptions, e);
+                    }
+                    // A STATEMENT-position `if`/`while`/`for`/`match`/`loop`/`assign` inside a value block
+                    // (`{ if d { let b=…; g(b) } … }`) carries control flow / loop-carried writes this
+                    // lightweight expression walker does not model — descending soundly needs the
+                    // statement-level path-condition + havoc + frame machinery (`analyze_stmts`). Left
+                    // undescended: a contracted call buried in such a nested statement stays at the
+                    // pre-existing fail-open (a documented residual, one level deeper than the tail/expr-stmt
+                    // call this arm closes — NOT a regression, the block was fully deferred before). Any
+                    // embedded write was already de-modeled by the enclosing `invalidate_embedded_writes`, so
+                    // no fact this arm relies on can be stale.
+                    _ => {}
+                }
+            }
+            if let Some(t) = tail {
+                discharge_calls_in_expr(ctx, assumptions, t);
+            }
+            assumptions.truncate(snap);
+            ctx.active_branch_guards.truncate(snap_g);
+            for n in &added_int {
+                ctx.solver_int_vars.remove(n);
+            }
+            for n in &added_float {
+                ctx.solver_float_vars.remove(n);
+            }
+            for n in &added_string {
+                ctx.solver_string_vars.remove(n);
+            }
+            for n in &added_width {
+                ctx.symbolic_widths.remove(n);
+            }
+        }
+        // `if let PATTERN = scrutinee { then } else { else_ }` in value position: the SCRUTINEE is evaluated
+        // unconditionally, so discharge contracted calls in it (like a `match` scrutinee). The THEN branch is
+        // left deferred — its pattern-bound names are unmodeled and could SHADOW an outer modeled var, which
+        // would discharge a body call against the wrong facts (the shadow-conflation false accept the `match`
+        // handler neutralizes with fresh symbols); handling it soundly needs that same machinery, a separate
+        // residual. The ELSE branch binds nothing, so its calls discharge safely under the enclosing facts.
+        Expr::IfLet {
+            scrutinee, else_, ..
+        } => {
+            discharge_calls_in_expr(ctx, assumptions, scrutinee);
+            discharge_calls_in_expr(ctx, assumptions, else_);
+        }
+        // Remaining deferred positions: an `if let` THEN branch (pattern-bound scope, see above) and lambda
+        // bodies. Leaves (Var/Literal/Symbolic/…) hold no call. Undischarged.
         _ => {}
     }
 }
@@ -7564,6 +7750,72 @@ fn split_top_level_conjuncts(e: &Expr) -> Vec<&Expr> {
         }
         _ => vec![e],
     }
+}
+
+/// MIDDLE-OPTION trigger (design decision 2026-07-21, hunt wf_7451545b): does `body` contain a
+/// statement-position `assert(P)` whose `P` (or a top-level conjunct of it) becomes a bool-modelable
+/// INTEGER formula once the function's integer parameters are treated as solver ints? Used by
+/// `analyze_function` to extend integer-param modeling to NON-contract functions, so an in-body int
+/// assert over int params is statically discharged instead of silently deferred to the runtime
+/// `assert!` backstop (the fail-open false-accept class: green `check` while `run` traps).
+///
+/// The candidate int-var set is exactly the function's integer parameter names — the predicate then
+/// asks "would this assert become checkable if we modeled them?" via the SAME `is_bool_modelable`
+/// the assert handler uses, mirroring its top-level-conjunct decomposition so `assert(x < 0 && g(x))`
+/// still triggers on its modelable `x < 0` conjunct. Over-approximation is SOUND in both directions:
+/// a spurious `true` only models a param that then yields no obligation (no verdict change), and a
+/// missed nested assert merely keeps the pre-change fail-open stance (never a new false accept). We
+/// walk the straight-line body plus every control-flow position where a statement `assert` is
+/// solver-checked (if/else branches, while/for/loop bodies, block statements); match-/if-let-arm
+/// bodies are deliberately NOT descended — an arm-body assert is a runtime-deferred position whose
+/// obligation is rolled back anyway (see the `Stmt::ExprStmt(Expr::Match ..)` handler), so modeling
+/// on its behalf would be pointless (and, being additive, still harmless).
+fn body_asserts_over_int_params(body: &[Stmt], params: &[(String, String)]) -> bool {
+    let cand: BTreeSet<String> = params
+        .iter()
+        .filter(|(_, ty)| is_integer_ty(ty))
+        .map(|(n, _)| n.clone())
+        .collect();
+    if cand.is_empty() {
+        return false;
+    }
+    fn assert_is_int_modelable(e: &Expr, cand: &BTreeSet<String>) -> bool {
+        is_bool_modelable(e, cand)
+            || split_top_level_conjuncts(e)
+                .iter()
+                .any(|c| is_bool_modelable(c, cand))
+    }
+    fn expr_has_assert(e: &Expr, cand: &BTreeSet<String>) -> bool {
+        // A block used in expression position (`let z = { assert(x < 0); 0 }`, or a bare block
+        // statement `Stmt::ExprStmt(Expr::Block ..)`) carries its own statement list — descend it.
+        matches!(e, Expr::Block { stmts, .. } if walk(stmts, cand))
+    }
+    fn walk(body: &[Stmt], cand: &BTreeSet<String>) -> bool {
+        for s in body {
+            let hit = match s {
+                Stmt::ExprStmt(Expr::Assert(e)) => assert_is_int_modelable(e, cand),
+                Stmt::ExprStmt(e) => expr_has_assert(e, cand),
+                Stmt::If { then, else_, .. } => {
+                    walk(then, cand) || else_.as_ref().is_some_and(|e| walk(e, cand))
+                }
+                Stmt::While { body, .. }
+                | Stmt::WhileLet { body, .. }
+                | Stmt::For { body, .. }
+                | Stmt::Loop { body, .. }
+                | Stmt::ResearchBlock { body, .. }
+                | Stmt::ExploitBlock { body, .. } => walk(body, cand),
+                Stmt::HybridBlock { gpu, cpu, prove } => {
+                    [gpu, cpu, prove].into_iter().flatten().any(|b| walk(b, cand))
+                }
+                _ => false,
+            };
+            if hit {
+                return true;
+            }
+        }
+        false
+    }
+    walk(body, &cand)
 }
 
 fn is_bool_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
@@ -12520,15 +12772,14 @@ fn check_expr_semantics(
                 // `Box<T> { v: T }` — can false-reject. Catches `Rec { name: 5 }` (string←int) and
                 // `Rec { id: "x" }` (u32←string), which previously constructed silently.
                 // Both the declared field type AND the value's synthesized type must be concrete
-                // SCALAR primitives (int/float/string/bool) for the mismatch to fire. Requiring the
-                // GOT side to be scalar too is load-bearing: the parser currently stores a list field
-                // type `[int]` as the bare element `"int"` (a known `collect_type_until` limitation —
-                // the `[`/`]` are dropped), so a correct list value (`log: []`, `log: some_vec`)
-                // synthesizes to `"list"` and would otherwise spuriously mismatch a field whose stored
-                // type reads `"int"`. Gating on a scalar GOT skips every container value, so no valid
-                // program false-rejects; the check still catches the real scalar cross-category lies
-                // (`name: string` given an int, `id: u32` given a string). See follow-up: fix
-                // `collect_type_until` to preserve `[...]` so list fields carry their true type.
+                // SCALAR primitives (int/float/string/bool) for the mismatch to fire. The DECLARED-side
+                // scalar gate is what excludes container fields: `collect_type_until` now preserves the
+                // brackets, so a list field type reads `"[int]"` (non-scalar) — `is_scalar_prim` is
+                // false and the whole check skips for `log: []` / `log: some_vec`, no spurious mismatch.
+                // The GOT-side scalar guard is kept as belt-and-suspenders: it declines to fire when the
+                // value's flat-inferred type is a container (`list`/`map`) even against a scalar declared
+                // type, so imprecise got inference can never false-reject. The check still catches the
+                // real scalar cross-category lies (`name: string` given an int, `id: u32` given a string).
                 let is_scalar_prim = |t: &str| {
                     ty::is_numeric(t) || matches!(ty::normalize(t).as_str(), "string" | "bool")
                 };
@@ -14896,6 +15147,16 @@ fn body_param_sinks(
                     lambdas.insert(name.clone(), init.clone());
                 }
             }
+            // A destructuring `let [a, b] = [x, 0]; send(a)` propagates the initializer's param-flow to
+            // each bound name so a later sink of `a` is summarized — the sink-side twin of the
+            // `body_param_returns` LetPattern arm. Without it, routing a value block through this walker
+            // (the `collect_param_sinks_in_expr` Block arm) would drop a destructured param to `_ =>`
+            // best-effort and under-approximate. Monotone add-only = fail-closed.
+            Stmt::LetPattern { pattern, init, .. } => {
+                collect_param_sinks_in_expr(init, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                let set = expr_param_flow(init, flow);
+                seed_flow_pattern(flow, pattern, &set);
+            }
             Stmt::If {
                 then, else_, cond, ..
             } => {
@@ -15183,50 +15444,30 @@ fn collect_param_sinks_in_expr(
             collect_param_sinks_in_expr(then, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
             collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
         }
+        // A value/lambda block: delegate the WHOLE statement list to `body_param_sinks` (the one stmt
+        // walker that tracks local-lambda bindings and DESCENDS into an applied local closure's body),
+        // flattening the trailing tail into a final `ExprStmt` so it is analyzed in the SAME local-lambda
+        // scope as the preceding `let`s. The former hand-rolled loop here built no lambda env, so a sink
+        // hidden behind a nested `let h = ||{ send(x) }; h()` in the block was dropped (fresh soundness
+        // hunt 2026-07-21: `fn leak(x){ let g = ||{ let h = ||{ send(x) }; h() }; g(); }` compiled a leak
+        // to net egress with a green check, though the DIRECT `let g = ||{ send(x) }; g()` was rejected).
+        // body_param_sinks already handles if/while/for/loop/match/if-let value blocks (hunt2 [10,11]) and
+        // is monotone add-only = fail-closed. Terminates: each applied-lambda descent recurses into a
+        // strictly-smaller, body-scoped closure.
         Expr::Block { stmts, tail } => {
             let mut local = flow.clone();
-            for stmt in stmts {
-                match stmt {
-                    Stmt::Let { name, init, .. } => {
-                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
-                        seed_param_flow_let(name, init, &mut local);
-                    }
-                    Stmt::LetPattern { pattern, init, .. } => {
-                        collect_param_sinks_in_expr(init, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
-                        let set = expr_param_flow(init, &local);
-                        seed_flow_pattern(&mut local, pattern, &set);
-                    }
-                    Stmt::Assign {
-                        target: Expr::Var(name),
-                        value,
-                    } => {
-                        collect_param_sinks_in_expr(value, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
-                        let set = expr_param_flow(value, &local);
-                        local.insert(name.clone(), set);
-                    }
-                    Stmt::ExprStmt(e) => {
-                        collect_param_sinks_in_expr(e, &local, sink_pred, known_param_sinks, known_method_param_sinks, found)
-                    }
-                    // A control-flow STATEMENT inside a value block (`let z = if c { while … {
-                    // send(x) } … }`) is delegated to `body_param_sinks`, which descends into
-                    // if/while/for/loop bodies. Without this the nested sink/egress was DROPPED here,
-                    // under-approximating the param→sink / param→egress summary and letting an interproc
-                    // leak compile (soundness hunt2 [10,11]: a secret through a method/fn param whose
-                    // egress is buried in a value-position while-in-if block). Monotone add-only, so it
-                    // only ever adds param indices — never a false interproc reject.
-                    other => body_param_sinks(
-                        std::slice::from_ref(other),
-                        &mut local,
-                        sink_pred,
-                        known_param_sinks,
-                        known_method_param_sinks,
-                        found,
-                    ),
-                }
-            }
+            let mut combined: Vec<Stmt> = stmts.clone();
             if let Some(t) = tail {
-                collect_param_sinks_in_expr(t, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                combined.push(Stmt::ExprStmt((**t).clone()));
             }
+            body_param_sinks(
+                &combined,
+                &mut local,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
         }
         // #68 free-fn→method / method→method sink/egress laundering. A method call `recv.name(a,b)`
         // parses as `CallExpr{ callee: FieldAccess{ base, field }, args }`; before this arm it fell to
@@ -15488,7 +15729,12 @@ fn expr_param_return_flow(
             for p in params {
                 inner.remove(p);
             }
-            expr_param_return_flow(body, &inner, known_param_return)
+            // Evaluate the closure body as its OWN return scope so a `return` statement or a nested
+            // local-lambda application inside it is not dropped (see `lambda_body_return_flow`); the bare
+            // `expr_param_return_flow` Block arm discards returns, which is right for a value-block in a
+            // function body but WRONG for a lambda body — a returned container holding `|x| { return k }`
+            // otherwise laundered the captured param past the summary.
+            lambda_body_return_flow(body, &inner, known_param_return)
         }
         _ => BTreeSet::new(),
     }
@@ -15526,10 +15772,47 @@ fn local_lambda_return_flow(
                     .unwrap_or_default();
                 inner.insert(p.clone(), af);
             }
-            return Some(expr_param_return_flow(lb, &inner, known));
+            return Some(lambda_body_return_flow(lb, &inner, known));
         }
     }
     None
+}
+
+/// The param→return-flow of a LAMBDA BODY evaluated as its OWN return scope. Unlike a value-position
+/// block inside a function body — where a `return` belongs to the enclosing function and
+/// `expr_param_return_flow`'s Block arm rightly ignores it — a lambda body IS its own return scope:
+/// `|| { return x; }` yields `x`, and `|| { let h = || x; h() }` yields `x` through the inner closure.
+/// Reuse the ONE canonical statement walker (`body_param_returns` with `tail = true`) by flattening
+/// `{ stmts; tail }` into a function-style stmt list, so (a) every `return` in the body is collected and
+/// (b) the body's OWN local-lambda env resolves a nested application in the tail. Fresh soundness hunt
+/// 2026-07-21: `fn fwd(x){ let g = ||{ return x; }; return g(); }` and `fn fwd(x){ let g = ||{ let h = ||
+/// x; h() }; return g(); }` otherwise summarized `{}` (the Block arm discarded the return / never
+/// resolved `h()`), and a forwarded secret laundered past ANUBIS_SECRET_EXFILTRATION with a green check.
+/// The DIRECT forms (`let g = ||{return k}; send(g(0))`) were already rejected — only the interproc
+/// forwarder composition slipped. Termination: each nested resolution descends into a strictly-smaller,
+/// body-scoped lambda (the fresh env can only bind lambdas defined inside THIS body — never an ancestor),
+/// so the resolution chain is structural on the finite AST. Monotone/fail-closed: only ever adds param
+/// indices to the summary, so it can turn a missed leak into a reject, never a genuine accept into one.
+fn lambda_body_return_flow(
+    body: &Expr,
+    flow: &BTreeMap<String, BTreeSet<usize>>,
+    known: &BTreeMap<String, BTreeSet<usize>>,
+) -> BTreeSet<usize> {
+    let mut found = BTreeSet::new();
+    match body {
+        Expr::Block { stmts, tail } => {
+            let mut combined: Vec<Stmt> = stmts.clone();
+            if let Some(t) = tail {
+                combined.push(Stmt::ExprStmt((**t).clone()));
+            }
+            let mut local = flow.clone();
+            body_param_returns(&combined, &mut local, known, &mut found, true);
+        }
+        other => {
+            found.extend(expr_param_return_flow(other, flow, known));
+        }
+    }
+    found
 }
 
 fn body_param_returns(

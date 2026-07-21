@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Over-rejection guard for the block-`return` forwarder fix: a forwarder whose local closure returns a
+// non-secret constant (captures no param) must still compile. Ensures `lambda_body_return_flow` labels the
+// return only when it genuinely derives from a param, not for every block-`return` closure body.
+fn fwd(x) { let g = || { return 42; }; return g(); }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }

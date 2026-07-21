@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// A block-branch call whose precondition is established by the branch GUARD plus a let alias: the
+// `Expr::If` arm pushes `n >= 10` as a scoped path condition before descending the then block, and the
+// block models `let t = n` as `t == n`, so `t >= 10` proves. Confirms the branch guard and the block-let
+// defining fact compose — precision, not blanket rejection, for a guard-safe block-branch call.
+fn g(x: u64) requires(x >= 10) { assert(x >= 10); return x; }
+fn main(n: u64) {
+    let z = if n >= 10 { let t = n; g(t) } else { 5 };
+    print(z);
+}

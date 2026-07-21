@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: requires@
+// The ELSE-branch twin of call_site_requires_block_branch_rejects: the `Expr::If` arm discharges the
+// else block under the negated condition, so a violating contracted call in an `else { let t = 2; g(t) }`
+// block is discharged and rejected exactly like the then branch — the block arm is position-symmetric.
+fn g(x: u64) requires(x >= 10) { assert(x >= 10); return x; }
+fn main() {
+    let z = if false { 5 } else { let t = 2; g(t) };
+    print(z);
+}

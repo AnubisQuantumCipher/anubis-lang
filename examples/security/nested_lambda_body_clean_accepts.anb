@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Over-rejection guard for the nested-closure sink fix: a nested closure that egresses only a non-secret
+// constant (captures no param) must still compile. The new local-lambda descent in `body_param_sinks` must
+// summarize a param as sinking only when the applied closure actually reaches the sink WITH that param.
+fn run(x) uses(net.send) { let g = || { let h = || { send("host", 80, 42); }; h(); }; g(); }
+fn main() uses(net.send) { run(secret_source("api_key")); }

@@ -1,0 +1,16 @@
+// EXPECT: PASS
+// Scope guard for the 2026-07-21 middle-option: modeling the integer parameters of a NON-contract
+// function must not degrade into a blanket reject of param asserts — a genuinely PROVABLE assert must
+// stay green. `x >= 0` holds for every value the runtime can produce for a `u8` parameter: a `u8` is
+// masked to [0, 2^8) at the call boundary (`anubis_coerce_uint_param`), a range the checker soundly
+// injects, so the assert is discharged. The signed tautology `y == y` is proven for any i64 `y`. Both
+// match `run`, which never traps. If this fixture ever flips to FAIL, the middle-option has started
+// over-rejecting provable param asserts.
+pub fn safe(x: u8, y: int) {
+    assert(x >= 0);
+    assert(y == y);
+}
+
+fn main() {
+    safe(200, 7);
+}

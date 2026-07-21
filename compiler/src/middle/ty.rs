@@ -1214,6 +1214,43 @@ mod tests {
     }
 
     #[test]
+    fn list_field_type_is_not_synthesized_as_a_modelable_integer() {
+        // Soundness contract downstream of the `collect_type_until` fix: once the parser preserves the
+        // brackets, a `[int]` field type reaches the inference core as the string `"[int]"`. It MUST
+        // NOT resolve to a modelable integer (`U32`/`IntAlias`) — that was the latent false-accept
+        // vector (a list field `s.log` typed as `u32`, numeric-compatible with a scalar slot). Parsing
+        // yields the opaque `Ty::Named("[int]")`, so a `[int]` value can never pass `check_mismatch`
+        // into a `u32` annotation. (Paired with the parser test that proves the string is `"[int]"`.)
+        let base = "[int]";
+        assert_eq!(Ty::parse(base), Ty::Named("[int]".into()));
+        assert!(!is_integer(base), "a list annotation must not read as an integer");
+        assert!(!is_numeric(base), "a list annotation must not read as numeric");
+
+        let mut vars = BTreeMap::new();
+        vars.insert("s".to_string(), "Seat".to_string());
+        let fns = BTreeMap::new();
+        let mut structs = BTreeMap::new();
+        let mut seat_fields = BTreeMap::new();
+        seat_fields.insert("log".to_string(), "[int]".to_string());
+        structs.insert("Seat".to_string(), seat_fields);
+        let env = empty_env(&vars, &fns, &structs);
+
+        let s_log = Expr::FieldAccess {
+            base: Box::new(Expr::Var("s".into())),
+            field: "log".into(),
+            span: crate::frontend::Span { start: 0, end: 0 },
+        };
+        // Synth resolves the field to its (non-numeric) declared type, not to `U32`.
+        let mut c = InferCtx::new();
+        assert_eq!(synth(&mut c, &env, &s_log), Ty::Named("[int]".into()));
+        // Therefore `Seat { …, log: s.log }`-style flow into a `u32` slot is a genuine mismatch: the
+        // check DECIDES (returns the got type) rather than silently accepting a list as an integer.
+        assert_eq!(check_mismatch(&env, &s_log, "u32"), Some("[int]".into()));
+        // And the SOUND direction is preserved: the same list value flows cleanly into a `[int]` slot.
+        assert_eq!(check_mismatch(&env, &s_log, "[int]"), None);
+    }
+
+    #[test]
     fn arm_join_flags_string_vs_int_but_not_numeric_widths_or_unknowns() {
         let vars = BTreeMap::new();
         let fns = BTreeMap::new();

@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// The sound counterpart to call_site_requires_block_branch_rejects: a contracted call in a block-bodied
+// branch whose modeled argument SATISFIES the precondition must still be accepted — proving the block
+// arm discharges for the RIGHT reason (the solver proves `t == 20 >= 10`), not by blanket-rejecting
+// every block-branch call. The never-reassigned `let t = 20` fact + the branch guard are in scope, so
+// the `requires@g` obligation proves and the program passes.
+fn g(x: u64) requires(x >= 10) { assert(x >= 10); return x; }
+fn main() {
+    let z = if true { let t = 20; g(t) } else { 5 };
+    print(z);
+}

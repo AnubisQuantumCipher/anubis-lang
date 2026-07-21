@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// Regression (design decision 2026-07-21, hunt wf_7451545b): an in-body `assert(P)` over an INTEGER
+// PARAMETER of a NON-contract function was formerly param-opaque. The checker modeled parameters only
+// for functions that DECLARE a `requires`/`ensures`, so here `x` was an unknown symbol, `x < 0` was
+// not bool-modelable, and the assert was SILENTLY DROPPED — `check` passed while `run` traps (exit
+// 101, ANUBIS_ASSERT_FAILED) on `f(5)`, a green check certifying what run violates. The middle-option
+// models integer params for ANY function whose body asserts over them, so this genuinely-unprovable
+// assert (`x` is an unconstrained i64; `5 < 0` is false) is now correctly REJECTED. The intended fix
+// for a program that means it is to state the precondition as `requires(x < 0)`, which discharges it.
+pub fn f(x: int) {
+    assert(x < 0);
+}
+
+fn main() {
+    f(5);
+}

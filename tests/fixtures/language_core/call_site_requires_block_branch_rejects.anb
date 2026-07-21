@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: requires@
+// Call-site precondition discharge inside a BLOCK-bodied branch (audit wf_e3f4fe9c). A contracted call
+// in the TAIL of an `if`-EXPRESSION's block branch (`let z = if c { let t = 0; g(t) } else { 5 };`) was
+// UNDISCHARGED: `discharge_calls_in_expr` had no `Expr::Block` arm, so the block hit the `_ => {}`
+// residual and `g(t)` — whose `requires(x >= 10)` its body ASSUMES — was never proved at the call site.
+// `check` passed green while `run` traps `ANUBIS_ASSERT_FAILED` (a false accept). The block arm now
+// models the never-reassigned, never-shadowed `let t = 0` as a scoped defining fact and discharges the
+// tail call under it, so `t == 0` disproves `t >= 10` and the `requires@g` obligation fails closed.
+fn g(x: u64) requires(x >= 10) { assert(x >= 10); return x; }
+fn main() {
+    let z = if true { let t = 0; g(t) } else { 5 };
+    print(z);
+}

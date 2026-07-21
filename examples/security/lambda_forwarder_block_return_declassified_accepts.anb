@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Over-rejection guard: the block-`return` forwarder whose captured param is DECLASSIFIED before egress
+// must still compile — declassify is the sanctioned release, so the tightened return-laundering summary
+// must not fire through a well-formed declassify.
+fn fwd(x) { let g = || { return declassify(x, "release-policy", "audited"); }; return g(); }
+fn main() uses(net.send) { send("host", 80, fwd(secret_source("api_key"))); }
