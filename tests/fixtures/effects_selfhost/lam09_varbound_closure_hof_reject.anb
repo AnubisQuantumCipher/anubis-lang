@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// #107 closure-hidden egress: a closure stored in a var and applied via a HOF (apply) charges its
+// body's effects to the caller — net.send is undeclared (main has fs.write).
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let f = |x| send(x);
+    apply(f, 7);
+}

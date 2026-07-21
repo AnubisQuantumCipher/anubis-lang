@@ -1487,8 +1487,14 @@ fn eff_walk_call(cn, a, scope, cx, row) {
         row = eff_add_direct(row, bcap);
     }
     if has_key(scope, cn) {
-        // A local binding (param/let) shadows any global fn of the same name → open tail (the
-        // unconditional name-charge above already recorded the direct cap, matching Rust's direct path).
+        // A local binding (param/let) shadows any global fn of the same name. #107: if it is a var
+        // bound to a lambda, a direct call `f(3)` APPLIES that closure — descend into its body and
+        // charge its effects. Otherwise (a plain local / param) the tail is open (unresolvable). The
+        // unconditional name-charge above already recorded the direct cap, matching Rust's direct path.
+        if has_key(scope, "closure$" + cn) {
+            row = eff_descend_closure_var(cn, scope, cx, row);
+            return row;
+        }
         row["open"] = true;
         return row;
     }
@@ -1592,14 +1598,37 @@ fn bind_lambda_params(ps, scope) {
     return scope;
 }
 
-// Walk a lambda-argument's body (with its params bound), charging its effects to the caller's row.
-// A non-lambda arg (a fn name / var) is NOT descended — mirrors effects.rs, which only descends into
-// INLINE lambdas at the closure index.
+fn is_lambda_expr(e) {
+    return match e {
+        Expr::Lambda { params: ps, body: b } => true,
+        _ => false,
+    };
+}
+
+// Walk a lambda-argument's body (params bound), charging its effects to the caller's row. Handles an
+// INLINE lambda (effects.rs #65) AND a VAR bound to a lambda (#107, the closure-hidden-egress case:
+// `let f = |x| send(x); apply(f, 7)` — f's send belongs to the caller). A var that is NOT a tracked
+// closure (a plain local / fn name) is not descended (matches effects.rs' inline-only for those).
 fn eff_walk_lambda_body(e, scope, cx, row) {
     return match e {
         Expr::Lambda { params: ps, body: b } => eff_walk_expr(b, bind_lambda_params(ps, scope), cx, row),
+        Expr::Var(vn) => eff_descend_closure_var(vn, scope, cx, row),
         _ => row,
     };
+}
+
+// Descend into the lambda a var is bound to (stored at "closure$<name>" by eff_stmt_let). A `$cdepth`
+// counter in scope caps recursion at 8 so a self-referential closure (`let f = |x| f(x)`) cannot loop.
+fn eff_descend_closure_var(vn, scope, cx, row) {
+    let key = "closure$" + vn;
+    if has_key(scope, key) {
+        let depth = get(scope, "$cdepth", 0);
+        if depth >= 8 { return row; }
+        let s2 = scope;
+        s2["$cdepth"] = depth + 1;
+        return eff_walk_lambda_body(s2[key], s2, cx, row);
+    }
+    return row;
 }
 
 // Each match arm binds its pattern into a FRESH copy of the enclosing scope (maps are by-value, so
@@ -1644,6 +1673,11 @@ fn eff_walk_stmt(s, scope, cx, row) {
 fn eff_stmt_let(nm, iv, scope, cx, row) {
     row = eff_walk_expr(iv, scope, cx, row);
     scope[nm] = true;
+    // #107: remember a lambda-valued binding so a later application (apply(f,..) or f(3)) descends
+    // into its body and charges its effects (closure-hidden egress).
+    if is_lambda_expr(iv) {
+        scope["closure$" + nm] = iv;
+    }
     return [scope, row];
 }
 

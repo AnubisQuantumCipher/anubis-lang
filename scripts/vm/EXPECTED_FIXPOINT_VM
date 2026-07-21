@@ -40,4 +40,8 @@
 #     inline HOF-closure descent. First slice to change the parser (not just add analysis fns).
 #     Seal PASS (stage2==stage3, 9/9) — self-host reproduction held with the parser change; all
 #     gates green; whole-corpus effect + capset 0-disagreement.
-e5706f5466506f212b20b9b5b8f67ea20ef4c7d4972150c64eb6c0c24edd28a0
+#   e5706f54…28a0 -> 977c2a62…bedd  (2026-07-21, Phase-4 #107)
+#     Trigger: the effect engine tracks VAR-BOUND closures (closure-hidden egress) —
+#     `let f = |x| send(x); apply(f,7)`/`f(3)` now charge f's effects, closing the unsafe gap.
+#     Seal PASS (9/9), all gates green; whole-corpus effect 0-disagreement.
+977c2a62b3a51e8f1d91d84157a87b784b5df245224d90aacda839e0e252bedd

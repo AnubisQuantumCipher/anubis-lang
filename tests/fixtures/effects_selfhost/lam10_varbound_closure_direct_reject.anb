@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// #107: a direct call of a closure var (`f(3)`) applies it — its net.send is charged to main.
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let f = |x| send(x);
+    f(3);
+}

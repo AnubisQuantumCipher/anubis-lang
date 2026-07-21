@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// #107 accept-guard: the same closure applied, but main correctly declares net.send.
+fn main() uses(net.send) {
+    let f = |x| send(x);
+    apply(f, 7);
+}
