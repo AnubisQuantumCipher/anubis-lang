@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Open-row accept-bias: apply_it calls its PARAM f() -> unresolvable -> row is `open`. main unions
+// that open row but every CONCRETE cap it performs (fs.write) is declared. `open` alone never fires.
+fn work() {
+    let x = 1;
+}
+fn apply_it(f) {
+    f();
+}
+fn main() uses(fs.write) {
+    write_file("a.txt", "x");
+    apply_it(work);
+}

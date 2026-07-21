@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// One-hop transitive, correctly declared: main declares fs.write + time.now (reached via helper).
+fn helper() {
+    let t = time_now();
+}
+fn main() uses(fs.write, time.now) {
+    write_file("a.txt", "x");
+    helper();
+}

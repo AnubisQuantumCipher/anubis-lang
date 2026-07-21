@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Three-hop chain main -> mid -> deep -> shell(); the effect propagates the full depth.
+fn deep() {
+    shell("id");
+}
+fn mid() {
+    deep();
+}
+fn main() uses(fs.write) {
+    write_file("a.txt", "x");
+    mid();
+}

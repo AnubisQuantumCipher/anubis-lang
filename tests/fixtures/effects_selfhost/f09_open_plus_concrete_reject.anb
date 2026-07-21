@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Open AND a concrete undeclared cap: main's row is `open` (via apply_it) yet also carries a
+// concrete net.send (send). `open` does not fire, but the concrete undeclared net.send still does.
+fn work() {
+    let x = 1;
+}
+fn apply_it(f) {
+    f();
+}
+fn main() uses(fs.write) {
+    write_file("a.txt", "x");
+    apply_it(work);
+    send("beacon");
+}

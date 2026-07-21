@@ -1225,6 +1225,392 @@ fn sh_check(ast) {
     return diags;
 }
 
+// ── Phase-4 slice 1: Anubis-authored effect inference ────────────────────────────────────────
+// A self-hosted port of the Rust effect engine (compiler/src/middle/effects.rs) + the
+// `inferred ⊆ declared` gate (compiler/src/middle/mod.rs ANUBIS_UNDECLARED_EFFECT). Validated by
+// scripts/run_effect_selfhost_gate.sh: a native_shadow-style differential that requires THIS engine
+// and the Rust engine to AGREE on the reported undeclared-effect cap set over an SH-parseable corpus
+// (0-disagreement invariant, exactly as native-vs-z3). This is a PARALLEL, self-hosted pass — its
+// AUTHORITY transfers only after the gate is a permanent 0-disagreement invariant and the Rust
+// checker is flipped to delegate (the shadow → opt-in-authoritative → default-flip arc of the native
+// SMT solver). Scope: the SH subset — named-fn call graph, builtin classification, declared uses(),
+// transitive fixpoint. The Rust higher_order_closure_args lambda-descent (effects.rs:87-99,291-300)
+// and the CallExpr→open arm (effects.rs:306-314) are STRUCTURALLY UNREACHABLE here (the SH parser has
+// no Lambda/CallExpr variant), not silently dropped — growing the SH parser with those is slice 2.
+
+// The six canonical capability ids a row may contain (effects.rs CAPABILITY_IDS).
+fn sh_is_cap(name) {
+    return name == "fs.read" || name == "fs.write" || name == "net.send" || name == "shell" || name == "time.now" || name == "rand.gen";
+}
+
+// Canonical capability id a builtin callee carries, or "" if none. A pure mirror of
+// effects.rs::builtin_effect_of (and the inline classification arms in mod.rs analyze_stmts).
+fn sh_builtin_effect_of(callee) {
+    if callee == "shell" || callee == "exec" || callee == "system" || callee == "target_run" {
+        return "shell";
+    }
+    if callee == "read_file" || callee == "open" {
+        return "fs.read";
+    }
+    if callee == "write_file" || callee == "write" || callee == "append_file" {
+        return "fs.write";
+    }
+    if index_of(callee, "network") >= 0 || callee == "send" || callee == "connect" || callee == "http_get" || callee == "http_post" {
+        return "net.send";
+    }
+    if callee == "time" || callee == "time_now" || callee == "now" {
+        return "time.now";
+    }
+    if callee == "rand" || callee == "rand_gen" || callee == "random" {
+        return "rand.gen";
+    }
+    return "";
+}
+
+// Fold a declared uses() token to its canonical id. Slice-1 scope: canonical dotted ids pass
+// through unchanged (the corpus uses canonical ids only). Full alias folding (mod.rs
+// normalize_effect_name) is a named slice-2 follow-up; an alias here would diverge from Rust and
+// the differential gate would flag it, so the corpus avoids aliases.
+fn sh_normalize_effect(name) {
+    return name;
+}
+
+// An effect row: a map of concrete capability ids the fn performs, plus an `open` bit for an
+// unresolvable tail (effects.rs EffectRow). Join is set-union + OR (a finite lattice: 2^6 caps ×
+// open), so the fixpoint converges — self- and mutual-recursion included.
+fn eff_empty_row() {
+    // `eff`  = transitive capability set — PROPAGATES to callers via eff_union (mirrors
+    //          effects.rs compute_fn_effect_rows; a call resolves all_fns/scope FIRST).
+    // `direct` = the direct name-based charge (mod.rs:5423-5474 caps_used) — LOCAL, does NOT
+    //          propagate: a call whose NAME matches an effect builtin charges that cap even when the
+    //          name is a user fn or a param, but that charge stays on the calling function's own row.
+    // The undeclared check per fn is (eff ∪ direct) ⊆ declared, reproducing Rust's caps_used ∪ row.
+    return {"eff": {}, "direct": {}, "open": false};
+}
+
+fn eff_add_cap(row, cap) {
+    let e = row["eff"];
+    e[cap] = true;
+    row["eff"] = e;
+    return row;
+}
+
+fn eff_add_direct(row, cap) {
+    let d = row["direct"];
+    d[cap] = true;
+    row["direct"] = d;
+    return row;
+}
+
+fn eff_union(row, other) {
+    let e = row["eff"];
+    let oe = other["eff"];
+    let ks = keys(oe);
+    let i = 0;
+    while i < len(ks) {
+        e[ks[i]] = true;
+        i = i + 1;
+    }
+    row["eff"] = e;
+    if other["open"] == true {
+        row["open"] = true;
+    }
+    return row;
+}
+
+// Concrete caps present, in the fixed 6-cap order (a canonical projection — no sort builtin needed,
+// and the reject path iterates ONLY concrete caps, never the open bit: default-lane accept-bias
+// identical to mod.rs — open alone never fires; a concrete cap alongside open still fires).
+fn eff_caps_list(row) {
+    let e = row["eff"];
+    let out = [];
+    if has_key(e, "fs.read") { push(out, "fs.read"); }
+    if has_key(e, "fs.write") { push(out, "fs.write"); }
+    if has_key(e, "net.send") { push(out, "net.send"); }
+    if has_key(e, "shell") { push(out, "shell"); }
+    if has_key(e, "time.now") { push(out, "time.now"); }
+    if has_key(e, "rand.gen") { push(out, "rand.gen"); }
+    return out;
+}
+
+// Stable serialization of the PROPAGATING row for the fixpoint change-test (transitive caps in fixed
+// order + open bit). The `direct` set is name-based and constant across passes, so it is not part of
+// the convergence key.
+fn eff_key(row) {
+    let caps = eff_caps_list(row);
+    let s = "";
+    let i = 0;
+    while i < len(caps) {
+        s = s + caps[i] + ",";
+        i = i + 1;
+    }
+    if row["open"] == true {
+        s = s + "|open";
+    }
+    return s;
+}
+
+// The concrete capability set the undeclared check enforces: transitive `eff` UNION the local
+// `direct` name-charge, in fixed order (never the open bit). Reproduces Rust's caps_used ∪ row.effects.
+fn eff_concrete_caps(row) {
+    let e = row["eff"];
+    let d = row["direct"];
+    let out = [];
+    if has_key(e, "fs.read") || has_key(d, "fs.read") { push(out, "fs.read"); }
+    if has_key(e, "fs.write") || has_key(d, "fs.write") { push(out, "fs.write"); }
+    if has_key(e, "net.send") || has_key(d, "net.send") { push(out, "net.send"); }
+    if has_key(e, "shell") || has_key(d, "shell") { push(out, "shell"); }
+    if has_key(e, "time.now") || has_key(d, "time.now") { push(out, "time.now"); }
+    if has_key(e, "rand.gen") || has_key(d, "rand.gen") { push(out, "rand.gen"); }
+    return out;
+}
+
+fn eff_walk_exprs(es, scope, cx, row) {
+    let i = 0;
+    while i < len(es) {
+        row = eff_walk_expr(es[i], scope, cx, row);
+        i = i + 1;
+    }
+    return row;
+}
+
+// Resolve a call — the 5-case discipline of effects.rs walk_expr Expr::Call (:255-303). `scope`
+// is a map name->true of locals/params; `cx` = {all_fns, declared, rows} (constant per fixpoint
+// pass, the WalkCtx analogue).
+fn eff_walk_call(cn, a, scope, cx, row) {
+    row = eff_walk_exprs(a, scope, cx, row);
+    // DIRECT name-based charge (mod.rs:5423-5474, the caps_used component) — UNCONDITIONAL and LOCAL.
+    // A call whose NAME matches an effect builtin charges that cap even when the name is shadowed by a
+    // user fn or a param (`send`/`connect`/`shell`/… are reserved effect names you cannot launder by
+    // defining a `fn send`). It goes into `direct`, which eff_union does NOT propagate — so the charge
+    // stays on THIS function's row and never leaks to its callers (matching Rust: caps_used is per-fn
+    // and only the transitive row + declared caps propagate). For a REAL (unshadowed) builtin the
+    // transitive branch below ALSO charges `eff`, so its cap propagates exactly as Rust's row does.
+    let bcap = sh_builtin_effect_of(cn);
+    if bcap != "" {
+        row = eff_add_direct(row, bcap);
+    }
+    if has_key(scope, cn) {
+        // A local binding (param/let) shadows any global fn of the same name → open tail (the
+        // unconditional name-charge above already recorded the direct cap, matching Rust's direct path).
+        row["open"] = true;
+        return row;
+    }
+    if has_key(cx["all_fns"], cn) {
+        // Known user fn: union its (in-progress) transitive row, then fold its declared uses() caps
+        // (the author's promise — 2+ hops must never be weaker than one hop). Its OWN direct set is
+        // NOT unioned — a name-collision inside the callee stays local to the callee.
+        if has_key(cx["rows"], cn) {
+            row = eff_union(row, cx["rows"][cn]);
+        } else {
+            row["open"] = true;
+        }
+        if has_key(cx["declared"], cn) {
+            let dcaps = cx["declared"][cn];
+            let ks = keys(dcaps);
+            let i = 0;
+            while i < len(ks) {
+                if sh_is_cap(ks[i]) {
+                    row = eff_add_cap(row, ks[i]);
+                }
+                i = i + 1;
+            }
+        }
+        return row;
+    }
+    if bcap != "" {
+        // A real (unshadowed) builtin-effect name: its cap PROPAGATES, so also charge the transitive
+        // eff (mirrors effects.rs builtin_effect_of branch). Closed — no open tail.
+        row = eff_add_cap(row, bcap);
+        return row;
+    }
+    if is_builtin(cn) {
+        // Known effect-free builtin (print/len/push/…): closed, no-op. SH has no lambda args, so the
+        // higher_order_closure_args descent that would apply here (effects.rs:282-300) is unreachable.
+        return row;
+    }
+    // Unknown bare name — nothing resolvable to charge, so the tail is open.
+    row["open"] = true;
+    return row;
+}
+
+// Mirror of check_expr's traversal (same Expr enum, same recursion order) — atoms contribute
+// nothing; every compound recurses into exactly the children check_expr visits.
+fn eff_walk_expr(e, scope, cx, row) {
+    return match e {
+        Expr::None => row,
+        Expr::Int(v) => row,
+        Expr::Str(v) => row,
+        Expr::Bool(v) => row,
+        Expr::Var(nm) => row,
+        Expr::Call { callee: cn, args: a } => eff_walk_call(cn, a, scope, cx, row),
+        Expr::Binary { op: o, lhs: l, rhs: r } => eff_walk_expr(r, scope, cx, eff_walk_expr(l, scope, cx, row)),
+        Expr::Unary { op: o, expr: x } => eff_walk_expr(x, scope, cx, row),
+        Expr::Index { base: b, index: ix } => eff_walk_expr(ix, scope, cx, eff_walk_expr(b, scope, cx, row)),
+        Expr::List { elements: els } => eff_walk_exprs(els, scope, cx, row),
+        Expr::Range { start: s, end: en } => eff_walk_expr(en, scope, cx, eff_walk_expr(s, scope, cx, row)),
+        Expr::Map { keys: k, vals: vs } => eff_walk_exprs(vs, scope, cx, eff_walk_exprs(k, scope, cx, row)),
+        Expr::EnumInit { ty: ty, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => eff_walk_exprs(fx, scope, cx, eff_walk_exprs(tp, scope, cx, row)),
+        Expr::IfExpr { cond: c, then_: t, else_: el } => eff_walk_stmts(el, scope, cx, eff_walk_stmts(t, scope, cx, eff_walk_expr(c, scope, cx, row))),
+        Expr::Match { scrut: sc, arms: ar } => eff_walk_match_arms(ar, scope, cx, eff_walk_expr(sc, scope, cx, row)),
+        _ => row,
+    };
+}
+
+// Each match arm binds its pattern into a FRESH copy of the enclosing scope (maps are by-value, so
+// bind_pattern mutates a copy) — arm-local binds do not leak across arms.
+fn eff_walk_match_arms(arms, scope, cx, row) {
+    let i = 0;
+    while i < len(arms) {
+        let s2 = bind_pattern(arms[i]["pat"], scope);
+        row = eff_walk_expr(arms[i]["body"], s2, cx, row);
+        i = i + 1;
+    }
+    return row;
+}
+
+// Statement threading mirrors check_stmts/check_stmt: [scope, row] is handed back so top-level lets
+// persist, while nested blocks receive scope BY VALUE so their inner binds do not leak up (effects.rs
+// scope.push/pop). Returns only the row (block-local scope discarded).
+fn eff_walk_stmts(ss, scope, cx, row) {
+    let i = 0;
+    while i < len(ss) {
+        let r = eff_walk_stmt(ss[i], scope, cx, row);
+        scope = r[0];
+        row = r[1];
+        i = i + 1;
+    }
+    return row;
+}
+
+fn eff_walk_stmt(s, scope, cx, row) {
+    return match s {
+        Stmt::Let { name: nm, ty: t, init: iv } => eff_stmt_let(nm, iv, scope, cx, row),
+        Stmt::Assign { target: tg, value: v } => [scope, eff_walk_expr(v, scope, cx, eff_walk_expr(tg, scope, cx, row))],
+        Stmt::Return { value: v } => [scope, eff_walk_expr(v, scope, cx, row)],
+        Stmt::ExprStmt { expr: e } => [scope, eff_walk_expr(e, scope, cx, row)],
+        Stmt::If { cond: c, then_: t, else_: e, has_else: he } => eff_stmt_if(c, t, e, he, scope, cx, row),
+        Stmt::While { cond: c, body: b } => [scope, eff_walk_stmts(b, scope, cx, eff_walk_expr(c, scope, cx, row))],
+        Stmt::For { var: vr, iter: it, body: b } => eff_stmt_for(vr, it, b, scope, cx, row),
+        _ => [scope, row],
+    };
+}
+
+fn eff_stmt_let(nm, iv, scope, cx, row) {
+    row = eff_walk_expr(iv, scope, cx, row);
+    scope[nm] = true;
+    return [scope, row];
+}
+
+fn eff_stmt_if(c, t, el, he, scope, cx, row) {
+    row = eff_walk_expr(c, scope, cx, row);
+    row = eff_walk_stmts(t, scope, cx, row);
+    if he { row = eff_walk_stmts(el, scope, cx, row); }
+    return [scope, row];
+}
+
+fn eff_stmt_for(vn, it, b, scope, cx, row) {
+    row = eff_walk_expr(it, scope, cx, row);
+    let s2 = scope;
+    s2[vn] = true;
+    row = eff_walk_stmts(b, s2, cx, row);
+    return [scope, row];
+}
+
+// The monotone round-robin fixpoint (effects.rs compute_fn_effect_rows :417-446): seed every Fn to
+// the empty row, then re-walk each body against the current rows until nothing grows. cx snapshots
+// `rows` per-fn so a call resolves against the latest computed rows in this pass.
+fn eff_compute_rows(items, all_fns, declared) {
+    let rows = {};
+    let i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" {
+            rows[items[i]["name"]] = eff_empty_row();
+        }
+        i = i + 1;
+    }
+    let changed = true;
+    while changed {
+        changed = false;
+        let j = 0;
+        while j < len(items) {
+            if items[j]["kind"] == "Fn" {
+                let f = items[j];
+                let cx = {"all_fns": all_fns, "declared": declared, "rows": rows};
+                let scope = {};
+                let p = 0;
+                while p < len(f["params"]) {
+                    scope[f["params"][p]["name"]] = true;
+                    p = p + 1;
+                }
+                let newrow = eff_walk_stmts(f["body"], scope, cx, eff_empty_row());
+                if eff_key(newrow) != eff_key(rows[f["name"]]) {
+                    rows[f["name"]] = newrow;
+                    changed = true;
+                }
+            }
+            j = j + 1;
+        }
+    }
+    return rows;
+}
+
+// The default-lane gate: for each fn, every concrete cap in its transitive row must appear in its
+// declared uses() set, else ANUBIS_UNDECLARED_EFFECT. Because the row already folds in DIRECT
+// builtin caps, this single row ⊆ declared check reproduces Rust's (direct ∪ transitive) verdict at
+// the SET level. Message phrasing matches mod.rs so one regex extracts the cap from both engines.
+fn eff_check(ast) {
+    let diags = [];
+    let items = ast["items"];
+    let all_fns = {};
+    let declared = {};
+    let i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" {
+            let nm = items[i]["name"];
+            all_fns[nm] = true;
+            let dc = {};
+            let effs = items[i]["effects"];
+            let k = 0;
+            while k < len(effs) {
+                let canon = sh_normalize_effect(effs[k]);
+                if sh_is_cap(canon) {
+                    dc[canon] = true;
+                }
+                k = k + 1;
+            }
+            declared[nm] = dc;
+        }
+        i = i + 1;
+    }
+    let rows = eff_compute_rows(items, all_fns, declared);
+    i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" {
+            // Default-lane gate (mod.rs:1872,1930): only functions WITH a non-empty `uses(...)`
+            // clause are checked. A function that declares no clause is unconstrained in the default
+            // lane (only `--verified` fails it closed) — skip it so a laundering helper is charged to
+            // its DECLARED callers, never flagged on its own row. Gate on the RAW clause length (a
+            // `uses(non_cap)` clause is non-empty and still checked), matching declared_effects.
+            let raw = items[i]["effects"];
+            if len(raw) > 0 {
+                let nm = items[i]["name"];
+                let dc = declared[nm];
+                let ecaps = eff_concrete_caps(rows[nm]);
+                let c = 0;
+                while c < len(ecaps) {
+                    if has_key(dc, ecaps[c]) == false {
+                        push(diags, "ANUBIS_UNDECLARED_EFFECT: function `" + nm + "` uses effect `" + ecaps[c] + "` but does not declare it in `uses(...)`");
+                    }
+                    c = c + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return diags;
+}
+
 fn sh_codegen(ast) {
     // Executable package: SH AST interpreter + payload AST of the compiled program.
     // When payload is anubis_sh itself, the binary is a real stage-N compiler.
@@ -1284,6 +1670,26 @@ fn main() uses(fs.read, fs.write) {
         let diags = sh_check(r["ast"]);
         if len(diags) == 0 {
             print("check passed");
+        } else {
+            let i = 0;
+            while i < len(diags) {
+                print(diags[i]);
+                i = i + 1;
+            }
+            exit(1);
+        }
+        return;
+    }
+    if cmd == "effects" {
+        let r = sh_parse(src);
+        if r["ok"] == false {
+            print("PARSE_ERROR: " + r["err"]);
+            exit(1);
+            return;
+        }
+        let diags = eff_check(r["ast"]);
+        if len(diags) == 0 {
+            print("effects ok");
         } else {
             let i = 0;
             while i < len(diags) {

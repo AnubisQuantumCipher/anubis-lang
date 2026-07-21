@@ -31,7 +31,19 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > Verdict-equivalent to z3 across the whole **445-file** corpus, 0 disagreements; z3 droppable for the
 > integer lane (opt-in). Every guarantee is proven-or-scoped; the named residuals are: **4** self-host the
 > checker's semantic engines (the largest remaining *engineering* effort; parse+codegen already
-> dogfooded), **7**-default-flip — the encoding is now fully proven, so the SOLE remaining prerequisite to
+> dogfooded) — **slice 1 LANDED**: **effect inference** is now Anubis-authored in
+> `selfhost/src/anubis_sh.anb` (the `effects` subcommand), reproducing the Rust engine's `caps_used ∪
+> row` verdict via a TWO-set model — a propagating transitive **row** (`eff_compute_rows` fixpoint,
+> all_fns/scope-first) plus a non-propagating **direct** name-charge (a call named `send`/`shell`/…
+> charges the cap even when shadowed by a user fn/param, but locally, never to callers) — checked
+> `(row ∪ direct) ⊆ declared`. Differential-gated at **0 disagreements** against the Rust engine —
+> PER-FUNCTION (not a coarse cap-union) — over a curated corpus + a 457-file whole-corpus sweep
+> (`scripts/run_effect_selfhost_gate.sh`). It is a PARALLEL pass whose authority transfers only on
+> promotion (the shadow→opt-in→default-flip arc of the native solver), and its honest scope is the SH
+> subset (no lambda/method-call arms — the SH parser has no such variant, so the Rust HOF-closure
+> descent is structurally unreachable, ported in slice 2). Remaining slices:
+> HO/effect completeness → lane gates → whole-program roll-up → **type** → **taint** → **Z3/contract**
+> (capstone). **7**-default-flip — the encoding is now fully proven, so the SOLE remaining prerequisite to
 > drop z3 by DEFAULT is a checkable CDCL `Unsat` certificate (LRAT/DRAT emit + verified replay; the SAT
 > *search* is the only unmechanized piece, and z3 is retained as a fail-closed cross-check until then),
 > **9** external reproduction and **10** production-hardening + 1.0-freeze (both

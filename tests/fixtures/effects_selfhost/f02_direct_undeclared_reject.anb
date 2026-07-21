@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Direct-only: main performs rand.gen (via rand()) but declares only fs.write.
+fn main() uses(fs.write) {
+    write_file("a.txt", "x");
+    let r = rand();
+}

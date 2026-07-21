@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Over-declaration is always accepted: the row (fs.write) is a subset of the declared set.
+fn main() uses(fs.write, net.send, shell, time.now) {
+    write_file("a.txt", "x");
+}

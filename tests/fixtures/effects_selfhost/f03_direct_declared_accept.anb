@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// Direct effects correctly declared: fs.write (write_file) + rand.gen (rand).
+fn main() uses(fs.write, rand.gen) {
+    write_file("a.txt", "x");
+    let r = rand();
+}

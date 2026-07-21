@@ -15,4 +15,15 @@
 # every slice run in this same golden image. Re-bake the golden image (OS point
 # update, toolchain bump, risc0 change) => re-baseline this file DELIBERATELY (a
 # logged event), never a silent drift. run-slice.sh asserts the seal matches this.
-dc680001e8e4b17774abf01110e6c94dee7d94dbcb939f57fb1da038df4e438e
+#
+# A change to selfhost/src/anubis_sh.anb (the self-hosting compiler's own source) ALSO
+# reseals the fixpoint to a new digest — the seal still proves stage2 == stage3, but the
+# reproduced binary now witnesses the new source. That is a DELIBERATE re-baseline too.
+#
+# RE-BASELINE LOG:
+#   dc680001…e438e -> 9fbc3b93…e98b  (2026-07-21, Phase-4 slice 1)
+#     Trigger: anubis_sh.anb grew the Anubis-authored `effects` subcommand (transitive
+#     effect inference + (row ∪ direct) ⊆ declared gate). First anubis_sh.anb source change
+#     since the 2026-07-14 baseline. Seal PASS (stage2==stage3, 9/9), all gates green
+#     including the new run_effect_selfhost_gate.sh (0 disagreements).
+9fbc3b93c122647cc910155e09dac497e264e9310dfd490eef4944c9e164e98b

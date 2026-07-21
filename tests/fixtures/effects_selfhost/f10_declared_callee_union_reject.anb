@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Declared-callee union-in: writer's BODY performs nothing, but it DECLARES net.send (the author's
+// promise). main calls writer and must inherit that promise: net.send is folded into main's row even
+// though no builtin call reveals it. main declares only fs.write -> net.send undeclared.
+fn writer() uses(net.send) {
+    let x = 1;
+}
+fn main() uses(fs.write) {
+    write_file("a.txt", "x");
+    writer();
+}

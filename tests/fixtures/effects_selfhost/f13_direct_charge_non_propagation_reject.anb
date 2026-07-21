@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Non-propagation of the direct name-charge: `run` calls its PARAM `send`, so `send(1)` charges
+// net.send to run's DIRECT set (name-based, mod.rs:5423-5474) while the transitive ROW resolves the
+// param-shadow to `open` (no net.send). run declares only fs.write, so net.send is undeclared ON RUN.
+// Critically, `main` calls run() and must NOT inherit net.send: the direct charge is local to run and
+// does NOT propagate (only run's transitive row + declared caps flow to callers). Rust flags net.send
+// on `run` ONLY; the self-hosted engine must match per-function (an over-propagating engine would also
+// flag main and share the same cap-union — which the per-function pair gate is built to catch).
+fn run(send) uses(fs.write) {
+    write_file("o", "x");
+    send(1);
+}
+fn main() uses(fs.write) {
+    write_file("o", "y");
+    run(3);
+}

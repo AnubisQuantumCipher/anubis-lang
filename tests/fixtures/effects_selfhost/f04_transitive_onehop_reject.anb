@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// One-hop transitive: helper (no clause) performs time.now; main reaches it but declares only fs.write.
+// The laundering helper is charged to its DECLARED caller (main), never flagged on its own row.
+fn helper() {
+    let t = time_now();
+}
+fn main() uses(fs.write) {
+    write_file("a.txt", "x");
+    helper();
+}

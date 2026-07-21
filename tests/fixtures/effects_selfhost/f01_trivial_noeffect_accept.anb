@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// Trivial: no capability effect anywhere; no fn carries a uses() clause → nothing to check.
+fn helper() {
+    let x = 1 + 2;
+}
+fn main() {
+    helper();
+}

@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Fail-closed name charge: `send` is a reserved effect-builtin name. Even though `send` here is a
+// USER function that performs no network I/O, calling it charges net.send to the caller's DIRECT set
+// (mod.rs:5423-5474) — you cannot launder the net.send gate by defining a local `fn send`. main
+// declares only fs.write, so net.send is undeclared. (This case caught a real over-permissive bug in
+// the self-hosted engine: the transitive row resolves `send`→user-fn and charges nothing, so the
+// direct name-charge is a SEPARATE, non-propagating set unioned in only at the check.)
+fn send(x) {
+    let y = x + 1;
+}
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    send(3);
+}

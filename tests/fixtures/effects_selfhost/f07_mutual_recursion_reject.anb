@@ -1,0 +1,19 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Mutual recursion ping <-> pong; the net.send lives only in the far node (pong). The monotone
+// fixpoint must converge through the cycle so main sees net.send despite declaring only fs.write.
+fn ping(n) {
+    if n > 0 {
+        pong(n - 1);
+    }
+}
+fn pong(n) {
+    send("data");
+    if n > 0 {
+        ping(n - 1);
+    }
+}
+fn main() uses(fs.write) {
+    write_file("a.txt", "x");
+    ping(3);
+}
