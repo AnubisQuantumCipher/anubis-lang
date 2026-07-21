@@ -7604,10 +7604,13 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         for b in [
             "map", "filter", "each", "find", "any", "all", "count", "sort_by", "flat_map",
             "take_while", "drop_while", "position", "min_by", "max_by", "partition", "map_values",
-            "reduce", "times",
+            "times",
         ] {
             assert_eq!(h(b), &[1usize], "{b} should apply its closure at index 1");
         }
+        // `reduce` is order-agnostic on its two non-list args (reduce(list, closure, seed) OR
+        // reduce(list, seed, closure)) so its closure may be at index 1 OR 2 — descend into both.
+        assert_eq!(h("reduce"), &[1usize, 2usize], "reduce applies its closure at index 1 or 2");
         assert_eq!(h("apply"), &[0usize]);
         assert_eq!(h("call"), &[0usize]);
         assert_eq!(h("compose"), &[0usize, 1usize]);

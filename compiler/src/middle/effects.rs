@@ -89,7 +89,12 @@ pub(crate) fn higher_order_closure_args(callee: &str) -> &'static [usize] {
         // list/map HOFs + `times`/`sort_by`/… — closure at index 1 (data first, closure second).
         "map" | "filter" | "each" | "find" | "any" | "all" | "count" | "sort_by" | "flat_map"
         | "take_while" | "drop_while" | "position" | "min_by" | "max_by" | "partition"
-        | "map_values" | "reduce" | "times" => &[1],
+        | "map_values" | "times" => &[1],
+        // `reduce` is ORDER-AGNOSTIC on its two non-list args (reduce(list, closure, seed) OR
+        // reduce(list, seed, closure)), so the closure body may be at index 1 OR index 2. Descend into
+        // BOTH — the non-closure (seed) argument at whichever index is a no-op for effect charging, so
+        // this stays exact for the closure-first order while making the seed-first order sound too.
+        "reduce" => &[1, 2],
         // `apply(f, args)` / `call(f, …)` — closure at index 0.
         "apply" | "call" => &[0],
         // `compose(f, g)` — BOTH indices are closures.

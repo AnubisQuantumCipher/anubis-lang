@@ -1958,7 +1958,12 @@ fn eff_method_call(r, a, scope, cx, row) {
 // (effects.rs higher_order_closure_args). The application happens inside the runtime builtin, so an
 // inline `|x| send(x)` at one of these indices is charged to the CALLING function's row (#65).
 fn sh_hof_closure_args(callee) {
-    if callee == "map" || callee == "filter" || callee == "each" || callee == "find" || callee == "any" || callee == "all" || callee == "count" || callee == "sort_by" || callee == "flat_map" || callee == "take_while" || callee == "drop_while" || callee == "position" || callee == "min_by" || callee == "max_by" || callee == "partition" || callee == "map_values" || callee == "reduce" || callee == "times" {
+    // `reduce` is order-agnostic on its two non-list args (reduce(list, closure, seed) OR
+    // reduce(list, seed, closure)) — the closure body may be at index 1 OR 2. Mirrors effects.rs.
+    if callee == "reduce" {
+        return [1, 2];
+    }
+    if callee == "map" || callee == "filter" || callee == "each" || callee == "find" || callee == "any" || callee == "all" || callee == "count" || callee == "sort_by" || callee == "flat_map" || callee == "take_while" || callee == "drop_while" || callee == "position" || callee == "min_by" || callee == "max_by" || callee == "partition" || callee == "map_values" || callee == "times" {
         return [1];
     }
     if callee == "apply" || callee == "call" {

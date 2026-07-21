@@ -703,6 +703,11 @@ impl AnubisValue {
         }
     }
 
+    #[inline]
+    fn is_closure(&self) -> bool {
+        matches!(self, AnubisValue::Closure(_))
+    }
+
     fn as_i64(&self) -> i64 {
         match self {
             AnubisValue::Int(v) => *v,
@@ -1668,9 +1673,34 @@ fn anubis_map(list: AnubisValue, f: AnubisValue) -> AnubisValue {
 fn anubis_filter(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_mk_list(anubis_iter(list).into_iter().filter(|x| f.call_closure(vec![x.clone()]).as_bool()).collect())
 }
-fn anubis_reduce(list: AnubisValue, f: AnubisValue, init: AnubisValue) -> AnubisValue {
-    let mut acc = init;
+// `reduce(list, closure, seed)` folds `closure(acc, x)` over the list from `seed`. ORDER-AGNOSTIC on the
+// two non-list arguments: the closure may be the 2nd arg (Anubis-native `reduce(list, f, seed)`) OR the
+// 3rd (the JS/Rust-fold-natural `reduce(list, seed, f)`). Whichever argument IS a closure is the fold
+// function; the other is the seed. This fixes the reported crash where the seed-first order sent an int
+// where a closure was expected. If NEITHER is a closure it is a genuine type error with a message that
+// names both accepted forms (was a bare `expected closure, got int`).
+fn anubis_reduce(list: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    let (f, mut acc) = match (a.is_closure(), b.is_closure()) {
+        (true, _) => (a, b),
+        (false, true) => (b, a),
+        (false, false) => panic!(
+            "ANUBIS_TYPE_ERROR: reduce expects a closure argument — reduce(list, closure, seed) or reduce(list, seed, closure)"
+        ),
+    };
     for x in anubis_iter(list) { acc = f.call_closure(vec![acc, x]); }
+    acc
+}
+// Seedless `reduce(list, closure)`: the FIRST element seeds the accumulator and the closure folds the
+// rest (standard seedless reduce, mirroring the semantics used when no initial value is supplied). An
+// empty list yields `Int(0)` — the additive identity for the common numeric fold — matching the other
+// empty-collection HOF conventions in this file.
+fn anubis_reduce2(list: AnubisValue, f: AnubisValue) -> AnubisValue {
+    if !f.is_closure() {
+        panic!("ANUBIS_TYPE_ERROR: reduce(list, closure) expects a closure as the second argument, got {}", f.type_name());
+    }
+    let mut it = anubis_iter(list).into_iter();
+    let mut acc = match it.next() { Some(x) => x, None => return AnubisValue::Int(0) };
+    for x in it { acc = f.call_closure(vec![acc, x]); }
     acc
 }
 fn anubis_each(list: AnubisValue, f: AnubisValue) -> AnubisValue {
@@ -1701,7 +1731,10 @@ fn anubis_sort_by(list: AnubisValue, f: AnubisValue) -> AnubisValue {
             });
             anubis_mk_list(items)
         }
-        other => other,
+        // Fail CLOSED on a non-list first argument (was `other => other`, which silently returned the
+        // argument unsorted — leaking a `<closure>` on a swapped `sort_by(closure, list)` call, or a
+        // string/map unchanged — an HOF-audit silent-wrong-output bug).
+        other => panic!("ANUBIS_TYPE_ERROR: sort_by expects a list as its first argument, got {}", other.type_name()),
     }
 }
 fn anubis_apply(f: AnubisValue, args: AnubisValue) -> AnubisValue {
@@ -1731,6 +1764,14 @@ fn anubis_iter(v: AnubisValue) -> Vec<AnubisValue> {
         AnubisValue::List(items) => anubis_rc_take(items),
         AnubisValue::Str(s) => s.chars().map(|c| anubis_mk_str(c.to_string())).collect(),
         AnubisValue::Map(m) => anubis_rc_take(m).into_iter().map(|(k, _)| anubis_mk_str(k)).collect(),
+        // A CLOSURE is never iterable — reaching here means a higher-order call was given a closure
+        // where the collection was expected (the classic swapped-argument mistake, e.g.
+        // `min_by(|x| x, list)`). Fail CLOSED with a message that names the likely cause, instead of
+        // the old `other => vec![other]` which silently wrapped the closure as a 1-element sequence and
+        // returned it unexamined (a silent-wrong-output bug the HOF audit surfaced).
+        AnubisValue::Closure(_) => panic!(
+            "ANUBIS_TYPE_ERROR: a closure is not iterable — check the argument order (the collection must come before the closure)"
+        ),
         other => vec![other],
     }
 }
@@ -1951,7 +1992,9 @@ fn anubis_merge(a: AnubisValue, b: AnubisValue) -> AnubisValue {
 fn anubis_map_values(m: AnubisValue, f: AnubisValue) -> AnubisValue {
     match m {
         AnubisValue::Map(mm) => anubis_mk_map(anubis_rc_take(mm).into_iter().map(|(k, v)| (k, f.call_closure(vec![v]))).collect()),
-        other => other,
+        // Fail CLOSED on a non-map first argument (was `other => other`, which silently returned e.g. a
+        // list unchanged with the closure never applied — an HOF-audit silent-wrong-output bug).
+        other => panic!("ANUBIS_TYPE_ERROR: map_values expects a map as its first argument, got {}", other.type_name()),
     }
 }
 
@@ -1964,6 +2007,12 @@ fn anubis_compose(f: AnubisValue, g: AnubisValue) -> AnubisValue {
     }))
 }
 fn anubis_times(n: AnubisValue, f: AnubisValue) -> AnubisValue {
+    // Fail CLOSED when the count slot holds a closure — the swapped `times(closure, n)` mistake. Without
+    // this, `n.as_i64()` coerced the closure to 0 and returned an empty list at exit 0 (a silent-wrong
+    // HOF-audit bug). The canonical order is `times(count, closure)`.
+    if n.is_closure() {
+        panic!("ANUBIS_TYPE_ERROR: times expects a count as its first argument — times(count, closure), got a closure");
+    }
     let n = n.as_i64().max(0);
     anubis_mk_list((0..n).map(|i| f.call_closure(vec![AnubisValue::Int(i)])).collect())
 }
@@ -2870,7 +2919,11 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         // higher-order (closures)
         "map" => fixed("anubis_map", callee, args, 2),
         "filter" => fixed("anubis_filter", callee, args, 2),
-        "reduce" => fixed("anubis_reduce", callee, args, 3),
+        "reduce" if args.len() == 2 => fixed("anubis_reduce2", callee, args, 2),
+        "reduce" if args.len() == 3 => fixed("anubis_reduce", callee, args, 3),
+        "reduce" => Err(unsupported_run(
+            "`reduce` expects 2 or 3 arguments: reduce(list, closure) or reduce(list, closure, seed)",
+        )),
         "each" => fixed("anubis_each", callee, args, 2),
         "find" => fixed("anubis_find", callee, args, 2),
         "any" => fixed("anubis_any", callee, args, 2),
@@ -3079,8 +3132,12 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
         ));
     }
     if name == "len" {
+        // Guard the argument access: the direct `__args[0usize]` aborted with a raw Rust
+        // index-out-of-bounds panic (leaking generated-source line + backtrace) when `len` was used as a
+        // first-class value and applied with zero args (`apply(len, [])`). Emit the clean ANUBIS_ARITY
+        // diagnostic its sibling builtin value-forms produce instead (HOF-audit finding).
         return Ok(
-            "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue { __args[0usize].len_val() }))"
+            "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue { match __args.first() { Some(a) => a.len_val(), None => panic!(\"ANUBIS_ARITY: builtin `len` cannot take 0 argument(s)\") } }))"
                 .to_string(),
         );
     }
@@ -6370,6 +6427,32 @@ mod run_tests {
             run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b, 0)); }"),
             "10"
         );
+    }
+
+    #[test]
+    fn reduce_is_argument_order_agnostic_and_seedless() {
+        // reduce is order-agnostic on its two non-list args: whichever IS a closure is the fold fn.
+        // Anubis-native closure-first order:
+        assert_eq!(run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b, 0)); }"), "10");
+        // JS/Rust-fold-natural seed-first order (previously crashed `expected closure, got int`):
+        assert_eq!(run("fn main() { print(reduce([1, 2, 3, 4], 0, |a, b| a + b)); }"), "10");
+        // Seedless 2-arg form: first element seeds, fold the rest.
+        assert_eq!(run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b)); }"), "10");
+        assert_eq!(run("fn main() { print(reduce([42], |a, b| a + b)); }"), "42");
+        assert_eq!(run("fn main() { print(reduce([], |a, b| a + b)); }"), "0");
+        // Named 2-param function in either position:
+        assert_eq!(run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], add, 0)); }"), "6");
+        assert_eq!(run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], 0, add)); }"), "6");
+    }
+
+    #[test]
+    fn hof_correct_usage_still_works_after_failclosed_hardening() {
+        // Regression guard: the fail-closed hardening of sort_by/map_values/times/min_by/max_by (which
+        // replaced silent-wrong-output fall-throughs) must not disturb their correct forms.
+        assert_eq!(run("fn main() { print(sort_by([3, 1, 2], |x| x)); }"), "[1, 2, 3]");
+        assert_eq!(run("fn main() { print(min_by([3, 1, 2], |x| x)); }"), "1");
+        assert_eq!(run("fn main() { print(max_by([3, 1, 2], |x| x)); }"), "3");
+        assert_eq!(run("fn main() { print(times(3, |i| i * i)); }"), "[0, 1, 4]");
     }
 
     #[test]

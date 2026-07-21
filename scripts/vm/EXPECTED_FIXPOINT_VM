@@ -69,4 +69,12 @@
 #     Ran the HOST self-host gate BEFORE this seal (the #109 lesson — compiled bootstrap uses only the ~21
 #     emitted-interpreter builtins). Seal PASS (stage2==stage3, 9/9), all gates green incl
 #     TAINT_SELFHOST_GATE; whole-corpus SH ⊆ Rust 0-spurious. ALL THREE semantic engines now self-hosted.
-c472309ade19ee57b9025a0d96ada5a15da285ea49292d440673107f0ece3a24
+#   c472309a…3a24 -> 707375b6…ef41  (2026-07-21, reduce() fix + HOF runtime robustness hardening)
+#     Trigger: user-reported reduce() crash on the seed-first arg order. Made anubis_reduce order-agnostic
+#     (+ 2-arg seedless form + clean errors) and, since the closure may now be at arg index 1 OR 2,
+#     widened higher_order_closure_args("reduce") AND its self-hosted mirror sh_hof_closure_args to
+#     [1, 2] — the ONLY anubis_sh.anb change (so the fixpoint reseals). An adversarial HOF audit also
+#     found + closed a class of silent-wrong-output fail-open fall-throughs (anubis_iter/sort_by/
+#     map_values/times/len now fail closed). Seal PASS (9/9), all gates green (effect differential still
+#     0 with the [1,2] descent), full lib suite 537/537.
+707375b61970eeec30fc2c9bdbead8d9b814edfd3b2e7fafc00f663add3def41
