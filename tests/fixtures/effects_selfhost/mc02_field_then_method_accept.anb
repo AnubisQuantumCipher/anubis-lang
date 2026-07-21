@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// #108: field access then method call `obj.field.method(3)` — field walks the base, method opens.
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let obj = 5;
+    let v = obj.field.method(3);
+}

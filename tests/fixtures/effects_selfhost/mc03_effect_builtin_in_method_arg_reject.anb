@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// #108: an effect builtin among the method-call ARGS is still charged (args are walked) even though
+// the method itself is open — send() in the args gives main an undeclared net.send.
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let obj = 5;
+    obj.run(send(1));
+}

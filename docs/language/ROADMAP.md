@@ -43,9 +43,11 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > subset. **slice 2 LANDED**: the SH parser grew **lambda literals** (`|p| body`) and the effect
 > engine ports the **HOF-closure descent** — `map(xs, |x| send(x))`'s closure body is charged to the
 > calling function (`higher_order_closure_args` indices; effects.rs #65) — AND (#107) tracks VAR-BOUND
-> closures (`let f = |x| send(x); apply(f,7)` / direct `f(3)`), closing the unsafe-direction gap;
-> differential-clean per-function over 11 lambda/closure fixtures + the whole corpus (residual: only
-> method/receiver calls `obj.f()`, which PARSE_ERROR→skip, not diverge). **slice 3 LANDED**: the WHOLE-PROGRAM
+> closures (`let f = |x| send(x); apply(f,7)` / direct `f(3)`), closing the unsafe-direction gap; AND
+> (#108) method/receiver calls `obj.f(args)` (→ open) + field access `obj.field`. With these the
+> self-hosted EFFECT engine is PARSE- and DIFFERENTIAL-COMPLETE over the SH subset (0 disagreements
+> per-function over the whole corpus; the only remaining subset boundary is struct literals,
+> orthogonal to the effect lane). **slice 3 LANDED**: the WHOLE-PROGRAM
 > capability set (`effects.rs program_capability_set` — the union of every function's transitive row
 > caps + declared fold + OR of open) is now Anubis-authored too (the `capset` subcommand,
 > `eff_program_capset`), so the input to the VZ hypervisor confinement grant is now derivable by the

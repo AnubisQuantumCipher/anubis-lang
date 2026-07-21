@@ -39,6 +39,12 @@ enum Expr {
     // callee is a closure-applying builtin (higher_order_closure_args). anubis_sh.anb itself uses no
     // lambdas, so this variant is unreached during self-compile.
     Lambda { params: any, body: any },
+    // Phase-4 #108: method/receiver call `recv.method(args)` and field access `recv.field`. The Rust
+    // effect engine treats a method/receiver call as OPEN (unresolvable — effects.rs:306-314) and a
+    // field access as walk-base. anubis_sh.anb uses neither (it uses `m["k"]` indexing), so both are
+    // unreached during self-compile.
+    MethodCall { recv: any, method: any, args: any },
+    FieldAccess { base: any, field: any },
 }
 
 fn json_escape(s) {
@@ -384,13 +390,45 @@ fn parse_expr(tokens, pos, min_prec) {
     if left["ok"] == false { return left; }
     let node = left["node"];
     pos = left["pos"];
-    while kind_is(tokens, pos, "LBracket") {
-        let ix = parse_expr(tokens, pos + 1, 0);
-        if ix["ok"] == false { return ix; }
-        pos = ix["pos"];
-        if kind_is(tokens, pos, "RBracket") == false { return perr("expected ]", pos); }
-        pos = pos + 1;
-        node = Expr::Index { base: node, index: ix["node"] };
+    while kind_is(tokens, pos, "LBracket") || (kind_is(tokens, pos, "Dot") && (kind_is(tokens, pos + 1, "Ident") || kind_is(tokens, pos + 1, "Keyword"))) {
+        // The `.` postfix fires ONLY when a NAME follows (a method/field). A `.` followed by a Number
+        // is a float literal fragment (SH lexes `1.5` as `1` `.` `5`, unsupported) — leave it for the
+        // pre-#108 behaviour (parse error → SKIP), NOT a bogus FieldAccess on the digits.
+        if kind_is(tokens, pos, "LBracket") {
+            let ix = parse_expr(tokens, pos + 1, 0);
+            if ix["ok"] == false { return ix; }
+            pos = ix["pos"];
+            if kind_is(tokens, pos, "RBracket") == false { return perr("expected ]", pos); }
+            pos = pos + 1;
+            node = Expr::Index { base: node, index: ix["node"] };
+        } else {
+            // #108: postfix `.` — a method call `recv.method(args)` or a field access `recv.field`.
+            pos = pos + 1;
+            let m = peek(tokens, pos);
+            pos = pos + 1;
+            if kind_is(tokens, pos, "LParen") {
+                pos = pos + 1;
+                let margs = [];
+                if kind_is(tokens, pos, "RParen") == false {
+                    let a0 = parse_expr(tokens, pos, 0);
+                    if a0["ok"] == false { return a0; }
+                    push(margs, a0["node"]);
+                    pos = a0["pos"];
+                    while kind_is(tokens, pos, "Comma") {
+                        pos = pos + 1;
+                        let a = parse_expr(tokens, pos, 0);
+                        if a["ok"] == false { return a; }
+                        push(margs, a["node"]);
+                        pos = a["pos"];
+                    }
+                }
+                if kind_is(tokens, pos, "RParen") == false { return perr("expected )", pos); }
+                pos = pos + 1;
+                node = Expr::MethodCall { recv: node, method: m["text"], args: margs };
+            } else {
+                node = Expr::FieldAccess { base: node, field: m["text"] };
+            }
+        }
     }
     while true {
         let t = peek(tokens, pos);
@@ -873,6 +911,8 @@ fn jexpr(e) {
         Expr::IfExpr { cond: c, then_: t, else_: el } => "{\"kind\":\"IfExpr\",\"cond\":" + jexpr(c) + ",\"then\":" + jstmts(t) + ",\"else\":" + jstmts(el) + "}",
         Expr::Match { scrut: sc, arms: ar } => jmatch(sc, ar),
         Expr::Lambda { params: ps, body: b } => "{\"kind\":\"Lambda\",\"params\":" + jparams(ps) + ",\"body\":" + jexpr(b) + "}",
+        Expr::MethodCall { recv: r, method: m, args: a } => "{\"kind\":\"MethodCall\",\"recv\":" + jexpr(r) + ",\"method\":" + q(m) + ",\"args\":" + jlist(a) + "}",
+        Expr::FieldAccess { base: b, field: f } => "{\"kind\":\"FieldAccess\",\"base\":" + jexpr(b) + ",\"field\":" + q(f) + "}",
         _ => "{\"kind\":\"UnsupportedExpr\"}",
     };
 }
@@ -1106,6 +1146,8 @@ fn check_expr(e, env, fns, diags) {
         Expr::IfExpr { cond: c, then_: t, else_: el } => check_stmts(el, env, fns, check_stmts(t, env, fns, check_expr(c, env, fns, diags))),
         Expr::Match { scrut: sc, arms: ar } => check_match_arms(ar, env, fns, check_expr(sc, env, fns, diags)),
         Expr::Lambda { params: ps, body: b } => check_lambda(ps, b, env, fns, diags),
+        Expr::MethodCall { recv: r, method: m, args: a } => check_exprs(a, env, fns, check_expr(r, env, fns, diags)),
+        Expr::FieldAccess { base: b, field: f } => check_expr(b, env, fns, diags),
         _ => diags,
     };
 }
@@ -1569,8 +1611,20 @@ fn eff_walk_expr(e, scope, cx, row) {
         Expr::IfExpr { cond: c, then_: t, else_: el } => eff_walk_stmts(el, scope, cx, eff_walk_stmts(t, scope, cx, eff_walk_expr(c, scope, cx, row))),
         Expr::Match { scrut: sc, arms: ar } => eff_walk_match_arms(ar, scope, cx, eff_walk_expr(sc, scope, cx, row)),
         Expr::Lambda { params: ps, body: b } => row,
+        Expr::MethodCall { recv: r, method: m, args: a } => eff_method_call(r, a, scope, cx, row),
+        Expr::FieldAccess { base: b, field: f } => eff_walk_expr(b, scope, cx, row),
         _ => row,
     };
+}
+
+// A method/receiver call `recv.method(args)` is unresolvable outside the flat fn table → OPEN
+// (effects.rs CallExpr arm :306-314). Walk the receiver and the args (charging any effect-builtin
+// among them), then mark the row open — the tail must never stay CLOSED past an unclassified call.
+fn eff_method_call(r, a, scope, cx, row) {
+    row = eff_walk_expr(r, scope, cx, row);
+    row = eff_walk_exprs(a, scope, cx, row);
+    row["open"] = true;
+    return row;
 }
 
 // The closure-argument indices at which a HIGHER-ORDER builtin applies its lambda internally

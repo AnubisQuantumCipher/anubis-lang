@@ -44,4 +44,11 @@
 #     Trigger: the effect engine tracks VAR-BOUND closures (closure-hidden egress) —
 #     `let f = |x| send(x); apply(f,7)`/`f(3)` now charge f's effects, closing the unsafe gap.
 #     Seal PASS (9/9), all gates green; whole-corpus effect 0-disagreement.
-977c2a62b3a51e8f1d91d84157a87b784b5df245224d90aacda839e0e252bedd
+#   977c2a62…bedd -> 8022465b…eac5  (2026-07-21, Phase-4 #108)
+#     Trigger: the SH PARSER grew postfix `.` — `recv.method(args)` -> Expr::MethodCall and
+#     `recv.field` -> Expr::FieldAccess (Ident-guarded so `1.5` still PARSE_ERRORs, never a bogus
+#     FieldAccess on float digits). The effect engine treats a method call as OPEN (walk recv+args,
+#     row.open) and a field access as walk-base. Seal PASS (stage2==stage3, 9/9), all gates green;
+#     whole-corpus effect 0-disagreement (OK=270 SKIP=208). Effect engine now PARSE- and
+#     DIFFERENTIAL-COMPLETE over the SH subset (last boundary: struct literals, orthogonal).
+8022465bf0cbaa9219406255b6804ceb9c6c65b6c4f45ac258765ea8c272eac5

@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// #108: a method/receiver call `obj.compute(...)` is unresolvable → the row is `open`, but no
+// concrete capability is charged (open alone never fires the undeclared check). Both engines agree.
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let obj = 5;
+    obj.compute(1, 2);
+}
