@@ -21,16 +21,31 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > `http_get`/`http_post` classified net.send), **3** verified surface 🟢AT-DoD (float+string differential
 > harness, 0 false-accepts), **5** mechanized soundness 🟢AT-DoD (all three theorems + 14 Lean modules),
 > **6** proof-carrying packages 🟢AT-DoD (cross-package call-site discharge verified + locked), **8** DX
-> 🟢AT-DoD (`run_dx_gate.sh` 15/15), **7** TCB-minimization 🟢advanced (native solver authoritative for the
-> int lane, 441-file z3-equivalence, adder Lean-proven). Every guarantee is proven-or-scoped; the named
-> residuals are: **4** self-host the checker's semantic engines (the largest remaining *engineering*
-> effort; parse+codegen already dogfooded), **7**-full-flip (to drop z3 by default:
-> adder/comparison/complement + the whole logical-shift(L+R)/multiply family already machine-proven; left
-> are the arithmetic right shift, the structural wiring ops, and the CDCL `Unsat`-soundness prerequisite), **9** external reproduction and **10** production-hardening + 1.0-freeze (both
+> 🟢AT-DoD (`run_dx_gate.sh` 15/15), **7** TCB-minimization 🟢advanced — the from-scratch native SMT solver
+> (`solver/`, ZERO external dependency) decides the integer lane behind a **PROOF-BACKED FRAGMENT GATE**:
+> its authority is bounded to bit-blasts machine-checked in Lean 4 (155 theorems across 14 modules), a
+> TOTAL no-wildcard walker (a new op is a compile error, not a silent admission), drift-checked against
+> the live theorem set. That fragment now covers **every operation a real integer contract emits except
+> division** — all 8 comparators, equality, bitwise `& | ^ ~`, negate, add/sub, abs/min/max (ite), AND
+> both shifts (`<<`/`>>` un-deferred via z3-PROVEN encoder identities built only from proven ops).
+> Verdict-equivalent to z3 across the whole **445-file** corpus, 0 disagreements; z3 droppable for the
+> integer lane (opt-in). Every guarantee is proven-or-scoped; the named residuals are: **4** self-host the
+> checker's semantic engines (the largest remaining *engineering* effort; parse+codegen already
+> dogfooded), **7**-default-flip — the encoding is now fully proven, so the SOLE remaining prerequisite to
+> drop z3 by DEFAULT is a checkable CDCL `Unsat` certificate (LRAT/DRAT emit + verified replay; the SAT
+> *search* is the only unmechanized piece, and z3 is retained as a fail-closed cross-check until then),
+> **9** external reproduction and **10** production-hardening + 1.0-freeze (both
 > `[NEEDS-HUMAN]` — independent reproducers and the operator's stability commitment; artifacts prepared,
 > real systems already shipped in ≥2 domains). Plus the **VZ↔language confinement** lane (a second,
 > hypervisor boundary derived from the same proof; native `objc2-virtualization` backend enforces the
 > zero-NIC air-gap + per-hostname substrate, entitlement shown ad-hoc-signable — no longer `[NEEDS-HUMAN]`).
+> **Soundness is adversarially stress-tested, not assumed:** whole-surface audits that BUILD+RUN candidate
+> programs hunt for any green-check/run-violation across the whole checker surface. This session's audits
+> closed the narrow-integer-CAST false-accepts inline (`x as u8..u32`/`i8..i32` now modeled exactly as
+> zero/sign-extension, matching the runtime) and precisely SCOPED two delicate residuals for careful
+> dedicated fixes rather than rushing them: the fail-open-vs-fail-closed stance for genuinely-unmodelable
+> in-body asserts (a language-design decision), and a call-site `requires` bypass for calls inside
+> block-bodied branches (`if c { let t=…; f(t) }` — the discharge walker's documented block/if-let residual).
 > No guarantee is overstated; each boundary above is either machine-checked, gate-verified, or explicitly
 > marked as scoped/human. That is the honest definition of done for a language of this class.
 
