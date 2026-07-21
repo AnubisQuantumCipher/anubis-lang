@@ -1,0 +1,2 @@
+// EXPECT: PASS
+fn main() { let n: i64 = 5; print("" + n); }

@@ -1,0 +1,2 @@
+// EXPECT: FAIL
+fn main() { let s: string = 5; print(s); }

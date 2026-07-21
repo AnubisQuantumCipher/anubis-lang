@@ -1,0 +1,3 @@
+// EXPECT: PASS
+fn f(n: u32) { let m: u32 = n + 1; print("" + m); }
+fn main() { f(3); }

@@ -51,4 +51,13 @@
 #     row.open) and a field access as walk-base. Seal PASS (stage2==stage3, 9/9), all gates green;
 #     whole-corpus effect 0-disagreement (OK=270 SKIP=208). Effect engine now PARSE- and
 #     DIFFERENTIAL-COMPLETE over the SH subset (last boundary: struct literals, orthogonal).
-8022465bf0cbaa9219406255b6804ceb9c6c65b6c4f45ac258765ea8c272eac5
+#   8022465b…eac5 -> 6c46a76c…3e0f  (2026-07-21, Phase-4 #109 TYPE engine slice 1)
+#     Trigger: the SH checker gained a real TYPE pass — let-annotation assignability (ty_normalize/
+#     compatible/assignable ported byte-for-byte from ty.rs:149-408 + a flat sh_infer_type), emitting
+#     byte-identical ANUBIS_TYPE_MISMATCH; env upgraded presence-set -> name->type map; new `types`
+#     subcommand + run_type_selfhost_gate.sh in the battery. GOTCHA (cost one seal): ty_* must call ONLY
+#     builtins the emitted bootstrap interpreter implements (char_at/chr/ord/substr/index_of/len/get) —
+#     an earlier draft used lower/trim/starts_with/ends_with (host run.rs builtins NOT in the emitted
+#     interpreter) and stage1 panicked "unknown function trim", breaking the fixpoint. Seal PASS
+#     (stage2==stage3, 9/9), all gates green incl TYPE_SELFHOST_GATE; whole-corpus SH ⊆ Rust 0-spurious.
+6c46a76c8aa1ef42dea62e925430836e364fd46a9de5116a35a2fda655da3e0f

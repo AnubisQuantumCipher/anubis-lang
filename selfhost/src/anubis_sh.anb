@@ -1157,7 +1157,7 @@ fn check_expr(e, env, fns, diags) {
 fn check_lambda(ps, b, env, fns, diags) {
     let i = 0;
     while i < len(ps) {
-        env[ps[i]] = true;
+        env[ps[i]] = "";
         i = i + 1;
     }
     return check_expr(b, env, fns, diags);
@@ -1209,7 +1209,7 @@ fn bind_pattern(p, env) {
             let binds = p["binds"];
             let i = 0;
             while i < len(binds) {
-                if binds[i] != "_" { env[binds[i]] = true; }
+                if binds[i] != "_" { env[binds[i]] = ""; }
                 i = i + 1;
             }
         }
@@ -1217,7 +1217,7 @@ fn bind_pattern(p, env) {
             let binds = p["binds"];
             let i = 0;
             while i < len(binds) {
-                if binds[i] != "_" { env[binds[i]] = true; }
+                if binds[i] != "_" { env[binds[i]] = ""; }
                 i = i + 1;
             }
         }
@@ -1261,17 +1261,25 @@ fn is_bool_expr(e) {
     };
 }
 
+// Phase-4 TYPE-engine slice 1: port of mod.rs let-binding ANUBIS_TYPE_MISMATCH (:3450). Generalizes the
+// former 4-hardcoded bool-vs-int checks to the full ty_assignable relation over sh_infer_type. Binds
+// env[nm] to the DECLARED type (or the inferred init type when unannotated), mirroring Rust's
+// scope[nm].ty = ty.or(infer_expr_type_scoped) (:3505). sh_infer_type is a strict UNDER-approximation of
+// Rust's inferer (Call/Index/FieldAccess/IfExpr/Match/Cast => "" = accept), so a "" got NEVER emits and
+// SH ⊆ Rust holds by construction (no spurious mismatch).
 fn check_let(nm, t, ini, env, fns, diags) {
     diags = check_expr(ini, env, fns, diags);
+    let got = sh_infer_type(ini, env);
     if t != "" {
-        if is_bool_expr(ini) {
-            if t == "u32" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
-            if t == "i64" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
-            if t == "i32" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
-            if t == "u64" { push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `bool`"); }
+        if got != "" {
+            if ty_assignable(t, got) == false {
+                push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: expected `" + t + "`, got `" + got + "`");
+            }
         }
+        env[nm] = t;
+    } else {
+        env[nm] = got;
     }
-    env[nm] = true;
     return [env, diags];
 }
 
@@ -1284,9 +1292,160 @@ fn check_if(c, t, e, he, env, fns, diags) {
 
 fn check_for(vr, it, b, env, fns, diags) {
     diags = check_expr(it, env, fns, diags);
-    env[vr] = true;
+    env[vr] = "";
     diags = check_stmts(b, env, fns, diags);
     return [env, diags];
+}
+
+// ===== TYPE ENGINE slice 1 (Anubis-authored port of compiler/src/middle/ty.rs:149-408) =====
+// Pure string-in/string-out predicates. "" annotation = dynamically typed => accept.
+// NOTE: uses ONLY builtins the self-host EMITTED INTERPRETER supports (char_at/chr/ord/substr/index_of/
+// len/get) — NOT lower/trim/starts_with/ends_with, which are host-run.rs builtins the bootstrap
+// interpreter does not implement (they would panic "unknown function" in stage1). Case-folding is
+// hand-rolled (sh_lower); type annotations are single tokens so trim is a no-op and dropped.
+
+// ASCII lowercase, hand-rolled (the emitted interpreter has no `lower`). A-Z (ord 65-90) -> +32.
+fn sh_lower(s) {
+    let out = "";
+    let i = 0;
+    while i < len(s) {
+        let c = char_at(s, i);
+        let o = ord(c);
+        if o >= 65 && o <= 90 { out = out + chr(o + 32); } else { out = out + c; }
+        i = i + 1;
+    }
+    return out;
+}
+
+fn ty_norm(t) {
+    let s = sh_lower(t);
+    if s == "int" || s == "i8" || s == "i16" || s == "i32" || s == "i64" || s == "i128" || s == "u128" || s == "usize" || s == "isize" || s == "number" { return "u32"; }
+    if s == "u8" || s == "u16" || s == "u32" || s == "u64" { return s; }
+    if s == "str" || s == "string" { return "string"; }
+    if s == "bool" || s == "boolean" { return "bool"; }
+    if s == "list" || s == "array" || s == "vec" { return "list"; }
+    if s == "map" || s == "dict" || s == "dictionary" { return "map"; }
+    return s;
+}
+
+fn ty_is_numeric(t) {
+    let s = ty_norm(t);
+    return s == "u8" || s == "u16" || s == "u32" || s == "u64" || s == "f32" || s == "f64" || s == "float";
+}
+
+// Strip a tainted<T>/secret<T> qualifier to base T (ty.rs strip_flow_qualifier). In the SH subset a
+// type annotation is a SINGLE token (parse_type reads one bare token), so `tainted<u32>` can never be an
+// SH annotation — the `<` splits it and the file PARSE_ERRORs. The peel is therefore INAPPLICABLE over
+// the SH-parseable corpus, so this collapses to identity (and avoids starts_with/ends_with, which the
+// self-host bootstrap interpreter does not implement).
+fn ty_strip_flow(t) {
+    return t;
+}
+
+fn ty_is_integer(t) {
+    let s = ty_norm(ty_strip_flow(t));
+    return s == "u8" || s == "u16" || s == "u32" || s == "u64";
+}
+
+fn ty_is_float(t) {
+    let s = ty_norm(ty_strip_flow(t));
+    return s == "f32" || s == "f64" || s == "float";
+}
+
+// generic param (<=2 all-uppercase chars, e.g. `T`) OR generic instantiation (contains '<'). Runtime-erased.
+fn ty_is_generic(t) {
+    let s = t;
+    if index_of(s, "<") >= 0 { return true; }
+    if len(s) == 0 { return false; }
+    if len(s) > 2 { return false; }
+    let i = 0;
+    while i < len(s) {
+        let c = ord(char_at(s, i));
+        if c < 65 || c > 90 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// tainted<T> inner (ty.rs tainted_inner). Inapplicable in the SH subset (annotations are single tokens,
+// no `<`), so always "" — avoids lower/starts_with/ends_with (unsupported by the bootstrap interpreter).
+fn ty_tainted_inner(t) {
+    return "";
+}
+
+// ty.rs compatible(): symmetric numeric interop; bool/string/enum do not cross. Recurses only through the
+// shallow tainted<> peel (inert in SH).
+fn ty_compatible(expected, actual) {
+    let e_raw = expected;
+    let a_raw = actual;
+    if e_raw == "" || a_raw == "" { return true; }
+    if ty_is_generic(e_raw) || ty_is_generic(a_raw) { return true; }
+    let e = ty_norm(e_raw);
+    let a = ty_norm(a_raw);
+    if e == a || e_raw == a_raw { return true; }
+    if e == "any" || a == "any" || e == "unknown" || a == "unknown" { return true; }
+    if (index_of(e_raw, "*") >= 0 || index_of(e, "rawptr") >= 0) && (index_of(a_raw, "*") >= 0 || index_of(a, "rawptr") >= 0) { return true; }
+    let ti_e = ty_tainted_inner(e_raw);
+    if ti_e != "" { if ty_compatible(ti_e, a_raw) { return true; } }
+    let ti_a = ty_tainted_inner(a_raw);
+    if ti_a != "" { if ty_compatible(e_raw, ti_a) { return true; } }
+    if ty_is_numeric(e) && ty_is_numeric(a) { return true; }
+    return false;
+}
+
+// ty.rs assignable(): compatible + the one asymmetric rule — a float value must not narrow into an
+// integer annotation.
+fn ty_assignable(expected, actual) {
+    if ty_compatible(expected, actual) == false { return false; }
+    if ty_is_integer(expected) && ty_is_float(actual) { return false; }
+    return true;
+}
+
+// Flat inference (ports mod.rs infer_expr_type_scoped:11743, SH subset). Returns a raw annotation
+// string; "" = unknown => accept. No float-literal arm (SH cannot lex `1.5`). This is a strict
+// UNDER-approximation of Rust's inferer, so SH ⊆ Rust holds by construction (no spurious mismatch).
+fn sh_infer_type(e, env) {
+    return match e {
+        Expr::Int(v) => "u32",
+        Expr::Str(v) => "string",
+        Expr::Bool(v) => "bool",
+        Expr::Var(nm) => get(env, nm, ""),
+        Expr::Unary { op: o, expr: x } => sh_infer_unary(o, x, env),
+        Expr::Binary { op: o, lhs: l, rhs: r } => sh_infer_binary(o, l, r, env),
+        Expr::List { elements: xs } => "list",
+        Expr::Map { keys: k, vals: v } => "map",
+        Expr::EnumInit { ty: n, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => n,
+        // Omitted vs Rust: IfExpr/Match (value_branch_type), Index/Call/FieldAccess (None in Rust too),
+        // Cast (no SH Cast variant). All => "" (accept) — a tolerated INCOMPLETE residual (slice-2 cand.).
+        _ => "",
+    };
+}
+
+fn sh_infer_unary(o, x, env) {
+    if o == "!" { return "bool"; }
+    if o == "~" { return "u32"; }
+    return sh_infer_type(x, env);
+}
+
+fn sh_infer_binary(o, l, r, env) {
+    if o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" || o == "&&" || o == "||" { return "bool"; }
+    if o == "+" {
+        // Rust maps BOTH operands through normalize_ty here; the lt.or(rt) fallback is NORMALIZED.
+        let lt = ty_norm(sh_infer_type(l, env));
+        let rt = ty_norm(sh_infer_type(r, env));
+        if lt == "string" || rt == "string" { return "string"; }
+        if lt == "list" || rt == "list" { return "list"; }
+        if ty_is_float(lt) || ty_is_float(rt) { return "f64"; }
+        if lt != "" { return lt; }
+        return rt;
+    }
+    if o == "&" || o == "|" || o == "^" || o == "<<" || o == ">>" { return "u32"; }
+    // arithmetic (- * / %): f64 if either operand float, else propagate lt.or(rt) RAW.
+    let lt2 = sh_infer_type(l, env);
+    let rt2 = sh_infer_type(r, env);
+    if ty_is_float(lt2) || ty_is_float(rt2) { return "f64"; }
+    if lt2 != "" { return lt2; }
+    return rt2;
 }
 
 fn sh_check(ast) {
@@ -1307,7 +1466,9 @@ fn sh_check(ast) {
             let env = {};
             let j = 0;
             while j < len(f["params"]) {
-                env[f["params"][j]["name"]] = true;
+                // Seed each param with its DECLARED type (or "" if unannotated), mirroring Rust's
+                // scope[param].ty. This is the type env sh_infer_type reads for Expr::Var.
+                env[f["params"][j]["name"]] = f["params"][j]["ty"];
                 j = j + 1;
             }
             diags = check_stmts(f["body"], env, fns, diags);
@@ -2012,6 +2173,26 @@ fn main() uses(fs.read, fs.write) {
         let boundedstr = "true";
         if cs["open"] == true { boundedstr = "false"; }
         print("CAPSET caps=" + eff_capset_caps_str(cs["caps"]) + " bounded=" + boundedstr);
+        return;
+    }
+    if cmd == "types" {
+        let r = sh_parse(src);
+        if r["ok"] == false {
+            print("PARSE_ERROR: " + r["err"]);
+            exit(1);
+            return;
+        }
+        let diags = sh_check(r["ast"]);
+        if len(diags) == 0 {
+            print("types ok");
+        } else {
+            let i = 0;
+            while i < len(diags) {
+                print(diags[i]);
+                i = i + 1;
+            }
+            exit(1);
+        }
         return;
     }
     if cmd == "compile" {

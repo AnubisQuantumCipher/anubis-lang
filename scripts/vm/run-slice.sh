@@ -109,12 +109,13 @@ run seal       bash scripts/run_selfhost_gate.sh
 run dogfood    bash scripts/run_selfhost_dogfood_gate.sh
 run effect-sh  bash scripts/run_effect_selfhost_gate.sh
 run capset-sh  bash scripts/run_capset_selfhost_gate.sh
+run type-sh    bash scripts/run_type_selfhost_gate.sh
 echo "BATTERY_DONE"
 REMOTE
 
 echo "[5/6] collect results"
 ssh "${SSHOPTS[@]}" "${USER_}@${IP}" \
-  'grep -E "^===== |^EXIT=|test result:|\"type\":\"suite\"|Overall:|SELFHOST_GATE:|SELFHOST_DOGFOOD_GATE:|EFFECT_SELFHOST_GATE:|CAPSET_SELFHOST_GATE:|stdlib gate:|SHADOW_DIFF:|binary_fixpoint sha256" "$HOME/battery.log"'
+  'grep -E "^===== |^EXIT=|test result:|\"type\":\"suite\"|Overall:|SELFHOST_GATE:|SELFHOST_DOGFOOD_GATE:|EFFECT_SELFHOST_GATE:|CAPSET_SELFHOST_GATE:|TYPE_SELFHOST_GATE:|stdlib gate:|SHADOW_DIFF:|binary_fixpoint sha256" "$HOME/battery.log"'
 VMFP=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep "binary_fixpoint sha256" "$HOME/battery.log" | grep -oE "[0-9a-f]{64}" | head -1' || true)
 NFAIL=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -cE "^EXIT=[1-9]" "$HOME/battery.log" || true')
 NFAIL=${NFAIL:-0}

@@ -1,0 +1,2 @@
+// EXPECT: FAIL
+fn main() { let y: u32 = "s"; print("" + y); }

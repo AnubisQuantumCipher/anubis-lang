@@ -1,0 +1,2 @@
+// EXPECT: PASS
+fn main() { let s: string = "a"; print(s); }
