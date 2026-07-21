@@ -40,8 +40,11 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > PER-FUNCTION (not a coarse cap-union) — over a curated corpus + a 457-file whole-corpus sweep
 > (`scripts/run_effect_selfhost_gate.sh`). It is a PARALLEL pass whose authority transfers only on
 > promotion (the shadow→opt-in→default-flip arc of the native solver), and its honest scope is the SH
-> subset (no lambda/method-call arms — the SH parser has no such variant, so the Rust HOF-closure
-> descent is structurally unreachable, ported in slice 2). **slice 3 LANDED**: the WHOLE-PROGRAM
+> subset. **slice 2 LANDED**: the SH parser grew **lambda literals** (`|p| body`) and the effect
+> engine ports the **inline HOF-closure descent** — `map(xs, |x| send(x))`'s closure body is charged
+> to the calling function (`higher_order_closure_args` indices; effects.rs #65), differential-clean
+> per-function over 8 lambda fixtures + the whole corpus (honest residual #107: var-bound/returned
+> closures + method-calls). **slice 3 LANDED**: the WHOLE-PROGRAM
 > capability set (`effects.rs program_capability_set` — the union of every function's transitive row
 > caps + declared fold + OR of open) is now Anubis-authored too (the `capset` subcommand,
 > `eff_program_capset`), so the input to the VZ hypervisor confinement grant is now derivable by the

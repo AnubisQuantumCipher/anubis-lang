@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// map applies |x| send(x) internally, so its net.send belongs to main — undeclared (main has fs.write).
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let xs = [1, 2, 3];
+    let r = map(xs, |x| send(x));
+}

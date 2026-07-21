@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// each (closure at index 1) — the lambda shells out; undeclared (main has fs.write).
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let xs = [1, 2, 3];
+    each(xs, |x| shell("id"));
+}

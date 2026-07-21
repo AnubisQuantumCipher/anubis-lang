@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// apply (closure at index 0) — the lambda sends; undeclared.
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let r = apply(|x| send(x), 7);
+}

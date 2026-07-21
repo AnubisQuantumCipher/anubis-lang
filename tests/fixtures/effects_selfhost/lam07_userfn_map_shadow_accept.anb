@@ -1,0 +1,11 @@
+// EXPECT: PASS
+// A USER fn named `map` shadows the HOF builtin — the call resolves to the user fn (all_fns), so NO
+// closure descent happens; the lambda arg's send is NOT charged. Both engines must agree.
+fn map(xs, f) {
+    let y = 1;
+}
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let xs = [1, 2, 3];
+    map(xs, |x| send(x));
+}

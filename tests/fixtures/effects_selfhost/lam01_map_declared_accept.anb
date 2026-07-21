@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// HOF closure: the lambda body sends; main declares net.send (reached via map's applied closure).
+fn main() uses(net.send) {
+    let xs = [1, 2, 3];
+    let r = map(xs, |x| send(x));
+}

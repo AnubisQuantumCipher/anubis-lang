@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// A pure lambda charges nothing; no uses() clause, nothing to check.
+fn main() {
+    let xs = [1, 2, 3];
+    let r = map(xs, |x| x + 1);
+}

@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// Nested HOF: the inner lambda (inside the outer lambda's body) sends; charged through both descents.
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    let xs = [1, 2, 3];
+    let ys = [4, 5];
+    each(xs, |x| each(ys, |y| send(y)));
+}

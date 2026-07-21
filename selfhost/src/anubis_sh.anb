@@ -34,6 +34,11 @@ enum Expr {
     EnumInit { ty: any, variant: any, shape: any, tuple: any, fnames: any, fexprs: any },
     IfExpr { cond: any, then_: any, else_: any },
     Match { scrut: any, arms: any },
+    // Phase-4 #104: closure literal `|p1, p2| body` (expression body). Only appears as an argument to
+    // a higher-order builtin (map/filter/each/…); the effect engine descends into its body when the
+    // callee is a closure-applying builtin (higher_order_closure_args). anubis_sh.anb itself uses no
+    // lambdas, so this variant is unreached during self-compile.
+    Lambda { params: any, body: any },
 }
 
 fn json_escape(s) {
@@ -236,6 +241,26 @@ fn text_is(tokens, pos, text) { return peek(tokens, pos)["text"] == text; }
 
 fn parse_prefix(tokens, pos) {
     let t = peek(tokens, pos);
+    if t["kind"] == "Pipe" {
+        // Phase-4 #104: closure literal `|p1, p2| body`. A single `|` (Pipe) has no infix precedence
+        // (prec_of == 0) and `||` is a distinct token (PipePipe), so a `|` at prefix position is
+        // unambiguously a lambda. Params are bare idents; the body is a single expression.
+        pos = pos + 1;
+        let params = [];
+        if kind_is(tokens, pos, "Pipe") == false {
+            while true {
+                let pt = peek(tokens, pos);
+                push(params, pt["text"]);
+                pos = pos + 1;
+                if kind_is(tokens, pos, "Comma") { pos = pos + 1; } else { break; }
+            }
+        }
+        if kind_is(tokens, pos, "Pipe") == false { return perr("expected | to close lambda params", pos); }
+        pos = pos + 1;
+        let body = parse_expr(tokens, pos, 0);
+        if body["ok"] == false { return body; }
+        return pok(Expr::Lambda { params: params, body: body["node"] }, body["pos"]);
+    }
     if t["text"] == "if" && t["kind"] == "Keyword" {
         return parse_if_expr(tokens, pos);
     }
@@ -818,6 +843,18 @@ fn sh_parse(src) {
     return {"ok": true, "ast": {"kind": "Program", "items": items}};
 }
 
+// Emit a list of parameter-name strings as a JSON string array (for a Lambda node's params).
+fn jparams(ps) {
+    let out = "[";
+    let i = 0;
+    while i < len(ps) {
+        if i > 0 { out = out + ","; }
+        out = out + q(ps[i]);
+        i = i + 1;
+    }
+    return out + "]";
+}
+
 fn jexpr(e) {
     return match e {
         Expr::None => "null",
@@ -835,6 +872,7 @@ fn jexpr(e) {
         Expr::EnumInit { ty: ty, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => jenuminit(ty, vr, sh, tp, fnm, fx),
         Expr::IfExpr { cond: c, then_: t, else_: el } => "{\"kind\":\"IfExpr\",\"cond\":" + jexpr(c) + ",\"then\":" + jstmts(t) + ",\"else\":" + jstmts(el) + "}",
         Expr::Match { scrut: sc, arms: ar } => jmatch(sc, ar),
+        Expr::Lambda { params: ps, body: b } => "{\"kind\":\"Lambda\",\"params\":" + jparams(ps) + ",\"body\":" + jexpr(b) + "}",
         _ => "{\"kind\":\"UnsupportedExpr\"}",
     };
 }
@@ -1067,8 +1105,20 @@ fn check_expr(e, env, fns, diags) {
         Expr::EnumInit { ty: ty, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => check_exprs(fx, env, fns, check_exprs(tp, env, fns, diags)),
         Expr::IfExpr { cond: c, then_: t, else_: el } => check_stmts(el, env, fns, check_stmts(t, env, fns, check_expr(c, env, fns, diags))),
         Expr::Match { scrut: sc, arms: ar } => check_match_arms(ar, env, fns, check_expr(sc, env, fns, diags)),
+        Expr::Lambda { params: ps, body: b } => check_lambda(ps, b, env, fns, diags),
         _ => diags,
     };
+}
+
+// A lambda binds its params into a FRESH copy of the scope (maps are by-value) and checks its body;
+// param binds do not leak out.
+fn check_lambda(ps, b, env, fns, diags) {
+    let i = 0;
+    while i < len(ps) {
+        env[ps[i]] = true;
+        i = i + 1;
+    }
+    return check_expr(b, env, fns, diags);
 }
 
 fn check_exprs(es, env, fns, diags) {
@@ -1471,11 +1521,21 @@ fn eff_walk_call(cn, a, scope, cx, row) {
         return row;
     }
     if is_builtin(cn) || sh_is_known_builtin(cn) {
-        // A known effect-free builtin (print/len/… or crypto/proof/symbolic/poc/cap): closed, no-op.
-        // Mirrors effects.rs's is_builtin_name branch — without sh_is_known_builtin, a builtin the SH
-        // parser's own 24-name is_builtin omits would fall to the open tail below and over-restrict
-        // the derived confinement. SH has no lambda args, so the higher_order_closure_args descent
-        // (effects.rs:282-300) is unreachable.
+        // A known effect-free builtin (print/len/… or crypto/proof/symbolic/poc/cap): closed. Mirrors
+        // effects.rs's is_builtin_name branch. BUT a HIGHER-ORDER builtin (map/filter/each/…) APPLIES
+        // its closure argument internally, so that inline lambda's body effects belong to THIS
+        // function's row (#104, effects.rs:282-300). The generic args walk above already visited and
+        // SKIPPED the lambda (Expr::Lambda arm contributes nothing), so walking the body here charges
+        // it exactly once. Reached only for the real builtin — a user `fn map` took the all_fns branch.
+        let hof = sh_hof_closure_args(cn);
+        let i = 0;
+        while i < len(hof) {
+            let idx = hof[i];
+            if idx < len(a) {
+                row = eff_walk_lambda_body(a[idx], scope, cx, row);
+            }
+            i = i + 1;
+        }
         return row;
     }
     // Unknown bare name — nothing resolvable to charge, so the tail is open.
@@ -1502,6 +1562,42 @@ fn eff_walk_expr(e, scope, cx, row) {
         Expr::EnumInit { ty: ty, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => eff_walk_exprs(fx, scope, cx, eff_walk_exprs(tp, scope, cx, row)),
         Expr::IfExpr { cond: c, then_: t, else_: el } => eff_walk_stmts(el, scope, cx, eff_walk_stmts(t, scope, cx, eff_walk_expr(c, scope, cx, row))),
         Expr::Match { scrut: sc, arms: ar } => eff_walk_match_arms(ar, scope, cx, eff_walk_expr(sc, scope, cx, row)),
+        Expr::Lambda { params: ps, body: b } => row,
+        _ => row,
+    };
+}
+
+// The closure-argument indices at which a HIGHER-ORDER builtin applies its lambda internally
+// (effects.rs higher_order_closure_args). The application happens inside the runtime builtin, so an
+// inline `|x| send(x)` at one of these indices is charged to the CALLING function's row (#65).
+fn sh_hof_closure_args(callee) {
+    if callee == "map" || callee == "filter" || callee == "each" || callee == "find" || callee == "any" || callee == "all" || callee == "count" || callee == "sort_by" || callee == "flat_map" || callee == "take_while" || callee == "drop_while" || callee == "position" || callee == "min_by" || callee == "max_by" || callee == "partition" || callee == "map_values" || callee == "reduce" || callee == "times" {
+        return [1];
+    }
+    if callee == "apply" || callee == "call" {
+        return [0];
+    }
+    if callee == "compose" {
+        return [0, 1];
+    }
+    return [];
+}
+
+fn bind_lambda_params(ps, scope) {
+    let i = 0;
+    while i < len(ps) {
+        scope[ps[i]] = true;
+        i = i + 1;
+    }
+    return scope;
+}
+
+// Walk a lambda-argument's body (with its params bound), charging its effects to the caller's row.
+// A non-lambda arg (a fn name / var) is NOT descended — mirrors effects.rs, which only descends into
+// INLINE lambdas at the closure index.
+fn eff_walk_lambda_body(e, scope, cx, row) {
+    return match e {
+        Expr::Lambda { params: ps, body: b } => eff_walk_expr(b, bind_lambda_params(ps, scope), cx, row),
         _ => row,
     };
 }

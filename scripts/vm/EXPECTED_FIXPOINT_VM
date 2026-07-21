@@ -35,4 +35,9 @@
 #     Trigger: anubis_sh.anb gained `sh_is_known_builtin` (mirror of is_builtin_name) so the
 #     effect engine no longer spuriously opens on effect-free builtins. Seal PASS (9/9), all
 #     gates green; whole-corpus capset now EXACT (0 conservative, 0 over-grants).
-d8c4510382cfe91b7dce887683435a125cf25168876b239a0fd5f44ae08e5ee5
+#   d8c45103…5ee5 -> e5706f54…28a0  (2026-07-21, Phase-4 slice 2)
+#     Trigger: the SH PARSER grew lambda literals (`|p| body`) + the effect engine ports the
+#     inline HOF-closure descent. First slice to change the parser (not just add analysis fns).
+#     Seal PASS (stage2==stage3, 9/9) — self-host reproduction held with the parser change; all
+#     gates green; whole-corpus effect + capset 0-disagreement.
+e5706f5466506f212b20b9b5b8f67ea20ef4c7d4972150c64eb6c0c24edd28a0

@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_UNDECLARED_EFFECT
+// compose (closures at indices 0 AND 1) — first lambda sends, second reads a file; both charged.
+fn main() uses(net.send) {
+    let g = compose(|x| send(x), |y| read_file(y));
+}
