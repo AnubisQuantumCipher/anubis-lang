@@ -41,8 +41,16 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > (`scripts/run_effect_selfhost_gate.sh`). It is a PARALLEL pass whose authority transfers only on
 > promotion (the shadow→opt-in→default-flip arc of the native solver), and its honest scope is the SH
 > subset (no lambda/method-call arms — the SH parser has no such variant, so the Rust HOF-closure
-> descent is structurally unreachable, ported in slice 2). Remaining slices:
-> HO/effect completeness → lane gates → whole-program roll-up → **type** → **taint** → **Z3/contract**
+> descent is structurally unreachable, ported in slice 2). **slice 3 LANDED**: the WHOLE-PROGRAM
+> capability set (`effects.rs program_capability_set` — the union of every function's transitive row
+> caps + declared fold + OR of open) is now Anubis-authored too (the `capset` subcommand,
+> `eff_program_capset`), so the input to the VZ hypervisor confinement grant is now derivable by the
+> self-hosted analysis. Pinned EXACT against the Rust `anubis vz confine` derivation over a curated
+> corpus (`scripts/run_capset_selfhost_gate.sh`), and FAIL-CLOSED over the whole SH-parseable corpus:
+> the self-hosted grant is never LESS restrictive than Rust's (0 over-grants) — it is merely more
+> conservative (`open`→unbounded→most-restrictive) on effect-free builtins the SH engine does not yet
+> recognize (proof/symbolic/cap/poc — mirror `is_builtin_name`, follow-up). Remaining slices:
+> HO/effect completeness (grow parser) → lane gates → **type** → **taint** → **Z3/contract**
 > (capstone). **7**-default-flip — the encoding is now fully proven, so the SOLE remaining prerequisite to
 > drop z3 by DEFAULT is a checkable CDCL `Unsat` certificate (LRAT/DRAT emit + verified replay; the SAT
 > *search* is the only unmechanized piece, and z3 is retained as a fail-closed cross-check until then),

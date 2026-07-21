@@ -1,0 +1,4 @@
+// EXPECT-CAPSET:  bounded=true
+// No capabilities at all — the empty grant, effects bounded.
+fn helper() { let x = 1 + 2; }
+fn main() { helper(); }

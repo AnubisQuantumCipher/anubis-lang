@@ -1,0 +1,10 @@
+// EXPECT-CAPSET: fs.read,fs.write,net.send,shell,time.now,rand.gen bounded=true
+// All six capabilities present and declared — the maximal grant, effects bounded.
+fn main() uses(fs.read, fs.write, net.send, shell, time.now, rand.gen) {
+    let a = read_file("x");
+    write_file("o", "y");
+    send("d");
+    shell("id");
+    let t = time_now();
+    let r = rand();
+}

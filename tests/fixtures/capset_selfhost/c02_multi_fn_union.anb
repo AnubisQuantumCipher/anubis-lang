@@ -1,0 +1,5 @@
+// EXPECT-CAPSET: fs.read,fs.write bounded=true
+// Whole-program union across functions: reader contributes fs.read, writer fs.write.
+fn reader() uses(fs.read) { let a = read_file("x"); }
+fn writer() uses(fs.write) { write_file("o", "y"); }
+fn main() uses(fs.read, fs.write) { reader(); writer(); }

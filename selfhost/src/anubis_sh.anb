@@ -1611,6 +1611,74 @@ fn eff_check(ast) {
     return diags;
 }
 
+// ── Phase-4 slice 3: whole-program capability set (effects.rs program_capability_set) ─────────────
+// The single source of truth the VZ confinement derivation (package::confinement::derive_confinement)
+// grants on: the UNION of every function's TRANSITIVE row caps (the `eff` set — NOT the direct
+// name-charge; the grant is based on capabilities the program actually PERFORMS, so a user `fn send()`
+// that does no network I/O contributes nothing), PLUS a defensive fold of every declared uses() cap,
+// PLUS the OR of every row's `open` bit (an unresolvable tail => unbounded => the confinement lane
+// confines MOST restrictively — fail-closed in the miss direction). Returns {"caps": map, "open": bool}.
+fn eff_program_capset(items) {
+    let all_fns = {};
+    let declared = {};
+    let i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" {
+            let nm = items[i]["name"];
+            all_fns[nm] = true;
+            let dc = {};
+            let effs = items[i]["effects"];
+            let k = 0;
+            while k < len(effs) {
+                let canon = sh_normalize_effect(effs[k]);
+                if sh_is_cap(canon) { dc[canon] = true; }
+                k = k + 1;
+            }
+            declared[nm] = dc;
+        }
+        i = i + 1;
+    }
+    let rows = eff_compute_rows(items, all_fns, declared);
+    let caps = {};
+    let open = false;
+    i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" {
+            let nm = items[i]["name"];
+            let r = rows[nm];
+            let e = r["eff"];
+            let ks = keys(e);
+            let j = 0;
+            while j < len(ks) {
+                caps[ks[j]] = true;
+                j = j + 1;
+            }
+            if r["open"] == true { open = true; }
+            let dc = declared[nm];
+            let dks = keys(dc);
+            j = 0;
+            while j < len(dks) {
+                caps[dks[j]] = true;
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return {"caps": caps, "open": open};
+}
+
+// Render a capability set in the fixed 6-cap order (the gate sorts both sides, so order is cosmetic).
+fn eff_capset_caps_str(caps) {
+    let out = "";
+    if has_key(caps, "fs.read") { out = out + "fs.read,"; }
+    if has_key(caps, "fs.write") { out = out + "fs.write,"; }
+    if has_key(caps, "net.send") { out = out + "net.send,"; }
+    if has_key(caps, "shell") { out = out + "shell,"; }
+    if has_key(caps, "time.now") { out = out + "time.now,"; }
+    if has_key(caps, "rand.gen") { out = out + "rand.gen,"; }
+    return out;
+}
+
 fn sh_codegen(ast) {
     // Executable package: SH AST interpreter + payload AST of the compiled program.
     // When payload is anubis_sh itself, the binary is a real stage-N compiler.
@@ -1698,6 +1766,19 @@ fn main() uses(fs.read, fs.write) {
             }
             exit(1);
         }
+        return;
+    }
+    if cmd == "capset" {
+        let r = sh_parse(src);
+        if r["ok"] == false {
+            print("PARSE_ERROR: " + r["err"]);
+            exit(1);
+            return;
+        }
+        let cs = eff_program_capset(r["ast"]["items"]);
+        let boundedstr = "true";
+        if cs["open"] == true { boundedstr = "false"; }
+        print("CAPSET caps=" + eff_capset_caps_str(cs["caps"]) + " bounded=" + boundedstr);
         return;
     }
     if cmd == "compile" {

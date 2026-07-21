@@ -26,4 +26,9 @@
 #     effect inference + (row ∪ direct) ⊆ declared gate). First anubis_sh.anb source change
 #     since the 2026-07-14 baseline. Seal PASS (stage2==stage3, 9/9), all gates green
 #     including the new run_effect_selfhost_gate.sh (0 disagreements).
-9fbc3b93c122647cc910155e09dac497e264e9310dfd490eef4944c9e164e98b
+#   9fbc3b93…e98b -> bb32b067…3e23  (2026-07-21, Phase-4 slice 3)
+#     Trigger: anubis_sh.anb grew the Anubis-authored `capset` subcommand (whole-program
+#     capability set = union of transitive rows + declared fold + open). Seal PASS
+#     (stage2==stage3, 9/9), all gates green including the new run_capset_selfhost_gate.sh
+#     (0 disagreements; whole-corpus fail-closed 0 over-grants).
+bb32b067a195afa9d62b8ef9f24953960905e19ff7272191cfee37d49eb73e23

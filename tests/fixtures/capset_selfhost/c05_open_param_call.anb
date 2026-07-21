@@ -1,0 +1,12 @@
+// EXPECT-CAPSET: fs.write bounded=false
+// Legitimate open source: apply_it calls its PARAM f() (unresolvable) -> the row is `open` -> the
+// program is UNBOUNDED -> confinement confines most restrictively. Both engines agree bounded=false;
+// the one concrete cap performed (fs.write via write_file) is present. This pins that `open` from a
+// scope-shadowed call (the SH subset's only legitimate open source — no lambdas/method-calls) is
+// reproduced exactly, distinct from the fail-closed conservatism on unrecognized effect-free builtins.
+fn work() { let x = 1; }
+fn apply_it(f) { f(); }
+fn main() uses(fs.write) {
+    write_file("o", "x");
+    apply_it(work);
+}

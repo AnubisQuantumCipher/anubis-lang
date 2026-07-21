@@ -1,0 +1,5 @@
+// EXPECT-CAPSET: net.send bounded=true
+// Declared-fold path: stub DECLARES net.send with an empty body; the capset grants it anyway
+// (declared ⊇ inferred; grant on the union) even though no send() call reveals it.
+fn stub() uses(net.send) { let x = 1; }
+fn main() uses(net.send) { stub(); }
