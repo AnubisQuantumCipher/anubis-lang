@@ -60,4 +60,13 @@
 #     an earlier draft used lower/trim/starts_with/ends_with (host run.rs builtins NOT in the emitted
 #     interpreter) and stage1 panicked "unknown function trim", breaking the fixpoint. Seal PASS
 #     (stage2==stage3, 9/9), all gates green incl TYPE_SELFHOST_GATE; whole-corpus SH ⊆ Rust 0-spurious.
-6c46a76c8aa1ef42dea62e925430836e364fd46a9de5116a35a2fda655da3e0f
+#   6c46a76c…3e0f -> c472309a…3a24  (2026-07-21, Phase-4 #110 TAINT engine slice 1 — the LAST engine)
+#     Trigger: the SH checker gained a real TAINT pass — intraprocedural source→sink information flow
+#     (tnt_source ports expr_taint_source_m Var/Binary/Unary/Index/FieldAccess/io-source arms + the sink
+#     gate mod.rs:5493-5518), emitting byte-identical ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY; scope =
+#     name->taint-label; new `taint` subcommand + run_taint_selfhost_gate.sh in the battery. General
+#     calls + composites + closures + interproc paths => "" (deferred) so SH ⊆ Rust by construction.
+#     Ran the HOST self-host gate BEFORE this seal (the #109 lesson — compiled bootstrap uses only the ~21
+#     emitted-interpreter builtins). Seal PASS (stage2==stage3, 9/9), all gates green incl
+#     TAINT_SELFHOST_GATE; whole-corpus SH ⊆ Rust 0-spurious. ALL THREE semantic engines now self-hosted.
+c472309ade19ee57b9025a0d96ada5a15da285ea49292d440673107f0ece3a24

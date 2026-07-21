@@ -1,0 +1,2 @@
+// EXPECT: FAIL
+fn main() uses(fs.read, fs.write) { let d = read_file("in"); write_file("out", d); }

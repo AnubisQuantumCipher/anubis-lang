@@ -1,0 +1,2 @@
+// EXPECT: PASS
+fn main() uses(net.send) { let x = input(); send(declassify(x, "policy", "reason")); }

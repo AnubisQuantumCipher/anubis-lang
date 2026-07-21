@@ -110,6 +110,7 @@ run dogfood    bash scripts/run_selfhost_dogfood_gate.sh
 run effect-sh  bash scripts/run_effect_selfhost_gate.sh
 run capset-sh  bash scripts/run_capset_selfhost_gate.sh
 run type-sh    bash scripts/run_type_selfhost_gate.sh
+run taint-sh   bash scripts/run_taint_selfhost_gate.sh
 echo "BATTERY_DONE"
 REMOTE
 

@@ -1,0 +1,2 @@
+// EXPECT: FAIL
+fn main() uses(net.send) { send(input()); }

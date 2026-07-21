@@ -1448,6 +1448,172 @@ fn sh_infer_binary(o, l, r, env) {
     return rt2;
 }
 
+// ===== TAINT ENGINE slice 1 (Anubis-authored) — intraprocedural source→sink information flow =====
+// Ports the DIRECT case of mod.rs expr_taint_source_m (:13200) + the sink gate (:5493-5518): a value from
+// an I/O taint source (input/read_file/…) reaching a sink (send/shell/write_file/print/…) without a
+// declassify wrapper is flagged with the byte-identical ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY. Scope is a
+// dedicated map name->taint-source-label ("" / absent = clean). Params are clean (tainted<T>/secret<T>
+// qualifiers are inexpressible in the SH parser — the `<` splits the annotation). Uses ONLY the
+// emitted-interpreter builtins (get/push/len/== /|| /+). SH ⊆ Rust BY CONSTRUCTION: a general
+// (non-io-source) call — including declassify() and taint_source() — and every composite
+// (List/Map/EnumInit) + interprocedural-summary + closure path yields "" (deferred), so SH only ever
+// UNDER-reports vs Rust, never a spurious reject. Slice-2 = the two interprocedural fixpoints
+// (compute_tainting_fns + compute_param_return_taint) + composite + declassify-wellformed precision.
+
+fn sh_is_egress_sink(n) {
+    return n == "send" || n == "network_send" || n == "connect" || n == "http_get" || n == "http_post" || n == "shell" || n == "exec" || n == "system" || n == "target_run" || n == "print" || n == "println" || n == "eprint" || n == "eprintln";
+}
+fn sh_is_sink(n) {
+    if sh_is_egress_sink(n) { return true; }
+    return n == "sink" || n == "write" || n == "write_file" || n == "append_file" || n == "memcpy" || n == "sql";
+}
+fn sh_is_io_taint_source(n) {
+    return n == "read_file" || n == "open" || n == "input" || n == "read_line" || n == "recv" || n == "net_recv" || n == "env" || n == "getenv";
+}
+
+fn tnt_or(a, b) { if a != "" { return a; } return b; }
+fn tnt_io_src(cn) { if sh_is_io_taint_source(cn) { return "io source `" + cn + "`"; } return ""; }
+
+// The taint-source LABEL of an expr (mirrors expr_taint_source_m Var/Binary/Unary/Index/FieldAccess/
+// io-source-Call arms), or "" if clean. Composite (List/Map/EnumInit), general-call, closure, and
+// declassify/taint_source arms => "" (deferred, SH-under-reports-safe).
+fn tnt_source(e, scope) {
+    return match e {
+        Expr::Var(nm) => get(scope, nm, ""),
+        Expr::Binary { op: o, lhs: l, rhs: r } => tnt_or(tnt_source(l, scope), tnt_source(r, scope)),
+        Expr::Unary { op: o, expr: x } => tnt_source(x, scope),
+        Expr::Index { base: b, index: ix } => tnt_or(tnt_source(b, scope), tnt_source(ix, scope)),
+        Expr::FieldAccess { base: b, field: f } => tnt_source(b, scope),
+        Expr::Call { callee: cn, args: a } => tnt_io_src(cn),
+        _ => "",
+    };
+}
+
+fn taint_walk_exprs(es, scope, diags) {
+    let i = 0;
+    while i < len(es) {
+        diags = taint_walk_expr(es[i], scope, diags);
+        i = i + 1;
+    }
+    return diags;
+}
+
+// Sink-finding walker: recurse everywhere; at a sink call, flag each tainted arg. Threads diags only
+// (scope is read-only here — mutation happens in the stmt walker's let/assign).
+fn taint_walk_expr(e, scope, diags) {
+    return match e {
+        Expr::Call { callee: cn, args: a } => taint_walk_call(cn, a, scope, diags),
+        Expr::Binary { op: o, lhs: l, rhs: r } => taint_walk_expr(r, scope, taint_walk_expr(l, scope, diags)),
+        Expr::Unary { op: o, expr: x } => taint_walk_expr(x, scope, diags),
+        Expr::Index { base: b, index: ix } => taint_walk_expr(ix, scope, taint_walk_expr(b, scope, diags)),
+        Expr::List { elements: els } => taint_walk_exprs(els, scope, diags),
+        Expr::Range { start: s, end: en } => taint_walk_expr(en, scope, taint_walk_expr(s, scope, diags)),
+        Expr::Map { keys: k, vals: vs } => taint_walk_exprs(vs, scope, taint_walk_exprs(k, scope, diags)),
+        Expr::EnumInit { ty: ty, variant: vr, shape: sh, tuple: tp, fnames: fnm, fexprs: fx } => taint_walk_exprs(fx, scope, taint_walk_exprs(tp, scope, diags)),
+        Expr::IfExpr { cond: c, then_: t, else_: el } => taint_walk_stmts(el, scope, taint_walk_stmts(t, scope, taint_walk_expr(c, scope, diags))),
+        Expr::Match { scrut: sc, arms: ar } => taint_walk_match_arms(ar, scope, taint_walk_expr(sc, scope, diags)),
+        Expr::MethodCall { recv: r, method: m, args: a } => taint_walk_exprs(a, scope, taint_walk_expr(r, scope, diags)),
+        Expr::FieldAccess { base: b, field: f } => taint_walk_expr(b, scope, diags),
+        _ => diags,
+    };
+}
+
+fn taint_walk_match_arms(arms, scope, diags) {
+    let i = 0;
+    while i < len(arms) {
+        diags = taint_walk_expr(arms[i]["body"], scope, diags);
+        i = i + 1;
+    }
+    return diags;
+}
+
+fn taint_walk_call(cn, a, scope, diags) {
+    // Recurse into args first so a NESTED sink is found (`send(f(shell(input())))` flags the shell).
+    diags = taint_walk_exprs(a, scope, diags);
+    if sh_is_sink(cn) {
+        let i = 0;
+        while i < len(a) {
+            let src = tnt_source(a[i], scope);
+            if src != "" {
+                push(diags, "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: safe mode tainted flow from `" + src + "` to sink `" + cn + "` requires declassify() or research boundary");
+            }
+            i = i + 1;
+        }
+    }
+    return diags;
+}
+
+fn taint_walk_stmts(ss, scope, diags) {
+    let i = 0;
+    while i < len(ss) {
+        let r = taint_walk_stmt(ss[i], scope, diags);
+        scope = r[0];
+        diags = r[1];
+        i = i + 1;
+    }
+    return diags;
+}
+
+fn taint_walk_stmt(s, scope, diags) {
+    return match s {
+        Stmt::Let { name: nm, ty: t, init: iv } => taint_stmt_let(nm, iv, scope, diags),
+        Stmt::Assign { target: tg, value: v } => taint_stmt_assign(tg, v, scope, diags),
+        Stmt::Return { value: v } => [scope, taint_walk_expr(v, scope, diags)],
+        Stmt::ExprStmt { expr: e } => [scope, taint_walk_expr(e, scope, diags)],
+        Stmt::If { cond: c, then_: t, else_: e, has_else: he } => taint_stmt_if(c, t, e, he, scope, diags),
+        Stmt::While { cond: c, body: b } => [scope, taint_walk_stmts(b, scope, taint_walk_expr(c, scope, diags))],
+        Stmt::For { var: vr, iter: it, body: b } => taint_stmt_for(vr, it, b, scope, diags),
+        _ => [scope, diags],
+    };
+}
+
+fn taint_stmt_let(nm, iv, scope, diags) {
+    diags = taint_walk_expr(iv, scope, diags);
+    scope[nm] = tnt_source(iv, scope);
+    return [scope, diags];
+}
+
+// A reassignment to a bare Var re-labels it from the RHS — a clean RHS CLEARS the taint (flow-sensitive,
+// matching Rust straight-line reassignment). Assign to an index/field leaves scope (deferred).
+fn taint_stmt_assign(tg, v, scope, diags) {
+    diags = taint_walk_expr(v, scope, taint_walk_expr(tg, scope, diags));
+    scope = match tg {
+        Expr::Var(nm) => taint_set(scope, nm, tnt_source(v, scope)),
+        _ => scope,
+    };
+    return [scope, diags];
+}
+fn taint_set(scope, nm, label) { scope[nm] = label; return scope; }
+
+fn taint_stmt_if(c, t, el, he, scope, diags) {
+    // Branch bodies receive scope BY VALUE (maps are by-value in Anubis) — a taint minted inside a branch
+    // does not leak past the join, giving the conservative "tainted if any path taints" merge for free.
+    diags = taint_walk_expr(c, scope, diags);
+    diags = taint_walk_stmts(t, scope, diags);
+    if he { diags = taint_walk_stmts(el, scope, diags); }
+    return [scope, diags];
+}
+
+fn taint_stmt_for(vr, it, b, scope, diags) {
+    diags = taint_walk_expr(it, scope, diags);
+    diags = taint_walk_stmts(b, scope, diags);
+    return [scope, diags];
+}
+
+fn taint_check(ast) {
+    let diags = [];
+    let items = ast["items"];
+    let i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" {
+            let scope = {};
+            diags = taint_walk_stmts(items[i]["body"], scope, diags);
+        }
+        i = i + 1;
+    }
+    return diags;
+}
+
 fn sh_check(ast) {
     let diags = [];
     let fns = {};
@@ -2173,6 +2339,26 @@ fn main() uses(fs.read, fs.write) {
         let boundedstr = "true";
         if cs["open"] == true { boundedstr = "false"; }
         print("CAPSET caps=" + eff_capset_caps_str(cs["caps"]) + " bounded=" + boundedstr);
+        return;
+    }
+    if cmd == "taint" {
+        let r = sh_parse(src);
+        if r["ok"] == false {
+            print("PARSE_ERROR: " + r["err"]);
+            exit(1);
+            return;
+        }
+        let diags = taint_check(r["ast"]);
+        if len(diags) == 0 {
+            print("taint ok");
+        } else {
+            let i = 0;
+            while i < len(diags) {
+                print(diags[i]);
+                i = i + 1;
+            }
+            exit(1);
+        }
         return;
     }
     if cmd == "types" {
