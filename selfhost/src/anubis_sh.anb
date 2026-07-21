@@ -1275,6 +1275,52 @@ fn sh_normalize_effect(name) {
     return name;
 }
 
+// Is `name` a known Anubis builtin — a MIRROR of backends/run.rs::is_builtin_name (emit_builtin_call
+// ∪ is_proof_input_builtin ∪ is_poc_kit_builtin ∪ is_non_run_builtin ∪ the hardcoded list). The effect
+// engine uses this in eff_walk_call to decide CLOSED (a known effect-free builtin) vs OPEN (a
+// genuinely unknown callee): without it, an effect-free builtin the SH parser's own 24-name is_builtin
+// omits (crypto/proof/symbolic/poc/cap/…) would spuriously OPEN the row, over-restricting the derived
+// confinement (fail-closed but imprecise). The full 199-name registry is extracted + completeness-
+// verified against run.rs; drift is caught by scripts/run_capset_corpus_failclosed.sh --strict
+// (CONSERVATIVE must be 0). Effect builtins (send/shell/read_file/…) are ALSO here but are resolved
+// earlier by sh_builtin_effect_of, so this list only decides the effect-free closed/open split.
+fn sh_is_known_builtin(name) {
+    return name == "abs" || name == "acos" || name == "aead_open" || name == "aead_seal" || name == "all" || name == "any" ||
+name == "append_file" || name == "apply" || name == "argon2id_hash" || name == "args" || name == "asin" || name == "assert" ||
+name == "assume" || name == "atan" || name == "atan2" || name == "bool" || name == "break" || name == "bytes_hex" ||
+name == "call" || name == "cap_acquire" || name == "cap_use" || name == "capitalize" || name == "cbrt" || name == "ceil" ||
+name == "chacha20_poly1305_open" || name == "chacha20_poly1305_seal" || name == "char_at" || name == "chars" || name == "chr" ||
+name == "chunk" || name == "clamp" || name == "compose" || name == "concat" || name == "connect" || name == "constant_time_eq" ||
+name == "contains" || name == "continue" || name == "cos" || name == "count" || name == "crypto_backend" || name == "ct_eq" ||
+name == "cyclic" || name == "declassify" || name == "domain_hash" || name == "drop" || name == "drop_while" || name == "e" ||
+name == "each" || name == "ed25519_keygen" || name == "ed25519_public_key" || name == "ed25519_sign" || name == "ed25519_verify" ||
+name == "ends_with" || name == "entries" || name == "enumerate" || name == "env" || name == "eprint" || name == "eprintln" ||
+name == "exec" || name == "exit" || name == "exp" || name == "factorial" || name == "filter" || name == "find" || name == "first" ||
+name == "flat" || name == "flat_map" || name == "flatten" || name == "float" || name == "floor" || name == "gcd" || name == "get" ||
+name == "getenv" || name == "has_key" || name == "hkdf_sha256" || name == "hmac_sha256" || name == "hmac_sha256_bytes" ||
+name == "hmac_sha256_hex" || name == "hmac_sha256_verify" || name == "http_get" || name == "http_post" || name == "hypot" ||
+name == "identity" || name == "index_of" || name == "input" || name == "insert" || name == "int" || name == "is_empty" ||
+name == "join" || name == "keys" || name == "last" || name == "len" || name == "lines" || name == "ln" || name == "log" ||
+name == "log10" || name == "log2" || name == "lower" || name == "map" || name == "map_values" || name == "max" || name == "max_by" ||
+name == "memcpy" || name == "merge" || name == "min" || name == "min_by" || name == "network_send" || name == "now" || name == "open" ||
+name == "ord" || name == "p16" || name == "p32" || name == "p64" || name == "p8" || name == "pad_end" || name == "pad_start" ||
+name == "panic" || name == "parse_float" || name == "parse_float_opt" || name == "parse_int" || name == "parse_int_opt" ||
+name == "partition" || name == "password_hash" || name == "password_hash_encode" || name == "password_hash_pbkdf2_encode" ||
+name == "password_hash_phc" || name == "password_hash_phc_raw" || name == "password_verify" || name == "password_verify_encoding" ||
+name == "pbkdf2_hmac_sha256" || name == "pi" || name == "pop" || name == "position" || name == "pow" || name == "print" ||
+name == "println" || name == "product" || name == "proof_assert" || name == "proof_commit_bool" || name == "proof_commit_u32" ||
+name == "proof_input_bool" || name == "proof_input_u32" || name == "proof_input_u64" || name == "push" || name == "rand" ||
+name == "rand_gen" || name == "random" || name == "random_bytes" || name == "range" || name == "read_file" || name == "read_line" ||
+name == "reduce" || name == "remove" || name == "repeat" || name == "replace" || name == "return" || name == "reverse" ||
+name == "round" || name == "secret_source" || name == "send" || name == "sha256" || name == "sha256_bytes" || name == "sha256_hex" ||
+name == "shell" || name == "sign" || name == "sin" || name == "sink" || name == "slice" || name == "sort" || name == "sort_by" ||
+name == "split" || name == "sql" || name == "sqrt" || name == "starts_with" || name == "str" || name == "substr" || name == "sum" ||
+name == "symbolic" || name == "system" || name == "taint_source" || name == "take" || name == "take_while" || name == "tan" ||
+name == "target_run" || name == "time" || name == "time_now" || name == "times" || name == "to_hex" || name == "trim" ||
+name == "trunc" || name == "type" || name == "unique" || name == "upper" || name == "values" || name == "window" || name == "words" ||
+name == "write" || name == "write_file" || name == "zip";
+}
+
 // An effect row: a map of concrete capability ids the fn performs, plus an `open` bit for an
 // unresolvable tail (effects.rs EffectRow). Join is set-union + OR (a finite lattice: 2^6 caps ×
 // open), so the fixpoint converges — self- and mutual-recursion included.
@@ -1424,9 +1470,12 @@ fn eff_walk_call(cn, a, scope, cx, row) {
         row = eff_add_cap(row, bcap);
         return row;
     }
-    if is_builtin(cn) {
-        // Known effect-free builtin (print/len/push/…): closed, no-op. SH has no lambda args, so the
-        // higher_order_closure_args descent that would apply here (effects.rs:282-300) is unreachable.
+    if is_builtin(cn) || sh_is_known_builtin(cn) {
+        // A known effect-free builtin (print/len/… or crypto/proof/symbolic/poc/cap): closed, no-op.
+        // Mirrors effects.rs's is_builtin_name branch — without sh_is_known_builtin, a builtin the SH
+        // parser's own 24-name is_builtin omits would fall to the open tail below and over-restrict
+        // the derived confinement. SH has no lambda args, so the higher_order_closure_args descent
+        // (effects.rs:282-300) is unreachable.
         return row;
     }
     // Unknown bare name — nothing resolvable to charge, so the tail is open.

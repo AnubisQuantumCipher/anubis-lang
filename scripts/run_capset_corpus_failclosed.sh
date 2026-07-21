@@ -47,10 +47,17 @@ find examples tests/fixtures selfhost/src -name '*.anb' | sort \
 ok=$(grep -c '^OK' "$RAW" || true); cons=$(grep -c '^CONSERVATIVE' "$RAW" || true)
 skip=$(grep -c '^SKIP' "$RAW" || true); dis=$(grep -c '^DISAGREE' "$RAW" || true)
 grep '^DISAGREE' "$RAW" || true
+[ "${STRICT:-0}" = 1 ] && grep '^CONSERVATIVE' "$RAW" || true
 echo "CAPSET_CORPUS_FAILCLOSED: OK=$ok CONSERVATIVE=$cons SKIP=$skip DISAGREE=$dis"
 rm -f "$RAW"
 if [ "$dis" -gt 0 ]; then
   echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL ($dis over-grant(s) — self-hosted capset less restrictive than Rust)"; exit 1
 fi
-echo "CAPSET_CORPUS_FAILCLOSED_GATE: PASS (0 over-grants; self-hosted grant never less restrictive than Rust)"
+# STRICT=1 additionally requires EXACT parity (0 CONSERVATIVE). Since #106 mirrored is_builtin_name the
+# whole corpus is exact; a NEW conservative means a builtin Rust recognizes that sh_is_known_builtin
+# does not (drift) — the same class the curated gate's drift-check pins for the volatile sub-predicates.
+if [ "${STRICT:-0}" = 1 ] && [ "$cons" -gt 0 ]; then
+  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (STRICT: $cons CONSERVATIVE — a Rust builtin is unrecognized by sh_is_known_builtin)"; exit 1
+fi
+echo "CAPSET_CORPUS_FAILCLOSED_GATE: PASS (0 over-grants; self-hosted grant never less restrictive than Rust${cons:+; $cons conservative}${STRICT:+ / STRICT exact})"
 exit 0

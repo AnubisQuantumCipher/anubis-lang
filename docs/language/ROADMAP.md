@@ -46,10 +46,11 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > caps + declared fold + OR of open) is now Anubis-authored too (the `capset` subcommand,
 > `eff_program_capset`), so the input to the VZ hypervisor confinement grant is now derivable by the
 > self-hosted analysis. Pinned EXACT against the Rust `anubis vz confine` derivation over a curated
-> corpus (`scripts/run_capset_selfhost_gate.sh`), and FAIL-CLOSED over the whole SH-parseable corpus:
-> the self-hosted grant is never LESS restrictive than Rust's (0 over-grants) — it is merely more
-> conservative (`open`→unbounded→most-restrictive) on effect-free builtins the SH engine does not yet
-> recognize (proof/symbolic/cap/poc — mirror `is_builtin_name`, follow-up). Remaining slices:
+> corpus (`scripts/run_capset_selfhost_gate.sh`) AND — after mirroring `is_builtin_name` into the
+> self-hosted engine (`sh_is_known_builtin`, a completeness-verified 199-name registry, drift-checked
+> in the battery) — over the WHOLE SH-parseable corpus: 150 check-passing programs, **0 disagreements,
+> 0 over-grants, 0 conservative** (`scripts/run_capset_corpus_failclosed.sh STRICT=1`). Remaining
+> slices:
 > HO/effect completeness (grow parser) → lane gates → **type** → **taint** → **Z3/contract**
 > (capstone). **7**-default-flip — the encoding is now fully proven, so the SOLE remaining prerequisite to
 > drop z3 by DEFAULT is a checkable CDCL `Unsat` certificate (LRAT/DRAT emit + verified replay; the SAT

@@ -31,4 +31,8 @@
 #     capability set = union of transitive rows + declared fold + open). Seal PASS
 #     (stage2==stage3, 9/9), all gates green including the new run_capset_selfhost_gate.sh
 #     (0 disagreements; whole-corpus fail-closed 0 over-grants).
-bb32b067a195afa9d62b8ef9f24953960905e19ff7272191cfee37d49eb73e23
+#   bb32b067…3e23 -> d8c45103…5ee5  (2026-07-21, Phase-4 #106)
+#     Trigger: anubis_sh.anb gained `sh_is_known_builtin` (mirror of is_builtin_name) so the
+#     effect engine no longer spuriously opens on effect-free builtins. Seal PASS (9/9), all
+#     gates green; whole-corpus capset now EXACT (0 conservative, 0 over-grants).
+d8c4510382cfe91b7dce887683435a125cf25168876b239a0fd5f44ae08e5ee5

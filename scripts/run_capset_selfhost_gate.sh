@@ -31,6 +31,26 @@ CORPUS=tests/fixtures/capset_selfhost
 
 cargo build -q --release -p anubis
 
+# ── Builtin-recognition drift-check ──────────────────────────────────────────────────────────────
+# The self-hosted effect engine's `sh_is_known_builtin` MIRRORS backends/run.rs::is_builtin_name so an
+# effect-free builtin never spuriously opens the row (which would over-restrict the derived
+# confinement). The math/string/crypto surface (emit_builtin_call) is stable; the VOLATILE part — the
+# analysis/proof/poc/cap builtins — lives in the greppable `matches!` sub-predicates. Assert every
+# name in those (is_proof_input_builtin / is_poc_kit_builtin / is_non_run_builtin + the is_builtin_name
+# hardcoded list) is present in sh_is_known_builtin, so a NEW such builtin added to Rust is caught here.
+RUN=compiler/src/backends/run.rs
+extract_fn_names() {
+  awk -v fn="fn $1" 'index($0, fn){d=1} d{print} d&&/^}/{exit}' "$RUN" | grep -oE '"[a-z_][a-z0-9_]*"' | tr -d '"'
+}
+drift_missing=0
+for cand in $( { extract_fn_names is_proof_input_builtin; extract_fn_names is_poc_kit_builtin; extract_fn_names is_non_run_builtin; extract_fn_names is_builtin_name; } | sort -u ); do
+  grep -q "name == \"$cand\"" "$SH" || { echo "  DRIFT: run.rs builtin \`$cand\` is NOT in sh_is_known_builtin (anubis_sh.anb)"; drift_missing=$((drift_missing+1)); }
+done
+if [ "$drift_missing" -gt 0 ]; then
+  echo "CAPSET_SELFHOST_GATE: FAIL ($drift_missing builtin-registry drift — mirror the new name into sh_is_known_builtin)"; exit 1
+fi
+echo "builtin-registry drift-check: PASS (all volatile run.rs builtins mirrored in sh_is_known_builtin)"
+
 # Normalize a caps string (Rust human list "a, b" | Anubis "a,b," | "(none proven…)") -> sorted set.
 norm_caps() {
   { tr ',' '\n' | sed 's/[[:space:]]//g' \
