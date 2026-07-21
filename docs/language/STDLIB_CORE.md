@@ -4,9 +4,10 @@ This document covers only the **analysis / proof / PoC** builtin subset (taint, 
 declassify, proof-surface, PoC-kit). The **general-purpose** builtin surface is much larger —
 ~116 builtins (conversions, ~24 math, ~19 string, ~30 list, map, and higher-order functions) all
 REAL in `anubis run` — and is documented authoritatively in `LANGUAGE.md` ("Standard library"),
-which matches the codegen in `backends/run.rs` (`emit_builtin_call`) 1:1. There is no separate
-`stdlib/` source tree yet (Phase 5 of the roadmap adds an Anubis-source stdlib over these
-primitives).
+which matches the codegen in `backends/run.rs` (`emit_builtin_call`) 1:1. An Anubis-source standard
+library now ALSO exists over these primitives: 10 content-locked modules under `compiler/stdlib/std/`
+(`math`, `collections`, `iter`, `result`, `option`, `io`, `str`, `crypto`, `testing`, and `pwn`),
+imported via `import std.<module>` and exercised by `scripts/run_stdlib_gate.sh`.
 
 - print / println / eprint / eprintln : REAL (general-purpose I/O in `anubis run`)
 - sink : REAL (recognized in taint/safe enforcement)

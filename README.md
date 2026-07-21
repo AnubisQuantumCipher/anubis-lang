@@ -1,12 +1,46 @@
+<div align="center">
+
 # Anubis
 
-**Anubis** is being built as an evidence-native dual-use systems language for professional bug bounty hunters (Sicarii) and builders of sovereign, high-assurance systems. The core bet: **a green `anubis check` must never certify a contract the runtime `anubis run` violates** — soundness is the product, and every claim below is checkable, not just asserted.
+### The language where a claim is *evidence*, not an assertion.
 
-## The solver finds the bug you didn't know you had
+![Built with Rust](https://img.shields.io/badge/built_with-Rust-000000?logo=rust&logoColor=white)
+![Self-host](https://img.shields.io/badge/self--host-byte--identical_fixpoint-2ea44f)
+![Formal gate](https://img.shields.io/badge/Lean_4_proofs-155_theorems-8250df)
+![Native SMT solver](https://img.shields.io/badge/native_SMT_solver-0_external_deps-1f6feb)
+![Apple Silicon](https://img.shields.io/badge/target-Apple_Silicon-black?logo=apple)
+![Status](https://img.shields.io/badge/status-pre--1.0_·_evidence--native-orange)
 
-Every language has contracts. What Anubis does that a type system cannot: it hands you the **exact program state** that breaks your invariant — before you ship.
+*The one invariant everything else serves: a green `anubis check` never certifies a contract that `anubis run` violates.*
 
-A ring buffer's slots-in-use is `tail - head`. Correct in mathematics; a bug in fixed-width code — when the buffer has wrapped and `tail < head`, the count goes negative. So you say a count is never negative:
+</div>
+
+---
+
+## What Anubis actually is
+
+Software's most consequential claims — *"this is correct," "this is secure," "this exploit is real," "this ran in isolation," "this dependency is what it says"* — are almost always **asserted**. Rarely **proven**. Never **handed to you as an artifact you can re-check yourself.**
+
+**Anubis is a systems language that turns those claims into evidence.** Every statement it can make about a program comes out as something checkable and tamper-evident: a machine-checked proof, a concrete counterexample, a zero-knowledge receipt, a signed evidence bundle, a hash-chained action log, or a hardware-isolation manifest **derived from the proof itself.**
+
+It is deliberately **dual-use**, because the two people who most need un-fakeable truth stand on opposite sides of the same program:
+
+- the **builder** who must prove a system is *correct and confined*, and
+- the **researcher** who must prove a system is *broken* — with a working, accountable proof-of-concept.
+
+Both trade in the same currency — **truth that survives adversarial scrutiny** — and Anubis is the machine that mints it. Defense and offense are two faces of one idea: establish, and sign, exactly what is true about a program.
+
+And Anubis earns the right to make those proofs by **trusting nothing it cannot check itself** — down to its own SMT solver (it is dropping Z3), its own soundness (machine-checked in Lean 4), and its own compiler (self-hosted to a byte-identical fixpoint). It fails closed, everywhere, on purpose.
+
+> **Where it is:** a real, gated, pre-1.0 language with a working safe execution core, a fail-closed contract verifier, an offensive/evidence toolchain, and Apple-Silicon proving lanes. Every capability below is marked with an honest status and is traceable to a command, a gate, or a file. Nothing is marked done that isn't sealed.
+
+---
+
+## The counterexample it hands you
+
+A type system tells you a *shape* is wrong. Anubis tells you the *value* that is wrong — before you ship.
+
+A ring buffer's slots-in-use is `tail - head`. Correct in mathematics; a bug in fixed-width code — once the buffer wraps and `tail < head`, the count goes negative. So you state the invariant:
 
 ```rust
 fn ring_used(head: u32, tail: u32) -> u32
@@ -16,146 +50,193 @@ fn ring_used(head: u32, tail: u32) -> u32
 }
 ```
 
-`anubis check` doesn't shrug and say "unproven". It **disproves** the claim with a counterexample — the wraparound state your tests never hit:
+`anubis check` does not shrug and say "unproven." It **disproves** the claim with the wraparound state your tests never hit:
 
 ```
 $ anubis check examples/showcase/ring_buffer_underflow.anb
-ANUBIS_ASSERTION_UNPROVEN: ensures:(bvsge (bvsub anb_tail anb_head) 0)
+ANUBIS_ASSERTION_UNPROVEN: ensures:(bvsge (bvsub anb_tail anb_head) (_ bv0 64))
   counterexample:
     anb_head = 0x00000000c0000000     # 3_221_225_472
     anb_tail = 0x0000000000000000     # 0   →  tail - head is negative
 ```
 
-Fix it — subtract only where it can't underflow — and the **same solver proves the fix correct** (`ring_used_fixed` in that file: `ensures(result >= 0)` discharged on both branches). That counterexample is worth more than a thousand type annotations. Run it yourself: [`examples/showcase/ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb).
+Fix it — subtract only where it can't underflow — and the **same solver proves the fix correct**. That counterexample is the evidence: [`examples/showcase/ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb).
 
-> Honest boundary: Anubis's `u32` is a bounded 64-bit integer with **signed** arithmetic, so the failure it proves is "the count goes below zero", not "wraps to 4 billion" — the bug is the same, stated in the language's real semantics. Nothing here is dramatized past what the solver actually decides.
+> **Honest boundary.** Anubis's `u32` is a bounded 64-bit integer with *signed* arithmetic, so the failure it proves is "the count goes below zero," not "wraps to 4 billion" — the same bug, stated in the language's real semantics. An obligation the solver cannot decide within budget also **fails closed** (undecided ≠ proved).
+
+---
+
+## It proves its own math
+
+Most verifiers lean on **Z3** — a large, external, unverified C++ trusted base. Anubis is removing it from the loop.
+
+The [`solver/`](solver/) crate is a **from-scratch QF_BV decision procedure with zero external dependency** (`std` only, empty `[dependencies]`): an SMT-LIB2 parser, a Tseitin bit-blaster, and a CDCL SAT engine (watched literals, 1-UIP learning, VSIDS, Luby restarts). And every bit-blast the authoritative path relies on is **machine-checked in Lean 4 core** (no Mathlib) — the ripple-carry adder, all eight signed/unsigned comparators, equality, bitwise `& | ^ ~`, negation, both shifts, and the structural ops — the **entire operation surface a real integer contract emits, except division**, each proven equal to the runtime's `i64` semantics.
+
+```bash
+ANUBIS_NATIVE_AUTHORITATIVE=1 anubis check <int-contract>.anb   # decides the integer lane with Z3 removed from PATH
+bash scripts/run_native_authoritative_gate.sh                   # verdict-equivalent to Z3 across the corpus, 0 disagreements
+bash scripts/run_formal_gate.sh                                 # 155 machine-checked Lean theorems, no sorry/axiom
+```
+
+> **Honest boundary.** The flip is **opt-in**; by default Z3 stays the authority and **cross-checks every native verdict, failing closed on any disagreement**. What is proven today is the *encoding*. Dropping Z3 entirely awaits a checkable UNSAT certificate from the CDCL search — a residual that is named, not hidden.
+
+---
+
+## Everything Anubis can do
+
+Status: ✅ **real** (implemented + gated) · 🟡 **partial** (real slices, honest boundary, fails closed on the rest) · ⬜ **planned** · 🔵 **needs human**
+
+### 🛡️ Verify — prove your contracts, or get the counterexample
+
+| | Status | |
+|---|---|---|
+| **Contract checking** | ✅ | `requires` / `ensures` / `assert` discharged by SMT, with real solver counterexamples; `--suggest-contracts` infers clauses for you |
+| **Fail-closed build** | ✅ | `anubis build` runs the *same* verification and refuses on any unproven contract (`--no-verify` to opt out) |
+| **Contract lanes** | 🟡 | integer (exact i64) ✅ · float **comparison** · string **equality/length** · bounded arrays · loop invariants · struct fields — **everything outside the modeled fragment fails closed** |
+| **Native SMT solver** | ✅ | the zero-dependency, Lean-verified QF_BV solver above; Z3-droppable for the integer lane (opt-in) |
+| **Mechanized soundness** | ✅ | 155 Lean 4 theorems: encoding soundness, the bit-blaster, Safe-mode non-interference, effect soundness — `run_formal_gate.sh` |
+
+### 🔒 Secure by construction — types that stop data from leaking
+
+| | Status | |
+|---|---|---|
+| **Information flow** | ✅ | `tainted<T>` (integrity) + `secret<T>` (confidentiality) tracked through the program; a secret reaching a public sink is a compile error unless routed through `declassify(value, policy, reason)` |
+| **The lethal trifecta** | ✅ | a function that *reads private data*, *takes untrusted input*, **and** *can exfiltrate* is rejected — `ANUBIS_LETHAL_TRIFECTA`, the AI-agent exfiltration bug as a type error |
+| **Effects & capabilities** | ✅ | transitive effect inference (`fs.read` `fs.write` `net.send` `shell` `time.now` `rand.gen`); linear **use-once** capability tokens (`cap_acquire`/`cap_use`) — reuse is `ANUBIS_CAPABILITY_REUSE` |
+| **Implicit-flow warning** | 🟡 | branch-on-secret is *warned*, not rejected (explicit-flow tracking is sound; implicit is advisory) — a documented boundary, not a silent gap |
+
+### 🧾 Prove (zero-knowledge) — attest a computation without revealing it
+
+| | Status | |
+|---|---|---|
+| **Program-bound RISC Zero proving** | ✅ | `anubis prove --backend risc0` lowers `main()` to a real zkVM guest; `proof_assert` is an in-circuit constraint (a false one yields *no valid receipt*) |
+| **Parameterized proofs + named journals** | ✅ | `--input-json`/`--input-file`; `proof_commit_u32`/`_bool` name public outputs; ImageID binds the *program*, the journal binds the *inputs* |
+| **Private witnesses** | ✅ | inputs read via `proof_input_*` stay off the journal — prove `lo <= x <= hi` without revealing `x` |
+| **Standalone receipt verification** | ✅ | `anubis verify-receipt --receipt … --image-id …` cold-verifies against ImageID |
+| **Metal-hybrid rv32im lane** | 🟡 | vendored `risc0-circuit-rv32im` + CPU fallback; real on Tier-2 Apple Silicon, `ANUBIS_REQUIRE_METAL=1` fails closed elsewhere (no speed claim is made) |
+
+### 🧱 Confine — hardware isolation derived from the proof
+
+| | Status | |
+|---|---|---|
+| **Effect-derived confinement** | ✅ | `anubis vz confine <program>` derives an Apple Virtualization isolation manifest **from the program's proven effect set** — a second boundary consistent-*by-construction* with `anubis check`, sealed into evidence bundles and **re-derived on verify** (a forged grant fails closed) |
+| **VM lifecycle (tart lane)** | ✅ | `anubis vz` create / boot / exec / snapshot / stop / delete — the full Virtualization.framework lifecycle behind one CLI, on Apple Silicon |
+| **Native VZ backend** | 🟡 | a direct `objc2-virtualization` binding (`vz native-preflight`): a proven-net-free program gets a **true zero-NIC air-gap** (0 network devices, hypervisor-enforced); per-hostname egress is substrate-staged. Locally ad-hoc-signable (`scripts/build_signed_anubis.sh`) |
+
+### ⚔️ Research — an accountable offensive toolchain (authorized use)
+
+Anubis carries a full, **engagement-scoped** offensive platform for authorized security work — because a proof-of-concept is *also* evidence, and every offensive action is logged as a **tamper-evident, hash-chained receipt** you can verify. It runs, by design, inside disposable, network-isolated VZ guests.
+
+| | Status | |
+|---|---|---|
+| **Bounty-grade PoC kit** | ✅ | cyclic patterns (`pattern-create`/`pattern-offset`), `p64` packing, `gadget-search`, a `target_run` harness, and **mutation fuzzing of local binaries** (`anubis fuzz`, real process crashes → crash evidence) |
+| **Engagement platform (AOP)** | ✅ | scoped workspaces (`engage-init`, authorization charter), an HTTP/JSON C2 listener, beacon `agent-generate`, task queue, and a **fail-closed action-receipt hash chain** (`receipt-verify`) — every action is accountable |
+| **Isolated execution** | ✅ | `vz-exploit` / `vz-fuzz` / `vz-c2-cycle` / `vz-stress` run the whole battery inside a crash- and egress-isolated guest — no host risk |
+| **Reporting** | ✅ | `anubis bounty-report` turns an evidence bundle into a structured responsible-disclosure report |
+| **High-risk primitives** | 🟡 | process injection and Windows lateral movement are **PLAN_ONLY** (emit a plan, never execute) — a deliberate safety boundary |
+
+### 📦 Evidence, packages & crypto — sign the truth, ship it, re-check it
+
+| | Status | |
+|---|---|---|
+| **Proof-Carrying Artifacts** | ✅ | `anubis build --evidence` → tamper-evident bundle: source Merkle root, HIR/MIR, taint traces, solver output, SARIF, hashes, Markdown report. `verify` re-derives the claim and fails closed on tamper; `keygen`/`sign` add Ed25519 signatures |
+| **Proof-carrying packages** | ✅ | `anubis package` — `Anubis.toml`/`Anubis.lock` with content-`sha256` pins; a dependency's effect/taint/**contract** summaries are re-derived and enforced at the consumer's call sites; a signer `trust` store |
+| **Crypto surface** | ✅ | boring primitives over audited RustCrypto: SHA-256, HMAC (constant-time verify), AEAD, PBKDF2/Argon2, Ed25519 — via `import std.crypto`. Post-quantum (ML-KEM/ML-DSA) is ⬜ a documented future path, never hand-rolled |
+| **Standard library** | ✅ | 10 content-locked Anubis-source modules (`compiler/stdlib/std/`): `math` `collections` `iter` `result` `option` `io` `str` `crypto` `testing`, and `pwn` for the offensive lane |
+
+### 🧰 Run, tool & self-host — a real language, day to day
+
+| | Status | |
+|---|---|---|
+| **Executable core** | ✅ | Turing-complete: loops, recursion, mutation, enums + `match`, `for x in xs` / `for i in a..b`, structs, maps, closures, `Option`/`Result`/`?`, ~150 builtins — native Apple-Silicon executables |
+| **Type system** | ✅ / 🟡 | bidirectional inference, traits + coherence; generics are runtime-erased + dynamically checked (not yet statically monomorphized); multi-file `import` resolution is 🟡 in progress |
+| **Developer experience** | ✅ | `fmt` (self-verifying), `test` (`// EXPECT: PASS\|FAIL`), `doc` (Contracts section), `repl`, `lsp` (contract hovers), tree-sitter grammar + VS Code extension — `run_dx_gate.sh` (15/15) |
+| **Self-hosting spine** | ✅ | `selfhost/` compiles itself: a real stage0→stage3 bootstrap sealed to a **byte-identical fixpoint** (`dc680001`); reproducibility + diverse-double-compile gates are 🟡 landed |
+
+---
 
 ## Where Anubis is — honest phase status
 
-Anubis follows an 11-phase maturity arc; the canonical source of truth is
-[`docs/language/ROADMAP.md`](docs/language/ROADMAP.md). Status uses a graded vocabulary —
-**REAL** (implemented **and** gated), **PARTIAL** (real slices landed, honest boundaries, fails
-closed on the rest), **PLANNED**. Nothing here is marked done that isn't sealed.
+An 11-phase maturity arc; the living source of truth is [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md).
 
 | Phase | State | What that means today |
 |---|---|---|
-| 0 — Trust spine | ✅ REAL | reproducible build + self-host bootstrap + byte-identical fixpoint seal (`dc680001`) |
-| 1 — Real type system | ✅ REAL | bidirectional inference, captured generics, traits + coherence — all enforcing |
-| 2 — Capability & effect | ✅ REAL | transitive effect inference, linear capability tokens, and the **lethal trifecta as a compile error** |
-| 3 — Broaden verified surface | 🟡 PARTIAL (converging) | Z3 contract lanes for int / float / string / bounded arrays / loop invariants / struct fields; **every case outside the modeled fragment fails closed** |
-| 4 — Port checker into Anubis | ⬜ PLANNED | deliberately deferred until 1–3 settle (each port would reseal the fixpoint) |
-| 5 — Mechanized soundness | 🟡 PARTIAL (live) | a **Lean 4 formal gate** — 72 machine-checked theorems: SMT-encoding soundness (the checker's bit-vector terms = the runtime's `i64` semantics), plus Safe-mode **non-interference** and **effect soundness** over a core calculus. Verify it yourself: `bash scripts/run_formal_gate.sh` |
-| 6 — Proof-carrying packages | 🟡 PARTIAL | signed evidence bundles — source Merkle root, effect/taint summaries, receipts (`compiler/src/package/`) |
-| 7 — Minimize TCB | ⬜ PLANNED | a second **independently-authored** parser + backend — closing author-diversity needs a second human |
-| 8 — Developer experience | 🟡 PARTIAL | LSP, formatter, REPL, doc-gen, tree-sitter grammar, tutorial, spec |
-| 9 — External reproduction | 🟡 PARTIAL | reproducibility + differential-compiler gates exist; independent-stranger reproduction is the pending step |
-| 10 — Production 1.0 | ⬜ PLANNED | ship in ≥2 domains + a frozen, semver'd 1.0 spec |
+| **0 — Trust spine** | ✅ Done | reproducible build + real self-host bootstrap + byte-identical fixpoint seal (`dc680001`) |
+| **1 — Type system** | ✅ Done | bidirectional inference, generics, traits + coherence — enforcing |
+| **2 — Capability & effect** | ✅ Done | transitive effects, linear capability tokens, the **lethal trifecta as a compile error** |
+| **3 — Verified surface** | 🟢 At DoD | SMT contract lanes for int / float / string / arrays / loops / structs; everything outside fails closed |
+| **4 — Port checker into Anubis** | 🟡 Scoped | parse + codegen self-host; porting the type/effect/taint *engines* is the largest remaining slice |
+| **5 — Mechanized soundness** | 🟢 At DoD | 155 Lean 4 theorems: encoding soundness, the native bit-blaster, non-interference, effect soundness |
+| **6 — Proof-carrying packages** | 🟢 At DoD | signed bundles, re-derived-on-verify summaries, contract enforcement across dependencies |
+| **7 — Minimize TCB** | 🟢 Advanced | the native, machine-checked SMT solver (Z3 droppable for integers, opt-in); residual: a mechanized UNSAT certificate + a second independently-authored frontend |
+| **8 — Developer experience** | 🟢 At DoD | LSP, formatter, REPL, doc-gen, tree-sitter, tutorial, spec — `run_dx_gate.sh` (15/15) |
+| **9 — External reproduction** | 🔵 Needs human | pinned-toolchain + hermetic-Docker + diverse-double-compile gates exist; independent-stranger reproduction is pending |
+| **10 — Production 1.0** | 🔵 Needs human | real systems shipped in ≥2 domains; a frozen, semver'd 1.0 spec is an operator commitment |
 
-**Watch it happen.** This repo is a live, minute-by-minute public record: every commit lands on the
-`a-plus-maturity/20260705-1649` branch within seconds of being made. The discipline is auditable, not
-advertised — `bash scripts/run_formal_gate.sh` machine-checks the Lean proofs, and every solver slice
-is sealed against a byte-identical self-host fixpoint before it is allowed to commit.
+**The discipline is auditable, not advertised.** Every commit lands on the `a-plus-maturity/20260705-1649` branch within seconds; the formal gate machine-checks the Lean proofs; every solver slice is sealed against the byte-identical self-host fixpoint before it may commit; and soundness is stress-tested by **whole-surface audits that build and run candidate programs** hunting for any case where a green check disagrees with the runtime.
 
-## v0.2 Backend Status
-- Dual safe (default) / research/exploit modes with intent annotations
-- `tainted<T>` + automatic propagation + `symbolic`/`assume`/`assert` with SMT path constraints
-- `hybrid { gpu(metal) {} cpu {} prove(...) {} }` + `spec { forall }` + `unified Buffer<T>`
-- Full `--full-hybrid` lowering emits the reference RISC0 workspace shape with vendored patched `risc0-circuit-rv32im`, generated guest ELF/image ID, stock `receipt.verify(ANUBIS_ID)`, Metal lane reporting, CPU fallback, and `ANUBIS_REQUIRE_METAL=1` fail-closed mode
-- `import` and `module` items with span-aware parsing and recoverable diagnostics
-- Typed HIR/MIR records with symbol tables, mode/effect boundaries, raw-pointer checks, taint traces, and declassify-aware sink reporting
-- Z3-backed assertion obligations with PASS/FAIL verdicts and counterexample models
-- `anubis build --bounty` / `--evidence` : timestamped bundles with environment capture, source-tree manifest, HIR/MIR, taint traces, solver output, SARIF, Markdown report, hashes, logs, and artifacts
-- Real native Apple Silicon executables emitted
-- `anubis capabilities --apple-native --json` exposes the Apple-native capability matrix, including RISC0/Metal, UMPG runtime-plan status, and advisory-only Neural Engine boundaries
-- `anubis runtime-probe --json` emits host/toolchain/RISC0/Metal capability evidence without claiming proof execution
-- `anubis runtime-plan --backend risc0 --lane metal-hybrid --apple-native` emits a source-derived UMPG-style operation DAG for proof/computation planning (Metal reference resolved via `--metal-reference` / `ANUBIS_RISC0_METAL_REFERENCE` / `Anubis.toml`)
-- `anubis run examples/hello_normal.anb` executes ordinary safe Anubis code through the current native safe subset
-- **Bounty-grade PoC kit** (authorized local lab): packing (`p64`/`cyclic`), `target_run` process harness, mutation fuzz against local binaries, crash evidence — see `docs/language/POC_KIT.md`
-- **Offensive Platform (AOP)**: engagement-scoped C2, agents, RBAC, hash-chained **action receipts** — see `docs/language/OFFENSIVE_PLATFORM.md`
-- **Proof-native language**: program-bound RISC0 guests, parameterized inputs, named journals, `proof_assert` / `proof_commit_*` — private witnesses stay off the journal
-- **Enums + `match`**: unit/tuple variants, pattern bindings, run + prove (`bash scripts/run_enum_match_gate.sh`)
-- **`for x in list`** and `for i in a..b` — collection + range iteration (`bash scripts/run_for_in_gate.sh`)
-- **Turing-complete executable core** (loops, mutation, recursion) with fixture gate
-- Excellent direct library entrypoints for agents/tests
-- Self-audit + reproducibility first-class (`bash scripts/run_power_gate.sh`)
+---
 
-See `docs/spec.md`, `docs/APPLE_NATIVE.md`, `docs/language/POC_KIT.md`, `docs/adr/`, `examples/`, and run `cargo test -p anubis-compiler`.
-
-## Learn Anubis (developer experience — Phase 8)
-
-Verification-first adoption path:
-
-| Tool | Purpose |
-|------|---------|
-| `anubis doc` | API docs with a **Contracts** section from source `requires`/`ensures` |
-| `anubis repl` | Check-first REPL (fast AST default; `--exact` = native `run` path) |
-| `anubis lsp` | Diagnostics from typecheck + obligations; contract hovers |
-| Editors | `editors/vscode-anubis` (TextMate + LSP), `editors/tree-sitter-anubis` |
-| Tutorial | [`docs/language/TUTORIAL.md`](docs/language/TUTORIAL.md) |
-| Reference | [`LANGUAGE.md`](LANGUAGE.md) · [`docs/language/SPEC.md`](docs/language/SPEC.md) |
+## Quick start
 
 ```bash
-cargo build --release -p anubis
-./target/release/anubis doc tests/fixtures/dx/contracts_doc.anb   # look for ### Contracts
-./target/release/anubis repl --eval '2 + 3'
-bash scripts/run_dx_gate.sh out/dx_gate   # DX_GATE: PASS
+git clone <this-repo> && cd anubis-lang
+cargo build --release -p anubis        # binary at ./target/release/anubis
+
+# ── Verify ────────────────────────────────────────────────────────────
+anubis check examples/showcase/ring_buffer_underflow.anb   # prints a real counterexample
+anubis check <yours>.anb --suggest-contracts               # infer requires/ensures
+anubis run   examples/hello_normal.anb                     # execute the safe core
+
+# ── The gates (the discipline, runnable) ──────────────────────────────
+bash scripts/run_formal_gate.sh                            # Lean: 155 theorems, no sorry/axiom
+bash scripts/run_native_authoritative_gate.sh              # native solver ≡ Z3, Z3 droppable
+bash scripts/run_selfhost_gate.sh out/selfhost             # stage0→3 bootstrap + fixpoint
+bash scripts/run_dx_gate.sh out/dx                         # LSP / fmt / repl / tree-sitter (15/15)
+
+# ── Evidence, packages, proving ───────────────────────────────────────
+anubis build examples/research_poc.anubis --evidence --out out/poc
+anubis verify out/poc && anubis report out/poc             # re-derive + read the bundle
+anubis prove examples/proof/proof_factorial_input.anb \
+      --backend risc0 --input-json '{"n":5}' --evidence     # zk receipt (journal = 120)
+
+# ── Confine (Apple Silicon) ───────────────────────────────────────────
+anubis vz confine examples/showcase/vz_confine_demo.anb    # isolation manifest from the proof
 ```
 
-### Self-hosting bootstrap (Anubis-SH — trust spine; porting the *checker* into it is Phase 4)
+---
 
-The compiler subset that compiles itself lives in `selfhost/`. The gate runs a **real bootstrap** (stage0 host → stage1 → stage2 → stage3, `cmp` stage2/stage3), not host×2:
+## Learn Anubis
 
-```bash
-bash scripts/run_selfhost_gate.sh out/selfhost_gate   # SELFHOST_GATE: PASS (N/N)
-./target/release/anubis run selfhost/src/anubis_sh.anb --allow-research -- parse selfhost/corpus/ok_hello.anb
-```
+| | |
+|---|---|
+| **Tutorial** | [`docs/language/TUTORIAL.md`](docs/language/TUTORIAL.md) |
+| **Language reference** | [`LANGUAGE.md`](LANGUAGE.md) · [`docs/language/SPEC.md`](docs/language/SPEC.md) |
+| **Roadmap (living status)** | [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md) |
+| **Information-flow model** | [`docs/language/INFORMATION_FLOW.md`](docs/language/INFORMATION_FLOW.md) |
+| **Solver pipeline** | [`docs/SOLVER_PIPELINE_MAP.md`](docs/SOLVER_PIPELINE_MAP.md) · [`solver/README.md`](solver/README.md) |
+| **Crypto / stdlib** | [`docs/language/CRYPTO.md`](docs/language/CRYPTO.md) · [`docs/language/STDLIB_CORE.md`](docs/language/STDLIB_CORE.md) |
+| **Architecture map** | [`ARCHITECTURE_MAP.md`](ARCHITECTURE_MAP.md) |
+| **Editors** | `editors/vscode-anubis` (LSP + syntax) · `editors/tree-sitter-anubis` |
 
-See `docs/language/SELFHOST.md` and `selfhost/SUBSET.md`.
+---
 
-## Quick Start
-```bash
-cd anubis-lang
-cargo build
-cargo run -- --help
+## Honest boundaries
 
-# `check` is the primary verb: it runs the Z3 contract solver over every
-# requires/ensures/assert and prints a real counterexample for any it cannot prove.
-cargo run -- check examples/hello_normal.anb
-# `build` is fail-closed by default — it runs the SAME verification before emitting
-# an artifact and refuses on an unproven contract (use --no-verify to skip).
-cargo run -- build examples/research_poc.anubis --bounty
-cargo run -- verify <the-evidence-dir>
-cargo run -- report <the-evidence-dir>
-cargo run -- doctor --json
-cargo run -- capabilities --apple-native --json
-cargo run -- run examples/hello_normal.anb
+Anubis states exactly what it proves and what it does not:
 
-# Bounty-grade local PoC kit
-bash poc_kit/build_vuln.sh
-./target/release/anubis run examples/security/poc_local_overflow.anb --allow-research
-./target/release/anubis fuzz --target poc_kit/bin/vuln_local --runs 200 --out out/fuzz_vuln
-bash scripts/run_poc_kit_gate.sh --out out/poc_kit
+- **`check` certifies contracts, not the absence of every runtime trap.** An `assert` the solver cannot model in a contract-free function is runtime-enforced (fail-open) — a documented stance, being actively narrowed.
+- **The native-solver flip is opt-in** until the CDCL engine emits a checkable UNSAT certificate; by default Z3 is the authority and cross-checks every verdict.
+- **Generics are runtime-erased**, multi-file `import` resolution is in progress, and implicit-flow is warned rather than rejected — each an explicit, fails-closed boundary, not a hidden gap.
+- **The offensive platform is for authorized engagements**, isolated in VZ guests, with the riskiest primitives PLAN_ONLY and every action receipted.
+- **Phase 4 (self-hosting the semantic engines) and Phases 9–10 (independent reproduction, 1.0 freeze) are open.** None is marked done.
 
-# Offensive platform (engagement-scoped lab C2)
-./target/release/anubis engage-init --dir out/engagements/lab --authorization local-lab-charter
-./target/release/anubis listen --engage out/engagements/lab   # terminal A
-./target/release/anubis agent-generate --engage out/engagements/lab --name agent0
-./target/release/anubis task-queue --engage out/engagements/lab --module whoami
-bash scripts/run_offensive_platform_gate.sh --out out/offensive_gate
+---
 
-# Parameterized RISC0 proof: prove f(input)=output (journal depends on input; ImageID on program)
-# Parameterized RISC0 proof (requires ANUBIS_RISC0_METAL_REFERENCE or --metal-reference)
-./target/release/anubis prove examples/proof/proof_factorial_input.anb \
-  --backend risc0 --lane cpu \
-  --input-json '{"n":5}' --evidence --out out/proof_factorial_5
-# journal = 120; use '{"n":6}' → journal 720 (same ImageID)
-bash scripts/run_parameterized_proof_gate.sh --out out/parameterized_proof
-```
+<div align="center">
 
-Current source gates: `cargo fmt -- --check`, `cargo clippy -- -D warnings`, `cargo test`, and fresh CLI build/verify flows are the acceptance checks. PoC kit: `bash scripts/run_poc_kit_gate.sh`.
+**The math is the authority. The proofs are mechanized. The system fails closed.**
 
-This is still an early language, but it now has both an ordinary safe execution path and a proof/evidence planning path. Remaining work is runtime-exec enforcement, language depth, richer semantics, broader taint modeling, package tooling, stress matrices, and release hygiene.
+*That is what Anubis is — and what it is becoming.*
 
-v0.1 MVP hardened: real AST lowering for POC, typed HIR/MIR records, semantic taint traces, real Z3 counterexamples, reference-grade evidence bundle files, IR-shaped safe native emission (no host crash), AST-driven mode, and tests that assert structure on shipped parser output.
-
-Built with maximum rigor for the operator.
+</div>
