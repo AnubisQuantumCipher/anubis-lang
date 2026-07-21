@@ -1,0 +1,21 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// Regression (cast re-hunt wf_39911ef5): the SIGNED sibling of the truncating-cast false-accept. An
+// in-body `assert` containing a signed narrow cast (`x as i8`/`i16`/`i32`) inside a CONTRACTED function
+// was silently DROPPED (fail-open) — is_int_modelable declined it, so a green `check` certified a
+// contracted fn whose assert `run` violates (300 as i8 = 44, so assert(44 == 99) traps). Fixed by
+// modeling `x as iN` as the EXACT low-w-bits SIGN-extension `sign_extend(64-w, extract(w-1,0,x))`
+// (matches anubis_cast_int signed=true; z3 decides it, the native fragment safely defers on sign_extend).
+// A TRUE signed cast contract (200 as i8 == -56) still proves.
+fn f(x: i64) -> i64
+    requires(x == 300)
+    ensures(result >= 0)
+{
+    let y = x as i8;
+    assert(y == 99);
+    return 0;
+}
+
+fn main() {
+    let _ = f(300);
+}

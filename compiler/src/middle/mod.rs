@@ -7466,7 +7466,15 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // A cast is modelable only when it cannot change the i64 value. `x as u8`/`u16`/`u32` truncate
         // at runtime, so modeling them as the identity is unsound (it "proved" `(x as u8) == x` while
         // `ident8(256)` runs to 0). Only 64-bit-target casts are value-preserving.
-        Expr::Cast { expr, ty } => cast_preserves_i64(ty) && is_int_modelable(expr, int_vars),
+        // A value-preserving 64-bit cast keeps the inner value (identity); an UNSIGNED truncating cast
+        // (u8/u16/u32) is modeled as the low-w-bits zero-extension, a SIGNED narrow cast (i8/i16/i32) as
+        // the low-w-bits sign-extension — both EXACT to the runtime, so all are modelable.
+        Expr::Cast { expr, ty } => {
+            (cast_preserves_i64(ty)
+                || ty::unsigned_mask_width(ty).is_some()
+                || ty::signed_narrow_width(ty).is_some())
+                && is_int_modelable(expr, int_vars)
+        }
         // `declassify(x)` forwards x's value, so it is int-modelable iff x is. But `assume(E)`/`assert(E)`
         // in VALUE position evaluate to Bool(true) at runtime (NOT E), so they are never integer-valued —
         // modeling them as E let `return assume(x)` certify `result == x`. They fall through to `false`.
@@ -8417,6 +8425,28 @@ fn fact_is_string(smt: &str, string_vars: &BTreeSet<String>) -> bool {
     string_vars.iter().any(|v| vs.contains(&smt_var(v)))
 }
 
+/// Model an unsigned truncating cast `x as uN` EXACTLY as the runtime computes it: keep the low `w`
+/// bits and zero the rest — `zero_extend(64-w, extract(w-1, 0, x))`. Verified against `run`:
+/// `300 as u8 == 44`, `(-1) as u8 == 255`, `70000 as u16 == 4464`, `(-1) as u32 == 4294967295`. Built
+/// from ops whose bit-blasts are machine-checked (`bitsToNat_extract` + `bitsToNat_append_replicate_false`),
+/// so a cast-bearing obligation lands in the native-authoritative PROVEN FRAGMENT too. Replaces the old
+/// UNSOUND-or-declined handling: modeling the cast as the identity recorded a false `y == x`, so casts
+/// were declined — which SILENTLY DROPPED an `assert` over a truncated value (a green check on a
+/// contracted fn whose assert `run` violates, e.g. `let y = x as u8; assert(y == 99)` with x = 300).
+fn uint_truncate_smt(inner: &str, w: u32) -> String {
+    format!("((_ zero_extend {}) ((_ extract {} 0) {}))", 64 - w, w - 1, inner)
+}
+
+/// Model a SIGNED narrow cast `x as iN` EXACTLY as the runtime: keep the low `w` bits and
+/// SIGN-extend (the top bit becomes the sign) — `sign_extend(64-w, extract(w-1, 0, x))`. Verified
+/// against `run`: `300 as i8 == 44`, `200 as i8 == -56`, `(-1) as i8 == -1`, `70000 as i16 == 4464`.
+/// `sign_extend` is not in the native PROVEN fragment, so a signed-cast obligation defers to z3 in the
+/// native-authoritative lane (safe: fail-closed) while z3 decides it in the default lane — either way
+/// the assert is now CHECKED (was silently dropped as unmodelable).
+fn sint_truncate_smt(inner: &str, w: u32) -> String {
+    format!("((_ sign_extend {}) ((_ extract {} 0) {}))", 64 - w, w - 1, inner)
+}
+
 fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String> {
     match e {
         Expr::Var(v) if widths.contains_key(v) => Some(smt_var(v)),
@@ -8486,14 +8516,18 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
             _ => None,
         },
         Expr::Cast { expr, ty } => {
-            // A TRUNCATING cast (`x as u8`) has NO sound integer value fact — modeling it as the
-            // identity recorded a false `y == x` that a loop invariant could later force-model and
-            // "prove" against the pre-truncation value. Only a value-preserving (64-bit) cast keeps
-            // the inner's value. (Mirrors `is_int_modelable`'s cast rule.)
-            if !cast_preserves_i64(ty) {
-                return None;
+            // A value-preserving (64-bit) cast keeps the inner's value. An UNSIGNED truncating cast
+            // (`x as u8`/`u16`/`u32`) is modeled EXACTLY as the low-w-bits truncation, matching the
+            // runtime — no longer declined, and no longer the UNSOUND identity `y == x`. A signed narrow
+            // cast (i8/i16/i32) sign-extends and is not modeled → declined (fail-closed), same as before.
+            let inner = expr_to_smt_value(expr, widths)?;
+            if cast_preserves_i64(ty) {
+                Some(inner)
+            } else if let Some(w) = ty::unsigned_mask_width(ty) {
+                Some(uint_truncate_smt(&inner, w))
+            } else {
+                ty::signed_narrow_width(ty).map(|w| sint_truncate_smt(&inner, w))
             }
-            expr_to_smt_value(expr, widths)
         }
         Expr::Declassify { inner, .. } => expr_to_smt_value(inner, widths),
         // `assume(E)`/`assert(E)` as a value are Bool(true) at runtime, not E (see is_int_modelable).
@@ -8587,7 +8621,19 @@ fn expr_to_smt_with_width(
                 _ => inner,
             }
         }
-        Expr::Cast { expr, ty } => expr_to_smt_with_width(expr, widths, Some(bitwidth_of(ty))),
+        Expr::Cast { expr, ty } => {
+            // Unsigned truncating casts (u8/u16/u32) model as the exact low-w-bits truncation; every
+            // other cast reaching here is value-preserving (is_int_modelable declines signed narrow
+            // casts, so they never arrive) and keeps the inner value.
+            let inner = expr_to_smt_with_width(expr, widths, Some(bitwidth_of(ty)));
+            if let Some(w) = ty::unsigned_mask_width(ty) {
+                uint_truncate_smt(&inner, w)
+            } else if let Some(w) = ty::signed_narrow_width(ty) {
+                sint_truncate_smt(&inner, w)
+            } else {
+                inner
+            }
+        }
         Expr::Declassify { inner, .. } => expr_to_smt_with_width(inner, widths, expected_width),
         // `assume(E)`/`assert(E)` in value position evaluate to Bool(true) at runtime, not E.
         Expr::Assume(_) | Expr::Assert(_) => "true".to_string(),

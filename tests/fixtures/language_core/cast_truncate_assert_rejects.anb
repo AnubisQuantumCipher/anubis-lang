@@ -1,0 +1,22 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// Regression (audit wf_c70fcc39): an in-body `assert` containing a TRUNCATING cast (`x as u8`) inside a
+// CONTRACTED function. is_int_modelable formerly DECLINED the truncating cast (modeling it as identity
+// was unsound), so the assert matched no solver lane and was SILENTLY DROPPED (fail-open) while the
+// independent `ensures(result >= 0)` proved — a green `check` on a contracted fn whose assert `run`
+// violates (300 as u8 = 44, so assert(44 == 99) traps). Fixed by modeling `x as uN` as the EXACT
+// low-w-bits truncation `zero_extend(64-w, extract(w-1,0,x))` (matches the runtime, built from proven
+// ops), so the assert is now checked and correctly REJECTED. A TRUE cast contract (`x==300 => x as u8 ==
+// 44`) still proves.
+fn f(x: i64) -> i64
+    requires(x == 300)
+    ensures(result >= 0)
+{
+    let y = x as u8;
+    assert(y == 99);
+    return 0;
+}
+
+fn main() {
+    let _ = f(300);
+}

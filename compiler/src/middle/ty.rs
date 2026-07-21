@@ -220,6 +220,24 @@ pub(crate) fn unsigned_mask_width(ty: &str) -> Option<u32> {
     }
 }
 
+/// Width of a SIGNED narrow integer type (`i8`/`i16`/`i32`), else `None`. A `x as iN` cast keeps the
+/// low `N` bits and REINTERPRETS the top bit as the sign (two's complement) — so it is modeled as a
+/// sign-extension of the low `N` bits, matching `anubis_cast_int(.., signed=true)`. Distinct from
+/// `unsigned_mask_width` (which zero-extends).
+pub(crate) fn signed_narrow_width(ty: &str) -> Option<u32> {
+    let inner = ty.trim();
+    let inner = inner
+        .strip_prefix("tainted<")
+        .and_then(|r| r.strip_suffix('>'))
+        .unwrap_or(inner);
+    match inner.trim().to_ascii_lowercase().as_str() {
+        "i8" => Some(8),
+        "i16" => Some(16),
+        "i32" => Some(32),
+        _ => None,
+    }
+}
+
 /// True when `x as ty` cannot change the underlying i64 value, so the cast may be modeled as the
 /// identity in QF_BV.
 pub(crate) fn cast_preserves_i64(ty: &str) -> bool {
