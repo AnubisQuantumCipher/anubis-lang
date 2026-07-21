@@ -1173,7 +1173,7 @@ fn check_exprs(es, env, fns, diags) {
 }
 
 fn check_var(nm, env, fns, diags) {
-    if get(env, nm, false) == false && is_builtin(nm) == false && get(fns, nm, -1) == -1 {
+    if get(env, nm, false) == false && is_builtin(nm) == false && has_key(fns, nm) == false {
         push(diags, "ANUBIS_SH_UNKNOWN_IDENT: " + nm);
     }
     return diags;
@@ -1182,13 +1182,29 @@ fn check_var(nm, env, fns, diags) {
 fn check_call(cn, a, env, fns, diags) {
     diags = check_exprs(a, env, fns, diags);
     if is_builtin(cn) { return diags; }
-    if get(fns, cn, -1) == -1 {
+    if has_key(fns, cn) == false {
         push(diags, "ANUBIS_SH_UNKNOWN_IDENT: " + cn);
         return diags;
     }
-    let arity = get(fns, cn, -1);
+    let rec = fns[cn];
+    let arity = rec["arity"];
     if len(a) != arity {
         push(diags, "ANUBIS_SH_ARITY: " + cn + " expected " + ("" + arity) + " got " + ("" + len(a)));
+    } else {
+        // slice-2: argument-position type check (mirrors mod.rs:5407-5418), only when arity matches.
+        // An arg whose inferred type is not assignable to the callee's declared param type is a mismatch.
+        // sh_infer_type is a strict under-approximation (Call/Index/… => "" => skipped) so SH ⊆ Rust.
+        let ptys = rec["ptys"];
+        let i = 0;
+        while i < len(a) {
+            let got = sh_infer_type(a[i], env);
+            if got != "" {
+                if ty_assignable(ptys[i], got) == false {
+                    push(diags, "ANUBIS_TYPE_MISMATCH: type mismatch: argument " + ("" + i) + " of `" + cn + "` expects `" + ptys[i] + "`, got `" + got + "`");
+                }
+            }
+            i = i + 1;
+        }
     }
     return diags;
 }
@@ -1614,6 +1630,70 @@ fn taint_check(ast) {
     return diags;
 }
 
+// ===== TYPE ENGINE slice 2: argument-position + return-position type checks =====
+// Ports mod.rs:5407 (arg) + :11703 (return). A CONSTANT return expr (is_constant_expr:11868) is the only
+// return form Rust statically type-checks (a variable/call return stays dynamic) — sh_is_constant mirrors
+// the SH-expressible SUBSET of that (Int/Str/Bool/List/Map/Binary/Unary; If/Cast deferred → false), so SH
+// only ever checks a return Rust also checks (SH ⊆ Rust, no spurious on `return x`).
+fn sh_all_constant(es) {
+    let i = 0;
+    while i < len(es) { if sh_is_constant(es[i]) == false { return false; } i = i + 1; }
+    return true;
+}
+fn sh_is_constant(e) {
+    return match e {
+        Expr::Int(v) => true,
+        Expr::Str(v) => true,
+        Expr::Bool(v) => true,
+        Expr::List { elements: els } => sh_all_constant(els),
+        Expr::Map { keys: k, vals: vs } => sh_all_constant(k) && sh_all_constant(vs),
+        Expr::Binary { op: o, lhs: l, rhs: r } => sh_is_constant(l) && sh_is_constant(r),
+        Expr::Unary { op: o, expr: x } => sh_is_constant(x),
+        _ => false,
+    };
+}
+
+// One return obligation (mirrors mod.rs check_one_return:11693): a CONSTANT v whose inferred type is not
+// assignable to the declared return type `rt` is a return-type lie (byte-identical ANUBIS_RETURN_TYPE_
+// MISMATCH). sh_is_constant ⊆ Rust is_constant_expr and sh_infer_type ⊆ Rust infer, so SH ⊆ Rust. The
+// scope `penv` is params-only (Rust's pscope) — irrelevant for constants (they contain no Var) but faithful.
+fn sh_one_return(v, rt, penv, diags) {
+    if sh_is_constant(v) {
+        let got = sh_infer_type(v, penv);
+        if got != "" {
+            if ty_assignable(rt, got) == false {
+                push(diags, "ANUBIS_RETURN_TYPE_MISMATCH: function declared `-> " + rt + "` but returns a value of type `" + got + "`");
+            }
+        }
+    }
+    return diags;
+}
+
+// Return-type pass over a fn body — mirrors mod.rs check_return_types:11670 EXACTLY: only the implicit-
+// return TAIL (last stmt when it is a bare expr) and the TOP-LEVEL explicit `return X;` statements are
+// checked. Returns nested inside if/while/for bodies are left dynamic (Rust does not recurse), so the SH
+// return check does not either — a nested constant return-mismatch would otherwise be spurious vs Rust.
+fn sh_return_types(body, rt, penv, diags) {
+    if rt == "" { return diags; }
+    if len(body) > 0 {
+        let last = body[len(body) - 1];
+        // A trailing bare expression is the implicit return value (Anubis fns yield their last expr).
+        diags = match last {
+            Stmt::ExprStmt { expr: e } => sh_one_return(e, rt, penv, diags),
+            _ => diags,
+        };
+    }
+    let i = 0;
+    while i < len(body) {
+        diags = match body[i] {
+            Stmt::Return { value: v } => sh_one_return(v, rt, penv, diags),
+            _ => diags,
+        };
+        i = i + 1;
+    }
+    return diags;
+}
+
 fn sh_check(ast) {
     let diags = [];
     let fns = {};
@@ -1621,7 +1701,13 @@ fn sh_check(ast) {
     let i = 0;
     while i < len(items) {
         if items[i]["kind"] == "Fn" {
-            fns[items[i]["name"]] = len(items[i]["params"]);
+            // slice-2: the fns table now carries a {arity, ptys, ret} RECORD (was a bare arity int) so the
+            // call-site argument-type check and the return-type check can read the declared signature.
+            let ff = items[i];
+            let ptys = [];
+            let k = 0;
+            while k < len(ff["params"]) { push(ptys, ff["params"][k]["ty"]); k = k + 1; }
+            fns[ff["name"]] = {"arity": len(ff["params"]), "ptys": ptys, "ret": ff["ret"]};
         }
         i = i + 1;
     }
@@ -1633,11 +1719,17 @@ fn sh_check(ast) {
             let j = 0;
             while j < len(f["params"]) {
                 // Seed each param with its DECLARED type (or "" if unannotated), mirroring Rust's
-                // scope[param].ty. This is the type env sh_infer_type reads for Expr::Var.
+                // scope[param].ty. This is the type env sh_infer_type reads for Expr::Var (arg-position check).
                 env[f["params"][j]["name"]] = f["params"][j]["ty"];
                 j = j + 1;
             }
+            // slice-2: the return-type check runs over a PARAMS-ONLY env (Rust's pscope) — clone `env`
+            // BEFORE the body walk so it carries no let-binding types (faithful to check_return_types).
+            let penv = {};
+            let pj = 0;
+            while pj < len(f["params"]) { penv[f["params"][pj]["name"]] = f["params"][pj]["ty"]; pj = pj + 1; }
             diags = check_stmts(f["body"], env, fns, diags);
+            diags = sh_return_types(f["body"], f["ret"], penv, diags);
         }
         i = i + 1;
     }

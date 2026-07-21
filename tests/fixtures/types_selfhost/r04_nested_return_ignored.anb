@@ -1,0 +1,6 @@
+// EXPECT: PASS
+fn f(b: bool) -> u32 {
+    if b { return 3; }
+    return 1;
+}
+fn main() { let x: u32 = f(true); print("" + x); }

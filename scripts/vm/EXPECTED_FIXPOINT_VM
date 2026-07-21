@@ -77,4 +77,16 @@
 #     found + closed a class of silent-wrong-output fail-open fall-throughs (anubis_iter/sort_by/
 #     map_values/times/len now fail closed). Seal PASS (9/9), all gates green (effect differential still
 #     0 with the [1,2] descent), full lib suite 537/537.
-707375b61970eeec30fc2c9bdbead8d9b814edfd3b2e7fafc00f663add3def41
+#   707375b6…ef41 -> d7776b5a…0539  (2026-07-21, Phase-4 #112 TYPE engine slice 2)
+#     Trigger: the SH checker gained the TYPE engine's two remaining enforcing sites — ARGUMENT-position
+#     (`type mismatch: argument N of \`F\` expects \`E\`, got \`G\``, ported from mod.rs:5407) and
+#     RETURN-position (`function declared \`-> R\` but returns a value of type \`A\``, mod.rs:11693,
+#     TOP-LEVEL + implicit-tail only, mirroring check_return_types:11670 which does NOT recurse into
+#     nested returns). The `fns` table upgraded from bare arity int -> {arity, ptys, ret} record so a call
+#     site knows the callee's declared param + return types. Byte-identical to Rust; SH ⊆ Rust by
+#     construction (sh_infer_type ⊆ infer_expr_type_scoped arm-for-arm, sh_is_constant ⊆ is_constant_expr).
+#     Seal PASS (stage2==stage3, 9/9), all gates green incl TYPE_SELFHOST_GATE (0 disagreements, 20/20
+#     fixtures: 12 slice-1 + 8 arg/return incl. the nested-return spurious guard) and TAINT_SELFHOST_GATE;
+#     whole-corpus SH ⊆ Rust 512 .anb / 12 emitters / 0 spurious. Self-compile stays clean (every SH fn is
+#     UNTYPED → both new checks short-circuit on empty annotations → 0 new self-diagnostics).
+d7776b5a1f00dd4f258b95b4c58a64988664a36040e43ce88626b550f41c0539

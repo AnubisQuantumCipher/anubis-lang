@@ -1,0 +1,3 @@
+// EXPECT: FAIL
+fn label(s: string) -> string { s }
+fn main() { let r: string = label(true); print(r); }

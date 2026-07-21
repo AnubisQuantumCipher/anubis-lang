@@ -1,0 +1,3 @@
+// EXPECT: FAIL
+fn f() -> string { return 5; }
+fn main() { let s: string = f(); print(s); }

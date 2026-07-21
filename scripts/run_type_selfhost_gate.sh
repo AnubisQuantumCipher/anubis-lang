@@ -9,14 +9,19 @@
 #   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- types <f>` — the
 #               self-hosted sh_check port (ty_assignable + sh_infer_type over the let-annotation site).
 #
-# PRIMARY ORACLE (0-disagreement invariant): the two independently-derived let-mismatch (expected,got)
-# PAIR sets must be IDENTICAL. Extraction is ANCHORED to the phrase
-# "type mismatch: expected `E`, got `G`", UNIQUE to the ported let-binding ANUBIS_TYPE_MISMATCH site.
-# That anchor DELIBERATELY EXCLUDES the sibling type-mismatch shapes slice 1 does NOT port (assignment
-# 'type mismatch on assign…', argument 'type mismatch: argument…', struct-field, operator/index), so the
-# gate isolates exactly the ported surface — the literal analog of the effect gate anchoring on
-# "function `F` uses effect `X`" to isolate the effect lane. Per-FILE set (SH diags carry no fn
-# attribution yet); slice 2 moves to per-(fn) pairs once return/arg checks add attribution.
+# PRIMARY ORACLE (0-disagreement invariant): the two independently-derived type-mismatch message sets
+# must be IDENTICAL. Extraction is ANCHORED to the THREE phrases the SH engine now ports:
+#   (1) let-init      "type mismatch: expected `E`, got `G`"                       (slice 1)
+#   (2) argument      "type mismatch: argument N of `F` expects `E`, got `G`"      (slice 2)
+#   (3) return        "function declared `-> R` but returns a value of type `A`"   (slice 2)
+# These anchors DELIBERATELY EXCLUDE the sibling type-mismatch shapes NOT ported (assignment
+# 'type mismatch on assign…', struct-field, operator/index), so the gate isolates exactly the ported
+# surface. Rust emits (2) from two walkers (mod.rs:5407 effect-walk + :12258 semantics-walk) with the
+# identical message — `sort -u` collapses the duplicate — and (2)/(3) each have a Rust-ONLY
+# `check_mismatch_scoped` fallback (:12270/:11727) for Call/Index/FieldAccess operands the flat SH
+# inferer returns "" for; those are the INCOMPLETE residual covered by the whole-corpus SH ⊆ Rust sweep
+# (subset-tolerant), and are deliberately kept out of THIS curated fixture corpus so the exact-equality
+# invariant holds here. Per-FILE set (SH diags carry no fn attribution yet).
 #
 # SECONDARY ORACLE: the Anubis `types` pass accept/reject (exit code) must match the fixture's
 # `// EXPECT:` marker — pinning that the corpus exercises both verdicts and that the self-hosted verdict
@@ -36,12 +41,12 @@ CORPUS=tests/fixtures/types_selfhost
 
 cargo build -q --release -p anubis
 
-# Extract the let-mismatch (expected, got) PAIR set — anchored to the unique
-# "type mismatch: expected `E`, got `G`" phrasing — as sorted-unique `E:G` lines so a per-file union
-# cannot mask a per-site divergence.
+# Extract the ported type-mismatch message set — anchored to the three ported phrasings (let-init,
+# argument, return) as sorted-unique whole messages so a per-file union cannot mask a per-site divergence
+# and a duplicate emission from two Rust walkers collapses.
 extract_types() {
-  { grep -oE 'type mismatch: expected `[^`]+`, got `[^`]+`' || true; } \
-    | sed -E 's/type mismatch: expected `([^`]+)`, got `([^`]+)`/\1:\2/' | sort -u
+  { grep -oE 'type mismatch: expected `[^`]+`, got `[^`]+`|type mismatch: argument [0-9]+ of `[^`]+` expects `[^`]+`, got `[^`]+`|function declared `-> [^`]+` but returns a value of type `[^`]+`' || true; } \
+    | sort -u
 }
 
 agree=0; disagree=0; expect_ok=0; expect_bad=0; n=0

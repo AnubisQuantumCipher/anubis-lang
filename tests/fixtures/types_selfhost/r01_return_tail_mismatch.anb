@@ -1,0 +1,3 @@
+// EXPECT: FAIL
+fn f() -> u32 { "hi" }
+fn main() { let x: u32 = f(); print("" + x); }
