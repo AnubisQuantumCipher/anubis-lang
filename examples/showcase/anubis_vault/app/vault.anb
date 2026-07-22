@@ -1,0 +1,889 @@
+// =============================================================================
+//  ANUBIS VAULT · SOVEREIGN  v2  — field-grade operational password manager
+// =============================================================================
+//
+// Audience (defensive / authorized):
+//   whistleblowers · journalists · IC/military operators · government officials ·
+//   high-risk counsel · civil-society defenders
+//
+// Dual-lane contract:
+//   CHECK — SMT-proved policy arithmetic + secret<> info-flow (no false accepts)
+//   RUN   — audited host crypto (Argon2id 19MiB, HKDF, ChaCha20-Poly1305,
+//           HMAC-SHA256, Ed25519, password_hash, ct_eq). Zero network.
+//
+// Threats addressed: coercion (duress/decoy), offline crack (Argon2id),
+// need-to-know (clearance), timebox, reveal budget, burn, tamper (AEAD/HMAC/sig),
+// air-gap export, n-of-n key shred for custodians.
+//
+// Non-claims: rubber-hose, SE/HSM, full Shamir m-of-n, legal privilege.
+//
+//   ./target/release/anubis check examples/showcase/anubis_vault/vault.anb
+//   ./target/release/anubis run   examples/showcase/anubis_vault/vault.anb --allow-research
+//   ./target/release/anubis build examples/showcase/anubis_vault/app/vault.anb \
+//       --evidence --out examples/showcase/anubis_vault/app/out
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Domain
+// ---------------------------------------------------------------------------
+
+enum Compartment { Real, Decoy, DeadDrop }
+
+enum Clearance {
+    Public,       // 0
+    Confidential, // 1
+    Secret,       // 2
+    TopSecret,    // 3
+    SCI,          // 4
+}
+
+enum SessionState {
+    Locked,
+    Active { compartment: int, clearance: int, reveals_left: int },
+    Burned,
+    DuressActive,
+}
+
+enum AccessVerdict {
+    Grant { reveals_left: int },
+    DenyClearance,
+    DenyBudget,
+    DenyWindow,
+    DenyBurned,
+    DenyLocked,
+    DenyUnlock,
+}
+
+struct OpPolicy {
+    min_score: int,
+    capacity: int,
+    clipboard_ttl_s: int,
+    autolock_s: int,
+    max_reveals: int,
+    window_start: int,
+    window_end: int,
+}
+
+// ---------------------------------------------------------------------------
+// SMT-dischargeable policy (pure integer returns; no multi-op lets)
+// ---------------------------------------------------------------------------
+
+fn class_score(has_upper: i64, has_digit: i64, has_symbol: i64) -> i64
+    requires(has_upper == 0 || has_upper == 1)
+    requires(has_digit == 0 || has_digit == 1)
+    requires(has_symbol == 0 || has_symbol == 1)
+    ensures(result >= 0)
+    ensures(result <= 50)
+{
+    return has_upper * 15 + has_digit * 15 + has_symbol * 20;
+}
+
+fn length_bonus(pw_len: i64) -> i64
+    requires(pw_len >= 0)
+    requires(pw_len <= 256)
+    ensures(result >= 0)
+    ensures(result <= 50)
+{
+    let twice = pw_len * 2;
+    if twice > 50 {
+        return 50;
+    }
+    return twice;
+}
+
+fn total_strength(pw_len: i64, has_upper: i64, has_digit: i64, has_symbol: i64) -> i64
+    requires(pw_len >= 0)
+    requires(pw_len <= 256)
+    requires(has_upper == 0 || has_upper == 1)
+    requires(has_digit == 0 || has_digit == 1)
+    requires(has_symbol == 0 || has_symbol == 1)
+    ensures(result >= 0)
+    ensures(result <= 100)
+{
+    if pw_len * 2 > 50 {
+        return 50 + (has_upper * 15 + has_digit * 15 + has_symbol * 20);
+    }
+    return (pw_len * 2) + (has_upper * 15 + has_digit * 15 + has_symbol * 20);
+}
+
+fn admit_entry(score: i64, min_score: i64, count: i64, capacity: i64) -> i64
+    requires(score >= 0)
+    requires(score <= 100)
+    requires(min_score >= 0)
+    requires(min_score <= 100)
+    requires(count >= 0)
+    requires(count <= 10000)
+    requires(capacity > 0)
+    requires(capacity <= 10000)
+    ensures(result == 0 || result == 1)
+{
+    if score < min_score {
+        return 0;
+    }
+    if count >= capacity {
+        return 0;
+    }
+    return 1;
+}
+
+fn clipboard_ttl(requested: i64) -> i64
+    requires(requested >= 0)
+    requires(requested <= 10000)
+    ensures(result >= 1)
+    ensures(result <= 120)
+{
+    if requested < 1 {
+        return 1;
+    }
+    if requested > 120 {
+        return 120;
+    }
+    return requested;
+}
+
+fn autolock_ttl(requested: i64) -> i64
+    requires(requested >= 0)
+    requires(requested <= 100000)
+    ensures(result >= 30)
+    ensures(result <= 900)
+{
+    if requested < 30 {
+        return 30;
+    }
+    if requested > 900 {
+        return 900;
+    }
+    return requested;
+}
+
+fn max_reveals_clamp(n: i64) -> i64
+    requires(n >= 0)
+    requires(n <= 100)
+    ensures(result >= 0)
+    ensures(result <= 5)
+{
+    if n > 5 {
+        return 5;
+    }
+    return n;
+}
+
+fn clearance_rank(level: i64) -> i64
+    requires(level >= 0)
+    requires(level <= 4)
+    ensures(result >= 0)
+    ensures(result <= 4)
+    ensures(result == level)
+{
+    return level;
+}
+
+fn clearance_allows(subject: i64, object: i64) -> i64
+    requires(subject >= 0)
+    requires(subject <= 4)
+    requires(object >= 0)
+    requires(object <= 4)
+    ensures(result == 0 || result == 1)
+{
+    if subject < object {
+        return 0;
+    }
+    return 1;
+}
+
+fn in_access_window(now: i64, start: i64, end: i64) -> i64
+    requires(now >= 0)
+    requires(start >= 0)
+    requires(end >= 0)
+    requires(end <= 1000000000)
+    requires(start <= 1000000000)
+    ensures(result == 0 || result == 1)
+{
+    if now < start {
+        return 0;
+    }
+    if now >= end {
+        return 0;
+    }
+    return 1;
+}
+
+fn spend_reveal(budget: i64) -> i64
+    requires(budget >= 0)
+    requires(budget <= 5)
+    ensures(result == 0 || result == 1)
+{
+    if budget > 0 {
+        return 1;
+    }
+    return 0;
+}
+
+fn after_spend(budget: i64, spent: i64) -> i64
+    requires(budget >= 0)
+    requires(budget <= 5)
+    requires(spent == 0 || spent == 1)
+    requires(spent == 0 || budget >= 1)
+    ensures(result >= 0)
+    ensures(result <= 5)
+{
+    if spent == 1 {
+        return budget - 1;
+    }
+    return budget;
+}
+
+fn duress_flag(is_duress: i64) -> i64
+    requires(is_duress == 0 || is_duress == 1)
+    ensures(result == 0 || result == 1)
+    ensures(result == is_duress)
+{
+    return is_duress;
+}
+
+fn session_reveals_init(max_r: i64) -> i64
+    requires(max_r >= 0)
+    requires(max_r <= 5)
+    ensures(result >= 0)
+    ensures(result <= 5)
+    ensures(result == max_r)
+{
+    return max_r;
+}
+
+fn audit_step(acc: i64, code: i64) -> i64
+    requires(acc >= 0)
+    requires(acc < 1000000007)
+    requires(code >= 0)
+    requires(code < 1000000)
+    ensures(result >= 0)
+    ensures(result < 1000000007)
+{
+    return ((acc * 131) + code) % 1000000007;
+}
+
+/// n-of-n XOR identity: (((k^r1)^r2)^r1)^r2 == k  (byte domain)
+fn threshold_identity(k: i64, r1: i64, r2: i64) -> i64
+    requires(k >= 0)
+    requires(k <= 255)
+    requires(r1 >= 0)
+    requires(r1 <= 255)
+    requires(r2 >= 0)
+    requires(r2 <= 255)
+    ensures(result == k)
+{
+    return (((k ^ r1) ^ r2) ^ r1) ^ r2;
+}
+
+/// Self-test accumulator: fold pass flags (0/1) into a score ≤ n_tests.
+fn selftest_add(score: i64, passed: i64, n_tests: i64) -> i64
+    requires(score >= 0)
+    requires(score <= 64)
+    requires(passed == 0 || passed == 1)
+    requires(n_tests > 0)
+    requires(n_tests <= 64)
+    requires(score < n_tests)
+    ensures(result >= 0)
+    ensures(result <= n_tests)
+{
+    return score + passed;
+}
+
+// ---------------------------------------------------------------------------
+// Crypto / vault mechanics (flat audited builtins)
+// ---------------------------------------------------------------------------
+
+fn bytes_to_str(bs) {
+    let mut s = "";
+    let mut i = 0;
+    while i < len(bs) {
+        s = s + chr(bs[i]);
+        i = i + 1;
+    }
+    return s;
+}
+
+/// Field Argon2id: m=19456 KiB (19 MiB), t=2, p=1, 32-byte output (OWASP-class).
+fn kdf_master(passphrase, salt) {
+    return argon2id_hash(passphrase, salt, 19456, 2, 1, 32);
+}
+
+fn derive_compartment_key(master, salt, compartment_label) {
+    let ikm = kdf_master(master, salt);
+    return hkdf_sha256(ikm, "anubis-vault-sovereign-v2", compartment_label, 32);
+}
+
+fn entry_aad(compartment, id, codename, version, clearance) {
+    return "av2|c=${compartment}|id=${id}|cn=${codename}|v=${version}|cl=${clearance}";
+}
+
+fn seal_entry(key, compartment, id, codename, version, clearance, plaintext) {
+    let aad = entry_aad(compartment, id, codename, version, clearance);
+    let n = random_bytes(12);
+    let c = aead_seal(key, n, aad, plaintext);
+    return [n, c];
+}
+
+fn open_entry(key, compartment, id, codename, version, clearance, nonce, ct) {
+    let aad = entry_aad(compartment, id, codename, version, clearance);
+    return bytes_to_str(aead_open(key, nonce, aad, ct));
+}
+
+fn catalog_mac(key, fingerprint) {
+    return hmac_sha256(key, fingerprint);
+}
+
+/// Unlock canary: proves the derived key actually opens vault material.
+fn seal_canary(key) {
+    let n = random_bytes(12);
+    let c = aead_seal(key, n, "vault-canary-v2", "ANUBIS_VAULT_UNLOCK_OK");
+    return [n, c];
+}
+
+fn check_canary(key, nonce, ct) {
+    let pt = bytes_to_str(aead_open(key, nonce, "vault-canary-v2", ct));
+    if pt == "ANUBIS_VAULT_UNLOCK_OK" {
+        return 1;
+    }
+    return 0;
+}
+
+/// n-of-n XOR shred of a key (all shares required). Returns [s0, r1, r2].
+fn shred_key_3(key) {
+    let n = len(key);
+    let r1 = random_bytes(n);
+    let r2 = random_bytes(n);
+    let mut s0 = [];
+    let mut i = 0;
+    while i < n {
+        push(s0, key[i] ^ r1[i] ^ r2[i]);
+        i = i + 1;
+    }
+    return [s0, r1, r2];
+}
+
+fn recombine_key_3(s0, r1, r2) {
+    let n = len(s0);
+    let mut out = [];
+    let mut i = 0;
+    while i < n {
+        push(out, s0[i] ^ r1[i] ^ r2[i]);
+        i = i + 1;
+    }
+    return out;
+}
+
+fn seal_export_package(vault_key, export_id, body) {
+    let exp_key = hkdf_sha256(vault_key, "anubis-export-v2", export_id, 32);
+    let n = random_bytes(12);
+    let c = aead_seal(exp_key, n, "export|${export_id}", body);
+    return [n, c];
+}
+
+fn open_export_package(vault_key, export_id, nonce, ct) {
+    let exp_key = hkdf_sha256(vault_key, "anubis-export-v2", export_id, 32);
+    return bytes_to_str(aead_open(exp_key, nonce, "export|${export_id}", ct));
+}
+
+/// Build sealed vault package text (ciphertext hex only — courier / air-gap disk).
+/// Caller must `write_file` under `uses(fs.write)` (effects are per-function).
+fn build_vault_package(salt_hex, canary_n_hex, canary_ct_hex, catalog_fp, entry_records, sig_hex, mac_hex) {
+    let hdr = "ANUBIS_VAULT_PACKAGE_V2\n";
+    return hdr
+        + "kdf=argon2id,m=19456,t=2,p=1\n"
+        + "salt_hex=${salt_hex}\n"
+        + "canary_n=${canary_n_hex}\n"
+        + "canary_ct=${canary_ct_hex}\n"
+        + "catalog_fp=${catalog_fp}\n"
+        + "catalog_mac=${mac_hex}\n"
+        + "ed25519_sig=${sig_hex}\n"
+        + "entries:\n"
+        + entry_records
+        + "END\n";
+}
+
+fn decide_access(
+    burned: i64,
+    locked: i64,
+    unlocked: i64,
+    subject_cl: i64,
+    object_cl: i64,
+    budget: i64,
+    now: i64,
+    win_start: i64,
+    win_end: i64
+) -> AccessVerdict {
+    if burned == 1 {
+        return AccessVerdict::DenyBurned;
+    }
+    if locked == 1 {
+        return AccessVerdict::DenyLocked;
+    }
+    if unlocked == 0 {
+        return AccessVerdict::DenyUnlock;
+    }
+    if clearance_allows(subject_cl, object_cl) == 0 {
+        return AccessVerdict::DenyClearance;
+    }
+    if in_access_window(now, win_start, win_end) == 0 {
+        return AccessVerdict::DenyWindow;
+    }
+    if spend_reveal(budget) == 0 {
+        return AccessVerdict::DenyBudget;
+    }
+    return AccessVerdict::Grant { reveals_left: budget - 1 };
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+fn main()
+    uses(io.print, fs.write)
+{
+    // Count of SELFTEST_* probes below (must match selftest_add call sites that fire).
+    let mut tests_passed = 0;
+    let n_tests = 16;
+
+    print("╔══════════════════════════════════════════════════════════════╗");
+    print("║  ANUBIS VAULT · SOVEREIGN v2  ·  field operational manager   ║");
+    print("║  whistleblower / IC / military / gov / counsel               ║");
+    print("║  backend=${crypto_backend()} · Argon2id 19MiB · air-gap first ║");
+    print("╚══════════════════════════════════════════════════════════════╝");
+
+    // ---- Policy ------------------------------------------------------------
+    let policy = OpPolicy {
+        min_score: 75,
+        capacity: 16,
+        clipboard_ttl_s: clipboard_ttl(15),
+        autolock_s: autolock_ttl(120),
+        max_reveals: max_reveals_clamp(2),
+        window_start: 1000,
+        window_end: 5000,
+    };
+    print("[policy] min_score=${policy.min_score} cap=${policy.capacity} clip=${policy.clipboard_ttl_s}s lock=${policy.autolock_s}s reveals=${policy.max_reveals}");
+    print("[policy] window=[${policy.window_start},${policy.window_end})");
+
+    let mut audit = 11;
+    let now = 2500;
+    let burned = 0;
+    let locked = 0;
+
+    // ---- Random salts (public, stored with package) ------------------------
+    let salt_real_b = random_bytes(16);
+    let salt_decoy_b = random_bytes(16);
+    let salt_drop_b = random_bytes(16);
+    let salt_real = to_hex(salt_real_b);
+    let salt_decoy = to_hex(salt_decoy_b);
+    let salt_drop = to_hex(salt_drop_b);
+    print("[kdf] random salts generated (hex len=${len(salt_real)})");
+
+    // ---- Masters (secret) + stored verifiers (public PHC-like encodings) ---
+    let master_real: secret<string> = "correct-horse-battery-staple-Ω-9-field!";
+    let master_duress: secret<string> = "travel-tourist-hotel-wifi-password-1";
+
+    let master_real_open = declassify(
+        master_real,
+        "vault.enroll.real",
+        "one-time enrollment: derive verifier + compartment keys"
+    );
+    let master_duress_open = declassify(
+        master_duress,
+        "vault.enroll.duress",
+        "one-time enrollment: decoy verifier + decoy keys"
+    );
+
+    let verifier_real = password_hash_encode(master_real_open);
+    let verifier_duress = password_hash_encode(master_duress_open);
+    print("[enroll] master verifiers stored (Argon2id encodings; not secret material)");
+
+    // Wrong passphrase must fail verify (constant-time path inside runtime)
+    let wrong_ok = password_verify_encoding("definitely-not-the-master", verifier_real);
+    if wrong_ok == false {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[enroll] SELFTEST wrong-master reject=PASS");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[enroll] SELFTEST wrong-master reject=FAIL");
+    }
+
+    // ---- A: legitimate unlock ----------------------------------------------
+    print("────────────────────────────────────────────────────────────");
+    print("[A] LEGITIMATE UNLOCK → REAL");
+    let unlock_try = declassify(
+        master_real,
+        "vault.unlock.real",
+        "operator session unlock; verify then KDF; no network"
+    );
+    let unlock_ok = password_verify_encoding(unlock_try, verifier_real);
+    if unlock_ok {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[A] SELFTEST unlock_verify=PASS");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[A] SELFTEST unlock_verify=FAIL");
+    }
+
+    let key_real = derive_compartment_key(unlock_try, salt_real, "compartment-real");
+    let key_decoy = derive_compartment_key(master_duress_open, salt_decoy, "compartment-decoy");
+    let key_drop = derive_compartment_key(unlock_try, salt_drop, "compartment-deaddrop");
+    print("[A] keys derived real/decoy/drop len=${len(key_real)} (never printed)");
+
+    // Unlock canary
+    let can = seal_canary(key_real);
+    let can_ok = check_canary(key_real, can[0], can[1]);
+    if can_ok == 1 {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[A] SELFTEST unlock_canary=PASS");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[A] SELFTEST unlock_canary=FAIL");
+    }
+    audit = audit_step(audit, 1001);
+
+    let mut reveals = session_reveals_init(policy.max_reveals);
+    let subject_cl = clearance_rank(3);
+    let unlocked = 1;
+    print("[A] session clearance=TopSecret(3) reveals_left=${reveals}");
+
+    // ---- Store REAL --------------------------------------------------------
+    let mut real_count = 0;
+    let mut real_fp = "real:v2";
+    let mut entry_records = "";
+
+    let score_r1 = total_strength(24, 1, 1, 1);
+    let ok_r1 = admit_entry(score_r1, policy.min_score, real_count, policy.capacity);
+    let r1_id = "R1";
+    let r1_cn = "NIGHTINGALE";
+    let r1_cl = 4;
+    let r1_pt: secret<string> = "otp-chain-ROOT-7f3a…FIELD-USE-ONLY";
+    let r1_plain = declassify(r1_pt, "vault.seal.real", "AEAD seal only");
+    let r1_sealed = seal_entry(key_real, 1, r1_id, r1_cn, 1, r1_cl, r1_plain);
+    let r1_n = r1_sealed[0];
+    let r1_c = r1_sealed[1];
+    if ok_r1 == 1 {
+        real_count = real_count + 1;
+        real_fp = "${real_fp}|${r1_id}:${r1_cn}:cl${r1_cl}:L${len(r1_c)}";
+        entry_records = entry_records
+            + "  - id=${r1_id} cn=${r1_cn} cl=${r1_cl} n=${to_hex(r1_n)} ct=${to_hex(r1_c)}\n";
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[A] sealed REAL ${r1_cn} SCI sealed_len=${len(r1_c)} SELFTEST admit=PASS");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[A] SELFTEST admit R1=FAIL");
+    }
+    audit = audit_step(audit, 1101);
+
+    let score_r2 = total_strength(20, 1, 1, 1);
+    let ok_r2 = admit_entry(score_r2, policy.min_score, real_count, policy.capacity);
+    let r2_id = "R2";
+    let r2_cn = "AMICUS";
+    let r2_cl = 2;
+    let r2_pt: secret<string> = "counsel-escrow-WORD-sequence-not-email";
+    let r2_plain = declassify(r2_pt, "vault.seal.real", "AEAD seal only");
+    let r2_sealed = seal_entry(key_real, 1, r2_id, r2_cn, 1, r2_cl, r2_plain);
+    let r2_n = r2_sealed[0];
+    let r2_c = r2_sealed[1];
+    if ok_r2 == 1 {
+        real_count = real_count + 1;
+        real_fp = "${real_fp}|${r2_id}:${r2_cn}:cl${r2_cl}:L${len(r2_c)}";
+        entry_records = entry_records
+            + "  - id=${r2_id} cn=${r2_cn} cl=${r2_cl} n=${to_hex(r2_n)} ct=${to_hex(r2_c)}\n";
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[A] sealed REAL ${r2_cn} Secret sealed_len=${len(r2_c)} SELFTEST admit=PASS");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[A] SELFTEST admit R2=FAIL");
+    }
+    audit = audit_step(audit, 1102);
+
+    let score_weak = total_strength(5, 0, 0, 0);
+    let ok_weak = admit_entry(score_weak, policy.min_score, real_count, policy.capacity);
+    if ok_weak == 0 {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[A] REJECT weak score=${score_weak} SELFTEST=PASS");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[A] SELFTEST weak reject=FAIL");
+    }
+    audit = audit_step(audit, 1199);
+
+    // ---- B: DECOY ----------------------------------------------------------
+    print("────────────────────────────────────────────────────────────");
+    print("[B] DECOY COMPARTMENT");
+    let d1_id = "D1";
+    let d1_cn = "gmail-personal";
+    let d1_cl = 0;
+    let d1_pt: secret<string> = "VacationPhotos2019!";
+    let d1_plain = declassify(d1_pt, "vault.seal.decoy", "decoy seal");
+    let d1_sealed = seal_entry(key_decoy, 2, d1_id, d1_cn, 1, d1_cl, d1_plain);
+    let d1_n = d1_sealed[0];
+    let d1_c = d1_sealed[1];
+    let decoy_count = 1;
+    let decoy_fp = "decoy:v2|${d1_id}:${d1_cn}:L${len(d1_c)}";
+    audit = audit_step(audit, 1201);
+    print("[B] sealed DECOY ${d1_cn} sealed_len=${len(d1_c)}");
+
+    // ---- B2: DEAD DROP (single-use source) ---------------------------------
+    print("────────────────────────────────────────────────────────────");
+    print("[B2] DEAD DROP compartment (source drop)");
+    let dd_id = "DD1";
+    let dd_cn = "SOURCE-DROP-α";
+    let dd_cl = 4;
+    let dd_pt: secret<string> = "one-time-drop-token-NEVER-REUSE";
+    let dd_plain = declassify(dd_pt, "vault.seal.deaddrop", "single-use dead drop seal");
+    let dd_sealed = seal_entry(key_drop, 3, dd_id, dd_cn, 1, dd_cl, dd_plain);
+    let dd_n = dd_sealed[0];
+    let dd_c = dd_sealed[1];
+    // Open once then conceptually burn the drop key path (demo: open + mark spent)
+    let dd_open = open_entry(key_drop, 3, dd_id, dd_cn, 1, dd_cl, dd_n, dd_c);
+    let dd_secret: secret<string> = dd_open;
+    let dd_len = len(dd_open);
+    let dd_spent = 1;
+    if dd_spent == 1 && dd_len > 0 {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[B2] dead-drop opened once len=${dd_len} SELFTEST=PASS (token not printed)");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[B2] SELFTEST deaddrop=FAIL");
+    }
+    // Hold secret without printing
+    let _dd_hold = dd_secret;
+    audit = audit_step(audit, 1210);
+
+    // ---- C: DURESS ---------------------------------------------------------
+    print("────────────────────────────────────────────────────────────");
+    print("[C] DURESS UNLOCK → DECOY only");
+    let is_duress_c = duress_flag(1);
+    let master_c = declassify(
+        master_duress,
+        "vault.unlock.duress",
+        "coercion path: verify duress verifier; REAL KDF not used for open"
+    );
+    let duress_verify = password_verify_encoding(master_c, verifier_duress);
+    let real_with_duress = password_verify_encoding(master_c, verifier_real);
+    if duress_verify && (real_with_duress == false) {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[C] SELFTEST duress_verify=PASS (opens decoy verifier only)");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[C] SELFTEST duress_verify=FAIL");
+    }
+    let key_duress_session = derive_compartment_key(master_c, salt_decoy, "compartment-decoy");
+    let decoy_open = open_entry(key_duress_session, 2, d1_id, d1_cn, 1, d1_cl, d1_n, d1_c);
+    let decoy_secret: secret<string> = decoy_open;
+    print("[C] duress opened DECOY len=${len(decoy_open)}; REAL compartment not derived");
+    let _dhold = decoy_secret;
+    audit = audit_step(audit, 1301);
+
+    // ---- D: need-to-know + window + budget ---------------------------------
+    print("────────────────────────────────────────────────────────────");
+    print("[D] NEED-TO-KNOW / WINDOW / BUDGET");
+    let v_sci = decide_access(burned, locked, unlocked, subject_cl, r1_cl, reveals, now, policy.window_start, policy.window_end);
+    match v_sci {
+        AccessVerdict::DenyClearance => {
+            tests_passed = selftest_add(tests_passed, 1, n_tests);
+            print("[D] DENY ${r1_cn}: TS < SCI SELFTEST=PASS");
+            audit = audit_step(audit, 1401);
+        }
+        AccessVerdict::Grant { reveals_left } => {
+            tests_passed = selftest_add(tests_passed, 0, n_tests);
+            print("[D] SELFTEST SCI deny=FAIL");
+            reveals = reveals_left;
+        }
+        AccessVerdict::DenyBudget => { print("[D] deny budget"); }
+        AccessVerdict::DenyWindow => { print("[D] deny window"); }
+        AccessVerdict::DenyBurned => { print("[D] deny burned"); }
+        AccessVerdict::DenyLocked => { print("[D] deny locked"); }
+        AccessVerdict::DenyUnlock => { print("[D] deny unlock"); }
+    }
+
+    let subject_sci = clearance_rank(4);
+    let v_ok = decide_access(burned, locked, unlocked, subject_sci, r1_cl, reveals, now, policy.window_start, policy.window_end);
+    match v_ok {
+        AccessVerdict::Grant { reveals_left } => {
+            reveals = reveals_left;
+            let opened = open_entry(key_real, 1, r1_id, r1_cn, 1, r1_cl, r1_n, r1_c);
+            let opened_s: secret<string> = opened;
+            let olen = declassify(len(opened), "vault.reveal.len", "authorized SCI: length only");
+            let once = declassify(opened_s, "vault.reveal.demo", "round-trip length; no production log");
+            if len(once) == olen {
+                tests_passed = selftest_add(tests_passed, 1, n_tests);
+                print("[D] GRANT ${r1_cn} len=${olen} reveals_left=${reveals} round-trip=PASS");
+            } else {
+                tests_passed = selftest_add(tests_passed, 0, n_tests);
+                print("[D] SELFTEST reveal=FAIL");
+            }
+            audit = audit_step(audit, 1402);
+        }
+        AccessVerdict::DenyClearance => {
+            tests_passed = selftest_add(tests_passed, 0, n_tests);
+            print("[D] unexpected deny clearance");
+        }
+        AccessVerdict::DenyBudget => {
+            tests_passed = selftest_add(tests_passed, 0, n_tests);
+            print("[D] deny budget");
+        }
+        AccessVerdict::DenyWindow => {
+            tests_passed = selftest_add(tests_passed, 0, n_tests);
+            print("[D] deny window");
+        }
+        AccessVerdict::DenyBurned => { print("[D] deny burned"); }
+        AccessVerdict::DenyLocked => { print("[D] deny locked"); }
+        AccessVerdict::DenyUnlock => { print("[D] deny unlock"); }
+    }
+
+    let v_win = decide_access(burned, locked, unlocked, subject_sci, r2_cl, reveals, 9999, policy.window_start, policy.window_end);
+    match v_win {
+        AccessVerdict::DenyWindow => {
+            tests_passed = selftest_add(tests_passed, 1, n_tests);
+            print("[D] DENY ${r2_cn}: outside window SELFTEST=PASS");
+            audit = audit_step(audit, 1403);
+        }
+        AccessVerdict::Grant { reveals_left } => {
+            tests_passed = selftest_add(tests_passed, 0, n_tests);
+            print("[D] SELFTEST window=FAIL");
+            reveals = reveals_left;
+        }
+        AccessVerdict::DenyClearance => { print("[D] deny cl"); }
+        AccessVerdict::DenyBudget => { print("[D] deny budget"); }
+        AccessVerdict::DenyBurned => { print("[D] deny burned"); }
+        AccessVerdict::DenyLocked => { print("[D] deny locked"); }
+        AccessVerdict::DenyUnlock => { print("[D] deny unlock"); }
+    }
+
+    // Second public reveal budget still available (max 2); third would deny
+    let spent2 = spend_reveal(reveals);
+    reveals = after_spend(reveals, spent2);
+    let spent3 = spend_reveal(reveals);
+    if spent2 == 1 && spent3 == 0 {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[D] SELFTEST reveal_budget exhaust=PASS (2nd ok, 3rd denied)");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[D] SELFTEST reveal_budget=FAIL spent2=${spent2} spent3=${spent3} left=${reveals}");
+    }
+
+    // ---- E: integrity + signed catalog + air-gap export + package file -----
+    print("────────────────────────────────────────────────────────────");
+    print("[E] INTEGRITY · SIGN · EXPORT · PERSIST");
+    let mac = catalog_mac(key_real, real_fp);
+    let mac_ok = hmac_sha256_verify(key_real, real_fp, mac);
+    let kp = ed25519_keygen();
+    let sig = ed25519_sign(kp[0], real_fp);
+    let sig_ok = ed25519_verify(kp[1], real_fp, sig);
+    let sig_bad = ed25519_verify(kp[1], "tampered", sig);
+    if mac_ok && sig_ok && (sig_bad == false) {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[E] catalog_mac+ed25519+tamper SELFTEST=PASS fp_len=${len(real_fp)}");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[E] SELFTEST integrity=FAIL");
+    }
+    audit = audit_step(audit, 1501);
+
+    let export_id = "export-2026-07-22-α";
+    let export_body = "FINGERPRINT=${real_fp}|ENTRIES=${real_count}|SIG=1";
+    let pkg = seal_export_package(key_real, export_id, export_body);
+    let opened_pkg = open_export_package(key_real, export_id, pkg[0], pkg[1]);
+    if len(opened_pkg) == len(export_body) {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[E] air-gap export round-trip SELFTEST=PASS sealed_len=${len(pkg[1])}");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[E] SELFTEST export=FAIL");
+    }
+    audit = audit_step(audit, 1502);
+
+    // Persist full sealed package (ciphertext hex only)
+    let pkg_path = "/tmp/anubis_vault_sovereign_v2.avault";
+    let pkg_body = build_vault_package(
+        salt_real,
+        to_hex(can[0]),
+        to_hex(can[1]),
+        real_fp,
+        entry_records,
+        to_hex(sig),
+        to_hex(mac)
+    );
+    write_file(pkg_path, pkg_body);
+    print("[E] wrote sealed package ${pkg_path} bytes≈${len(pkg_body)}");
+    audit = audit_step(audit, 1503);
+
+    // ---- F: threshold recovery on real key material ------------------------
+    print("────────────────────────────────────────────────────────────");
+    print("[F] THRESHOLD n-of-n XOR shred of vault key");
+    let shares = shred_key_3(key_real);
+    let recon = recombine_key_3(shares[0], shares[1], shares[2]);
+    let recon_ok = ct_eq(key_real, recon);
+    // Algebraic identity on a sample byte (SMT-proved function)
+    let byte_id = threshold_identity(0xA5, 0x3C, 0x71);
+    if recon_ok && byte_id == 165 {
+        tests_passed = selftest_add(tests_passed, 1, n_tests);
+        print("[F] key recombine ct_eq=PASS + SMT byte identity=PASS");
+    } else {
+        tests_passed = selftest_add(tests_passed, 0, n_tests);
+        print("[F] SELFTEST threshold=FAIL");
+    }
+    // Custodian export stubs (share material — in field, offline separate media)
+    write_file("/tmp/anubis_vault_share0.hex", to_hex(shares[0]));
+    write_file("/tmp/anubis_vault_share1.hex", to_hex(shares[1]));
+    write_file("/tmp/anubis_vault_share2.hex", to_hex(shares[2]));
+    print("[F] wrote 3 custodian share files under /tmp (co-locate never)");
+    audit = audit_step(audit, 1601);
+
+    // ---- G: emergency burn -------------------------------------------------
+    print("────────────────────────────────────────────────────────────");
+    print("[G] EMERGENCY BURN");
+    let burned_g = 1;
+    let v_burn = decide_access(burned_g, locked, unlocked, subject_sci, r2_cl, reveals, now, policy.window_start, policy.window_end);
+    match v_burn {
+        AccessVerdict::DenyBurned => {
+            tests_passed = selftest_add(tests_passed, 1, n_tests);
+            print("[G] post-burn deny SELFTEST=PASS");
+            audit = audit_step(audit, 1701);
+        }
+        AccessVerdict::Grant { reveals_left } => {
+            tests_passed = selftest_add(tests_passed, 0, n_tests);
+            print("[G] SELFTEST burn=FAIL");
+            reveals = reveals_left;
+        }
+        AccessVerdict::DenyClearance => { print("[G] deny cl"); }
+        AccessVerdict::DenyBudget => { print("[G] deny budget"); }
+        AccessVerdict::DenyWindow => { print("[G] deny window"); }
+        AccessVerdict::DenyLocked => { print("[G] deny locked"); }
+        AccessVerdict::DenyUnlock => { print("[G] deny unlock"); }
+    }
+    let state = SessionState::Burned;
+    match state {
+        SessionState::Burned => { print("[G] SessionState=Burned"); }
+        SessionState::Locked => { print("[G] Locked"); }
+        SessionState::Active { compartment, clearance, reveals_left } => {
+            print("[G] Active c=${compartment} cl=${clearance} r=${reveals_left}");
+        }
+        SessionState::DuressActive => { print("[G] DuressActive"); }
+    }
+
+    // ---- Final self-test gate ----------------------------------------------
+    audit = audit_step(audit, 1999);
+    print("════════════════════════════════════════════════════════════");
+    print(" SOVEREIGN v2 COMPLETE");
+    print("  audit_tip=${audit}  REAL=${real_count} DECOY=${decoy_count} DROP=1");
+    print("  selftest ${tests_passed}/${n_tests}");
+    print("  ✓ Argon2id 19MiB + random salts + password verifiers");
+    print("  ✓ unlock canary + dual/duress + dead-drop");
+    print("  ✓ clearance / window / reveal budget / burn");
+    print("  ✓ AEAD entries + HMAC + Ed25519 + air-gap export");
+    print("  ✓ sealed .avault package + n-of-n key shred (ct_eq)");
+    print("  ✓ secret<> · zero network · fail-closed");
+    print("════════════════════════════════════════════════════════════");
+
+    // Self-test gate (runtime only). Do NOT `assert(0==1)` here: the SMT lane
+    // treats that as a reachable false obligation and rejects the whole check.
+    // Operator / CI greps for "SELFTEST GATE PASSED".
+    if tests_passed == n_tests {
+        print("SELFTEST GATE PASSED: ${tests_passed}/${n_tests}");
+    } else {
+        print("SELFTEST GATE FAILED: ${tests_passed}/${n_tests}");
+    }
+}

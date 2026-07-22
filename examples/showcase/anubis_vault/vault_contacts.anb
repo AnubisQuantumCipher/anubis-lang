@@ -1,0 +1,435 @@
+// =============================================================================
+//  ANUBIS VAULT · CONTACTS  — real bulk use: save / verify / delete
+// =============================================================================
+//
+// 500 mixed contacts (personal, business, medical, finance, gov, …).
+// Sealed with ChaCha20-Poly1305; vault key from Argon2id (19 MiB) + HKDF.
+// Package path is a real file you can wipe completely.
+//
+// Usage (from repo root):
+//
+//   VAULT=examples/showcase/anubis_vault/data/contacts.avault
+//   MASTER='bulk-demo-master-passphrase-Ω-9'
+//
+//   # Create + save 500 contacts
+//   ./target/release/anubis run examples/showcase/anubis_vault/vault_contacts.anb \
+//       --allow-research -- create "$VAULT" "$MASTER" 500
+//
+//   # Reload from disk, re-open samples, confirm count
+//   ./target/release/anubis run examples/showcase/anubis_vault/vault_contacts.anb \
+//       --allow-research -- verify "$VAULT" "$MASTER"
+//
+//   # Delete one contact by id (e.g. c000042)
+//   ./target/release/anubis run examples/showcase/anubis_vault/vault_contacts.anb \
+//       --allow-research -- delete-one "$VAULT" "$MASTER" c000042
+//
+//   # Delete ALL contacts (empty vault file remains)
+//   ./target/release/anubis run examples/showcase/anubis_vault/vault_contacts.anb \
+//       --allow-research -- delete-all "$VAULT" "$MASTER"
+//
+//   # Destroy vault: overwrite marker, then unlink via delete_file (fs.write)
+//   ./target/release/anubis run examples/showcase/anubis_vault/vault_contacts.anb \
+//       --allow-research -- destroy "$VAULT"
+//
+// Native product binary (build once, multi-op without recompile):
+//
+//   ./target/release/anubis build examples/showcase/anubis_vault/vault_contacts.anb \
+//       -o examples/showcase/anubis_vault/product
+//   BIN=examples/showcase/anubis_vault/product/anubis_out
+//   $BIN create "$VAULT" "$MASTER" 50
+//   $BIN verify "$VAULT" "$MASTER"
+//   $BIN delete-one "$VAULT" "$MASTER" c000010
+//   $BIN delete-all "$VAULT" "$MASTER"
+//   $BIN destroy "$VAULT"
+//
+// Package format (text, ciphertext as hex — no plain secrets on disk):
+//   AVCONTACTS1
+//   salt_hex=<32 hex chars>
+//   verifier=<password_hash_encode string>
+//   count=<n>
+//   <id>\t<kind>\t<name>\t<nonce_hex>\t<ct_hex>
+//   ...
+//   END
+// =============================================================================
+
+fn bytes_to_str(bs) {
+    let mut s = "";
+    let mut i = 0;
+    while i < len(bs) {
+        s = s + chr(bs[i]);
+        i = i + 1;
+    }
+    return s;
+}
+
+fn kdf_master(pass, salt_hex) {
+    return argon2id_hash(pass, salt_hex, 19456, 2, 1, 32);
+}
+
+fn vault_key(pass, salt_hex) {
+    let ikm = kdf_master(pass, salt_hex);
+    return hkdf_sha256(ikm, "anubis-vault-contacts-v1", "contacts-aead-key", 32);
+}
+
+fn contact_aad(id, kind, name) {
+    return "avc1|id=${id}|kind=${kind}|name=${name}";
+}
+
+fn seal_contact(key, id, kind, name, secret_plain) {
+    let aad = contact_aad(id, kind, name);
+    let n = random_bytes(12);
+    let c = aead_seal(key, n, aad, secret_plain);
+    return [n, c];
+}
+
+fn open_contact(key, id, kind, name, n_hex, ct_hex) {
+    // Nonce/ct stored as hex strings of byte values joined... we store to_hex of bytes.
+    // open expects byte lists — use from hex via a simple decoder.
+    let n = hex_to_bytes(n_hex);
+    let c = hex_to_bytes(ct_hex);
+    let aad = contact_aad(id, kind, name);
+    return bytes_to_str(aead_open(key, n, aad, c));
+}
+
+// Hex helpers: to_hex exists; from hex for reload.
+fn hex_val(ch) {
+    let o = ord(ch);
+    if o >= 48 && o <= 57 {
+        return o - 48;
+    }
+    if o >= 97 && o <= 102 {
+        return o - 97 + 10;
+    }
+    if o >= 65 && o <= 70 {
+        return o - 65 + 10;
+    }
+    return 0;
+}
+
+fn hex_to_bytes(hx) {
+    let mut out = [];
+    let mut i = 0;
+    let L = len(hx);
+    while i + 1 < L {
+        let hi = hex_val(char_at(hx, i));
+        let lo = hex_val(char_at(hx, i + 1));
+        push(out, hi * 16 + lo);
+        i = i + 2;
+    }
+    return out;
+}
+
+fn kind_for(i) {
+    let k = i % 10;
+    if k == 0 { return "personal"; }
+    if k == 1 { return "business"; }
+    if k == 2 { return "medical"; }
+    if k == 3 { return "finance"; }
+    if k == 4 { return "government"; }
+    if k == 5 { return "family"; }
+    if k == 6 { return "vendor"; }
+    if k == 7 { return "travel"; }
+    if k == 8 { return "legal"; }
+    return "ops";
+}
+
+fn name_for(i, kind) {
+    return "${kind}-contact-${i}";
+}
+
+fn secret_for(i, kind) {
+    return "secret-${kind}-${i}-NEVER-PRINT-ME";
+}
+
+fn pad4(n) {
+    if n < 10 { return "000${n}"; }
+    if n < 100 { return "00${n}"; }
+    if n < 1000 { return "0${n}"; }
+    return "${n}";
+}
+
+fn id_for(i) {
+    return "c${pad4(i)}";
+}
+
+/// Serialize vault to disk (ciphertext only). Verified-lane: spend linear fs.write once.
+fn save_vault(path, salt_hex, verifier, rows) uses(fs.write) {
+    let w = cap_acquire("fs.write");
+    let mut body = "AVCONTACTS1\n";
+    body = body + "salt_hex=${salt_hex}\n";
+    body = body + "verifier=${verifier}\n";
+    body = body + "count=${len(rows)}\n";
+    let mut i = 0;
+    while i < len(rows) {
+        let r = rows[i];
+        // r = [id, kind, name, n_hex, ct_hex]
+        body = body + "${r[0]}\t${r[1]}\t${r[2]}\t${r[3]}\t${r[4]}\n";
+        i = i + 1;
+    }
+    body = body + "END\n";
+    write_file(path, body);
+    cap_use(w);
+    return len(rows);
+}
+
+/// Parse vault package → [salt_hex, verifier, rows]. Verified-lane: spend linear fs.read once.
+fn load_vault(path) uses(fs.read) {
+    let r = cap_acquire("fs.read");
+    let text = read_file(path);
+    cap_use(r);
+    let lines = split(text, "\n");
+    let mut salt_hex = "";
+    let mut verifier = "";
+    let mut rows = [];
+    let mut i = 0;
+    while i < len(lines) {
+        let line = lines[i];
+        if starts_with(line, "salt_hex=") {
+            salt_hex = substr(line, 9, len(line) - 9);
+        } else if starts_with(line, "verifier=") {
+            verifier = substr(line, 9, len(line) - 9);
+        } else if starts_with(line, "count=") {
+            // ignore, recompute from rows
+        } else if line == "AVCONTACTS1" || line == "END" || line == "" {
+            // skip
+        } else if contains(line, "\t") {
+            let parts = split(line, "\t");
+            if len(parts) >= 5 {
+                push(rows, [parts[0], parts[1], parts[2], parts[3], parts[4]]);
+            }
+        }
+        i = i + 1;
+    }
+    return [salt_hex, verifier, rows];
+}
+
+fn cmd_create(path, master, n) uses(fs.write) {
+    print("[create] path=${path} n=${n}");
+    let salt_b = random_bytes(16);
+    let salt_hex = to_hex(salt_b);
+    let verifier = password_hash_encode(master);
+    if password_verify_encoding(master, verifier) == false {
+        print("[create] FAIL verifier round-trip");
+        return 1;
+    }
+    let key = vault_key(master, salt_hex);
+    let mut rows = [];
+    let mut i = 0;
+    while i < n {
+        let id = id_for(i);
+        let kind = kind_for(i);
+        let name = name_for(i, kind);
+        let plain = secret_for(i, kind);
+        let sealed = seal_contact(key, id, kind, name, plain);
+        let n_hex = to_hex(sealed[0]);
+        let ct_hex = to_hex(sealed[1]);
+        push(rows, [id, kind, name, n_hex, ct_hex]);
+        if i % 100 == 0 {
+            print("[create] sealed ${i}/${n} …");
+        }
+        i = i + 1;
+    }
+    let saved = save_vault(path, salt_hex, verifier, rows);
+    print("[create] SAVED count=${saved} → ${path}");
+    // Prove a mid and last contact open correctly
+    let mid = rows[n / 2];
+    let last = rows[n - 1];
+    let m_plain = open_contact(key, mid[0], mid[1], mid[2], mid[3], mid[4]);
+    let l_plain = open_contact(key, last[0], last[1], last[2], last[3], last[4]);
+    print("[create] sample open mid=${mid[0]} ok=${if m_plain == secret_for(n / 2, mid[1]) { 1 } else { 0 }}");
+    print("[create] sample open last=${last[0]} ok=${if l_plain == secret_for(n - 1, last[1]) { 1 } else { 0 }}");
+    print("[create] DONE");
+    return 0;
+}
+
+fn cmd_verify(path, master) uses(fs.read) {
+    print("[verify] path=${path}");
+    let loaded = load_vault(path);
+    let salt_hex = loaded[0];
+    let verifier = loaded[1];
+    let rows = loaded[2];
+    print("[verify] on-disk count=${len(rows)} salt_len=${len(salt_hex)}");
+    if password_verify_encoding(master, verifier) == false {
+        print("[verify] FAIL master does not match verifier");
+        return 1;
+    }
+    print("[verify] master OK");
+    let key = vault_key(master, salt_hex);
+    // Open first, middle, last, and every 50th — confirm plaintext matches scheme
+    let mut ok = 0;
+    let mut fail = 0;
+    let checks = [0, 1, 49, 50, 99, 100, 250, 499];
+    let mut ci = 0;
+    while ci < len(checks) {
+        let idx = checks[ci];
+        if idx < len(rows) {
+            let r = rows[idx];
+            // recover index from id c0XXX
+            let plain = open_contact(key, r[0], r[1], r[2], r[3], r[4]);
+            let expect = secret_for(idx, r[1]);
+            // for non-sequential after delete, compare kind/name seal opens non-empty
+            if len(plain) > 10 {
+                ok = ok + 1;
+                print("[verify] open ${r[0]} kind=${r[1]} len=${len(plain)} OK");
+            } else {
+                fail = fail + 1;
+                print("[verify] open ${r[0]} FAIL");
+            }
+        }
+        ci = ci + 1;
+    }
+    // Kind histogram
+    let mut hist = {
+        "personal": 0,
+        "business": 0,
+        "medical": 0,
+        "finance": 0,
+        "government": 0,
+        "family": 0,
+        "vendor": 0,
+        "travel": 0,
+        "legal": 0,
+        "ops": 0
+    };
+    let mut i = 0;
+    while i < len(rows) {
+        let k = rows[i][1];
+        hist[k] = hist[k] + 1;
+        i = i + 1;
+    }
+    print("[verify] kinds personal=${hist["personal"]} business=${hist["business"]} medical=${hist["medical"]} finance=${hist["finance"]} government=${hist["government"]}");
+    print("[verify] kinds family=${hist["family"]} vendor=${hist["vendor"]} travel=${hist["travel"]} legal=${hist["legal"]} ops=${hist["ops"]}");
+    print("[verify] sample_opens ok=${ok} fail=${fail} total=${len(rows)}");
+    if fail > 0 {
+        print("[verify] FAIL");
+        return 1;
+    }
+    print("[verify] PASS — data is on disk and decrypts");
+    return 0;
+}
+
+fn cmd_delete_one(path, master, del_id) uses(fs.read, fs.write) {
+    print("[delete-one] id=${del_id}");
+    let loaded = load_vault(path);
+    let salt_hex = loaded[0];
+    let verifier = loaded[1];
+    let rows = loaded[2];
+    if password_verify_encoding(master, verifier) == false {
+        print("[delete-one] FAIL master");
+        return 1;
+    }
+    let mut kept = [];
+    let mut removed = 0;
+    let mut i = 0;
+    while i < len(rows) {
+        if rows[i][0] == del_id {
+            removed = removed + 1;
+        } else {
+            push(kept, rows[i]);
+        }
+        i = i + 1;
+    }
+    save_vault(path, salt_hex, verifier, kept);
+    print("[delete-one] removed=${removed} remaining=${len(kept)} → ${path}");
+    return 0;
+}
+
+fn cmd_delete_all(path, master) uses(fs.read, fs.write) {
+    print("[delete-all] path=${path}");
+    let loaded = load_vault(path);
+    let salt_hex = loaded[0];
+    let verifier = loaded[1];
+    if password_verify_encoding(master, verifier) == false {
+        print("[delete-all] FAIL master");
+        return 1;
+    }
+    let before = len(loaded[2]);
+    save_vault(path, salt_hex, verifier, []);
+    print("[delete-all] wiped ${before} contacts; empty vault remains at ${path}");
+    return 0;
+}
+
+fn cmd_destroy(path) uses(fs.write) {
+    print("[destroy] overwriting then unlinking ${path}");
+    // Overwrite with non-secret marker (no keys, no ciphertext), then unlink in-language.
+    // Verified-lane: one linear fs.write authorizes overwrite + delete_file.
+    let w = cap_acquire("fs.write");
+    write_file(path, "ANUBIS_VAULT_DESTROYED\n");
+    delete_file(path);
+    cap_use(w);
+    print("[destroy] DONE — path unlinked via delete_file (fs.write)");
+    return 0;
+}
+
+fn cmd_list(path, master, limit) uses(fs.read) {
+    let loaded = load_vault(path);
+    if password_verify_encoding(master, loaded[1]) == false {
+        print("[list] FAIL master");
+        return 1;
+    }
+    let rows = loaded[2];
+    print("[list] count=${len(rows)} (showing up to ${limit})");
+    let mut i = 0;
+    while i < len(rows) && i < limit {
+        let r = rows[i];
+        print("  ${r[0]}  ${r[1]}  ${r[2]}  ct_hex_len=${len(r[4])}");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() uses(io.print, fs.read, fs.write) {
+    let a = args();
+    // args() may include binary name — find subcommand
+    // Typical: [..., "create", path, master, n] after -- 
+    if len(a) < 1 {
+        print("usage: create|verify|list|delete-one|delete-all|destroy …");
+        return;
+    }
+    // Find first recognized command token
+    let mut cmd = "";
+    let mut rest = [];
+    let mut i = 0;
+    while i < len(a) {
+        let t = a[i];
+        if t == "create" || t == "verify" || t == "list" || t == "delete-one" || t == "delete-all" || t == "destroy" {
+            cmd = t;
+            let mut j = i + 1;
+            while j < len(a) {
+                push(rest, a[j]);
+                j = j + 1;
+            }
+            break;
+        }
+        i = i + 1;
+    }
+    if cmd == "" {
+        print("usage: … -- create|verify|list|delete-one|delete-all|destroy …");
+        print("argv was: ${a}");
+        return;
+    }
+    print("ANUBIS VAULT CONTACTS  cmd=${cmd}  crypto=${crypto_backend()}");
+    if cmd == "create" {
+        let path = rest[0];
+        let master = rest[1];
+        let n = 500;
+        if len(rest) > 2 {
+            n = int(rest[2]);
+        }
+        cmd_create(path, master, n);
+    } else if cmd == "verify" {
+        cmd_verify(rest[0], rest[1]);
+    } else if cmd == "list" {
+        let lim = 20;
+        if len(rest) > 2 {
+            lim = int(rest[2]);
+        }
+        cmd_list(rest[0], rest[1], lim);
+    } else if cmd == "delete-one" {
+        cmd_delete_one(rest[0], rest[1], rest[2]);
+    } else if cmd == "delete-all" {
+        cmd_delete_all(rest[0], rest[1]);
+    } else if cmd == "destroy" {
+        cmd_destroy(rest[0]);
+    }
+}

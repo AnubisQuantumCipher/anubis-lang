@@ -1,0 +1,18 @@
+// Companion for anubis-defensive-harden Lever 4 (--verified).
+// FULLY EXECUTABLE: linear fs.write capability authorizes the sealed package write
+// at check time AND lowers under `anubis run` / native build.
+//
+//   ./target/release/anubis check --verified examples/showcase/anubis_vault/vault_verified_caps.anb
+//   → check passed
+//   ./target/release/anubis run examples/showcase/anubis_vault/vault_verified_caps.anb
+//   → writes /tmp/anubis_vault_verified_cap_demo.txt
+
+fn main() uses(io.print, fs.write) {
+    let w = cap_acquire("fs.write");
+    write_file(
+        "/tmp/anubis_vault_verified_cap_demo.txt",
+        "ANUBIS_VAULT_VERIFIED_CAP\ncapability=fs.write spent once\n"
+    );
+    cap_use(w);
+    print("verified-lane package write authorized (check + run)");
+}

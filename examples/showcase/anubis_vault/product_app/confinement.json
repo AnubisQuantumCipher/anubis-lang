@@ -1,0 +1,83 @@
+{
+  "schema": "anubis.confinement.v1",
+  "package": "program",
+  "version": "0.0.0",
+  "source_merkle": "044b89d845bad57820ec8b51fe2e3403a4784da692d32836c001fa32b762dcfa",
+  "effects_bounded": true,
+  "capabilities_present": [
+    "fs.read",
+    "fs.write"
+  ],
+  "grants": [
+    {
+      "capability": "net.send",
+      "present": false,
+      "hypervisor_grant": "network:host-only",
+      "tart_enforced": true,
+      "tart_args": [
+        "--net-host"
+      ],
+      "advisory": [
+        "--net-host still lets the guest reach the HOST and other host-only guests (a potential exfil channel), so it is not a true air-gap."
+      ],
+      "needs_human": [
+        "a true zero-NIC air-gap for a proven-net-free program is FULLY ENFORCED by the native backend `anubis vz native-preflight` (objc2-virtualization, zero network devices) on a binary signed with `scripts/build_signed_anubis.sh` — an ad-hoc signature suffices for local use, so this is no longer [NEEDS-HUMAN] (only notarization-for-distribution is). tart's `--net-host` (the enforced grant here) is the host-only fallback where the native lane is unavailable."
+      ]
+    },
+    {
+      "capability": "fs.read",
+      "present": true,
+      "hypervisor_grant": "mount:read-write",
+      "tart_enforced": false,
+      "tart_args": [],
+      "advisory": [],
+      "needs_human": [
+        "the host PATHS to mount are engagement-supplied; without --engagement allowed_paths no host directory is exposed (fail-closed). Applied mounts (--dir=<tag>:<path>[:ro]) land in the applied manifest, slice-2."
+      ]
+    },
+    {
+      "capability": "fs.write",
+      "present": true,
+      "hypervisor_grant": "mount:read-write",
+      "tart_enforced": false,
+      "tart_args": [],
+      "advisory": [],
+      "needs_human": [
+        "the host PATHS to mount are engagement-supplied; without --engagement allowed_paths no host directory is exposed (fail-closed). Applied mounts (--dir=<tag>:<path>[:ro]) land in the applied manifest, slice-2."
+      ]
+    },
+    {
+      "capability": "shell",
+      "present": false,
+      "hypervisor_grant": "informational:in-guest-shell-not-hypervisor-gated",
+      "tart_enforced": false,
+      "tart_args": [],
+      "advisory": [
+        "a shell inside a full-OS guest cannot be forbidden by tart; the LANGUAGE checker gates shell. The two boundaries are complementary, not redundant."
+      ],
+      "needs_human": []
+    },
+    {
+      "capability": "time.now",
+      "present": false,
+      "hypervisor_grant": "informational:not-a-vm-confinement-dimension",
+      "tart_enforced": false,
+      "tart_args": [],
+      "advisory": [],
+      "needs_human": []
+    },
+    {
+      "capability": "rand.gen",
+      "present": false,
+      "hypervisor_grant": "informational:not-a-vm-confinement-dimension",
+      "tart_enforced": false,
+      "tart_args": [],
+      "advisory": [],
+      "needs_human": []
+    }
+  ],
+  "notes": [
+    "This manifest reflects the DECLARED + inferred effect surface (the checker enforces inferred ⊆ declared). The effect fixpoint may under-approximate higher-order/closure flows; the hypervisor boundary is the backstop for undeclared flows. Safety relies on the miss-direction being fail-closed: a MISSED capability yields a MORE restrictive grant (host-only / mount:none), so a mis-analysed guest breaks rather than leaks.",
+    "tart cannot give a guest zero network devices, cannot restrict egress by hostname (IPv4 CIDR only via Softnet), and cannot gate an in-guest shell. The native backend `anubis vz native-preflight` (objc2-virtualization) closes the first two: a proven-net-free program gets a real zero-NIC air-gap, and a net-using program gets a per-hostname egress substrate — on a binary signed with `scripts/build_signed_anubis.sh` (an ad-hoc signature suffices locally, so NOT [NEEDS-HUMAN]; only notarization-for-distribution is). An in-guest shell remains a full-OS-guest concern gated by the LANGUAGE checker, not the hypervisor."
+  ]
+}
