@@ -229,7 +229,10 @@ fn collect_container_closures(
         Expr::MapLiteral { entries, .. } => entries
             .iter()
             .filter_map(|(k, v)| match k {
+                // Quoted `"f"` and bare `f` both key the stored closure so `m["f"](0)` / `m.f(0)`
+                // can descend (unquoted keys used to be dropped → Safe-mode launder).
                 Expr::StrLiteral(s) => Some((mk(s), v)),
+                Expr::Var(name) => Some((mk(name), v)),
                 _ => None,
             })
             .collect(),
@@ -6551,49 +6554,56 @@ fn analyze_expr_effect(
                     }
                 }
             }
-            // Task #48-d: a closure stored in a LIST ELEMENT (`let arr = [|x| write_file(..)]`) applied
-            // via `arr[0](0)` — a `CallExpr` on an `Index` — otherwise hides its body. Descend into the
-            // stored element-closure (keyed by the concrete index in `field_closures`, populated at the
-            // array literal), the same safe-direction descent as the struct-field case (#48-c). Only a
-            // concrete literal index on a Var base is resolved (a symbolic index is a residual).
+            // Task #48-d: a closure stored in a LIST ELEMENT (`let arr = [|x| write_file(..)]`) or
+            // MAP ENTRY (`let m = { "f": |x| write_file(..) }`) applied via `arr[0](0)` / `m["f"](0)` —
+            // a `CallExpr` on an `Index` — otherwise hides its body. Descend into the stored closure
+            // (keyed by the concrete int index OR string key in `field_closures`). Only a concrete
+            // literal/string index on a Var base is resolved (a symbolic index is a residual).
             if let Expr::Index { base, index } = callee.as_ref() {
-                if let (Expr::Var(bname), Expr::Literal(idx)) = (base.as_ref(), index.as_ref()) {
-                    if let Some(lam) = scope
-                        .get(bname)
-                        .and_then(|b| b.field_closures.get(idx.trim()).cloned())
-                    {
-                        if let Expr::Lambda { params, body } = lam.as_ref() {
-                            let mut local = scope.clone();
-                            // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
-                            // arr[0](input())` runs with x = the tainted arg (else the arg's label was
-                            // dropped and the index-applied closure laundered it — hunt wf_e67160a7).
-                            for (j, p) in params.iter().enumerate() {
-                                let (pt, ps) = match args.get(j) {
-                                    Some(a) => (
-                                        expr_taint_source_m(
-                                            a,
-                                            scope,
-                                            &ctx.tainting_fns,
-                                            &ctx.param_return_taint,
-                                            &ctx.method_tainting_fns,
+                if let Expr::Var(bname) = base.as_ref() {
+                    let key_opt: Option<String> = match index.as_ref() {
+                        Expr::Literal(idx) => Some(idx.trim().to_string()),
+                        Expr::StrLiteral(s) => Some(s.clone()),
+                        _ => None,
+                    };
+                    if let Some(key) = key_opt {
+                        if let Some(lam) = scope
+                            .get(bname)
+                            .and_then(|b| b.field_closures.get(&key).cloned())
+                        {
+                            if let Expr::Lambda { params, body } = lam.as_ref() {
+                                let mut local = scope.clone();
+                                // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
+                                // arr[0](input())` runs with x = the tainted arg (else the arg's label was
+                                // dropped and the index-applied closure laundered it — hunt wf_e67160a7).
+                                for (j, p) in params.iter().enumerate() {
+                                    let (pt, ps) = match args.get(j) {
+                                        Some(a) => (
+                                            expr_taint_source_m(
+                                                a,
+                                                scope,
+                                                &ctx.tainting_fns,
+                                                &ctx.param_return_taint,
+                                                &ctx.method_tainting_fns,
+                                            ),
+                                            expr_secret_source_m(
+                                                a,
+                                                scope,
+                                                &ctx.secret_fns,
+                                                &ctx.param_return_taint,
+                                                &ctx.method_secret_fns,
+                                            )
+                                            .is_some(),
                                         ),
-                                        expr_secret_source_m(
-                                            a,
-                                            scope,
-                                            &ctx.secret_fns,
-                                            &ctx.param_return_taint,
-                                            &ctx.method_secret_fns,
-                                        )
-                                        .is_some(),
-                                    ),
-                                    None => (None, false),
-                                };
-                                local.insert(
-                                    p.clone(),
-                                    labelled_param_binding(p, pt.is_some(), pt, ps),
-                                );
+                                        None => (None, false),
+                                    };
+                                    local.insert(
+                                        p.clone(),
+                                        labelled_param_binding(p, pt.is_some(), pt, ps),
+                                    );
+                                }
+                                analyze_expr_effect(body, mode, &local, effects, ctx);
                             }
-                            analyze_expr_effect(body, mode, &local, effects, ctx);
                         }
                     }
                 }

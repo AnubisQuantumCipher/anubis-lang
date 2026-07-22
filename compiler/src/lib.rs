@@ -6350,6 +6350,35 @@ fn main() {
     }
 
     #[test]
+    fn map_entry_closure_application_is_enforced() {
+        // SECURITY (Phase-9 closeout): map-keyed closures applied via `m["f"](0)` or bare-key
+        // `m.f(0)` previously hid their bodies (Index arm only resolved int literals; MapLiteral
+        // only recorded StrLiteral keys). Taint/secret/effect must enforce at the call site.
+        assert!(
+            tc_ok(r#"fn main() { let t = input(); let m = { "f": |x| write_file("o", t) }; m["f"](0); }"#)
+                .is_err(),
+            "map string-key closure capturing taint into write_file must reject"
+        );
+        assert!(
+            tc_ok(r#"fn main() uses(fs.write) { let t = input(); let m = { f: |x| write_file("o", t) }; m.f(0); }"#)
+                .is_err(),
+            "map bare-key field application of a taint-capturing closure must reject"
+        );
+        assert!(
+            tc_ok(r#"fn main() { let s = secret_source("k"); let m = { "f": |x| shell(s) }; m["f"](0); }"#)
+                .is_err(),
+            "map string-key secret→shell must reject"
+        );
+        // NON-REGRESSION: clean / declared / unapplied accept.
+        tc_ok(r#"fn main() { let m = { "f": |x| 1 }; m["f"](0); }"#)
+            .expect("clean map-entry closure accepts");
+        tc_ok(r#"fn main() uses(fs.write) { let m = { "f": |x| write_file("o","d") }; m["f"](0); }"#)
+            .expect("declared fs.write via map-entry closure accepts");
+        tc_ok(r#"fn main() { let m = { "f": |x| write_file("o","d") }; print(1); }"#)
+            .expect("stored-but-unapplied map-entry closure is not enforced");
+    }
+
+    #[test]
     fn closure_return_value_carries_capture_taint_and_secrecy() {
         // SECURITY (task #48-g, soundness-hunt wf_7e946a56): a local closure's RESULT carries the
         // taint/secrecy of its body's returned CAPTURE — `let g = |x| t; let r = g(0); sink(r)`
