@@ -109,3 +109,39 @@ cargo run --release -p anubis -- run examples/hello_normal.anb \
 This proves Anubis has a normal-language path: safe programs can execute without
 RISC0, Metal, runtime-plan, or evidence unless requested. The current `run`
 subset is intentionally partial and fails closed on unsupported constructs.
+
+## Code-signing & the "do I need an Apple Developer account?" question
+
+**Short answer: no. No user — building, installing, or downloading Anubis — needs an
+Apple ID or an Apple Developer account.**
+
+The entire core — `check`, `run`, `build`, `prove`, contracts, secrets, taint, and the
+**tart** VM lane (`anubis vz create` / `exec` / `snapshot` / …) — needs **no
+code-signing at all**.
+
+Only the **native VZ backend** (`anubis vz native-preflight`, the direct
+Virtualization.framework air-gap) needs the binary signed with **one** entitlement,
+`com.apple.security.virtualization` — and that entitlement is **unrestricted**:
+
+| Path | What it takes | Apple account needed? |
+|---|---|---|
+| Core language + the tart VM lane | just build and run | **none** |
+| Native VZ lane, built from source | a **local ad-hoc signature** — `scripts/build_signed_anubis.sh` runs `codesign --sign -` with the entitlement, no portal, no provisioning profile | **none** |
+| Distributing a **pre-built** binary to others | the *publisher* notarizes once with a Developer ID so Gatekeeper is happy on download | only the **publisher, once** — never the downloader |
+
+Details that make this a non-issue:
+
+- `com.apple.security.virtualization` is **not** a developer-portal entitlement. An
+  ad-hoc signature (`codesign --sign -`) applies it and it works on your own Mac. The
+  *restricted* VM entitlement, `com.apple.vm.networking` (which would need Apple's
+  approval), is **not used** anywhere in Anubis.
+- Building with a plain `cargo build` and then trying the native lane **fails closed**
+  with a precise message telling you to run `scripts/build_signed_anubis.sh` — it never
+  silently degrades. This was verified firsthand: the same binary is rejected without
+  the entitlement and instantiates a VM with it.
+- Signing with a real "Apple Development" identity (`--identity "Apple Development: …"`)
+  also works, but that is a *convenience*, not a requirement.
+
+So: clone-and-build users run `scripts/build_signed_anubis.sh` (ad-hoc, no account) and
+the native lane works; download-a-release users just run the binary you notarized once.
+Neither ever links their own Apple ID.
