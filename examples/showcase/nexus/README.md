@@ -1,14 +1,24 @@
-# NEXUS — a whole program, proved *and* run
+# NEXUS — a secure AI agent, proved by the compiler
 
-NEXUS is the flagship Anubis showcase: a **472-line** self-verifying "cognitive
-kernel" that `anubis check` proves and `anubis run` executes — one coherent program
-that exercises essentially the entire language at once.
+NEXUS is the flagship Anubis showcase: an **autonomous AI agent whose safety
+properties are machine-checked**, not left to a system prompt. It forms private
+beliefs, reasons over untrusted sensor input, deliberates, and acts — and
+`anubis check` proves, *before it ever runs*, that:
 
-It is an autonomous reasoner that produces a hash-committed record of its own
-integrity **without revealing what it deliberated about**: private beliefs are
-`secret<T>`, every arithmetic bound is Z3-proved from a contract, deliberation is
-hash-committed, and the final integrity chain is established under a proved loop
-invariant.
+- its private beliefs (`secret<T>`) never reach a public sink — **a leak is a compile error**;
+- every untrusted `taint_source` (a sensor, a command) is validated and `declassify`-ed
+  with an auditable **policy + reason** before the agent may act on it — prompt-injection
+  and poisoned input become a compile error;
+- outbound action is a **linear, use-once capability** (`cap_acquire("net.send")` →
+  `cap_use`): it earns the right to broadcast once and spends it once;
+- the **lethal trifecta** — reads-private **+** untrusted-input **+** can-exfiltrate —
+  can never fire (`ANUBIS_LETHAL_TRIFECTA`);
+- and it emits a **hash-committed record of its own cognitive integrity** — evidence it
+  reasoned within its safety envelope — while revealing nothing about what it deliberated on.
+
+It is also a real, **472-line** program that `check`s clean **and** `run`s, exercising
+essentially the entire language: 9 Z3-verified contracts, traits, three `enum` kinds,
+generics, the higher-order builtins, and a proved loop-invariant integrity chain.
 
 ```bash
 # 1. Prove it — types, taint, effects, and every requires/ensures discharged by SMT

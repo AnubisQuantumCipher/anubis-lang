@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-label="Anubis — a claim is evidence, not an assertion">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0f16"/>
+      <stop offset="1" stop-color="#151b26"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.1" cy="0.05" r="0.95">
+      <stop offset="0" stop-color="#d4af37" stop-opacity="0.16"/>
+      <stop offset="0.55" stop-color="#d4af37" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0d27a"/>
+      <stop offset="1" stop-color="#c1902a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#bg)"/>
+  <rect width="1200" height="300" fill="url(#glow)"/>
+
+  <!-- proof mark ∎ (QED): the claim, sealed -->
+  <g transform="translate(1058,132)">
+    <rect x="-46" y="-46" width="92" height="92" rx="10" fill="none" stroke="url(#gold)" stroke-width="2" opacity="0.5"/>
+    <rect x="-14" y="-14" width="28" height="28" fill="url(#gold)" opacity="0.9"/>
+  </g>
+
+  <!-- gold accent bar -->
+  <rect x="90" y="94" width="6" height="112" fill="url(#gold)"/>
+
+  <!-- overline -->
+  <text x="118" y="90" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="17" letter-spacing="6" fill="#8b96a5">THE ANUBIS LANGUAGE</text>
+
+  <!-- wordmark -->
+  <text x="115" y="174" font-family="Georgia, 'Times New Roman', serif" font-size="94" font-weight="700" letter-spacing="7" fill="#f2ead6">ANUBIS</text>
+
+  <!-- tagline -->
+  <text x="118" y="222" font-family="Georgia, 'Times New Roman', serif" font-size="29" font-style="italic" fill="#eac86a">a claim is evidence, not an assertion.</text>
+
+  <!-- feature line -->
+  <text x="119" y="260" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="16" letter-spacing="0.4" fill="#7d8794">SMT-proved contracts · secrets &amp; taint as types · self-hosting · Apple Silicon</text>
+</svg>

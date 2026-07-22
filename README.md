@@ -1,8 +1,8 @@
 <div align="center">
 
-# Anubis
+<img src="docs/assets/anubis-banner.svg" alt="Anubis — a claim is evidence, not an assertion" width="100%">
 
-### The language where a claim is *evidence*, not an assertion.
+<br><br>
 
 ![Built with Rust](https://img.shields.io/badge/built_with-Rust-000000?logo=rust&logoColor=white)
 ![Self-host](https://img.shields.io/badge/self--host-byte--identical_fixpoint-2ea44f)
@@ -81,36 +81,50 @@ Fix it — subtract only where it can't underflow — and the **same solver prov
 
 ---
 
-## A whole program, proved *and* run — NEXUS
+## The showcase — NEXUS, a secure AI agent the compiler keeps honest
 
-That counterexample is one obligation. **NEXUS** is the other end of the range: a
-**472-line** self-verifying *cognitive kernel* that `anubis check` proves and
-`anubis run` executes — one coherent program that exercises essentially the entire
-language, and produces a hash-committed record of its own integrity *without revealing
-what it deliberated about.*
+This is what Anubis is *for*. **NEXUS is an autonomous AI agent whose safety is proved
+by the compiler — not promised by a system prompt.**
+
+Every AI-agent security failure of the moment — a prompt-injected agent that
+exfiltrates a secret, a tool-using agent that over-acts, an agent you have to *trust*
+because you can't inspect its reasoning — is, in NEXUS, either a **compile error** or a
+**machine-checked proof**:
+
+| The agent must… | …and Anubis makes it a property, not a promise |
+|---|---|
+| **keep private beliefs secret** | its beliefs are `secret<T>`; the checker proves no secret ever reaches a public sink — **a leak is a compile error**, not a runtime incident |
+| **not be hijacked by untrusted input** | every sensor and command is a `taint_source` that **must** be validated and `declassify`-ed with an auditable *policy + reason* before the agent may act on it — unsanitized influence is rejected |
+| **not over-act** | outbound action is a **linear, use-once capability** — `cap_acquire("net.send")` then `cap_use`: it earns the right to broadcast exactly once and spends it exactly once |
+| **never combine all three** | reads-private **+** untrusted-input **+** can-exfiltrate — *the lethal trifecta*, the canonical agent-exfiltration bug — is `ANUBIS_LETHAL_TRIFECTA`; NEXUS passes only because it routes every flow through validation, declassify, and a spent capability |
+| **be auditable without exposing its thoughts** | it emits a **hash-committed record of its own cognitive integrity** — evidence it reasoned inside its safety envelope — while the beliefs themselves (`secret<T>`) never leave |
+
+And it is a real program, not a diagram: **472 lines** that `check` clean **and** `run` —
+9 Z3-verified contracts, `trait` dispatch, three `enum` kinds, generics, the
+higher-order builtins, and a proved `while … invariant(...)` integrity chain.
 
 ```bash
 anubis check examples/showcase/nexus/nexus_cognitive_kernel.anb   # → check passed
-anubis run   examples/showcase/nexus/nexus_cognitive_kernel.anb   # → runs to a deterministic result
+anubis run   examples/showcase/nexus/nexus_cognitive_kernel.anb   # → runs; proves its own integrity
 ```
 
-One file puts **9 Z3-verified contracts**, `secret<T>` private beliefs (checker-proved
-no-leak), `trait` + `impl` dispatch, three `enum` kinds with `match` destructuring,
-`Result`/`Option`, generics, the higher-order builtins (`map`/`filter`/`find`/`sort_by`/…),
-and a `while … invariant(...)` integrity chain into a single program — and it still
-checks clean *and* runs:
-
 ```
-NEXUS cognitive cycle complete.
-  + Contracts:    requires/ensures on 9 functions, Z3-proved
-  + Beliefs:      secret<T>, contract-verified, never leaked
-  + Integrity:    hash-chain, loop-invariant proved
+[Phase 3] Private belief formation: secret<T>, contract-verified
+  beliefs formed and fused (secret<i64> — checker enforces no leak)
+  Z3 proved: 0 <= fused < 10000, 0 <= surprise < 10000
+...
 The kernel proved its own cognitive integrity. It revealed NOTHING about what it deliberated.
 ```
 
-Its information-flow half, [`nexus_checker_security.anb`](examples/showcase/nexus/nexus_checker_security.anb),
-proves the `taint_source → declassify` discipline and capability-gated egress in the
-checker lane. Full walkthrough: **[`examples/showcase/nexus/`](examples/showcase/nexus/)**.
+The information-flow half — [`nexus_checker_security.anb`](examples/showcase/nexus/nexus_checker_security.anb) —
+is where the `taint_source → declassify` discipline and the capability-gated broadcast
+are proved in the checker lane (`anubis check --verified` → passed). Full walkthrough:
+**[`examples/showcase/nexus/`](examples/showcase/nexus/)**.
+
+> **Why it matters.** The guarantees that AI-agent frameworks today write into a system
+> prompt and *hope* hold — "don't leak the key," "don't act on injected instructions,"
+> "only use the tools you were given" — NEXUS turns into properties the compiler
+> refuses to build without.
 
 ---
 
@@ -211,7 +225,7 @@ trigger-happy** — the same program with the leak removed passes.
 
 | Program | What it shows |
 |---|---|
-| ⭐ **[NEXUS cognitive kernel](examples/showcase/nexus/)** (472 lines) | the **flagship** — a whole real program that `check` proves *and* `run` executes: 9 Z3 contracts, `secret<T>`, traits, enums, generics, HOF, and a proved loop-invariant integrity chain, all in one file |
+| ⭐ **[NEXUS](examples/showcase/nexus/)** — secure AI agent (472 lines) | the **flagship**: an autonomous agent whose safety is *compiler-proved* — private beliefs can't leak, untrusted input can't hijack it, egress is a use-once capability, the lethal trifecta can't fire, and it proves its own integrity. `check` clean **and** `run` |
 | [`ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb) | the solver hands you the **counterexample** — `check` disproves `ensures(result >= 0)` at the wraparound state, then proves the fix |
 | [`verified_private_settlement.anb`](examples/showcase/verified_private_settlement.anb) | **contracts + secrets in one file**: SMT-proved debit/credit over `secret<i64>` balances, and the info-flow lane guarantees nothing private leaves |
 | [`verified_loop.anb`](examples/showcase/verified_loop.anb) | a **loop invariant** discharged to establish a postcondition |
