@@ -1,0 +1,25 @@
+{
+  "gate": "selfhost_ddc",
+  "claim": "Diverse Double-Compiling: two independent toolchains emit byte-identical compiler output",
+  "reference_toolchain": {
+    "role": "cA",
+    "compiler": "rustc",
+    "version": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+    "interpreter_source": "selfhost/runtime/anubis_sh_interp_rt.rs"
+  },
+  "diverse_toolchain": {
+    "role": "cB",
+    "compiler": "gcc-15",
+    "version": "gcc-15 (Homebrew GCC 15.2.0) 15.2.0",
+    "interpreter_source": "selfhost/backend_c/anubis_sh_interp_rt.c",
+    "parser_source": "selfhost/backend_c/anubis_sh_parse.c"
+  },
+  "input": "selfhost/src/anubis_sh.anb",
+  "payload_sha256": "9c736749d62c78fd0469927c956f6cea54bb8a681b3811d567f029bf4342e378",
+  "c_native_parser_payload_sha256": "9c736749d62c78fd0469927c956f6cea54bb8a681b3811d567f029bf4342e378",
+  "agreed_output_sha256": "3830edc6aff9b5960b365435c742109065451fa861853bafa20774466d97b63e",
+  "result": "PASS",
+  "checks_pass": 34,
+  "checks_fail": 0,
+  "scope": "Diversifies BOTH the source-level derivation of the AST (via a C-native, non-rustc parser proven byte-identical to the host) AND the execution of the compiler across two native toolchains (rustc/LLVM vs gcc/non-LLVM). Does NOT prove semantic correctness; it proves no single toolchain hid a divergence across the whole source -> AST -> execution pipeline."
+}

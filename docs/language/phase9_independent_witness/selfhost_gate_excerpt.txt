@@ -1,0 +1,14 @@
+  unit_selfhost_schema: PASS
+  args_and_version: PASS
+  host_dump_cli: PASS
+== SELFHOST_A lex/parse goldens (stage0 host SH) ==
+  selfhost_a_lexparse: PASS
+== SELFHOST_B checker (stage0) + fail exits ==
+  selfhost_b_check: PASS
+== SELFHOST_C hello: executable (not payload-viewer) ==
+  selfhost_c_hello_executable: PASS
+  selfhost_parse_self: PASS
+  selfhost_bootstrap_fixpoint: PASS
+  binary_fixpoint sha256 (LC_UUID + ad-hoc-sig normalized): 9030e24b4105e02ddeb1bb68932c8e0e5fc9959dcb3db9f4b0e6f64504f5780c
+  selfhost_binary_fixpoint: PASS
+SELFHOST_GATE: PASS (9/9)

@@ -18,7 +18,7 @@ See `MATURITY_CLAIM_MATRIX.md` for the live table.
 - Runtime planning with embedded probe: **REAL PLAN-ONLY**
 - Runtime execution / plan-observed enforcement: **DEFERRED**
 - General-purpose language: **PARTIAL**
-- Third-party reproduction: **NOT CLAIMED**
+- Third-party reproduction: **REAL** (independent clean-clone stranger witness 2026-07-22 — selfhost 9/9, repro 6/6 hermetic Docker, DDC 34/34, fixtures 244/244, formal PASS; see `docs/language/phase9_independent_witness/`)
 - Hosted CI Metal validation: **NOT CLAIMED**
 - Public package ecosystem: **NOT CLAIMED**
 - Production-grade broad language: **NOT CLAIMED**

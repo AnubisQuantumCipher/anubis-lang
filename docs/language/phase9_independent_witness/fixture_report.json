@@ -1,0 +1,1472 @@
+{
+  "fixtures": [
+    {
+      "name": "arithmetic_precedence",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "arm_join_numeric_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "arm_join_unknown_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "arm_type_conflict_if",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "arm_type_conflict_match",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "attribute_safe_parse",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_call_capability_declared_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_call_in_aggregate_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_call_in_application_arg_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_call_in_cast_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_capability_launder_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_clean_call_with_capability_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_declassify_in_branch_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_interproc_sink_through_match",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_read_file_in_aggregate_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_reassign_clean_before_sink_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_secret_egress_in_block_flagged",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_shell_launder_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_sink_in_if_branch_flagged",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_sink_in_match_arm_flagged",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "buried_tainted_sink_in_aggregate_flagged",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "call_arg_type_mismatch",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "call_return_type_mismatch",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "call_site_requires_block_branch_guard_passes",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "call_site_requires_block_branch_passes",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "call_site_requires_block_branch_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "call_site_requires_block_else_branch_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "call_site_requires_closed_arg_in_branch_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "call_site_requires_satisfied_passes",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "call_site_requires_violated_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_branch_default_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_branch_reuse_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_effect_authorized_verified",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_effect_default_lane_free",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_effect_unauthorized_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_forge_unknown_provenance_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_missing",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_move_rebind_reuse",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_open_row_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_reuse",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_surrendered",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_used_once",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "capability_verified_no_effect_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "cast_signed_narrow_assert_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "cast_truncate_assert_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "clean_arg_to_egressing_method_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "clean_container_to_sink_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "clean_match_value_to_sink_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "comments_line",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "comparison_bool",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "contract_early_return_reassigned_param_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "contract_for_source_embedded_write_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "control_flow_shadow_pattern_var_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "declassify_in_branch_releases_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "declassify_missing_reason",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "declassify_policy_pass",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "destructure_let_clean_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "destructure_let_declassified_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "destructure_let_method_return_secret_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "destructure_let_secret_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "destructure_let_stmt_shadow_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "destructure_let_taint_sink_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "direct_secret_block_shadow_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "direct_secret_clear_both_branches_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "direct_secret_for_loopvar_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "direct_secret_letpattern_shadow_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "direct_secret_value_block_nested_cf_clean_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "direct_secret_value_block_nested_cf_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "direct_taint_value_block_nested_cf_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "effect_declared_transitive_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "effect_open_plus_concrete_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "effect_open_row_hof_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "effect_overdeclared_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "effect_undeclared_transitive",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "field_access_type_mismatch",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "float_assert_false_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "float_contract_division_bounded_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "float_contract_false_ensures_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "float_contract_monotonicity_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "float_contract_nan_requires_safety",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "float_let_chain_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "float_let_frame_leak_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "float_let_match_reassign_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "float_let_of_let_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "float_narrow_arith_operand_order_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "function_call",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "function_return_u32",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "generic_arity_mismatch",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "generic_param_conflict",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "generic_use_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "hello_minimal",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "if_else",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "ifexpr_false_branch_contract_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "ifexpr_guarded_max_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "imin_assert_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "int_let_if_init_reassign_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "int_let_match_reassign_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "interproc_declassify_through_method_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "interproc_discard_arg_method_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "interproc_freefn_to_method_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "interproc_freefn_to_method_sink_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "interproc_method_to_method_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "interproc_method_to_method_sink_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "interproc_value_through_method_sink_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_apply_idx0_shell_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_declared_cap_lambda_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_declassify_in_lambda_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_defined_but_uncalled_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_pure_field_forward_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_pure_lambda_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_secret_exfil_in_lambda_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_send_in_lambda_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_shell_in_lambda_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_tainted_sink_in_lambda_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "issue65_times_shell_forbidden",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "let_call_return_type_lie_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "let_call_return_type_matches_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_declassified_verified",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_default_lane_free",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_interproc_helpers_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_safe_lane_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_secret_no_read_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_shell_egress_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_two_legs_verified",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "lethal_trifecta_verified",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "loop_invariant_break_in_let_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "loop_invariant_break_in_map_literal_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "loop_invariant_break_in_struct_literal_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "metal_parity_minimal",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_chain_clean_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_chain_secret_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_chain_taint_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_secret_let_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_secret_nested_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_secret_valueblock_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_taint_let_sink_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "method_return_taint_nested_sink_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "missing_semicolon",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "mixed_theory_assert_false_conjunct_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "nonsecret_method_return_egress_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "param_assert_noncontract_float_stays_failopen",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "param_assert_noncontract_provable_passes",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "param_assert_noncontract_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_buffer_forwarder_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_conditional_forwarder_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_destructure_forwarder_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_discard_forwarder_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_method_forwarder_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_straightline_reassign_clean_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_value_block_nested_cf_clean_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "param_return_value_block_nested_cf_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "parenthesized_expr",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "path_sensitive_clamp_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "path_sensitive_false_clamp_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "path_sensitive_guard_other_var_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "path_sensitive_pick_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "path_sensitive_reassign_local_after_guard_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "path_sensitive_reassign_param_after_guard_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "path_sensitive_two_guards_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_letpattern_shadow_no_false_accept",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_assert_discharges",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_backslash_escape_no_false_accept",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_ensures_discharges",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_false_assert_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_false_ensures_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_let_backslash_no_false_accept",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_let_chain_discharges",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_let_false_ensures_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_string_let_reassigned_stays_unmodeled",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_var_var_identity_discharges",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "qf_s_var_var_unrelated_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "risc0_minimal_pass",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_container_element_write_flagged",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_container_passthrough_helper",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_declassified_egress_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_discard_helper_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_egress_declassified_arg_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_exfiltration_reassign",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_exfiltration_send",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_exfiltration_shell",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_exfiltration_via_helper",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_if_branch_to_egress",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_in_container_to_egress",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_interproc_match_passthrough",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_into_discard_helper_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_into_egress_transitive_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_into_egressing_helper_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_into_egressing_method_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_into_local_write_param_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_into_nonleaking_method_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_into_shell_helper_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_local_write_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_match_destructure_to_egress",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_method_return_declassified_egress_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_qualifier_declassified_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_qualifier_let_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_qualifier_param_egress_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_qualifier_param_return_declassified_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_qualifier_param_return_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_qualifier_param_trifecta_leg1_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_qualifier_reassigned_clean_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "secret_reassigned_clean_before_egress_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "struct_field_access",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "struct_literal_field_type_mismatch_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "struct_literal",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "symbolic_assert_fail",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "symbolic_assert_pass",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_block_let_passthrough_to_sink",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_container_element_write_flagged",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_in_container_to_sink",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_reassign_branch",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_reassign_straightline",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_reassign_to_clean_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_reassign_to_clean_in_branch_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "taint_reject_safe",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "tainted_into_sinking_method_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "tainted_qualifier_param_return_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "tainted_sink_without_declassify",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "trait_bound_primitive_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "trait_bound_satisfied_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "trait_bound_unsatisfied_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "trait_impl_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "trait_missing_method",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "trait_overlap",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "try_outside_result_preserved",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "try_type_matches_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "try_type_mismatch_option_in_result",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "try_type_mismatch_result_in_option",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "type_mismatch_u32_bool",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_let_u32",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_let_u8",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_question_mark_call_option_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_question_mark_call_return_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_question_mark_call_return_type_lie_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_question_mark_ok_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_question_mark_option_unwrap_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "typed_question_mark_type_lie_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "unknown_variable",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "unprovable_names_reassigned_var_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "unsigned_signed_int_still_taxed_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "unsigned_u32_callsite_coercion_rejects",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "unsigned_u32_nonneg_accepts",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    },
+    {
+      "name": "unterminated_block",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "status": "PASS"
+    },
+    {
+      "name": "while_loop_or_planned_skip",
+      "expected": "PASS",
+      "actual": "PASS",
+      "status": "PASS"
+    }
+  ],
+  "overall_verdict": "PASS",
+  "total": 244,
+  "passed": 244,
+  "failed": 0
+}

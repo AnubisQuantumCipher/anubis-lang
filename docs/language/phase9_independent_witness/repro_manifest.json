@@ -1,0 +1,44 @@
+{
+  "artifact": "anubis-sh self-host compiler (stage2 fixpoint source)",
+  "source_sha256": "3830edc6aff9b5960b365435c742109065451fa861853bafa20774466d97b63e",
+  "macos_lane": {
+    "toolchain": "rustc 1.97.0-nightly (82bee9650 2026-05-09)",
+    "target": "aarch64-apple-darwin",
+    "reproducible_sha256": "c94fd5b110418773d70f595a11c3863e11c5be346e81ea8cce29297db87dfc15",
+    "build": {
+      "flags": [
+        "-O",
+        "-C codegen-units=1",
+        "-C debuginfo=0"
+      ],
+      "remap_path_prefix": [
+        "$HOME=/anubis-home",
+        "<builddir>=/anubis-build"
+      ],
+      "SOURCE_DATE_EPOCH": "0",
+      "canonical_source_name": "canon.rs",
+      "normalize": [
+        "codesign --remove-signature",
+        "zero LC_UUID"
+      ]
+    }
+  },
+  "hermetic_linux_lane": {
+    "status": "reproducible",
+    "image": "rust:1.83-slim-bookworm",
+    "image_digest": "rust@sha256:540c902e99c384163b688bbd8b5b8520e94e7731b27f7bd0eaa56ae1960627ab",
+    "target": "aarch64-unknown-linux-gnu (or host arch in image)",
+    "reproducible_sha256": "6211f8c9de22e0a85007680dfcb59fb48a883d30b53f4c413554e7b446947e2e",
+    "build": {
+      "flags": [
+        "-O",
+        "-C codegen-units=1",
+        "-C debuginfo=0",
+        "-C link-args=-Wl,--build-id=none"
+      ],
+      "SOURCE_DATE_EPOCH": "0",
+      "note": "all paths fixed by the container image; no remap needed"
+    }
+  },
+  "claim": "Reproducible under the pinned toolchain/image + normalized environment. NOT toolchain-diversity / trusting-trust closure."
+}

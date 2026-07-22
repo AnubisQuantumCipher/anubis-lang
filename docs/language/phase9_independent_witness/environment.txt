@@ -1,0 +1,5 @@
+host=Darwin MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6041 arm64
+rustc=rustc 1.97.0-nightly (82bee9650 2026-05-09)
+docker=29.2.1
+gcc-15=gcc-15 (Homebrew GCC 15.2.0) 15.2.0
+lean=Lean (version 4.32.0, arm64-apple-darwin24.6.0, commit 8c9756b28d64dab099da31a4c09229a9e6a2ef35, Release)
