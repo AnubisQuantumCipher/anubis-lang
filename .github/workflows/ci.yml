@@ -38,6 +38,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gate-report
-          path: |
-            out/ci_gate/gate_report.json
-            out/ci_gate/gate_log.txt
+          # Upload the whole gate dir — including the per-gate gN.log detail — so a
+          # red gate is diagnosable from the artifact without re-running locally.
+          path: out/ci_gate/

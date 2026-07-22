@@ -35,6 +35,20 @@ And Anubis earns the right to make those proofs by **trusting nothing it cannot 
 
 > **Where it is:** a real, gated, pre-1.0 language with a working safe execution core, a fail-closed contract verifier, an offensive/evidence toolchain, and Apple-Silicon proving lanes. Every capability below is marked with an honest status and is traceable to a command, a gate, or a file. Nothing is marked done that isn't sealed.
 
+**The shape of it — one `check` decides everything downstream, and every green check becomes a re-checkable artifact:**
+
+```mermaid
+flowchart TD
+    SRC["your .anb program<br/>contracts · secrets · declared effects"]
+    SRC --> CHK["anubis check<br/>types · taint · effects/capabilities · SMT contracts"]
+    CHK -->|disproved| CE(["concrete counterexample<br/>the exact failing value"])
+    CHK -->|proved| OK(["green check"])
+    OK --> B["build<br/>native binary, same verification"]
+    OK --> P["prove<br/>zero-knowledge receipt"]
+    OK --> C["vz confine<br/>isolation from the proven effect set"]
+    OK --> E["evidence bundle<br/>signed, tamper-evident, re-derived on verify"]
+```
+
 ---
 
 ## The counterexample it hands you
@@ -201,8 +215,9 @@ An 11-phase maturity arc; the living source of truth is [`docs/language/ROADMAP.
 ## Quick start
 
 ```bash
-git clone <this-repo> && cd anubis-lang
-cargo build --release -p anubis        # binary at ./target/release/anubis
+git clone https://github.com/AnubisQuantumCipher/anubis-lang.git && cd anubis-lang
+cargo build --release -p anubis        # binary at ./target/release/anubis; the pinned
+                                       # toolchain (rust-toolchain.toml) is selected for you
 
 # ── Verify ────────────────────────────────────────────────────────────
 anubis check examples/showcase/ring_buffer_underflow.anb   # prints a real counterexample
@@ -238,7 +253,8 @@ anubis vz confine examples/showcase/vz_confine_demo.anb    # isolation manifest 
 | **Solver pipeline** | [`docs/SOLVER_PIPELINE_MAP.md`](docs/SOLVER_PIPELINE_MAP.md) · [`solver/README.md`](solver/README.md) |
 | **Crypto / stdlib** | [`docs/language/CRYPTO.md`](docs/language/CRYPTO.md) · [`docs/language/STDLIB_CORE.md`](docs/language/STDLIB_CORE.md) |
 | **Architecture map** | [`ARCHITECTURE_MAP.md`](ARCHITECTURE_MAP.md) |
-| **Editors** | `editors/vscode-anubis` (LSP + syntax) · `editors/tree-sitter-anubis` |
+| **Editors** | [`editors/vscode-anubis`](editors/vscode-anubis) (LSP + syntax) · [`editors/tree-sitter-anubis`](editors/tree-sitter-anubis) (grammar) |
+| **Contributing / Security** | [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md) · [`LICENSE`](LICENSE) (BUSL-1.1) |
 
 ---
 
