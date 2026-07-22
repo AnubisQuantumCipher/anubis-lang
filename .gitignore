@@ -50,3 +50,25 @@ editors/**/node_modules/
 
 # Claude Code session data — transcripts, worktrees, workflow scripts (never publish)
 .claude/
+
+# Local agent-harness config + transient dev artifacts (not part of the language)
+.grok/
+goal/
+.hunt2_findings/
+scratchpad/
+
+# Stray scratch files that were previously ignored only via a non-portable local
+# .git/info/exclude — pin them here so a fresh clone ignores them too
+run313131.anb
+secret.txt
+hello.txt
+*.bak
+*.zip
+
+# Stray logs. The handful of deliberately-tracked evidence logs (implementer/evidence,
+# gate parity logs) are already committed and stay tracked; this only stops NEW ones.
+*.log
+
+# Landing page — held out of the tree until its figures are reconciled to the gates.
+# `git add -f site/` to include it once it is honest.
+site/

@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// FEATURE: Phase-5 std.io taint leak without declassify
+import std.io;
+
+fn main() uses(fs.read, fs.write) {
+    let t = io::read_text("tests/fixtures/stdlib/_scratch_clean.txt");
+    io::write_text("tests/fixtures/stdlib/_scratch_leak.txt", t);
+}

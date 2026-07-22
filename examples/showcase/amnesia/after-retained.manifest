@@ -1,0 +1,6 @@
+# Adversarial post-erasure state: raw Alice is still present and must force FAIL.
+raw-alice-001|raw_sample|alice|-|1111111111111111111111111111111111111111111111111111111111111111
+raw-bob-001|raw_sample|bob|-|2222222222222222222222222222222222222222222222222222222222222222
+batch-bob-008|training_batch|-|raw-bob-001|8888888888888888888888888888888888888888888888888888888888888888
+checkpoint-bob-010|checkpoint|-|batch-bob-008|9999999999999999999999999999999999999999999999999999999999999999
+metric-bob-005|evaluation_metric|-|checkpoint-bob-010|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

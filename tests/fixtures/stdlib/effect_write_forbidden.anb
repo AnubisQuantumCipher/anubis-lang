@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// FEATURE: Phase-5 capability inheritance — std.io write_text cannot launder fs.write
+import std.io;
+
+fn main() {
+    io::write_text("/tmp/forbidden.txt", "nope");
+}

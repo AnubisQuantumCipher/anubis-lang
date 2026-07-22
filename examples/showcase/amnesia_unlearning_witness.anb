@@ -1,0 +1,630 @@
+// AMNESIA — Transitive Machine-Unlearning Deletion Witness
+//
+// REAL scope: this Anubis CLI validates a declared artifact-lineage DAG, traces
+// every artifact transitively derived from revoked subjects, verifies that a
+// candidate after-manifest is an unchanged subset with the entire closure
+// removed, commits both states with domain-separated Merkle trees, constructs
+// an inclusion proof plus sorted-set non-membership proof for a challenged
+// artifact, and writes a deterministic erasure certificate.
+//
+// PARTIAL boundary: this proves purge completeness for the supplied manifests.
+// It does not inspect opaque model weights and does not claim semantic machine
+// unlearning unless weights/checkpoints are themselves represented faithfully in
+// the lineage manifest.
+//
+// Usage:
+//   ./target/release/anubis run --allow-research \
+//     examples/showcase/amnesia_unlearning_witness.anb -- \
+//     BEFORE.manifest AFTER.manifest REVOCATIONS.txt CERTIFICATE.txt
+
+struct Artifact {
+    id: string,
+    kind: string,
+    subject: string,
+    parents: list,
+    content_sha256: string,
+}
+
+struct Assessment {
+    pass: bool,
+    subset_integrity: bool,
+    dependency_integrity: bool,
+    revocation_hits: bool,
+    direct_ids: list,
+    closure_ids: list,
+    removed_ids: list,
+    residual_ids: list,
+    collateral_ids: list,
+}
+
+struct InclusionProof {
+    target_id: string,
+    found: bool,
+    index: int,
+    total: int,
+    canonical: string,
+    leaf: string,
+    siblings: list,
+    root: string,
+}
+
+struct NonMembershipProof {
+    target_id: string,
+    present: bool,
+    total: int,
+    predecessor: InclusionProof,
+    successor: InclusionProof,
+    root: string,
+}
+
+fn clean_lines(text) {
+    let out = [];
+    for raw in lines(text) {
+        let line = trim(raw);
+        if line == "" { continue; }
+        if starts_with(line, "#") { continue; }
+        push(out, line);
+    }
+    return out;
+}
+
+fn parse_parents(text) {
+    let value = trim(text);
+    if value == "" || value == "-" { return []; }
+    let out = [];
+    for raw in split(value, ",") {
+        let parent = trim(raw);
+        if parent == "" { panic("AMNESIA_MANIFEST_EMPTY_PARENT"); }
+        push(out, parent);
+    }
+    return sort(unique(out));
+}
+
+fn parse_manifest(text) {
+    let artifacts = [];
+    let line_no = 0;
+    for line in clean_lines(text) {
+        line_no = line_no + 1;
+        let fields = split(line, "|");
+        if len(fields) != 5 {
+            panic("AMNESIA_MANIFEST_ARITY line=" + str(line_no) + " expected=5 got=" + str(len(fields)));
+        }
+        push(artifacts, Artifact {
+            id: trim(fields[0]),
+            kind: trim(fields[1]),
+            subject: trim(fields[2]),
+            parents: parse_parents(fields[3]),
+            content_sha256: lower(trim(fields[4])),
+        });
+    }
+    return artifacts;
+}
+
+fn parse_revocations(text) {
+    return sort(unique(clean_lines(text)));
+}
+
+fn is_hex64(value) {
+    if len(value) != 64 { return false; }
+    return all(chars(lower(value)), |glyph| contains("0123456789abcdef", glyph));
+}
+
+fn valid_atom(value) {
+    return value != ""
+        && !contains(value, "|")
+        && !contains(value, ",")
+        && !contains(value, "\n")
+        && !contains(value, "\r");
+}
+
+fn canonical_artifact(artifact) {
+    let subject = if artifact.subject == "" { "-" } else { artifact.subject };
+    let parents = if len(artifact.parents) == 0 { "-" } else { join(sort(artifact.parents), ",") };
+    return join([
+        artifact.id,
+        artifact.kind,
+        subject,
+        parents,
+        artifact.content_sha256,
+    ], "|");
+}
+
+fn artifact_ids(artifacts) {
+    return map(artifacts, |artifact| artifact.id);
+}
+
+fn find_artifact(artifacts, id) {
+    for artifact in artifacts {
+        if artifact.id == id { return Some(artifact); }
+    }
+    return None;
+}
+
+fn require_artifact(artifacts, id) {
+    match find_artifact(artifacts, id) {
+        Some(artifact) => artifact,
+        None => panic("AMNESIA_UNKNOWN_ARTIFACT " + id),
+    }
+}
+
+fn same_artifact(left, right) {
+    return canonical_artifact(left) == canonical_artifact(right);
+}
+
+// The before-manifest is the trust anchor for lineage. It must be a well-formed,
+// acyclic DAG with unique artifact ids and declared 64-hex content hashes.
+fn validate_before(artifacts) {
+    if len(artifacts) == 0 { panic("AMNESIA_EMPTY_BEFORE_MANIFEST"); }
+    let ids = artifact_ids(artifacts);
+    if len(unique(ids)) != len(ids) { panic("AMNESIA_DUPLICATE_ARTIFACT_ID"); }
+
+    for artifact in artifacts {
+        if !valid_atom(artifact.id) { panic("AMNESIA_INVALID_ARTIFACT_ID " + artifact.id); }
+        if !valid_atom(artifact.kind) { panic("AMNESIA_INVALID_ARTIFACT_KIND " + artifact.id); }
+        if !is_hex64(artifact.content_sha256) { panic("AMNESIA_INVALID_CONTENT_SHA256 " + artifact.id); }
+        if len(unique(artifact.parents)) != len(artifact.parents) {
+            panic("AMNESIA_DUPLICATE_PARENT " + artifact.id);
+        }
+        for parent in artifact.parents {
+            if parent == artifact.id { panic("AMNESIA_SELF_CYCLE " + artifact.id); }
+            if !contains(ids, parent) { panic("AMNESIA_UNKNOWN_PARENT " + artifact.id + "->" + parent); }
+        }
+    }
+
+    // Kahn-style resolution without assuming input order.
+    let resolved = [];
+    let progress = true;
+    while len(resolved) < len(artifacts) && progress {
+        progress = false;
+        for artifact in artifacts {
+            if contains(resolved, artifact.id) { continue; }
+            if all(artifact.parents, |parent| contains(resolved, parent)) {
+                push(resolved, artifact.id);
+                progress = true;
+            }
+        }
+    }
+    if len(resolved) != len(artifacts) { panic("AMNESIA_LINEAGE_CYCLE"); }
+    return true;
+}
+
+fn direct_revoked_ids(before, revocations) {
+    let out = [];
+    for artifact in before {
+        if artifact.subject != "" && artifact.subject != "-" && contains(revocations, artifact.subject) {
+            push(out, artifact.id);
+        }
+    }
+    return sort(unique(out));
+}
+
+fn every_revocation_hit(before, revocations) {
+    for subject in revocations {
+        if !any(before, |artifact| artifact.subject == subject) { return false; }
+    }
+    return len(revocations) > 0;
+}
+
+// Monotone fixpoint: a derived artifact is in the erasure closure when any
+// declared parent is already in it. Mixed clean/revoked batches therefore taint
+// downstream checkpoints instead of laundering the revoked contribution.
+fn transitive_erasure_closure(before, direct_ids) {
+    let closure = direct_ids;
+    let changed = true;
+    while changed {
+        changed = false;
+        for artifact in before {
+            if contains(closure, artifact.id) { continue; }
+            if any(artifact.parents, |parent| contains(closure, parent)) {
+                push(closure, artifact.id);
+                changed = true;
+            }
+        }
+    }
+    return sort(unique(closure));
+}
+
+fn candidate_subset_integrity(before, after) {
+    let after_ids = artifact_ids(after);
+    if len(unique(after_ids)) != len(after_ids) { return false; }
+    for artifact in after {
+        if !is_hex64(artifact.content_sha256) { return false; }
+        match find_artifact(before, artifact.id) {
+            None => return false,
+            Some(original) => {
+                if !same_artifact(original, artifact) { return false; }
+            },
+        }
+    }
+    return true;
+}
+
+fn candidate_dependencies_intact(after) {
+    let ids = artifact_ids(after);
+    for artifact in after {
+        for parent in artifact.parents {
+            if !contains(ids, parent) { return false; }
+        }
+    }
+    return true;
+}
+
+fn assess(before, after, revocations) {
+    let direct = direct_revoked_ids(before, revocations);
+    let closure = transitive_erasure_closure(before, direct);
+    let before_ids = artifact_ids(before);
+    let after_ids = artifact_ids(after);
+    let removed = filter(before_ids, |id| !contains(after_ids, id));
+    let residual = filter(closure, |id| contains(after_ids, id));
+    let collateral = filter(removed, |id| !contains(closure, id));
+    let subset_ok = candidate_subset_integrity(before, after);
+    let deps_ok = candidate_dependencies_intact(after);
+    let revocations_ok = every_revocation_hit(before, revocations);
+    let pass = subset_ok && deps_ok && revocations_ok && len(residual) == 0 && len(closure) > 0;
+
+    return Assessment {
+        pass: pass,
+        subset_integrity: subset_ok,
+        dependency_integrity: deps_ok,
+        revocation_hits: revocations_ok,
+        direct_ids: sort(direct),
+        closure_ids: sort(closure),
+        removed_ids: sort(removed),
+        residual_ids: sort(residual),
+        collateral_ids: sort(collateral),
+    };
+}
+
+fn artifact_leaf_from_canonical(canonical) {
+    return domain_hash("AMNESIA_ARTIFACT_LEAF_V1", canonical);
+}
+
+fn artifact_leaf(artifact) {
+    return artifact_leaf_from_canonical(canonical_artifact(artifact));
+}
+
+fn node_hash(left, right) {
+    return domain_hash("AMNESIA_MERKLE_NODE_V1", left + "|" + right);
+}
+
+fn parent_layer(layer) {
+    let out = [];
+    let index = 0;
+    while index < len(layer) {
+        let left = layer[index];
+        let right = if index + 1 < len(layer) { layer[index + 1] } else { left };
+        push(out, node_hash(left, right));
+        index = index + 2;
+    }
+    return out;
+}
+
+fn sorted_artifacts(artifacts) {
+    return sort_by(artifacts, |artifact| artifact.id);
+}
+
+fn merkle_root(artifacts) {
+    if len(artifacts) == 0 {
+        return domain_hash("AMNESIA_EMPTY_TREE_V1", "");
+    }
+    let layer = map(sorted_artifacts(artifacts), |artifact| artifact_leaf(artifact));
+    while len(layer) > 1 { layer = parent_layer(layer); }
+    return layer[0];
+}
+
+fn empty_inclusion(root, total) {
+    return InclusionProof {
+        target_id: "",
+        found: false,
+        index: -1,
+        total: total,
+        canonical: "",
+        leaf: "",
+        siblings: [],
+        root: root,
+    };
+}
+
+fn merkle_inclusion(artifacts, target_id) {
+    let sorted = sorted_artifacts(artifacts);
+    let root = merkle_root(sorted);
+    let target_index = -1;
+    for i in 0..len(sorted) {
+        if sorted[i].id == target_id { target_index = i; break; }
+    }
+    if target_index < 0 { return empty_inclusion(root, len(sorted)); }
+
+    let canonical = canonical_artifact(sorted[target_index]);
+    let layer = map(sorted, |artifact| artifact_leaf(artifact));
+    let index = target_index;
+    let siblings = [];
+    while len(layer) > 1 {
+        if index % 2 == 0 {
+            let sibling_index = if index + 1 < len(layer) { index + 1 } else { index };
+            push(siblings, "R:" + layer[sibling_index]);
+        } else {
+            push(siblings, "L:" + layer[index - 1]);
+        }
+        layer = parent_layer(layer);
+        index = index / 2;
+    }
+
+    return InclusionProof {
+        target_id: target_id,
+        found: true,
+        index: target_index,
+        total: len(sorted),
+        canonical: canonical,
+        leaf: artifact_leaf_from_canonical(canonical),
+        siblings: siblings,
+        root: root,
+    };
+}
+
+fn verify_inclusion(proof) {
+    if !proof.found { return false; }
+    if proof.total <= 0 { return false; }
+    if proof.index < 0 || proof.index >= proof.total { return false; }
+    if !starts_with(proof.canonical, proof.target_id + "|") { return false; }
+    let current = artifact_leaf_from_canonical(proof.canonical);
+    if current != proof.leaf { return false; }
+    let index = proof.index;
+    let width = proof.total;
+    for step in proof.siblings {
+        if width <= 1 { return false; }
+        if len(step) != 66 || char_at(step, 1) != ":" { return false; }
+        let side = char_at(step, 0);
+        let sibling = substr(step, 2, 64);
+        let expected_side = if index % 2 == 0 { "R" } else { "L" };
+        if side != expected_side { return false; }
+
+        if side == "L" {
+            current = node_hash(sibling, current);
+        } else if side == "R" {
+            // Odd-width trees duplicate the last node. Bind that duplicate to
+            // the current hash instead of accepting an arbitrary right sibling.
+            if index + 1 >= width && sibling != current { return false; }
+            current = node_hash(current, sibling);
+        } else {
+            return false;
+        }
+        index = index / 2;
+        width = (width + 1) / 2;
+    }
+    return index == 0 && width == 1 && current == proof.root;
+}
+
+// Non-membership is proved against a unique-key sorted Merkle set by including
+// the adjacent predecessor/successor. Their inclusion paths plus consecutive
+// indices prove there is no committed key between them.
+fn merkle_nonmembership(artifacts, target_id) {
+    let sorted = sorted_artifacts(artifacts);
+    let root = merkle_root(sorted);
+    let position = 0;
+    while position < len(sorted) && sorted[position].id < target_id {
+        position = position + 1;
+    }
+    if position < len(sorted) && sorted[position].id == target_id {
+        return NonMembershipProof {
+            target_id: target_id,
+            present: true,
+            total: len(sorted),
+            predecessor: empty_inclusion(root, len(sorted)),
+            successor: empty_inclusion(root, len(sorted)),
+            root: root,
+        };
+    }
+
+    let predecessor = if position > 0 {
+        merkle_inclusion(sorted, sorted[position - 1].id)
+    } else {
+        empty_inclusion(root, len(sorted))
+    };
+    let successor = if position < len(sorted) {
+        merkle_inclusion(sorted, sorted[position].id)
+    } else {
+        empty_inclusion(root, len(sorted))
+    };
+
+    return NonMembershipProof {
+        target_id: target_id,
+        present: false,
+        total: len(sorted),
+        predecessor: predecessor,
+        successor: successor,
+        root: root,
+    };
+}
+
+fn verify_nonmembership(proof) {
+    if proof.present { return false; }
+    if proof.total < 0 { return false; }
+    if proof.predecessor.root != proof.root || proof.successor.root != proof.root { return false; }
+
+    let has_pred = proof.predecessor.found;
+    let has_succ = proof.successor.found;
+    if proof.total == 0 { return !has_pred && !has_succ; }
+
+    if has_pred && proof.predecessor.total != proof.total { return false; }
+    if has_succ && proof.successor.total != proof.total { return false; }
+    if has_pred && !verify_inclusion(proof.predecessor) { return false; }
+    if has_succ && !verify_inclusion(proof.successor) { return false; }
+    if has_pred && proof.predecessor.target_id >= proof.target_id { return false; }
+    if has_succ && proof.target_id >= proof.successor.target_id { return false; }
+
+    if has_pred && has_succ {
+        return proof.successor.index == proof.predecessor.index + 1;
+    }
+    if has_pred {
+        return proof.predecessor.index == proof.total - 1;
+    }
+    if has_succ {
+        return proof.successor.index == 0;
+    }
+    return false;
+}
+
+fn set_root(domain, values) {
+    return domain_hash(domain, join(sort(unique(values)), "\n"));
+}
+
+fn bool_text(value) {
+    if value { "true" } else { "false" }
+}
+
+fn proof_path(proof) {
+    if !proof.found { return "-"; }
+    if len(proof.siblings) == 0 { return "SELF"; }
+    return join(proof.siblings, ",");
+}
+
+fn build_certificate(before, after, revocations, assessment, inclusion, absence, proof_ok, negative_run, negative_ok) {
+    let before_root = merkle_root(before);
+    let after_root = merkle_root(after);
+    let verdict = if assessment.pass && proof_ok && negative_ok { "PASS" } else { "FAIL" };
+    let payload = join([
+        "schema=amnesia-erasure-certificate-v1",
+        "verdict=" + verdict,
+        "claim_scope=declared-artifact-lineage-purge",
+        "before_merkle_root=" + before_root,
+        "after_merkle_root=" + after_root,
+        "revocation_set_root=" + set_root("AMNESIA_REVOCATION_SET_V1", revocations),
+        "erasure_closure_root=" + set_root("AMNESIA_ERASURE_CLOSURE_V1", assessment.closure_ids),
+        "before_count=" + str(len(before)),
+        "after_count=" + str(len(after)),
+        "direct_revoked_count=" + str(len(assessment.direct_ids)),
+        "closure_count=" + str(len(assessment.closure_ids)),
+        "removed_count=" + str(len(assessment.removed_ids)),
+        "residual_count=" + str(len(assessment.residual_ids)),
+        "collateral_count=" + str(len(assessment.collateral_ids)),
+        "subset_integrity=" + bool_text(assessment.subset_integrity),
+        "dependency_integrity=" + bool_text(assessment.dependency_integrity),
+        "every_revocation_hit=" + bool_text(assessment.revocation_hits),
+        "direct_revoked_ids=" + join(assessment.direct_ids, ","),
+        "erasure_closure_ids=" + join(assessment.closure_ids, ","),
+        "removed_ids=" + join(assessment.removed_ids, ","),
+        "residual_ids=" + join(assessment.residual_ids, ","),
+        "collateral_ids=" + join(assessment.collateral_ids, ","),
+        "challenge_id=" + inclusion.target_id,
+        "challenge_before_index=" + str(inclusion.index),
+        "challenge_before_canonical=" + inclusion.canonical,
+        "challenge_before_path=" + proof_path(inclusion),
+        "challenge_after_predecessor=" + absence.predecessor.target_id,
+        "challenge_after_predecessor_index=" + str(absence.predecessor.index),
+        "challenge_after_predecessor_canonical=" + absence.predecessor.canonical,
+        "challenge_after_predecessor_path=" + proof_path(absence.predecessor),
+        "challenge_after_successor=" + absence.successor.target_id,
+        "challenge_after_successor_index=" + str(absence.successor.index),
+        "challenge_after_successor_canonical=" + absence.successor.canonical,
+        "challenge_after_successor_path=" + proof_path(absence.successor),
+        "cryptographic_proofs_verified=" + bool_text(proof_ok),
+        "reinsertion_negative_control_run=" + bool_text(negative_run),
+        "reinsertion_negative_control_rejected=" + bool_text(negative_ok),
+        "boundary=does-not-prove-semantic-erasure-from-opaque-model-weights",
+    ], "\n");
+    let digest = domain_hash("AMNESIA_ERASURE_CERTIFICATE_V1", payload);
+    return payload + "\ncertificate_digest=" + digest + "\n";
+}
+
+fn summary(assessment, before_count, after_count, before_root, after_root, challenge, proof_ok, negative_run, negative_ok, output_path) {
+    let verdict = if assessment.pass && proof_ok && negative_ok { "PASS" } else { "FAIL" };
+    print("AMNESIA MACHINE-UNLEARNING DELETION WITNESS");
+    print("  verdict ............... ${verdict}");
+    print("  before artifacts ...... ${before_count}");
+    print("  after artifacts ....... ${after_count}");
+    print("  direct revoked ........ ${len(assessment.direct_ids)}");
+    print("  transitive closure .... ${len(assessment.closure_ids)}");
+    print("  removed ............... ${len(assessment.removed_ids)}");
+    print("  residual violations ... ${len(assessment.residual_ids)}");
+    print("  collateral removals ... ${len(assessment.collateral_ids)}");
+    print("  challenge ............. ${challenge}");
+    print("  proofs verified ....... ${proof_ok}");
+    let negative_status = if negative_run { str(negative_ok) } else { "not-run" };
+    print("  reinsertion rejected .. ${negative_status}");
+    print("  before root ........... ${before_root}");
+    print("  after root ............ ${after_root}");
+    print("  certificate ........... ${output_path}");
+    print("");
+    print("BOUNDARY: a PASS proves the declared manifest closure was purged. It does not");
+    print("prove semantic erasure from opaque weights outside that declared lineage.");
+}
+
+@research(
+    authorization: "operator-owned-local-manifests",
+    scope: "local-file-read-and-derived-certificate-write",
+    reason: "explicitly declassify validated Merkle roots, counts, ids, and proof paths",
+    non_destructive: true
+)
+fn main() uses(fs.read, fs.write) {
+    let argv = args();
+    if len(argv) != 4 {
+        print("usage: amnesia BEFORE.manifest AFTER.manifest REVOCATIONS.txt CERTIFICATE.txt");
+        exit(64);
+    }
+
+    let before = parse_manifest(read_file(argv[0]));
+    let after = parse_manifest(read_file(argv[1]));
+    let revocations = parse_revocations(read_file(argv[2]));
+    validate_before(before);
+
+    let assessment = assess(before, after, revocations);
+    let challenge = if len(assessment.closure_ids) > 0 { assessment.closure_ids[0] } else { "" };
+    let inclusion = if challenge != "" {
+        merkle_inclusion(before, challenge)
+    } else {
+        empty_inclusion(merkle_root(before), len(before))
+    };
+    let absence = merkle_nonmembership(after, challenge);
+    let proof_ok = challenge != "" && verify_inclusion(inclusion) && verify_nonmembership(absence);
+
+    // Internal adversarial control: reinsert one required-deletion source into a
+    // passing candidate. The assessor must flip to FAIL.
+    let negative_run = assessment.pass && challenge != "";
+    let negative_ok = false;
+    if negative_run {
+        let reinserted = after;
+        push(reinserted, require_artifact(before, challenge));
+        negative_ok = !assess(before, reinserted, revocations).pass;
+    }
+
+    if assessment.pass {
+        assert(proof_ok);
+        assert(negative_ok);
+    }
+
+    let certificate = build_certificate(
+        before,
+        after,
+        revocations,
+        assessment,
+        inclusion,
+        absence,
+        proof_ok,
+        negative_run,
+        negative_ok,
+    );
+
+    // read_file() is integrity-tainted by design. Only the fully parsed,
+    // structurally validated, root-bound certificate crosses the fs.write sink.
+    let public_certificate = declassify(
+        certificate,
+        "validated-erasure-certificate",
+        "output contains canonical ids, counts, Merkle roots, and proof paths only",
+    );
+    write_file(argv[3], public_certificate);
+
+    summary(
+        assessment,
+        len(before),
+        len(after),
+        merkle_root(before),
+        merkle_root(after),
+        challenge,
+        proof_ok,
+        negative_run,
+        negative_ok,
+        argv[3],
+    );
+
+    if !(assessment.pass && proof_ok && negative_ok) { exit(2); }
+}

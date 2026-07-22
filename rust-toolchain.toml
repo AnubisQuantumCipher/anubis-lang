@@ -1,0 +1,8 @@
+# Pinned toolchain — the SAME nightly the compiler, the VM seal battery, and the
+# committed self-host fixpoint were built with (rustc 1.97.0-nightly, 82bee9650,
+# 2026-05-09). Pinning it here makes a fresh clone, CI, and the author's machine
+# agree bit-for-bit on rustfmt/clippy/build — so "green in CI" == "green locally"
+# rather than a toolchain-version coincidence. See scripts/vm/README.md.
+[toolchain]
+channel = "nightly-2026-05-10"
+components = ["rustfmt", "clippy"]

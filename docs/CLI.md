@@ -7,7 +7,7 @@ cargo run -- build <file>
 cargo run -- run <file.anb> [--evidence --out DIR]
 cargo run --release -p anubis -- prove <file> --backend risc0 --lane cpu|metal-hybrid \
   [--metal-reference /path/to/metal-hybrid-prover] [--evidence]
-cargo run -- verify-bundle <bundle>
+cargo run -- verify <bundle>            # (alias: validate) re-derive + tamper/signature check
 cargo run -- verify-receipt --receipt <path> --image-id <path>
 cargo run -- doctor
 cargo run -- capabilities --apple-native --json [--evidence --out DIR]
@@ -241,7 +241,7 @@ jq . out/gate11/parity_report.json
 
 ### Verify bundle
 ```bash
-cargo run --release -p anubis -- verify-bundle out/.../evidence-*
+cargo run --release -p anubis -- verify out/.../evidence-*   # (alias: validate)
 ```
 
 ## Config (portable)

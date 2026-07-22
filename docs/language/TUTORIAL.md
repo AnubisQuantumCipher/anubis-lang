@@ -237,7 +237,8 @@ and what the journal actually binds.
 
 ```bash
 bash scripts/run_dx_gate.sh out/dx_gate
-# expect: DX_GATE: PASS  (10 checks: unit, doc, repl, hello, lsp, editors, tutorial, p5/p6)
+# expect: DX_GATE: PASS  (15 checks: unit, doc, repl ×3, hello check+run, lsp,
+#         editors, tree-sitter ×2, tutorial/spec, p5/p6 regress, fmt, test)
 ```
 
 That gate is the seal for Phase 7 — not aspirational docs.

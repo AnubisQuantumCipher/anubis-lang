@@ -1,6 +1,0 @@
-=== CHANGED_FILES (anubis-lang only) ===
-anubis-lang/docs/GATE10_TOP_LEVEL_FAILURE_ANALYSIS.md
-anubis-lang/scripts/gate10_a15_reproduce.sh
-anubis-lang/scripts/verify_bundle.sh
-anubis-lang/examples/risc0_receipt.anb
-anubis-lang/compiler/src/evidence/mod.rs

@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// FEATURE: Phase-5 capability inheritance — std.pwn run_local cannot launder shell
+import std.pwn;
+
+fn main() {
+    let _ = pwn::run_local("poc_kit/bin/vuln_local", [1, 2, 3]);
+}

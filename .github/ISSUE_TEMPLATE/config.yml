@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Security / soundness disclosure (private)
+    url: https://github.com/AnubisQuantumCipher/anubis-lang/security/policy
+    about: "For anything sensitive, email sic.tau@pm.me instead of filing publicly. See SECURITY.md."
+  - name: 📖 Docs — Tutorial, Language reference, Roadmap
+    url: https://github.com/AnubisQuantumCipher/anubis-lang/blob/a-plus-maturity/20260705-1649/README.md
+    about: "Read the README, TUTORIAL.md, LANGUAGE.md, and the living ROADMAP before filing."

@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// FEATURE: Phase-5 std.math + std.collections
+import std.math;
+import std.collections;
+import std.testing;
+
+fn main() {
+    testing::assert_eq(math::math_add(2, 40), 42);
+    testing::assert_eq(math::math_gcd(54, 24), 6);
+    let s = collections::set_insert(collections::set_insert(collections::set_new(), 1), 2);
+    testing::assert_eq(collections::set_len(s), 2);
+    print(42);
+}

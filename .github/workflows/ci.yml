@@ -18,13 +18,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pin the SAME nightly the compiler + VM seal + self-host fixpoint are built
+      # with (rust-toolchain.toml). Using `stable` here made rustfmt/clippy diverge
+      # from the author's toolchain and failed G1/G2 on version skew alone.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-05-10
           components: rustfmt, clippy
-      # The gate scripts use ripgrep, which is not preinstalled on macOS runners;
-      # python3, jq, shasum, and clang already are.
-      - name: Install gate tooling (ripgrep)
-        run: brew install ripgrep
+      # The gate scripts use ripgrep (not preinstalled on macOS runners). z3 is the
+      # checker's default authoritative solver + the native-solver cross-check — the
+      # contract-proving fixtures (G3/G5/G8) fail closed without it. python3, jq,
+      # shasum, and clang are already present.
+      - name: Install gate tooling (ripgrep, z3)
+        run: brew install ripgrep z3
       - name: Run the full sealed gate suite (the advertised front door)
         run: bash scripts/audit_a_plus.sh --out out/ci_gate
       - name: Upload gate report

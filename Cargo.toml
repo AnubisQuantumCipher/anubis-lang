@@ -22,7 +22,7 @@ risc0-sys = { path = "vendor/risc0-sys" }
 version = "0.1.0"
 edition = "2021"
 authors = ["Sicarii Amun'ra"]
-license = "Apache-2.0 OR MIT"
+license = "BUSL-1.1"
 description = "Anubis language - dual-use systems programming for bounty hunters and sovereign systems"
 
 [workspace.dependencies]
