@@ -122,6 +122,21 @@ is where the `taint_source → declassify` discipline and the capability-gated b
 are proved in the checker lane (`anubis check --verified` → passed). Full walkthrough:
 **[`examples/showcase/nexus/`](examples/showcase/nexus/)**.
 
+### Also showcase — Anubis Vault (high-threat password manager)
+
+**[`examples/showcase/anubis_vault/`](examples/showcase/anubis_vault/)** is a second full
+showcase application: a CLI password / contacts vault for high-threat ops (dual REAL/DURESS
+worlds, Argon2id 19 MiB, ChaCha20-Poly1305, verified-lane linear `fs.write`/`fs.read` caps,
+build-once multi-op product binary, in-language `delete_file` destroy, confinement with **no
+`net.send`**). Selftest **16/16**; product battery **76/0** (`scripts/thorough_test.sh`).
+
+```bash
+anubis check --verified examples/showcase/anubis_vault/vault.anb
+anubis run examples/showcase/anubis_vault/vault.anb --allow-research   # → SELFTEST GATE PASSED: 16/16
+anubis build examples/showcase/anubis_vault/vault_contacts.anb -o examples/showcase/anubis_vault/product
+# then multi-op without recompile: product/anubis_out create|verify|list|delete-one|delete-all|destroy
+```
+
 > **Why it matters.** The guarantees that AI-agent frameworks today write into a system
 > prompt and *hope* hold — "don't leak the key," "don't act on injected instructions,"
 > "only use the tools you were given" — NEXUS turns into properties the compiler
@@ -227,6 +242,7 @@ trigger-happy** — the same program with the leak removed passes.
 | Program | What it shows |
 |---|---|
 | ⭐ **[NEXUS](examples/showcase/nexus/)** — secure AI agent (472 lines) | the **flagship**: an autonomous agent whose safety is *compiler-proved* — private beliefs can't leak, untrusted input can't hijack it, egress is a use-once capability, the lethal trifecta can't fire, and it proves its own integrity. `check` clean **and** `run` |
+| ⭐ **[Anubis Vault](examples/showcase/anubis_vault/)** — high-threat password manager | operational CLI vault: Argon2id + AEAD + dual/duress worlds + clearance/burn + **verified-lane caps that run** + build-once multi-op contacts CRUD + real unlink destroy; `check --verified` and `run` both green; thorough battery in-tree |
 | [`ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb) | the solver hands you the **counterexample** — `check` disproves `ensures(result >= 0)` at the wraparound state, then proves the fix |
 | [`verified_private_settlement.anb`](examples/showcase/verified_private_settlement.anb) | **contracts + secrets in one file**: SMT-proved debit/credit over `secret<i64>` balances, and the info-flow lane guarantees nothing private leaves |
 | [`verified_loop.anb`](examples/showcase/verified_loop.anb) | a **loop invariant** discharged to establish a postcondition |
