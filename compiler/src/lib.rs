@@ -6638,6 +6638,43 @@ fn main() uses(fs.read) {
     }
 
     #[test]
+    fn governed_io_delete_file_unlinks_and_is_idempotent() {
+        // Product closeout: delete_file/remove_file lower to std::fs::remove_file under fs.write.
+        let dir = std::env::temp_dir().join(format!("anubis-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("killme.txt");
+        let path_s = path.to_string_lossy().replace('\\', "\\\\");
+
+        let src = format!(
+            r#"fn main() uses(fs.write) {{
+    write_file("{path_s}", "bye");
+    delete_file("{path_s}");
+    delete_file("{path_s}");
+    print("gone");
+}}"#
+        );
+        let out = backends::run::compile_and_run_source(&src, true, &[]).expect("compile+run del");
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "gone");
+        assert!(!path.exists(), "delete_file must unlink the path");
+
+        let err = tc_ok(r#"fn main() { delete_file("/tmp/x"); }"#)
+            .expect_err("delete_file without uses(fs.write) must reject in Safe");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || msg.contains("fs.write"),
+            "got: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn uses_clause_parses_and_undeclared_effect_is_rejected() {
         // Phase-3 C1+C2: `uses(fs.read, net.send)` parses on Item::Fn; inferred capability effects
         // must be ⊆ the declared set → `ANUBIS_UNDECLARED_EFFECT` when a used effect is missing.

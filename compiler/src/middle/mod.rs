@@ -5883,9 +5883,15 @@ fn analyze_expr_effect(
                 effects.push("file_read".to_string());
                 // file_read is allowed in Safe by default (legacy); verified lane still requires uses.
             }
-            if callee == "write_file" || callee == "write" || callee == "append_file" {
+            if callee == "write_file"
+                || callee == "write"
+                || callee == "append_file"
+                || callee == "delete_file"
+                || callee == "remove_file"
+            {
                 effects.push("file_write".to_string());
                 // Safe: authorized when `uses(fs.write)` is declared on this function.
+                // delete_file/remove_file share fs.write (unlink is a write-class mutation of the FS).
                 if mode == Mode::Safe && !safe_cap_allowed(ctx, "fs.write") {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_EFFECT_FORBIDDEN_IN_MODE".into()),
@@ -17722,7 +17728,15 @@ fn is_sink(callee: &str) -> bool {
     is_egress_sink(callee)
         || matches!(
             callee,
-            "sink" | "network_send" | "write" | "write_file" | "append_file" | "memcpy" | "sql"
+            "sink"
+                | "network_send"
+                | "write"
+                | "write_file"
+                | "append_file"
+                | "delete_file"
+                | "remove_file"
+                | "memcpy"
+                | "sql"
         )
 }
 
@@ -17799,7 +17813,9 @@ pub(crate) fn normalize_effect_name(raw: &str) -> String {
     let s = raw.trim().to_ascii_lowercase();
     match s.as_str() {
         "fs.read" | "file_read" | "read_file" | "open" => "fs.read".into(),
-        "fs.write" | "file_write" | "write_file" | "append_file" => "fs.write".into(),
+        "fs.write" | "file_write" | "write_file" | "append_file" | "delete_file" | "remove_file" => {
+            "fs.write".into()
+        }
         "net.send" | "net.connect" | "network" | "send" | "connect" | "network_send" => {
             "net.send".into()
         }

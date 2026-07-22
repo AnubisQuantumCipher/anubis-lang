@@ -1125,7 +1125,7 @@ fn jast(ast) {
 
 
 fn is_builtin(name) {
-    return name == "print" || name == "println" || name == "len" || name == "push" || name == "char_at" || name == "ord" || name == "chr" || name == "substr" || name == "index_of" || name == "split" || name == "read_file" || name == "write_file" || name == "args" || name == "env" || name == "declassify" || name == "append_file" || name == "exit" || name == "get" || name == "has_key" || name == "keys" || name == "values" || name == "break" || name == "continue";
+    return name == "print" || name == "println" || name == "len" || name == "push" || name == "char_at" || name == "ord" || name == "chr" || name == "substr" || name == "index_of" || name == "split" || name == "read_file" || name == "write_file" || name == "args" || name == "env" || name == "declassify" || name == "append_file" || name == "delete_file" || name == "remove_file" || name == "exit" || name == "get" || name == "has_key" || name == "keys" || name == "values" || name == "break" || name == "continue";
 }
 
 fn check_expr(e, env, fns, diags) {
@@ -1481,7 +1481,7 @@ fn sh_is_egress_sink(n) {
 }
 fn sh_is_sink(n) {
     if sh_is_egress_sink(n) { return true; }
-    return n == "sink" || n == "write" || n == "write_file" || n == "append_file" || n == "memcpy" || n == "sql";
+    return n == "sink" || n == "write" || n == "write_file" || n == "append_file" || n == "delete_file" || n == "remove_file" || n == "memcpy" || n == "sql";
 }
 fn sh_is_io_taint_source(n) {
     return n == "read_file" || n == "open" || n == "input" || n == "read_line" || n == "recv" || n == "net_recv" || n == "env" || n == "getenv";
@@ -2012,7 +2012,7 @@ fn sh_builtin_effect_of(callee) {
     if callee == "read_file" || callee == "open" {
         return "fs.read";
     }
-    if callee == "write_file" || callee == "write" || callee == "append_file" {
+    if callee == "write_file" || callee == "write" || callee == "append_file" || callee == "delete_file" || callee == "remove_file" {
         return "fs.write";
     }
     if index_of(callee, "network") >= 0 || callee == "send" || callee == "connect" || callee == "http_get" || callee == "http_post" {

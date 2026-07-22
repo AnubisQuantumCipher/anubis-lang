@@ -1611,6 +1611,32 @@ fn anubis_write_file(path: AnubisValue, contents: AnubisValue) -> AnubisValue {
         Err(e) => panic!("ANUBIS_IO_ERROR: write_file({}): {}", path.display_string(), e),
     }
 }
+/// Unlink a path. Shares the `fs.write` capability (filesystem mutation). Missing path is success
+/// (idempotent destroy). Returns 0 on success, panics only on hard errors (permission, etc.).
+fn anubis_delete_file(path: AnubisValue) -> AnubisValue {
+    let p = path.display_string();
+    match std::fs::remove_file(&p) {
+        Ok(()) => AnubisValue::Int(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => AnubisValue::Int(0),
+        Err(e) => panic!("ANUBIS_IO_ERROR: delete_file({}): {}", p, e),
+    }
+}
+/// Mint a linear capability token (verified-lane authority). Runtime token is an opaque string;
+/// use-once / unforgeability is enforced by `anubis check --verified` (middle/capability.rs).
+fn anubis_cap_acquire(kind: AnubisValue) -> AnubisValue {
+    anubis_mk_str(format!("__anubis_cap:{}", kind.display_string()))
+}
+/// Consume a capability token. Linearity is checked at `check --verified`; runtime is the
+/// authorized use-once sink so programs with caps lower and execute.
+fn anubis_cap_use(cap: AnubisValue) -> AnubisValue {
+    let _ = cap;
+    AnubisValue::Int(0)
+}
+/// Confidentiality label mint (checker-side leg-1). Runtime is identity — the secret type system
+/// and egress analysis run at check time.
+fn anubis_secret_source(v: AnubisValue) -> AnubisValue {
+    v
+}
 fn anubis_open(path: AnubisValue) -> AnubisValue {
     // `open` is a path-existence / openability probe that returns the path string on success
     // (contents are read via read_file). Fail-closed on missing/unreadable paths.
@@ -2619,17 +2645,11 @@ pub fn is_builtin_name(name: &str) -> bool {
                 | "return"
                 | "break"
                 | "continue"
-                // Phase-2 slice 2: capability-token surface (checker-only this slice). `cap_acquire`
-                // mints an unforgeable linear token; `cap_use` is the authorized use-once consumer.
-                // Recognized here so the unknown-call gate accepts them; linearity is enforced by
-                // middle/capability.rs. Executing a `cap_*` program is a documented later concern.
+                // Phase-2 capability + confidentiality labels: also lowered via emit_builtin_call
+                // (anubis_cap_acquire / anubis_cap_use / anubis_secret_source). Kept here as a
+                // belt-and-braces name set if emit dispatch is ever probed with empty args only.
                 | "cap_acquire"
                 | "cap_use"
-                // Phase-2 leg-1 confidentiality label (checker-only this slice). `secret_source(v)`
-                // marks a value CONFIDENTIAL — the dual of `taint_source` (which marks a value
-                // untrusted). Recognized here so the unknown-call gate accepts it; the lethal-trifecta
-                // check (middle/trifecta.rs) reads its presence as leg 1 (private-data access), a
-                // precise alternative to the coarse `fs.read` proxy. Executing it is a later concern.
                 | "secret_source"
         )
         || is_proof_input_builtin(name)
@@ -2960,7 +2980,12 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "read_file" => fixed("anubis_read_file", callee, args, 1),
         "write_file" | "write" => fixed("anubis_write_file", callee, args, 2),
         "append_file" => fixed("anubis_append_file", callee, args, 2),
+        "delete_file" | "remove_file" => fixed("anubis_delete_file", callee, args, 1),
         "open" => fixed("anubis_open", callee, args, 1),
+        // Verified-lane linear capabilities + confidentiality mint — now fully executable
+        "cap_acquire" => fixed("anubis_cap_acquire", callee, args, 1),
+        "cap_use" => fixed("anubis_cap_use", callee, args, 1),
+        "secret_source" => fixed("anubis_secret_source", callee, args, 1),
         // Cryptography (SHA-256 / HMAC-SHA256) — pure std in emitted runtime
         // Cryptography — RWC-aligned surface (pure embedded runtime; no cargo deps in `anubis run`)
         "sha256" | "sha256_hex" => fixed("anubis_sha256", callee, args, 1),
