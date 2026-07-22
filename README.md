@@ -151,7 +151,7 @@ Anubis carries a full, **engagement-scoped** offensive platform for authorized s
 | **Executable core** | ✅ | Turing-complete: loops, recursion, mutation, enums + `match`, `for x in xs` / `for i in a..b`, structs, maps, closures, `Option`/`Result`/`?`, ~150 builtins — native Apple-Silicon executables |
 | **Type system** | ✅ / 🟡 | bidirectional inference, traits + coherence; generics are runtime-erased + dynamically checked (not yet statically monomorphized); multi-file `import` resolution is 🟡 in progress |
 | **Developer experience** | ✅ | `fmt` (self-verifying), `test` (`// EXPECT: PASS\|FAIL`), `doc` (Contracts section), `repl`, `lsp` (contract hovers), tree-sitter grammar + VS Code extension — `run_dx_gate.sh` (15/15) |
-| **Self-hosting spine** | ✅ | `selfhost/` compiles itself: a real stage0→stage3 bootstrap sealed to a **byte-identical fixpoint** (`dc680001`); reproducibility + diverse-double-compile gates are 🟡 landed |
+| **Self-hosting spine** | ✅ | `selfhost/` compiles itself: a real stage0→stage3 bootstrap sealed to a **byte-identical fixpoint**; and the **effect, type, and taint checker engines are now Anubis-authored too**, each differential-gated 0-disagreement vs the Rust checker (`run_{effect,capset,type,taint}_selfhost_gate.sh`) and VM-sealed; reproducibility + diverse-double-compile gates landed |
 
 ---
 
@@ -161,11 +161,11 @@ An 11-phase maturity arc; the living source of truth is [`docs/language/ROADMAP.
 
 | Phase | State | What that means today |
 |---|---|---|
-| **0 — Trust spine** | ✅ Done | reproducible build + real self-host bootstrap + byte-identical fixpoint seal (`dc680001`) |
+| **0 — Trust spine** | ✅ Done | reproducible build + real self-host bootstrap + byte-identical fixpoint seal (re-sealed on each checker slice; current VM fixpoint pinned in `scripts/vm/EXPECTED_FIXPOINT_VM`) |
 | **1 — Type system** | ✅ Done | bidirectional inference, generics, traits + coherence — enforcing |
 | **2 — Capability & effect** | ✅ Done | transitive effects, linear capability tokens, the **lethal trifecta as a compile error** |
 | **3 — Verified surface** | 🟢 At DoD | SMT contract lanes for int / float / string / arrays / loops / structs; everything outside fails closed |
-| **4 — Port checker into Anubis** | 🟡 Scoped | parse + codegen self-host; porting the type/effect/taint *engines* is the largest remaining slice |
+| **4 — Port checker into Anubis** | 🟢 At DoD | all three semantic engines — **effect, type, taint** — are now Anubis-authored in `selfhost/` and **match the Rust checker** (each differential-gated 0-disagreement and VM-sealed); parse + codegen were already self-hosted. Residuals are structural (type HM/generics — unreachable in the self-host grammar) or deferred-precision (taint closure/container interproc, where the self-hosted engine soundly under-reports) |
 | **5 — Mechanized soundness** | 🟢 At DoD | 155 Lean 4 theorems: encoding soundness, the native bit-blaster, non-interference, effect soundness |
 | **6 — Proof-carrying packages** | 🟢 At DoD | signed bundles, re-derived-on-verify summaries, contract enforcement across dependencies |
 | **7 — Minimize TCB** | 🟢 Advanced | the native, machine-checked SMT solver (Z3 droppable for integers, opt-in); residual: a mechanized UNSAT certificate + a second independently-authored frontend |
@@ -225,11 +225,11 @@ anubis vz confine examples/showcase/vz_confine_demo.anb    # isolation manifest 
 
 Anubis states exactly what it proves and what it does not:
 
-- **`check` certifies contracts, not the absence of every runtime trap.** An `assert` the solver cannot model in a contract-free function is runtime-enforced (fail-open) — a documented stance, being actively narrowed.
+- **`check` certifies contracts, not the absence of every runtime trap.** A contract-free function's in-body `assert` over its **integer** parameters is now modeled and enforced (state the precondition or it is disproved); a float/string assert the solver cannot model stays runtime-enforced (fail-open) — a documented, actively-narrowed stance.
 - **The native-solver flip is opt-in** until the CDCL engine emits a checkable UNSAT certificate; by default Z3 is the authority and cross-checks every verdict.
 - **Generics are runtime-erased**, multi-file `import` resolution is in progress, and implicit-flow is warned rather than rejected — each an explicit, fails-closed boundary, not a hidden gap.
 - **The offensive platform is for authorized engagements**, isolated in VZ guests, with the riskiest primitives PLAN_ONLY and every action receipted.
-- **Phase 4 (self-hosting the semantic engines) and Phases 9–10 (independent reproduction, 1.0 freeze) are open.** None is marked done.
+- **Phases 9–10 (independent-stranger reproduction, a frozen 1.0 spec) are open** — neither is marked done; both are operator/third-party commitments, not code. (Phase 4 — self-hosting the effect/type/taint engines — reached DoD: all three now match the Rust checker on the self-host-expressible surface, differential-gated and sealed.)
 
 ---
 

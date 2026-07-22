@@ -19,7 +19,7 @@ the originating brief was partly stale.
   `arm_join_conflict_scoped`, every one of them entered in shadow mode first. Promoted to enforcing (the
   shadow diff reported UNEXPECTED=0): `ANUBIS_ARM_TYPE_CONFLICT` (if/match arm-join), and the
   `Call`/`Index`/`FieldAccess` `ANUBIS_TYPE_MISMATCH`/`ANUBIS_RETURN_TYPE_MISMATCH` that synthesis can
-  now see. **The port of the unifier and checker into Anubis remains the next phase** — the core was
+  now see. **The type checker's assignability surface is now ported into Anubis (Phase 4, #109/#112 — differential-gated 0-disagreement vs Rust); the full HM unifier + generics + traits port remains a scoped STRUCTURAL residual (unreachable in the single-token self-host grammar)** — the core was
   kept dependency-light (plain maps, no closures/trait objects) precisely to make that port mechanical.
 - **Captured generics.** Type parameters captured onto a **new defaulted** AST field (not discarded
   by `skip_generic_params`, `frontend:2533`); monomorphization is checker-only, codegen stays erased.
@@ -73,9 +73,14 @@ unpinnable type, or foreign trait accepts). The FIXPOINT was UNMOVED — `generi
 by `selfhost_schema::project_item`, exactly like the structural trait checks (overlap, missing-method).
 All three trait checks are now complete and enforcing.
 
-### Next phase
-The Anubis-language **port** of `Ty`, the unifier, and the checker (the core was kept dependency-light
-— plain maps, no closures/trait objects — precisely to make that port mechanical) — Phase 4.
+### Next phase — DONE (Phase 4, #109/#112)
+The Anubis-language **port** of the type checker (the core was kept dependency-light — plain maps, no
+closures/trait objects — precisely to make that port mechanical) LANDED for the assignability surface:
+`ty_normalize`/`compatible`/`assignable` + a flat `sh_infer_type` are Anubis-authored in
+`selfhost/src/anubis_sh.anb`, emitting byte-identical `ANUBIS_TYPE_MISMATCH`/`ANUBIS_RETURN_TYPE_MISMATCH`
+at let/argument/return position, differential-gated 0-disagreement vs Rust (`run_type_selfhost_gate.sh`)
+and VM-sealed. The full HM unifier + generics + traits port remains a scoped STRUCTURAL residual —
+unreachable in the single-token self-host grammar.
 
 ## Invariants (green after every commit)
 
@@ -113,9 +118,12 @@ currently-accepted programs — verified verdict-neutral by a pre/post binary co
 **140-program** corpus (**112 accept / 28 reject** identical before and after; the 112-vs-111 is one
 added fixture, not a regression). All three promoted checks were flipped only after that zero diff.
 
-## Next-phase seam (deliberately set up, not done here)
+## Next-phase seam — the port LANDED (Phase 4)
 
-Keep the unification core small and dependency-light so porting `Ty` + unification + the checker into
-Anubis is the next phase's mechanical job. The review's suggested opener for that phase — port the
-`ty_parity` oracle and a few core predicates, prove the self-host still type-checks itself — belongs
-at the front of the *port* phase, not this one.
+Keeping the unification core small and dependency-light paid off: the type checker's assignability
+surface was ported into Anubis in Phase 4 (#109/#112) exactly as the mechanical job set up here — the
+core predicates (`ty_normalize`/`compatible`/`assignable`) plus a flat inferer are now Anubis-authored
+and differential-gated 0-disagreement vs Rust, and the self-host still type-checks itself (VM-sealed).
+The full HM unification core + generics + traits are a scoped STRUCTURAL residual — they are not
+expressible in the single-token self-host grammar, so there is no SH-reachable surface on which they
+would disagree.

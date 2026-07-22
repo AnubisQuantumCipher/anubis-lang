@@ -47,8 +47,9 @@ Hostile re-audit (2026-07-12) found the prior gate only compared
 | Stage | Implementation |
 |-------|----------------|
 | Lex | Full SH token stream (comments skipped); byte spans; matches host goldens |
-| Parse | Recursive descent; list/map literals; enums, `Name::Variant`, match, if-expressions, for-in collections; `requires`/`ensures`/`uses`; fail-closed |
+| Parse | Recursive descent; list/map literals; enums, `Name::Variant`, match, if-expressions, for-in collections; lambdas + method calls; `requires`/`ensures`/`uses`; fail-closed |
 | Check | Names, arity, annotated type mismatches, builtin allowlist; pattern bindings |
+| **Semantic engines** | **Effect** (transitive rows + capability set + closure egress + method calls — DIFFERENTIAL-COMPLETE), **Type** (let/argument/return-position assignability → `ANUBIS_TYPE_MISMATCH`/`ANUBIS_RETURN_TYPE_MISMATCH`), **Taint** (intra- + INTERPROCEDURAL source→sink → `ANUBIS_TAINTED_SINK`/`ANUBIS_INTERPROC_SINK`) — all Anubis-authored, each **differential-gated 0-disagreement** vs the Rust checker (`run_{effect,capset,type,taint}_selfhost_gate.sh`) and VM-sealed. Residuals are structural (type HM/generics — unreachable in the SH grammar) or deferred-precision (taint closure/container interproc, where SH soundly under-reports) |
 | Codegen | Deterministic Rust **package**: no-deps AST interpreter + embedded program JSON |
 
 Normative subset the compiler is *written in*: [`selfhost/SUBSET.md`](../../selfhost/SUBSET.md).

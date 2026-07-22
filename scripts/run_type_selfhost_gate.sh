@@ -88,5 +88,5 @@ if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ]; then
   echo "TYPE_SELFHOST_GATE: FAIL"
   exit 1
 fi
-echo "TYPE_SELFHOST_GATE: PASS (0 disagreements; Anubis-authored type engine == Rust type checker on the let-annotation surface)"
+echo "TYPE_SELFHOST_GATE: PASS (0 disagreements; Anubis-authored type engine == Rust type checker on the let/argument/return-position mismatch surface)"
 exit 0

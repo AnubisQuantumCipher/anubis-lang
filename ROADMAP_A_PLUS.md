@@ -1,6 +1,8 @@
 # Anubis A+ Roadmap
 
-**Current (post baseline 2026-07-05):** C-grade real prototype per ANUBIS_REALITY_AUDIT.md.
+**Baseline (2026-07-05):** C-grade real prototype per ANUBIS_REALITY_AUDIT.md — the *starting* point, not the current state.
+
+**Live status is well past this baseline.** The living phase tracker is [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md): Phases 0–2 done; 3/5/6/8 at DoD; **Phase 4 (port checker into Anubis) at DoD — all three semantic engines (effect, type, taint) self-hosted and differential-matching the Rust checker**; Phase 7 advanced (native Lean-verified SMT solver); Phases 9–10 `[NEEDS-HUMAN]`.
 
 **Target:** A+ when all 15 gates in A_PLUS_ACCEPTANCE_CRITERIA.md pass + A15 hostile audit clean.
 

@@ -52,7 +52,8 @@ build, so it is safe on the host).
 
 ## Fixpoint parity
 
-`EXPECTED_FIXPOINT_VM` (`dc680001…`) is the in-VM self-host fixpoint. It differs
+`EXPECTED_FIXPOINT_VM` (currently `a01a1e8b…`; re-baselined on each `anubis_sh.anb`
+slice — see the log inside the file) is the in-VM self-host fixpoint. It differs
 from the **host** fixpoint (`c640badd…`, macOS 26.5.2) because the guest is on a
 different macOS point-build — a Mach-O-normalization byte difference, not a
 correctness change. The seal's real invariant is `stage2 == stage3` AND the hash is
