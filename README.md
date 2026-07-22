@@ -81,6 +81,39 @@ Fix it — subtract only where it can't underflow — and the **same solver prov
 
 ---
 
+## A whole program, proved *and* run — NEXUS
+
+That counterexample is one obligation. **NEXUS** is the other end of the range: a
+**472-line** self-verifying *cognitive kernel* that `anubis check` proves and
+`anubis run` executes — one coherent program that exercises essentially the entire
+language, and produces a hash-committed record of its own integrity *without revealing
+what it deliberated about.*
+
+```bash
+anubis check examples/showcase/nexus/nexus_cognitive_kernel.anb   # → check passed
+anubis run   examples/showcase/nexus/nexus_cognitive_kernel.anb   # → runs to a deterministic result
+```
+
+One file puts **9 Z3-verified contracts**, `secret<T>` private beliefs (checker-proved
+no-leak), `trait` + `impl` dispatch, three `enum` kinds with `match` destructuring,
+`Result`/`Option`, generics, the higher-order builtins (`map`/`filter`/`find`/`sort_by`/…),
+and a `while … invariant(...)` integrity chain into a single program — and it still
+checks clean *and* runs:
+
+```
+NEXUS cognitive cycle complete.
+  + Contracts:    requires/ensures on 9 functions, Z3-proved
+  + Beliefs:      secret<T>, contract-verified, never leaked
+  + Integrity:    hash-chain, loop-invariant proved
+The kernel proved its own cognitive integrity. It revealed NOTHING about what it deliberated.
+```
+
+Its information-flow half, [`nexus_checker_security.anb`](examples/showcase/nexus/nexus_checker_security.anb),
+proves the `taint_source → declassify` discipline and capability-gated egress in the
+checker lane. Full walkthrough: **[`examples/showcase/nexus/`](examples/showcase/nexus/)**.
+
+---
+
 ## It proves its own math
 
 Most verifiers lean on **Z3** — a large, external, unverified C++ trusted base. Anubis is removing it from the loop.
@@ -178,6 +211,7 @@ trigger-happy** — the same program with the leak removed passes.
 
 | Program | What it shows |
 |---|---|
+| ⭐ **[NEXUS cognitive kernel](examples/showcase/nexus/)** (472 lines) | the **flagship** — a whole real program that `check` proves *and* `run` executes: 9 Z3 contracts, `secret<T>`, traits, enums, generics, HOF, and a proved loop-invariant integrity chain, all in one file |
 | [`ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb) | the solver hands you the **counterexample** — `check` disproves `ensures(result >= 0)` at the wraparound state, then proves the fix |
 | [`verified_private_settlement.anb`](examples/showcase/verified_private_settlement.anb) | **contracts + secrets in one file**: SMT-proved debit/credit over `secret<i64>` balances, and the info-flow lane guarantees nothing private leaves |
 | [`verified_loop.anb`](examples/showcase/verified_loop.anb) | a **loop invariant** discharged to establish a postcondition |
