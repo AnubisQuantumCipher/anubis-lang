@@ -90,3 +90,7 @@ cd anubis-lang && git checkout 4b19c4819b04c14b7e12970220db96d4b1bf8567
 # then the procedure block at the top of this file
 # compare your repro_manifest.json / ddc_manifest.json shas to this witness
 ```
+
+## Multi-party
+
+Second independent stranger: [`WITNESS_2.md`](WITNESS_2.md) — **same hashes**, different clone path.

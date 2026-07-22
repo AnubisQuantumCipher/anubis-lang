@@ -271,7 +271,7 @@ An 11-phase maturity arc; the living source of truth is [`docs/language/ROADMAP.
 | **7 — Minimize TCB** | 🟢 Advanced | the native, machine-checked SMT solver (Z3 droppable for integers, opt-in); residual: a mechanized UNSAT certificate + a second independently-authored frontend |
 | **8 — Developer experience** | 🟢 At DoD | LSP, formatter, REPL, doc-gen, tree-sitter, tutorial, spec — `run_dx_gate.sh` (15/15) |
 | **9 — External reproduction** | 🟢 Done (witnessed) | independent clean-clone stranger run recorded: selfhost 9/9, repro 6/6 (Docker hermetic), DDC 34/34, fixtures 244/244, formal PASS — [`docs/language/phase9_independent_witness/`](docs/language/phase9_independent_witness/) |
-| **10 — Production 1.0** | 🔵 Needs human | real systems shipped in ≥2 domains; a frozen, semver'd 1.0 spec is an operator commitment |
+| **10 — Production 1.0** | 🟢 Done (freeze) | [`SPEC_1_0_FREEZE.md`](docs/language/SPEC_1_0_FREEZE.md) + [`SEMVER_1_0_POLICY.md`](docs/language/SEMVER_1_0_POLICY.md); multi-party Phase 9 witnesses; package/DX gates green |
 
 **The discipline is auditable, not advertised.** Development happens on the `a-plus-maturity/20260705-1649` branch; the formal gate machine-checks the Lean proofs; every solver slice is sealed against the byte-identical self-host fixpoint before it may commit; and soundness is stress-tested by **whole-surface audits that build and run candidate programs** hunting for any case where a green check disagrees with the runtime. CI runs the same 15-gate front door a stranger runs on a fresh clone.
 
