@@ -56,10 +56,10 @@ const LITERALS: &[&str] = &[
     "\"a\"",
     "\"b\"",
     "\"open\"",
-    "\"\"",           // empty string
+    "\"\"", // empty string
     "\"hello\"",
-    "\"\\u{5c}\"",    // a single backslash
-    "\"x\"\"y\"",     // the string  x"y  (doubled-quote escape)
+    "\"\\u{5c}\"", // a single backslash
+    "\"x\"\"y\"",  // the string  x"y  (doubled-quote escape)
 ];
 
 fn operand(rng: &mut Rng) -> String {
@@ -121,9 +121,13 @@ fn native_string_equality_agrees_with_z3() {
         decided, deferred, disagreements
     );
     assert_eq!(
-        disagreements, 0,
+        disagreements,
+        0,
         "native string lowering disagreed with z3.\nFirst: {}",
         first_bad.unwrap_or_default()
     );
-    assert!(decided > 500, "native decided too few string formulas ({decided}) — lowering sanity");
+    assert!(
+        decided > 500,
+        "native decided too few string formulas ({decided}) — lowering sanity"
+    );
 }

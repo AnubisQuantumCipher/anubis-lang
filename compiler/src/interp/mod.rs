@@ -86,9 +86,7 @@ impl Interp {
                     self.env.insert(name.clone(), v);
                     Ok(Value::Unit)
                 } else {
-                    Err(
-                        "ANUBIS_REPL_UNSUPPORTED: complex assignment (use --exact)".into(),
-                    )
+                    Err("ANUBIS_REPL_UNSUPPORTED: complex assignment (use --exact)".into())
                 }
             }
             Stmt::ExprStmt(e) => {
@@ -103,11 +101,7 @@ impl Interp {
                 }
                 self.eval_expr(e)
             }
-            Stmt::If {
-                cond,
-                then,
-                else_,
-            } => {
+            Stmt::If { cond, then, else_ } => {
                 let c = self.eval_expr(cond)?;
                 if truthy(&c) {
                     self.eval_stmts(then)
@@ -177,20 +171,12 @@ impl Interp {
                         _ => Err("ANUBIS_REPL_UNSUPPORTED: len".into()),
                     };
                 }
-                let f = self
-                    .fns
-                    .get(callee)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!(
-                            "ANUBIS_REPL_UNSUPPORTED: unknown function `{callee}` (use --exact)"
-                        )
-                    })?;
+                let f = self.fns.get(callee).cloned().ok_or_else(|| {
+                    format!("ANUBIS_REPL_UNSUPPORTED: unknown function `{callee}` (use --exact)")
+                })?;
                 if let Item::Fn { params, body, .. } = f {
                     if params.len() != args.len() {
-                        return Err(format!(
-                            "ANUBIS_REPL_UNSUPPORTED: arity {callee}"
-                        ));
+                        return Err(format!("ANUBIS_REPL_UNSUPPORTED: arity {callee}"));
                     }
                     let mut vals = Vec::new();
                     for a in args {

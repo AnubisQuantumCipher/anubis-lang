@@ -67,7 +67,9 @@ fn collect_fn_aliases(
 ) {
     for s in stmts {
         if let Stmt::Let {
-            name, init: Expr::Var(v), ..
+            name,
+            init: Expr::Var(v),
+            ..
         } = s
         {
             if all_fns.contains(v) {
@@ -147,7 +149,9 @@ pub(crate) fn scan_legs(
 /// (which excludes `read_file`/`open`), so a file-reading helper is never mis-marked as a steering
 /// channel — the read_file/leg-2 conflation the design avoids. Parameter-side taint is NOT considered
 /// here (receiving a tainted param does not make a function source untrusted input for its caller).
-pub(crate) fn compute_leg2_fns(items: &[crate::frontend::Item]) -> std::collections::BTreeSet<String> {
+pub(crate) fn compute_leg2_fns(
+    items: &[crate::frontend::Item],
+) -> std::collections::BTreeSet<String> {
     let mut fns: Vec<(String, Vec<String>, &[Stmt])> = Vec::new();
     super::collect_fn_params_bodies(items, &mut fns);
     let empty_secret = std::collections::BTreeSet::new();
@@ -279,7 +283,11 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs, sc: &ScanCtx) {
             // aliased function for leg detection — otherwise the leg is laundered through the binding
             // (audit follow-up: closure/function-value-aliased legs). `resolved` is the effective
             // callee name; its effects are also credited so leg-1 fs.read / leg-3 egress are counted.
-            let resolved: &str = sc.fn_aliases.get(callee).map(String::as_str).unwrap_or(callee);
+            let resolved: &str = sc
+                .fn_aliases
+                .get(callee)
+                .map(String::as_str)
+                .unwrap_or(callee);
             if sc.fn_aliases.contains_key(callee) {
                 if let Some(eff) = sc.fn_effects.get(resolved) {
                     legs.aliased_effects.extend(eff.iter().cloned());
@@ -293,7 +301,8 @@ fn walk_expr(expr: &Expr, legs: &mut TrifectaLegs, sc: &ScanCtx) {
             // Leg 2 (untrusted steering): a direct steering source OR a call to a helper that
             // transitively sources untrusted input (interprocedural `leg2_fns`).
             if is_leg2_source(resolved) {
-                legs.leg2_untrusted.get_or_insert_with(|| resolved.to_string());
+                legs.leg2_untrusted
+                    .get_or_insert_with(|| resolved.to_string());
             } else if sc.leg2_fns.contains(resolved) {
                 legs.leg2_untrusted
                     .get_or_insert_with(|| format!("{resolved}() (exposes untrusted input)"));
@@ -467,7 +476,9 @@ mod tests {
 
     #[test]
     fn detects_distinct_untrusted_source_not_the_read() {
-        let legs = legs_of(r#"fn agent() { let s = input(); let d = read_file("x"); send("h", 80, "b"); }"#);
+        let legs = legs_of(
+            r#"fn agent() { let s = input(); let d = read_file("x"); send("h", 80, "b"); }"#,
+        );
         assert_eq!(legs.leg2_untrusted.as_deref(), Some("input"));
     }
 
@@ -481,7 +492,11 @@ mod tests {
     #[test]
     fn tainted_param_is_leg2() {
         let legs = legs_of(r#"fn agent(q: tainted<string>) { let d = read_file("x"); }"#);
-        assert!(legs.leg2_untrusted.as_deref().unwrap().contains("tainted parameter"));
+        assert!(legs
+            .leg2_untrusted
+            .as_deref()
+            .unwrap()
+            .contains("tainted parameter"));
     }
 
     #[test]
@@ -489,18 +504,27 @@ mod tests {
         // The confidentiality dual of tainted_param_is_leg2: a secret<T> param is leg-1 private data.
         assert!(legs_of(r#"fn agent(k: secret<u64>) { let d = read_file("x"); }"#).secret_present);
         // A param merely NAMED with "secret" (not the qualifier) is not leg-1.
-        assert!(!legs_of(r#"fn agent(secret_key: u64) { let d = read_file("x"); }"#).secret_present);
+        assert!(
+            !legs_of(r#"fn agent(secret_key: u64) { let d = read_file("x"); }"#).secret_present
+        );
     }
 
     #[test]
     fn wellformed_declassify_detected_malformed_ignored() {
-        assert!(legs_of(r#"fn agent() { let s = input(); let x = declassify(s, "p", "r"); }"#).wellformed_declassify);
-        assert!(!legs_of(r#"fn agent() { let s = input(); let x = declassify(s); }"#).wellformed_declassify);
+        assert!(
+            legs_of(r#"fn agent() { let s = input(); let x = declassify(s, "p", "r"); }"#)
+                .wellformed_declassify
+        );
+        assert!(
+            !legs_of(r#"fn agent() { let s = input(); let x = declassify(s); }"#)
+                .wellformed_declassify
+        );
     }
 
     #[test]
     fn secret_source_is_leg1_confidentiality() {
-        let legs = legs_of(r#"fn agent() { let k = secret_source("api_key"); send("h", 80, "b"); }"#);
+        let legs =
+            legs_of(r#"fn agent() { let k = secret_source("api_key"); send("h", 80, "b"); }"#);
         assert!(legs.secret_present);
         // A plain read with no secret_source: the label is absent (fs.read handles that leg in mod.rs).
         assert!(!legs_of(r#"fn agent() { let d = read_file("x"); }"#).secret_present);
@@ -508,7 +532,9 @@ mod tests {
 
     #[test]
     fn scans_into_nested_branches_and_blocks() {
-        let legs = legs_of(r#"fn agent(c: bool) { if c { let s = recv(); } else { let x = declassify(read_file("x"), "p", "r"); } }"#);
+        let legs = legs_of(
+            r#"fn agent(c: bool) { if c { let s = recv(); } else { let x = declassify(read_file("x"), "p", "r"); } }"#,
+        );
         assert_eq!(legs.leg2_untrusted.as_deref(), Some("recv"));
         assert!(legs.wellformed_declassify);
     }
@@ -521,7 +547,9 @@ mod tests {
         // direct input(). Without the summary it is missed (accept-biased).
         let leg2: BTreeSet<String> = ["get_steer".to_string()].into_iter().collect();
         let src = r#"fn agent() { let s = get_steer(); send("h", 80, "b"); }"#;
-        assert!(legs_of_with(src, &BTreeSet::new(), &leg2).leg2_untrusted.is_some());
+        assert!(legs_of_with(src, &BTreeSet::new(), &leg2)
+            .leg2_untrusted
+            .is_some());
         assert!(legs_of(src).leg2_untrusted.is_none()); // no summary => not seen
     }
 
@@ -550,9 +578,15 @@ fn sanitizes_input() { let s = declassify(input(), "policy", "reviewed"); }"#,
         // PRESENCE, not return-flow: a helper that reads input and discards it still exposes.
         assert!(leg2.contains("discards_input"), "presence semantics");
         // The read_file/leg-2 conflation the design avoids: a file reader is leg 1, NEVER leg 2.
-        assert!(!leg2.contains("reads_file"), "file read must not be a leg-2 steering channel");
+        assert!(
+            !leg2.contains("reads_file"),
+            "file read must not be a leg-2 steering channel"
+        );
         // The declassify barrier holds across the helper boundary: a helper that SANITIZES its
         // untrusted read is not a leg-2 exposer (the confirmed over-rejection, now closed).
-        assert!(!leg2.contains("sanitizes_input"), "a declassified read is not a leg-2 channel");
+        assert!(
+            !leg2.contains("sanitizes_input"),
+            "a declassified read is not a leg-2 channel"
+        );
     }
 }

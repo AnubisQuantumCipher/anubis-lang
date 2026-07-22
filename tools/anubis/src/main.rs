@@ -23,9 +23,10 @@ use anubis_compiler::{
     package::{
         registry, resolve_workspace, ResolveOptions, ResolvedWorkspace, TrustStore, LOCK_FILENAME,
     },
-    parse_source, typecheck, typecheck_ex,
+    parse_source,
     project::ProjectLayout,
     resolve::combine_from_entry_opts,
+    typecheck, typecheck_ex,
 };
 use anyhow::anyhow;
 use anyhow::Result;
@@ -920,10 +921,7 @@ fn load_program_items(
         return Ok((ast, None));
     }
     let layout = ProjectLayout::discover(input).map_err(|e| anyhow!("{}", e))?;
-    let has_imports = ast
-        .items
-        .iter()
-        .any(|it| matches!(it, Item::Import { .. }));
+    let has_imports = ast.items.iter().any(|it| matches!(it, Item::Import { .. }));
     let has_deps = !layout.manifest.dependencies.is_empty();
     if !has_imports && !has_deps {
         return Ok((ast, None));
@@ -1159,12 +1157,12 @@ fn wrap_repl_input(src: &str) -> String {
 
 /// Phase-7 REPL: always typecheck (+ obligations when present) before eval.
 fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Result<()> {
+    use anubis_compiler::backends::run::{
+        compile_native_rust_to_exe, lower_program_to_rust, resolved_run_timeout, run_child_capped,
+    };
     use anubis_compiler::frontend::{parse_source, Mode, AST};
     use anubis_compiler::interp::Interp;
     use anubis_compiler::middle::{typecheck, SymbolicEngine};
-    use anubis_compiler::backends::run::{
-        compile_native_rust_to_exe, lower_program_to_rust, run_child_capped, resolved_run_timeout,
-    };
     use std::io::{self, BufRead, Write};
 
     let mode = if allow_research {
@@ -1192,16 +1190,13 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
     let run_snippet = |src: &str, session: &mut Interp| -> Result<()> {
         let ast = check_src(src)?;
         if exact {
-            let rust = lower_program_to_rust(&ast.items, allow_research)
-                .map_err(|e| anyhow!("{e}"))?;
+            let rust =
+                lower_program_to_rust(&ast.items, allow_research).map_err(|e| anyhow!("{e}"))?;
             let dir = tempfile::tempdir()?;
             let bin = dir.path().join("repl_bin");
             compile_native_rust_to_exe(&rust, &bin).map_err(|e| anyhow!("{e}"))?;
-            let out = run_child_capped(
-                std::process::Command::new(&bin),
-                resolved_run_timeout(),
-            )
-            .map_err(|e| anyhow!("{e}"))?;
+            let out = run_child_capped(std::process::Command::new(&bin), resolved_run_timeout())
+                .map_err(|e| anyhow!("{e}"))?;
             print!("{}", String::from_utf8_lossy(&out.output.stdout));
             eprint!("{}", String::from_utf8_lossy(&out.output.stderr));
             if !out.output.status.success() {
@@ -1233,8 +1228,10 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
         return Ok(());
     }
 
-    println!("anubis repl  (check-first; {} mode; :quit to exit)",
-        if exact { "exact" } else { "fast" });
+    println!(
+        "anubis repl  (check-first; {} mode; :quit to exit)",
+        if exact { "exact" } else { "fast" }
+    );
     let mut session = Interp::new();
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -1315,11 +1312,7 @@ fn run_lsp() -> Result<()> {
 
     let write_msg = |stdout: &mut dyn Write, v: &serde_json::Value| -> Result<()> {
         let body = serde_json::to_vec(v)?;
-        write!(
-            stdout,
-            "Content-Length: {}\r\n\r\n",
-            body.len()
-        )?;
+        write!(stdout, "Content-Length: {}\r\n\r\n", body.len())?;
         stdout.write_all(&body)?;
         stdout.flush()?;
         Ok(())
@@ -1404,13 +1397,9 @@ fn run_lsp() -> Result<()> {
                 }
             }
             "textDocument/hover" => {
-                let uri = msg["params"]["textDocument"]["uri"]
-                    .as_str()
-                    .unwrap_or("");
+                let uri = msg["params"]["textDocument"]["uri"].as_str().unwrap_or("");
                 let line = msg["params"]["position"]["line"].as_u64().unwrap_or(0) as usize;
-                let ch = msg["params"]["position"]["character"]
-                    .as_u64()
-                    .unwrap_or(0) as usize;
+                let ch = msg["params"]["position"]["character"].as_u64().unwrap_or(0) as usize;
                 let text = docs.get(uri).cloned().unwrap_or_default();
                 let offset = {
                     let mut o = 0usize;
@@ -1472,8 +1461,8 @@ fn main() -> Result<()> {
                 include_private: private,
                 format: fmt,
             };
-            let rendered = anubis_compiler::doc::render_path(&path, &opts)
-                .map_err(|e| anyhow!("{}", e))?;
+            let rendered =
+                anubis_compiler::doc::render_path(&path, &opts).map_err(|e| anyhow!("{}", e))?;
             if let Some(p) = out {
                 std::fs::write(&p, &rendered)?;
                 println!("wrote {}", p.display());
@@ -1710,11 +1699,12 @@ fn main() -> Result<()> {
             };
             // Multi-file modules + Phase-6 package deps: same combine path as `run`.
             if parse_err.is_none() && input.is_file() {
-                let needs_combine = ast.as_ref().is_some_and(|a| {
-                    a.items.iter().any(|it| matches!(it, Item::Import { .. }))
-                }) || ProjectLayout::discover(&input)
-                    .map(|l| !l.manifest.dependencies.is_empty())
-                    .unwrap_or(false);
+                let needs_combine = ast
+                    .as_ref()
+                    .is_some_and(|a| a.items.iter().any(|it| matches!(it, Item::Import { .. })))
+                    || ProjectLayout::discover(&input)
+                        .map(|l| !l.manifest.dependencies.is_empty())
+                        .unwrap_or(false);
                 if needs_combine {
                     match combine_from_entry_opts(&input, &default_pkg_opts(false)) {
                         Ok(items) => {
@@ -3581,12 +3571,20 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             // the native ANUBIS_PROOF_INPUTS env — so a program that both runs and proves has ONE input
             // format that agrees by construction. No flag ⇒ None ⇒ existing behavior (unset env).
             let proof_env = {
-                let pin =
-                    proof_input::resolve_proof_inputs(input_json.as_deref(), input_file.as_deref())?;
+                let pin = proof_input::resolve_proof_inputs(
+                    input_json.as_deref(),
+                    input_file.as_deref(),
+                )?;
                 proof_inputs_env_string(&pin.values)?
             };
-            let outcome =
-                run_anubis_source(&input, &src, &out, allow_research, &args, proof_env.as_deref())?;
+            let outcome = run_anubis_source(
+                &input,
+                &src,
+                &out,
+                allow_research,
+                &args,
+                proof_env.as_deref(),
+            )?;
             if evidence {
                 write_run_evidence(&out, &outcome)?;
             }
@@ -5853,8 +5851,15 @@ fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let outcome = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
-            .expect("safe program should run");
+        let outcome = run_anubis_source(
+            Path::new("inline.anb"),
+            source,
+            temp.path(),
+            false,
+            &[],
+            None,
+        )
+        .expect("safe program should run");
         assert!(outcome.status_success);
         assert_eq!(outcome.stdout.trim(), "Hello, Sicarii");
         assert_eq!(outcome.stderr.trim(), "");
@@ -6005,8 +6010,15 @@ fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let outcome = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
-            .expect("safe arithmetic program should run");
+        let outcome = run_anubis_source(
+            Path::new("inline.anb"),
+            source,
+            temp.path(),
+            false,
+            &[],
+            None,
+        )
+        .expect("safe arithmetic program should run");
         assert!(outcome.status_success);
         assert_eq!(outcome.stdout.trim(), "big");
     }
@@ -6019,8 +6031,15 @@ research fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let err = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
-            .expect_err("research run should require explicit allow");
+        let err = run_anubis_source(
+            Path::new("inline.anb"),
+            source,
+            temp.path(),
+            false,
+            &[],
+            None,
+        )
+        .expect_err("research run should require explicit allow");
         assert!(err
             .to_string()
             .contains("ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW"));
@@ -6037,8 +6056,15 @@ fn main() {
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");
-        let err = run_anubis_source(Path::new("inline.anb"), source, temp.path(), false, &[], None)
-            .expect_err("unsupported safe lowering should fail closed");
+        let err = run_anubis_source(
+            Path::new("inline.anb"),
+            source,
+            temp.path(),
+            false,
+            &[],
+            None,
+        )
+        .expect_err("unsupported safe lowering should fail closed");
         assert!(err
             .to_string()
             .contains("ANUBIS_UNSUPPORTED_NATIVE_LOWERING"));
@@ -6139,19 +6165,46 @@ fn main() {
         // placeholder/garbage ID masquerade as a real one). Every malformed form must fail closed.
         assert!(parse_image_id_words("").is_err(), "empty");
         assert!(parse_image_id_words("   ").is_err(), "whitespace-only");
-        assert!(parse_image_id_words("ANUBIS_ID_FRESH_RISC0").is_err(), "placeholder token");
-        assert!(parse_image_id_words("PENDING_REAL_ID").is_err(), "placeholder token");
-        assert!(parse_image_id_words("NO_REAL_ID_DERIVED").is_err(), "placeholder token");
-        assert!(parse_image_id_words("1 2 3 FRESH 5 6 7 8").is_err(), "contains FRESH");
-        assert!(parse_image_id_words("1 2 3 PENDING 5 6 7 8").is_err(), "contains PENDING");
-        assert!(parse_image_id_words("1 2 3 4 5 6 7").is_err(), "7 words (too few)");
-        assert!(parse_image_id_words("1 2 3 4 5 6 7 8 9").is_err(), "9 words (too many)");
+        assert!(
+            parse_image_id_words("ANUBIS_ID_FRESH_RISC0").is_err(),
+            "placeholder token"
+        );
+        assert!(
+            parse_image_id_words("PENDING_REAL_ID").is_err(),
+            "placeholder token"
+        );
+        assert!(
+            parse_image_id_words("NO_REAL_ID_DERIVED").is_err(),
+            "placeholder token"
+        );
+        assert!(
+            parse_image_id_words("1 2 3 FRESH 5 6 7 8").is_err(),
+            "contains FRESH"
+        );
+        assert!(
+            parse_image_id_words("1 2 3 PENDING 5 6 7 8").is_err(),
+            "contains PENDING"
+        );
+        assert!(
+            parse_image_id_words("1 2 3 4 5 6 7").is_err(),
+            "7 words (too few)"
+        );
+        assert!(
+            parse_image_id_words("1 2 3 4 5 6 7 8 9").is_err(),
+            "9 words (too many)"
+        );
         assert!(parse_image_id_words("1 2 3").is_err(), "3 words");
         // A letter between digits is a silent SEPARATOR (split on non-digit) → a dropped word → wrong
         // count → Err. Documents that garbage cannot sneak through as a short-but-valid ID.
-        assert!(parse_image_id_words("1 2 x 4 5 6 7 8").is_err(), "letter drops a word");
+        assert!(
+            parse_image_id_words("1 2 x 4 5 6 7 8").is_err(),
+            "letter drops a word"
+        );
         // A u32 overflow fails closed.
-        assert!(parse_image_id_words("99999999999 2 3 4 5 6 7 8").is_err(), "u32 overflow");
+        assert!(
+            parse_image_id_words("99999999999 2 3 4 5 6 7 8").is_err(),
+            "u32 overflow"
+        );
         // Exactly 8 valid u32 words parse.
         assert_eq!(
             parse_image_id_words("1 2 3 4 5 6 7 8").expect("8 valid words"),

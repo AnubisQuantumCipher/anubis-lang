@@ -99,7 +99,8 @@ impl<'a> Blaster<'a> {
         let c = Lit::pos(self.cnf.new_var());
         // c ↔ (a ⊕ b)
         self.cnf.add_clause(vec![c.negate(), a, b]);
-        self.cnf.add_clause(vec![c.negate(), a.negate(), b.negate()]);
+        self.cnf
+            .add_clause(vec![c.negate(), a.negate(), b.negate()]);
         self.cnf.add_clause(vec![c, a.negate(), b]);
         self.cnf.add_clause(vec![c, a, b.negate()]);
         c
@@ -231,7 +232,11 @@ impl<'a> Blaster<'a> {
             Term::Var(name, _) => self.vars.get(name).cloned(),
             Term::Const(v, w) => {
                 let (tt, ff) = (self.tt(), self.ff());
-                Some((0..*w).map(|i| if (v >> i) & 1 == 1 { tt } else { ff }).collect())
+                Some(
+                    (0..*w)
+                        .map(|i| if (v >> i) & 1 == 1 { tt } else { ff })
+                        .collect(),
+                )
             }
             Term::Not(a) => Some(self.blast_term(a)?.iter().map(|l| l.negate()).collect()),
             Term::And(a, b) => self.bitwise(a, b, |s, x, y| s.and2(x, y)),
@@ -418,11 +423,17 @@ impl<'a> Blaster<'a> {
             Pred::BoolVar(name) => self.bool_vars.get(name).copied(),
             Pred::Not(q) => Some(self.blast_pred(q)?.negate()),
             Pred::And(qs) => {
-                let ls: Vec<Lit> = qs.iter().map(|q| self.blast_pred(q)).collect::<Option<_>>()?;
+                let ls: Vec<Lit> = qs
+                    .iter()
+                    .map(|q| self.blast_pred(q))
+                    .collect::<Option<_>>()?;
                 Some(self.and_all(&ls))
             }
             Pred::Or(qs) => {
-                let ls: Vec<Lit> = qs.iter().map(|q| self.blast_pred(q)).collect::<Option<_>>()?;
+                let ls: Vec<Lit> = qs
+                    .iter()
+                    .map(|q| self.blast_pred(q))
+                    .collect::<Option<_>>()?;
                 if ls.is_empty() {
                     return Some(self.ff());
                 }

@@ -549,13 +549,21 @@ mod tests {
     fn straight_line_double_use_is_reuse_in_both_lanes() {
         let src = r#"fn main() { let c = cap_acquire("fs.read"); cap_use(c); cap_use(c); }"#;
         for verified in [false, true] {
-            assert_eq!(codes(src, verified), ["ANUBIS_CAPABILITY_REUSE"], "verified={verified}");
+            assert_eq!(
+                codes(src, verified),
+                ["ANUBIS_CAPABILITY_REUSE"],
+                "verified={verified}"
+            );
         }
     }
 
     #[test]
     fn used_once_and_surrendered_accept() {
-        assert!(codes(r#"fn main() { let c = cap_acquire("fs.read"); cap_use(c); }"#, true).is_empty());
+        assert!(codes(
+            r#"fn main() { let c = cap_acquire("fs.read"); cap_use(c); }"#,
+            true
+        )
+        .is_empty());
         // Passing the token to a callee consumes it here; not used again → accept.
         assert!(codes(
             r#"fn main() { let c = cap_acquire("fs.read"); sink(c); }"#,
@@ -566,8 +574,14 @@ mod tests {
 
     #[test]
     fn missing_on_provable_non_capability() {
-        assert_eq!(codes(r#"fn main() { cap_use(5); }"#, false), ["ANUBIS_CAPABILITY_MISSING"]);
-        assert_eq!(codes(r#"fn main() { cap_use(1 + 2); }"#, false), ["ANUBIS_CAPABILITY_MISSING"]);
+        assert_eq!(
+            codes(r#"fn main() { cap_use(5); }"#, false),
+            ["ANUBIS_CAPABILITY_MISSING"]
+        );
+        assert_eq!(
+            codes(r#"fn main() { cap_use(1 + 2); }"#, false),
+            ["ANUBIS_CAPABILITY_MISSING"]
+        );
         // Unknown provenance (a param) → accept in both lanes (never MISSING on ignorance).
         assert!(codes(r#"fn handler(c) { cap_use(c); }"#, true).is_empty());
     }
@@ -576,7 +590,10 @@ mod tests {
     fn move_on_rebind_keeps_the_token_singular() {
         // Use of the moved-from variable after the move is a reuse (aliasing cannot launder).
         assert_eq!(
-            codes(r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(c); }"#, false),
+            codes(
+                r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(c); }"#,
+                false
+            ),
             ["ANUBIS_CAPABILITY_REUSE"]
         );
         // Using the token via its new name exactly once accepts.
@@ -590,7 +607,10 @@ mod tests {
     #[test]
     fn aggregate_double_use_is_reuse() {
         assert_eq!(
-            codes(r#"fn main() { let c = cap_acquire("fs.read"); let pair = [c, c]; }"#, false),
+            codes(
+                r#"fn main() { let c = cap_acquire("fs.read"); let pair = [c, c]; }"#,
+                false
+            ),
             ["ANUBIS_CAPABILITY_REUSE"]
         );
     }
@@ -598,7 +618,10 @@ mod tests {
     #[test]
     fn branch_dual_default_accepts_verified_rejects() {
         let src = r#"fn f(cond) { let c = cap_acquire("x"); if cond { cap_use(c); } cap_use(c); }"#;
-        assert!(codes(src, false).is_empty(), "default lane must-consume accepts");
+        assert!(
+            codes(src, false).is_empty(),
+            "default lane must-consume accepts"
+        );
         assert_eq!(
             codes(src, true),
             ["ANUBIS_CAPABILITY_REUSE"],
@@ -617,7 +640,10 @@ mod tests {
     #[test]
     fn loop_carried_consume_rejects_in_verified_only() {
         let carried = r#"fn f() { let c = cap_acquire("x"); for i in 0..3 { cap_use(c); } }"#;
-        assert!(codes(carried, false).is_empty(), "default lane accepts (loop may not run)");
+        assert!(
+            codes(carried, false).is_empty(),
+            "default lane accepts (loop may not run)"
+        );
         assert_eq!(
             codes(carried, true),
             ["ANUBIS_CAPABILITY_REUSE"],
@@ -635,7 +661,10 @@ mod tests {
     fn verified_effect_without_acquisition_is_unauthorized() {
         // Performs net.send directly with no genuine acquisition → UNAUTHORIZED in verified only.
         let src = r#"fn f() { send("h", 80, "x"); }"#;
-        assert!(codes(src, false).is_empty(), "default lane requires no authorization");
+        assert!(
+            codes(src, false).is_empty(),
+            "default lane requires no authorization"
+        );
         assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
     }
 

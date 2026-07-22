@@ -191,7 +191,10 @@ fn tart_run(args: &[String]) -> Result<()> {
         bail!(
             "ANUBIS_VZ_COMMAND_FAILED: `tart {}` exited with {}",
             args.join(" "),
-            status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into())
         )
     }
 }
@@ -236,12 +239,20 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 println!("anubis vz — virtualization status");
                 println!(
                     "  backend            : tart (Apple Virtualization.framework)  [{}]",
-                    if backend_ok { "available" } else { "MISSING — brew install cirruslabs/cli/tart" }
+                    if backend_ok {
+                        "available"
+                    } else {
+                        "MISSING — brew install cirruslabs/cli/tart"
+                    }
                 );
                 println!("  host arch          : {arch}");
                 println!(
                     "  Virtualization.fwk : {}",
-                    if apple_silicon { "supported (Apple Silicon macOS)" } else { "NOT available on this host" }
+                    if apple_silicon {
+                        "supported (Apple Silicon macOS)"
+                    } else {
+                        "NOT available on this host"
+                    }
                 );
                 if backend_ok {
                     println!("\n  virtual machines:\n{}", indent(&vms));
@@ -260,7 +271,12 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             }
             Ok(())
         }
-        VzCmd::Create { name, from, cpu, memory } => {
+        VzCmd::Create {
+            name,
+            from,
+            cpu,
+            memory,
+        } => {
             eprintln!("[anubis vz] cloning `{from}` -> `{name}`");
             tart_run(&[s("clone"), from, name.clone()])?;
             if cpu.is_some() || memory.is_some() {
@@ -278,7 +294,12 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             println!("created VM `{name}` (run it with `anubis vz run {name}`)");
             Ok(())
         }
-        VzCmd::Run { name, no_graphics, detach, dir } => {
+        VzCmd::Run {
+            name,
+            no_graphics,
+            detach,
+            dir,
+        } => {
             let mut args = vec![s("run"), name.clone()];
             if no_graphics {
                 args.push(s("--no-graphics"));
@@ -300,7 +321,9 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 println!("booting `{name}` in the background (headless). `anubis vz ip {name}` when ready.");
                 Ok(())
             } else {
-                eprintln!("[anubis vz] booting `{name}` (Ctrl-C to stop); the guest holds this terminal.");
+                eprintln!(
+                    "[anubis vz] booting `{name}` (Ctrl-C to stop); the guest holds this terminal."
+                );
                 tart_run(&args)
             }
         }
@@ -309,9 +332,14 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             println!("{ip}");
             Ok(())
         }
-        VzCmd::Exec { name, user, command } => {
-            let ip = tart_capture(&[s("ip"), name.clone()])
-                .with_context(|| format!("VM `{name}` has no IP — is it running? (`anubis vz run {name} --detach`)"))?;
+        VzCmd::Exec {
+            name,
+            user,
+            command,
+        } => {
+            let ip = tart_capture(&[s("ip"), name.clone()]).with_context(|| {
+                format!("VM `{name}` has no IP — is it running? (`anubis vz run {name} --detach`)")
+            })?;
             let target = format!("{user}@{ip}");
             eprintln!("[anubis vz] ssh {target} -- {}", command.join(" "));
             let status = Command::new("ssh")
@@ -332,7 +360,10 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             } else {
                 bail!(
                     "ANUBIS_VZ_EXEC_FAILED: remote command exited with {}",
-                    status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+                    status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into())
                 )
             }
         }
@@ -349,11 +380,22 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             }
             tart_run(&[s("delete"), name])
         }
-        VzCmd::Sync { name, from, to, user } => {
+        VzCmd::Sync {
+            name,
+            from,
+            to,
+            user,
+        } => {
             let ip = wait_for_ip(&name)?;
             rsync_into(&from, &format!("{user}@{ip}:{to}"))
         }
-        VzCmd::Exploit { poc, base, keep, allow_research, user } => {
+        VzCmd::Exploit {
+            poc,
+            base,
+            keep,
+            allow_research,
+            user,
+        } => {
             if !allow_research {
                 bail!(
                     "ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz exploit` runs offensive code — pass \
@@ -367,15 +409,28 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 ssh_exec(
                     user,
                     ip,
-                    &["anubis".into(), "run".into(), "/tmp/anubis-poc.anb".into(), "--allow-research".into()],
+                    &[
+                        "anubis".into(),
+                        "run".into(),
+                        "/tmp/anubis-poc.anb".into(),
+                        "--allow-research".into(),
+                    ],
                 )
             })
         }
         VzCmd::Confine { program, out } => run_confine(&program, out),
-        VzCmd::NativePreflight { program, allow_host } => {
-            crate::vz_native::native_preflight(&program, &allow_host)
-        }
-        VzCmd::Fuzz { target, iterations, base, keep, allow_research, user } => {
+        VzCmd::NativePreflight {
+            program,
+            allow_host,
+        } => crate::vz_native::native_preflight(&program, &allow_host),
+        VzCmd::Fuzz {
+            target,
+            iterations,
+            base,
+            keep,
+            allow_research,
+            user,
+        } => {
             if !allow_research {
                 bail!("ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz fuzz` runs offensive code — pass --allow-research.");
             }
@@ -404,8 +459,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
 /// closed: the program must PARSE and pass `anubis check` (there is no proof to confine from
 /// otherwise). Never boots a VM. The manifest is the same one auto-sealed into every evidence bundle.
 fn run_confine(program: &str, out: Option<String>) -> Result<()> {
-    let src = std::fs::read_to_string(program)
-        .with_context(|| format!("read program `{program}`"))?;
+    let src =
+        std::fs::read_to_string(program).with_context(|| format!("read program `{program}`"))?;
     let ast = anubis_compiler::parse_source(&src)
         .map_err(|e| anyhow!("ANUBIS_CONFINE_PARSE_FAILED: {e}"))?;
     let mode = crate::first_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
@@ -422,7 +477,9 @@ fn run_confine(program: &str, out: Option<String>) -> Result<()> {
             .map_err(|e| anyhow!("{e}"))?;
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| anyhow!("{e}"))?;
 
-    eprintln!("[anubis vz confine] hypervisor confinement derived from the program's PROVEN effect set:");
+    eprintln!(
+        "[anubis vz confine] hypervisor confinement derived from the program's PROVEN effect set:"
+    );
     eprintln!("  effects_bounded : {}", manifest.effects_bounded);
     eprintln!(
         "  capabilities    : {}",
@@ -440,13 +497,20 @@ fn run_confine(program: &str, out: Option<String>) -> Result<()> {
         if !relevant {
             continue;
         }
-        let mark = if g.tart_enforced { "tart-enforced" } else { "advisory/needs-human" };
+        let mark = if g.tart_enforced {
+            "tart-enforced"
+        } else {
+            "advisory/needs-human"
+        };
         let args = if g.tart_args.is_empty() {
             String::new()
         } else {
             format!("  ({})", g.tart_args.join(" "))
         };
-        eprintln!("  {:<9} -> {:<30} [{}]{}", g.capability, g.hypervisor_grant, mark, args);
+        eprintln!(
+            "  {:<9} -> {:<30} [{}]{}",
+            g.capability, g.hypervisor_grant, mark, args
+        );
     }
     eprintln!(
         "  (sealed + re-derived-on-verify as confinement_manifest.json in every `anubis build --evidence` bundle)"
@@ -526,7 +590,10 @@ fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
     } else {
         bail!(
             "ANUBIS_VZ_EXEC_FAILED: remote command exited with {}",
-            status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into())
         )
     }
 }
@@ -535,7 +602,11 @@ fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
 /// ip)`, then DELETE the guest (unless `keep`) — even if the body errors. The blast radius of whatever
 /// ran inside is the throwaway VM, never the host. The clone name is derived from the base + pid so a
 /// caller need not manage names.
-fn disposable<F: FnOnce(&str, String) -> Result<()>>(base: &str, keep: bool, body: F) -> Result<()> {
+fn disposable<F: FnOnce(&str, String) -> Result<()>>(
+    base: &str,
+    keep: bool,
+    body: F,
+) -> Result<()> {
     let name = format!("anubis-vz-ephemeral-{}", std::process::id());
     eprintln!("[anubis vz] cloning disposable guest `{name}` from `{base}` (APFS CoW)");
     tart_run(&[s("clone"), base.into(), name.clone()])?;

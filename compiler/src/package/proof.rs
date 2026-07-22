@@ -49,9 +49,8 @@ pub fn verify_dep_evidence_for_package(
             evidence_dir.display()
         ));
     }
-    let ok = verify_pca(evidence_dir).map_err(|e| {
-        format!("ANUBIS_DEP_PROOF_UNVERIFIED: pca verify failed: {e}")
-    })?;
+    let ok = verify_pca(evidence_dir)
+        .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: pca verify failed: {e}"))?;
     if !ok {
         return Err(
             "ANUBIS_DEP_PROOF_UNVERIFIED: evidence bundle failed hash/claim verification"
@@ -63,13 +62,16 @@ pub fn verify_dep_evidence_for_package(
         // Sealed summaries must re-derive from the package the consumer mounts.
         // (skip only when evidence lacks summaries.json for pre-summary fixtures —
         // resolve_deps enforces summaries by default via summary::verify_against_package.)
-        if evidence_dir.join(crate::package::summary::SUMMARIES_FILENAME).is_file() {
+        if evidence_dir
+            .join(crate::package::summary::SUMMARIES_FILENAME)
+            .is_file()
+        {
             crate::package::summary::verify_against_package(root, evidence_dir)?;
         }
     }
-    match pca_signature_status(evidence_dir).map_err(|e| {
-        format!("ANUBIS_DEP_PROOF_UNVERIFIED: signature status: {e}")
-    })? {
+    match pca_signature_status(evidence_dir)
+        .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: signature status: {e}"))?
+    {
         None => {
             if policy.allow_unsigned {
                 Ok(None)
@@ -110,9 +112,7 @@ pub fn bind_evidence_to_package_sources(
 ) -> Result<(), String> {
     let sealed_path = evidence_dir.join("source.anubis");
     let sealed = std::fs::read(&sealed_path).map_err(|e| {
-        format!(
-            "ANUBIS_DEP_PROOF_UNVERIFIED: cannot read evidence source.anubis: {e}"
-        )
+        format!("ANUBIS_DEP_PROOF_UNVERIFIED: cannot read evidence source.anubis: {e}")
     })?;
     let src_root = {
         let s = package_root.join("src");
@@ -201,10 +201,7 @@ fn collect_modules_walk(
         if path.is_dir() {
             collect_modules_walk(root, &path, out)?;
         } else if path.is_file() {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if PACKAGE_MODULE_EXTS.contains(&ext) {
                 let rel = path
                     .strip_prefix(root)

@@ -212,7 +212,11 @@ pub fn gen_false_float_contract_program(seed: u64, depth: u32) -> Option<(String
     let mut rng = Lcg(seed ^ 0x9e37_79b9_7f4a_7c15);
     let (e, v) = build_float_expr(&mut rng, depth);
     let wrong = v + 1.0;
-    if !v.is_finite() || !wrong.is_finite() || wrong == v || format!("{wrong:?}").contains(['e', 'E']) {
+    if !v.is_finite()
+        || !wrong.is_finite()
+        || wrong == v
+        || format!("{wrong:?}").contains(['e', 'E'])
+    {
         return None;
     }
     let wl = flit(wrong);
@@ -237,14 +241,13 @@ pub fn gen_false_float_contract_program(seed: u64, depth: u32) -> Option<(String
 /// SMT encoder fails to escape the backslash. Printable only (no raw control chars): the encoder's
 /// modelable domain is exact for these; control-char handling is a documented residual.
 pub const STRING_POOL: [&str; 15] = [
-    "", "a", "b", "A", "B", "ok", "OK", "closed",
-    "\\",        // one backslash
-    "\\u{41}",   // 6 chars: \ u { 4 1 }  — collision-bait vs "A"
-    "\\u{42}",   // 6 chars — collision-bait vs "B"
-    "\\n",       // 2 chars: \ n  — vs a real newline (excluded) / distinct from "n"
-    "\"",        // one double-quote
-    "a\"b",      // embedded quote
-    "x\\y",      // embedded backslash
+    "", "a", "b", "A", "B", "ok", "OK", "closed", "\\",      // one backslash
+    "\\u{41}", // 6 chars: \ u { 4 1 }  — collision-bait vs "A"
+    "\\u{42}", // 6 chars — collision-bait vs "B"
+    "\\n",     // 2 chars: \ n  — vs a real newline (excluded) / distinct from "n"
+    "\"",      // one double-quote
+    "a\"b",    // embedded quote
+    "x\\y",    // embedded backslash
 ];
 
 /// Encode a runtime string into an Anubis SOURCE literal so the lexer reconstructs it EXACTLY: escape

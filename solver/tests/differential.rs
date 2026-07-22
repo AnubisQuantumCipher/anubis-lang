@@ -86,8 +86,14 @@ fn ser_pred(p: &Pred) -> String {
         Sgt(a, b) => bin("bvsgt", a, b),
         Sge(a, b) => bin("bvsge", a, b),
         Not(q) => format!("(not {})", ser_pred(q)),
-        And(qs) => format!("(and {})", qs.iter().map(ser_pred).collect::<Vec<_>>().join(" ")),
-        Or(qs) => format!("(or {})", qs.iter().map(ser_pred).collect::<Vec<_>>().join(" ")),
+        And(qs) => format!(
+            "(and {})",
+            qs.iter().map(ser_pred).collect::<Vec<_>>().join(" ")
+        ),
+        Or(qs) => format!(
+            "(or {})",
+            qs.iter().map(ser_pred).collect::<Vec<_>>().join(" ")
+        ),
     }
 }
 
@@ -149,7 +155,10 @@ fn gen_term(rng: &mut Rng, w: u32, depth: u32) -> Term {
             8 => Term::Lshr(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
             9 => Term::Ashr(a, Box::new(Term::Const(rng.below(w as u64) as u128, w))),
             // Constant-multiplier multiply: `x * c` (native decides via shift-and-add; z3 checks).
-            10 => Term::Mul(a, Box::new(Term::Const((rng.next() as u128) & ((1u128 << w) - 1), w))),
+            10 => Term::Mul(
+                a,
+                Box::new(Term::Const((rng.next() as u128) & ((1u128 << w) - 1), w)),
+            ),
             // VARIABLE-amount shifts: b is a full sub-term, exercising the barrel shifter (incl. the
             // shift-≥-width ⇒ 0 / all-sign path when b's value is large).
             11 => Term::Shl(a, b),
@@ -237,7 +246,11 @@ fn native_agrees_with_z3_on_64bit_edge_cases() {
         if let (Some(n), Some(z)) = (nat, zv) {
             assert_eq!(n, z, "native≠z3 on:\n{}", full);
         } else {
-            assert!(nat.is_some() && zv.is_some(), "native deferred a 64-bit edge case:\n{}", full);
+            assert!(
+                nat.is_some() && zv.is_some(),
+                "native deferred a 64-bit edge case:\n{}",
+                full
+            );
         }
     }
 }
@@ -263,10 +276,7 @@ fn native_agrees_with_z3_on_random_battery() {
                     if nat != zv {
                         disagreements += 1;
                         if first_bad.is_none() {
-                            first_bad = Some(format!(
-                                "native={} z3={} on:\n{}",
-                                nat, zv, smt
-                            ));
+                            first_bad = Some(format!("native={} z3={} on:\n{}", nat, zv, smt));
                         }
                     } else {
                         decided += 1;
@@ -280,7 +290,8 @@ fn native_agrees_with_z3_on_random_battery() {
         decided, deferred, disagreements
     );
     assert_eq!(
-        disagreements, 0,
+        disagreements,
+        0,
         "native disagreed with z3.\nFirst: {}",
         first_bad.unwrap_or_default()
     );
@@ -327,7 +338,8 @@ fn native_agrees_with_z3_on_wide_battery() {
         decided, deferred, disagreements
     );
     assert_eq!(
-        disagreements, 0,
+        disagreements,
+        0,
         "native disagreed with z3 on a wide formula.\nFirst: {}",
         first_bad.unwrap_or_default()
     );
@@ -370,23 +382,36 @@ fn native_sat_models_are_accepted_by_z3() {
                 pinned.push_str(&format!("(assert {})\n", ser_pred(a)));
             }
             for (name, value, width) in &model {
-                pinned.push_str(&format!("(assert (= {} (_ bv{} {})))\n", name, value, width));
+                pinned.push_str(&format!(
+                    "(assert (= {} (_ bv{} {})))\n",
+                    name, value, width
+                ));
             }
             pinned.push_str("(check-sat)\n");
             checked += 1;
             if z3(&pinned) != Some(true) {
                 bad += 1;
                 if first_bad.is_none() {
-                    first_bad = Some(format!("native model {:?} rejected by z3 on:\n{}", model, smt));
+                    first_bad = Some(format!(
+                        "native model {:?} rejected by z3 on:\n{}",
+                        model, smt
+                    ));
                 }
             }
         }
     }
-    eprintln!("native-model validation: checked={} rejected_by_z3={}", checked, bad);
+    eprintln!(
+        "native-model validation: checked={} rejected_by_z3={}",
+        checked, bad
+    );
     assert_eq!(
-        bad, 0,
+        bad,
+        0,
         "z3 rejected a native SAT model (reconstruction/evaluator bug).\nFirst: {}",
         first_bad.unwrap_or_default()
     );
-    assert!(checked > 50, "too few SAT models exercised ({checked}) — generator sanity");
+    assert!(
+        checked > 50,
+        "too few SAT models exercised ({checked}) — generator sanity"
+    );
 }

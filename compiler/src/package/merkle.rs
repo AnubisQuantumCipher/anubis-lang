@@ -80,12 +80,8 @@ fn collect_walk(
     dir: &std::path::Path,
     out: &mut Vec<(String, Vec<u8>)>,
 ) -> Result<(), String> {
-    let rd = std::fs::read_dir(dir).map_err(|e| {
-        format!(
-            "ANUBIS_DEP_UNRESOLVED: cannot read {}: {e}",
-            dir.display()
-        )
-    })?;
+    let rd = std::fs::read_dir(dir)
+        .map_err(|e| format!("ANUBIS_DEP_UNRESOLVED: cannot read {}: {e}", dir.display()))?;
     for ent in rd {
         let ent = ent.map_err(|e| e.to_string())?;
         let path = ent.path();

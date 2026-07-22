@@ -137,7 +137,13 @@ pub fn resolve_workspace(
     let mut new_lock = LockFile::empty();
 
     for locked in &locked_packages {
-        let root = materialize_locked(locked, &layout.root, &cache_root, &registry_root, registry_url.as_deref())?;
+        let root = materialize_locked(
+            locked,
+            &layout.root,
+            &cache_root,
+            &registry_root,
+            registry_url.as_deref(),
+        )?;
         cache::verify_cache_dir(&root, &locked.content_sha256).or_else(|_| {
             let actual = merkle::merkle_root_dir(&root)?;
             if actual != locked.content_sha256 {
@@ -249,7 +255,14 @@ fn resolve_tree(
     }
     stack.push(name.to_string());
 
-    let locked = resolve_one_fresh(name, spec, workspace_root, base_root, registry_root, registry_url)?;
+    let locked = resolve_one_fresh(
+        name,
+        spec,
+        workspace_root,
+        base_root,
+        registry_root,
+        registry_url,
+    )?;
 
     if let Some(prev) = out.get(name) {
         if prev.version != locked.version || prev.content_sha256 != locked.content_sha256 {
@@ -331,7 +344,11 @@ fn peek_package_root(
                         .map(|pv| pv.to_string_canonical() == locked.version)
                         .unwrap_or(false)
                     {
-                        return Ok(registry::package_version_dir(registry_root, &locked.name, &v));
+                        return Ok(registry::package_version_dir(
+                            registry_root,
+                            &locked.name,
+                            &v,
+                        ));
                     }
                 }
                 Err(format!(
@@ -341,7 +358,10 @@ fn peek_package_root(
             }
         }
         "git" => {
-            let g = locked.git.as_ref().ok_or("ANUBIS_LOCK_STALE: git missing")?;
+            let g = locked
+                .git
+                .as_ref()
+                .ok_or("ANUBIS_LOCK_STALE: git missing")?;
             let rev = locked.rev.as_ref().ok_or("ANUBIS_GIT_REV_REQUIRED")?;
             fetch_git(g, rev, &locked.name)
         }
@@ -456,7 +476,9 @@ fn resolve_one_fresh(
 }
 
 fn path_for_lock(abs: &Path, workspace_root: &Path) -> String {
-    let ws = workspace_root.canonicalize().unwrap_or_else(|_| workspace_root.to_path_buf());
+    let ws = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
     if let Ok(rel) = abs.strip_prefix(&ws) {
         rel.to_string_lossy().replace('\\', "/")
     } else {
@@ -522,11 +544,8 @@ fn materialize_locked(
                 let reg = if let Some(url) = url {
                     registry::fetch_remote_version(url, &locked.name, &locked.version)?
                 } else {
-                    let p = registry::package_version_dir(
-                        registry_root,
-                        &locked.name,
-                        &locked.version,
-                    );
+                    let p =
+                        registry::package_version_dir(registry_root, &locked.name, &locked.version);
                     if p.is_dir() {
                         p
                     } else {
@@ -545,7 +564,10 @@ fn materialize_locked(
                 );
             }
             if locked.source == "git" {
-                let g = locked.git.as_ref().ok_or("ANUBIS_LOCK_STALE: git missing")?;
+                let g = locked
+                    .git
+                    .as_ref()
+                    .ok_or("ANUBIS_LOCK_STALE: git missing")?;
                 let rev = locked.rev.as_ref().ok_or("ANUBIS_GIT_REV_REQUIRED")?;
                 let dest = fetch_git(g, rev, &locked.name)?;
                 return cache::materialize_from_dir(

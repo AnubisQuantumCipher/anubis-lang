@@ -117,7 +117,11 @@ fn walk_stmt_dcl(s: &Stmt, fname: &str, out: &mut Vec<DeclassifyRecord>) {
 
 fn walk_expr_dcl(e: &Expr, fname: &str, out: &mut Vec<DeclassifyRecord>) {
     match e {
-        Expr::Declassify { inner, policy, reason } => {
+        Expr::Declassify {
+            inner,
+            policy,
+            reason,
+        } => {
             let p = policy.clone().unwrap_or_default();
             let r = reason.clone().unwrap_or_default();
             let well_formed = !p.trim().is_empty() && !r.trim().is_empty();
@@ -149,25 +153,38 @@ fn walk_expr_dcl(e: &Expr, fname: &str, out: &mut Vec<DeclassifyRecord>) {
             walk_expr_dcl(index, fname, out);
         }
         Expr::FieldAccess { base, .. } => walk_expr_dcl(base, fname, out),
-        Expr::ArrayLiteral { elements } => elements.iter().for_each(|x| walk_expr_dcl(x, fname, out)),
-        Expr::StructLiteral { fields, .. } => {
-            fields.iter().for_each(|(_, x)| walk_expr_dcl(x, fname, out))
+        Expr::ArrayLiteral { elements } => {
+            elements.iter().for_each(|x| walk_expr_dcl(x, fname, out))
         }
-        Expr::EnumConstruct { fields, .. } => fields.iter().for_each(|x| walk_expr_dcl(x, fname, out)),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .for_each(|(_, x)| walk_expr_dcl(x, fname, out)),
+        Expr::EnumConstruct { fields, .. } => {
+            fields.iter().for_each(|x| walk_expr_dcl(x, fname, out))
+        }
         Expr::MapLiteral { entries, .. } => entries.iter().for_each(|(k, v)| {
             walk_expr_dcl(k, fname, out);
             walk_expr_dcl(v, fname, out);
         }),
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             walk_expr_dcl(scrutinee, fname, out);
             arms.iter().for_each(|a| walk_expr_dcl(&a.body, fname, out));
         }
-        Expr::If { cond, then, else_, .. } => {
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             walk_expr_dcl(cond, fname, out);
             walk_expr_dcl(then, fname, out);
             walk_expr_dcl(else_, fname, out);
         }
-        Expr::IfLet { scrutinee, then, else_, .. } => {
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
             walk_expr_dcl(scrutinee, fname, out);
             walk_expr_dcl(then, fname, out);
             walk_expr_dcl(else_, fname, out);
@@ -238,9 +255,8 @@ pub fn extract_from_source_text(
     source: &str,
 ) -> Result<PackageSummaries, String> {
     let source_merkle = merkle::sha256_hex(source.as_bytes());
-    let ast = parse_source(source).map_err(|e| {
-        format!("ANUBIS_DEP_PROOF_UNVERIFIED: summary extract parse failed: {e}")
-    })?;
+    let ast = parse_source(source)
+        .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: summary extract parse failed: {e}"))?;
     let mut functions = Vec::new();
     collect_fns(&ast.items, &mut functions);
     functions.sort_by(|a, b| a.name.cmp(&b.name));
@@ -288,7 +304,10 @@ pub fn extract_from_package(package_root: &Path) -> Result<PackageSummaries, Str
 }
 
 /// Write `summaries.json` into an evidence directory (before MANIFEST hash).
-pub fn write_to_evidence_dir(evidence_dir: &Path, summaries: &PackageSummaries) -> Result<(), String> {
+pub fn write_to_evidence_dir(
+    evidence_dir: &Path,
+    summaries: &PackageSummaries,
+) -> Result<(), String> {
     let json = serde_json::to_string_pretty(summaries).map_err(|e| e.to_string())?;
     std::fs::write(evidence_dir.join(SUMMARIES_FILENAME), json).map_err(|e| e.to_string())
 }
@@ -304,9 +323,8 @@ pub fn verify_against_package(package_root: &Path, evidence_dir: &Path) -> Resul
         );
     }
     let sealed_text = std::fs::read_to_string(&sealed_path).map_err(|e| e.to_string())?;
-    let sealed: PackageSummaries = serde_json::from_str(&sealed_text).map_err(|e| {
-        format!("ANUBIS_DEP_PROOF_UNVERIFIED: summaries.json parse: {e}")
-    })?;
+    let sealed: PackageSummaries = serde_json::from_str(&sealed_text)
+        .map_err(|e| format!("ANUBIS_DEP_PROOF_UNVERIFIED: summaries.json parse: {e}"))?;
     if sealed.schema != SUMMARIES_SCHEMA {
         return Err(format!(
             "ANUBIS_DEP_PROOF_UNVERIFIED: unsupported summaries schema `{}`",
@@ -347,8 +365,7 @@ fn collect_fns(items: &[Item], out: &mut Vec<FnSummary>) {
                 // Contracts are rendered to canonical source form and preserved in declaration
                 // order (NOT sorted): a precondition/postcondition list is an ordered conjunction as
                 // authored, and re-deriving it must reproduce the sealed text byte-for-byte.
-                let requires: Vec<String> =
-                    requires.iter().map(crate::doc::expr_to_src).collect();
+                let requires: Vec<String> = requires.iter().map(crate::doc::expr_to_src).collect();
                 let ensures: Vec<String> = ensures.iter().map(crate::doc::expr_to_src).collect();
                 let params: Vec<ParamSummary> = params
                     .iter()
@@ -457,7 +474,10 @@ mod tests {
         .unwrap();
         let s = extract_from_package(root).unwrap();
         assert_eq!(s.package, "x");
-        assert!(s.functions.iter().any(|f| f.name == "need_shell" && f.effects.iter().any(|e| e.contains("shell"))));
+        assert!(s
+            .functions
+            .iter()
+            .any(|f| f.name == "need_shell" && f.effects.iter().any(|e| e.contains("shell"))));
         let id = s.functions.iter().find(|f| f.name == "id").unwrap();
         assert!(id.params[0].tainted);
         assert!(id.returns_tainted);
@@ -465,7 +485,13 @@ mod tests {
         // visible, not just the API. `private` is included but marked non-public; `pub` fns are public.
         let private = s.functions.iter().find(|f| f.name == "private").unwrap();
         assert!(!private.public);
-        assert!(s.functions.iter().find(|f| f.name == "need_shell").unwrap().public);
+        assert!(
+            s.functions
+                .iter()
+                .find(|f| f.name == "need_shell")
+                .unwrap()
+                .public
+        );
         assert!(id.public);
     }
 
@@ -494,8 +520,16 @@ mod tests {
         // Precondition and postcondition both captured, in declaration order.
         assert_eq!(inc.requires.len(), 1, "requires captured");
         assert_eq!(inc.ensures.len(), 1, "ensures captured");
-        assert!(inc.requires[0].contains('x') && inc.requires[0].contains('>'), "requires text: {}", inc.requires[0]);
-        assert!(inc.ensures[0].contains("result"), "ensures references result: {}", inc.ensures[0]);
+        assert!(
+            inc.requires[0].contains('x') && inc.requires[0].contains('>'),
+            "requires text: {}",
+            inc.requires[0]
+        );
+        assert!(
+            inc.ensures[0].contains("result"),
+            "ensures references result: {}",
+            inc.ensures[0]
+        );
 
         // Tamper-evidence: seal, then weaken the precondition in the source; re-derive must reject.
         let ev = tmp.path().join("evidence");

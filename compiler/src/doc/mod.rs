@@ -4,8 +4,8 @@
 
 use crate::frontend::{associate_docs, parse_source, Expr, Item, Mode, Visibility, AST};
 use crate::middle::{typecheck, TypedIR};
-use crate::resolve::combine_from_entry_opts;
 use crate::package::ResolveOptions;
+use crate::resolve::combine_from_entry_opts;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -33,11 +33,8 @@ impl Default for DocOptions {
 pub fn render_path(path: &Path, opts: &DocOptions) -> Result<String, String> {
     let source = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let items = if path.is_file() {
-        combine_from_entry_opts(path, &ResolveOptions::default()).unwrap_or_else(|_| {
-            parse_source(&source)
-                .map(|a| a.items)
-                .unwrap_or_default()
-        })
+        combine_from_entry_opts(path, &ResolveOptions::default())
+            .unwrap_or_else(|_| parse_source(&source).map(|a| a.items).unwrap_or_default())
     } else {
         parse_source(&source)?.items
     };
@@ -151,7 +148,9 @@ fn collect_fn_pages(
 
 fn render_markdown(pages: &[FnDocPage]) -> String {
     let mut s = String::from("# Anubis API documentation\n\n");
-    s.push_str("_Verification-first: Contracts are source `requires`/`ensures`, not prose claims._\n\n");
+    s.push_str(
+        "_Verification-first: Contracts are source `requires`/`ensures`, not prose claims._\n\n",
+    );
     for p in pages {
         s.push_str(&format!("## `{}`\n\n", p.name));
         if !p.doc.is_empty() {

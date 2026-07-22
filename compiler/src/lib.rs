@@ -17,9 +17,7 @@ pub mod selfhost_schema;
 pub mod stdlib;
 
 pub use backends::native::lower_to_native;
-pub use backends::run::{
-    compile_native_rust_to_exe, ANUBIS_RUN_CRYPTO_CACHE_TAG,
-};
+pub use backends::run::{compile_native_rust_to_exe, ANUBIS_RUN_CRYPTO_CACHE_TAG};
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
 pub use frontend::{lex, parse, parse_source, Mode, AST};
 pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
@@ -420,8 +418,10 @@ mod tests {
             assert!(err.contains("ANUBIS_TYPE_MISMATCH"), "{src} — got: {err}");
         }
         // Controls that MUST still accept: pure-integer arithmetic, and the float result into a float slot.
-        tc_ok("fn main() { let x: u32 = 2 + 3; print(x); }").expect("integer arithmetic still narrows");
-        tc_ok("fn main() { let x: f64 = 2 + 1.5; print(x); }").expect("float result into f64 accepts");
+        tc_ok("fn main() { let x: u32 = 2 + 3; print(x); }")
+            .expect("integer arithmetic still narrows");
+        tc_ok("fn main() { let x: f64 = 2 + 1.5; print(x); }")
+            .expect("float result into f64 accepts");
         // Bitwise/shift stay INTEGER even with a float operand (anubis_band/shl as_i64) — must accept.
         tc_ok("fn main() { let avg = (4.0 + 6.0) / 2.0; let b: u32 = avg & 7; print(b); }")
             .expect("bitwise on a float operand is integer and still narrows");
@@ -2314,14 +2314,29 @@ fn main() {
         // (a genuine z3 `unknown` is non-deterministic — it needs a per-query timeout — so the LOGIC is
         // tested here rather than via a flaky timing-dependent program).
         use middle::obligation_undecided_is_unsound as undecided;
-        assert!(undecided("loop-invariant-step:(bvsgt anb_x (_ bv0 64))"), "step must fail closed");
-        assert!(undecided("loop-invariant-base:(bvsgt anb_x (_ bv0 64))"), "base");
-        assert!(undecided("ensures:(bvsgt anb_result (_ bv0 64))"), "ensures");
+        assert!(
+            undecided("loop-invariant-step:(bvsgt anb_x (_ bv0 64))"),
+            "step must fail closed"
+        );
+        assert!(
+            undecided("loop-invariant-base:(bvsgt anb_x (_ bv0 64))"),
+            "base"
+        );
+        assert!(
+            undecided("ensures:(bvsgt anb_result (_ bv0 64))"),
+            "ensures"
+        );
         assert!(undecided("requires@f:(bvsgt anb_x (_ bv0 64))"), "requires");
         assert!(undecided("assert:(bvsgt anb_x (_ bv0 64))"), "assert");
         // A non-proof-carrying obligation name is not forced to FAIL on unknown.
-        assert!(!undecided("solver"), "a bare solver check is not a contract obligation");
-        assert!(!undecided("taint-flow:x"), "an analysis tag is not a contract obligation");
+        assert!(
+            !undecided("solver"),
+            "a bare solver check is not a contract obligation"
+        );
+        assert!(
+            !undecided("taint-flow:x"),
+            "an analysis tag is not a contract obligation"
+        );
     }
 
     #[test]
@@ -2359,16 +2374,20 @@ fn main() {
         );
         // (accept-bias) a BUILT-IN primitive under the bound is accepted (never demand `impl … for u32`).
         assert!(
-            tc_ok("trait Comparable { fn cmp(self, other) -> i64; }\n\
+            tc_ok(
+                "trait Comparable { fn cmp(self, other) -> i64; }\n\
                    fn choose<T: Comparable>(a: T, b: T) -> T { a }\n\
-                   fn main() { let r = choose(1, 2); print(r); }")
+                   fn main() { let r = choose(1, 2); print(r); }"
+            )
             .is_ok(),
             "a primitive argument under a trait bound must be accepted (accept-bias)"
         );
         // (accept-bias) an UNBOUNDED generic never fires (parser records no bound).
         assert!(
-            tc_ok("struct Blob { x: u32 }\nfn id<T>(a: T) -> T { a }\n\
-                   fn main() { let r = id(Blob { x: 1 }); print(r.x); }")
+            tc_ok(
+                "struct Blob { x: u32 }\nfn id<T>(a: T) -> T { a }\n\
+                   fn main() { let r = id(Blob { x: 1 }); print(r.x); }"
+            )
             .is_ok(),
             "an unbounded generic must not trigger the bound check"
         );
@@ -2387,7 +2406,9 @@ fn main() {
              fn h() -> i64 ensures(result > 0) { let z = g(5); return z; }\n\
              fn main() { print(h()); }",
         )
-        .expect_err("early return over a reassigned parameter must not launder a false postcondition");
+        .expect_err(
+            "early return over a reassigned parameter must not launder a false postcondition",
+        );
         assert!(
             err.contains("ANUBIS_CONTRACT_UNPROVABLE"),
             "early-return reassigned-param — got: {err}"
@@ -2993,7 +3014,9 @@ fn main() {
         );
         // SOUNDNESS: an invariant referencing the ELEMENT `x` fails closed (x is a loop-local `let x = a[i]`).
         assert!(
-            !discharged("fn f() { let a = [0, 0, 5]; for x in a invariant(x == 0) { } } fn main() { f(); }"),
+            !discharged(
+                "fn f() { let a = [0, 0, 5]; for x in a invariant(x == 0) { } } fn main() { f(); }"
+            ),
             "a collection invariant referencing the element x is fail-closed"
         );
         // An UNBOUNDED/parameter collection keeps the honest rejection (no modeled length/cells).
@@ -3319,7 +3342,8 @@ fn bad() {
         // fail-closed); no forall, no set-logic change; z3's ground array+BV reasoning discharges the
         // symbolic select over the bounded index. This is the READ half of "bounded-array symbolic-index
         // loop invariants"; the quantified array-WRITE-fill half stays deferred.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3399,7 +3423,8 @@ fn bad() {
         // `len(a)` bound or a modeled read certifies a contract the grown array violates (hunt-confirmed, and
         // a PRE-EXISTING false proof: `push(a,v); assert(len(a) == <literal count>)` used to be certified
         // while the runtime length had changed). `discharged` is false when the program is rejected.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3461,7 +3486,8 @@ fn bad() {
         // modeled bounded seq, `v` not referencing `a`) now UPDATES cell k in place instead of de-modeling
         // the whole sequence, so a later read `a[k]` (and the untouched cells + length) still verify.
         // `discharged` is false when the program is rejected.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3514,7 +3540,8 @@ fn bad() {
         // symbol with the written value, so a later read `p.f` in an assert/ensures is CHECKED. Gated
         // fail-closed on `struct_write_disqualified`: any var mutated in any way OTHER than a top-level
         // straight-line field write (a whole/embedded/branch/loop reassign) is EXCLUDED → its fields defer.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3573,7 +3600,8 @@ fn bad() {
         // write to a FLOAT field `p.f = v` (v float-modelable and not referencing p) registers the field's
         // `mangle_field(p,f)` symbol in the FLOAT lane with the Float64 encoding, so a later read `p.f` is
         // CHECKED. Same `struct_write_disqualified` gate + Rc-COW soundness as the integer branch.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3642,7 +3670,8 @@ fn bad() {
         // `mangle_field(p,s)` symbol in the STRING lane, so a later read `p.s` is CHECKED. Same
         // `struct_write_disqualified` gate + Rc-COW soundness. No int/float kind-coercion subtlety (a string
         // field only ever holds a string); the z3 `\u`-decode escaping rides `string_expr_to_smt`.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3650,7 +3679,9 @@ fn bad() {
         };
         // THE DEMONSTRATION: the written string is PROVED (was fail-open before the slice).
         assert!(
-            discharged(r#"struct P { s: string } fn f() -> string ensures(result == "hi") { let mut p = P { s: "a" }; p.s = "hi"; return p.s; } fn main() { let r = f(); }"#),
+            discharged(
+                r#"struct P { s: string } fn f() -> string ensures(result == "hi") { let mut p = P { s: "a" }; p.s = "hi"; return p.s; } fn main() { let r = f(); }"#
+            ),
             "a string field write proves the written value (p.s=\"hi\" ⇒ p.s==\"hi\")"
         );
         // A FALSE post-write ensures is DISPROVED (modeled, not deferred).
@@ -3660,13 +3691,17 @@ fn bad() {
         );
         // A string field write composes with the str.len lane; a rewrite tracks the latest value.
         assert!(
-            discharged(r#"struct P { s: string } fn f() -> i64 ensures(result == 5) { let mut p = P { s: "a" }; p.s = "hello"; return len(p.s); } fn main() { let r = f(); }"#),
+            discharged(
+                r#"struct P { s: string } fn f() -> i64 ensures(result == 5) { let mut p = P { s: "a" }; p.s = "hello"; return len(p.s); } fn main() { let r = f(); }"#
+            ),
             "a string field write composes with str.len (p.s=\"hello\" ⇒ len==5)"
         );
         // A `\`-bearing literal is faithfully modeled (the z3 `\u`-decode escaping holds both ways) — a true
         // self-equality proves, so the encoding is not a false accept nor a decode exploit.
         assert!(
-            discharged(r#"struct P { s: string } fn f() -> string ensures(result == "a\\b") { let mut p = P { s: "a" }; p.s = "a\\b"; return p.s; } fn main() { let r = f(); }"#),
+            discharged(
+                r#"struct P { s: string } fn f() -> string ensures(result == "a\\b") { let mut p = P { s: "a" }; p.s = "a\\b"; return p.s; } fn main() { let r = f(); }"#
+            ),
             "a backslash-bearing string field write models faithfully (p.s==\"a\\\\b\")"
         );
         // SOUNDNESS: a whole reassign after a string field write disqualifies the base (stale must not prove).
@@ -3683,7 +3718,8 @@ fn bad() {
         // seeding `mangle_field(mangle_field(p,a),b)`, and the read resolves to the same symbol via
         // `field_access_symbol`. SOUND with NO invalidation: any write to p at any level (`p =`, `p.a =`,
         // `p.a.b =`) puts p in reassigned_roots → not seeded → fail-open.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3720,7 +3756,8 @@ fn bad() {
         // are prefix-related (`p.a` is a strict prefix of `p.a.b`) is disqualified, because an intermediate
         // reassign `p.a = ..` would stale the leaf's fact. Under the gate all writes are PARALLEL leaf
         // writes updating their OWN symbol — no subtree eviction needed.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe) {
+        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), Mode::Safe)
+        {
             Ok(ir) => SymbolicEngine::check_obligations(&ir)
                 .iter()
                 .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
@@ -3764,15 +3801,17 @@ fn bad() {
         // These are OBLIGATION-level facts, so they must be checked through the SOLVER (check_obligations),
         // not `tc_ok` (parse+typecheck only — it never runs the SMT obligations, so it cannot see an
         // obligation FAIL; see [[anubis-strlen-sum-lane]] LESSON 33). This helper matches the CLI verdict.
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
-        {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
-            Err(_) => false,
-        };
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
         assert!(
-            discharged("fn f(x: f64) -> f64 requires(x == 5.5) ensures(result == 1.5) { return x % 2.0; }"),
+            discharged(
+                "fn f(x: f64) -> f64 requires(x == 5.5) ensures(result == 1.5) { return x % 2.0; }"
+            ),
             "float 5.5 % 2.0 discharges to 1.5 (fmod)"
         );
         // The fp.rem value (-0.5) must NOT discharge — proves the encoding is fmod, not fp.rem.
@@ -3789,7 +3828,9 @@ fn bad() {
         // the contract discharges without ever consulting the integer divisor gate (`x / 0.0` = ±inf is
         // handled by the NaN-aware comparison encoding; there is no spurious ANUBIS_DIVISOR_MAYBE_ZERO).
         assert!(
-            discharged("fn f(x: f64) -> f64 requires(x == 7.0) ensures(result == 3.5) { return x / 2.0; }"),
+            discharged(
+                "fn f(x: f64) -> f64 requires(x == 7.0) ensures(result == 3.5) { return x / 2.0; }"
+            ),
             "float division discharges via the total fp.div lane (no div-by-zero gate)"
         );
     }
@@ -3959,7 +4000,9 @@ fn bad() {
         // The == boundary: 2^53 does NOT satisfy `> 2^53` (a control that the coercion model did not
         // spuriously flip a true rejection into an accept).
         assert!(
-            !discharged("fn g(x: f64) requires(x > 9007199254740992) {} fn main() { g(9007199254740992); }"),
+            !discharged(
+                "fn g(x: f64) requires(x > 9007199254740992) {} fn main() { g(9007199254740992); }"
+            ),
             "the arg exactly equal to the bound does not satisfy `>` (control rejection)"
         );
         // A const-foldable int-ARITHMETIC arg is folded to its runtime i64 value THEN coerced — `2^53 + 1`
@@ -4022,12 +4065,16 @@ fn bad() {
         // 2^53 = 9007199254740992. Returning 2^53+1 rounds to 2^53 under `n as f64`, which does NOT satisfy
         // the postcondition `result > 2^53` — the `ensures` is FALSE at runtime, so it must be REJECTED.
         assert!(
-            !discharged("fn src() -> f64 ensures(result > 9007199254740992) { return 9007199254740993; }"),
+            !discharged(
+                "fn src() -> f64 ensures(result > 9007199254740992) { return 9007199254740993; }"
+            ),
             "a return value that ROUNDS across the f64 ensures (2^53+1 -> 2^53) must be rejected"
         );
         // 2^53+2 IS exactly representable and satisfies `result > 2^53` after coercion — must still ACCEPT.
         assert!(
-            discharged("fn src() -> f64 ensures(result > 9007199254740992) { return 9007199254740994; }"),
+            discharged(
+                "fn src() -> f64 ensures(result > 9007199254740992) { return 9007199254740994; }"
+            ),
             "an exactly-representable return satisfying the f64 ensures (2^53+2) still discharges"
         );
         // A const-foldable int-ARITHMETIC return is folded then coerced (2^53+1 rounds → reject).
@@ -4042,7 +4089,9 @@ fn bad() {
         );
         // A genuine FLOAT return (a float param passed through) is untouched — accepts.
         assert!(
-            discharged("fn id(x: f64) -> f64 requires(x > 3.0) ensures(result > 2.0) { return x; }"),
+            discharged(
+                "fn id(x: f64) -> f64 requires(x > 3.0) ensures(result > 2.0) { return x; }"
+            ),
             "a genuine float return (float param passed through) is unchanged and still discharges"
         );
         // A SYMBOLIC int return whose coercion could round across the bound is discharged fail-closed
@@ -4198,7 +4247,9 @@ fn bad() {
             "an in-range integer divisor still models in QF_BV (5 % 3 = 2)"
         );
         assert!(
-            !discharged("fn f(x: i64) requires(x == 5) { assert(x % 3 == 1); } fn main() { f(5); }"),
+            !discharged(
+                "fn f(x: i64) requires(x == 5) { assert(x % 3 == 1); } fn main() { f(5); }"
+            ),
             "an in-range integer divisor rejects a false value (5 % 3 != 1)"
         );
     }
@@ -4320,15 +4371,17 @@ fn bad() {
         // fabricates a proof — a fully-symbolic `result == x % y` is UNPROVABLE (when y == 0, x % y is NaN
         // and NaN != NaN defeats reflexivity), so the SOLVER keeps it fail-closed. This is an obligation-
         // level fact, so it is checked through the solver (check_obligations), not `tc_ok` (typecheck-only).
-        let discharged = |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
-        {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
-            Err(_) => false,
-        };
+        let discharged =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
         assert!(
-            discharged("fn f(x: f64) -> f64 requires(x == 5.5) ensures(result == 1.5) { return x % 2.0; }"),
+            discharged(
+                "fn f(x: f64) -> f64 requires(x == 5.5) ensures(result == 1.5) { return x % 2.0; }"
+            ),
             "float `%` now models fmod: 5.5 % 2.0 = 1.5 discharges (no longer opaque)"
         );
         assert!(
@@ -4700,7 +4753,14 @@ fn main() uses(fs.read, fs.write) {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&clean).expect("combine clean");
-        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("declassify path must check");
+        typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect("declassify path must check");
 
         let leak = dir.join("leak.anb");
         std::fs::write(
@@ -4715,7 +4775,14 @@ fn main() uses(fs.read, fs.write) {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&leak).expect("combine leak");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect_err("leak must fail");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("leak must fail");
         assert!(
             err.contains("ANUBIS_INTERPROC_SINK") || err.contains("TAINTED"),
             "got: {err}"
@@ -4742,9 +4809,20 @@ fn main() uses(fs.read, fs.write) {
 
         // (a) requires DISCHARGE across the boundary: a violating call must be DISPROVED by the solver.
         let bad = dir.join("bad.anb");
-        std::fs::write(&bad, "import dep;\nfn main() { let _ = dep::safe_div(10, 0); }\n").unwrap();
+        std::fs::write(
+            &bad,
+            "import dep;\nfn main() { let _ = dep::safe_div(10, 0); }\n",
+        )
+        .unwrap();
         let items = resolve::combine_from_entry(&bad).expect("combine bad");
-        let ir = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("tc bad");
+        let ir = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect("tc bad");
         let checks = SymbolicEngine::check_obligations(&ir);
         assert!(
             checks
@@ -4755,12 +4833,25 @@ fn main() uses(fs.read, fs.write) {
 
         // (a') the SAME call with a valid arg must NOT be disproved.
         let ok = dir.join("ok.anb");
-        std::fs::write(&ok, "import dep;\nfn main() { let _ = dep::safe_div(10, 2); }\n").unwrap();
+        std::fs::write(
+            &ok,
+            "import dep;\nfn main() { let _ = dep::safe_div(10, 2); }\n",
+        )
+        .unwrap();
         let items = resolve::combine_from_entry(&ok).expect("combine ok");
-        let ir = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("tc ok");
+        let ir = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect("tc ok");
         let checks = SymbolicEngine::check_obligations(&ir);
         assert!(
-            !checks.iter().any(|c| c.name.contains("requires") && c.status == "FAIL"),
+            !checks
+                .iter()
+                .any(|c| c.name.contains("requires") && c.status == "FAIL"),
             "a valid imported call must not be disproved: {checks:?}"
         );
 
@@ -4768,8 +4859,14 @@ fn main() uses(fs.read, fs.write) {
         let eff = dir.join("eff.anb");
         std::fs::write(&eff, "import dep;\nfn main() { dep::beacon(); }\n").unwrap();
         let items = resolve::combine_from_entry(&eff).expect("combine eff");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe)
-            .expect_err("inherited net.send effect must be enforced");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("inherited net.send effect must be enforced");
         assert!(
             err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"),
             "inherited effect not enforced: {err}"
@@ -4783,9 +4880,18 @@ fn main() uses(fs.read, fs.write) {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&tnt).expect("combine tnt");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe)
-            .expect_err("inherited taint must be enforced");
-        assert!(err.contains("TAINTED"), "inherited taint not enforced: {err}");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("inherited taint must be enforced");
+        assert!(
+            err.contains("TAINTED"),
+            "inherited taint not enforced: {err}"
+        );
     }
 
     #[test]
@@ -4960,7 +5066,10 @@ fn main() {
             .collect();
         assert_eq!(lines[0], "true");
         assert_eq!(lines[1], "false");
-        assert_eq!(lines[2], "true", "pbkdf2 verify must accept correct password");
+        assert_eq!(
+            lines[2], "true",
+            "pbkdf2 verify must accept correct password"
+        );
         assert_eq!(lines[3], "false");
     }
 
@@ -5056,10 +5165,7 @@ fn main() {
         let out = compile_and_run_items(&items, false, &[]).expect("spawn");
         assert!(!out.status.success());
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            err.contains("ANUBIS_CRYPTO_BYTE_RANGE"),
-            "got: {err}"
-        );
+        assert!(err.contains("ANUBIS_CRYPTO_BYTE_RANGE"), "got: {err}");
     }
 
     #[test]
@@ -5105,8 +5211,14 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&f).expect("combine");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe)
-            .expect_err("std.crypto mac == must fail");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("std.crypto mac == must fail");
         assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
     }
 
@@ -5124,7 +5236,14 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&w).expect("combine");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect_err("write must fail");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("write must fail");
         assert!(
             err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("file_write"),
             "got: {err}"
@@ -5138,7 +5257,14 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&s).expect("combine");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect_err("shell must fail");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("shell must fail");
         assert!(
             err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("shell"),
             "got: {err}"
@@ -5152,7 +5278,14 @@ fn main() {
         )
         .unwrap();
         let items = resolve::combine_from_entry(&ok).expect("combine");
-        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("authorized write must pass");
+        typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect("authorized write must pass");
     }
 
     #[test]
@@ -5876,9 +6009,13 @@ fn main() {
     sink(xs[0]);
 }
 "#;
-        let err = tc_ok(push_launder)
-            .expect_err("push of a tainted value into a container, then sink of a read-back, must be rejected");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        let err = tc_ok(push_launder).expect_err(
+            "push of a tainted value into a container, then sink of a read-back, must be rejected",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // FP1: a `while let Some(v) = o` binder did NOT inherit the scrutinee `o`'s taint, so extracting a
         // tainted value through the loop pattern laundered it (the isomorphic `if let` form WAS caught).
@@ -5893,7 +6030,10 @@ fn main() {
 "#;
         let err = tc_ok(while_let_launder)
             .expect_err("a while-let binder inheriting the scrutinee's taint, reaching a sink, must be rejected");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // NON-REGRESSION: a CLEAN push and a CLEAN while-let must still be accepted (no over-tainting).
         tc_ok("fn main() { let xs = []; push(xs, 7); sink(xs[0]); }")
@@ -5917,9 +6057,13 @@ fn main() {
     each([1], g);
 }
 "#;
-        let err = tc_ok(taint_via_hof)
-            .expect_err("a var-bound closure capturing taint into a sink via a HOF must be rejected");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        let err = tc_ok(taint_via_hof).expect_err(
+            "a var-bound closure capturing taint into a sink via a HOF must be rejected",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // The DIRECT-application twin (`g(0)`, no HOF) must also be caught.
         let taint_via_direct = r#"
@@ -5929,9 +6073,13 @@ fn main() {
     g(0);
 }
 "#;
-        let err = tc_ok(taint_via_direct)
-            .expect_err("a var-bound closure capturing taint into a sink, applied directly, must be rejected");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        let err = tc_ok(taint_via_direct).expect_err(
+            "a var-bound closure capturing taint into a sink, applied directly, must be rejected",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // FP4: the EFFECT dual — a var-bound closure performs an fs.write with NO `uses(fs.write)`, laundered
         // through `each`. Descending charges the effect to main(), which is undeclared → forbidden.
@@ -5941,8 +6089,9 @@ fn main() {
     each([1], g);
 }
 "#;
-        let err = tc_ok(effect_via_hof)
-            .expect_err("a var-bound closure's undeclared fs.write laundered through a HOF must be rejected");
+        let err = tc_ok(effect_via_hof).expect_err(
+            "a var-bound closure's undeclared fs.write laundered through a HOF must be rejected",
+        );
         assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN"), "got: {err}");
 
         // NESTED closure: the descent recurses — an inner closure defined and applied inside the outer
@@ -5954,14 +6103,21 @@ fn main() {
     g(0);
 }
 "#;
-        let err = tc_ok(nested)
-            .expect_err("a nested closure inside a descended var-bound closure body must also be enforced");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        let err = tc_ok(nested).expect_err(
+            "a nested closure inside a descended var-bound closure body must also be enforced",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // ALIAS chain and REASSIGN both propagate the closure body to the application site.
         let err = tc_ok("fn main() { let t: tainted<u32> = symbolic(); let g = |x| sink(t); let h = g; each([1], h); }")
             .expect_err("an alias of a var-bound closure still enforces its captured taint");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // NON-REGRESSION: a clean var-bound closure (via HOF and directly), and a closure whose effect IS
         // declared, must all still be ACCEPTED (the descent enforces, it does not over-reject).
@@ -5984,9 +6140,13 @@ fn main() {
     g(0);
 }
 "#;
-        let err = tc_ok(returned)
-            .expect_err("a returned closure capturing a tainted call arg, then applied, must be rejected");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        let err = tc_ok(returned).expect_err(
+            "a returned closure capturing a tainted call arg, then applied, must be rejected",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
         // NON-REGRESSION: a returned closure that does nothing harmful, and one whose effect is declared,
         // are accepted (the substitution + descent enforce, they do not over-reject).
         tc_ok("fn make(t) { return |x| t; } fn main() { let g = make(5); g(0); }")
@@ -6011,18 +6171,26 @@ fn main() {
     apply_it(leak);
 }
 "#;
-        let err = tc_ok(taint)
-            .expect_err("a closure laundering taint through a user-fn param that applies it must be rejected");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        let err = tc_ok(taint).expect_err(
+            "a closure laundering taint through a user-fn param that applies it must be rejected",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // TAINT via an INLINE closure arg (not var-bound) — the same descent resolves it.
         let taint_inline = r#"
 fn apply_it(g) { g(0); }
 fn main() { let t: tainted<u32> = symbolic(); apply_it(|x| sink(t)); }
 "#;
-        let err = tc_ok(taint_inline)
-            .expect_err("an inline closure arg laundering taint through an applying user fn must be rejected");
-        assert!(err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"), "got: {err}");
+        let err = tc_ok(taint_inline).expect_err(
+            "an inline closure arg laundering taint through an applying user fn must be rejected",
+        );
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "got: {err}"
+        );
 
         // EFFECT dual: an undeclared fs.write laundered through a user forwarder is charged to the caller.
         let effect = r#"
@@ -6100,8 +6268,10 @@ fn main() {
             .expect("a callee that does NOT apply the forwarded param must not trigger the descent");
         tc_ok(r#"fn b(g) { g(0); } fn a(g) { let g = |y| 1; b(g); } fn main() { let leak = |x| write_file("o","d"); a(leak); }"#)
             .expect("a param shadowed by a clean local before forwarding must not be marked applied");
-        tc_ok("fn rec(g, n) { if n > 0 { rec(g, n - 1); } } fn main() { let g = |x| 1; rec(g, 3); }")
-            .expect("a self-forwarding recursion must converge and not over-reject");
+        tc_ok(
+            "fn rec(g, n) { if n > 0 { rec(g, n - 1); } } fn main() { let g = |x| 1; rec(g, 3); }",
+        )
+        .expect("a self-forwarding recursion must converge and not over-reject");
     }
 
     #[test]
@@ -6166,7 +6336,8 @@ fn main() {
             "a list-element closure capturing taint into a sink must be enforced"
         );
         assert!(
-            tc_ok(r#"fn main() { let arr = [|x| 1, |x| write_file("o","d")]; arr[1](0); }"#).is_err(),
+            tc_ok(r#"fn main() { let arr = [|x| 1, |x| write_file("o","d")]; arr[1](0); }"#)
+                .is_err(),
             "the correct element-closure is enforced at a non-zero index"
         );
         // NON-REGRESSION: clean, caller-declared, and stored-but-unapplied must ACCEPT.
@@ -6617,7 +6788,9 @@ fn main() { let d = mid(); let _ = d; }"#;
         let err = typecheck_ex(ast, frontend::Mode::Safe, true)
             .expect_err("verified lane must see transitive fs.read");
         assert!(
-            err.contains("function `main` uses capability effect(s) [fs.read] (via transitive call)"),
+            err.contains(
+                "function `main` uses capability effect(s) [fs.read] (via transitive call)"
+            ),
             "got: {err}"
         );
         // Default lane: same program accepts (absent clause is permissive outside verified).
@@ -6641,11 +6814,17 @@ fn main() { let d = mid(); let _ = d; }"#;
                 verified,
             )
             .expect_err("double use must reject");
-            assert!(err.contains("ANUBIS_CAPABILITY_REUSE"), "verified={verified} got: {err}");
+            assert!(
+                err.contains("ANUBIS_CAPABILITY_REUSE"),
+                "verified={verified} got: {err}"
+            );
             // Unforgeable: cap_use on a provable non-capability is MISSING (a token cannot be conjured).
             let err = tc_lane(r#"fn main() { cap_use(5); }"#, verified)
                 .expect_err("cap_use on a literal must reject");
-            assert!(err.contains("ANUBIS_CAPABILITY_MISSING"), "verified={verified} got: {err}");
+            assert!(
+                err.contains("ANUBIS_CAPABILITY_MISSING"),
+                "verified={verified} got: {err}"
+            );
         }
     }
 
@@ -6670,10 +6849,8 @@ fn main() { let c = cap_acquire("fs.read"); consume_it(c); }"#,
     #[test]
     fn capability_move_on_rebind_keeps_token_singular() {
         // `let y = c` MOVES: using `c` after the move is a reuse (aliasing cannot launder).
-        let err = tc_ok(
-            r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(c); }"#,
-        )
-        .expect_err("use after move must reject");
+        let err = tc_ok(r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(c); }"#)
+            .expect_err("use after move must reject");
         assert!(err.contains("ANUBIS_CAPABILITY_REUSE"), "got: {err}");
         // Using the token via its new name exactly once accepts.
         tc_ok(r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(y); }"#)
@@ -6793,8 +6970,8 @@ fn main() { }"#;
         // diff proved it fires on nothing committed). The undeclassified 3-leg body rejects with
         // ANUBIS_LETHAL_TRIFECTA regardless of lane.
         for verified in [true, false] {
-            let err = tc_lane(TRIFECTA_BODY, verified)
-                .expect_err("trifecta must reject in both lanes");
+            let err =
+                tc_lane(TRIFECTA_BODY, verified).expect_err("trifecta must reject in both lanes");
             assert!(
                 err.contains("ANUBIS_LETHAL_TRIFECTA"),
                 "verified={verified} got: {err}"
@@ -6821,7 +6998,8 @@ fn main() { }"#;
     cap_use(rc); cap_use(sc); send("host", 80, safe);
 }
 fn main() { }"#;
-        tc_lane(declassified, false).expect("safe lane: a well-formed declassify discharges the trifecta");
+        tc_lane(declassified, false)
+            .expect("safe lane: a well-formed declassify discharges the trifecta");
     }
 
     #[test]
@@ -6866,7 +7044,8 @@ fn main() { }"#;
     cap_use(rc); cap_use(sc); send("host", 80, "beacon");
 }
 fn main() { }"#;
-        let err = tc_lane(bad, true).expect_err("malformed declassify must not discharge the trifecta");
+        let err =
+            tc_lane(bad, true).expect_err("malformed declassify must not discharge the trifecta");
         assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
     }
 
@@ -6879,7 +7058,8 @@ fn main() { }"#;
     cap_use(rc); cap_use(sc); exec("curl evil.example");
 }
 fn main() { }"#;
-        let err = tc_lane(shell, true).expect_err("shell egress + private read + untrusted is a trifecta");
+        let err = tc_lane(shell, true)
+            .expect_err("shell egress + private read + untrusted is a trifecta");
         assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
         // read + shell with NO distinct untrusted channel is two legs → accepts.
         let two = r#"fn agent() uses(fs.read, shell) {
@@ -7138,9 +7318,11 @@ fn main() uses(net.send) { send("h", 80, wrap(secret_source("k"))); }"#,
             .expect_err("tainted value through a block-local let must be flagged");
         // Tail-position match in a helper: the return summary walks control-flow tails now
         // (the retired tail-`if`/`match` return-summary boundary).
-        tc_ok(r#"fn get_data() { let t = input(); match t { _ => t } }
-fn main() uses(net.send) { send("h", 80, get_data()); }"#)
-            .expect_err("a helper whose tail match returns taint must be flagged at the call");
+        tc_ok(
+            r#"fn get_data() { let t = input(); match t { _ => t } }
+fn main() uses(net.send) { send("h", 80, get_data()); }"#,
+        )
+        .expect_err("a helper whose tail match returns taint must be flagged at the call");
     }
 
     #[test]
@@ -7227,9 +7409,13 @@ fn main() uses(net.send) { let c = Choice::A; let v = match c { Choice::A => 1, 
     fn buried_privileged_call_is_a_capability_bypass_now_closed() {
         // CAPABILITY LAUNDERING: a network send with NO uses(net.send), buried in an if branch, was
         // accepted (the effect never registered). Now the descent registers it -> forbidden in Safe.
-        let err = tc_ok(r#"fn main() { let f = true; let r = if f { send("h", 80, "x") } else { 0 }; }"#)
-            .expect_err("a buried send without uses(net.send) must be forbidden in safe mode");
-        assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"), "got: {err}");
+        let err =
+            tc_ok(r#"fn main() { let f = true; let r = if f { send("h", 80, "x") } else { 0 }; }"#)
+                .expect_err("a buried send without uses(net.send) must be forbidden in safe mode");
+        assert!(
+            err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"),
+            "got: {err}"
+        );
         // Shell dual.
         tc_ok(r#"fn main() { let f = true; let r = if f { shell("id") } else { 0 }; }"#)
             .expect_err("a buried shell without uses(shell) must be forbidden in safe mode");
@@ -7297,7 +7483,10 @@ fn main() uses(shell) { leak(secret_source("k")); }"#,
             false,
         )
         .expect_err("secret into a param that reaches a shell egress must reject");
-        assert!(err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "shell dual: got: {err}");
+        assert!(
+            err.contains("ANUBIS_INTERPROC_EXFILTRATION"),
+            "shell dual: got: {err}"
+        );
         // Transitive: a → b → egress.
         let err = tc_lane(
             r#"fn b(y) uses(net.send) { send("h", 80, y); }
@@ -7306,7 +7495,10 @@ fn main() uses(net.send) { a(secret_source("k")); }"#,
             false,
         )
         .expect_err("secret through a transitive egress chain must reject");
-        assert!(err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "transitive: got: {err}");
+        assert!(
+            err.contains("ANUBIS_INTERPROC_EXFILTRATION"),
+            "transitive: got: {err}"
+        );
         // The arg may itself be a secret-returning helper (consults secret_fns, like the direct check).
         let err = tc_lane(
             r#"fn get_key() { return secret_source("k"); }
@@ -7315,7 +7507,10 @@ fn main() uses(net.send) { leak(get_key()); }"#,
             false,
         )
         .expect_err("a secret-returning helper passed into an egressing param must reject");
-        assert!(err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "secret-helper arg: got: {err}");
+        assert!(
+            err.contains("ANUBIS_INTERPROC_EXFILTRATION"),
+            "secret-helper arg: got: {err}"
+        );
     }
 
     #[test]
@@ -7342,9 +7537,11 @@ fn main() uses(net.send) { ignore(secret_source("k")); }"#,
         )
         .expect("a param that never reaches the egress is not flagged");
         // A clean (non-secret) argument to an egressing helper accepts.
-        tc_ok(r#"fn leak(x) uses(net.send) { send("h", 80, x); }
-fn main() uses(net.send) { leak("public"); }"#)
-            .expect("a non-secret argument to an egressing helper accepts");
+        tc_ok(
+            r#"fn leak(x) uses(net.send) { send("h", 80, x); }
+fn main() uses(net.send) { leak("public"); }"#,
+        )
+        .expect("a non-secret argument to an egressing helper accepts");
     }
 
     #[test]
@@ -7357,7 +7554,10 @@ fn main() uses(net.send) { leak(input()); }"#,
         )
         .expect_err("taint into an egressing param fires the integrity interproc sink");
         assert!(err.contains("ANUBIS_INTERPROC_SINK"), "got: {err}");
-        assert!(!err.contains("ANUBIS_INTERPROC_EXFILTRATION"), "taint must not fire exfiltration: {err}");
+        assert!(
+            !err.contains("ANUBIS_INTERPROC_EXFILTRATION"),
+            "taint must not fire exfiltration: {err}"
+        );
     }
 
     // ── Phase-2: param_return_taint soundness — forwarder helpers that return a secret param ───────
@@ -7370,15 +7570,28 @@ fn main() uses(net.send) { leak(input()); }"#,
         // arity and the specific confidentiality diagnostic is asserted.
         let cases = [
             // (helper body, exact call)
-            (r#"fn fwd(k) { let buf = [0, 0]; buf[0] = k; return buf; }"#, r#"fwd(secret_source("k"))"#),
-            (r#"fn fwd(x, c) { let r = 0; if c { r = x; } return r; }"#, r#"fwd(secret_source("k"), true)"#),
-            (r#"fn fwd(x) { return x.clone(); }"#, r#"fwd(secret_source("k"))"#),
-            (r#"fn fwd(x) { let [a, b] = [x, 0]; return a; }"#, r#"fwd(secret_source("k"))"#),
+            (
+                r#"fn fwd(k) { let buf = [0, 0]; buf[0] = k; return buf; }"#,
+                r#"fwd(secret_source("k"))"#,
+            ),
+            (
+                r#"fn fwd(x, c) { let r = 0; if c { r = x; } return r; }"#,
+                r#"fwd(secret_source("k"), true)"#,
+            ),
+            (
+                r#"fn fwd(x) { return x.clone(); }"#,
+                r#"fwd(secret_source("k"))"#,
+            ),
+            (
+                r#"fn fwd(x) { let [a, b] = [x, 0]; return a; }"#,
+                r#"fwd(secret_source("k"))"#,
+            ),
             (r#"fn fwd(x) { return x; }"#, r#"fwd(secret_source("k"))"#), // control: passthrough
         ];
         for (body, call) in cases {
             let src = format!("{body}\nfn main() uses(net.send) {{ send(\"h\", 80, {call}); }}");
-            let err = tc_ok(&src).expect_err(&format!("forwarder leak not caught for body: {body}"));
+            let err =
+                tc_ok(&src).expect_err(&format!("forwarder leak not caught for body: {body}"));
             assert!(
                 err.contains("ANUBIS_SECRET_EXFILTRATION"),
                 "body {body}: expected ANUBIS_SECRET_EXFILTRATION, got: {err}"
@@ -7390,17 +7603,21 @@ fn main() uses(net.send) { leak(input()); }"#,
     fn direct_callexpr_launder_is_caught() {
         // The intra-procedural twin: `s.clone()` (a CallExpr on a secret) egressed is exfiltration —
         // the direct expr_secret_source now has a CallExpr arm mirroring the summary walker.
-        let err = tc_ok(r#"fn main() uses(net.send) { let s = secret_source("k"); send("h", 80, s.clone()); }"#)
-            .expect_err("a method-call launder of a secret must be caught");
+        let err = tc_ok(
+            r#"fn main() uses(net.send) { let s = secret_source("k"); send("h", 80, s.clone()); }"#,
+        )
+        .expect_err("a method-call launder of a secret must be caught");
         assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
     }
 
     #[test]
     fn param_return_summary_accept_bias() {
         // A helper that does NOT return its secret param accepts (no over-summarization of a discard).
-        tc_ok(r#"fn fwd(x) { return 0; }
-fn main() uses(net.send) { send("h", 80, fwd(secret_source("k"))); }"#)
-            .expect("a param-discarding helper does not make its caller leak");
+        tc_ok(
+            r#"fn fwd(x) { return 0; }
+fn main() uses(net.send) { send("h", 80, fwd(secret_source("k"))); }"#,
+        )
+        .expect("a param-discarding helper does not make its caller leak");
     }
 
     // ── Phase-2: the secret<T> qualifier — auto-label a value secret without secret_source() ───────
@@ -7408,17 +7625,21 @@ fn main() uses(net.send) { send("h", 80, fwd(secret_source("k"))); }"#)
     #[test]
     fn secret_qualifier_param_and_let_are_labelled() {
         // A secret<T> param that egresses is exfiltration — no secret_source() call needed.
-        let err = tc_ok(r#"fn f(x: secret<u64>) uses(net.send) { send("h", 80, x); }
-fn main() { }"#)
-            .expect_err("a secret<T> param egressed is exfiltration");
+        let err = tc_ok(
+            r#"fn f(x: secret<u64>) uses(net.send) { send("h", 80, x); }
+fn main() { }"#,
+        )
+        .expect_err("a secret<T> param egressed is exfiltration");
         assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
         // A secret<T> let annotation, likewise.
         tc_ok(r#"fn main() uses(net.send) { let k: secret<u64> = 42; send("h", 80, k); }"#)
             .expect_err("a secret<T> let egressed is exfiltration");
         // A declassify on the secret<T> value releases it (accept).
-        tc_ok(r#"fn f(x: secret<u64>) uses(net.send) { send("h", 80, declassify(x, "p", "r")); }
-fn main() { }"#)
-            .expect("a declassified secret<T> value is released");
+        tc_ok(
+            r#"fn f(x: secret<u64>) uses(net.send) { send("h", 80, declassify(x, "p", "r")); }
+fn main() { }"#,
+        )
+        .expect("a declassified secret<T> value is released");
     }
 
     #[test]
@@ -7428,9 +7649,11 @@ fn main() { }"#)
             .expect_err("a secret<T> block-local let egressed is exfiltration");
         // A locally-minted secret<T> that is RETURNED makes the fn secret-returning
         // (seed_one_let_secret mirror site → compute_secret_fns), so an egress of its result is caught.
-        let err = tc_ok(r#"fn getk() -> u64 { let k: secret<u64> = 5; return k; }
-fn main() uses(net.send) { send("h", 80, getk()); }"#)
-            .expect_err("a returned secret<T> local flows interprocedurally to the egress");
+        let err = tc_ok(
+            r#"fn getk() -> u64 { let k: secret<u64> = 5; return k; }
+fn main() uses(net.send) { send("h", 80, getk()); }"#,
+        )
+        .expect_err("a returned secret<T> local flows interprocedurally to the egress");
         assert!(err.contains("ANUBIS_SECRET_EXFILTRATION"), "got: {err}");
     }
 
@@ -7444,9 +7667,11 @@ fn main() { }"#)
             .expect_err("a secret<T> param + untrusted input + egress forms the lethal trifecta");
         assert!(err.contains("ANUBIS_LETHAL_TRIFECTA"), "got: {err}");
         // Two legs only (secret param + egress, no untrusted channel) accepts.
-        tc_ok(r#"fn agent(k: secret<u64>) uses(net.send) { send("h", 80, "beacon"); }
-fn main() { }"#)
-            .expect("secret param + egress with no untrusted channel is two legs");
+        tc_ok(
+            r#"fn agent(k: secret<u64>) uses(net.send) { send("h", 80, "beacon"); }
+fn main() { }"#,
+        )
+        .expect("secret param + egress with no untrusted channel is two legs");
     }
 
     // ── Phase-2: effect-walk NON-control-flow compound exprs (buried-in-compound enforcement) ──────
@@ -7464,8 +7689,12 @@ fn main() { }"#)
             // is walked (only the Lambda BODY stays opaque).
             r#"fn id(f) { return f; } fn main() { let y = id(0)(shell("id")); }"#,
         ] {
-            let err = tc_ok(src).expect_err("a privileged call buried in a compound expr must be forbidden");
-            assert!(err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"), "src={src} got: {err}");
+            let err = tc_ok(src)
+                .expect_err("a privileged call buried in a compound expr must be forbidden");
+            assert!(
+                err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"),
+                "src={src} got: {err}"
+            );
         }
         // A tainted value sunk through a call buried in an aggregate is caught.
         tc_ok(r#"fn main() uses(net.send) { let t = input(); let x = [send("h", 80, t)]; }"#)
@@ -7487,9 +7716,11 @@ fn main() { }"#)
         )
         .expect("a declassified secret in an aggregate is released");
         // Clean compound expressions accept.
-        tc_ok(r#"struct W { f: u64 }
-fn main() { let w = W { f: 7 }; let arr = [1, 2, 3]; let y = arr[1]; }"#)
-            .expect("clean compound expressions accept");
+        tc_ok(
+            r#"struct W { f: u64 }
+fn main() { let w = W { f: 7 }; let arr = [1, 2, 3]; let y = arr[1]; }"#,
+        )
+        .expect("clean compound expressions accept");
     }
 
     #[test]
@@ -7548,10 +7779,7 @@ impl Mailer { fn deliver(self, msg) uses(net.send) { send("h", 80, msg); } }
 fn main() uses(net.send) { let m = Mailer { host: 1 }; m.deliver(secret_source("k")); }"#,
         )
         .expect_err("secret into an egressing method must be flagged");
-        assert!(
-            sec.contains("ANUBIS_INTERPROC_EXFILTRATION"),
-            "got: {sec}"
-        );
+        assert!(sec.contains("ANUBIS_INTERPROC_EXFILTRATION"), "got: {sec}");
         // (integrity) tainted input into a method that sinks it → INTERPROC_SINK.
         let taint = tc_ok(
             r#"struct Runner { id: u32 }
@@ -7622,15 +7850,33 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         use crate::middle::effects::higher_order_closure_args as h;
         // list/map HOFs + times/sort_by/… apply the closure at index 1.
         for b in [
-            "map", "filter", "each", "find", "any", "all", "count", "sort_by", "flat_map",
-            "take_while", "drop_while", "position", "min_by", "max_by", "partition", "map_values",
+            "map",
+            "filter",
+            "each",
+            "find",
+            "any",
+            "all",
+            "count",
+            "sort_by",
+            "flat_map",
+            "take_while",
+            "drop_while",
+            "position",
+            "min_by",
+            "max_by",
+            "partition",
+            "map_values",
             "times",
         ] {
             assert_eq!(h(b), &[1usize], "{b} should apply its closure at index 1");
         }
         // `reduce` is order-agnostic on its two non-list args (reduce(list, closure, seed) OR
         // reduce(list, seed, closure)) so its closure may be at index 1 OR 2 — descend into both.
-        assert_eq!(h("reduce"), &[1usize, 2usize], "reduce applies its closure at index 1 or 2");
+        assert_eq!(
+            h("reduce"),
+            &[1usize, 2usize],
+            "reduce applies its closure at index 1 or 2"
+        );
         assert_eq!(h("apply"), &[0usize]);
         assert_eq!(h("call"), &[0usize]);
         assert_eq!(h("compose"), &[0usize, 1usize]);
@@ -7650,8 +7896,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             .expect_err("a shell in a HO-applied lambda without uses(shell) must be forbidden");
         assert!(sh.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE"), "got: {sh}");
         // (blocker: times) a shell hidden in times' lambda.
-        tc_ok(r#"fn agent() { times(3, |i| shell("id")); }"#)
-            .expect_err("times is a closure-applying builtin — a shell in its lambda must be forbidden");
+        tc_ok(r#"fn agent() { times(3, |i| shell("id")); }"#).expect_err(
+            "times is a closure-applying builtin — a shell in its lambda must be forbidden",
+        );
         // (confidentiality) a captured secret sent inside a HO-applied lambda (cap declared → only exfil).
         let sec = tc_ok(
             r#"fn agent() uses(net.send) { let k = secret_source("api"); each([1], |x| send("h", 80, k)); }"#,
@@ -7698,12 +7945,16 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // A var-var ensures proven THROUGH a var-var requires: assume `s == t`, prove `result(=s) == t`.
         assert!(
-            discharged(r#"fn f(s: string, t: string) -> string requires(s == t) ensures(result == t) { return s; }"#),
+            discharged(
+                r#"fn f(s: string, t: string) -> string requires(s == t) ensures(result == t) { return s; }"#
+            ),
             "requires(s==t) ⇒ ensures(result==t) for `return s` must discharge"
         );
         // `!=` var-var: assume `s != t`, prove `result(=s) != t`.
         assert!(
-            discharged(r#"fn f(s: string, t: string) -> string requires(s != t) ensures(result != t) { return s; }"#),
+            discharged(
+                r#"fn f(s: string, t: string) -> string requires(s != t) ensures(result != t) { return s; }"#
+            ),
             "requires(s!=t) ⇒ ensures(result!=t) must discharge"
         );
         // A var-var ensures with NO relating requires is DISPROVED (s and t unrelated → can't prove s==t).
@@ -7719,17 +7970,18 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // `ensures`/`requires`/`assert(result == s + t)` DISCHARGES instead of the ensures site
         // fail-closing (over-reject) and the requires/assert site fail-opening. Sound: runtime string `+`
         // is char-sequence concat = SMT `str.++`; the printable-ASCII literal gate + abstract vars hold.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // a VALID concat ensures now discharges (was a fail-closed over-rejection).
         assert!(
-            accepts(r#"fn cat(s: string, t: string) -> string ensures(result == s + t) { return s + t; } fn main() { print(cat("a", "b")); }"#),
+            accepts(
+                r#"fn cat(s: string, t: string) -> string ensures(result == s + t) { return s + t; } fn main() { print(cat("a", "b")); }"#
+            ),
             "ensures(result == s + t) for `return s + t` must discharge (str.++ identity)"
         );
         // a FALSE concat ensures (`t + s` for `return s + t`) is DISPROVED (z3 finds s,t with t++s != s++t).
@@ -7750,13 +8002,18 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // a string-LET concat composes: `let u = s + t; assert(u == s + t)` proves; the false dual rejects.
         // (The fn declares a contract so its string params are solver-modeled — has_contract gates that.)
         assert!(
-            accepts(r#"fn cat(s: string, t: string) -> i64 requires(len(s) >= 0) { let u = s + t; assert(u == s + t); return 1; } fn main() { print(cat("a", "b")); }"#)
-                && !accepts(r#"fn cat(s: string, t: string) -> i64 requires(len(s) >= 0) { let u = s + t; assert(u == t + s); return 1; } fn main() { print(cat("a", "b")); }"#),
+            accepts(
+                r#"fn cat(s: string, t: string) -> i64 requires(len(s) >= 0) { let u = s + t; assert(u == s + t); return 1; } fn main() { print(cat("a", "b")); }"#
+            ) && !accepts(
+                r#"fn cat(s: string, t: string) -> i64 requires(len(s) >= 0) { let u = s + t; assert(u == t + s); return 1; } fn main() { print(cat("a", "b")); }"#
+            ),
             "a string-let concat proves `u == s + t` and disproves `u == t + s`"
         );
         // a NON-ASCII literal operand keeps the concat unmodeled (fail-open), per the printable-ASCII gate.
         assert!(
-            accepts(r#"fn g(s: string) -> i64 requires(s + "é" == "aé") { return 1; } fn f() -> i64 { return g("a"); } fn main() { print(f()); }"#),
+            accepts(
+                r#"fn g(s: string) -> i64 requires(s + "é" == "aé") { return 1; } fn f() -> i64 { return g("a"); } fn main() { print(f()); }"#
+            ),
             "a concat with a non-ASCII literal operand stays fail-open (printable-ASCII gate)"
         );
     }
@@ -7768,37 +8025,47 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // matched NO lane and was SKIPPED (fail-open — a violating call certified a runtime-trapping
         // precondition). `A && B` at a call site requires proving BOTH, so each conjunct discharges in its
         // own lane. Homogeneous `&&` is unchanged (equivalent two-obligation split).
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // mixed string-eq && strlen, violated → must REJECT (was fail-open accept).
         assert!(
-            !accepts(r#"fn gs(s: string) -> i64 requires(s == "ok" && len(s) >= 2) { assert(s == "ok"); return 1; } fn f() -> i64 { let z = gs("no"); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"fn gs(s: string) -> i64 requires(s == "ok" && len(s) >= 2) { assert(s == "ok"); return 1; } fn f() -> i64 { let z = gs("no"); return z; } fn main() { print(f()); }"#
+            ),
             "a mixed string-eq && strlen requires must decompose and catch the violation"
         );
         // …satisfied → must ACCEPT.
         assert!(
-            accepts(r#"fn gs(s: string) -> i64 requires(s == "ok" && len(s) >= 2) { assert(s == "ok"); return 1; } fn f() -> i64 { let z = gs("ok"); return z; } fn main() { print(f()); }"#),
+            accepts(
+                r#"fn gs(s: string) -> i64 requires(s == "ok" && len(s) >= 2) { assert(s == "ok"); return 1; } fn f() -> i64 { let z = gs("ok"); return z; } fn main() { print(f()); }"#
+            ),
             "a mixed requires whose both conjuncts hold must accept"
         );
         // only the STRLEN conjunct violated (equality holds) → still REJECT (each conjunct is checked).
         assert!(
-            !accepts(r#"fn gs(s: string) -> i64 requires(s == "okay" && len(s) >= 10) { return 1; } fn f() -> i64 { let z = gs("okay"); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"fn gs(s: string) -> i64 requires(s == "okay" && len(s) >= 10) { return 1; } fn f() -> i64 { let z = gs("okay"); return z; } fn main() { print(f()); }"#
+            ),
             "a mixed requires rejects when the length conjunct fails though the equality holds"
         );
         // mixed int && string, violated string → REJECT; homogeneous int && unchanged (violated → REJECT).
         assert!(
-            !accepts(r#"fn g(x: i64, s: string) -> i64 requires(x > 0 && s == "ok") { assert(s == "ok"); return x; } fn f() -> i64 { let z = g(5, "no"); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"fn g(x: i64, s: string) -> i64 requires(x > 0 && s == "ok") { assert(s == "ok"); return x; } fn f() -> i64 { let z = g(5, "no"); return z; } fn main() { print(f()); }"#
+            ),
             "a mixed int && string requires catches the string violation"
         );
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0 && x < 10) { return 100 / x; } fn f() -> i64 { let z = g(50); return z; } fn main() { print(f()); }"#)
-                && accepts(r#"fn g(x: i64) -> i64 requires(x > 0 && x < 10) { return 100 / x; } fn f() -> i64 { let z = g(5); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0 && x < 10) { return 100 / x; } fn f() -> i64 { let z = g(50); return z; } fn main() { print(f()); }"#
+            ) && accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0 && x < 10) { return 100 / x; } fn f() -> i64 { let z = g(5); return z; } fn main() { print(f()); }"#
+            ),
             "a homogeneous int && requires is unchanged (violated rejects, satisfied accepts)"
         );
     }
@@ -7810,28 +8077,33 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // call site — else a violating call certifies a runtime-trapping assert / a false ensures.
         // Before this slice only INT preconditions at a Let-initializer call site emitted a `requires@`
         // obligation; string/float preconditions, and calls in STATEMENT/Assign position, emitted none.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // ── caller CANNOT prove the precondition ⇒ MUST reject ─────────────────────────────────────
         // string literal arg violates a literal requires
         assert!(
-            !accepts(r#"fn g(s: string) -> string requires(s == "a") { return s; } fn main() { let r = g("b"); print(r); }"#),
+            !accepts(
+                r#"fn g(s: string) -> string requires(s == "a") { return s; } fn main() { let r = g("b"); print(r); }"#
+            ),
             "string requires violated by a literal arg must reject at the call site"
         );
         // var-var string requires (the case this session's var-var slice widened): unprovable ⇒ reject
         assert!(
-            !accepts(r#"fn h(s: string, t: string) -> string requires(s == t) ensures(result == t) { return s; } fn main() { let o = h("alpha", "beta"); print(o); }"#),
+            !accepts(
+                r#"fn h(s: string, t: string) -> string requires(s == t) ensures(result == t) { return s; } fn main() { let o = h("alpha", "beta"); print(o); }"#
+            ),
             "var-var string requires the caller cannot prove must reject at the call site"
         );
         // float requires violated
         assert!(
-            !accepts(r#"fn f(x: f64) -> f64 requires(x == 1.0) { return x; } fn main() { let r = f(2.0); print(r); }"#),
+            !accepts(
+                r#"fn f(x: f64) -> f64 requires(x == 1.0) { return x; } fn main() { let r = f(2.0); print(r); }"#
+            ),
             "float requires violated by a literal arg must reject at the call site"
         );
         // int requires in STATEMENT position (bare ExprStmt call — no Let binding)
@@ -7841,13 +8113,17 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // int requires in ASSIGN-value position
         assert!(
-            !accepts(r#"fn g(x: u32) -> u32 requires(x > 0) { return x; } fn main() { let mut y = 5; y = g(0); print(y); }"#),
+            !accepts(
+                r#"fn g(x: u32) -> u32 requires(x > 0) { return x; } fn main() { let mut y = 5; y = g(0); print(y); }"#
+            ),
             "int requires in assign-value position must reject"
         );
         // ── caller CAN prove the precondition ⇒ MUST still accept (no over-rejection) ───────────────
         // satisfying literal
         assert!(
-            accepts(r#"fn g(s: string) -> string requires(s == "a") { return s; } fn main() { let r = g("a"); print(r); }"#),
+            accepts(
+                r#"fn g(s: string) -> string requires(s == "a") { return s; } fn main() { let r = g("a"); print(r); }"#
+            ),
             "a string requires satisfied by a matching literal must still be accepted"
         );
         // caller establishes the precondition via its own requires (var-var chained)
@@ -7857,7 +8133,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // satisfying float + int
         assert!(
-            accepts(r#"fn f(x: f64) -> f64 requires(x == 1.0) { return x; } fn main() { let r = f(1.0); print(r); }"#),
+            accepts(
+                r#"fn f(x: f64) -> f64 requires(x == 1.0) { return x; } fn main() { let r = f(1.0); print(r); }"#
+            ),
             "a float requires satisfied by a matching literal must be accepted"
         );
         assert!(
@@ -7874,22 +8152,30 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             "a CLOSED int violating call in a branch must reject (constant obligation, context-free)"
         );
         assert!(
-            !accepts(r#"fn g(s: string) requires(s == "a") { assert(s == "a"); } fn caller(b: bool) { if b { g("b"); } } fn main() { caller(true); }"#),
+            !accepts(
+                r#"fn g(s: string) requires(s == "a") { assert(s == "a"); } fn caller(b: bool) { if b { g("b"); } } fn main() { caller(true); }"#
+            ),
             "a CLOSED string violating call in a branch must reject"
         );
         assert!(
-            !accepts(r#"fn g(x: f64) -> f64 requires(x == 1.0) { assert(x == 1.0); return x; } fn caller(b: bool) { if b { let y = g(2.0); print(y); } } fn main() { caller(true); }"#),
+            !accepts(
+                r#"fn g(x: f64) -> f64 requires(x == 1.0) { assert(x == 1.0); return x; } fn caller(b: bool) { if b { let y = g(2.0); print(y); } } fn main() { caller(true); }"#
+            ),
             "a CLOSED float violating call in a branch must reject"
         );
         // ── NO over-rejection: a VARIABLE-arg branch call whose precondition depends on the (out-of-scope)
         //    branch guard stays GATED (only closed preconditions discharge in a branch). A satisfying
         //    closed call in a branch is discharged and accepted; a variable-arg guarded call is deferred.
         assert!(
-            accepts(r#"fn g(s: string) requires(s == "a") { } fn caller(x: string) { if x == "a" { g(x); } } fn main() { caller("a"); }"#),
+            accepts(
+                r#"fn g(s: string) requires(s == "a") { } fn caller(x: string) { if x == "a" { g(x); } } fn main() { caller("a"); }"#
+            ),
             "a branch-guarded VARIABLE-arg string call stays gated (deferred), not over-rejected"
         );
         assert!(
-            accepts(r#"fn g(x: u32) requires(x > 0) { } fn caller(b: bool) { if b { g(5); } } fn main() { caller(true); }"#),
+            accepts(
+                r#"fn g(x: u32) requires(x > 0) { } fn caller(b: bool) { if b { g(5); } } fn main() { caller(true); }"#
+            ),
             "a CLOSED satisfying int call in a branch is discharged and accepted"
         );
         assert!(
@@ -7906,13 +8192,13 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // `requires(x > 0)`, was not in scope). The guard is EXEMPT from the vacuity check: a provably-DEAD
         // branch (`requires(x>0) { if x<0 { … } }` — guard contradicts the precondition) is legitimately
         // unreachable and must pass, NOT trip the "contradictory assumptions" vacuity FAIL.
-        let accepts = |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe)
-        {
-            Ok(ir) => SymbolicEngine::check_obligations(&ir)
-                .iter()
-                .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
-            Err(_) => false,
-        };
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+                Ok(ir) => SymbolicEngine::check_obligations(&ir)
+                    .iter()
+                    .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
+                Err(_) => false,
+            };
         // Guard PROVES the callee precondition ⇒ no more over-rejection at the int Let-init position.
         assert!(
             accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { let y = g(a); print(y); } } fn main() { c(5); }"#),
@@ -7925,7 +8211,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // The else branch gets the NEGATED guard.
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if a < 0 - 200 { let z = 0; print(z); } else { let y = g(a); print(y); } } fn main() { c(5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if a < 0 - 200 { let z = 0; print(z); } else { let y = g(a); print(y); } } fn main() { c(5); }"#
+            ),
             "the else branch's negated guard must not spuriously prove the callee requires"
         );
         // REGRESSION GUARD (the review's blocker): a DEAD branch whose guard contradicts the precondition
@@ -7958,48 +8246,63 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // inside a branch is now discharged at any depth — the branch guard is in scope (a scoped premise),
         // so a guard-provable call passes and a guard-unrelated violating call is CAUGHT. Before, such calls
         // were depth-gated (deferred) → fail-open: `if bb { g(a); }` certified a runtime-trapping precondition.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // ── the closed false accept: a modelable variable arg in a GUARD-UNRELATED branch, violable ──
         assert!(
-            !accepts(r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64, bb: bool) requires(a > 0 - 100) { if bb { g(a); } } fn main() { c(0 - 50, true); }"#),
+            !accepts(
+                r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64, bb: bool) requires(a > 0 - 100) { if bb { g(a); } } fn main() { c(0 - 50, true); }"#
+            ),
             "int: a violable variable-arg call in a guard-unrelated branch (ExprStmt) must reject"
         );
         assert!(
-            !accepts(r#"fn g(x: f64) requires(x > 1.0) { } fn c(a: f64, bb: bool) requires(a > 0.0 - 100.0) { if bb { g(a); } } fn main() { c(0.5, true); }"#),
+            !accepts(
+                r#"fn g(x: f64) requires(x > 1.0) { } fn c(a: f64, bb: bool) requires(a > 0.0 - 100.0) { if bb { g(a); } } fn main() { c(0.5, true); }"#
+            ),
             "float: a violable variable-arg call in a guard-unrelated branch must reject"
         );
         assert!(
-            !accepts(r#"fn g(s: string) requires(s == "open") { } fn c(t: string, bb: bool) requires(t == "shut") { if bb { g(t); } } fn main() { c("shut", true); }"#),
+            !accepts(
+                r#"fn g(s: string) requires(s == "open") { } fn c(t: string, bb: bool) requires(t == "shut") { if bb { g(t); } } fn main() { c("shut", true); }"#
+            ),
             "string: a violable variable-arg call in a guard-unrelated branch must reject"
         );
         // Assign-value position too.
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, bb: bool) requires(a > 0 - 100) { let mut y = 1; if bb { y = g(a); } print(y); } fn main() { c(0 - 50, true); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, bb: bool) requires(a > 0 - 100) { let mut y = 1; if bb { y = g(a); } print(y); } fn main() { c(0 - 50, true); }"#
+            ),
             "int: a violable variable-arg call in assign-value position in a branch must reject"
         );
         // ── no over-rejection: the guard PROVES the precondition ⇒ still accepts ──
         assert!(
-            accepts(r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { g(a); } } fn main() { c(5); }"#),
+            accepts(
+                r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { g(a); } } fn main() { c(5); }"#
+            ),
             "int: a guard that proves the precondition (`if a>0`) must keep the call accepted"
         );
         assert!(
-            accepts(r#"fn g(x: f64) requires(x > 1.0) { } fn c(a: f64) requires(a > 0.0 - 100.0) { if a > 2.0 { g(a); } } fn main() { c(5.0); }"#),
+            accepts(
+                r#"fn g(x: f64) requires(x > 1.0) { } fn c(a: f64) requires(a > 0.0 - 100.0) { if a > 2.0 { g(a); } } fn main() { c(5.0); }"#
+            ),
             "float: a guard that proves the precondition (`if a>2.0`) must keep the call accepted"
         );
         assert!(
-            accepts(r#"fn g(s: string) requires(s == "open") { } fn c(t: string) requires(t == "open") { if t == "open" { g(t); } } fn main() { c("open"); }"#),
+            accepts(
+                r#"fn g(s: string) requires(s == "open") { } fn c(t: string) requires(t == "open") { if t == "open" { g(t); } } fn main() { c("open"); }"#
+            ),
             "string: a guard that proves the precondition must keep the call accepted"
         );
         // The else branch carries the NEGATED guard: `if a<=0 {} else { g(a) }` ⇒ a>0 in else ⇒ accepts.
         assert!(
-            accepts(r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64) requires(a > 0 - 100) { if a <= 0 { } else { g(a); } } fn main() { c(5); }"#),
+            accepts(
+                r#"fn g(x: i64) requires(x > 0) { } fn c(a: i64) requires(a > 0 - 100) { if a <= 0 { } else { g(a); } } fn main() { c(5); }"#
+            ),
             "int: the negated guard in the else branch (`else` ⇒ a>0) must prove the precondition"
         );
     }
@@ -8010,48 +8313,63 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // operand, a `return`-arg, an assert/assign value) must have its precondition discharged — it was
         // fail-open (only a DIRECT statement-position call was checked), so a violable nested call
         // certified a runtime-trapping requires.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // ── violable nested call ⇒ REJECT (each position) ──
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn h(y: i64) -> i64 { return y; } fn c(a: i64) requires(a > 0 - 100) { let z = h(g(a)); print(z); } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn h(y: i64) -> i64 { return y; } fn c(a: i64) requires(a > 0 - 100) { let z = h(g(a)); print(z); } fn main() { c(0 - 5); }"#
+            ),
             "arg-nested h(g(a)) with violable g must reject"
         );
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { print(g(a)); } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { print(g(a)); } fn main() { c(0 - 5); }"#
+            ),
             "print(g(a)) (builtin arg) with violable g must reject"
         );
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { return g(a) + 1; } fn main() { print(c(0 - 5)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { return g(a) + 1; } fn main() { print(c(0 - 5)); }"#
+            ),
             "binary-operand g(a)+1 in a return with violable g must reject"
         );
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { return g(a); } fn main() { print(c(0 - 5)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { return g(a); } fn main() { print(c(0 - 5)); }"#
+            ),
             "return g(a) parsed as a return-Call over g(a) with violable g must reject"
         );
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { assert(g(a) == a); } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { assert(g(a) == a); } fn main() { c(0 - 5); }"#
+            ),
             "assert(g(a) == a) with violable g must reject"
         );
         // ── guard-provable nested call ⇒ still ACCEPT (no over-rejection) ──
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn h(y: i64) -> i64 { return y; } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { let z = h(g(a)); print(z); } } fn main() { c(5); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn h(y: i64) -> i64 { return y; } fn c(a: i64) requires(a > 0 - 100) { if a > 0 { let z = h(g(a)); print(z); } } fn main() { c(5); }"#
+            ),
             "arg-nested h(g(a)) under a proving guard (a>0) must be accepted"
         );
         // ── the SHORT-CIRCUIT rhs is now discharged UNDER its guard (the LHS): a violable call in `&&` rhs
         //    whose guard does not establish the precondition is CAUGHT; a guard-provable one still passes ──
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b && (g(a) > 0); print(z); } fn main() { c(0 - 5, true); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b && (g(a) > 0); print(z); } fn main() { c(0 - 5, true); }"#
+            ),
             "a violable call in `&&` rhs (guard `b` doesn't constrain `a`) must now reject"
         );
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let z = (a > 0) && (g(a) > 0); print(z); } fn main() { c(5); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let z = (a > 0) && (g(a) > 0); print(z); } fn main() { c(5); }"#
+            ),
             "a `&&` rhs call proven by the LHS guard (`a>0 && g(a)`) must be accepted"
         );
     }
@@ -8061,25 +8379,30 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // C2: a contracted call in an `if`-EXPRESSION branch or a short-circuit `&&`/`||` rhs is discharged
         // under the branch/short-circuit PATH CONDITION (pushed as a scoped premise), so a guard-provable
         // one passes and a guard-unrelated violating one is caught — previously these were fail-open.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // ── if-EXPRESSION branches: guard-unrelated violable ⇒ REJECT; guard-proving ⇒ ACCEPT ──
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) -> i64 requires(a > 0 - 100) { let z = if b { g(a) } else { 0 }; return z; } fn main() { print(c(0 - 5, true)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) -> i64 requires(a > 0 - 100) { let z = if b { g(a) } else { 0 }; return z; } fn main() { print(c(0 - 5, true)); }"#
+            ),
             "if-expr THEN branch call, guard `b` unrelated to `a` ⇒ violable ⇒ reject"
         );
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = if a > 0 { g(a) } else { 0 }; return z; } fn main() { print(c(5)); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = if a > 0 { g(a) } else { 0 }; return z; } fn main() { print(c(5)); }"#
+            ),
             "if-expr THEN branch call under a proving guard (`if a>0`) ⇒ accept"
         );
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = if a <= 0 { 0 } else { g(a) }; return z; } fn main() { print(c(5)); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = if a <= 0 { 0 } else { g(a) }; return z; } fn main() { print(c(5)); }"#
+            ),
             "if-expr ELSE branch call under the negated guard (`else` ⇒ a>0) ⇒ accept"
         );
         assert!(
@@ -8088,12 +8411,16 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // ── || rhs runs under the negated LHS ──
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b || (g(a) > 0); print(z); } fn main() { c(0 - 5, false); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, b: bool) requires(a > 0 - 100) { let z = b || (g(a) > 0); print(z); } fn main() { c(0 - 5, false); }"#
+            ),
             "a violable call in `||` rhs (guard `!b` doesn't constrain `a`) must reject"
         );
         // ── match SCRUTINEE is unconditional ⇒ a violable call there is caught ──
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match g(a) { 0 => 0, _ => 1 }; return z; } fn main() { print(c(0 - 5)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match g(a) { 0 => 0, _ => 1 }; return z; } fn main() { print(c(0 - 5)); }"#
+            ),
             "a violable call in the match scrutinee (unconditional) must reject"
         );
     }
@@ -8104,37 +8431,46 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // that the per-arm wiring of the nested-call walker had missed — a call there was fail-open. Each
         // must now be discharged: an `if`/`while` condition, a `for` range/collection header, a `let`
         // destructuring initializer, an assignment TARGET place-expression, a `while let` scrutinee.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // if-condition
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if g(a) > 100 { print(1); } } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { if g(a) > 100 { print(1); } } fn main() { c(0 - 5); }"#
+            ),
             "a violable call in an `if` CONDITION must reject"
         );
         // while-condition
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { while g(a) > 100 { } } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { while g(a) > 100 { } } fn main() { c(0 - 5); }"#
+            ),
             "a violable call in a `while` CONDITION must reject"
         );
         // for-range header
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let mut s = 0; for i in 0..g(a) { s = s + i; } print(s); } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let mut s = 0; for i in 0..g(a) { s = s + i; } print(s); } fn main() { c(0 - 5); }"#
+            ),
             "a violable call in a `for` RANGE header must reject"
         );
         // let-pattern (destructuring) initializer
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let [p, q] = [g(a), 0]; print(p + q); } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let [p, q] = [g(a), 0]; print(p + q); } fn main() { c(0 - 5); }"#
+            ),
             "a violable call in a destructuring `let` INITIALIZER must reject"
         );
         // assign TARGET place-expression
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let mut arr = [0, 0, 0]; arr[g(a)] = 5; print(arr[0]); } fn main() { c(0 - 5); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) requires(a > 0 - 100) { let mut arr = [0, 0, 0]; arr[g(a)] = 5; print(arr[0]); } fn main() { c(0 - 5); }"#
+            ),
             "a violable call in an ASSIGN TARGET place-expression must reject"
         );
         // ── no over-rejection: a guard/premise-provable header call still passes ──
@@ -8151,17 +8487,18 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // scrutinee contributes `scrutinee == literal`, an `if`-guard is assumed. So a violable arm call is
         // caught and a pattern-/guard-/premise-provable one passes. (Enum/binding/struct patterns whose
         // bound sub-values would constrain the call stay fail-open — the bound var is unmodeled.)
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // literal-pattern arm makes the scrutinee concrete: `0 => g(a)` runs iff a==0 ⇒ g(0) violates x>0.
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 0 => g(a), _ => 1 }; return z; } fn main() { print(c(0)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 0 => g(a), _ => 1 }; return z; } fn main() { print(c(0)); }"#
+            ),
             "a violable literal-pattern match-arm call (`0 => g(a)`, g requires x>0) must reject"
         );
         // literal pattern that PROVES the precondition: `5 => g(a)` runs iff a==5 ⇒ g(5) ok.
@@ -8171,7 +8508,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // an `if`-guard proves it: `_ if a > 0 => g(a)`.
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { _ if a > 0 => g(a), _ => 0 }; return z; } fn main() { print(c(5)); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { _ if a > 0 => g(a), _ => 0 }; return z; } fn main() { print(c(5)); }"#
+            ),
             "a guarded match arm (`_ if a>0 => g(a)`) must prove the precondition"
         );
         // a violable GUARD-arm call whose guard does NOT establish the precondition rejects.
@@ -8181,7 +8520,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // wildcard arm, precondition provable from the caller premise alone.
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, s: i64) -> i64 requires(a > 0) { let z = match s { _ => g(a) }; return z; } fn main() { print(c(5, 1)); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64, s: i64) -> i64 requires(a > 0) { let z = match s { _ => g(a) }; return z; } fn main() { print(c(5, 1)); }"#
+            ),
             "a wildcard-arm call whose precondition the caller premise proves must be accepted"
         );
         // NO OVER-REJECTION of the "special-case zero, otherwise operate" idiom: the `_` fall-through arm
@@ -8194,7 +8535,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // …but the negation is not over-strong: `_ => g(a)` (g requires a>0) still REJECTS, because `a != 0`
         // does not prove `a > 0` (a could be negative).
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 0 => 0, _ => g(a) }; return z; } fn main() { print(c(0 - 5)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { 0 => 0, _ => g(a) }; return z; } fn main() { print(c(0 - 5)); }"#
+            ),
             "the fall-through negation `a != 0` must NOT over-prove `a > 0` — this stays a reject"
         );
         // An IRREFUTABLE (`_`/binding) GUARDED arm followed by a fall-through: the pattern always matches, so
@@ -8206,7 +8549,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             "an irrefutable guarded arm's `!guard` must reach the fall-through (`_ if a>0`, `_ => h(a)`)"
         );
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { _ if a > 0 => 1, _ => g(a) }; return z; } fn main() { print(c(0 - 5)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return x; } fn c(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { _ if a > 0 => 1, _ => g(a) }; return z; } fn main() { print(c(0 - 5)); }"#
+            ),
             "the irrefutable-guard negation `a <= 0` must NOT over-prove `a > 0` — stays a reject"
         );
         // A GUARDED literal arm contributes NO fall-through negation (its non-match could be the guard
@@ -8226,27 +8571,32 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // so the shadowing binding becomes a fresh UNCONSTRAINED int symbol → the obligation fires with no
         // facts → fail-CLOSED. A NON-shadowing bound name stays untouched (fail-open, the documented
         // residual) — this slice is monotone-toward-reject on exactly the shadow class.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // the confirmed enum-payload shadow false accept → must REJECT.
         assert!(
-            !accepts(r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, o: Opt) -> i64 requires(a > 50) { let z = match o { Opt::Some(a) => g(a), Opt::None => 1 }; return z; } fn main() { print(f(200, Opt::Some(0))); }"#),
+            !accepts(
+                r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, o: Opt) -> i64 requires(a > 50) { let z = match o { Opt::Some(a) => g(a), Opt::None => 1 }; return z; } fn main() { print(f(200, Opt::Some(0))); }"#
+            ),
             "an enum-payload binding shadowing a param must not inherit the param's facts"
         );
         // the list-pattern sibling → must REJECT.
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 50) { let xs = [0]; let z = match xs { [a] => g(a), _ => 1 }; return z; } fn main() { print(f(200)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 50) { let xs = [0]; let z = match xs { [a] => g(a), _ => 1 }; return z; } fn main() { print(f(200)); }"#
+            ),
             "a list-pattern binding shadowing a param must not inherit the param's facts"
         );
         // a NON-shadowing payload binding stays fail-open (documented residual — unchanged verdict).
         assert!(
-            accepts(r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(o: Opt) -> i64 { let z = match o { Opt::Some(n) => g(n), Opt::None => 1 }; return z; } fn main() { print(f(Opt::Some(5))); }"#),
+            accepts(
+                r#"enum Opt { Some(i64), None } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(o: Opt) -> i64 { let z = match o { Opt::Some(n) => g(n), Opt::None => 1 }; return z; } fn main() { print(f(Opt::Some(5))); }"#
+            ),
             "a non-shadowing payload binding stays fail-open (documented residual)"
         );
         // an ENCLOSING modeled var used in a destructuring arm's body still discharges normally — the
@@ -8260,12 +8610,16 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // (d == p == a > 0) — the fresh symbols must carry a width so the inner alias encodes. Was a
         // review-noted fail-closed over-rejection; must ACCEPT.
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0) { let z = match a { p => match p { d => g(d) } }; return z; } fn main() { print(f(5)); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0) { let z = match a { p => match p { d => g(d) } }; return z; } fn main() { print(f(5)); }"#
+            ),
             "a nested whole-value alias chain must encode (fresh symbols need widths)"
         );
         // …and the nested chain is not over-trusted: under a weak `a > -100` it must still REJECT.
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { p => match p { d => g(d) } }; return z; } fn main() { print(f(0 - 5)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { p => match p { d => g(d) } }; return z; } fn main() { print(f(0 - 5)); }"#
+            ),
             "a nested alias chain must not over-prove (a > -100 does not prove d > 0)"
         );
         // LANE ROUTING (review-caught): the fresh symbol must join the SHADOWED var's OWN lane. An
@@ -8273,11 +8627,15 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // flipping the pre-diff fail-closed reject (the obligation was built in the float/string lane over
         // the OUTER var, whose contradicting premise disproved it). Both must REJECT (fail closed).
         assert!(
-            !accepts(r#"enum FOpt { Some(f64), None } fn gf(x: f64) -> i64 requires(x >= 1.0) { let n = x as i64; return 100 / n; } fn f(a: f64, o: FOpt) -> i64 requires(a < 0.0) { let z = match o { FOpt::Some(a) => gf(a), FOpt::None => 1 }; return z; } fn main() { print(f(0.0 - 3.0, FOpt::Some(0.0))); }"#),
+            !accepts(
+                r#"enum FOpt { Some(f64), None } fn gf(x: f64) -> i64 requires(x >= 1.0) { let n = x as i64; return 100 / n; } fn f(a: f64, o: FOpt) -> i64 requires(a < 0.0) { let z = match o { FOpt::Some(a) => gf(a), FOpt::None => 1 }; return z; } fn main() { print(f(0.0 - 3.0, FOpt::Some(0.0))); }"#
+            ),
             "a FLOAT payload shadow must fail closed (fresh symbol in the float lane)"
         );
         assert!(
-            !accepts(r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(s == "ok") { assert(s == "ok"); return 1; } fn f(a: string, o: SOpt) -> i64 requires(a == "hello") { let z = match o { SOpt::Some(a) => gs(a), SOpt::None => 1 }; return z; } fn main() { print(f("hello", SOpt::Some("no"))); }"#),
+            !accepts(
+                r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(s == "ok") { assert(s == "ok"); return 1; } fn f(a: string, o: SOpt) -> i64 requires(a == "hello") { let z = match o { SOpt::Some(a) => gs(a), SOpt::None => 1 }; return z; } fn main() { print(f("hello", SOpt::Some("no"))); }"#
+            ),
             "a STRING payload shadow must fail closed (fresh symbol in the string lane)"
         );
         // …and the string-LENGTH sub-lane too (review-caught): the str.len coverage gate skips an
@@ -8290,7 +8648,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // a NON-shadowing string payload feeding a strlen-contracted call stays fail-open (unchanged).
         assert!(
-            accepts(r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(len(s) >= 3) { return 1; } fn f(o: SOpt) -> i64 { let z = match o { SOpt::Some(n) => gs(n), SOpt::None => 1 }; return z; } fn main() { print(f(SOpt::Some("abc"))); }"#),
+            accepts(
+                r#"enum SOpt { Some(string), None } fn gs(s: string) -> i64 requires(len(s) >= 3) { return 1; } fn f(o: SOpt) -> i64 { let z = match o { SOpt::Some(n) => gs(n), SOpt::None => 1 }; return z; } fn main() { print(f(SOpt::Some("abc"))); }"#
+            ),
             "a non-shadowing string payload stays fail-open (documented residual)"
         );
     }
@@ -8303,14 +8663,13 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // it OVER-REJECTS a valid program (`fn max→0; assert(max(x,10)==0)` runs clean, but the builtin
         // model disproves 10==0 → reject) and wrong-PROVES a false one. The shadow guard declines to model a
         // shadowed builtin (fail-open, matching the pre-modeling stance for an unmodeled call).
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // OVER-REJECTION (the red baseline): a user `fn max` returning 0 makes `assert(max(x,10)==0)` TRUE at
         // runtime (clean). Without the guard the builtin model disproves it (10 != 0) → wrongly REJECTS. The
         // guard declines the shadowed builtin → fail-open ACCEPT.
@@ -8320,12 +8679,16 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // LOCAL (let-closure) shadow of `max` — same.
         assert!(
-            accepts(r#"fn f(x: i64) requires(x == 5) { let max = |a, b| 0; assert(max(x, 10) == 0); } fn main() { f(5); }"#),
+            accepts(
+                r#"fn f(x: i64) requires(x == 5) { let max = |a, b| 0; assert(max(x, 10) == 0); } fn main() { f(5); }"#
+            ),
             "a LOCAL (let-closure) shadow of `max` declines to model — no over-rejection"
         );
         // user `fn abs` / `fn min` likewise.
         assert!(
-            accepts(r#"fn abs(x: i64) -> i64 { return 0; } fn f(x: i64) requires(x == 0 - 5) { assert(abs(x) == 0); } fn main() { f(0 - 5); }"#),
+            accepts(
+                r#"fn abs(x: i64) -> i64 { return 0; } fn f(x: i64) requires(x == 0 - 5) { assert(abs(x) == 0); } fn main() { f(0 - 5); }"#
+            ),
             "a user-shadowed `abs` declines — no over-rejection"
         );
         // GENUINE builtins (NO shadow) still model: max(3,5)==5 proves, ==3 disproves.
@@ -8335,8 +8698,11 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             "the genuine builtin `max` still models (proves 5, disproves 3)"
         );
         assert!(
-            accepts(r#"fn f(x: i64) requires(x == 0 - 7) { assert(abs(x) == 7); } fn main() { f(0 - 7); }"#)
-                && !accepts(r#"fn f(x: i64) requires(x == 0 - 7) { assert(abs(x) == 8); } fn main() { f(0 - 7); }"#),
+            accepts(
+                r#"fn f(x: i64) requires(x == 0 - 7) { assert(abs(x) == 7); } fn main() { f(0 - 7); }"#
+            ) && !accepts(
+                r#"fn f(x: i64) requires(x == 0 - 7) { assert(abs(x) == 8); } fn main() { f(0 - 7); }"#
+            ),
             "the genuine builtin `abs` still models (proves 7, disproves 8)"
         );
         // SEED-ORDERING (review-confirmed CRITICAL false accept): the shadow marks must be set BEFORE
@@ -8365,27 +8731,32 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // `P{v: e}.f` is value-equal to the named field's expr — the struct analog of the modeled
         // `[a, b][0]` bounded-array read. Leaving it unmodeled let `g(P{v: 0}.v)` certify against
         // `requires(x > 0)` (check ACCEPTED, run trapped DIV_BY_ZERO — a hunt-confirmed false accept).
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // the confirmed false accept: field value 0 violates g's requires(x > 0) → must REJECT.
         assert!(
-            !accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{v: 0}.v); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{v: 0}.v); return z; } fn main() { print(f()); }"#
+            ),
             "a struct-literal field access with value 0 against requires x gt 0 must reject"
         );
         // the safe dual → must ACCEPT (no over-rejection).
         assert!(
-            accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{v: 5}.v); return z; } fn main() { print(f()); }"#),
+            accepts(
+                r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{v: 5}.v); return z; } fn main() { print(f()); }"#
+            ),
             "a struct-literal field access with value 5 satisfies the requires — must accept"
         );
         // multi-field: the NAMED field is selected, not the first (`.b` = 0 violates).
         assert!(
-            !accepts(r#"struct P { a: i64, b: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{a: 1, b: 0}.b); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"struct P { a: i64, b: i64 } fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f() -> i64 { let z = g(P{a: 1, b: 0}.b); return z; } fn main() { print(f()); }"#
+            ),
             "the NAMED field b = 0 is selected, not the first — must reject"
         );
         // substitute_vars COUPLING (the LESSON-4 class): a contract MENTIONING a struct-literal field
@@ -8393,8 +8764,11 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // with arg 5 proves, with arg -5 is caught. Without the substitute_vars StructLiteral/FieldAccess
         // arms the callee param name would survive and re-bind (a precondition bypass).
         assert!(
-            accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(P{v: x}.v > 0) { return x; } fn f() -> i64 { let z = g(5); return z; } fn main() { print(f()); }"#)
-                && !accepts(r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(P{v: x}.v > 0) { return x; } fn f() -> i64 { let z = g(0 - 5); return z; } fn main() { print(f()); }"#),
+            accepts(
+                r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(P{v: x}.v > 0) { return x; } fn f() -> i64 { let z = g(5); return z; } fn main() { print(f()); }"#
+            ) && !accepts(
+                r#"struct P { v: i64 } fn g(x: i64) -> i64 requires(P{v: x}.v > 0) { return x; } fn f() -> i64 { let z = g(0 - 5); return z; } fn main() { print(f()); }"#
+            ),
             "a struct-literal contract must substitute the call arg into the field value"
         );
         // the VIA-LET form is now MODELED by the struct-literal-let field slice: `let p = P{v: 0}` seeds
@@ -8417,46 +8791,57 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // the adversarial hunt (probe P5) confirmed. The coverage gate is folded into registration: only a
         // field MENTIONED in a `requires` is registered, so an unseeded field stays fail-open (no
         // over-rejection of the corpus).
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // CASE 1 (the confirmed false accept): a FALSE string field assert under a seeding requires must
         // REJECT. Runtime g(P{a:"x"}) → p.a == "x", so assert(p.a == "z") traps.
         assert!(
-            !accepts(r#"struct P { a: string } fn g(p: P) requires(p.a == "x") { assert(p.a == "z"); } fn main() { g(P{a: "x"}); }"#),
+            !accepts(
+                r#"struct P { a: string } fn g(p: P) requires(p.a == "x") { assert(p.a == "z"); } fn main() { g(P{a: "x"}); }"#
+            ),
             "a false string field assert under a seeding requires must reject"
         );
         // CASE 2: the TRUE dual (assert the SEEDED value) must ACCEPT — no over-rejection.
         assert!(
-            accepts(r#"struct P { a: string } fn g(p: P) requires(p.a == "x") { assert(p.a == "x"); } fn main() { g(P{a: "x"}); }"#),
+            accepts(
+                r#"struct P { a: string } fn g(p: P) requires(p.a == "x") { assert(p.a == "x"); } fn main() { g(P{a: "x"}); }"#
+            ),
             "a true string field assert under the seeding requires must accept"
         );
         // CASE 3: the INT lane — a FALSE int field assert under a seeding requires must REJECT.
         assert!(
-            !accepts(r#"struct P { n: i64 } fn g(p: P) requires(p.n == 5) { assert(p.n == 6); } fn main() { g(P{n: 5}); }"#),
+            !accepts(
+                r#"struct P { n: i64 } fn g(p: P) requires(p.n == 5) { assert(p.n == 6); } fn main() { g(P{n: 5}); }"#
+            ),
             "a false int field assert under a seeding requires must reject"
         );
         // CASE 4: the TRUE int dual accepts.
         assert!(
-            accepts(r#"struct P { n: i64 } fn g(p: P) requires(p.n == 5) { assert(p.n == 5); } fn main() { g(P{n: 5}); }"#),
+            accepts(
+                r#"struct P { n: i64 } fn g(p: P) requires(p.n == 5) { assert(p.n == 5); } fn main() { g(P{n: 5}); }"#
+            ),
             "a true int field assert under the seeding requires must accept"
         );
         // CASE 5 (COVERAGE / corpus safety): a field NOT mentioned in any requires stays UNMODELED, so an
         // assert over it fail-opens (ACCEPTS) exactly as before — the seeding requires on p.a must not
         // register p.b. This preserves the pre-slice behavior and prevents free-var over-rejection.
         assert!(
-            accepts(r#"struct P { a: string, b: string } fn g(p: P) requires(p.a == "x") { assert(p.b == "z"); } fn main() { g(P{a: "x", b: "z"}); }"#),
+            accepts(
+                r#"struct P { a: string, b: string } fn g(p: P) requires(p.a == "x") { assert(p.b == "z"); } fn main() { g(P{a: "x", b: "z"}); }"#
+            ),
             "an unseeded field (not in any requires) stays fail-open — must accept"
         );
         // CASE 6 (ENSURES): a field-referencing postcondition is DISPROVED when false. `result`
         // substitutes to the returned field; ensures(result == "z") contradicts requires(p.a == "x").
         assert!(
-            !accepts(r#"struct P { a: string } fn g(p: P) -> string requires(p.a == "x") ensures(result == "z") { return p.a; } fn main() { let r = g(P{a: "x"}); }"#),
+            !accepts(
+                r#"struct P { a: string } fn g(p: P) -> string requires(p.a == "x") ensures(result == "z") { return p.a; } fn main() { let r = g(P{a: "x"}); }"#
+            ),
             "a false field-referencing ensures must reject"
         );
         // CASE 7 (COVERAGE PRUNE — the LESSON-12 stranded-obligation trap): a field MENTIONED in a
@@ -8513,14 +8898,13 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // ACCEPTED (the field access was unmodeled) while it traps at runtime. Gated OFF a reassigned or
         // SHADOWED base — the mangled per-field fact escapes the scalar shadow-clear, so a re-bound base
         // fail-opens rather than reusing a stale field fact.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // int lane: false field assert on a let-struct must REJECT; true accepts.
         assert!(
             !accepts(r#"struct P { v: i64 } fn main() { let p = P { v: 5 }; assert(p.v == 6); }"#),
@@ -8532,16 +8916,22 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         );
         // string + float lanes.
         assert!(
-            !accepts(r#"struct P { a: string } fn main() { let p = P { a: "x" }; assert(p.a == "z"); }"#),
+            !accepts(
+                r#"struct P { a: string } fn main() { let p = P { a: "x" }; assert(p.a == "z"); }"#
+            ),
             "a false string field assert over a let-struct must reject"
         );
         assert!(
-            !accepts(r#"struct P { x: f64 } fn main() { let p = P { x: 3.0 }; assert(p.x > 4.0); }"#),
+            !accepts(
+                r#"struct P { x: f64 } fn main() { let p = P { x: 3.0 }; assert(p.x > 4.0); }"#
+            ),
             "a false float field assert over a let-struct must reject"
         );
         // multi-field: the NAMED field is selected, and a satisfied assert on a DIFFERENT field accepts.
         assert!(
-            accepts(r#"struct P { a: i64, b: i64 } fn main() { let p = P { a: 1, b: 2 }; assert(p.a == 1); assert(p.b == 2); }"#),
+            accepts(
+                r#"struct P { a: i64, b: i64 } fn main() { let p = P { a: 1, b: 2 }; assert(p.a == 1); assert(p.b == 2); }"#
+            ),
             "each named field of a let-struct is modeled to its own construction value"
         );
         // SHADOW soundness: a re-bound `p` fail-opens (mangled field fact escapes the scalar shadow-clear),
@@ -8592,42 +8982,51 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // over `name` in the body must be discharged against S's facts — NOT a shadowed OUTER var of the
         // same name. Modelling the binding as an outer param's SMT symbol (a shadow conflation) certifies
         // a runtime-trapping call: a FALSE ACCEPT. The fix aliases the binding to the scrutinee.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // CASE 3 — the confirmed false accept. `match b { a => g(a) }` binds a = b (unconstrained), so
         // g(a) = g(b) can trap though the param `a > 50` holds. Must REJECT (was accepted via conflated a).
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, b: i64) -> i64 requires(a > 50) { let z = match b { a => g(a) }; return z; } fn main() { print(f(200, 0)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, b: i64) -> i64 requires(a > 50) { let z = match b { a => g(a) }; return z; } fn main() { print(f(200, 0)); }"#
+            ),
             "a whole-value binding shadowing a param must alias the SCRUTINEE, not the param"
         );
         // identity rebind, SAFE: `match a { a => g(a) }`, a > 50 ⇒ a > 0. The binding IS the scrutinee IS
         // the param (one value), so its own facts apply. Must ACCEPT (regression guard — no over-reject).
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 50) { let z = match a { a => g(a) }; return z; } fn main() { print(f(200)); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 50) { let z = match a { a => g(a) }; return z; } fn main() { print(f(200)); }"#
+            ),
             "an identity rebind keeps the scrutinee's own facts (a > 50 proves a > 0)"
         );
         // identity rebind, UNSAFE: `match a { a => g(a) }`, a > -100 allows a = -50. Must REJECT.
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { a => g(a) }; return z; } fn main() { print(f(0 - 50)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64) -> i64 requires(a > 0 - 100) { let z = match a { a => g(a) }; return z; } fn main() { print(f(0 - 50)); }"#
+            ),
             "an identity rebind cannot prove a > 0 from a > -100"
         );
         // non-identity binding over a PROVABLE scrutinee: `match p { a => g(a) }`, p > 0 ⇒ a = p > 0. The
         // alias carries the scrutinee's fact, so this proves. Must ACCEPT.
         assert!(
-            accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, p: i64) -> i64 requires(a > 50) requires(p > 0) { let z = match p { a => g(a) }; return z; } fn main() { print(f(200, 5)); }"#),
+            accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn f(a: i64, p: i64) -> i64 requires(a > 50) requires(p > 0) { let z = match p { a => g(a) }; return z; } fn main() { print(f(200, 5)); }"#
+            ),
             "a whole-value binding aliases the scrutinee, so a provable scrutinee proves the call"
         );
         // BLOCKER 1 (review-caught): a NON-int-modelable scrutinee (`ident(b)`, a user call) over a shadowed
         // param must FAIL CLOSED — the binding value is unknown, so `g(a)` cannot be proved. Must REJECT
         // (a fresh UNCONSTRAINED symbol, not a drop-from-the-model that would fail open).
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn ident(b: i64) -> i64 { return b; } fn f(a: i64, b: i64) -> i64 requires(b < 1000) { let z = match ident(b) { a => g(a) }; return z; } fn main() { print(f(7, 0)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x > 0) { return 100 / x; } fn ident(b: i64) -> i64 { return b; } fn f(a: i64, b: i64) -> i64 requires(b < 1000) { let z = match ident(b) { a => g(a) }; return z; } fn main() { print(f(7, 0)); }"#
+            ),
             "a non-modelable scrutinee over a shadowed binding must fail CLOSED, not fail open"
         );
         // BLOCKER 2 (review-caught): a scrutinee CONSTRAINED via the shadowed name (`requires(p == a)`) must
@@ -8641,7 +9040,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // `!(k>0)` push must not land on the shadowing binding `k`. Bound `k = a` here; `g(k)=g(a)` violable
         // (g requires x<=0). Must REJECT.
         assert!(
-            !accepts(r#"fn g(x: i64) -> i64 requires(x <= 0) { return 0 - x; } fn c(a: i64, k: i64) -> i64 requires(a > 0 - 1000) { let z = match a { _ if k > 0 => 1, k => g(k) }; return z; } fn main() { print(c(5, 0 - 1)); }"#),
+            !accepts(
+                r#"fn g(x: i64) -> i64 requires(x <= 0) { return 0 - x; } fn c(a: i64, k: i64) -> i64 requires(a > 0 - 1000) { let z = match a { _ if k > 0 => 1, k => g(k) }; return z; } fn main() { print(c(5, 0 - 1)); }"#
+            ),
             "a wildcard-guard negation must not conflate with a later shadowing binding"
         );
         // NESTED same-name rebind: `match b { a => match c { a => g(a) } }` — inner `a = c` (unconstrained),
@@ -8735,40 +9136,54 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // C1 — LetPattern (`let [s] = [..]`) shadows a modeled string binding without clearing its fact.
         // The ensures is a CONTRACT → must be REJECTED (not discharged against the stale fact).
         assert!(
-            !discharged(r#"fn f() -> string ensures(result == "A") { let s = "A"; let [s] = ["B"]; return s; }"#),
+            !discharged(
+                r#"fn f() -> string ensures(result == "A") { let s = "A"; let [s] = ["B"]; return s; }"#
+            ),
             "C1a: a LetPattern shadow of a string let must not discharge a stale-fact ensures"
         );
         assert!(
-            !discharged(r#"fn f(s: string) -> string requires(s == "A") ensures(result == "A") { let [s] = ["B"]; return s; }"#),
+            !discharged(
+                r#"fn f(s: string) -> string requires(s == "A") ensures(result == "A") { let [s] = ["B"]; return s; }"#
+            ),
             "C1b: a LetPattern shadow of a string param must not discharge a stale-fact ensures"
         );
 
         // C2 — a `for` loop VARIABLE shadows a modeled string binding; a body assert over it must NOT be
         // solver-proved (it becomes unmodeled → runtime-enforced).
         assert!(
-            !proves_an_assert(r#"fn f() { let s = "a"; for s in ["b", "c"] { assert(s == "a"); } }"#),
+            !proves_an_assert(
+                r#"fn f() { let s = "a"; for s in ["b", "c"] { assert(s == "a"); } }"#
+            ),
             "C2a: a for-var shadowing a string let must not let the body assert be proved"
         );
         assert!(
-            !proves_an_assert(r#"fn f(s: string) requires(s == "a") { for s in ["b", "c"] { assert(s == "a"); } }"#),
+            !proves_an_assert(
+                r#"fn f(s: string) requires(s == "a") { for s in ["b", "c"] { assert(s == "a"); } }"#
+            ),
             "C2b: a for-var shadowing a string param must not let the body assert be proved"
         );
 
         // C2' — a `while let` pattern binder shadows a modeled string binding; its analyze_stmts'd body
         // assert must NOT be proved either (same fix as `for`).
         assert!(
-            !proves_an_assert(r#"fn f() { let s = "a"; while let Some(s) = Some("b") { assert(s == "a"); } }"#),
+            !proves_an_assert(
+                r#"fn f() { let s = "a"; while let Some(s) = Some("b") { assert(s == "a"); } }"#
+            ),
             "C2': a while-let binder shadowing a string let must not let the body assert be proved"
         );
         // if-let / match-arm branch bodies are expressions (NOT solver-analyzed for asserts), so a
         // shadowed assert there is never PROVEN (defers to runtime). Lock that in against a future change
         // that would analyze those branches without a shadow-clear.
         assert!(
-            !proves_an_assert(r#"fn f() { let s = "a"; if let Some(s) = Some("b") { assert(s == "a"); } }"#),
+            !proves_an_assert(
+                r#"fn f() { let s = "a"; if let Some(s) = Some("b") { assert(s == "a"); } }"#
+            ),
             "if-let branch assert over a shadowed binder must not be proved"
         );
         assert!(
-            !proves_an_assert(r#"fn f() { let s = "a"; match Some("b") { Some(s) => { assert(s == "a"); } _ => {} } }"#),
+            !proves_an_assert(
+                r#"fn f() { let s = "a"; match Some("b") { Some(s) => { assert(s == "a"); } _ => {} } }"#
+            ),
             "match-arm assert over a shadowed binder must not be proved"
         );
 
@@ -8782,7 +9197,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // ── Positive controls: the fixes must NOT spuriously reject valid programs. ──
         // A `for` over a DIFFERENT variable leaves the contracted binding's fact intact → still discharges.
         assert!(
-            discharged(r#"fn f() -> string ensures(result == "a") { let s = "a"; for x in ["b"] { } return s; }"#),
+            discharged(
+                r#"fn f() -> string ensures(result == "a") { let s = "a"; for x in ["b"] { } return s; }"#
+            ),
             "a for-loop over a different var must not invalidate the outer string let"
         );
         // COMPLETENESS (review-caught over-reject): a for/while-let loop var shadow is BODY-SCOPED, so the
@@ -8797,7 +9214,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             "a transitive dependent of a for-shadowed int binding must keep its constraint after the loop"
         );
         assert!(
-            discharged(r#"fn f() -> u32 ensures(result == 7) { let n = 7; for n in [1, 2, 3] { } return n; }"#),
+            discharged(
+                r#"fn f() -> u32 ensures(result == 7) { let n = 7; for n in [1, 2, 3] { } return n; }"#
+            ),
             "an int for-var shadow must be restored after the loop"
         );
         // A genuinely-TRUE printable-ASCII assert is still solver-proved (the modelable domain is unchanged).
@@ -8813,52 +9232,67 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // Runtime `len(String)` = `s.chars().count()` (Unicode scalar count) = SMT-LIB `str.len` (code
         // points), so the model is SOUND both ways. Scope: `len(s)`/`len(t)` vs a NON-NEGATIVE int literal
         // (an int VAR bound stays fail-open — BitVec sort ≠ QF_S Int).
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // a body assert unprovable from the requires must REJECT (len>=1 does not prove len>=3)…
         assert!(
-            !accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1) { assert(len(s) >= 3); return 0; } fn main() { print(f("abcd")); }"#),
+            !accepts(
+                r#"fn f(s: string) -> i64 requires(len(s) >= 1) { assert(len(s) >= 3); return 0; } fn main() { print(f("abcd")); }"#
+            ),
             "assert(len>=3) under requires(len>=1) is unprovable — must reject"
         );
         // …and the provable direction discharges (len>=3 proves len>=1) via the seeded requires assumption.
         assert!(
-            accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 3) { assert(len(s) >= 1); return 0; } fn main() { print(g("abcd")); }"#),
+            accepts(
+                r#"fn g(s: string) -> i64 requires(len(s) >= 3) { assert(len(s) >= 1); return 0; } fn main() { print(g("abcd")); }"#
+            ),
             "assert(len>=1) under requires(len>=3) is provable"
         );
         // call-site: a literal argument whose length violates the callee's requires is CAUGHT.
         assert!(
-            !accepts(r#"fn h(s: string) -> i64 requires(len(s) >= 3) { return 0; } fn f() -> i64 { let z = h("ab"); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"fn h(s: string) -> i64 requires(len(s) >= 3) { return 0; } fn f() -> i64 { let z = h("ab"); return z; } fn main() { print(f()); }"#
+            ),
             "h(\"ab\") against requires(len(s)>=3): len=2<3 must reject"
         );
         assert!(
-            accepts(r#"fn h(s: string) -> i64 requires(len(s) >= 3) { return 0; } fn f() -> i64 { let z = h("abcd"); return z; } fn main() { print(f()); }"#),
+            accepts(
+                r#"fn h(s: string) -> i64 requires(len(s) >= 3) { return 0; } fn f() -> i64 { let z = h("abcd"); return z; } fn main() { print(f()); }"#
+            ),
             "h(\"abcd\") against requires(len(s)>=3): len=4>=3 must accept"
         );
         // ensures over lengths: identity return satisfies len(result)>=len(s); an over-strong bound fails.
         assert!(
-            accepts(r#"fn ids(s: string) -> string ensures(len(result) >= len(s)) { return s; } fn main() { print(ids("x")); }"#),
+            accepts(
+                r#"fn ids(s: string) -> string ensures(len(result) >= len(s)) { return s; } fn main() { print(ids("x")); }"#
+            ),
             "ensures(len(result) >= len(s)) for `return s` holds (equal lengths)"
         );
         assert!(
-            !accepts(r#"fn f(s: string) -> string ensures(len(result) >= 3) { return s; } fn main() { print(f("x")); }"#),
+            !accepts(
+                r#"fn f(s: string) -> string ensures(len(result) >= 3) { return s; } fn main() { print(f("x")); }"#
+            ),
             "ensures(len(result) >= 3) for `return s` is not provable (s may be short)"
         );
         // SOUNDNESS: a strlen fact must NOT leak into an INT obligation (sort clash) — a mixed contract's
         // int assert still discharges cleanly.
         assert!(
-            accepts(r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= 3) requires(n > 0) { assert(n > 0); return n; } fn main() { print(f("abc", 5)); }"#),
+            accepts(
+                r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= 3) requires(n > 0) { assert(n > 0); return n; } fn main() { print(f("abc", 5)); }"#
+            ),
             "a string-length fact must not sort-clash into an int obligation"
         );
         // an int-VAR length bound is deliberately OUT of scope (BitVec sort) → fail-open (accept), NOT a
         // sort-clash reject.
         assert!(
-            accepts(r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= n) { return 0; } fn main() { print(f("abc", 2)); }"#),
+            accepts(
+                r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= n) { return 0; } fn main() { print(f("abc", 2)); }"#
+            ),
             "an int-var length bound stays fail-open (no sort clash)"
         );
         // SOUNDNESS: a NON-ASCII string literal is NOT modeled — z3's `str.len` of a raw-UTF-8 literal
@@ -8882,7 +9316,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // marker) so it is filtered OUT of a same-function INT obligation — else the `\"` re-routes that
         // bit-vector query to QF_S and the int var is mis-declared String → z3 sort error → over-rejection.
         assert!(
-            accepts(r#"fn f(n: i64) -> i64 requires(len("abc") == 3) requires(n > 0) { assert(n > 0); return n; } fn main() { print(f(5)); }"#),
+            accepts(
+                r#"fn f(n: i64) -> i64 requires(len("abc") == 3) requires(n > 0) { assert(n > 0); return n; } fn main() { print(f(5)); }"#
+            ),
             "a constant str.len fact must not sort-clash an int obligation in the same function"
         );
         // COMPLETENESS (review-caught regression): a MIXED-lane `&&` requires (`len(s) >= 3 && s == "abc"`)
@@ -8890,14 +9326,19 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // that chains on the length conjunct proves. Without the seed's `&&` decomposition this over-rejected
         // a program that fail-open-accepted before the lane.
         assert!(
-            accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 3 && s == "abc") { assert(len(s) >= 1); return 0; } fn main() { print(f("abc")); }"#),
+            accepts(
+                r#"fn f(s: string) -> i64 requires(len(s) >= 3 && s == "abc") { assert(len(s) >= 1); return 0; } fn main() { print(f("abc")); }"#
+            ),
             "a mixed strlen && string-eq requires must seed both conjuncts (no over-rejection)"
         );
         // …and the decomposition is SOUND: the string-eq conjunct constrains the length transitively
         // (`s == "abc"` ⇒ len 3), so `assert(len(s) >= 3)` proves; the dual over a length-2 literal rejects.
         assert!(
-            accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1 && s == "abc") { assert(len(s) >= 3); return 0; } fn main() { print(f("abc")); }"#)
-                && !accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1 && s == "ab") { assert(len(s) >= 3); return 0; } fn main() { print(f("ab")); }"#),
+            accepts(
+                r#"fn f(s: string) -> i64 requires(len(s) >= 1 && s == "abc") { assert(len(s) >= 3); return 0; } fn main() { print(f("abc")); }"#
+            ) && !accepts(
+                r#"fn f(s: string) -> i64 requires(len(s) >= 1 && s == "ab") { assert(len(s) >= 3); return 0; } fn main() { print(f("ab")); }"#
+            ),
             "the && decomposition is sound: s==\"abc\" proves len>=3, s==\"ab\" disproves it"
         );
         // COVERAGE GATE (review-caught regression class): when the justifying precondition is UNSEEDABLE —
@@ -8911,11 +9352,15 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             "an unseedable non-ASCII requires must not strand a body strlen assert (spurious s=\"\")"
         );
         assert!(
-            accepts(r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= n) requires(n >= 1) { assert(len(s) >= 1); return 0; } fn main() { print(f("abc", 1)); }"#),
+            accepts(
+                r#"fn f(s: string, n: i64) -> i64 requires(len(s) >= n) requires(n >= 1) { assert(len(s) >= 1); return 0; } fn main() { print(f("abc", 1)); }"#
+            ),
             "an unseedable int-var length bound must not strand a body strlen assert"
         );
         assert!(
-            accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 1) { return 0; } fn f(s: string) -> i64 requires(s == "é") { let z = g(s); return z; } fn main() { print(f("é")); }"#),
+            accepts(
+                r#"fn g(s: string) -> i64 requires(len(s) >= 1) { return 0; } fn f(s: string) -> i64 requires(s == "é") { let z = g(s); return z; } fn main() { print(f("é")); }"#
+            ),
             "an unseedable requires must not strand a forwarded call-site strlen obligation"
         );
         // …while a COVERED forwarded var still discharges both directions (the gate is not over-broad):
@@ -8936,48 +9381,61 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // EXCLUDED — `len(a) + <near-i64::MAX literal>` overflows the runtime i64 at a small realizable string
         // while unbounded Int does not (a false proof — see the overflow guard below). `-` (usize underflow
         // vs signed Int) and `*` (nonlinear + realistic overflow) also stay unmodeled → fail-open.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
 
         // THE DISCRIMINATOR (red baseline on HEAD — a len-sum was unmodelable → the assert fail-opened):
         // a COVERED false len-sum assert is now DISPROVED. `a=="xx"`,`b=="yy"` ⇒ len(a)+len(b)=4, not 0.
         assert!(
-            !accepts(r#"fn f(a: string, b: string) requires(a == "xx") requires(b == "yy") { assert(len(a) + len(b) == 0); return; } fn main() { f("xx", "yy"); }"#),
+            !accepts(
+                r#"fn f(a: string, b: string) requires(a == "xx") requires(b == "yy") { assert(len(a) + len(b) == 0); return; } fn main() { f("xx", "yy"); }"#
+            ),
             "a covered FALSE len-sum assert (4 != 0) must be disproved"
         );
         // …and the covered TRUE len-sum assert proves.
         assert!(
-            accepts(r#"fn f(a: string, b: string) requires(a == "xx") requires(b == "yy") { assert(len(a) + len(b) == 4); return; } fn main() { f("xx", "yy"); }"#),
+            accepts(
+                r#"fn f(a: string, b: string) requires(a == "xx") requires(b == "yy") { assert(len(a) + len(b) == 4); return; } fn main() { f("xx", "yy"); }"#
+            ),
             "a covered TRUE len-sum assert (4 == 4) proves"
         );
         // Transitivity via a len-sum requires bound: len(a)+len(b) >= 5 ⊨ len(a)+len(b) >= 3.
         assert!(
-            accepts(r#"fn f(a: string, b: string) requires(len(a) + len(b) >= 5) { assert(len(a) + len(b) >= 3); return; } fn main() { f("xxx", "yy"); }"#),
+            accepts(
+                r#"fn f(a: string, b: string) requires(len(a) + len(b) >= 5) { assert(len(a) + len(b) >= 3); return; } fn main() { f("xxx", "yy"); }"#
+            ),
             "len(a)+len(b) >= 5 proves len(a)+len(b) >= 3"
         );
         // …and a FALSE consequence of a len-sum bound is disproved: len(a)+len(b) <= 3 ⊭ len(a)+len(b) >= 5.
         assert!(
-            !accepts(r#"fn f(a: string, b: string) requires(len(a) + len(b) <= 3) { assert(len(a) + len(b) >= 5); return; } fn main() { f("x", "y"); }"#),
+            !accepts(
+                r#"fn f(a: string, b: string) requires(len(a) + len(b) <= 3) { assert(len(a) + len(b) >= 5); return; } fn main() { f("x", "y"); }"#
+            ),
             "len(a)+len(b) <= 3 must not certify len(a)+len(b) >= 5"
         );
         // `len(s) + <lit>` form + a single-len consequence of a sum bound.
         assert!(
-            accepts(r#"fn f(a: string, b: string) requires(len(a) + len(b) <= 2) { assert(len(a) <= 2); return; } fn main() { f("a", "b"); }"#),
+            accepts(
+                r#"fn f(a: string, b: string) requires(len(a) + len(b) <= 2) { assert(len(a) <= 2); return; } fn main() { f("a", "b"); }"#
+            ),
             "len(a)+len(b) <= 2 proves len(a) <= 2 (a single term of the sum)"
         );
         // CALL SITE: a literal-argument pair whose combined length violates the callee's sum requires.
         assert!(
-            !accepts(r#"fn g(a: string, b: string) -> i64 requires(len(a) + len(b) <= 3) { return 0; } fn f() -> i64 { let z = g("xx", "yy"); return z; } fn main() { print(f()); }"#),
+            !accepts(
+                r#"fn g(a: string, b: string) -> i64 requires(len(a) + len(b) <= 3) { return 0; } fn f() -> i64 { let z = g("xx", "yy"); return z; } fn main() { print(f()); }"#
+            ),
             "g(\"xx\",\"yy\") against requires(len(a)+len(b)<=3): 4>3 must reject"
         );
         assert!(
-            accepts(r#"fn g(a: string, b: string) -> i64 requires(len(a) + len(b) <= 5) { return 0; } fn f() -> i64 { let z = g("xx", "yy"); return z; } fn main() { print(f()); }"#),
+            accepts(
+                r#"fn g(a: string, b: string) -> i64 requires(len(a) + len(b) <= 5) { return 0; } fn f() -> i64 { let z = g("xx", "yy"); return z; } fn main() { print(f()); }"#
+            ),
             "g(\"xx\",\"yy\") against requires(len(a)+len(b)<=5): 4<=5 must accept"
         );
         // SOUNDNESS — OVERFLOW GUARD: a LITERAL addend near i64::MAX is EXCLUDED. `len("abcdef") +
@@ -9000,19 +9458,26 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // wrong proof. A covered `len(a) - len(b)` assert must NOT be certified via the (excluded) model; it
         // fail-opens (accept, runtime backstop), it does NOT falsely reject a true one either.
         assert!(
-            accepts(r#"fn f(a: string, b: string) requires(a == "xxx") requires(b == "y") { assert(len(a) - len(b) == 2); return; } fn main() { f("xxx", "y"); }"#),
+            accepts(
+                r#"fn f(a: string, b: string) requires(a == "xxx") requires(b == "y") { assert(len(a) - len(b) == 2); return; } fn main() { f("xxx", "y"); }"#
+            ),
             "a `-` of length terms stays unmodeled (fail-open) — never a wrong model"
         );
         // CONSISTENCY: an UNCOVERED len-sum assert fail-opens exactly like an uncovered single-len assert
         // (the LESSON-12 coverage gate over free string vars), not a len-sum-specific regression.
         assert!(
-            accepts(r#"fn f(a: string, b: string) { assert(len(a) + len(b) == 0); return; } fn main() { f("x", "y"); }"#),
+            accepts(
+                r#"fn f(a: string, b: string) { assert(len(a) + len(b) == 0); return; } fn main() { f("x", "y"); }"#
+            ),
             "an uncovered len-sum assert fail-opens (coverage gate), same as uncovered single-len"
         );
         // REGRESSION: a single-len contract (no sum) still discharges both directions unchanged.
         assert!(
-            accepts(r#"fn g(s: string) -> i64 requires(len(s) >= 3) { assert(len(s) >= 1); return 0; } fn main() { print(g("abcd")); }"#)
-                && !accepts(r#"fn f(s: string) -> i64 requires(len(s) >= 1) { assert(len(s) >= 3); return 0; } fn main() { print(f("abcd")); }"#),
+            accepts(
+                r#"fn g(s: string) -> i64 requires(len(s) >= 3) { assert(len(s) >= 1); return 0; } fn main() { print(g("abcd")); }"#
+            ) && !accepts(
+                r#"fn f(s: string) -> i64 requires(len(s) >= 1) { assert(len(s) >= 3); return 0; } fn main() { print(f("abcd")); }"#
+            ),
             "the single-len strlen lane is unchanged by the sum extension"
         );
     }
@@ -9023,53 +9488,70 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // DISCHARGE in Z3 QF_S (`str.contains` / `str.prefixof` / `str.suffixof`) instead of fail-opening.
         // Runtime is Rust `str::contains`/`starts_with`/`ends_with` = z3 exactly over printable-ASCII. Before
         // this slice, `requires(s=="hello") { assert(starts_with(s,"xy")) }` was ACCEPTED while it traps.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // the confirmed false accept: a FALSE predicate under a pinning requires must REJECT.
         assert!(
-            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(starts_with(s, "xy")); } fn main() { f("hello"); }"#),
+            !accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(starts_with(s, "xy")); } fn main() { f("hello"); }"#
+            ),
             "a false starts_with under a pinning requires must reject"
         );
         // the TRUE duals must ACCEPT (proven, not merely fail-open).
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(starts_with(s, "he")); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(starts_with(s, "he")); } fn main() { f("hello"); }"#
+            ),
             "a true starts_with proves"
         );
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(ends_with(s, "lo")); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(ends_with(s, "lo")); } fn main() { f("hello"); }"#
+            ),
             "a true ends_with proves"
         );
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(contains(s, "ell")); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(contains(s, "ell")); } fn main() { f("hello"); }"#
+            ),
             "a true contains proves"
         );
         // FALSE contains / ends_with reject.
         assert!(
-            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(contains(s, "zzz")); } fn main() { f("hello"); }"#)
-                && !accepts(r#"fn f(s: string) requires(s == "hello") { assert(ends_with(s, "he")); } fn main() { f("hello"); }"#),
+            !accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(contains(s, "zzz")); } fn main() { f("hello"); }"#
+            ) && !accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(ends_with(s, "he")); } fn main() { f("hello"); }"#
+            ),
             "a false contains / ends_with is disproved"
         );
         // ABSTRACT-VAR reasoning is sound: starts_with(s,"ab") ⊨ contains(s,"a").
         assert!(
-            accepts(r#"fn f(s: string) requires(starts_with(s, "ab")) { assert(contains(s, "a")); } fn main() { f("abc"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(starts_with(s, "ab")) { assert(contains(s, "a")); } fn main() { f("abc"); }"#
+            ),
             "abstract: a starts_with premise entails a contains conclusion"
         );
         // NEGATION composes: `!contains` under a pinning requires.
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(!contains(s, "z")); } fn main() { f("hello"); }"#)
-                && !accepts(r#"fn f(s: string) requires(s == "hello") { assert(!contains(s, "ell")); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(!contains(s, "z")); } fn main() { f("hello"); }"#
+            ) && !accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(!contains(s, "ell")); } fn main() { f("hello"); }"#
+            ),
             "predicate negation composes (¬contains true when absent, disproved when present)"
         );
         // SOUNDNESS gate: a NON-ASCII literal arg declines (fail-open) — z3 byte-vs-char, same as the rest
         // of the string lane. `contains(s, "é")` stays unmodeled → a false assert over it fail-opens.
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hi") { assert(starts_with(s, "aé")); } fn main() { f("hi"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hi") { assert(starts_with(s, "aé")); } fn main() { f("hi"); }"#
+            ),
             "a non-ASCII predicate literal arg fail-opens (no byte-wise mis-model)"
         );
         // BUILTIN-SHADOW guard (the #12 class): if the user DEFINES `fn starts_with`/`contains`, the runtime
@@ -9115,47 +9597,60 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // (an extension of the str.len lane). Runtime `s.find` → char index, or -1 — matches z3 exactly over
         // printable-ASCII. Before this lane, `assert(index_of(s,"ll") == 5)` was ACCEPTED (fail-open) while
         // `index_of("hello","ll") = 2 != 5` traps at runtime.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // the confirmed false accept: a FALSE index disproves.
         assert!(
-            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 5); } fn main() { f("hello"); }"#),
+            !accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 5); } fn main() { f("hello"); }"#
+            ),
             "a false index_of value must reject"
         );
         // the TRUE index proves.
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 2); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 2); } fn main() { f("hello"); }"#
+            ),
             "a true index_of value proves"
         );
         // not-found → -1; a false `>= 0` over a missing needle rejects.
         assert!(
-            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "zzz") >= 0); } fn main() { f("hello"); }"#),
+            !accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "zzz") >= 0); } fn main() { f("hello"); }"#
+            ),
             "index_of of a missing needle is -1 → `>= 0` is disproved"
         );
         // ABSTRACT reasoning is sound: contains(s,"ab") ⊨ index_of(s,"ab") >= 0.
         assert!(
-            accepts(r#"fn f(s: string) requires(contains(s, "ab")) { assert(index_of(s, "ab") >= 0); } fn main() { f("xaby"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(contains(s, "ab")) { assert(index_of(s, "ab") >= 0); } fn main() { f("xaby"); }"#
+            ),
             "abstract: a contains premise entails index_of >= 0"
         );
         // composes with str.len: index_of(s,sub) < len(s) reasoning (a found needle's index is < the length).
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "l") < len(s)); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(index_of(s, "l") < len(s)); } fn main() { f("hello"); }"#
+            ),
             "index_of composes with str.len in one QF_S obligation"
         );
         // SHADOW guard (#12 class): a user `fn index_of` declines (fail-open), not builtin-modeled.
         assert!(
-            accepts(r#"fn index_of(a: string, b: string) -> i64 { return 0; } fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 0); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn index_of(a: string, b: string) -> i64 { return 0; } fn f(s: string) requires(s == "hello") { assert(index_of(s, "ll") == 0); } fn main() { f("hello"); }"#
+            ),
             "a user-shadowed index_of is not builtin-modeled (fail-open)"
         );
         // a LIST index_of declines (args not string-modelable) — no false model.
         assert!(
-            accepts(r#"fn f() { let xs = [1, 2, 3]; assert(index_of(xs, 2) == 1); } fn main() { f(); }"#),
+            accepts(
+                r#"fn f() { let xs = [1, 2, 3]; assert(index_of(xs, 2) == 1); } fn main() { f(); }"#
+            ),
             "a list index_of declines (args not string-modelable)"
         );
         // CROSS-CALL parity (review): a caller-LOCAL shadow named `index_of` must NOT suppress the callee's
@@ -9175,45 +9670,58 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
         // `chars.skip(off).take(len)` = z3 str.substr for off>=0 over printable-ASCII (validated: clamping,
         // off==len→"", off>len→""). Before this lane, `assert(substr(s,0,3) == "xyz")` was ACCEPTED (fail-
         // open) while `substr("hello",0,3) = "hel" != "xyz"` traps.
-        let accepts = |src: &str| {
-            match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
+        let accepts =
+            |src: &str| match typecheck(parse_source(src).expect("parse"), frontend::Mode::Safe) {
                 Ok(ir) => SymbolicEngine::check_obligations(&ir)
                     .iter()
                     .all(|c| c.status != "FAIL" && c.status != "UNKNOWN"),
                 Err(_) => false,
-            }
-        };
+            };
         // the confirmed false accept: a FALSE substring disproves.
         assert!(
-            !accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "xyz"); } fn main() { f("hello"); }"#),
+            !accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "xyz"); } fn main() { f("hello"); }"#
+            ),
             "a false substr value must reject"
         );
         // the TRUE substrings prove (prefix, interior, clamped-past-end).
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "hel"); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "hel"); } fn main() { f("hello"); }"#
+            ),
             "a true substr prefix proves"
         );
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 1, 3) == "ell"); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 1, 3) == "ell"); } fn main() { f("hello"); }"#
+            ),
             "a true substr interior proves"
         );
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 3, 10) == "lo"); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(substr(s, 3, 10) == "lo"); } fn main() { f("hello"); }"#
+            ),
             "a substr clamped past the end proves"
         );
         // composes with str.len: len(substr(s, 0, 3)) <= 3 for any s.
         assert!(
-            accepts(r#"fn f(s: string) requires(s == "hello") { assert(len(substr(s, 0, 3)) <= 3); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn f(s: string) requires(s == "hello") { assert(len(substr(s, 0, 3)) <= 3); } fn main() { f("hello"); }"#
+            ),
             "substr composes with str.len"
         );
         // a VAR offset fail-opens (only nonneg literals are modeled — a var offset needs Int↔BV, excluded).
         assert!(
-            accepts(r#"fn f(s: string, k: i64) requires(s == "hello") { assert(substr(s, k, 3) == "zzz"); } fn main() { f("hello", 0); }"#),
+            accepts(
+                r#"fn f(s: string, k: i64) requires(s == "hello") { assert(substr(s, k, 3) == "zzz"); } fn main() { f("hello", 0); }"#
+            ),
             "a var-offset substr fail-opens (not modeled)"
         );
         // SHADOW guard (#12 class): a user `fn substr` declines (fail-open), not builtin-modeled.
         assert!(
-            accepts(r#"fn substr(s: string, a: i64, b: i64) -> string { return "zzz"; } fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "hel"); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn substr(s: string, a: i64, b: i64) -> string { return "zzz"; } fn f(s: string) requires(s == "hello") { assert(substr(s, 0, 3) == "hel"); } fn main() { f("hello"); }"#
+            ),
             "a user-shadowed substr is not builtin-modeled (fail-open)"
         );
         // OVER-REJECTION guard (LESSON-12 stranding): a substr-equality is a WEAK consequence (constrains
@@ -9226,7 +9734,9 @@ fn main() uses(net.send) { let m = Store { id: 1 }; drop_it(m, secret_source("k"
             "a substr-equality with an unseeable (non-ASCII) justification fail-opens — no stranded over-rejection"
         );
         assert!(
-            accepts(r#"fn pred(s: string) -> bool { return true; } fn f(s: string) requires(pred(s)) { assert(substr(s, 0, 2) == "he"); } fn main() { f("hello"); }"#),
+            accepts(
+                r#"fn pred(s: string) -> bool { return true; } fn f(s: string) requires(pred(s)) { assert(substr(s, 0, 2) == "he"); } fn main() { f("hello"); }"#
+            ),
             "a substr-equality under a non-modelable user-predicate requires fail-opens"
         );
         // …but a MIXED `substr == lit && s == lit` is NOT gated (the plain-pin conjunct keeps it fail-closed)
@@ -10179,10 +10689,7 @@ mod phase6_package_tests {
             },
         )
         .unwrap_err();
-        assert!(
-            err.contains("ANUBIS_DEP_PROOF_UNVERIFIED"),
-            "got: {err}"
-        );
+        assert!(err.contains("ANUBIS_DEP_PROOF_UNVERIFIED"), "got: {err}");
         // Dual-gate allow: only when allow_unsigned=true (CLI+env enforced by CLI layer)
         let ws = resolve_workspace(
             &layout,
@@ -10246,8 +10753,8 @@ mod phase6_package_tests {
             cache_root: Some(root.join("cache")),
             registry_root: Some(reg),
             trust_path: Some(trust_path.clone()),
-                ..Default::default()
-            };
+            ..Default::default()
+        };
         let ws = resolve_workspace(&layout, &opts).expect("registry resolve");
         assert_eq!(ws.deps["math"].version, "1.2.0");
         assert!(app.join(LOCK_FILENAME).is_file());
@@ -10335,8 +10842,8 @@ mod phase6_package_tests {
             skip_proof: false,
             cache_root: Some(root.join("cache")),
             registry_root: Some(root.join("registry")),
-                ..Default::default()
-            };
+            ..Default::default()
+        };
         let ws = resolve_workspace(&layout, &opts).expect("resolve");
         assert!(ws.deps.contains_key("math"));
         assert!(app.join(LOCK_FILENAME).is_file());
@@ -10365,7 +10872,14 @@ mod phase6_package_tests {
             names.iter().any(|n| n == "math__add"),
             "expected math__add in {names:?}"
         );
-        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("typecheck");
+        typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect("typecheck");
     }
 
     #[test]
@@ -10409,10 +10923,7 @@ mod phase6_package_tests {
             },
         )
         .unwrap_err();
-        assert!(
-            err.contains("ANUBIS_DEP_UNTRUSTED_SIGNER"),
-            "got: {err}"
-        );
+        assert!(err.contains("ANUBIS_DEP_UNTRUSTED_SIGNER"), "got: {err}");
     }
 
     #[test]
@@ -10487,10 +10998,7 @@ mod phase6_package_tests {
             },
         )
         .unwrap_err();
-        assert!(
-            err.contains("ANUBIS_CACHE_HASH_MISMATCH"),
-            "got: {err}"
-        );
+        assert!(err.contains("ANUBIS_CACHE_HASH_MISMATCH"), "got: {err}");
     }
 
     #[test]
@@ -10580,7 +11088,13 @@ mod phase6_package_tests {
         );
         let layout = ProjectLayout::discover(&app.join("main.anb")).unwrap();
         assert!(
-            layout.manifest.package.trust.signers.iter().any(|s| s == &pk),
+            layout
+                .manifest
+                .package
+                .trust
+                .signers
+                .iter()
+                .any(|s| s == &pk),
             "manifest must parse [package.trust] signers"
         );
         let ws = resolve_workspace(
@@ -10642,8 +11156,8 @@ mod phase6_package_tests {
             allow_unsigned: false,
             cache_root: Some(root.join("cache")),
             registry_root: Some(root.join("registry")),
-                ..Default::default()
-            };
+            ..Default::default()
+        };
         resolve_workspace(&layout, &opts).expect("resolve");
         let items = resolve::combine_from_entry_opts(
             &app.join("main.anb"),
@@ -10658,7 +11172,14 @@ mod phase6_package_tests {
             },
         )
         .expect("combine");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).unwrap_err();
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .unwrap_err();
         assert!(
             err.contains("ANUBIS_EFFECT_FORBIDDEN_IN_MODE") || err.contains("shell"),
             "effect must inherit across package mount: {err}"
@@ -10683,7 +11204,14 @@ mod phase6_package_tests {
             },
         )
         .expect("combine taint");
-        let err = typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).unwrap_err();
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .unwrap_err();
         assert!(
             err.contains("ANUBIS_TAINTED_SINK") || err.contains("taint") || err.contains("TAINTED"),
             "taint must inherit across package mount: {err}"
@@ -10725,10 +11253,7 @@ mod phase6_package_tests {
             },
         )
         .unwrap_err();
-        assert!(
-            err.contains("ANUBIS_DEP_PROOF_UNVERIFIED"),
-            "got: {err}"
-        );
+        assert!(err.contains("ANUBIS_DEP_PROOF_UNVERIFIED"), "got: {err}");
     }
 
     #[test]
@@ -10762,10 +11287,7 @@ math = { git = "https://example.invalid/math.git" }
             },
         )
         .unwrap_err();
-        assert!(
-            err.contains("ANUBIS_GIT_REV_REQUIRED"),
-            "got: {err}"
-        );
+        assert!(err.contains("ANUBIS_GIT_REV_REQUIRED"), "got: {err}");
     }
 
     #[test]
@@ -10842,8 +11364,8 @@ math = { git = "https://example.invalid/math.git" }
             allow_unsigned: false,
             cache_root: Some(root.join("cache")),
             registry_root: Some(root.join("registry")),
-                ..Default::default()
-            };
+            ..Default::default()
+        };
         let ws = resolve_workspace(&layout, &opts).expect("git resolve");
         assert!(ws.deps.contains_key("math"));
         assert!(app.join(LOCK_FILENAME).is_file());
@@ -10871,10 +11393,19 @@ math = { git = "https://example.invalid/math.git" }
         )
         .expect("combine git dep");
         assert!(
-            items.iter().any(|it| matches!(it, frontend::Item::Fn { name, .. } if name == "math__add")),
+            items
+                .iter()
+                .any(|it| matches!(it, frontend::Item::Fn { name, .. } if name == "math__add")),
             "expected math__add from git dep"
         );
-        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("typecheck");
+        typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect("typecheck");
     }
 
     #[test]
@@ -10968,7 +11499,14 @@ math = { git = "https://example.invalid/math.git" }
             .collect();
         assert!(names.iter().any(|n| n == "leaf__ten"), "{names:?}");
         assert!(names.iter().any(|n| n == "mid__twenty"), "{names:?}");
-        typecheck(frontend::AST { items, ..Default::default() }, Mode::Safe).expect("typecheck");
+        typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect("typecheck");
     }
 
     #[test]
@@ -11068,10 +11606,7 @@ math = { git = "https://example.invalid/math.git" }
             },
         )
         .unwrap_err();
-        assert!(
-            err.contains("ANUBIS_DEP_VERSION_CONFLICT"),
-            "got: {err}"
-        );
+        assert!(err.contains("ANUBIS_DEP_VERSION_CONFLICT"), "got: {err}");
     }
 
     #[test]

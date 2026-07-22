@@ -75,8 +75,19 @@ impl Term {
         use Term::*;
         match self {
             Var(_, w) | Const(_, w) => Some(*w),
-            Add(a, b) | Sub(a, b) | Mul(a, b) | And(a, b) | Or(a, b) | Xor(a, b) | Shl(a, b)
-            | Lshr(a, b) | Ashr(a, b) | Udiv(a, b) | Urem(a, b) | Sdiv(a, b) | Srem(a, b) => {
+            Add(a, b)
+            | Sub(a, b)
+            | Mul(a, b)
+            | And(a, b)
+            | Or(a, b)
+            | Xor(a, b)
+            | Shl(a, b)
+            | Lshr(a, b)
+            | Ashr(a, b)
+            | Udiv(a, b)
+            | Urem(a, b)
+            | Sdiv(a, b)
+            | Srem(a, b) => {
                 let (wa, wb) = (a.width()?, b.width()?);
                 if wa == wb {
                     Some(wa)
@@ -173,13 +184,15 @@ impl Term {
                     (mask(x << y, w), w)
                 }
             }),
-            Lshr(a, b) => bin(a, b).map(|(x, y, w)| {
-                if y >= w as u128 {
-                    (0, w)
-                } else {
-                    (x >> y, w)
-                }
-            }),
+            Lshr(a, b) => bin(a, b).map(
+                |(x, y, w)| {
+                    if y >= w as u128 {
+                        (0, w)
+                    } else {
+                        (x >> y, w)
+                    }
+                },
+            ),
             Ashr(a, b) => bin(a, b).and_then(|(x, y, w)| {
                 if w == 0 {
                     return None;
@@ -235,7 +248,14 @@ impl Term {
                     return None;
                 }
                 let sign = (v >> (w - 1)) & 1 == 1;
-                Some((if sign { v | (mask(u128::MAX, ow) ^ mask(u128::MAX, w)) } else { v }, ow))
+                Some((
+                    if sign {
+                        v | (mask(u128::MAX, ow) ^ mask(u128::MAX, w))
+                    } else {
+                        v
+                    },
+                    ow,
+                ))
             }
             Ite(p, a, b) => {
                 if p.eval(env, bool_env)? {

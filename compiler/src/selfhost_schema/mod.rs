@@ -4,9 +4,7 @@
 //! Spans are UTF-8 byte offsets. Comments are **omitted** from token dumps (SH lexer skips them
 //! for the parse stream, matching host parse path).
 
-use crate::frontend::{
-    lex_spanned, parse_source, Expr, Item, Stmt, Token, Visibility, AST,
-};
+use crate::frontend::{lex_spanned, parse_source, Expr, Item, Stmt, Token, Visibility, AST};
 use serde::Serialize;
 use std::path::Path;
 

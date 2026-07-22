@@ -3423,9 +3423,9 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     // Modeling no-ops in research execution path.
                     if callee == "taint_source" {
                         let a = args.first().map(|e| safe_run_expr(e, ctx)).transpose()?;
-                        return Ok(a.unwrap_or_else(|| {
-                            "anubis_mk_str(\"tainted\".to_string())".into()
-                        }));
+                        return Ok(
+                            a.unwrap_or_else(|| "anubis_mk_str(\"tainted\".to_string())".into())
+                        );
                     }
                     if let Some(first) = args.first() {
                         return safe_run_expr(first, ctx);
@@ -3741,14 +3741,26 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 let declared = field_tys.and_then(|m| m.get(fname));
                 let wrapped = match declared {
                     Some(t) if crate::middle::ty::is_integer(t) => {
-                        format!("anubis_field_require_int({}, {})", val, rust_string_lit(fname)?)
+                        format!(
+                            "anubis_field_require_int({}, {})",
+                            val,
+                            rust_string_lit(fname)?
+                        )
                     }
                     Some(t) if crate::middle::ty::is_float(t) => {
-                        format!("anubis_field_coerce_float({}, {})", val, rust_string_lit(fname)?)
+                        format!(
+                            "anubis_field_coerce_float({}, {})",
+                            val,
+                            rust_string_lit(fname)?
+                        )
                     }
                     _ => val,
                 };
-                fs.push(format!("({}.to_string(), {})", rust_string_lit(fname)?, wrapped));
+                fs.push(format!(
+                    "({}.to_string(), {})",
+                    rust_string_lit(fname)?,
+                    wrapped
+                ));
             }
             Ok(format!(
                 "AnubisValue::Struct {{ ty: {}.to_string(), fields: vec![{}] }}",
@@ -4591,7 +4603,8 @@ mod run_tests {
         let dir = std::env::temp_dir().join(format!("anubis-stdin-{}", anubis_unique_suffix()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("anubis_run");
-        compile_native_rust_to_exe(&rust_source, &exe).expect("compile via cargo (audited crypto deps)");
+        compile_native_rust_to_exe(&rust_source, &exe)
+            .expect("compile via cargo (audited crypto deps)");
         let mut child = std::process::Command::new(&exe)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -6433,26 +6446,50 @@ mod run_tests {
     fn reduce_is_argument_order_agnostic_and_seedless() {
         // reduce is order-agnostic on its two non-list args: whichever IS a closure is the fold fn.
         // Anubis-native closure-first order:
-        assert_eq!(run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b, 0)); }"), "10");
+        assert_eq!(
+            run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b, 0)); }"),
+            "10"
+        );
         // JS/Rust-fold-natural seed-first order (previously crashed `expected closure, got int`):
-        assert_eq!(run("fn main() { print(reduce([1, 2, 3, 4], 0, |a, b| a + b)); }"), "10");
+        assert_eq!(
+            run("fn main() { print(reduce([1, 2, 3, 4], 0, |a, b| a + b)); }"),
+            "10"
+        );
         // Seedless 2-arg form: first element seeds, fold the rest.
-        assert_eq!(run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b)); }"), "10");
-        assert_eq!(run("fn main() { print(reduce([42], |a, b| a + b)); }"), "42");
+        assert_eq!(
+            run("fn main() { print(reduce([1, 2, 3, 4], |a, b| a + b)); }"),
+            "10"
+        );
+        assert_eq!(
+            run("fn main() { print(reduce([42], |a, b| a + b)); }"),
+            "42"
+        );
         assert_eq!(run("fn main() { print(reduce([], |a, b| a + b)); }"), "0");
         // Named 2-param function in either position:
-        assert_eq!(run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], add, 0)); }"), "6");
-        assert_eq!(run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], 0, add)); }"), "6");
+        assert_eq!(
+            run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], add, 0)); }"),
+            "6"
+        );
+        assert_eq!(
+            run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], 0, add)); }"),
+            "6"
+        );
     }
 
     #[test]
     fn hof_correct_usage_still_works_after_failclosed_hardening() {
         // Regression guard: the fail-closed hardening of sort_by/map_values/times/min_by/max_by (which
         // replaced silent-wrong-output fall-throughs) must not disturb their correct forms.
-        assert_eq!(run("fn main() { print(sort_by([3, 1, 2], |x| x)); }"), "[1, 2, 3]");
+        assert_eq!(
+            run("fn main() { print(sort_by([3, 1, 2], |x| x)); }"),
+            "[1, 2, 3]"
+        );
         assert_eq!(run("fn main() { print(min_by([3, 1, 2], |x| x)); }"), "1");
         assert_eq!(run("fn main() { print(max_by([3, 1, 2], |x| x)); }"), "3");
-        assert_eq!(run("fn main() { print(times(3, |i| i * i)); }"), "[0, 1, 4]");
+        assert_eq!(
+            run("fn main() { print(times(3, |i| i * i)); }"),
+            "[0, 1, 4]"
+        );
     }
 
     #[test]

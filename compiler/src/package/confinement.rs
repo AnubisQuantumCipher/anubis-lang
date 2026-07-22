@@ -33,12 +33,7 @@ pub const CONFINEMENT_SCHEMA: &str = "anubis.confinement.v1";
 
 /// The six canonical capabilities, in the order they appear in the manifest (deterministic).
 const CAPS: [&str; 6] = [
-    "net.send",
-    "fs.read",
-    "fs.write",
-    "shell",
-    "time.now",
-    "rand.gen",
+    "net.send", "fs.read", "fs.write", "shell", "time.now", "rand.gen",
 ];
 
 /// One capability's derived hypervisor grant. `tart_enforced` is TRUE only when the tart CLI
@@ -84,8 +79,9 @@ pub fn derive_confinement(
     source: &str,
 ) -> Result<ConfinementManifest, String> {
     let source_merkle = merkle::sha256_hex(source.as_bytes());
-    let ast = parse_source(source)
-        .map_err(|e| format!("ANUBIS_CONFINE_PARSE_FAILED: confinement derivation parse failed: {e}"))?;
+    let ast = parse_source(source).map_err(|e| {
+        format!("ANUBIS_CONFINE_PARSE_FAILED: confinement derivation parse failed: {e}")
+    })?;
     let (caps, open) = crate::middle::effects::program_capability_set(&ast.items);
 
     let has = |c: &str| caps.contains(c);
@@ -248,7 +244,10 @@ pub fn derive_confinement(
     })
 }
 
-pub fn write_confinement_to_evidence_dir(dir: &Path, m: &ConfinementManifest) -> Result<(), String> {
+pub fn write_confinement_to_evidence_dir(
+    dir: &Path,
+    m: &ConfinementManifest,
+) -> Result<(), String> {
     let json = serde_json::to_string_pretty(m).map_err(|e| e.to_string())?;
     std::fs::write(dir.join(CONFINEMENT_FILENAME), json).map_err(|e| e.to_string())
 }
@@ -285,11 +284,16 @@ mod tests {
 
     #[test]
     fn net_free_program_confines_to_host_only() {
-        let src = "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
+        let src =
+            "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
         let m = derive_confinement("pkg", "0.0.0", src).expect("derive");
         assert!(m.effects_bounded, "no closures => bounded");
         assert!(!m.capabilities_present.contains(&"net.send".to_string()));
-        let net = m.grants.iter().find(|g| g.capability == "net.send").unwrap();
+        let net = m
+            .grants
+            .iter()
+            .find(|g| g.capability == "net.send")
+            .unwrap();
         assert_eq!(net.hypervisor_grant, "network:host-only");
         assert!(net.tart_enforced);
         assert_eq!(net.tart_args, vec!["--net-host".to_string()]);
@@ -303,9 +307,16 @@ mod tests {
         let src = "fn beacon() uses(net.send) { http_post(\"http://x/y\", \"z\"); }\nfn main() uses(net.send) { beacon(); }\n";
         let m = derive_confinement("pkg", "0.0.0", src).expect("derive");
         assert!(m.capabilities_present.contains(&"net.send".to_string()));
-        let net = m.grants.iter().find(|g| g.capability == "net.send").unwrap();
+        let net = m
+            .grants
+            .iter()
+            .find(|g| g.capability == "net.send")
+            .unwrap();
         assert_eq!(net.hypervisor_grant, "network:unrestricted-nat");
-        assert!(!net.tart_enforced, "NAT default is permissive, not a confinement");
+        assert!(
+            !net.tart_enforced,
+            "NAT default is permissive, not a confinement"
+        );
     }
 
     #[test]
@@ -316,7 +327,11 @@ mod tests {
             "fn r() uses(fs.read) { let _ = read_file(\"a\"); }\nfn main() uses(fs.read) { r(); }\n",
         )
         .unwrap();
-        let g = ro.grants.iter().find(|g| g.capability == "fs.read").unwrap();
+        let g = ro
+            .grants
+            .iter()
+            .find(|g| g.capability == "fs.read")
+            .unwrap();
         assert_eq!(g.hypervisor_grant, "mount:read-only");
         let rw = derive_confinement(
             "p",
@@ -324,7 +339,11 @@ mod tests {
             "fn w() uses(fs.write) { let _ = write_file(\"a\", \"b\"); }\nfn main() uses(fs.write) { w(); }\n",
         )
         .unwrap();
-        let g = rw.grants.iter().find(|g| g.capability == "fs.write").unwrap();
+        let g = rw
+            .grants
+            .iter()
+            .find(|g| g.capability == "fs.write")
+            .unwrap();
         assert_eq!(g.hypervisor_grant, "mount:read-write");
     }
 

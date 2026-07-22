@@ -22,7 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The six canonical capability ids a row may contain (the gated subset of effect tags — analysis
 /// tags like taint/assume/loop are never row members). Mirrors `capability_effect`'s domain.
-const CAPABILITY_IDS: [&str; 6] = ["fs.read", "fs.write", "net.send", "shell", "time.now", "rand.gen"];
+const CAPABILITY_IDS: [&str; 6] = [
+    "fs.read", "fs.write", "net.send", "shell", "time.now", "rand.gen",
+];
 
 /// A transitive effect row: the canonical capability ids a function performs, plus whether the row
 /// is open over an unknown tail (unresolvable callee). Union is set-union with `open` OR-ed — the

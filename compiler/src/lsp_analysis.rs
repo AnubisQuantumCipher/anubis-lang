@@ -204,9 +204,7 @@ fn word_at(source: &str, offset: usize) -> Option<String> {
     }
     let mut s = offset;
     let mut e = offset;
-    while s > 0
-        && ((b[s - 1] as char).is_ascii_alphanumeric() || b[s - 1] == b'_')
-    {
+    while s > 0 && ((b[s - 1] as char).is_ascii_alphanumeric() || b[s - 1] == b'_') {
         s -= 1;
     }
     while e < b.len() && ((b[e] as char).is_ascii_alphanumeric() || b[e] == b'_') {
@@ -258,12 +256,24 @@ fn main() {}
             "hover should have a Taint section, got:\n{}",
             h.contents
         );
-        assert!(h.contents.contains("`q`") && h.contents.contains("tainted"), "tainted param shown");
-        assert!(h.contents.contains("`key`") && h.contents.contains("secret"), "secret param shown");
-        assert!(h.contents.contains("return") && h.contents.contains("tainted"), "tainted return shown");
+        assert!(
+            h.contents.contains("`q`") && h.contents.contains("tainted"),
+            "tainted param shown"
+        );
+        assert!(
+            h.contents.contains("`key`") && h.contents.contains("secret"),
+            "secret param shown"
+        );
+        assert!(
+            h.contents.contains("return") && h.contents.contains("tainted"),
+            "tainted return shown"
+        );
         // A function with NO taint qualifiers must NOT get a spurious Taint section.
         let clean = "fn f(a: u32) -> u32 { return a; }\nfn main() {}\n";
         let hc = hover_at(clean, clean.find("fn f").unwrap() + 3).expect("hover");
-        assert!(!hc.contents.contains("Taint & confidentiality"), "no taint section for a clean fn");
+        assert!(
+            !hc.contents.contains("Taint & confidentiality"),
+            "no taint section for a clean fn"
+        );
     }
 }

@@ -56,12 +56,36 @@ pub fn is_proven_authoritative(f: &Formula) -> bool {
 /// proof, nor a proof silently dropped while its op stays admitted.
 pub const PROVEN_OP_TAGS: &[&str] = &[
     // TIER-1 term wiring
-    "Add", "MulConst", "Shl", "Lshr", "Not", "Concat", "Extract", "ZeroExtend",
-    "And", "Or", "Xor", "Sub", "Neg", "Ite",
+    "Add",
+    "MulConst",
+    "Shl",
+    "Lshr",
+    "Not",
+    "Concat",
+    "Extract",
+    "ZeroExtend",
+    "And",
+    "Or",
+    "Xor",
+    "Sub",
+    "Neg",
+    "Ite",
     // TIER-1 comparators (all eight) + equality
-    "Ult", "Ule", "Ugt", "Uge", "Slt", "Sle", "Sgt", "Sge", "Eq",
+    "Ult",
+    "Ule",
+    "Ugt",
+    "Uge",
+    "Slt",
+    "Sle",
+    "Sgt",
+    "Sge",
+    "Eq",
     // TIER-0 propositional base
-    "PredConst", "BoolVar", "PredNot", "PredAnd", "PredOr",
+    "PredConst",
+    "BoolVar",
+    "PredNot",
+    "PredAnd",
+    "PredOr",
 ];
 
 fn pred_ok(p: &Pred) -> bool {
@@ -151,14 +175,20 @@ mod tests {
         let smt = "(declare-const x (_ BitVec 64))\
                    (assert (bvult (bvmul x (_ bv4 64)) (bvshl x (_ bv3 64))))\
                    (assert (bvule ((_ extract 31 0) x) ((_ zero_extend 0) x)))(check-sat)";
-        assert!(gate(smt), "const-mul, const-shift, extract, zero_extend must be authoritative");
+        assert!(
+            gate(smt),
+            "const-mul, const-shift, extract, zero_extend must be authoritative"
+        );
     }
 
     #[test]
     fn admits_propositional_structure() {
         let smt = "(declare-const x (_ BitVec 64))\
                    (assert (and (bvslt x (_ bv5 64)) (not (bvsgt x (_ bv0 64)))))(check-sat)";
-        assert!(gate(smt), "And/Or/Not over proven comparators must be authoritative");
+        assert!(
+            gate(smt),
+            "And/Or/Not over proven comparators must be authoritative"
+        );
     }
 
     // ---- Negative: a danger op ANYWHERE forces a decline. This is the soundness core. ----
@@ -176,16 +206,26 @@ mod tests {
         // Bitwise is proof-backed (andBits/orBits/xorBits_correct via the bitsToNat_testBit bridge).
         // The u32 literal-arg call-site coercion lowers to bvand, so this keeps concrete-call
         // obligations native-authoritative z3-free.
-        assert!(gate("(declare-const x (_ BitVec 64))(assert (bvsle (bvand x (_ bv7 64)) x))(check-sat)"));
-        assert!(gate("(declare-const x (_ BitVec 64))(assert (bvule x (bvor x (_ bv7 64))))(check-sat)"));
-        assert!(gate("(declare-const x (_ BitVec 64))(assert (= (bvxor x x) (_ bv0 64)))(check-sat)"));
+        assert!(gate(
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvand x (_ bv7 64)) x))(check-sat)"
+        ));
+        assert!(gate(
+            "(declare-const x (_ BitVec 64))(assert (bvule x (bvor x (_ bv7 64))))(check-sat)"
+        ));
+        assert!(gate(
+            "(declare-const x (_ BitVec 64))(assert (= (bvxor x x) (_ bv0 64)))(check-sat)"
+        ));
     }
 
     #[test]
     fn admits_sub_and_neg() {
         // Sub/Neg are proof-backed (subBits/negBits_correct — the two's-complement subtractor).
-        assert!(gate("(declare-const x (_ BitVec 64))(assert (bvsle (bvsub x (_ bv1 64)) x))(check-sat)"));
-        assert!(gate("(declare-const x (_ BitVec 64))(assert (= (bvadd (bvneg x) x) (_ bv0 64)))(check-sat)"));
+        assert!(gate(
+            "(declare-const x (_ BitVec 64))(assert (bvsle (bvsub x (_ bv1 64)) x))(check-sat)"
+        ));
+        assert!(gate(
+            "(declare-const x (_ BitVec 64))(assert (= (bvadd (bvneg x) x) (_ bv0 64)))(check-sat)"
+        ));
     }
 
     #[test]
@@ -215,7 +255,10 @@ mod tests {
             "(declare-const x (_ BitVec 64))\
              (assert (bvsge (ite (bvslt x (_ bv0 64)) x (bvurem x (_ bv2 64))) x))(check-sat)",
         ] {
-            assert!(!gate(smt), "danger op in an Ite child must force decline: {smt}");
+            assert!(
+                !gate(smt),
+                "danger op in an Ite child must force decline: {smt}"
+            );
         }
     }
 
@@ -262,7 +305,10 @@ mod tests {
             "(declare-const x (_ BitVec 64))\
              (assert (not (bvsle (bvashr x (_ bv1 64)) x)))(check-sat)",
         ] {
-            assert!(!gate(smt), "danger op nested in an allowed constructor must force decline: {smt}");
+            assert!(
+                !gate(smt),
+                "danger op nested in an allowed constructor must force decline: {smt}"
+            );
         }
     }
 

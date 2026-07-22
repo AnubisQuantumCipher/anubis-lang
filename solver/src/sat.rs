@@ -360,7 +360,11 @@ impl Solver {
     #[inline]
     fn enqueue(&mut self, l: Lit, reason: Option<usize>) {
         let v = l.var();
-        self.assigns[v] = if l.is_neg() { LBool::False } else { LBool::True };
+        self.assigns[v] = if l.is_neg() {
+            LBool::False
+        } else {
+            LBool::True
+        };
         self.level[v] = self.decision_level();
         self.reason[v] = reason;
         self.trail.push(l);

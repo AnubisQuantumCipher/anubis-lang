@@ -1627,7 +1627,12 @@ where
 pub fn lex(source: &str) -> Vec<Token> {
     lex_spanned(source)
         .into_iter()
-        .filter(|spanned| !matches!(spanned.token, Token::LineComment(_) | Token::BlockComment(_)))
+        .filter(|spanned| {
+            !matches!(
+                spanned.token,
+                Token::LineComment(_) | Token::BlockComment(_)
+            )
+        })
         .map(|spanned| spanned.token)
         .collect()
 }
@@ -1636,7 +1641,12 @@ pub fn lex(source: &str) -> Vec<Token> {
 pub fn lex_spanned_no_comments(source: &str) -> Vec<SpannedToken> {
     lex_spanned(source)
         .into_iter()
-        .filter(|spanned| !matches!(spanned.token, Token::LineComment(_) | Token::BlockComment(_)))
+        .filter(|spanned| {
+            !matches!(
+                spanned.token,
+                Token::LineComment(_) | Token::BlockComment(_)
+            )
+        })
         .collect()
 }
 
@@ -4425,9 +4435,15 @@ mod list_type_annotation_tests {
     fn list_struct_field_type_keeps_its_brackets() {
         // The regression: `[int]` was stored as the bare element `"int"`, letting a list field be
         // modeled as a scalar integer downstream (`s.log` synthesizing as u32). It must round-trip.
-        assert_eq!(struct_field_ty("struct S { log: [int] }\n", "S", "log"), "[int]");
+        assert_eq!(
+            struct_field_ty("struct S { log: [int] }\n", "S", "log"),
+            "[int]"
+        );
         // A non-numeric element behaves the same — the bracket wrapper is what carries "this is a list".
-        assert_eq!(struct_field_ty("struct S { names: [string] }\n", "S", "names"), "[string]");
+        assert_eq!(
+            struct_field_ty("struct S { names: [string] }\n", "S", "names"),
+            "[string]"
+        );
     }
 
     #[test]
@@ -4462,8 +4478,8 @@ mod list_type_annotation_tests {
         // INSIDE the list brackets and must be preserved, not treated as the param separator. If the
         // bracket depth were not tracked, collection would stop at that inner comma and `next: int`
         // would be swallowed / misparsed.
-        let ast =
-            parse_source("fn f(rows: [Map<int, string>], next: int) { return next; }\n").expect("parse");
+        let ast = parse_source("fn f(rows: [Map<int, string>], next: int) { return next; }\n")
+            .expect("parse");
         let Item::Fn { params, .. } = fn_of(&ast, "f") else {
             unreachable!()
         };

@@ -75,8 +75,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pkg = tmp.path().join("pkg");
         std::fs::create_dir_all(pkg.join("src")).unwrap();
-        std::fs::write(pkg.join("Anubis.toml"), "[package]\nname=\"p\"\nversion=\"1.0.0\"\n")
-            .unwrap();
+        std::fs::write(
+            pkg.join("Anubis.toml"),
+            "[package]\nname=\"p\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
         std::fs::write(pkg.join("src/lib.anb"), "pub fn f() { return 1; }\n").unwrap();
         let sha = merkle::merkle_root_dir(&pkg).unwrap();
         let cache = tmp.path().join("cache");

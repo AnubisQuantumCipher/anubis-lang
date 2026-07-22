@@ -72,9 +72,8 @@ pub fn resolve_version_any(
             local_root.display()
         ));
     }
-    let chosen = select_max_matching(&req, vers.iter().map(|s| s.as_str())).map_err(|_| {
-        format!("ANUBIS_REGISTRY_MISS: no version of `{name}` matches `{req_str}`")
-    })?;
+    let chosen = select_max_matching(&req, vers.iter().map(|s| s.as_str()))
+        .map_err(|_| format!("ANUBIS_REGISTRY_MISS: no version of `{name}` matches `{req_str}`"))?;
     let ver = chosen.to_string_canonical();
     let path = package_version_dir(local_root, name, &ver);
     if path.is_dir() {

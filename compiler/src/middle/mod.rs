@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-pub mod proptest;
 pub(crate) mod capability;
 pub(crate) mod effects;
+pub mod proptest;
 pub(crate) mod trifecta;
 pub(crate) mod ty;
 
@@ -889,55 +889,58 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     // Restricting to exactly-one return keeps it conservative (two divergent returns can't
                     // be one recorded lambda) — a skipped multi-return case under-approximates, never
                     // false-rejects.
-                    let cand: Option<Expr> = if tv.len() == 1
-                        && matches!(&tv[0], Expr::Lambda { .. })
-                    {
-                        Some(tv[0].clone())
-                    } else {
-                        let mut rets = Vec::new();
-                        for st in body {
-                            collect_returns_in_stmt(st, &mut rets);
-                        }
-                        if rets.len() == 1 && matches!(&rets[0], Expr::Lambda { .. }) {
-                            Some(rets.remove(0))
+                    let cand: Option<Expr> =
+                        if tv.len() == 1 && matches!(&tv[0], Expr::Lambda { .. }) {
+                            Some(tv[0].clone())
                         } else {
-                            None
-                        }
-                    };
-                    if let Some(Expr::Lambda { params: lparams, body: lbody }) = cand.as_ref() {
-                            // Inline the function's leading STRAIGHT-LINE `let`s into the returned lambda
-                            // body, so a closure capturing a LOCAL that aliases a secret/tainted param
-                            // (`fn mk(k){ let s = k; return |x| s; }`) carries that label when applied at
-                            // the caller (the call-site substitution replaces only PARAMS, not locals) —
-                            // soundness hunt2 [04]. Conservative: stop at the first non-`let` statement or
-                            // the return (a branch/loop before the return breaks the straight-line
-                            // assumption); the lambda's own params shadow and are not substituted. Under-
-                            // approximates (a missed capture never false-rejects).
-                            let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+                            let mut rets = Vec::new();
                             for st in body {
-                                match st {
-                                    Stmt::Let { name: ln, init, .. } => {
-                                        let resolved = substitute_vars(init, &sub);
-                                        sub.insert(ln.clone(), resolved);
-                                    }
-                                    Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => {
-                                        break
-                                    }
-                                    _ => break,
+                                collect_returns_in_stmt(st, &mut rets);
+                            }
+                            if rets.len() == 1 && matches!(&rets[0], Expr::Lambda { .. }) {
+                                Some(rets.remove(0))
+                            } else {
+                                None
+                            }
+                        };
+                    if let Some(Expr::Lambda {
+                        params: lparams,
+                        body: lbody,
+                    }) = cand.as_ref()
+                    {
+                        // Inline the function's leading STRAIGHT-LINE `let`s into the returned lambda
+                        // body, so a closure capturing a LOCAL that aliases a secret/tainted param
+                        // (`fn mk(k){ let s = k; return |x| s; }`) carries that label when applied at
+                        // the caller (the call-site substitution replaces only PARAMS, not locals) —
+                        // soundness hunt2 [04]. Conservative: stop at the first non-`let` statement or
+                        // the return (a branch/loop before the return breaks the straight-line
+                        // assumption); the lambda's own params shadow and are not substituted. Under-
+                        // approximates (a missed capture never false-rejects).
+                        let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+                        for st in body {
+                            match st {
+                                Stmt::Let { name: ln, init, .. } => {
+                                    let resolved = substitute_vars(init, &sub);
+                                    sub.insert(ln.clone(), resolved);
                                 }
+                                Stmt::ExprStmt(Expr::Call { callee, .. }) if callee == "return" => {
+                                    break
+                                }
+                                _ => break,
                             }
-                            for lp in lparams {
-                                sub.remove(lp);
-                            }
-                            let recorded = Expr::Lambda {
-                                params: lparams.clone(),
-                                body: Box::new(substitute_vars(lbody, &sub)),
-                            };
-                            ctx.fn_returns_lambda.insert(
-                                name.clone(),
-                                (params.iter().map(|(n, _)| n.clone()).collect(), recorded),
-                            );
                         }
+                        for lp in lparams {
+                            sub.remove(lp);
+                        }
+                        let recorded = Expr::Lambda {
+                            params: lparams.clone(),
+                            body: Box::new(substitute_vars(lbody, &sub)),
+                        };
+                        ctx.fn_returns_lambda.insert(
+                            name.clone(),
+                            (params.iter().map(|(n, _)| n.clone()).collect(), recorded),
+                        );
+                    }
                 }
                 // Task #48-A / #48 transitive: record which param positions this fn APPLIES directly at
                 // its own level (`p(...)` or a HOF-forward `each([1],p)`, NOT inside a deferred lambda)
@@ -1704,8 +1707,10 @@ fn analyze_function(
             let mut base_reassigned = BTreeSet::new();
             collect_assigned_roots(body, &mut base_reassigned);
             collect_let_bound(body, &mut base_reassigned);
-            let param_ty: BTreeMap<&str, &str> =
-                params.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+            let param_ty: BTreeMap<&str, &str> = params
+                .iter()
+                .map(|(n, t)| (n.as_str(), t.as_str()))
+                .collect();
             let mut field_accesses = Vec::new();
             for req in requires {
                 collect_field_accesses(req, &mut field_accesses);
@@ -1862,8 +1867,13 @@ fn analyze_function(
     // `selfhost/src/anubis_sh.anb` and every stdlib module, scratch fire/inert/accept runs, AND the
     // full `cargo test` green (the shadow diff scans only `.anb`, so it cannot see the verified-lane
     // Rust tests this composition tightens — those are updated to acquire their authorizing token).
-    for f in capability::check_linearity(params, body, ctx.verified, (span.start, span.end), &ctx.all_fns)
-    {
+    for f in capability::check_linearity(
+        params,
+        body,
+        ctx.verified,
+        (span.start, span.end),
+        &ctx.all_fns,
+    ) {
         ctx.emit(
             SemanticDiagnostic {
                 code: Some(f.code.into()),
@@ -2541,8 +2551,7 @@ fn discharge_call_requires(
     // `substr` doesn't suppress the callee's builtin requires. (Parity with `len`, handled in the int loop.)
     let mut restore_str_builtin: Vec<&str> = vec![];
     for name in ["index_of", "substr"] {
-        if !ctx.all_fns.contains(name)
-            && ctx.solver_string_vars.remove(&shadow_builtin_mark(name))
+        if !ctx.all_fns.contains(name) && ctx.solver_string_vars.remove(&shadow_builtin_mark(name))
         {
             restore_str_builtin.push(name);
         }
@@ -2557,93 +2566,67 @@ fn discharge_call_requires(
         // seed_requires_fact). Homogeneous `&&` is unchanged (two obligations vs one conjunction — same
         // verdict); an unmodelable conjunct still sets all_requires_checkable=false.
         for clause in flatten_and_exprs(&concrete) {
-        if is_bool_modelable(clause, &ctx.solver_int_vars) {
-            let smt = expr_to_smt(clause, &ctx.symbolic_widths);
-            let int_asm: Vec<String> = assumptions
-                .iter()
-                .filter(|a| {
-                    !fact_is_float(a, &ctx.solver_float_vars)
-                        && !fact_is_string(a, &ctx.solver_string_vars)
-                })
-                .cloned()
-                .collect();
-            let mut vars = BTreeSet::new();
-            collect_vars_from_smt(&smt, &mut vars);
-            for a in int_asm.iter() {
-                collect_vars_from_smt(a, &mut vars);
-            }
-            ctx.solver_obligations.push(SolverObligation {
-                name: format!("requires@{callee}:{smt}"),
-                assumptions: int_asm,
-                assertion: smt,
-                vars: vars.into_iter().collect(),
-                strings: false,
-                guard_assumptions: ctx.active_branch_guards.clone(),
-            });
-        } else if is_bool_modelable_float(clause, &ctx.solver_float_vars) {
-            // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
-            let smt = float_bool_to_smt(clause);
-            let float_asm: Vec<String> = assumptions
-                .iter()
-                .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
-                .cloned()
-                .collect();
-            let mut raw = BTreeSet::new();
-            collect_expr_vars(clause, &mut raw);
-            let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
-            for a in &float_asm {
-                let mut avs = BTreeSet::new();
-                collect_vars_from_smt(a, &mut avs);
-                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
-            }
-            ctx.solver_obligations.push(SolverObligation {
-                name: format!("requires@{callee}:{smt}"),
-                assumptions: float_asm,
-                assertion: smt,
-                vars: vars.into_iter().collect(),
-                strings: false,
-                guard_assumptions: ctx.active_branch_guards.clone(),
-            });
-        } else if is_bool_modelable_string(clause, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
-            // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
-            // a quoteless var-var body still routes to QF_S. The shared `string_expr_to_smt` under
-            // `string_bool_to_smt` carries the load-bearing backslash escape.
-            let smt = string_bool_to_smt(clause);
-            let str_asm: Vec<String> = assumptions
-                .iter()
-                .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
-                .cloned()
-                .collect();
-            let mut raw = BTreeSet::new();
-            collect_expr_vars(clause, &mut raw);
-            let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
-            for a in &str_asm {
-                let mut avs = BTreeSet::new();
-                collect_vars_from_smt(a, &mut avs);
-                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
-            }
-            ctx.solver_obligations.push(SolverObligation {
-                name: format!("requires@{callee}:{smt}"),
-                assumptions: str_asm,
-                assertion: smt,
-                vars: vars.into_iter().collect(),
-                strings: true,
-                guard_assumptions: ctx.active_branch_guards.clone(),
-            });
-        } else if is_bool_modelable_strlen(clause, &ctx.solver_string_vars) {
-            // Phase-3 str.len: discharge a string-LENGTH precondition at the call site (`h("ab")` against
-            // `requires(len(s) >= 3)` → `(str.len "ab") = 2 < 3` → caught). COVERAGE-GATED: a referenced
-            // string var with no seeded String-lane fact would make z3 disprove via the spurious `s = ""`
-            // (the caller's justification is real but unseedable) — skip instead (fail-open, pre-lane). A
-            // predicate fact (str.contains/prefixof/suffixof) is excluded — it does not tightly bound length
-            // (see is_predicate_fact), so it must not spuriously "cover" this strlen obligation.
-            let str_asm: Vec<String> = assumptions
-                .iter()
-                .filter(|a| fact_is_string(a, &ctx.solver_string_vars) && !is_predicate_fact(a))
-                .cloned()
-                .collect();
-            if strlen_vars_covered(clause, &str_asm, &ctx.solver_string_vars) {
-                let smt = strlen_bool_to_smt(clause, &ctx.solver_string_vars);
+            if is_bool_modelable(clause, &ctx.solver_int_vars) {
+                let smt = expr_to_smt(clause, &ctx.symbolic_widths);
+                let int_asm: Vec<String> = assumptions
+                    .iter()
+                    .filter(|a| {
+                        !fact_is_float(a, &ctx.solver_float_vars)
+                            && !fact_is_string(a, &ctx.solver_string_vars)
+                    })
+                    .cloned()
+                    .collect();
+                let mut vars = BTreeSet::new();
+                collect_vars_from_smt(&smt, &mut vars);
+                for a in int_asm.iter() {
+                    collect_vars_from_smt(a, &mut vars);
+                }
+                ctx.solver_obligations.push(SolverObligation {
+                    name: format!("requires@{callee}:{smt}"),
+                    assumptions: int_asm,
+                    assertion: smt,
+                    vars: vars.into_iter().collect(),
+                    strings: false,
+                    guard_assumptions: ctx.active_branch_guards.clone(),
+                });
+            } else if is_bool_modelable_float(clause, &ctx.solver_float_vars) {
+                // QF_FP: mirror the float ensures-site — FLOAT-only assumptions, mangled assertion vars.
+                let smt = float_bool_to_smt(clause);
+                let float_asm: Vec<String> = assumptions
+                    .iter()
+                    .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
+                    .cloned()
+                    .collect();
+                let mut raw = BTreeSet::new();
+                collect_expr_vars(clause, &mut raw);
+                let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+                for a in &float_asm {
+                    let mut avs = BTreeSet::new();
+                    collect_vars_from_smt(a, &mut avs);
+                    vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                }
+                ctx.solver_obligations.push(SolverObligation {
+                    name: format!("requires@{callee}:{smt}"),
+                    assumptions: float_asm,
+                    assertion: smt,
+                    vars: vars.into_iter().collect(),
+                    strings: false,
+                    guard_assumptions: ctx.active_branch_guards.clone(),
+                });
+            } else if is_bool_modelable_string(
+                clause,
+                &ctx.solver_string_vars,
+                &ctx.shadowed_string_preds,
+            ) {
+                // QF_S: mirror the string ensures-site — STRING-only assumptions, `strings: true` sort tag so
+                // a quoteless var-var body still routes to QF_S. The shared `string_expr_to_smt` under
+                // `string_bool_to_smt` carries the load-bearing backslash escape.
+                let smt = string_bool_to_smt(clause);
+                let str_asm: Vec<String> = assumptions
+                    .iter()
+                    .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                    .cloned()
+                    .collect();
                 let mut raw = BTreeSet::new();
                 collect_expr_vars(clause, &mut raw);
                 let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
@@ -2660,12 +2643,42 @@ fn discharge_call_requires(
                     strings: true,
                     guard_assumptions: ctx.active_branch_guards.clone(),
                 });
+            } else if is_bool_modelable_strlen(clause, &ctx.solver_string_vars) {
+                // Phase-3 str.len: discharge a string-LENGTH precondition at the call site (`h("ab")` against
+                // `requires(len(s) >= 3)` → `(str.len "ab") = 2 < 3` → caught). COVERAGE-GATED: a referenced
+                // string var with no seeded String-lane fact would make z3 disprove via the spurious `s = ""`
+                // (the caller's justification is real but unseedable) — skip instead (fail-open, pre-lane). A
+                // predicate fact (str.contains/prefixof/suffixof) is excluded — it does not tightly bound length
+                // (see is_predicate_fact), so it must not spuriously "cover" this strlen obligation.
+                let str_asm: Vec<String> = assumptions
+                    .iter()
+                    .filter(|a| fact_is_string(a, &ctx.solver_string_vars) && !is_predicate_fact(a))
+                    .cloned()
+                    .collect();
+                if strlen_vars_covered(clause, &str_asm, &ctx.solver_string_vars) {
+                    let smt = strlen_bool_to_smt(clause, &ctx.solver_string_vars);
+                    let mut raw = BTreeSet::new();
+                    collect_expr_vars(clause, &mut raw);
+                    let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
+                    for a in &str_asm {
+                        let mut avs = BTreeSet::new();
+                        collect_vars_from_smt(a, &mut avs);
+                        vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                    }
+                    ctx.solver_obligations.push(SolverObligation {
+                        name: format!("requires@{callee}:{smt}"),
+                        assumptions: str_asm,
+                        assertion: smt,
+                        vars: vars.into_iter().collect(),
+                        strings: true,
+                        guard_assumptions: ctx.active_branch_guards.clone(),
+                    });
+                } else {
+                    all_requires_checkable = false;
+                }
             } else {
                 all_requires_checkable = false;
             }
-        } else {
-            all_requires_checkable = false;
-        }
         }
     }
     // Restore the caller-local shadow marks dropped for this discharge.
@@ -2778,12 +2791,25 @@ fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
         Expr::ArrayLiteral { elements } => Expr::ArrayLiteral {
             elements: elements.iter().map(&go).collect(),
         },
-        Expr::StructLiteral { name: n, fields, span } => Expr::StructLiteral {
+        Expr::StructLiteral {
+            name: n,
+            fields,
+            span,
+        } => Expr::StructLiteral {
             name: n.clone(),
-            fields: fields.iter().map(|(k, v)| (k.clone(), Box::new(go(v)))).collect(),
+            fields: fields
+                .iter()
+                .map(|(k, v)| (k.clone(), Box::new(go(v))))
+                .collect(),
             span: *span,
         },
-        Expr::EnumConstruct { enum_name, variant, fields, field_names, span } => Expr::EnumConstruct {
+        Expr::EnumConstruct {
+            enum_name,
+            variant,
+            fields,
+            field_names,
+            span,
+        } => Expr::EnumConstruct {
             enum_name: enum_name.clone(),
             variant: variant.clone(),
             fields: fields.iter().map(&go).collect(),
@@ -2798,7 +2824,11 @@ fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
             ty: ty.clone(),
             inner: Box::new(go(inner)),
         },
-        Expr::Declassify { inner, policy, reason } => Expr::Declassify {
+        Expr::Declassify {
+            inner,
+            policy,
+            reason,
+        } => Expr::Declassify {
             inner: Box::new(go(inner)),
             policy: policy.clone(),
             reason: reason.clone(),
@@ -2806,13 +2836,22 @@ fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
         Expr::Assume(i) => Expr::Assume(Box::new(go(i))),
         Expr::Assert(i) => Expr::Assert(Box::new(go(i))),
         Expr::Try(i) => Expr::Try(Box::new(go(i))),
-        Expr::If { cond, then, else_, span } => Expr::If {
+        Expr::If {
+            cond,
+            then,
+            else_,
+            span,
+        } => Expr::If {
             cond: Box::new(go(cond)),
             then: Box::new(go(then)),
             else_: Box::new(go(else_)),
             span: *span,
         },
-        Expr::Match { scrutinee, arms, span } => Expr::Match {
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+        } => Expr::Match {
             scrutinee: Box::new(go(scrutinee)),
             arms: arms
                 .iter()
@@ -3042,8 +3081,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                                 // constrains nothing, so z3 still disproves via len=0 → FAIL-CLOSED,
                                 // matching the int/float/string-eq lanes. Pushed after `snap` → removed
                                 // by the arm's truncate (leak-free).
-                                assumptions
-                                    .push(format!("(>= (str.len {}) 0)", smt_var(&fresh)));
+                                assumptions.push(format!("(>= (str.len {}) 0)", smt_var(&fresh)));
                             } else {
                                 ctx.solver_int_vars.insert(fresh.clone());
                                 ctx.symbolic_widths.insert(fresh.clone(), 64);
@@ -3079,8 +3117,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                 // also irrefutable: `G` may reference the binding `n` (which aliases the scrutinee), and `n`
                 // denotes a DIFFERENT thing (or an enclosing shadowed var) in a later arm — pushing `!G`
                 // there could assert a wrong fact. Fail-closed: a binding-guarded arm contributes nothing.
-                let wildcard_guarded =
-                    matches!(arm.pattern, crate::frontend::Pattern::Wildcard);
+                let wildcard_guarded = matches!(arm.pattern, crate::frontend::Pattern::Wildcard);
                 match (&arm.guard, wildcard_guarded) {
                     // Guardless literal/or-literal → later arms have `scrutinee != lit`.
                     (None, _) => {
@@ -3109,7 +3146,10 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
             discharge_calls_in_expr(ctx, assumptions, index);
         }
         Expr::FieldAccess { base, .. } => discharge_calls_in_expr(ctx, assumptions, base),
-        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+        Expr::ArrayLiteral { elements }
+        | Expr::EnumConstruct {
+            fields: elements, ..
+        } => {
             for e in elements {
                 discharge_calls_in_expr(ctx, assumptions, e);
             }
@@ -3199,13 +3239,19 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                         if genuinely_float {
                             ctx.solver_float_vars.insert(name.clone());
                             added_float.push(name.clone());
-                            assumptions
-                                .push(format!("(= {} {})", smt_var(name), float_expr_to_smt(init)));
+                            assumptions.push(format!(
+                                "(= {} {})",
+                                smt_var(name),
+                                float_expr_to_smt(init)
+                            ));
                         } else if genuinely_string {
                             ctx.solver_string_vars.insert(name.clone());
                             added_string.push(name.clone());
-                            assumptions
-                                .push(format!("(= {} {})", smt_var(name), string_expr_to_smt(init)));
+                            assumptions.push(format!(
+                                "(= {} {})",
+                                smt_var(name),
+                                string_expr_to_smt(init)
+                            ));
                         } else if !matches!(init, Expr::ArrayLiteral { .. })
                             && is_int_modelable(init, &ctx.solver_int_vars)
                         {
@@ -3234,8 +3280,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                                 added_width.push(name.clone());
                                 ctx.solver_int_vars.insert(name.clone());
                                 added_int.push(name.clone());
-                                assumptions
-                                    .push(format!("(= {} {})", smt_var(name), init_smt));
+                                assumptions.push(format!("(= {} {})", smt_var(name), init_smt));
                             }
                         }
                     }
@@ -3323,11 +3368,7 @@ fn push_branch_path_condition(
     } else {
         return;
     };
-    let fact = if negate {
-        format!("(not {smt})")
-    } else {
-        smt
-    };
+    let fact = if negate { format!("(not {smt})") } else { smt };
     assumptions.push(fact.clone());
     ctx.active_branch_guards.push(fact);
 }
@@ -3423,12 +3464,18 @@ fn seed_struct_literal_fields(
             && !is_int_modelable(fexpr, &ctx.solver_int_vars)
         {
             ctx.solver_float_vars.insert(sym.clone());
-            assumptions.push(format!("(= {} {})", smt_var(&sym), float_expr_to_smt(fexpr)));
-        } else if fty.as_str() == "string"
-            && is_string_modelable(fexpr, &ctx.solver_string_vars)
-        {
+            assumptions.push(format!(
+                "(= {} {})",
+                smt_var(&sym),
+                float_expr_to_smt(fexpr)
+            ));
+        } else if fty.as_str() == "string" && is_string_modelable(fexpr, &ctx.solver_string_vars) {
             ctx.solver_string_vars.insert(sym.clone());
-            assumptions.push(format!("(= {} {})", smt_var(&sym), string_expr_to_smt(fexpr)));
+            assumptions.push(format!(
+                "(= {} {})",
+                smt_var(&sym),
+                string_expr_to_smt(fexpr)
+            ));
         } else if let Expr::StructLiteral {
             name: nested_sname,
             fields: nested_fields,
@@ -3438,8 +3485,7 @@ fn seed_struct_literal_fields(
             // NESTED struct field `p.a = A{b: ..}`: recurse so `p.a.b` is seeded at the deeper mangle
             // path. Gate on the field's DECLARED type matching the literal's struct (a mismatch or an
             // unknown type declines → the nested facts simply aren't seeded, fail-open).
-            if fty.as_str() == nested_sname.as_str()
-                && ctx.struct_fields.contains_key(nested_sname)
+            if fty.as_str() == nested_sname.as_str() && ctx.struct_fields.contains_key(nested_sname)
             {
                 seed_struct_literal_fields(ctx, assumptions, &sym, nested_sname, nested_fields);
             }
@@ -3466,12 +3512,19 @@ fn apply_container_mutation_taint(
     if let Expr::Call { callee, args } = expr {
         if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 {
             let root = assign_target_root(&args[0]).map(|s| s.to_string());
-            let any_taint = args[1..]
-                .iter()
-                .find_map(|a| expr_taint_source_m(a, scope, tainting_fns, param_return_taint, method_tainting_fns));
-            let any_secret = args[1..]
-                .iter()
-                .any(|a| expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns).is_some());
+            let any_taint = args[1..].iter().find_map(|a| {
+                expr_taint_source_m(
+                    a,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                )
+            });
+            let any_secret = args[1..].iter().any(|a| {
+                expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns)
+                    .is_some()
+            });
             if let Some(root) = root {
                 if let Some(b) = scope.get_mut(&root) {
                     if let Some(src) = &any_taint {
@@ -3493,7 +3546,12 @@ fn apply_container_mutation_taint(
 /// ELEMENT / applied ARGUMENT it stands for — instead of a fresh UNLABELLED binding, which dropped the
 /// element/arg's secret/taint and laundered `each([input()], |x| shell(x))` / `let f=|x| memcpy(x,16);
 /// f(input())` past the sink check (soundness hunt `wf_5b2a1bcc`).
-fn labelled_param_binding(name: &str, tainted: bool, taint_source: Option<String>, secret: bool) -> ScopeBinding {
+fn labelled_param_binding(
+    name: &str,
+    tainted: bool,
+    taint_source: Option<String>,
+    secret: bool,
+) -> ScopeBinding {
     ScopeBinding {
         info: BindingInfo {
             name: name.to_string(),
@@ -3601,13 +3659,23 @@ fn analyze_stmts(
                     _ => {}
                 }
 
-                let init_taint =
-                    expr_taint_source_m(init, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
+                let init_taint = expr_taint_source_m(
+                    init,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                );
                 // CONFIDENTIALITY seed (dual of `init_taint`): the secret label the initializer carries.
                 // `expr_secret_source`'s Declassify arm already clears a released value, so no separate
                 // declassify gate is needed here (unlike the taint side's `declass_source`).
-                let init_secret =
-                    expr_secret_source_m(init, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns);
+                let init_secret = expr_secret_source_m(
+                    init,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                );
                 let declass_source =
                     declassify_source(init, scope, &ctx.tainting_fns, &ctx.param_return_taint);
                 // Effect inference must see calls in let-initializers (`let d = read_file(p)`),
@@ -3644,7 +3712,10 @@ fn analyze_stmts(
                         }
                     } else if matches!(
                         init,
-                        Expr::Call { .. } | Expr::Index { .. } | Expr::FieldAccess { .. } | Expr::Try(_)
+                        Expr::Call { .. }
+                            | Expr::Index { .. }
+                            | Expr::FieldAccess { .. }
+                            | Expr::Try(_)
                     ) {
                         // A `Call`/`Index`/`FieldAccess` return — and a `?` on one — is invisible to the
                         // flat `infer_expr_type_scoped` above (it returns `None` for all of them), so
@@ -3725,7 +3796,11 @@ fn analyze_stmts(
                             if pnames.len() != args.len() {
                                 return None;
                             }
-                            if let Expr::Lambda { params: lparams, body } = lam {
+                            if let Expr::Lambda {
+                                params: lparams,
+                                body,
+                            } = lam
+                            {
                                 let mut sub: BTreeMap<String, Expr> =
                                     pnames.iter().cloned().zip(args.iter().cloned()).collect();
                                 for lp in lparams {
@@ -3759,7 +3834,9 @@ fn analyze_stmts(
                                 } else {
                                     format!("{path}.{k}")
                                 };
-                                scope.get(&root).and_then(|b| b.field_closures.get(&full).cloned())
+                                scope
+                                    .get(&root)
+                                    .and_then(|b| b.field_closures.get(&full).cloned())
                             })
                         })
                     }
@@ -3779,9 +3856,10 @@ fn analyze_stmts(
                 // / `arr[0].f(0)` / `m["k"](0)` all descend into the stored closure body. An alias
                 // `let b2 = b` inherits b's paths.
                 let fclos: BTreeMap<String, Box<Expr>> = match init {
-                    Expr::Var(v) => {
-                        scope.get(v).map(|b| b.field_closures.clone()).unwrap_or_default()
-                    }
+                    Expr::Var(v) => scope
+                        .get(v)
+                        .map(|b| b.field_closures.clone())
+                        .unwrap_or_default(),
                     _ => {
                         let mut m = BTreeMap::new();
                         collect_container_closures(init, "", scope, &mut m);
@@ -3913,7 +3991,10 @@ fn analyze_stmts(
                 // list name as a BitVec, which would be an unsound sort. A genuinely-float let is handled
                 // by the QF_FP branch below, never as a bit-vector; a genuinely-string let by the QF_S
                 // branch — the three lanes are mutually exclusive by construction.)
-                if !matches!(init, Expr::ArrayLiteral { .. }) && !genuinely_float && !genuinely_string {
+                if !matches!(init, Expr::ArrayLiteral { .. })
+                    && !genuinely_float
+                    && !genuinely_string
+                {
                     if let Some(init_smt) = expr_to_smt_value(init, &ctx.symbolic_widths) {
                         let def_smt = format!("(= {} {})", smt_var(name), init_smt);
                         ctx.symbolic_defs.push(def_smt.clone());
@@ -3953,7 +4034,11 @@ fn analyze_stmts(
                 // ctx.constraints/symbolic_defs (kept byte-identical for the self-host projection).
                 if genuinely_string && !ctx.reassigned_roots.contains(name) {
                     ctx.solver_string_vars.insert(name.clone());
-                    assumptions.push(format!("(= {} {})", smt_var(name), string_expr_to_smt(init)));
+                    assumptions.push(format!(
+                        "(= {} {})",
+                        smt_var(name),
+                        string_expr_to_smt(init)
+                    ));
                 }
                 // Struct-literal LET field modeling — the body twin of the has_contract struct-PARAM path:
                 // `let p = P{f: v, ...}` (p neither reassigned nor SHADOWED) registers each scalar modelable
@@ -3965,7 +4050,12 @@ fn analyze_stmts(
                 // param of the same name is mutually exclusive: slice-19 registration skips a let-shadowed
                 // param (its gate includes collect_let_bound), so no conflicting fact can coexist. Only a
                 // field whose value ENCODES is registered (else it declines → fail-open, no free-var strand).
-                if let Expr::StructLiteral { name: sname, fields, .. } = init {
+                if let Expr::StructLiteral {
+                    name: sname,
+                    fields,
+                    ..
+                } = init
+                {
                     if !ctx.reassigned_roots.contains(name) && !ctx.shadowed_lets.contains(name) {
                         // Seed each modelable scalar field's `mangle_field` fact — RECURSIVELY, so a nested
                         // `let p = P{a: A{b: 5}}` also seeds `p.a.b`; a later `p.a.b` read resolves to the
@@ -4061,7 +4151,11 @@ fn analyze_stmts(
                     }
                 }
             }
-            Stmt::LetPattern { pattern, init, span } => {
+            Stmt::LetPattern {
+                pattern,
+                init,
+                span,
+            } => {
                 // Destructuring binding: register each bound name so later statements don't
                 // flag it as unknown. (No type annotation, so no raw-pointer/type-mismatch check.)
                 for n in pattern.bound_names() {
@@ -4141,7 +4235,7 @@ fn analyze_stmts(
                     fn_symbols,
                     effects,
                     assumptions,
-                    ctx
+                    ctx,
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -4156,7 +4250,7 @@ fn analyze_stmts(
                     fn_symbols,
                     effects,
                     assumptions,
-                    ctx
+                    ctx,
                 );
                 restore_block_scope(scope, &snap_scope);
             }
@@ -4218,140 +4312,148 @@ fn analyze_stmts(
                     split_top_level_conjuncts(whole)
                 };
                 for expr in conjuncts {
-                if is_bool_modelable(expr, &ctx.solver_int_vars) {
-                    let smt = expr_to_smt(expr, &ctx.symbolic_widths);
-                    ctx.constraints.push(format!("(assert {})", smt));
-                    // Sort-partition: an integer (QF_BV) obligation assumes only integer facts. Dropping
-                    // any float fact keeps a `fp.`/`to_fp` token out of the body (which would flip the
-                    // query to QF_FP and mis-declare these i64 symbols as Float64). Corpus-inert: with no
-                    // float vars in scope `fact_is_float` is always false, so this is `assumptions.clone()`.
-                    let int_asm: Vec<String> = assumptions
-                        .iter()
-                        .filter(|a| {
-                    !fact_is_float(a, &ctx.solver_float_vars)
-                        && !fact_is_string(a, &ctx.solver_string_vars)
-                })
-                        .cloned()
-                        .collect();
-                    let mut vars = BTreeSet::new();
-                    collect_vars_from_smt(&smt, &mut vars);
-                    for assumption in &int_asm {
-                        collect_vars_from_smt(assumption, &mut vars);
-                    }
-                    ctx.solver_obligations.push(SolverObligation {
-                        name: format!("assert:{}", smt),
-                        assumptions: int_asm,
-                        assertion: smt,
-                        vars: vars.into_iter().collect(),
-                        strings: false,
-                        guard_assumptions: ctx.active_branch_guards.clone(),
-                    });
-                } else if is_bool_modelable_float(expr, &ctx.solver_float_vars) {
-                    // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged in QF_FP.
-                    // The shared `assumptions` channel is sort-partitioned — this obligation assumes only
-                    // FLOAT facts (float `requires`, float `let`/reassignment defining-facts), so its body
-                    // is all-Float64 and never sort-clashes with an integer bit-vector fact. Assertion
-                    // vars come from the Expr (mangled); each consumed float fact's vars are scraped too
-                    // (anb_-prefixed only, so the `fp.`/`RNE`/`to_fp` operator tokens are not mistaken for
-                    // symbols) and declared, so a chained `let y = x * 2.0` fact is fully constrained.
-                    let smt = float_bool_to_smt(expr);
-                    let float_asm: Vec<String> = assumptions
-                        .iter()
-                        .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
-                        .cloned()
-                        .collect();
-                    let mut raw = BTreeSet::new();
-                    collect_expr_vars(expr, &mut raw);
-                    let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
-                    for a in &float_asm {
-                        let mut avs = BTreeSet::new();
-                        collect_vars_from_smt(a, &mut avs);
-                        vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
-                    }
-                    ctx.solver_obligations.push(SolverObligation {
-                        name: format!("assert:{smt}"),
-                        assumptions: float_asm,
-                        assertion: smt,
-                        vars: vars.into_iter().collect(),
-                        strings: false,
-                        guard_assumptions: ctx.active_branch_guards.clone(),
-                    });
-                } else if is_bool_modelable_string(expr, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
-                    // Phase-3 QF_S: a string-equality/predicate `assert` is discharged in QF_S. The shared
-                    // `assumptions` channel is sort-partitioned to STRING facts (a string `requires`), so
-                    // the body is all-`String` and never sort-clashes with a bit-vector/float fact.
-                    let smt = string_bool_to_smt(expr);
-                    let str_asm: Vec<String> = assumptions
-                        .iter()
-                        .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
-                        .cloned()
-                        .collect();
-                    // COVERAGE-GATE a PURE-predicate assert (`contains`/`starts_with`/`ends_with`, no `==`):
-                    // it is a WEAKER consequence than an equality pin, so with an UNSEEDABLE justification (a
-                    // non-ASCII `requires(s == "café")` seeds nothing) the obligation would carry zero facts →
-                    // z3's spurious `s = ""` counterexample → over-rejection of a program that runs clean
-                    // (`starts_with("café","ca")` is true). Uncovered → skip (fail-open, the pre-lane stance).
-                    // Equality is intentionally NOT gated (is_pure_string_predicate is false for it): an ASCII
-                    // equality assert under an unseeable pin is genuinely runtime-false, so its reject is
-                    // correct — gating it would fail-open a false accept.
-                    if is_pure_string_predicate(expr)
-                        && !strlen_vars_covered(expr, &str_asm, &ctx.solver_string_vars)
-                    {
-                        // stranded pure-predicate obligation — fail-open, exactly as before this lane.
-                    } else {
+                    if is_bool_modelable(expr, &ctx.solver_int_vars) {
+                        let smt = expr_to_smt(expr, &ctx.symbolic_widths);
+                        ctx.constraints.push(format!("(assert {})", smt));
+                        // Sort-partition: an integer (QF_BV) obligation assumes only integer facts. Dropping
+                        // any float fact keeps a `fp.`/`to_fp` token out of the body (which would flip the
+                        // query to QF_FP and mis-declare these i64 symbols as Float64). Corpus-inert: with no
+                        // float vars in scope `fact_is_float` is always false, so this is `assumptions.clone()`.
+                        let int_asm: Vec<String> = assumptions
+                            .iter()
+                            .filter(|a| {
+                                !fact_is_float(a, &ctx.solver_float_vars)
+                                    && !fact_is_string(a, &ctx.solver_string_vars)
+                            })
+                            .cloned()
+                            .collect();
+                        let mut vars = BTreeSet::new();
+                        collect_vars_from_smt(&smt, &mut vars);
+                        for assumption in &int_asm {
+                            collect_vars_from_smt(assumption, &mut vars);
+                        }
+                        ctx.solver_obligations.push(SolverObligation {
+                            name: format!("assert:{}", smt),
+                            assumptions: int_asm,
+                            assertion: smt,
+                            vars: vars.into_iter().collect(),
+                            strings: false,
+                            guard_assumptions: ctx.active_branch_guards.clone(),
+                        });
+                    } else if is_bool_modelable_float(expr, &ctx.solver_float_vars) {
+                        // Phase-3 QF_FP: a float `assert` over the modelable subset is discharged in QF_FP.
+                        // The shared `assumptions` channel is sort-partitioned — this obligation assumes only
+                        // FLOAT facts (float `requires`, float `let`/reassignment defining-facts), so its body
+                        // is all-Float64 and never sort-clashes with an integer bit-vector fact. Assertion
+                        // vars come from the Expr (mangled); each consumed float fact's vars are scraped too
+                        // (anb_-prefixed only, so the `fp.`/`RNE`/`to_fp` operator tokens are not mistaken for
+                        // symbols) and declared, so a chained `let y = x * 2.0` fact is fully constrained.
+                        let smt = float_bool_to_smt(expr);
+                        let float_asm: Vec<String> = assumptions
+                            .iter()
+                            .filter(|a| fact_is_float(a, &ctx.solver_float_vars))
+                            .cloned()
+                            .collect();
                         let mut raw = BTreeSet::new();
                         collect_expr_vars(expr, &mut raw);
                         let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
-                        for a in &str_asm {
+                        for a in &float_asm {
                             let mut avs = BTreeSet::new();
                             collect_vars_from_smt(a, &mut avs);
                             vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
                         }
                         ctx.solver_obligations.push(SolverObligation {
                             name: format!("assert:{smt}"),
-                            assumptions: str_asm,
+                            assumptions: float_asm,
                             assertion: smt,
                             vars: vars.into_iter().collect(),
-                            strings: true,
+                            strings: false,
                             guard_assumptions: ctx.active_branch_guards.clone(),
                         });
-                    }
-                } else if is_bool_modelable_strlen(expr, &ctx.solver_string_vars) {
-                    // Phase-3 str.len: a string-LENGTH body `assert` (`assert(len(s) >= 1)`) discharges in
-                    // QF_S. COVERAGE-GATED (see strlen_vars_covered): with an unseedable justification
-                    // (`requires(s == "é")` / `requires(len(s) >= n)`) the obligation would carry zero
-                    // facts → spurious `s = ""` rejection of a valid program. Uncovered → skip (fail-open;
-                    // the assert is runtime-enforced, exactly the pre-lane stance for unmodeled asserts). A
-                    // predicate fact (str.contains/prefixof/suffixof) is excluded — it does not tightly bound
-                    // length, so it must not spuriously "cover" this strlen obligation (see is_predicate_fact).
-                    let str_asm: Vec<String> = assumptions
-                        .iter()
-                        .filter(|a| fact_is_string(a, &ctx.solver_string_vars) && !is_predicate_fact(a))
-                        .cloned()
-                        .collect();
-                    if strlen_vars_covered(expr, &str_asm, &ctx.solver_string_vars) {
-                        let smt = strlen_bool_to_smt(expr, &ctx.solver_string_vars);
-                        let mut raw = BTreeSet::new();
-                        collect_expr_vars(expr, &mut raw);
-                        let mut vars: BTreeSet<String> = raw.iter().map(|v| smt_var(v)).collect();
-                        for a in &str_asm {
-                            let mut avs = BTreeSet::new();
-                            collect_vars_from_smt(a, &mut avs);
-                            vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                    } else if is_bool_modelable_string(
+                        expr,
+                        &ctx.solver_string_vars,
+                        &ctx.shadowed_string_preds,
+                    ) {
+                        // Phase-3 QF_S: a string-equality/predicate `assert` is discharged in QF_S. The shared
+                        // `assumptions` channel is sort-partitioned to STRING facts (a string `requires`), so
+                        // the body is all-`String` and never sort-clashes with a bit-vector/float fact.
+                        let smt = string_bool_to_smt(expr);
+                        let str_asm: Vec<String> = assumptions
+                            .iter()
+                            .filter(|a| fact_is_string(a, &ctx.solver_string_vars))
+                            .cloned()
+                            .collect();
+                        // COVERAGE-GATE a PURE-predicate assert (`contains`/`starts_with`/`ends_with`, no `==`):
+                        // it is a WEAKER consequence than an equality pin, so with an UNSEEDABLE justification (a
+                        // non-ASCII `requires(s == "café")` seeds nothing) the obligation would carry zero facts →
+                        // z3's spurious `s = ""` counterexample → over-rejection of a program that runs clean
+                        // (`starts_with("café","ca")` is true). Uncovered → skip (fail-open, the pre-lane stance).
+                        // Equality is intentionally NOT gated (is_pure_string_predicate is false for it): an ASCII
+                        // equality assert under an unseeable pin is genuinely runtime-false, so its reject is
+                        // correct — gating it would fail-open a false accept.
+                        if is_pure_string_predicate(expr)
+                            && !strlen_vars_covered(expr, &str_asm, &ctx.solver_string_vars)
+                        {
+                            // stranded pure-predicate obligation — fail-open, exactly as before this lane.
+                        } else {
+                            let mut raw = BTreeSet::new();
+                            collect_expr_vars(expr, &mut raw);
+                            let mut vars: BTreeSet<String> =
+                                raw.iter().map(|v| smt_var(v)).collect();
+                            for a in &str_asm {
+                                let mut avs = BTreeSet::new();
+                                collect_vars_from_smt(a, &mut avs);
+                                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                            }
+                            ctx.solver_obligations.push(SolverObligation {
+                                name: format!("assert:{smt}"),
+                                assumptions: str_asm,
+                                assertion: smt,
+                                vars: vars.into_iter().collect(),
+                                strings: true,
+                                guard_assumptions: ctx.active_branch_guards.clone(),
+                            });
                         }
-                        ctx.solver_obligations.push(SolverObligation {
-                            name: format!("assert:{smt}"),
-                            assumptions: str_asm,
-                            assertion: smt,
-                            vars: vars.into_iter().collect(),
-                            strings: true,
-                            guard_assumptions: ctx.active_branch_guards.clone(),
-                        });
+                    } else if is_bool_modelable_strlen(expr, &ctx.solver_string_vars) {
+                        // Phase-3 str.len: a string-LENGTH body `assert` (`assert(len(s) >= 1)`) discharges in
+                        // QF_S. COVERAGE-GATED (see strlen_vars_covered): with an unseedable justification
+                        // (`requires(s == "é")` / `requires(len(s) >= n)`) the obligation would carry zero
+                        // facts → spurious `s = ""` rejection of a valid program. Uncovered → skip (fail-open;
+                        // the assert is runtime-enforced, exactly the pre-lane stance for unmodeled asserts). A
+                        // predicate fact (str.contains/prefixof/suffixof) is excluded — it does not tightly bound
+                        // length, so it must not spuriously "cover" this strlen obligation (see is_predicate_fact).
+                        let str_asm: Vec<String> = assumptions
+                            .iter()
+                            .filter(|a| {
+                                fact_is_string(a, &ctx.solver_string_vars) && !is_predicate_fact(a)
+                            })
+                            .cloned()
+                            .collect();
+                        if strlen_vars_covered(expr, &str_asm, &ctx.solver_string_vars) {
+                            let smt = strlen_bool_to_smt(expr, &ctx.solver_string_vars);
+                            let mut raw = BTreeSet::new();
+                            collect_expr_vars(expr, &mut raw);
+                            let mut vars: BTreeSet<String> =
+                                raw.iter().map(|v| smt_var(v)).collect();
+                            for a in &str_asm {
+                                let mut avs = BTreeSet::new();
+                                collect_vars_from_smt(a, &mut avs);
+                                vars.extend(avs.into_iter().filter(|v| v.starts_with("anb_")));
+                            }
+                            ctx.solver_obligations.push(SolverObligation {
+                                name: format!("assert:{smt}"),
+                                assumptions: str_asm,
+                                assertion: smt,
+                                vars: vars.into_iter().collect(),
+                                strings: true,
+                                guard_assumptions: ctx.active_branch_guards.clone(),
+                            });
+                        }
                     }
-                }
                 } // end per-conjunct decomposition loop
-                // A write embedded in the asserted expression escapes the statement sweep; invalidate it
-                // AFTER building this obligation (the obligation is over the pre-write value).
+                  // A write embedded in the asserted expression escapes the statement sweep; invalidate it
+                  // AFTER building this obligation (the obligation is over the pre-write value).
                 invalidate_embedded_writes(ctx, assumptions, expr);
                 effects.push("assert".into());
             }
@@ -4363,11 +4465,27 @@ fn analyze_stmts(
             // was dropped (soundness hunt `wf_5b2a1bcc`). Per-arm assumptions are isolated (arms are
             // mutually exclusive) and restored to the pre-match facts afterward (arm-body facts are
             // branch-local, exactly the `Stmt::If` discipline).
-            Stmt::ExprStmt(match_expr @ Expr::Match { scrutinee, arms, .. }) => {
+            Stmt::ExprStmt(
+                match_expr @ Expr::Match {
+                    scrutinee, arms, ..
+                },
+            ) => {
                 analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-                let st = expr_taint_source_m(scrutinee, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
-                let ss = expr_secret_source_m(scrutinee, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                    .is_some();
+                let st = expr_taint_source_m(
+                    scrutinee,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                );
+                let ss = expr_secret_source_m(
+                    scrutinee,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                )
+                .is_some();
                 let snap_asm = assumptions.clone();
                 // Arm bodies are analyzed for SECURITY value-flow only — a `match`/`if let` arm body is a
                 // deferred-to-runtime position for CONTRACTS (an arm-body `assert` is NOT solver-proved, so
@@ -4391,7 +4509,15 @@ fn analyze_stmts(
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
                     }
                     let mut arm_asm = snap_asm.clone();
-                    analyze_value_block(&arm.body, mode, &mut arm_scope, fn_symbols, effects, &mut arm_asm, ctx);
+                    analyze_value_block(
+                        &arm.body,
+                        mode,
+                        &mut arm_scope,
+                        fn_symbols,
+                        effects,
+                        &mut arm_asm,
+                        ctx,
+                    );
                     arm_scopes.push(arm_scope);
                 }
                 *assumptions = snap_asm;
@@ -4410,11 +4536,31 @@ fn analyze_stmts(
             }
             // A statement-position `if let Some(x) = e { out = x; }` — the if-let twin of the match arm
             // above. `then` binds the pattern (carrying the scrutinee's taint/secret); `else_` does not.
-            Stmt::ExprStmt(iflet_expr @ Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+            Stmt::ExprStmt(
+                iflet_expr @ Expr::IfLet {
+                    pattern,
+                    scrutinee,
+                    then,
+                    else_,
+                    ..
+                },
+            ) => {
                 analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-                let st = expr_taint_source_m(scrutinee, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
-                let ss = expr_secret_source_m(scrutinee, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                    .is_some();
+                let st = expr_taint_source_m(
+                    scrutinee,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                );
+                let ss = expr_secret_source_m(
+                    scrutinee,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                )
+                .is_some();
                 let snap_asm = assumptions.clone();
                 let obl_mark = ctx.solver_obligations.len();
                 let mut then_scope = scope.clone();
@@ -4424,14 +4570,35 @@ fn analyze_stmts(
                     ctx.known_bindings.insert(n);
                 }
                 let mut then_asm = snap_asm.clone();
-                analyze_value_block(then, mode, &mut then_scope, fn_symbols, effects, &mut then_asm, ctx);
+                analyze_value_block(
+                    then,
+                    mode,
+                    &mut then_scope,
+                    fn_symbols,
+                    effects,
+                    &mut then_asm,
+                    ctx,
+                );
                 let mut else_scope = scope.clone();
                 let mut else_asm = snap_asm.clone();
-                analyze_value_block(else_, mode, &mut else_scope, fn_symbols, effects, &mut else_asm, ctx);
+                analyze_value_block(
+                    else_,
+                    mode,
+                    &mut else_scope,
+                    fn_symbols,
+                    effects,
+                    &mut else_asm,
+                    ctx,
+                );
                 *assumptions = snap_asm;
                 ctx.solver_obligations.truncate(obl_mark);
                 merge_taint_over(scope, &[&then_scope, &else_scope]);
-                merge_fn_alias_over(scope, &[&then_scope, &else_scope], &ctx.param_egress, &ctx.param_sinks);
+                merge_fn_alias_over(
+                    scope,
+                    &[&then_scope, &else_scope],
+                    &ctx.param_egress,
+                    &ctx.param_sinks,
+                );
                 invalidate_embedded_writes(ctx, assumptions, iflet_expr);
                 check_expr_semantics(iflet_expr, scope, ctx);
             }
@@ -4475,8 +4642,13 @@ fn analyze_stmts(
                 // discharge calls in it too.
                 discharge_calls_in_expr(ctx, assumptions, value);
                 discharge_calls_in_expr(ctx, assumptions, target);
-                let value_taint =
-                    expr_taint_source_m(value, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
+                let value_taint = expr_taint_source_m(
+                    value,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                );
                 if let (Some(source), Expr::Var(name)) = (&value_taint, target) {
                     ctx.taint_traces.push(TaintTrace {
                         source: source.clone(),
@@ -4516,9 +4688,14 @@ fn analyze_stmts(
                 // clean/declassified. The branch/loop merge (`merge_taint_over`) refines it across
                 // control flow, exactly as for taint.
                 if let Expr::Var(name) = target {
-                    let value_secret =
-                        expr_secret_source_m(value, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                            .is_some();
+                    let value_secret = expr_secret_source_m(
+                        value,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                    )
+                    .is_some();
                     if let Some(b) = scope.get_mut(name) {
                         b.secret = value_secret;
                     }
@@ -4526,9 +4703,14 @@ fn analyze_stmts(
                     // Confidentiality dual: a non-`Var` place-assignment of a SECRET value MAY-labels the
                     // root container secret (set-only), so egressing the container is caught. Without it,
                     // `a[0] = k; send(host, port, a)` laundered the secret past ANUBIS_SECRET_EXFILTRATION.
-                    let value_secret =
-                        expr_secret_source_m(value, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                            .is_some();
+                    let value_secret = expr_secret_source_m(
+                        value,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                    )
+                    .is_some();
                     if value_secret {
                         if let Some(b) = scope.get_mut(root) {
                             b.secret = true;
@@ -4660,7 +4842,11 @@ fn analyze_stmts(
                                 // literal, a modeled float var, or a mixed expr like `7.0 + 3` that carries a
                                 // float and thus coerces at runtime) is float-modeled; an all-int value defers.
                                 ctx.solver_float_vars.insert(sym.clone());
-                                assumptions.push(format!("(= {} {})", fld, float_expr_to_smt(value)));
+                                assumptions.push(format!(
+                                    "(= {} {})",
+                                    fld,
+                                    float_expr_to_smt(value)
+                                ));
                             } else if field_string
                                 && v_ok
                                 && is_string_modelable(value, &ctx.solver_string_vars)
@@ -4674,7 +4860,11 @@ fn analyze_stmts(
                                 // string encoder. A non-string-modelable value (a call, an unmodeled var)
                                 // defers.
                                 ctx.solver_string_vars.insert(sym.clone());
-                                assumptions.push(format!("(= {} {})", fld, string_expr_to_smt(value)));
+                                assumptions.push(format!(
+                                    "(= {} {})",
+                                    fld,
+                                    string_expr_to_smt(value)
+                                ));
                             } else {
                                 // Unmodelable / self-referencing / unstable value → field UNMODELED (defer),
                                 // dropped from ALL lanes so no stale fact of any sort survives.
@@ -4789,9 +4979,10 @@ fn analyze_stmts(
                         // ORIGINAL container hid the new closure's captured secret from the egress check
                         // (soundness hunt2: reassigned struct-field / list-element closure laundered a leak).
                         let new_fclos: BTreeMap<String, Box<Expr>> = match value {
-                            Expr::Var(v) => {
-                                scope.get(v).map(|b| b.field_closures.clone()).unwrap_or_default()
-                            }
+                            Expr::Var(v) => scope
+                                .get(v)
+                                .map(|b| b.field_closures.clone())
+                                .unwrap_or_default(),
                             _ => {
                                 let mut m = BTreeMap::new();
                                 collect_container_closures(value, "", scope, &mut m);
@@ -4843,7 +5034,14 @@ fn analyze_stmts(
                 // Jif/FlowCaml version). Fires once per guarded assignment; a var that IS already secret is
                 // fine (the label is preserved).
                 if mode == Mode::Safe
-                    && expr_secret_source_m(cond, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some()
+                    && expr_secret_source_m(
+                        cond,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                    )
+                    .is_some()
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(then, &mut assigned);
@@ -4908,7 +5106,7 @@ fn analyze_stmts(
                         fn_symbols,
                         effects,
                         assumptions,
-                        ctx
+                        ctx,
                     );
                     scope.clone()
                 } else {
@@ -4925,7 +5123,12 @@ fn analyze_stmts(
                 // discarded — so `let f = safe; if c { f = leak; } f(k)` resolved `f` to `safe` and
                 // laundered the secret past the interproc egress/sink check. Shared with the loop and
                 // statement-`match` joins via `merge_fn_alias_over`.
-                merge_fn_alias_over(scope, &[&then_scope, &else_scope], &ctx.param_egress, &ctx.param_sinks);
+                merge_fn_alias_over(
+                    scope,
+                    &[&then_scope, &else_scope],
+                    &ctx.param_egress,
+                    &ctx.param_sinks,
+                );
                 let else_slice: &[Stmt] = else_.as_deref().unwrap_or(&[]);
                 drop_written_after_scope(ctx, assumptions, snapshot, &[then, else_slice]);
                 // Path conditions are scoped to the branches: restore the pre-`if` guard stack.
@@ -4966,7 +5169,15 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                );
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -5022,10 +5233,18 @@ fn analyze_stmts(
                 // binder was inserted `tainted: false`, so `let o = Some(input()); while let Some(v) = o {
                 // write_file(v) }` laundered untrusted stdin to disk (the isomorphic `if let` was caught).
                 let wl_taint = expr_taint_source_m(
-                    expr, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns,
+                    expr,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
                 );
                 let wl_secret = expr_secret_source_m(
-                    expr, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns,
+                    expr,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
                 )
                 .is_some();
                 // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
@@ -5072,7 +5291,15 @@ fn analyze_stmts(
                     invalidate_binding_facts(ctx, assumptions, n);
                 }
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                );
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -5102,7 +5329,15 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 let snap_scope = scope.clone();
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                );
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -5275,10 +5510,11 @@ fn analyze_stmts(
                         } else {
                             ctx.diagnostics.push(SemanticDiagnostic {
                                 code: Some("ANUBIS_LOOP_INVARIANT_UNVERIFIABLE".into()),
-                                message: "a `for` invariant over a collection is verified only for a \
+                                message:
+                                    "a `for` invariant over a collection is verified only for a \
                                      BOUNDED modeled sequence (a `let`-bound array literal); an \
                                      unbounded/parameter collection keeps the honest rejection"
-                                    .into(),
+                                        .into(),
                                 span: None,
                             });
                             None
@@ -5321,23 +5557,39 @@ fn analyze_stmts(
                     }
                 }
                 let taint_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => {
-                        expr_taint_source_m(start, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns)
-                    }
-                    crate::frontend::ForSource::Collection { expr } => {
-                        expr_taint_source_m(expr, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns)
-                    }
+                    crate::frontend::ForSource::Range { start, .. } => expr_taint_source_m(
+                        start,
+                        scope,
+                        &ctx.tainting_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_tainting_fns,
+                    ),
+                    crate::frontend::ForSource::Collection { expr } => expr_taint_source_m(
+                        expr,
+                        scope,
+                        &ctx.tainting_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_tainting_fns,
+                    ),
                 };
                 // Confidentiality dual: iterating a secret collection binds a secret element.
                 let secret_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => {
-                        expr_secret_source_m(start, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                            .is_some()
-                    }
-                    crate::frontend::ForSource::Collection { expr } => {
-                        expr_secret_source_m(expr, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                            .is_some()
-                    }
+                    crate::frontend::ForSource::Range { start, .. } => expr_secret_source_m(
+                        start,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                    )
+                    .is_some(),
+                    crate::frontend::ForSource::Collection { expr } => expr_secret_source_m(
+                        expr,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                    )
+                    .is_some(),
                 };
                 // The loop variable is a fresh in-scope binding for the body's analysis. A range
                 // loop (`for i in a..b`) binds a number; a collection loop (`for x in xs`) binds an
@@ -5383,7 +5635,15 @@ fn analyze_stmts(
                 let snapshot = assumptions.clone();
                 invalidate_binding_facts(ctx, assumptions, var);
                 havoc_loop_written(ctx, assumptions, body);
-                seed_loop_carried_labels(body, scope, &ctx.tainting_fns, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_tainting_fns, &ctx.method_secret_fns);
+                seed_loop_carried_labels(
+                    body,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                );
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -5679,9 +5939,13 @@ fn analyze_expr_effect(
             if is_sink(sink_callee) {
                 effects.push(format!("sink:{}", sink_callee));
                 for arg in args {
-                    if let Some(source) =
-                        expr_taint_source_m(arg, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns)
-                    {
+                    if let Some(source) = expr_taint_source_m(
+                        arg,
+                        scope,
+                        &ctx.tainting_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_tainting_fns,
+                    ) {
                         let declassified = expr_is_declassified(arg, scope);
                         ctx.taint_traces.push(TaintTrace {
                             source: source.clone(),
@@ -5711,9 +5975,13 @@ fn analyze_expr_effect(
             // `is_sink` so it also covers egress builtins (`http_post`, `connect`) not in that set.
             if mode == Mode::Safe && is_egress_sink(sink_callee) {
                 for arg in args {
-                    if let Some(source) =
-                        expr_secret_source_m(arg, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                    {
+                    if let Some(source) = expr_secret_source_m(
+                        arg,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                    ) {
                         ctx.emit(
                             SemanticDiagnostic {
                                 code: Some("ANUBIS_SECRET_EXFILTRATION".into()),
@@ -5773,7 +6041,9 @@ fn analyze_expr_effect(
                                     span: None,
                                 });
                             }
-                        } else if let Some((params, body)) = resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda) {
+                        } else if let Some((params, body)) =
+                            resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda)
+                        {
                             // hunt2 [07]: the callee APPLIES-and-sinks this formal (a closure param),
                             // so a closure passed here leaks iff its BODY reads a tainted capture. The
                             // arg VALUE is a plain closure (no taint source) — inspect the body under a
@@ -5840,7 +6110,9 @@ fn analyze_expr_effect(
                                     },
                                     false,
                                 );
-                            } else if let Some((params, body)) = resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda) {
+                            } else if let Some((params, body)) =
+                                resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda)
+                            {
                                 // hunt2 [06]: the callee APPLIES-and-egresses this formal (a closure
                                 // param), so a closure passed here exfiltrates iff its BODY reads a
                                 // secret capture. The arg VALUE is a plain closure (no secret source)
@@ -5896,9 +6168,23 @@ fn analyze_expr_effect(
                             continue;
                         }
                         if elem_taint.is_none() {
-                            elem_taint = expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
+                            elem_taint = expr_taint_source_m(
+                                a,
+                                scope,
+                                &ctx.tainting_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_tainting_fns,
+                            );
                         }
-                        if expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some() {
+                        if expr_secret_source_m(
+                            a,
+                            scope,
+                            &ctx.secret_fns,
+                            &ctx.param_return_taint,
+                            &ctx.method_secret_fns,
+                        )
+                        .is_some()
+                        {
                             elem_secret = true;
                         }
                     }
@@ -5907,7 +6193,9 @@ fn analyze_expr_effect(
                     // var-bound closure's body is enforced too (it otherwise laundered its taint/effect).
                     let resolved: Option<&Expr> = match args.get(i) {
                         Some(l @ Expr::Lambda { .. }) => Some(l),
-                        Some(Expr::Var(g)) => scope.get(g).and_then(|b| b.closure_lambda.as_deref()),
+                        Some(Expr::Var(g)) => {
+                            scope.get(g).and_then(|b| b.closure_lambda.as_deref())
+                        }
                         _ => None,
                     };
                     if let Some(Expr::Lambda { params, body }) = resolved {
@@ -5915,7 +6203,12 @@ fn analyze_expr_effect(
                         for p in params {
                             local.insert(
                                 p.clone(),
-                                labelled_param_binding(p, elem_taint.is_some(), elem_taint.clone(), elem_secret),
+                                labelled_param_binding(
+                                    p,
+                                    elem_taint.is_some(),
+                                    elem_taint.clone(),
+                                    elem_secret,
+                                ),
                             );
                         }
                         analyze_expr_effect(body, mode, &local, effects, ctx);
@@ -5947,7 +6240,8 @@ fn analyze_expr_effect(
                                     });
                                 }
                             }
-                            if mode == Mode::Safe && elem_secret
+                            if mode == Mode::Safe
+                                && elem_secret
                                 && ctx.param_egress.get(fname).is_some_and(|s| !s.is_empty())
                             {
                                 ctx.emit(
@@ -5991,8 +6285,21 @@ fn analyze_expr_effect(
                     for (j, p) in params.iter().enumerate() {
                         let (pt, ps) = match args.get(j) {
                             Some(a) => (
-                                expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns),
-                                expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some(),
+                                expr_taint_source_m(
+                                    a,
+                                    scope,
+                                    &ctx.tainting_fns,
+                                    &ctx.param_return_taint,
+                                    &ctx.method_tainting_fns,
+                                ),
+                                expr_secret_source_m(
+                                    a,
+                                    scope,
+                                    &ctx.secret_fns,
+                                    &ctx.param_return_taint,
+                                    &ctx.method_secret_fns,
+                                )
+                                .is_some(),
                             ),
                             None => (None, false),
                         };
@@ -6014,9 +6321,9 @@ fn analyze_expr_effect(
                 for i in applied {
                     let resolved: Option<Expr> = match args.get(i) {
                         Some(l @ Expr::Lambda { .. }) => Some(l.clone()),
-                        Some(Expr::Var(g)) => {
-                            scope.get(g).and_then(|b| b.closure_lambda.as_deref().cloned())
-                        }
+                        Some(Expr::Var(g)) => scope
+                            .get(g)
+                            .and_then(|b| b.closure_lambda.as_deref().cloned()),
                         _ => None,
                     };
                     if let Some(Expr::Lambda { params, body }) = resolved {
@@ -6091,7 +6398,9 @@ fn analyze_expr_effect(
         // (the sink check inside then resolves the inner clean binding, not the outer labelled one).
         // The `if` condition and match guards ARE walked for effects (a sink in a guard/cond is a real
         // effect) — unlike the value walkers, which ignore them because they are control, not value.
-        Expr::If { cond, then, else_, .. } => {
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             analyze_expr_effect(cond, mode, scope, effects, ctx);
             analyze_expr_effect(then, mode, scope, effects, ctx);
             analyze_expr_effect(else_, mode, scope, effects, ctx);
@@ -6100,9 +6409,21 @@ fn analyze_expr_effect(
             scrutinee, arms, ..
         } => {
             analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-            let st = expr_taint_source_m(scrutinee, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
-            let ss = expr_secret_source_m(scrutinee, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                .is_some();
+            let st = expr_taint_source_m(
+                scrutinee,
+                scope,
+                &ctx.tainting_fns,
+                &ctx.param_return_taint,
+                &ctx.method_tainting_fns,
+            );
+            let ss = expr_secret_source_m(
+                scrutinee,
+                scope,
+                &ctx.secret_fns,
+                &ctx.param_return_taint,
+                &ctx.method_secret_fns,
+            )
+            .is_some();
             for arm in arms {
                 let mut local = scope.clone();
                 seed_effect_pattern(&mut local, &arm.pattern, &st, ss);
@@ -6121,9 +6442,21 @@ fn analyze_expr_effect(
             ..
         } => {
             analyze_expr_effect(scrutinee, mode, scope, effects, ctx);
-            let st = expr_taint_source_m(scrutinee, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
-            let ss = expr_secret_source_m(scrutinee, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                .is_some();
+            let st = expr_taint_source_m(
+                scrutinee,
+                scope,
+                &ctx.tainting_fns,
+                &ctx.param_return_taint,
+                &ctx.method_tainting_fns,
+            );
+            let ss = expr_secret_source_m(
+                scrutinee,
+                scope,
+                &ctx.secret_fns,
+                &ctx.param_return_taint,
+                &ctx.method_secret_fns,
+            )
+            .is_some();
             let mut local = scope.clone();
             seed_effect_pattern(&mut local, pattern, &st, ss);
             propagate_pattern_closures(&mut local, scrutinee, pattern);
@@ -6231,12 +6564,28 @@ fn analyze_expr_effect(
                             for (j, p) in params.iter().enumerate() {
                                 let (pt, ps) = match args.get(j) {
                                     Some(a) => (
-                                        expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns),
-                                        expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some(),
+                                        expr_taint_source_m(
+                                            a,
+                                            scope,
+                                            &ctx.tainting_fns,
+                                            &ctx.param_return_taint,
+                                            &ctx.method_tainting_fns,
+                                        ),
+                                        expr_secret_source_m(
+                                            a,
+                                            scope,
+                                            &ctx.secret_fns,
+                                            &ctx.param_return_taint,
+                                            &ctx.method_secret_fns,
+                                        )
+                                        .is_some(),
                                     ),
                                     None => (None, false),
                                 };
-                                local.insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
+                                local.insert(
+                                    p.clone(),
+                                    labelled_param_binding(p, pt.is_some(), pt, ps),
+                                );
                             }
                             analyze_expr_effect(body, mode, &local, effects, ctx);
                         }
@@ -6274,8 +6623,9 @@ fn analyze_expr_effect(
                 // base resolves to a binding whose `field_closures` holds this field (a real stored
                 // closure), so a genuine method call is unaffected.
                 if let Expr::Var(bname) = base.as_ref() {
-                    if let Some(lam) =
-                        scope.get(bname).and_then(|b| b.field_closures.get(field).cloned())
+                    if let Some(lam) = scope
+                        .get(bname)
+                        .and_then(|b| b.field_closures.get(field).cloned())
                     {
                         if let Expr::Lambda { params, body } = lam.as_ref() {
                             let mut local = scope.clone();
@@ -6285,12 +6635,28 @@ fn analyze_expr_effect(
                             for (j, p) in params.iter().enumerate() {
                                 let (pt, ps) = match args.get(j) {
                                     Some(a) => (
-                                        expr_taint_source_m(a, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns),
-                                        expr_secret_source_m(a, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some(),
+                                        expr_taint_source_m(
+                                            a,
+                                            scope,
+                                            &ctx.tainting_fns,
+                                            &ctx.param_return_taint,
+                                            &ctx.method_tainting_fns,
+                                        ),
+                                        expr_secret_source_m(
+                                            a,
+                                            scope,
+                                            &ctx.secret_fns,
+                                            &ctx.param_return_taint,
+                                            &ctx.method_secret_fns,
+                                        )
+                                        .is_some(),
                                     ),
                                     None => (None, false),
                                 };
-                                local.insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
+                                local.insert(
+                                    p.clone(),
+                                    labelled_param_binding(p, pt.is_some(), pt, ps),
+                                );
                             }
                             analyze_expr_effect(body, mode, &local, effects, ctx);
                         }
@@ -6538,9 +6904,21 @@ fn walk_block_effects(
             }
             Stmt::LetPattern { pattern, init, .. } => {
                 analyze_expr_effect(init, mode, scope, effects, ctx);
-                let t = expr_taint_source_m(init, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
-                let s = expr_secret_source_m(init, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                    .is_some();
+                let t = expr_taint_source_m(
+                    init,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                );
+                let s = expr_secret_source_m(
+                    init,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                )
+                .is_some();
                 seed_effect_pattern(scope, pattern, &t, s);
             }
             Stmt::Assign {
@@ -6548,9 +6926,21 @@ fn walk_block_effects(
                 value,
             } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
-                let t = expr_taint_source_m(value, scope, &ctx.tainting_fns, &ctx.param_return_taint, &ctx.method_tainting_fns);
-                let s = expr_secret_source_m(value, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns)
-                    .is_some();
+                let t = expr_taint_source_m(
+                    value,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                );
+                let s = expr_secret_source_m(
+                    value,
+                    scope,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_secret_fns,
+                )
+                .is_some();
                 if let Some(b) = scope.get_mut(name) {
                     b.info.tainted = t.is_some();
                     if t.is_some() {
@@ -6574,7 +6964,14 @@ fn walk_block_effects(
                 // top-level function bodies; this path fires for lambda bodies reached
                 // via the #65 HOF descent / #47 var-bound closure descent).
                 if mode == Mode::Safe
-                    && expr_secret_source_m(cond, scope, &ctx.secret_fns, &ctx.param_return_taint, &ctx.method_secret_fns).is_some()
+                    && expr_secret_source_m(
+                        cond,
+                        scope,
+                        &ctx.secret_fns,
+                        &ctx.param_return_taint,
+                        &ctx.method_secret_fns,
+                    )
+                    .is_some()
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(then, &mut assigned);
@@ -6619,9 +7016,7 @@ fn walk_block_effects(
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
-            Stmt::For {
-                source, body, ..
-            } => {
+            Stmt::For { source, body, .. } => {
                 match source {
                     crate::frontend::ForSource::Range { start, end } => {
                         analyze_expr_effect(start, mode, scope, effects, ctx);
@@ -6703,11 +7098,10 @@ pub struct SymbolicEngine;
 impl SymbolicEngine {
     /// Returns usable SMT-LIB path constraints (ready for Z3 or other solver).
     pub fn generate_constraints(source: &str) -> Vec<String> {
-        let ast = crate::frontend::parse_source(source)
-            .unwrap_or(crate::frontend::AST {
-                items: vec![],
-                ..Default::default()
-            });
+        let ast = crate::frontend::parse_source(source).unwrap_or(crate::frontend::AST {
+            items: vec![],
+            ..Default::default()
+        });
         let ir = typecheck(ast, Mode::Safe).unwrap_or_else(|_| empty_ir());
         ir.constraints
     }
@@ -7263,7 +7657,11 @@ fn native_shadow_compare(smt: &str, z3_ans: Option<&str>) {
     };
     if let Ok(path) = std::env::var("ANUBIS_NATIVE_SHADOW_LOG") {
         use std::io::Write as _;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{outcome}");
         }
     }
@@ -7643,7 +8041,8 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
         // unmodelable, so an assert over i64::MIN was silently DROPPED (a value certified `!= itself`).
         // Magnitudes STRICTLY above 2^63 stay unmodelable (genuinely f64 at runtime → fail-open).
         Expr::Unary { op, expr }
-            if op == "-" && matches!(expr.as_ref(), Expr::Literal(l) if l == "9223372036854775808") =>
+            if op == "-"
+                && matches!(expr.as_ref(), Expr::Literal(l) if l == "9223372036854775808") =>
         {
             true
         }
@@ -7721,9 +8120,8 @@ fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
             // (fail-open), so this can only strengthen checking, never over-reject an unseeded field.
             Expr::Var(v) => int_vars.contains(&mangle_field(v, field)),
             // NESTED `p.a.b`: resolve the whole field path (the `Var` arm is the single-level `p.a`).
-            Expr::FieldAccess { .. } => {
-                field_access_symbol(base).is_some_and(|bs| int_vars.contains(&mangle_field(&bs, field)))
-            }
+            Expr::FieldAccess { .. } => field_access_symbol(base)
+                .is_some_and(|bs| int_vars.contains(&mangle_field(&bs, field))),
             _ => false,
         },
         // A bare array literal is a sequence value, not an integer — not int-modelable.
@@ -7804,9 +8202,10 @@ fn body_asserts_over_int_params(body: &[Stmt], params: &[(String, String)]) -> b
                 | Stmt::Loop { body, .. }
                 | Stmt::ResearchBlock { body, .. }
                 | Stmt::ExploitBlock { body, .. } => walk(body, cand),
-                Stmt::HybridBlock { gpu, cpu, prove } => {
-                    [gpu, cpu, prove].into_iter().flatten().any(|b| walk(b, cand))
-                }
+                Stmt::HybridBlock { gpu, cpu, prove } => [gpu, cpu, prove]
+                    .into_iter()
+                    .flatten()
+                    .any(|b| walk(b, cand)),
                 _ => false,
             };
             if hit {
@@ -7914,7 +8313,8 @@ fn is_float_modelable(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
         // field constrained by a `requires`). Mirrors the int/string field arms.
         Expr::FieldAccess { base, field, .. } => {
             // Single-level `p.a` OR nested `p.a.b` — resolve the whole field path to its symbol.
-            field_access_symbol(base).is_some_and(|bs| float_vars.contains(&mangle_field(&bs, field)))
+            field_access_symbol(base)
+                .is_some_and(|bs| float_vars.contains(&mangle_field(&bs, field)))
         }
         _ => false,
     }
@@ -7960,9 +8360,9 @@ fn int_chain_exact(e: &Expr) -> Option<i64> {
             };
             exact(v)
         }
-        Expr::Unary { op, expr } if op == "-" => {
-            int_chain_exact(expr).and_then(|v| v.checked_neg()).and_then(exact)
-        }
+        Expr::Unary { op, expr } if op == "-" => int_chain_exact(expr)
+            .and_then(|v| v.checked_neg())
+            .and_then(exact),
         _ => None,
     }
 }
@@ -8089,9 +8489,8 @@ fn is_genuinely_float(e: &Expr, float_vars: &BTreeSet<String>) -> bool {
         }
         Expr::Unary { expr, .. } => is_genuinely_float(expr, float_vars),
         Expr::Declassify { inner, .. } => is_genuinely_float(inner, float_vars),
-        Expr::FieldAccess { base, field, .. } => {
-            field_access_symbol(base).is_some_and(|bs| float_vars.contains(&mangle_field(&bs, field)))
-        }
+        Expr::FieldAccess { base, field, .. } => field_access_symbol(base)
+            .is_some_and(|bs| float_vars.contains(&mangle_field(&bs, field))),
         _ => false,
     }
 }
@@ -8247,7 +8646,8 @@ fn is_string_modelable(e: &Expr, string_vars: &BTreeSet<String>) -> bool {
         // field constrained by a `requires`). Mirrors the int/float field arms.
         Expr::FieldAccess { base, field, .. } => {
             // Single-level `p.a` OR nested `p.a.b` — resolve the whole field path to its symbol.
-            field_access_symbol(base).is_some_and(|bs| string_vars.contains(&mangle_field(&bs, field)))
+            field_access_symbol(base)
+                .is_some_and(|bs| string_vars.contains(&mangle_field(&bs, field)))
         }
         Expr::Declassify { inner, .. } => is_string_modelable(inner, string_vars),
         _ => false,
@@ -8327,7 +8727,11 @@ fn string_expr_to_smt(e: &Expr) -> String {
         // Phase-3 str.++: string concat (gated by is_string_modelable's Binary `+` arm — both operands
         // string-modelable). Total on reachable exprs; a non-string operand can never arrive here.
         Expr::Binary { op, lhs, rhs } if op == "+" => {
-            format!("(str.++ {} {})", string_expr_to_smt(lhs), string_expr_to_smt(rhs))
+            format!(
+                "(str.++ {} {})",
+                string_expr_to_smt(lhs),
+                string_expr_to_smt(rhs)
+            )
         }
         // Phase-3 str.substr (gated by is_string_modelable's `substr` arm — off/len are nonneg int
         // literals). The off/len literals encode directly as SMT-LIB Int (nonneg, fit i64).
@@ -8594,9 +8998,7 @@ fn expr_contains_substr(e: &Expr) -> bool {
     match e {
         Expr::Call { callee, args } if callee == "substr" && args.len() == 3 => true,
         Expr::Call { args, .. } => args.iter().any(expr_contains_substr),
-        Expr::Binary { lhs, rhs, .. } => {
-            expr_contains_substr(lhs) || expr_contains_substr(rhs)
-        }
+        Expr::Binary { lhs, rhs, .. } => expr_contains_substr(lhs) || expr_contains_substr(rhs),
         Expr::Unary { expr, .. } => expr_contains_substr(expr),
         Expr::Declassify { inner, .. } => expr_contains_substr(inner),
         _ => false,
@@ -8686,7 +9088,12 @@ fn fact_is_string(smt: &str, string_vars: &BTreeSet<String>) -> bool {
 /// were declined — which SILENTLY DROPPED an `assert` over a truncated value (a green check on a
 /// contracted fn whose assert `run` violates, e.g. `let y = x as u8; assert(y == 99)` with x = 300).
 fn uint_truncate_smt(inner: &str, w: u32) -> String {
-    format!("((_ zero_extend {}) ((_ extract {} 0) {}))", 64 - w, w - 1, inner)
+    format!(
+        "((_ zero_extend {}) ((_ extract {} 0) {}))",
+        64 - w,
+        w - 1,
+        inner
+    )
 }
 
 /// Model a SIGNED narrow cast `x as iN` EXACTLY as the runtime: keep the low `w` bits and
@@ -8696,7 +9103,12 @@ fn uint_truncate_smt(inner: &str, w: u32) -> String {
 /// native-authoritative lane (safe: fail-closed) while z3 decides it in the default lane — either way
 /// the assert is now CHECKED (was silently dropped as unmodelable).
 fn sint_truncate_smt(inner: &str, w: u32) -> String {
-    format!("((_ sign_extend {}) ((_ extract {} 0) {}))", 64 - w, w - 1, inner)
+    format!(
+        "((_ sign_extend {}) ((_ extract {} 0) {}))",
+        64 - w,
+        w - 1,
+        inner
+    )
 }
 
 fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String> {
@@ -9272,7 +9684,9 @@ fn expr_tail_values_guarded(
     out: &mut Vec<(Expr, Vec<(Expr, bool)>)>,
 ) {
     match e {
-        Expr::If { cond, then, else_, .. } => {
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             let mut g_then = guards.to_vec();
             g_then.push(((**cond).clone(), false));
             expr_tail_values_guarded(then, &g_then, out);
@@ -9286,7 +9700,9 @@ fn expr_tail_values_guarded(
             expr_tail_values_guarded(then, guards, out);
             expr_tail_values_guarded(else_, guards, out);
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             for a in arms {
                 let mut g = guards.to_vec();
                 if let Some(fact) = match_arm_pattern_fact(scrutinee, &a.pattern) {
@@ -9646,9 +10062,7 @@ fn scan_forward_edges_stmts(
                 scan_forward_edges_stmts(body, pidx, out);
             }
             Stmt::Loop { body, .. } => scan_forward_edges_stmts(body, pidx, out),
-            Stmt::For {
-                source, body, ..
-            } => {
+            Stmt::For { source, body, .. } => {
                 match source {
                     ForSource::Range { start, end } => {
                         scan_forward_edges_expr(start, pidx, out);
@@ -9904,7 +10318,11 @@ fn push_ensures_obligations(
                 strings: false,
                 guard_assumptions: ctx.active_branch_guards.clone(),
             });
-        } else if is_bool_modelable_string(&concrete, &ctx.solver_string_vars, &ctx.shadowed_string_preds) {
+        } else if is_bool_modelable_string(
+            &concrete,
+            &ctx.solver_string_vars,
+            &ctx.shadowed_string_preds,
+        ) {
             // Phase-3 QF_S: a string-equality postcondition is DISCHARGED via the string encoder, with
             // the shared `assumptions` channel sort-partitioned to STRING facts (a string `requires`), so
             // `requires(s == "open") ensures(s == "open")` proves. All-`String` body, no sort clash.
@@ -10403,8 +10821,7 @@ fn collect_struct_write_disqualified(body: &[Stmt], out: &mut BTreeSet<String>) 
                 // target sub-expression) that hides an embedded write is still scanned and disqualifies. The
                 // PREFIX-CONFLICT gate (computed in analyze_function) additionally disqualifies a base with
                 // prefix-related write paths (`p.a` + `p.a.b`), where an intermediate reassign would stale a leaf.
-                let safe_field_write =
-                    field_place_path(target).is_some_and(|(_, p)| !p.is_empty());
+                let safe_field_write = field_place_path(target).is_some_and(|(_, p)| !p.is_empty());
                 if !safe_field_write {
                     if let Some(r) = assign_target_root(target) {
                         out.insert(r.to_string());
@@ -10585,7 +11002,9 @@ fn note_shadowed_lets(body: &[Stmt], seen: &mut BTreeSet<String>, out: &mut BTre
                     note_shadowed_lets(e, seen, out);
                 }
             }
-            Stmt::For { var, source, body, .. } => {
+            Stmt::For {
+                var, source, body, ..
+            } => {
                 if !seen.insert(var.clone()) {
                     out.insert(var.clone());
                 }
@@ -10602,7 +11021,11 @@ fn note_shadowed_lets(body: &[Stmt], seen: &mut BTreeSet<String>, out: &mut BTre
                 note_expr(cond, seen, out);
                 note_shadowed_lets(body, seen, out);
             }
-            Stmt::WhileLet { pattern, expr, body } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
                 for n in pattern.bound_names() {
                     if !seen.insert(n.clone()) {
                         out.insert(n);
@@ -10863,7 +11286,11 @@ fn drop_written_after_scope(
 /// then certifies. Mirror the straight-line reassignment invalidation (clear modelability — INT and float
 /// — and drop the stale fact) but do NOT re-establish: the write is path-dependent (it fires on only one
 /// arm/branch), so no unconditional fact can replace the dropped one. The variable falls to the runtime.
-fn invalidate_embedded_writes(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, expr: &Expr) {
+fn invalidate_embedded_writes(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    expr: &Expr,
+) {
     let mut written = BTreeSet::new();
     expr_assigned_roots(expr, &mut written);
     for root in &written {
@@ -10929,8 +11356,7 @@ fn expr_escapes_loop(e: &Expr) -> bool {
             expr_escapes_loop(callee) || args.iter().any(expr_escapes_loop)
         }
         Expr::Block { stmts, tail } => {
-            stmts.iter().any(stmt_escapes_loop)
-                || tail.as_deref().is_some_and(expr_escapes_loop)
+            stmts.iter().any(stmt_escapes_loop) || tail.as_deref().is_some_and(expr_escapes_loop)
         }
         Expr::If {
             cond, then, else_, ..
@@ -10941,7 +11367,9 @@ fn expr_escapes_loop(e: &Expr) -> bool {
             else_,
             ..
         } => expr_escapes_loop(scrutinee) || expr_escapes_loop(then) || expr_escapes_loop(else_),
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             expr_escapes_loop(scrutinee)
                 || arms.iter().any(|a| {
                     a.guard.as_ref().is_some_and(expr_escapes_loop) || expr_escapes_loop(&a.body)
@@ -11147,8 +11575,7 @@ fn verify_while_invariants(
     let outer_assumptions: Vec<String> = outer_assumptions
         .iter()
         .filter(|a| {
-            !fact_is_float(a, &ctx.solver_float_vars)
-                && !fact_is_string(a, &ctx.solver_string_vars)
+            !fact_is_float(a, &ctx.solver_float_vars) && !fact_is_string(a, &ctx.solver_string_vars)
         })
         .cloned()
         .collect();
@@ -11422,7 +11849,10 @@ fn verify_while_invariants_float(
     }
     for inv in invariants {
         if !is_bool_modelable_float(inv, &model_vars) {
-            reject(ctx, "an invariant is not a float formula the solver can model");
+            reject(
+                ctx,
+                "an invariant is not a float formula the solver can model",
+            );
             return None;
         }
     }
@@ -11462,7 +11892,8 @@ fn verify_while_invariants_float(
     }
 
     // TRANSITION: the straight-line float effect of one iteration on the tracked variables.
-    let transition = match extract_loop_transition(body, &tracked, &model_vars, &is_float_modelable) {
+    let transition = match extract_loop_transition(body, &tracked, &model_vars, &is_float_modelable)
+    {
         Some(t) => t,
         None => {
             reject(ctx, "the loop body is not straight-line float assignments");
@@ -12006,7 +12437,9 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
         // Typed `?` propagation: `r?` unwraps `Option<T>`/`Result<T, E>` to its Ok/Some type `T`, so a
         // `let x: WrongT = r?` mismatch is caught when `r`'s type is known. (Residual: `f()?` where the
         // callee's return type is not inferable in this scope-only inferer — no fn-return table here.)
-        Expr::Try(inner) => infer_expr_type_scoped(inner, scope).and_then(|t| ty::try_unwrap_ok(&t)),
+        Expr::Try(inner) => {
+            infer_expr_type_scoped(inner, scope).and_then(|t| ty::try_unwrap_ok(&t))
+        }
         Expr::TaintSource { .. } => Some("tainted<string>".into()),
         Expr::Literal(s) if s == "true" || s == "false" => Some("bool".into()),
         // Integer literal (i64, or a u64 bit-pattern for magnitudes above i64::MAX) → the
@@ -12072,7 +12505,8 @@ fn infer_expr_type_scoped(expr: &Expr, scope: &BTreeMap<String, ScopeBinding>) -
                 // integer slot. Otherwise propagate the (integer) operand type.
                 let lt = infer_expr_type_scoped(lhs, scope);
                 let rt = infer_expr_type_scoped(rhs, scope);
-                if lt.as_deref().is_some_and(is_float_ty) || rt.as_deref().is_some_and(is_float_ty) {
+                if lt.as_deref().is_some_and(is_float_ty) || rt.as_deref().is_some_and(is_float_ty)
+                {
                     Some("f64".into())
                 } else {
                     lt.or(rt)
@@ -12563,7 +12997,8 @@ fn check_expr_semantics(
             // fail-closed toward accept. ENFORCING (`shadow_gated=false`): the corpus shadow diff is
             // UNEXPECTED=0 — no existing program triggers it (verified across examples, fixtures, and
             // the self-host source), so it fires only on the `EXPECT: FAIL` generic-conflict fixture.
-            if let Some((param, first, second)) = generic_conflict_scoped(callee, args, scope, ctx) {
+            if let Some((param, first, second)) = generic_conflict_scoped(callee, args, scope, ctx)
+            {
                 ctx.emit(
                     SemanticDiagnostic {
                         code: Some("ANUBIS_GENERIC_CONFLICT".into()),
@@ -12583,7 +13018,9 @@ fn check_expr_semantics(
             // committed program declares a bounded generic, so the shadow diff was UNEXPECTED=0 and the
             // verdict-diff is 0-flip. The self-host schema ignores `generic_bounds`, so the fixpoint is
             // unmoved (checker-only field, absorbed by `..` in `project_item`).
-            if let Some((generic, concrete, tr)) = bound_unsatisfied_scoped(callee, args, scope, ctx) {
+            if let Some((generic, concrete, tr)) =
+                bound_unsatisfied_scoped(callee, args, scope, ctx)
+            {
                 ctx.emit(
                     SemanticDiagnostic {
                         code: Some("ANUBIS_TRAIT_BOUND_UNSATISFIED".into()),
@@ -12783,7 +13220,11 @@ fn check_expr_semantics(
                 let is_scalar_prim = |t: &str| {
                     ty::is_numeric(t) || matches!(ty::normalize(t).as_str(), "string" | "bool")
                 };
-                let declared = ctx.struct_fields.get(name).and_then(|m| m.get(fname)).cloned();
+                let declared = ctx
+                    .struct_fields
+                    .get(name)
+                    .and_then(|m| m.get(fname))
+                    .cloned();
                 if let Some(declared) = declared {
                     if is_scalar_prim(&declared) {
                         if let Some(got) = infer_expr_type_scoped(fexpr, scope) {
@@ -12845,7 +13286,10 @@ fn check_expr_semantics(
         Expr::Try(inner) => {
             check_expr_semantics(inner, scope, ctx);
             // `return_container_kind` yields a `&'static str`, so this holds no borrow of `ctx`.
-            let ret_kind = ctx.current_fn_return.as_deref().and_then(return_container_kind);
+            let ret_kind = ctx
+                .current_fn_return
+                .as_deref()
+                .and_then(return_container_kind);
             if let Some(ret_kind) = ret_kind {
                 let op_kind = try_operand_kind_scoped(inner, scope, ctx);
                 if let Some(op_kind) = op_kind {
@@ -13059,8 +13503,20 @@ fn seed_loop_carried_labels(
     let bound = scope.len() + 2;
     for _ in 0..bound {
         let mut c = scope.clone();
-        walk_block_taint(body, &mut c, tainting_fns, param_return_taint, method_tainting_fns);
-        walk_block_secret(body, &mut c, secret_fns, param_return_taint, method_secret_fns);
+        walk_block_taint(
+            body,
+            &mut c,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        );
+        walk_block_secret(
+            body,
+            &mut c,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        );
         let mut changed = false;
         let names: Vec<String> = c.keys().cloned().collect();
         for n in names {
@@ -13097,15 +13553,36 @@ fn walk_block_taint(
     for stmt in stmts {
         match stmt {
             Stmt::Let {
-                name, ty, init, span,
+                name,
+                ty,
+                init,
+                span,
             } => {
-                seed_one_let(name, ty.as_deref(), init, local, tainting_fns, param_return_taint, method_tainting_fns);
+                seed_one_let(
+                    name,
+                    ty.as_deref(),
+                    init,
+                    local,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 if let Some(b) = local.get_mut(name) {
                     b.info.span = Some((span.start, span.end));
                 }
             }
-            Stmt::LetPattern { pattern, init, span } => {
-                let label = expr_taint_source_m(init, local, tainting_fns, param_return_taint, method_tainting_fns);
+            Stmt::LetPattern {
+                pattern,
+                init,
+                span,
+            } => {
+                let label = expr_taint_source_m(
+                    init,
+                    local,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 seed_taint_pattern(local, pattern, &label);
                 for n in pattern.bound_names() {
                     if let Some(b) = local.get_mut(&n) {
@@ -13117,7 +13594,13 @@ fn walk_block_taint(
                 target: Expr::Var(name),
                 value,
             } => {
-                let label = expr_taint_source_m(value, local, tainting_fns, param_return_taint, method_tainting_fns);
+                let label = expr_taint_source_m(
+                    value,
+                    local,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 if let Some(b) = local.get_mut(name) {
                     b.info.tainted = label.is_some();
                     if label.is_some() {
@@ -13130,9 +13613,13 @@ fn walk_block_taint(
                 // Value-position dual of the statement-level place-assignment fix: a non-`Var` target
                 // (`buf[0] = k` inside a value block) MAY-taints the root container binding (set-only).
                 if let Some(root) = assign_target_root(target) {
-                    if let Some(src) =
-                        expr_taint_source_m(value, local, tainting_fns, param_return_taint, method_tainting_fns)
-                    {
+                    if let Some(src) = expr_taint_source_m(
+                        value,
+                        local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    ) {
                         if let Some(b) = local.get_mut(root) {
                             b.info.tainted = true;
                             b.info.taint_source = Some(src);
@@ -13143,10 +13630,22 @@ fn walk_block_taint(
             }
             Stmt::If { then, else_, .. } => {
                 let mut then_c = local.clone();
-                walk_block_taint(then, &mut then_c, tainting_fns, param_return_taint, method_tainting_fns);
+                walk_block_taint(
+                    then,
+                    &mut then_c,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 let else_c = if let Some(eb) = else_ {
                     let mut c = local.clone();
-                    walk_block_taint(eb, &mut c, tainting_fns, param_return_taint, method_tainting_fns);
+                    walk_block_taint(
+                        eb,
+                        &mut c,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    );
                     c
                 } else {
                     local.clone()
@@ -13156,7 +13655,13 @@ fn walk_block_taint(
             Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
                 let snap = local.clone();
                 let mut body_c = local.clone();
-                walk_block_taint(body, &mut body_c, tainting_fns, param_return_taint, method_tainting_fns);
+                walk_block_taint(
+                    body,
+                    &mut body_c,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 merge_taint_over(local, &[&snap, &body_c]);
             }
             Stmt::WhileLet { pattern, body, .. } => {
@@ -13164,19 +13669,33 @@ fn walk_block_taint(
                 let mut body_c = local.clone();
                 // Oracle seeds `while let` pattern vars CLEAN (analyze_stmts WhileLet arm).
                 seed_taint_pattern(&mut body_c, pattern, &None);
-                walk_block_taint(body, &mut body_c, tainting_fns, param_return_taint, method_tainting_fns);
+                walk_block_taint(
+                    body,
+                    &mut body_c,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 merge_taint_over(local, &[&snap, &body_c]);
             }
             Stmt::For {
                 var, body, source, ..
             } => {
                 let taint_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => {
-                        expr_taint_source_m(start, local, tainting_fns, param_return_taint, method_tainting_fns)
-                    }
-                    crate::frontend::ForSource::Collection { expr } => {
-                        expr_taint_source_m(expr, local, tainting_fns, param_return_taint, method_tainting_fns)
-                    }
+                    crate::frontend::ForSource::Range { start, .. } => expr_taint_source_m(
+                        start,
+                        local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    ),
+                    crate::frontend::ForSource::Collection { expr } => expr_taint_source_m(
+                        expr,
+                        local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    ),
                 };
                 let snap = local.clone();
                 let mut body_c = local.clone();
@@ -13199,7 +13718,13 @@ fn walk_block_taint(
                         secret: false,
                     },
                 );
-                walk_block_taint(body, &mut body_c, tainting_fns, param_return_taint, method_tainting_fns);
+                walk_block_taint(
+                    body,
+                    &mut body_c,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 merge_taint_over(local, &[&snap, &body_c]);
             }
             // A statement-position `match` / `if let` INSIDE a value-position block reassigning an outer
@@ -13207,30 +13732,68 @@ fn walk_block_taint(
             // (hunt wf_5b2a1bcc). Without it, `let out = match s { _ => { let mut y=0; match i { _ => { y =
             // input(); } }; y } }; sink(out)` laundered the taint (the arm reassignment was dropped by the
             // former `_ => {}`). Arm bodies are Blocks; a bare-expr arm cannot reassign an outer var.
-            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
-                let st = expr_taint_source_m(scrutinee, local, tainting_fns, param_return_taint, method_tainting_fns);
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
+                let st = expr_taint_source_m(
+                    scrutinee,
+                    local,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 let mut arm_cs = Vec::new();
                 for arm in arms {
                     let mut c = local.clone();
                     seed_taint_pattern(&mut c, &arm.pattern, &st);
                     if let Expr::Block { stmts, .. } = &arm.body {
-                        walk_block_taint(stmts, &mut c, tainting_fns, param_return_taint, method_tainting_fns);
+                        walk_block_taint(
+                            stmts,
+                            &mut c,
+                            tainting_fns,
+                            param_return_taint,
+                            method_tainting_fns,
+                        );
                     }
                     arm_cs.push(c);
                 }
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_cs.iter().collect();
                 merge_taint_over(local, &refs);
             }
-            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
-                let st = expr_taint_source_m(scrutinee, local, tainting_fns, param_return_taint, method_tainting_fns);
+            Stmt::ExprStmt(Expr::IfLet {
+                pattern,
+                scrutinee,
+                then,
+                else_,
+                ..
+            }) => {
+                let st = expr_taint_source_m(
+                    scrutinee,
+                    local,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 let mut then_c = local.clone();
                 seed_taint_pattern(&mut then_c, pattern, &st);
                 if let Expr::Block { stmts, .. } = then.as_ref() {
-                    walk_block_taint(stmts, &mut then_c, tainting_fns, param_return_taint, method_tainting_fns);
+                    walk_block_taint(
+                        stmts,
+                        &mut then_c,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    );
                 }
                 let mut else_c = local.clone();
                 if let Expr::Block { stmts, .. } = else_.as_ref() {
-                    walk_block_taint(stmts, &mut else_c, tainting_fns, param_return_taint, method_tainting_fns);
+                    walk_block_taint(
+                        stmts,
+                        &mut else_c,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    );
                 }
                 merge_taint_over(local, &[&then_c, &else_c]);
             }
@@ -13240,10 +13803,15 @@ fn walk_block_taint(
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
             {
                 if let Some(root) = assign_target_root(&args[0]) {
-                    if let Some(src) = args[1..]
-                        .iter()
-                        .find_map(|a| expr_taint_source_m(a, local, tainting_fns, param_return_taint, method_tainting_fns))
-                    {
+                    if let Some(src) = args[1..].iter().find_map(|a| {
+                        expr_taint_source_m(
+                            a,
+                            local,
+                            tainting_fns,
+                            param_return_taint,
+                            method_tainting_fns,
+                        )
+                    }) {
                         if let Some(b) = local.get_mut(root) {
                             b.info.tainted = true;
                             b.info.taint_source = Some(src);
@@ -13270,15 +13838,37 @@ fn walk_block_secret(
     for stmt in stmts {
         match stmt {
             Stmt::Let {
-                name, ty, init, span,
+                name,
+                ty,
+                init,
+                span,
             } => {
-                seed_one_let_secret(name, ty.as_deref(), init, local, secret_fns, param_return_taint, method_secret_fns);
+                seed_one_let_secret(
+                    name,
+                    ty.as_deref(),
+                    init,
+                    local,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                );
                 if let Some(b) = local.get_mut(name) {
                     b.info.span = Some((span.start, span.end));
                 }
             }
-            Stmt::LetPattern { pattern, init, span } => {
-                let secret = expr_secret_source_m(init, local, secret_fns, param_return_taint, method_secret_fns).is_some();
+            Stmt::LetPattern {
+                pattern,
+                init,
+                span,
+            } => {
+                let secret = expr_secret_source_m(
+                    init,
+                    local,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
+                .is_some();
                 seed_secret_pattern(local, pattern, secret);
                 for n in pattern.bound_names() {
                     if let Some(b) = local.get_mut(&n) {
@@ -13290,7 +13880,14 @@ fn walk_block_secret(
                 target: Expr::Var(name),
                 value,
             } => {
-                let secret = expr_secret_source_m(value, local, secret_fns, param_return_taint, method_secret_fns).is_some();
+                let secret = expr_secret_source_m(
+                    value,
+                    local,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
+                .is_some();
                 if let Some(b) = local.get_mut(name) {
                     b.secret = secret;
                 }
@@ -13299,7 +13896,15 @@ fn walk_block_secret(
                 // Value-position dual: a non-`Var` place-assignment of a secret MAY-labels the root
                 // container secret (set-only).
                 if let Some(root) = assign_target_root(target) {
-                    if expr_secret_source_m(value, local, secret_fns, param_return_taint, method_secret_fns).is_some() {
+                    if expr_secret_source_m(
+                        value,
+                        local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                    .is_some()
+                    {
                         if let Some(b) = local.get_mut(root) {
                             b.secret = true;
                         }
@@ -13308,10 +13913,22 @@ fn walk_block_secret(
             }
             Stmt::If { then, else_, .. } => {
                 let mut then_c = local.clone();
-                walk_block_secret(then, &mut then_c, secret_fns, param_return_taint, method_secret_fns);
+                walk_block_secret(
+                    then,
+                    &mut then_c,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                );
                 let else_c = if let Some(eb) = else_ {
                     let mut c = local.clone();
-                    walk_block_secret(eb, &mut c, secret_fns, param_return_taint, method_secret_fns);
+                    walk_block_secret(
+                        eb,
+                        &mut c,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    );
                     c
                 } else {
                     local.clone()
@@ -13321,26 +13938,48 @@ fn walk_block_secret(
             Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
                 let snap = local.clone();
                 let mut body_c = local.clone();
-                walk_block_secret(body, &mut body_c, secret_fns, param_return_taint, method_secret_fns);
+                walk_block_secret(
+                    body,
+                    &mut body_c,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                );
                 merge_taint_over(local, &[&snap, &body_c]);
             }
             Stmt::WhileLet { pattern, body, .. } => {
                 let snap = local.clone();
                 let mut body_c = local.clone();
                 seed_secret_pattern(&mut body_c, pattern, false);
-                walk_block_secret(body, &mut body_c, secret_fns, param_return_taint, method_secret_fns);
+                walk_block_secret(
+                    body,
+                    &mut body_c,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                );
                 merge_taint_over(local, &[&snap, &body_c]);
             }
             Stmt::For {
                 var, body, source, ..
             } => {
                 let secret_src = match source {
-                    crate::frontend::ForSource::Range { start, .. } => {
-                        expr_secret_source_m(start, local, secret_fns, param_return_taint, method_secret_fns).is_some()
-                    }
-                    crate::frontend::ForSource::Collection { expr } => {
-                        expr_secret_source_m(expr, local, secret_fns, param_return_taint, method_secret_fns).is_some()
-                    }
+                    crate::frontend::ForSource::Range { start, .. } => expr_secret_source_m(
+                        start,
+                        local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                    .is_some(),
+                    crate::frontend::ForSource::Collection { expr } => expr_secret_source_m(
+                        expr,
+                        local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                    .is_some(),
                 };
                 let snap = local.clone();
                 let mut body_c = local.clone();
@@ -13363,35 +14002,81 @@ fn walk_block_secret(
                         secret: secret_src,
                     },
                 );
-                walk_block_secret(body, &mut body_c, secret_fns, param_return_taint, method_secret_fns);
+                walk_block_secret(
+                    body,
+                    &mut body_c,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                );
                 merge_taint_over(local, &[&snap, &body_c]);
             }
             // Statement-position `match` / `if let` inside a value block reassigning an outer var in an arm
             // — the confidentiality dual of the `walk_block_taint` arms (hunt wf_e67160a7).
-            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
-                let ss = expr_secret_source_m(scrutinee, local, secret_fns, param_return_taint, method_secret_fns).is_some();
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
+                let ss = expr_secret_source_m(
+                    scrutinee,
+                    local,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
+                .is_some();
                 let mut arm_cs = Vec::new();
                 for arm in arms {
                     let mut c = local.clone();
                     seed_secret_pattern(&mut c, &arm.pattern, ss);
                     if let Expr::Block { stmts, .. } = &arm.body {
-                        walk_block_secret(stmts, &mut c, secret_fns, param_return_taint, method_secret_fns);
+                        walk_block_secret(
+                            stmts,
+                            &mut c,
+                            secret_fns,
+                            param_return_taint,
+                            method_secret_fns,
+                        );
                     }
                     arm_cs.push(c);
                 }
                 let refs: Vec<&BTreeMap<String, ScopeBinding>> = arm_cs.iter().collect();
                 merge_taint_over(local, &refs);
             }
-            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
-                let ss = expr_secret_source_m(scrutinee, local, secret_fns, param_return_taint, method_secret_fns).is_some();
+            Stmt::ExprStmt(Expr::IfLet {
+                pattern,
+                scrutinee,
+                then,
+                else_,
+                ..
+            }) => {
+                let ss = expr_secret_source_m(
+                    scrutinee,
+                    local,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
+                .is_some();
                 let mut then_c = local.clone();
                 seed_secret_pattern(&mut then_c, pattern, ss);
                 if let Expr::Block { stmts, .. } = then.as_ref() {
-                    walk_block_secret(stmts, &mut then_c, secret_fns, param_return_taint, method_secret_fns);
+                    walk_block_secret(
+                        stmts,
+                        &mut then_c,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    );
                 }
                 let mut else_c = local.clone();
                 if let Expr::Block { stmts, .. } = else_.as_ref() {
-                    walk_block_secret(stmts, &mut else_c, secret_fns, param_return_taint, method_secret_fns);
+                    walk_block_secret(
+                        stmts,
+                        &mut else_c,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    );
                 }
                 merge_taint_over(local, &[&then_c, &else_c]);
             }
@@ -13400,10 +14085,16 @@ fn walk_block_secret(
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
             {
                 if let Some(root) = assign_target_root(&args[0]) {
-                    if args[1..]
-                        .iter()
-                        .any(|a| expr_secret_source_m(a, local, secret_fns, param_return_taint, method_secret_fns).is_some())
-                    {
+                    if args[1..].iter().any(|a| {
+                        expr_secret_source_m(
+                            a,
+                            local,
+                            secret_fns,
+                            param_return_taint,
+                            method_secret_fns,
+                        )
+                        .is_some()
+                    }) {
                         if let Some(b) = local.get_mut(root) {
                             b.secret = true;
                         }
@@ -13460,13 +14151,29 @@ fn expr_taint_source_m(
             .get(name)
             .and_then(|binding| binding.info.taint_source.clone())
             .filter(|_| scope.get(name).is_some_and(|binding| binding.info.tainted)),
-        Expr::Binary { lhs, rhs, .. } => {
-            expr_taint_source_m(lhs, scope, tainting_fns, param_return_taint, method_tainting_fns)
-                .or_else(|| expr_taint_source_m(rhs, scope, tainting_fns, param_return_taint, method_tainting_fns))
-        }
-        Expr::Unary { expr, .. } => {
-            expr_taint_source_m(expr, scope, tainting_fns, param_return_taint, method_tainting_fns)
-        }
+        Expr::Binary { lhs, rhs, .. } => expr_taint_source_m(
+            lhs,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        )
+        .or_else(|| {
+            expr_taint_source_m(
+                rhs,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+        }),
+        Expr::Unary { expr, .. } => expr_taint_source_m(
+            expr,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        ),
         Expr::Call { callee, args } => {
             // C4: an I/O read is itself a taint source (untrusted input), even with clean args.
             if is_io_taint_source(callee) {
@@ -13476,8 +14183,15 @@ fn expr_taint_source_m(
             } else if let Some(rets) = param_return_taint.get(callee) {
                 // Known user function: only params that the summary says reach the return.
                 rets.iter().find_map(|&i| {
-                    args.get(i)
-                        .and_then(|a| expr_taint_source_m(a, scope, tainting_fns, param_return_taint, method_tainting_fns))
+                    args.get(i).and_then(|a| {
+                        expr_taint_source_m(
+                            a,
+                            scope,
+                            tainting_fns,
+                            param_return_taint,
+                            method_tainting_fns,
+                        )
+                    })
                 })
             } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
                 // Task #48-g: a LOCAL CLOSURE's RESULT carries the taint of its body's RETURNED value,
@@ -13496,9 +14210,18 @@ fn expr_taint_source_m(
                     expr_tail_values(body, &mut tails);
                     // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
                     let __subst = closure_body_let_subst(body);
-                    let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
+                    let tails: Vec<Expr> = tails
+                        .into_iter()
+                        .map(|t| substitute_vars(&t, &__subst))
+                        .collect();
                     tails.iter().find_map(|t| {
-                        expr_taint_source_m(t, &inner, tainting_fns, param_return_taint, method_tainting_fns)
+                        expr_taint_source_m(
+                            t,
+                            &inner,
+                            tainting_fns,
+                            param_return_taint,
+                            method_tainting_fns,
+                        )
                     })
                 } else {
                     None
@@ -13514,7 +14237,13 @@ fn expr_taint_source_m(
                     })
                     .or_else(|| {
                         args.iter().find_map(|arg| {
-                            expr_taint_source_m(arg, scope, tainting_fns, param_return_taint, method_tainting_fns)
+                            expr_taint_source_m(
+                                arg,
+                                scope,
+                                tainting_fns,
+                                param_return_taint,
+                                method_tainting_fns,
+                            )
                         })
                     })
             } else if scope.get(callee).is_some_and(|b| b.info.tainted) {
@@ -13527,16 +14256,31 @@ fn expr_taint_source_m(
                     .or_else(|| Some(format!("captured tainted value in closure `{callee}`")))
             } else {
                 // Builtin / not-yet-summarized: any tainted argument taints the call (conservative).
-                args.iter()
-                    .find_map(|arg| expr_taint_source_m(arg, scope, tainting_fns, param_return_taint, method_tainting_fns))
+                args.iter().find_map(|arg| {
+                    expr_taint_source_m(
+                        arg,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    )
+                })
             }
         }
-        Expr::Tainted { inner, .. } => {
-            expr_taint_source_m(inner, scope, tainting_fns, param_return_taint, method_tainting_fns)
-        }
-        Expr::Assume(inner) | Expr::Assert(inner) => {
-            expr_taint_source_m(inner, scope, tainting_fns, param_return_taint, method_tainting_fns)
-        }
+        Expr::Tainted { inner, .. } => expr_taint_source_m(
+            inner,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        ),
+        Expr::Assume(inner) | Expr::Assert(inner) => expr_taint_source_m(
+            inner,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        ),
         Expr::Declassify {
             inner,
             policy,
@@ -13546,7 +14290,13 @@ fn expr_taint_source_m(
             if declassify_wellformed(policy, reason) {
                 None // cleared
             } else {
-                expr_taint_source_m(inner, scope, tainting_fns, param_return_taint, method_tainting_fns)
+                expr_taint_source_m(
+                    inner,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                )
             }
         }
         Expr::TaintSource { label } => Some(label.clone()),
@@ -13560,34 +14310,88 @@ fn expr_taint_source_m(
         // tainted — only a binding whose own `let`/param annotation (or tainted initializer) seeded it
         // tainted propagates here, matching how every other walker in this file treats field/struct
         // definitions as opaque to flow analysis.
-        Expr::Index { base, index } => {
-            expr_taint_source_m(base, scope, tainting_fns, param_return_taint, method_tainting_fns)
-                .or_else(|| expr_taint_source_m(index, scope, tainting_fns, param_return_taint, method_tainting_fns))
-        }
-        Expr::FieldAccess { base, .. } => {
-            expr_taint_source_m(base, scope, tainting_fns, param_return_taint, method_tainting_fns)
-        }
+        Expr::Index { base, index } => expr_taint_source_m(
+            base,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        )
+        .or_else(|| {
+            expr_taint_source_m(
+                index,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+        }),
+        Expr::FieldAccess { base, .. } => expr_taint_source_m(
+            base,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        ),
         // A cast reinterprets a value without changing its provenance — `secret as u64` is still the
         // secret. Without this arm, `sink(s as u64)` (and `return s as u64` interprocedurally)
         // laundered taint through the cast (adversary-found fail-open, both intra- and inter-procedural).
-        Expr::Cast { expr, .. } => expr_taint_source_m(expr, scope, tainting_fns, param_return_taint, method_tainting_fns),
+        Expr::Cast { expr, .. } => expr_taint_source_m(
+            expr,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        ),
         // Composite value propagation: a container/aggregate carries taint if ANY sub-expression it is
         // built from does. Without these, `sink([tainted])` / `sink(Struct{f: tainted})` /
         // `sink(Enum::V(tainted))` / `sink({k: tainted})` laundered taint through the aggregate — an
         // adversary-shaped bypass (the composite-laundering boundary the review confirmed, closed here
         // symmetrically with the secrecy dual and the interprocedural param-flow summary).
-        Expr::ArrayLiteral { elements } => elements
-            .iter()
-            .find_map(|e| expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns)),
-        Expr::StructLiteral { fields, .. } => fields
-            .iter()
-            .find_map(|(_, e)| expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns)),
-        Expr::EnumConstruct { fields, .. } => fields
-            .iter()
-            .find_map(|e| expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns)),
+        Expr::ArrayLiteral { elements } => elements.iter().find_map(|e| {
+            expr_taint_source_m(
+                e,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+        }),
+        Expr::StructLiteral { fields, .. } => fields.iter().find_map(|(_, e)| {
+            expr_taint_source_m(
+                e,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+        }),
+        Expr::EnumConstruct { fields, .. } => fields.iter().find_map(|e| {
+            expr_taint_source_m(
+                e,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+        }),
         Expr::MapLiteral { entries, .. } => entries.iter().find_map(|(k, v)| {
-            expr_taint_source_m(k, scope, tainting_fns, param_return_taint, method_tainting_fns)
-                .or_else(|| expr_taint_source_m(v, scope, tainting_fns, param_return_taint, method_tainting_fns))
+            expr_taint_source_m(
+                k,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+            .or_else(|| {
+                expr_taint_source_m(
+                    v,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                )
+            })
         }),
         // A capturing closure IS a tainted VALUE (integrity dual of the secret Lambda arm) — labeling
         // the lambda literal lets the existing value-flow track it through struct fields, dicts, fn
@@ -13632,18 +14436,43 @@ fn expr_taint_source_m(
         // dropped and a laundered value read clean.
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
-            walk_block_taint(stmts, &mut local, tainting_fns, param_return_taint, method_tainting_fns);
-            tail.as_ref()
-                .and_then(|t| expr_taint_source_m(t, &local, tainting_fns, param_return_taint, method_tainting_fns))
+            walk_block_taint(
+                stmts,
+                &mut local,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            );
+            tail.as_ref().and_then(|t| {
+                expr_taint_source_m(
+                    t,
+                    &local,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                )
+            })
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            let scrut = expr_taint_source_m(scrutinee, scope, tainting_fns, param_return_taint, method_tainting_fns);
+            let scrut = expr_taint_source_m(
+                scrutinee,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            );
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
                 seed_taint_pattern(&mut local, &arm.pattern, &scrut);
-                expr_taint_source_m(&arm.body, &local, tainting_fns, param_return_taint, method_tainting_fns)
+                expr_taint_source_m(
+                    &arm.body,
+                    &local,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                )
             })
         }
         Expr::IfLet {
@@ -13653,18 +14482,56 @@ fn expr_taint_source_m(
             else_,
             ..
         } => {
-            let scrut = expr_taint_source_m(scrutinee, scope, tainting_fns, param_return_taint, method_tainting_fns);
+            let scrut = expr_taint_source_m(
+                scrutinee,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            );
             let mut local = scope.clone();
             seed_taint_pattern(&mut local, pattern, &scrut);
-            expr_taint_source_m(then, &local, tainting_fns, param_return_taint, method_tainting_fns)
-                .or_else(|| expr_taint_source_m(else_, scope, tainting_fns, param_return_taint, method_tainting_fns))
+            expr_taint_source_m(
+                then,
+                &local,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+            .or_else(|| {
+                expr_taint_source_m(
+                    else_,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                )
+            })
         }
-        Expr::If { then, else_, .. } => {
-            expr_taint_source_m(then, scope, tainting_fns, param_return_taint, method_tainting_fns)
-                .or_else(|| expr_taint_source_m(else_, scope, tainting_fns, param_return_taint, method_tainting_fns))
-        }
+        Expr::If { then, else_, .. } => expr_taint_source_m(
+            then,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        )
+        .or_else(|| {
+            expr_taint_source_m(
+                else_,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+        }),
         // `expr?` unwraps Ok/Some to the inner value, which carries the same provenance (no binding).
-        Expr::Try(inner) => expr_taint_source_m(inner, scope, tainting_fns, param_return_taint, method_tainting_fns),
+        Expr::Try(inner) => expr_taint_source_m(
+            inner,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        ),
         // A method/closure application (`x.clone()`, `f(a)`) may carry the taint of its receiver/callee
         // or any argument — conservatively surface the first tainted sub-expression (the symmetric
         // intra-procedural twin of the `CallExpr` arm in `expr_param_return_flow`, so `s.clone()` does
@@ -13676,8 +14543,11 @@ fn expr_taint_source_m(
             // laundered the captured tainted value past ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY. Resolve
             // the stored lambda from the base binding's `field_closures` and read its tail values in
             // the caller scope minus the lambda params.
-            let stored_closure = flatten_access_path(callee)
-                .and_then(|(root, path)| scope.get(&root).and_then(|b| b.field_closures.get(&path).cloned()));
+            let stored_closure = flatten_access_path(callee).and_then(|(root, path)| {
+                scope
+                    .get(&root)
+                    .and_then(|b| b.field_closures.get(&path).cloned())
+            });
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
                 for p in params {
@@ -13688,9 +14558,18 @@ fn expr_taint_source_m(
                 expr_tail_values(body, &mut tails);
                 // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
                 let __subst = closure_body_let_subst(body);
-                let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
+                let tails: Vec<Expr> = tails
+                    .into_iter()
+                    .map(|t| substitute_vars(&t, &__subst))
+                    .collect();
                 if let Some(s) = tails.iter().find_map(|t| {
-                    expr_taint_source_m(t, &inner, tainting_fns, param_return_taint, method_tainting_fns)
+                    expr_taint_source_m(
+                        t,
+                        &inner,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    )
                 }) {
                     return Some(s);
                 }
@@ -13702,9 +14581,23 @@ fn expr_taint_source_m(
                     return Some(format!("return value of method `{field}`"));
                 }
             }
-            expr_taint_source_m(callee, scope, tainting_fns, param_return_taint, method_tainting_fns).or_else(|| {
-                args.iter()
-                    .find_map(|a| expr_taint_source_m(a, scope, tainting_fns, param_return_taint, method_tainting_fns))
+            expr_taint_source_m(
+                callee,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+            )
+            .or_else(|| {
+                args.iter().find_map(|a| {
+                    expr_taint_source_m(
+                        a,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    )
+                })
             })
         }
         _ => None,
@@ -13796,8 +14689,15 @@ fn expr_secret_source_m(
             } else if let Some(rets) = param_return_taint.get(callee) {
                 // Known user function: only params the summary says reach the return carry secrecy.
                 rets.iter().find_map(|&i| {
-                    args.get(i)
-                        .and_then(|a| expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns))
+                    args.get(i).and_then(|a| {
+                        expr_secret_source_m(
+                            a,
+                            scope,
+                            secret_fns,
+                            param_return_taint,
+                            method_secret_fns,
+                        )
+                    })
                 })
             } else if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
                 // Task #48-g (secret dual, keeps parity with `expr_taint_source_m`): a LOCAL CLOSURE's
@@ -13814,9 +14714,18 @@ fn expr_secret_source_m(
                     expr_tail_values(body, &mut tails);
                     // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
                     let __subst = closure_body_let_subst(body);
-                    let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
+                    let tails: Vec<Expr> = tails
+                        .into_iter()
+                        .map(|t| substitute_vars(&t, &__subst))
+                        .collect();
                     tails.iter().find_map(|t| {
-                        expr_secret_source_m(t, &inner, secret_fns, param_return_taint, method_secret_fns)
+                        expr_secret_source_m(
+                            t,
+                            &inner,
+                            secret_fns,
+                            param_return_taint,
+                            method_secret_fns,
+                        )
                     })
                 } else {
                     None
@@ -13835,7 +14744,13 @@ fn expr_secret_source_m(
                     })
                     .or_else(|| {
                         args.iter().find_map(|a| {
-                            expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns)
+                            expr_secret_source_m(
+                                a,
+                                scope,
+                                secret_fns,
+                                param_return_taint,
+                                method_secret_fns,
+                            )
                         })
                     })
             } else if scope.get(callee).is_some_and(|b| b.secret) {
@@ -13847,32 +14762,87 @@ fn expr_secret_source_m(
                 Some(format!("captured secret in closure `{callee}`"))
             } else {
                 // Builtin / not-yet-summarized: any secret argument is conservative.
-                args.iter()
-                    .find_map(|a| expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns))
+                args.iter().find_map(|a| {
+                    expr_secret_source_m(
+                        a,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                })
             }
         }
-        Expr::Binary { lhs, rhs, .. } => {
-            expr_secret_source_m(lhs, scope, secret_fns, param_return_taint, method_secret_fns)
-                .or_else(|| expr_secret_source_m(rhs, scope, secret_fns, param_return_taint, method_secret_fns))
-        }
-        Expr::Unary { expr, .. } => expr_secret_source_m(expr, scope, secret_fns, param_return_taint, method_secret_fns),
-        Expr::Index { base, index } => {
-            expr_secret_source_m(base, scope, secret_fns, param_return_taint, method_secret_fns)
-                .or_else(|| expr_secret_source_m(index, scope, secret_fns, param_return_taint, method_secret_fns))
-        }
-        Expr::FieldAccess { base, .. } => {
-            expr_secret_source_m(base, scope, secret_fns, param_return_taint, method_secret_fns)
-        }
-        Expr::Cast { expr, .. } => expr_secret_source_m(expr, scope, secret_fns, param_return_taint, method_secret_fns),
+        Expr::Binary { lhs, rhs, .. } => expr_secret_source_m(
+            lhs,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        )
+        .or_else(|| {
+            expr_secret_source_m(
+                rhs,
+                scope,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            )
+        }),
+        Expr::Unary { expr, .. } => expr_secret_source_m(
+            expr,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        ),
+        Expr::Index { base, index } => expr_secret_source_m(
+            base,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        )
+        .or_else(|| {
+            expr_secret_source_m(
+                index,
+                scope,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            )
+        }),
+        Expr::FieldAccess { base, .. } => expr_secret_source_m(
+            base,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        ),
+        Expr::Cast { expr, .. } => expr_secret_source_m(
+            expr,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        ),
         // Faithful mirror of `expr_taint_source`'s `Tainted` arm: unwrap the marker to keep tracking
         // provenance (defensive — the parser does not currently emit `Expr::Tainted`, but the taint
         // dual has this arm, so the confidentiality side keeps it symmetric).
-        Expr::Tainted { inner, .. } => {
-            expr_secret_source_m(inner, scope, secret_fns, param_return_taint, method_secret_fns)
-        }
-        Expr::Assume(inner) | Expr::Assert(inner) => {
-            expr_secret_source_m(inner, scope, secret_fns, param_return_taint, method_secret_fns)
-        }
+        Expr::Tainted { inner, .. } => expr_secret_source_m(
+            inner,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        ),
+        Expr::Assume(inner) | Expr::Assert(inner) => expr_secret_source_m(
+            inner,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        ),
         Expr::Declassify {
             inner,
             policy,
@@ -13882,23 +14852,37 @@ fn expr_secret_source_m(
             if declassify_wellformed(policy, reason) {
                 None // released — dual of the taint declassify clear
             } else {
-                expr_secret_source_m(inner, scope, secret_fns, param_return_taint, method_secret_fns)
+                expr_secret_source_m(
+                    inner,
+                    scope,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
             }
         }
         // Composite / control-flow value propagation — the confidentiality dual of the same arms on
         // `expr_taint_source`: a secret stashed in a container, or a branch of a match/if, carries.
-        Expr::ArrayLiteral { elements } => elements
-            .iter()
-            .find_map(|e| expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns)),
-        Expr::StructLiteral { fields, .. } => fields
-            .iter()
-            .find_map(|(_, e)| expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns)),
-        Expr::EnumConstruct { fields, .. } => fields
-            .iter()
-            .find_map(|e| expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns)),
+        Expr::ArrayLiteral { elements } => elements.iter().find_map(|e| {
+            expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns)
+        }),
+        Expr::StructLiteral { fields, .. } => fields.iter().find_map(|(_, e)| {
+            expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns)
+        }),
+        Expr::EnumConstruct { fields, .. } => fields.iter().find_map(|e| {
+            expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns)
+        }),
         Expr::MapLiteral { entries, .. } => entries.iter().find_map(|(k, v)| {
             expr_secret_source_m(k, scope, secret_fns, param_return_taint, method_secret_fns)
-                .or_else(|| expr_secret_source_m(v, scope, secret_fns, param_return_taint, method_secret_fns))
+                .or_else(|| {
+                    expr_secret_source_m(
+                        v,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                })
         }),
         // A capturing closure IS a secret VALUE — its captures hold the secret. Labeling a lambda
         // literal itself makes the EXISTING container/field/param/return value-flow track it wherever
@@ -13936,19 +14920,38 @@ fn expr_secret_source_m(
         // same value-position nested-control-flow fail-open on the confidentiality side.
         Expr::Block { stmts, tail } => {
             let mut local = scope.clone();
-            walk_block_secret(stmts, &mut local, secret_fns, param_return_taint, method_secret_fns);
-            tail.as_ref()
-                .and_then(|t| expr_secret_source_m(t, &local, secret_fns, param_return_taint, method_secret_fns))
+            walk_block_secret(
+                stmts,
+                &mut local,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            );
+            tail.as_ref().and_then(|t| {
+                expr_secret_source_m(t, &local, secret_fns, param_return_taint, method_secret_fns)
+            })
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            let scrut =
-                expr_secret_source_m(scrutinee, scope, secret_fns, param_return_taint, method_secret_fns).is_some();
+            let scrut = expr_secret_source_m(
+                scrutinee,
+                scope,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            )
+            .is_some();
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
                 seed_secret_pattern(&mut local, &arm.pattern, scrut);
-                expr_secret_source_m(&arm.body, &local, secret_fns, param_return_taint, method_secret_fns)
+                expr_secret_source_m(
+                    &arm.body,
+                    &local,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
             })
         }
         Expr::IfLet {
@@ -13958,18 +14961,56 @@ fn expr_secret_source_m(
             else_,
             ..
         } => {
-            let scrut =
-                expr_secret_source_m(scrutinee, scope, secret_fns, param_return_taint, method_secret_fns).is_some();
+            let scrut = expr_secret_source_m(
+                scrutinee,
+                scope,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            )
+            .is_some();
             let mut local = scope.clone();
             seed_secret_pattern(&mut local, pattern, scrut);
-            expr_secret_source_m(then, &local, secret_fns, param_return_taint, method_secret_fns)
-                .or_else(|| expr_secret_source_m(else_, scope, secret_fns, param_return_taint, method_secret_fns))
+            expr_secret_source_m(
+                then,
+                &local,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            )
+            .or_else(|| {
+                expr_secret_source_m(
+                    else_,
+                    scope,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
+            })
         }
-        Expr::If { then, else_, .. } => {
-            expr_secret_source_m(then, scope, secret_fns, param_return_taint, method_secret_fns)
-                .or_else(|| expr_secret_source_m(else_, scope, secret_fns, param_return_taint, method_secret_fns))
-        }
-        Expr::Try(inner) => expr_secret_source_m(inner, scope, secret_fns, param_return_taint, method_secret_fns),
+        Expr::If { then, else_, .. } => expr_secret_source_m(
+            then,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        )
+        .or_else(|| {
+            expr_secret_source_m(
+                else_,
+                scope,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            )
+        }),
+        Expr::Try(inner) => expr_secret_source_m(
+            inner,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        ),
         // A method/closure application on a secret (`s.clone()`) may carry the secret — conservatively
         // surface the first secret sub-expression (twin of the `expr_taint_source` CallExpr arm).
         Expr::CallExpr { callee, args } => {
@@ -13982,8 +15023,11 @@ fn expr_secret_source_m(
             // the RESULT secret). Resolve the stored lambda from the base binding's `field_closures`
             // (field name, or literal element index), then read its tail values in the caller scope
             // MINUS the lambda params (so a captured secret is seen, a shadowing param is not).
-            let stored_closure = flatten_access_path(callee)
-                .and_then(|(root, path)| scope.get(&root).and_then(|b| b.field_closures.get(&path).cloned()));
+            let stored_closure = flatten_access_path(callee).and_then(|(root, path)| {
+                scope
+                    .get(&root)
+                    .and_then(|b| b.field_closures.get(&path).cloned())
+            });
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
                 for p in params {
@@ -13994,9 +15038,18 @@ fn expr_secret_source_m(
                 expr_tail_values(body, &mut tails);
                 // Fix A: resolve closure-local `let` aliases of a capture before reading the return value.
                 let __subst = closure_body_let_subst(body);
-                let tails: Vec<Expr> = tails.into_iter().map(|t| substitute_vars(&t, &__subst)).collect();
+                let tails: Vec<Expr> = tails
+                    .into_iter()
+                    .map(|t| substitute_vars(&t, &__subst))
+                    .collect();
                 if let Some(s) = tails.iter().find_map(|t| {
-                    expr_secret_source_m(t, &inner, secret_fns, param_return_taint, method_secret_fns)
+                    expr_secret_source_m(
+                        t,
+                        &inner,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
                 }) {
                     return Some(s);
                 }
@@ -14009,9 +15062,23 @@ fn expr_secret_source_m(
                     return Some(format!("return value of method `{field}`"));
                 }
             }
-            expr_secret_source_m(callee, scope, secret_fns, param_return_taint, method_secret_fns).or_else(|| {
-                args.iter()
-                    .find_map(|a| expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns))
+            expr_secret_source_m(
+                callee,
+                scope,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+            )
+            .or_else(|| {
+                args.iter().find_map(|a| {
+                    expr_secret_source_m(
+                        a,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                })
             })
         }
         _ => None,
@@ -14045,7 +15112,13 @@ fn seed_one_let(
     method_tainting_fns: &BTreeSet<String>,
 ) {
     let explicit = is_tainted_type(ty);
-    let init_taint = expr_taint_source_m(init, scope, tainting_fns, param_return_taint, method_tainting_fns);
+    let init_taint = expr_taint_source_m(
+        init,
+        scope,
+        tainting_fns,
+        param_return_taint,
+        method_tainting_fns,
+    );
     let declassified = declassify_source(init, scope, tainting_fns, param_return_taint).is_some();
     let tainted = explicit || (init_taint.is_some() && !declassified);
     let taint_source = if explicit {
@@ -14167,9 +15240,21 @@ fn seed_effect_let(
     // #67: route to the method-aware `_m` variants so a value-block-local `let x = v.key()` inside an
     // effect-analyzed block is labelled from the method return (its sole caller is the enforcing
     // walk_block_effects, so method awareness is always wanted here).
-    let init_taint = expr_taint_source_m(init, scope, tainting_fns, param_return_taint, method_tainting_fns);
-    let init_secret =
-        expr_secret_source_m(init, scope, secret_fns, param_return_taint, method_secret_fns).is_some();
+    let init_taint = expr_taint_source_m(
+        init,
+        scope,
+        tainting_fns,
+        param_return_taint,
+        method_tainting_fns,
+    );
+    let init_secret = expr_secret_source_m(
+        init,
+        scope,
+        secret_fns,
+        param_return_taint,
+        method_secret_fns,
+    )
+    .is_some();
     let declass = declassify_source(init, scope, tainting_fns, param_return_taint);
     let explicit = is_tainted_type(ty);
     // A `secret<T>` annotation on a value-position block-local `let` auto-labels it secret, mirroring
@@ -14263,7 +15348,14 @@ fn body_returns_taint(
                 let mut rets = Vec::new();
                 expr_returns(init, &mut rets);
                 if rets.iter().any(|e| {
-                    expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns).is_some()
+                    expr_taint_source_m(
+                        e,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    )
+                    .is_some()
                 }) {
                     return true;
                 }
@@ -14282,7 +15374,14 @@ fn body_returns_taint(
             Stmt::If { then, else_, .. } => {
                 // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
                 let saved = scope.clone();
-                if body_returns_taint(then, scope, tainting_fns, param_return_taint, method_tainting_fns, stmt_is_tail) {
+                if body_returns_taint(
+                    then,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                    stmt_is_tail,
+                ) {
                     return true;
                 }
                 *scope = saved.clone();
@@ -14309,7 +15408,14 @@ fn body_returns_taint(
                 // A loop/research body is never the function's implicit return value (tail = false);
                 // only an explicit `return` inside it counts. Its `let`s are block-scoped.
                 let saved = scope.clone();
-                if body_returns_taint(body, scope, tainting_fns, param_return_taint, method_tainting_fns, false) {
+                if body_returns_taint(
+                    body,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                    false,
+                ) {
                     return true;
                 }
                 *scope = saved;
@@ -14317,7 +15423,14 @@ fn body_returns_taint(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = scope.clone();
-                    if body_returns_taint(b, scope, tainting_fns, param_return_taint, method_tainting_fns, false) {
+                    if body_returns_taint(
+                        b,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                        false,
+                    ) {
                         return true;
                     }
                     *scope = saved;
@@ -14325,8 +15438,17 @@ fn body_returns_taint(
             }
             // A reassignment updates a local's taint so a later `return name` sees it — `let mut xs=[];
             // xs = [input()]; return xs` returns a tainted container (hunt wf_e67160a7 leak-return-side).
-            Stmt::Assign { target: Expr::Var(name), value } => {
-                let label = expr_taint_source_m(value, scope, tainting_fns, param_return_taint, method_tainting_fns);
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                let label = expr_taint_source_m(
+                    value,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
                 if let Some(b) = scope.get_mut(name) {
                     b.info.tainted = label.is_some();
                     if label.is_some() {
@@ -14337,7 +15459,13 @@ fn body_returns_taint(
             }
             Stmt::Assign { target, value } => {
                 if let Some(root) = assign_target_root(target) {
-                    if let Some(src) = expr_taint_source_m(value, scope, tainting_fns, param_return_taint, method_tainting_fns) {
+                    if let Some(src) = expr_taint_source_m(
+                        value,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    ) {
                         if let Some(b) = scope.get_mut(root) {
                             b.info.tainted = true;
                             b.info.taint_source = Some(src);
@@ -14351,10 +15479,15 @@ fn body_returns_taint(
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
             {
                 if let Some(root) = assign_target_root(&args[0]) {
-                    if let Some(src) = args[1..]
-                        .iter()
-                        .find_map(|a| expr_taint_source_m(a, scope, tainting_fns, param_return_taint, method_tainting_fns))
-                    {
+                    if let Some(src) = args[1..].iter().find_map(|a| {
+                        expr_taint_source_m(
+                            a,
+                            scope,
+                            tainting_fns,
+                            param_return_taint,
+                            method_tainting_fns,
+                        )
+                    }) {
                         if let Some(b) = scope.get_mut(root) {
                             b.info.tainted = true;
                             b.info.taint_source = Some(src);
@@ -14369,7 +15502,14 @@ fn body_returns_taint(
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 if rets.iter().any(|e| {
-                    expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns).is_some()
+                    expr_taint_source_m(
+                        e,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    )
+                    .is_some()
                 }) {
                     return true;
                 }
@@ -14379,8 +15519,14 @@ fn body_returns_taint(
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
                         if !is_return_call(e)
-                            && expr_taint_source_m(e, scope, tainting_fns, param_return_taint, method_tainting_fns)
-                                .is_some()
+                            && expr_taint_source_m(
+                                e,
+                                scope,
+                                tainting_fns,
+                                param_return_taint,
+                                method_tainting_fns,
+                            )
+                            .is_some()
                         {
                             return true;
                         }
@@ -14482,9 +15628,15 @@ fn fn_returns_taint(
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    body_returns_taint(body, &mut scope, tainting_fns, &empty, method_tainting_fns, true)
+    body_returns_taint(
+        body,
+        &mut scope,
+        tainting_fns,
+        &empty,
+        method_tainting_fns,
+        true,
+    )
 }
-
 
 /// Populate `ctx.tainting_fns` by a monotone fixpoint: repeatedly mark any not-yet-marked function
 /// whose return carries taint under the current summary, until no function is added. Converges in at
@@ -14535,8 +15687,15 @@ fn seed_one_let_secret(
     param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
     method_secret_fns: &BTreeSet<String>,
 ) {
-    let secret =
-        is_secret_type(ty) || expr_secret_source_m(init, scope, secret_fns, param_return_taint, method_secret_fns).is_some();
+    let secret = is_secret_type(ty)
+        || expr_secret_source_m(
+            init,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+        )
+        .is_some();
     scope.insert(
         name.to_string(),
         ScopeBinding {
@@ -14607,10 +15766,16 @@ fn body_returns_secret(
             Stmt::Let { name, ty, init, .. } => {
                 let mut rets = Vec::new();
                 expr_returns(init, &mut rets);
-                if rets
-                    .iter()
-                    .any(|e| expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns).is_some())
-                {
+                if rets.iter().any(|e| {
+                    expr_secret_source_m(
+                        e,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                    .is_some()
+                }) {
                     return true;
                 }
                 // #70: thread the (possibly non-empty for the METHOD summary) method-return set so a
@@ -14627,7 +15792,14 @@ fn body_returns_secret(
             }
             Stmt::If { then, else_, .. } => {
                 let saved = scope.clone();
-                if body_returns_secret(then, scope, secret_fns, param_return_taint, method_secret_fns, stmt_is_tail) {
+                if body_returns_secret(
+                    then,
+                    scope,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                    stmt_is_tail,
+                ) {
                     return true;
                 }
                 *scope = saved.clone();
@@ -14652,7 +15824,14 @@ fn body_returns_secret(
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let saved = scope.clone();
-                if body_returns_secret(body, scope, secret_fns, param_return_taint, method_secret_fns, false) {
+                if body_returns_secret(
+                    body,
+                    scope,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                    false,
+                ) {
                     return true;
                 }
                 *scope = saved;
@@ -14660,7 +15839,14 @@ fn body_returns_secret(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let saved = scope.clone();
-                    if body_returns_secret(b, scope, secret_fns, param_return_taint, method_secret_fns, false) {
+                    if body_returns_secret(
+                        b,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        false,
+                    ) {
                         return true;
                     }
                     *scope = saved;
@@ -14668,15 +15854,33 @@ fn body_returns_secret(
             }
             // Reassignment / container-mutation dual of `body_returns_taint` — `xs = [secret_source(..)];
             // return xs` and `push(xs, secret_source(..)); return xs` are return-secret (hunt wf_e67160a7).
-            Stmt::Assign { target: Expr::Var(name), value } => {
-                let secret = expr_secret_source_m(value, scope, secret_fns, param_return_taint, method_secret_fns).is_some();
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                let secret = expr_secret_source_m(
+                    value,
+                    scope,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                )
+                .is_some();
                 if let Some(b) = scope.get_mut(name) {
                     b.secret = secret;
                 }
             }
             Stmt::Assign { target, value } => {
                 if let Some(root) = assign_target_root(target) {
-                    if expr_secret_source_m(value, scope, secret_fns, param_return_taint, method_secret_fns).is_some() {
+                    if expr_secret_source_m(
+                        value,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                    .is_some()
+                    {
                         if let Some(b) = scope.get_mut(root) {
                             b.secret = true;
                         }
@@ -14687,10 +15891,16 @@ fn body_returns_secret(
                 if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
             {
                 if let Some(root) = assign_target_root(&args[0]) {
-                    if args[1..]
-                        .iter()
-                        .any(|a| expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns).is_some())
-                    {
+                    if args[1..].iter().any(|a| {
+                        expr_secret_source_m(
+                            a,
+                            scope,
+                            secret_fns,
+                            param_return_taint,
+                            method_secret_fns,
+                        )
+                        .is_some()
+                    }) {
                         if let Some(b) = scope.get_mut(root) {
                             b.secret = true;
                         }
@@ -14700,16 +15910,29 @@ fn body_returns_secret(
             _ => {
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
-                if rets
-                    .iter()
-                    .any(|e| expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns).is_some())
-                {
+                if rets.iter().any(|e| {
+                    expr_secret_source_m(
+                        e,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                    )
+                    .is_some()
+                }) {
                     return true;
                 }
                 if stmt_is_tail {
                     if let Stmt::ExprStmt(e) = stmt {
                         if !is_return_call(e)
-                            && expr_secret_source_m(e, scope, secret_fns, param_return_taint, method_secret_fns).is_some()
+                            && expr_secret_source_m(
+                                e,
+                                scope,
+                                secret_fns,
+                                param_return_taint,
+                                method_secret_fns,
+                            )
+                            .is_some()
                         {
                             return true;
                         }
@@ -14735,7 +15958,14 @@ fn fn_returns_secret(
     let mut scope: BTreeMap<String, ScopeBinding> = BTreeMap::new();
     seed_qualifier_params(params, &mut scope);
     let empty: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-    body_returns_secret(body, &mut scope, secret_fns, &empty, method_secret_fns, true)
+    body_returns_secret(
+        body,
+        &mut scope,
+        secret_fns,
+        &empty,
+        method_secret_fns,
+        true,
+    )
 }
 
 /// Populate `ctx.secret_fns` by a monotone fixpoint — the exact dual of `compute_tainting_fns`.
@@ -14942,11 +16172,13 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             acc.extend(expr_param_flow(e, flow));
             acc
         }),
-        Expr::MapLiteral { entries, .. } => entries.iter().fold(BTreeSet::new(), |mut acc, (k, v)| {
-            acc.extend(expr_param_flow(k, flow));
-            acc.extend(expr_param_flow(v, flow));
-            acc
-        }),
+        Expr::MapLiteral { entries, .. } => {
+            entries.iter().fold(BTreeSet::new(), |mut acc, (k, v)| {
+                acc.extend(expr_param_flow(k, flow));
+                acc.extend(expr_param_flow(v, flow));
+                acc
+            })
+        }
         // Control-flow value exprs — SCOPE-AWARE walk (see the full note on `expr_taint_source`).
         // Set-walker semantics: UNION over arms/branches; pattern vars inherit the scrutinee's
         // whole index set; a straight-line block `Assign` OVERWRITES the local clone's entry
@@ -15038,7 +16270,10 @@ fn apply_stmt_param_flow(stmt: &Stmt, local: &mut BTreeMap<String, BTreeSet<usiz
             let set = expr_param_flow(init, local);
             seed_flow_pattern(local, pattern, &set);
         }
-        Stmt::Assign { target: Expr::Var(name), value } => {
+        Stmt::Assign {
+            target: Expr::Var(name),
+            value,
+        } => {
             let set = expr_param_flow(value, local);
             local.insert(name.clone(), set);
         }
@@ -15058,7 +16293,9 @@ fn apply_stmt_param_flow(stmt: &Stmt, local: &mut BTreeMap<String, BTreeSet<usiz
                 }
             }
         }
-        Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+        Stmt::ExprStmt(Expr::Match {
+            scrutinee, arms, ..
+        }) => {
             let scrut = expr_param_flow(scrutinee, local);
             let base = local.clone();
             for arm in arms {
@@ -15072,7 +16309,13 @@ fn apply_stmt_param_flow(stmt: &Stmt, local: &mut BTreeMap<String, BTreeSet<usiz
                 union_flow_into(local, &c);
             }
         }
-        Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+        Stmt::ExprStmt(Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        }) => {
             let scrut = expr_param_flow(scrutinee, local);
             let mut c = local.clone();
             seed_flow_pattern(&mut c, pattern, &scrut);
@@ -15141,7 +16384,14 @@ fn body_param_sinks(
         match stmt {
             Stmt::Let { name, init, .. } => {
                 // A sink can hide inside the initializer (e.g. `let _ = sink(x)`).
-                collect_param_sinks_in_expr(init, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    init,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 seed_param_flow_let(name, init, flow);
                 if matches!(init, Expr::Lambda { .. }) {
                     lambdas.insert(name.clone(), init.clone());
@@ -15153,7 +16403,14 @@ fn body_param_sinks(
             // (the `collect_param_sinks_in_expr` Block arm) would drop a destructured param to `_ =>`
             // best-effort and under-approximate. Monotone add-only = fail-closed.
             Stmt::LetPattern { pattern, init, .. } => {
-                collect_param_sinks_in_expr(init, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    init,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 let set = expr_param_flow(init, flow);
                 seed_flow_pattern(flow, pattern, &set);
             }
@@ -15168,20 +16425,48 @@ fn body_param_sinks(
                 // `body_param_returns` already uses; `found` accrues unconditionally across the arm
                 // recursions (only the flow map is merged). Fail-closed: unioning over-approximates a
                 // branch-local `let` name into the outer flow — harmless (out of scope, never read).
-                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    cond,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 let saved = flow.clone();
                 let mut t = saved.clone();
-                body_param_sinks(then, &mut t, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                body_param_sinks(
+                    then,
+                    &mut t,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 let mut e = saved.clone();
                 if let Some(else_body) = else_ {
-                    body_param_sinks(else_body, &mut e, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    body_param_sinks(
+                        else_body,
+                        &mut e,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
                 }
                 *flow = saved;
                 union_flow_into(flow, &t);
                 union_flow_into(flow, &e);
             }
             Stmt::While { body, cond, .. } => {
-                collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    cond,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 // Loop-carried fixpoint: a param can migrate across iterations before reaching a post-loop
                 // SINK (`while { a=b; b=c; c=0 } send(a)` needs 2 passes for x to reach a) — iterate the
                 // body to a fixpoint (monotone union → converges), the sink-side twin of the
@@ -15189,7 +16474,14 @@ fn body_param_sinks(
                 let bound = flow.len() + 1;
                 for _ in 0..bound {
                     let mut b = flow.clone();
-                    body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    body_param_sinks(
+                        body,
+                        &mut b,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
                     let before = flow.clone();
                     union_flow_into(flow, &b);
                     if *flow == before {
@@ -15204,7 +16496,14 @@ fn body_param_sinks(
                 let bound = flow.len() + 1;
                 for _ in 0..bound {
                     let mut b = flow.clone();
-                    body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    body_param_sinks(
+                        body,
+                        &mut b,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
                     let before = flow.clone();
                     union_flow_into(flow, &b);
                     if *flow == before {
@@ -15228,7 +16527,14 @@ fn body_param_sinks(
                 for _ in 0..bound {
                     let mut b = flow.clone();
                     b.insert(var.clone(), src_flow.clone());
-                    body_param_sinks(body, &mut b, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    body_param_sinks(
+                        body,
+                        &mut b,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
                     let before = flow.clone();
                     union_flow_into(flow, &b);
                     if *flow == before {
@@ -15239,7 +16545,14 @@ fn body_param_sinks(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for b in [gpu, cpu, prove].into_iter().flatten() {
                     let mut bf = flow.clone();
-                    body_param_sinks(b, &mut bf, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    body_param_sinks(
+                        b,
+                        &mut bf,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
                     union_flow_into(flow, &bf);
                 }
             }
@@ -15250,7 +16563,14 @@ fn body_param_sinks(
                 // (`b.v = x`, `a[i] = x`) flows the RHS's params to the ROOT container/struct name, so a
                 // later read of `b.v`/`a[0]` — which flows through that root in `expr_param_flow` — sees
                 // it (`fn leak(x){ let mut b=Box{v:0}; b.v=x; send(b.v); }` else summarized non-sinking).
-                collect_param_sinks_in_expr(value, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    value,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 if let Some(root) = assign_target_root(target) {
                     let rhs = expr_param_flow(value, flow);
                     flow.entry(root.to_string()).or_default().extend(rhs);
@@ -15261,56 +16581,148 @@ fn body_param_sinks(
             // seed each arm's pattern with the scrutinee's param-flow, recurse into the arm body, and
             // may-union the arm-end flow (the interproc-summary twin of the `analyze_stmts` Match handler;
             // audit after hunt wf_e67160a7). Arm bodies are Blocks.
-            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
-                collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
+                collect_param_sinks_in_expr(
+                    scrutinee,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 let scrut = expr_param_flow(scrutinee, flow);
                 for arm in arms {
                     let mut c = flow.clone();
                     seed_flow_pattern(&mut c, &arm.pattern, &scrut);
                     match &arm.body {
                         Expr::Block { stmts, tail } => {
-                            body_param_sinks(stmts, &mut c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                            body_param_sinks(
+                                stmts,
+                                &mut c,
+                                sink_pred,
+                                known_param_sinks,
+                                known_method_param_sinks,
+                                found,
+                            );
                             if let Some(t) = tail {
-                                collect_param_sinks_in_expr(t, &c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                                collect_param_sinks_in_expr(
+                                    t,
+                                    &c,
+                                    sink_pred,
+                                    known_param_sinks,
+                                    known_method_param_sinks,
+                                    found,
+                                );
                             }
                         }
                         // A BARE-expr arm (`_ => send(x)`) can itself be a sink of a param — collect it (this
                         // is exactly the `buried_interproc_sink_through_match` case, which the former `_ =>`
                         // fallthrough handled via `collect_returns_in_stmt` + the whole-expr walk).
-                        other => collect_param_sinks_in_expr(other, &c, sink_pred, known_param_sinks, known_method_param_sinks, found),
+                        other => collect_param_sinks_in_expr(
+                            other,
+                            &c,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        ),
                     }
                     union_flow_into(flow, &c);
                 }
             }
-            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
-                collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            Stmt::ExprStmt(Expr::IfLet {
+                pattern,
+                scrutinee,
+                then,
+                else_,
+                ..
+            }) => {
+                collect_param_sinks_in_expr(
+                    scrutinee,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 let scrut = expr_param_flow(scrutinee, flow);
                 let mut c = flow.clone();
                 seed_flow_pattern(&mut c, pattern, &scrut);
                 match then.as_ref() {
                     Expr::Block { stmts, tail } => {
-                        body_param_sinks(stmts, &mut c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                        body_param_sinks(
+                            stmts,
+                            &mut c,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
                         if let Some(t) = tail {
-                            collect_param_sinks_in_expr(t, &c, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                            collect_param_sinks_in_expr(
+                                t,
+                                &c,
+                                sink_pred,
+                                known_param_sinks,
+                                known_method_param_sinks,
+                                found,
+                            );
                         }
                     }
-                    other => collect_param_sinks_in_expr(other, &c, sink_pred, known_param_sinks, known_method_param_sinks, found),
+                    other => collect_param_sinks_in_expr(
+                        other,
+                        &c,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    ),
                 }
                 union_flow_into(flow, &c);
                 let mut e2 = flow.clone();
                 match else_.as_ref() {
                     Expr::Block { stmts, tail } => {
-                        body_param_sinks(stmts, &mut e2, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                        body_param_sinks(
+                            stmts,
+                            &mut e2,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
                         if let Some(t) = tail {
-                            collect_param_sinks_in_expr(t, &e2, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                            collect_param_sinks_in_expr(
+                                t,
+                                &e2,
+                                sink_pred,
+                                known_param_sinks,
+                                known_method_param_sinks,
+                                found,
+                            );
                         }
                     }
-                    other => collect_param_sinks_in_expr(other, &e2, sink_pred, known_param_sinks, known_method_param_sinks, found),
+                    other => collect_param_sinks_in_expr(
+                        other,
+                        &e2,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    ),
                 }
                 union_flow_into(flow, &e2);
             }
             Stmt::ExprStmt(e) => {
-                collect_param_sinks_in_expr(e, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    e,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
                 // `push`/`insert` into a container flows the stored arg's params to the container ROOT, so
                 // a later `container[i]` SINK sees them — the interproc-summary analog of the intraproc
                 // container-mutation taint (`fn fwd(x){ let c=[0]; push(c,x); send(c[1]); }` else summarized
@@ -15330,7 +16742,11 @@ fn body_param_sinks(
                 // params bound to the args' param-flow, so a sink/egress buried in the closure body
                 // (`let g = ||{ send(x) }; g();`) is summarized to the enclosing param (hunt2 [13]).
                 if let Expr::Call { callee, args } = e {
-                    if let Some(Expr::Lambda { params: lp, body: lb }) = lambdas.get(callee) {
+                    if let Some(Expr::Lambda {
+                        params: lp,
+                        body: lb,
+                    }) = lambdas.get(callee)
+                    {
                         let mut inner = flow.clone();
                         for (i, p) in lp.iter().enumerate() {
                             let af = args
@@ -15339,7 +16755,14 @@ fn body_param_sinks(
                                 .unwrap_or_default();
                             inner.insert(p.clone(), af);
                         }
-                        collect_param_sinks_in_expr(lb, &inner, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                        collect_param_sinks_in_expr(
+                            lb,
+                            &inner,
+                            sink_pred,
+                            known_param_sinks,
+                            known_method_param_sinks,
+                            found,
+                        );
                     }
                 }
             }
@@ -15348,7 +16771,14 @@ fn body_param_sinks(
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 for r in rets {
-                    collect_param_sinks_in_expr(&r, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    collect_param_sinks_in_expr(
+                        &r,
+                        flow,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
                 }
             }
         }
@@ -15383,12 +16813,33 @@ fn collect_param_sinks_in_expr(
                 }
             }
             for arg in args {
-                collect_param_sinks_in_expr(arg, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    arg,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            collect_param_sinks_in_expr(lhs, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
-            collect_param_sinks_in_expr(rhs, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                lhs,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
+            collect_param_sinks_in_expr(
+                rhs,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
         }
         Expr::Unary { expr, .. }
         | Expr::Cast { expr, .. }
@@ -15396,14 +16847,42 @@ fn collect_param_sinks_in_expr(
         | Expr::Assume(expr)
         | Expr::Assert(expr)
         | Expr::FieldAccess { base: expr, .. } => {
-            collect_param_sinks_in_expr(expr, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                expr,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
         }
         Expr::Declassify { inner, .. } => {
-            collect_param_sinks_in_expr(inner, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                inner,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
         }
         Expr::Index { base, index } => {
-            collect_param_sinks_in_expr(base, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
-            collect_param_sinks_in_expr(index, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                base,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
+            collect_param_sinks_in_expr(
+                index,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
         }
         // Control-flow value exprs — SCOPE-AWARE, the param->sink SUMMARY dual of the enforcing
         // descent in `analyze_expr_effect`: a param that reaches a sink buried in a match arm / if
@@ -15412,22 +16891,64 @@ fn collect_param_sinks_in_expr(
         Expr::If {
             cond, then, else_, ..
         } => {
-            collect_param_sinks_in_expr(cond, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
-            collect_param_sinks_in_expr(then, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
-            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                cond,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
+            collect_param_sinks_in_expr(
+                then,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
+            collect_param_sinks_in_expr(
+                else_,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                scrutinee,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
             let scrut = expr_param_flow(scrutinee, flow);
             for arm in arms {
                 let mut local = flow.clone();
                 seed_flow_pattern(&mut local, &arm.pattern, &scrut);
                 if let Some(guard) = &arm.guard {
-                    collect_param_sinks_in_expr(guard, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                    collect_param_sinks_in_expr(
+                        guard,
+                        &local,
+                        sink_pred,
+                        known_param_sinks,
+                        known_method_param_sinks,
+                        found,
+                    );
                 }
-                collect_param_sinks_in_expr(&arm.body, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    &arm.body,
+                    &local,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
             }
         }
         Expr::IfLet {
@@ -15437,12 +16958,33 @@ fn collect_param_sinks_in_expr(
             else_,
             ..
         } => {
-            collect_param_sinks_in_expr(scrutinee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                scrutinee,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
             let scrut = expr_param_flow(scrutinee, flow);
             let mut local = flow.clone();
             seed_flow_pattern(&mut local, pattern, &scrut);
-            collect_param_sinks_in_expr(then, &local, sink_pred, known_param_sinks, known_method_param_sinks, found);
-            collect_param_sinks_in_expr(else_, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                then,
+                &local,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
+            collect_param_sinks_in_expr(
+                else_,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
         }
         // A value/lambda block: delegate the WHOLE statement list to `body_param_sinks` (the one stmt
         // walker that tracks local-lambda bindings and DESCENDS into an applied local closure's body),
@@ -15491,9 +17033,23 @@ fn collect_param_sinks_in_expr(
                     }
                 }
             }
-            collect_param_sinks_in_expr(callee, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+            collect_param_sinks_in_expr(
+                callee,
+                flow,
+                sink_pred,
+                known_param_sinks,
+                known_method_param_sinks,
+                found,
+            );
             for arg in args {
-                collect_param_sinks_in_expr(arg, flow, sink_pred, known_param_sinks, known_method_param_sinks, found);
+                collect_param_sinks_in_expr(
+                    arg,
+                    flow,
+                    sink_pred,
+                    known_param_sinks,
+                    known_method_param_sinks,
+                    found,
+                );
             }
         }
         _ => {}
@@ -15535,7 +17091,14 @@ fn compute_sink_summaries_joint(
                 flow.insert(p.clone(), BTreeSet::from([i]));
             }
             let mut found = BTreeSet::new();
-            body_param_sinks(body, &mut flow, sink_pred, &known_free, &known_method, &mut found);
+            body_param_sinks(
+                body,
+                &mut flow,
+                sink_pred,
+                &known_free,
+                &known_method,
+                &mut found,
+            );
             let entry = free_map.entry(name.clone()).or_default();
             for i in found {
                 if entry.insert(i) {
@@ -15551,7 +17114,14 @@ fn compute_sink_summaries_joint(
                 flow.insert(p.clone(), BTreeSet::from([i]));
             }
             let mut found = BTreeSet::new();
-            body_param_sinks(body, &mut flow, sink_pred, &known_free, &known_method, &mut found);
+            body_param_sinks(
+                body,
+                &mut flow,
+                sink_pred,
+                &known_free,
+                &known_method,
+                &mut found,
+            );
             let entry = method_map.entry(name.clone()).or_default();
             for i in found {
                 if entry.insert(i) {
@@ -15678,7 +17248,11 @@ fn expr_param_return_flow(
             arms.iter().fold(BTreeSet::new(), |mut acc, arm| {
                 let mut local = flow.clone();
                 seed_flow_pattern(&mut local, &arm.pattern, &scrut);
-                acc.extend(expr_param_return_flow(&arm.body, &local, known_param_return));
+                acc.extend(expr_param_return_flow(
+                    &arm.body,
+                    &local,
+                    known_param_return,
+                ));
                 acc
             })
         }
@@ -15763,7 +17337,11 @@ fn local_lambda_return_flow(
     known: &BTreeMap<String, BTreeSet<usize>>,
 ) -> Option<BTreeSet<usize>> {
     if let Expr::Call { callee, args } = e {
-        if let Some(Expr::Lambda { params: lp, body: lb }) = lambdas.get(callee) {
+        if let Some(Expr::Lambda {
+            params: lp,
+            body: lb,
+        }) = lambdas.get(callee)
+        {
             let mut inner = flow.clone();
             for (j, p) in lp.iter().enumerate() {
                 let af = args
@@ -15987,14 +17565,22 @@ fn body_param_returns(
             // the `Some(x)` binding, so `extract` must flow param 0 to its return. The `_ =>` arm below
             // collects the `return x` but `x` is not in `flow` (it is pattern-bound), so the flow was lost
             // (hunt wf_e67160a7). Seed each arm's pattern with the scrutinee's param-flow, then recurse.
-            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
                 let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
                 for arm in arms {
                     let mut c = flow.clone();
                     seed_flow_pattern(&mut c, &arm.pattern, &scrut);
                     match &arm.body {
                         Expr::Block { stmts, tail } => {
-                            body_param_returns(stmts, &mut c, known_param_return, found, stmt_is_tail);
+                            body_param_returns(
+                                stmts,
+                                &mut c,
+                                known_param_return,
+                                found,
+                                stmt_is_tail,
+                            );
                             if stmt_is_tail {
                                 if let Some(t) = tail {
                                     found.extend(expr_param_return_flow(t, &c, known_param_return));
@@ -16014,7 +17600,13 @@ fn body_param_returns(
                     union_flow_into(flow, &c);
                 }
             }
-            Stmt::ExprStmt(Expr::IfLet { pattern, scrutinee, then, else_, .. }) => {
+            Stmt::ExprStmt(Expr::IfLet {
+                pattern,
+                scrutinee,
+                then,
+                else_,
+                ..
+            }) => {
                 let scrut = expr_param_return_flow(scrutinee, flow, known_param_return);
                 let mut c = flow.clone();
                 seed_flow_pattern(&mut c, pattern, &scrut);
@@ -16047,7 +17639,9 @@ fn body_param_returns(
                 collect_returns_in_stmt(stmt, &mut rets);
                 for r in rets {
                     found.extend(expr_param_return_flow(&r, flow, known_param_return));
-                    if let Some(lf) = local_lambda_return_flow(&r, flow, &lambdas, known_param_return) {
+                    if let Some(lf) =
+                        local_lambda_return_flow(&r, flow, &lambdas, known_param_return)
+                    {
                         found.extend(lf);
                     }
                 }
@@ -16298,7 +17892,13 @@ pub fn suggest_contracts(items: &[Item]) -> Vec<ContractSuggestion> {
     let mut out = Vec::new();
     for it in items {
         match it {
-            Item::Fn { name, params, body, requires, .. } => {
+            Item::Fn {
+                name,
+                params,
+                body,
+                requires,
+                ..
+            } => {
                 let mut clauses = Vec::new();
                 for (pname, pty) in params {
                     if !ty::is_integer(pty) {
@@ -16313,7 +17913,14 @@ pub fn suggest_contracts(items: &[Item]) -> Vec<ContractSuggestion> {
                     let mut upper_lt: Option<i64> = None;
                     let mut used_as_index = false;
                     for s in body {
-                        scan_param_bounds_stmt(s, pname, &mut lower, &mut upper_le, &mut upper_lt, &mut used_as_index);
+                        scan_param_bounds_stmt(
+                            s,
+                            pname,
+                            &mut lower,
+                            &mut upper_le,
+                            &mut upper_lt,
+                            &mut used_as_index,
+                        );
                     }
                     if used_as_index && lower.is_none() {
                         lower = Some(0);
@@ -16329,7 +17936,10 @@ pub fn suggest_contracts(items: &[Item]) -> Vec<ContractSuggestion> {
                     }
                 }
                 if !clauses.is_empty() {
-                    out.push(ContractSuggestion { function: name.clone(), clauses });
+                    out.push(ContractSuggestion {
+                        function: name.clone(),
+                        clauses,
+                    });
                 }
             }
             Item::Module { items, .. } => out.extend(suggest_contracts(items)),
@@ -16344,11 +17954,16 @@ fn expr_names_var(e: &Expr, v: &str) -> bool {
     match e {
         Expr::Var(n) => n == v,
         Expr::Binary { lhs, rhs, .. } => expr_names_var(lhs, v) || expr_names_var(rhs, v),
-        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Assume(expr) | Expr::Assert(expr)
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
         | Expr::Try(expr) => expr_names_var(expr, v),
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => expr_names_var(inner, v),
         Expr::Call { args, .. } => args.iter().any(|a| expr_names_var(a, v)),
-        Expr::CallExpr { callee, args } => expr_names_var(callee, v) || args.iter().any(|a| expr_names_var(a, v)),
+        Expr::CallExpr { callee, args } => {
+            expr_names_var(callee, v) || args.iter().any(|a| expr_names_var(a, v))
+        }
         Expr::Index { base, index } => expr_names_var(base, v) || expr_names_var(index, v),
         Expr::FieldAccess { base, .. } => expr_names_var(base, v),
         _ => false,
@@ -16381,17 +17996,21 @@ fn scan_param_bounds_stmt(
         }
         Stmt::If { cond, then, else_ } => {
             scan_param_bounds_expr(cond, p, lower, upper_le, upper_lt, idx);
-            then.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+            then.iter()
+                .for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
             if let Some(e) = else_ {
-                e.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+                e.iter()
+                    .for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
             }
         }
         Stmt::While { cond, body, .. } => {
             scan_param_bounds_expr(cond, p, lower, upper_le, upper_lt, idx);
-            body.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+            body.iter()
+                .for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
         }
         Stmt::For { body, .. } | Stmt::Loop { body, .. } | Stmt::WhileLet { body, .. } => {
-            body.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+            body.iter()
+                .for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
         }
         Stmt::ExprStmt(e) => scan_param_bounds_expr(e, p, lower, upper_le, upper_lt, idx),
         _ => {}
@@ -16444,24 +18063,36 @@ fn scan_param_bounds_expr(
             scan_param_bounds_expr(base, p, lower, upper_le, upper_lt, idx);
             scan_param_bounds_expr(index, p, lower, upper_le, upper_lt, idx);
         }
-        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Assume(expr) | Expr::Assert(expr)
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
         | Expr::Try(expr) => scan_param_bounds_expr(expr, p, lower, upper_le, upper_lt, idx),
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
             scan_param_bounds_expr(inner, p, lower, upper_le, upper_lt, idx)
         }
-        Expr::Call { args, .. } => args.iter().for_each(|a| scan_param_bounds_expr(a, p, lower, upper_le, upper_lt, idx)),
+        Expr::Call { args, .. } => args
+            .iter()
+            .for_each(|a| scan_param_bounds_expr(a, p, lower, upper_le, upper_lt, idx)),
         Expr::CallExpr { callee, args } => {
             scan_param_bounds_expr(callee, p, lower, upper_le, upper_lt, idx);
-            args.iter().for_each(|a| scan_param_bounds_expr(a, p, lower, upper_le, upper_lt, idx));
+            args.iter()
+                .for_each(|a| scan_param_bounds_expr(a, p, lower, upper_le, upper_lt, idx));
         }
-        Expr::FieldAccess { base, .. } => scan_param_bounds_expr(base, p, lower, upper_le, upper_lt, idx),
+        Expr::FieldAccess { base, .. } => {
+            scan_param_bounds_expr(base, p, lower, upper_le, upper_lt, idx)
+        }
         Expr::Block { stmts, tail } => {
-            stmts.iter().for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
+            stmts
+                .iter()
+                .for_each(|s| scan_param_bounds_stmt(s, p, lower, upper_le, upper_lt, idx));
             if let Some(t) = tail {
                 scan_param_bounds_expr(t, p, lower, upper_le, upper_lt, idx);
             }
         }
-        Expr::If { cond, then, else_, .. } => {
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             scan_param_bounds_expr(cond, p, lower, upper_le, upper_lt, idx);
             scan_param_bounds_expr(then, p, lower, upper_le, upper_lt, idx);
             scan_param_bounds_expr(else_, p, lower, upper_le, upper_lt, idx);

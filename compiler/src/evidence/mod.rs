@@ -95,7 +95,7 @@ pub fn build_evidence_bundle(
 ) -> Result<EvidenceBundle, String> {
     // Phase-6: single-file path uses Merkle one-leaf identity (= sha256(source)).
     build_evidence_bundle_tree(
-        &[( "source.anubis".to_string(), source.as_bytes().to_vec() )],
+        &[("source.anubis".to_string(), source.as_bytes().to_vec())],
         mode,
         artifact,
         logs,
@@ -163,8 +163,7 @@ pub fn build_evidence_bundle_tree(
     }
     // Phase-6 crown: seal function summaries from the sealed source text.
     // Package publish overwrites with extract_from_package (correct name/version/merkle) before sign.
-    if let Ok(sum) =
-        crate::package::summary::extract_from_source_text("package", "0.0.0", &source)
+    if let Ok(sum) = crate::package::summary::extract_from_source_text("package", "0.0.0", &source)
     {
         let _ = crate::package::summary::write_to_evidence_dir(&dir, &sum);
     }
@@ -751,10 +750,10 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
                     serde_json::from_str::<crate::package::confinement::ConfinementManifest>(&s)
                         .map_err(|e| e.to_string())
                 }) {
-                Ok(sealed) => crate::package::confinement::verify_confinement_matches_source(
-                    &source, &sealed,
-                )
-                .is_ok(),
+                Ok(sealed) => {
+                    crate::package::confinement::verify_confinement_matches_source(&source, &sealed)
+                        .is_ok()
+                }
                 Err(_) => false, // a malformed sealed confinement manifest fails closed
             }
         } else {
@@ -1345,7 +1344,7 @@ mod pca_tests {
         let text = "fn main() { let x = 1; }";
         let mut binary = vec![0xcfu8, 0xfa, 0xed, 0xfe]; // Mach-O 64 magic
         binary.extend_from_slice(&[0u8, 1, 2, 0, 255, 0]); // NUL bytes + non-UTF-8
-        binary.extend(std::iter::repeat(0xABu8).take(4096));
+        binary.extend(std::iter::repeat_n(0xABu8, 4096));
         let files = vec![
             ("main.anb".to_string(), text.as_bytes().to_vec()),
             ("anubis_out".to_string(), binary.clone()),
@@ -1354,7 +1353,10 @@ mod pca_tests {
             build_evidence_bundle_tree(&files, "safe", None, vec![], &base, None, None, None)
                 .unwrap();
         let snap = std::fs::read(bundle.dir.join("source.anubis")).unwrap();
-        assert!(!snap.contains(&0u8), "source.anubis must contain no NUL byte");
+        assert!(
+            !snap.contains(&0u8),
+            "source.anubis must contain no NUL byte"
+        );
         assert!(
             std::str::from_utf8(&snap)
                 .map(|s| s.contains("fn main"))

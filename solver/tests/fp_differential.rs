@@ -140,9 +140,13 @@ fn native_fp_lowering_agrees_with_z3() {
         decided, deferred, disagreements
     );
     assert_eq!(
-        disagreements, 0,
+        disagreements,
+        0,
         "native fp lowering disagreed with z3.\nFirst: {}",
         first_bad.unwrap_or_default()
     );
-    assert!(decided > 500, "native decided too few fp formulas ({decided}) — lowering sanity");
+    assert!(
+        decided > 500,
+        "native decided too few fp formulas ({decided}) — lowering sanity"
+    );
 }

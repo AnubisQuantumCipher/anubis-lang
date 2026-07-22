@@ -201,7 +201,10 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     fn bv_width(&self, name: &str) -> Option<u32> {
-        self.bv_vars.iter().find(|(n, _)| n == name).map(|(_, w)| *w)
+        self.bv_vars
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, w)| *w)
     }
     fn is_bool(&self, name: &str) -> bool {
         self.bool_vars.iter().any(|n| n == name)
@@ -221,11 +224,21 @@ fn parse_pred(s: &Sexp, ctx: &Ctx) -> Option<Pred> {
             let args = &items[1..];
             match head {
                 "not" if args.len() == 1 => Some(Pred::Not(Box::new(parse_pred(&args[0], ctx)?))),
-                "and" => Some(Pred::And(args.iter().map(|a| parse_pred(a, ctx)).collect::<Option<_>>()?)),
-                "or" => Some(Pred::Or(args.iter().map(|a| parse_pred(a, ctx)).collect::<Option<_>>()?)),
+                "and" => Some(Pred::And(
+                    args.iter()
+                        .map(|a| parse_pred(a, ctx))
+                        .collect::<Option<_>>()?,
+                )),
+                "or" => Some(Pred::Or(
+                    args.iter()
+                        .map(|a| parse_pred(a, ctx))
+                        .collect::<Option<_>>()?,
+                )),
                 "=" if args.len() == 2 => {
                     // could be BV equality or boolean equality; try BV first
-                    if let (Some(a), Some(b)) = (parse_term(&args[0], ctx), parse_term(&args[1], ctx)) {
+                    if let (Some(a), Some(b)) =
+                        (parse_term(&args[0], ctx), parse_term(&args[1], ctx))
+                    {
                         Some(Pred::Eq(a, b))
                     } else {
                         // boolean =: a ↔ b  ≡  (a→b)∧(b→a). Represent via And/Or.
@@ -320,29 +333,35 @@ fn parse_term(s: &Sexp, ctx: &Ctx) -> Option<Term> {
                     "extract" => {
                         let hi: u32 = op.get(2)?.as_atom()?.parse().ok()?;
                         let lo: u32 = op.get(3)?.as_atom()?.parse().ok()?;
-                        Some(Term::Extract(hi, lo, Box::new(parse_term(args.first()?, ctx)?)))
+                        Some(Term::Extract(
+                            hi,
+                            lo,
+                            Box::new(parse_term(args.first()?, ctx)?),
+                        ))
                     }
                     "zero_extend" => {
                         let n: u32 = op.get(2)?.as_atom()?.parse().ok()?;
-                        Some(Term::ZeroExtend(n, Box::new(parse_term(args.first()?, ctx)?)))
+                        Some(Term::ZeroExtend(
+                            n,
+                            Box::new(parse_term(args.first()?, ctx)?),
+                        ))
                     }
                     "sign_extend" => {
                         let n: u32 = op.get(2)?.as_atom()?.parse().ok()?;
-                        Some(Term::SignExtend(n, Box::new(parse_term(args.first()?, ctx)?)))
+                        Some(Term::SignExtend(
+                            n,
+                            Box::new(parse_term(args.first()?, ctx)?),
+                        ))
                     }
                     // ((_ to_fp 11 53) <rounding> <decimal>) — a Float64 literal. The rounding mode is
                     // irrelevant for a decimal (Rust's f64 parse is round-to-nearest-even, matching
                     // RNE). Only Float64 and a plain (or negated) decimal literal are accepted.
-                    "to_fp"
-                        if op.get(2)?.as_atom()? == "11" && op.get(3)?.as_atom()? == "53" =>
-                    {
+                    "to_fp" if op.get(2)?.as_atom()? == "11" && op.get(3)?.as_atom()? == "53" => {
                         let lit = args.get(1)?;
                         let bits = match lit {
                             Sexp::Atom(a) => fp::decimal_to_bits(a)?,
                             // (- 4.0) — a negated decimal literal.
-                            Sexp::List(neg)
-                                if neg.len() == 2 && neg[0].as_atom()? == "-" =>
-                            {
+                            Sexp::List(neg) if neg.len() == 2 && neg[0].as_atom()? == "-" => {
                                 let m = fp::decimal_to_bits(neg[1].as_atom()?)?;
                                 m ^ 0x8000_0000_0000_0000 // flip the sign bit
                             }

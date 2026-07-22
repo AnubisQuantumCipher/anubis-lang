@@ -25,12 +25,26 @@ jobs:
         with:
           toolchain: nightly-2026-05-10
           components: rustfmt, clippy
-      # The gate scripts use ripgrep (not preinstalled on macOS runners). z3 is the
-      # checker's default authoritative solver + the native-solver cross-check — the
-      # contract-proving fixtures (G3/G5/G8) fail closed without it. python3, jq,
-      # shasum, and clang are already present.
-      - name: Install gate tooling (ripgrep, z3)
-        run: brew install ripgrep z3
+      # ripgrep is used by the gate scripts (not preinstalled on macOS runners);
+      # python3, jq, shasum, and clang already are.
+      - name: Install ripgrep
+        run: brew install ripgrep
+      # z3 is the checker's default authoritative solver + the native cross-check. Pin
+      # the SAME version the author develops + seals against (4.15.4): the QF_FP float
+      # lane depends on z3's version-specific float reasoning (e.g. proving x*x < x for
+      # 0<x<1), so brew-latest drifts and fails the float fixtures. When z3 can't prove,
+      # the checker fails closed (rejects) — a completeness difference, never a false
+      # accept — but a pinned z3 makes "green in CI" == "green in the reference env".
+      - name: Install pinned z3 4.15.4 (reference version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download z3-4.15.4 --repo Z3Prover/z3 --pattern '*arm64-osx*.zip' --output z3.zip \
+            || gh release download z3-4.15.4 --repo Z3Prover/z3 --pattern '*x64-osx*.zip' --output z3.zip
+          unzip -q z3.zip
+          Z3DIR="$(find . -maxdepth 1 -type d -name 'z3-4.15.4*' | head -1)"
+          echo "$PWD/$Z3DIR/bin" >> "$GITHUB_PATH"
+          "$PWD/$Z3DIR/bin/z3" --version
       - name: Run the full sealed gate suite (the advertised front door)
         run: bash scripts/audit_a_plus.sh --out out/ci_gate
       - name: Upload gate report

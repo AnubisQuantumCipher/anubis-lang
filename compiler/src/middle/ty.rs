@@ -186,14 +186,20 @@ pub(crate) fn strip_flow_qualifier(ty: &str) -> &str {
 /// An INTEGER type the solver may soundly model as a 64-bit bit-vector (matching the i64 runtime).
 /// Floats are deliberately excluded. `tainted<T>`/`secret<T>` are qualifiers — unwrap them first.
 pub(crate) fn is_integer(ty: &str) -> bool {
-    matches!(normalize(strip_flow_qualifier(ty)).as_str(), "u8" | "u16" | "u32" | "u64")
+    matches!(
+        normalize(strip_flow_qualifier(ty)).as_str(),
+        "u8" | "u16" | "u32" | "u64"
+    )
 }
 
 /// A FLOAT type (`f32`/`f64`/`float`) — the complement of [`is_integer`] within [`is_numeric`].
 /// Unwraps a `tainted<T>`/`secret<T>` qualifier first, exactly like [`is_integer`], so the two
 /// partition the numeric types identically regardless of the flow-label wrapper.
 pub(crate) fn is_float(ty: &str) -> bool {
-    matches!(normalize(strip_flow_qualifier(ty)).as_str(), "f32" | "f64" | "float")
+    matches!(
+        normalize(strip_flow_qualifier(ty)).as_str(),
+        "f32" | "f64" | "float"
+    )
 }
 
 /// The bit-width of a LITERALLY-UNSIGNED fixed-width integer annotation — `u8`→8, `u16`→16,
@@ -1154,7 +1160,10 @@ mod tests {
             synth(
                 &mut c,
                 &env,
-                &Expr::Call { callee: "area".into(), args: vec![] }
+                &Expr::Call {
+                    callee: "area".into(),
+                    args: vec![]
+                }
             ),
             Ty::U32
         );
@@ -1162,7 +1171,10 @@ mod tests {
             synth(
                 &mut c,
                 &env,
-                &Expr::Call { callee: "unknown_fn".into(), args: vec![] }
+                &Expr::Call {
+                    callee: "unknown_fn".into(),
+                    args: vec![]
+                }
             ),
             Ty::Any
         );
@@ -1170,7 +1182,10 @@ mod tests {
             synth(
                 &mut c,
                 &env,
-                &Expr::Call { callee: "mystery".into(), args: vec![] }
+                &Expr::Call {
+                    callee: "mystery".into(),
+                    args: vec![]
+                }
             ),
             Ty::Any
         );
@@ -1223,8 +1238,14 @@ mod tests {
         // into a `u32` annotation. (Paired with the parser test that proves the string is `"[int]"`.)
         let base = "[int]";
         assert_eq!(Ty::parse(base), Ty::Named("[int]".into()));
-        assert!(!is_integer(base), "a list annotation must not read as an integer");
-        assert!(!is_numeric(base), "a list annotation must not read as numeric");
+        assert!(
+            !is_integer(base),
+            "a list annotation must not read as an integer"
+        );
+        assert!(
+            !is_numeric(base),
+            "a list annotation must not read as numeric"
+        );
 
         let mut vars = BTreeMap::new();
         vars.insert("s".to_string(), "Seat".to_string());
@@ -1269,7 +1290,10 @@ mod tests {
         assert_eq!(arm_join_conflict(&env, &[&one, &two]), None);
         assert_eq!(arm_join_conflict(&env, &[&one, &pi]), None);
         // An unseeable arm (call to an unknown fn) absorbs — never a spurious conflict.
-        let unknown = Expr::Call { callee: "who".into(), args: vec![] };
+        let unknown = Expr::Call {
+            callee: "who".into(),
+            args: vec![],
+        };
         assert_eq!(arm_join_conflict(&env, &[&s, &unknown]), None);
     }
 
@@ -1285,20 +1309,48 @@ mod tests {
         // A `string`-returning call flowing where `u32` is expected — a mismatch the flat inference
         // (which returned `None` for every `Call`) could never see.
         assert_eq!(
-            check_mismatch(&env, &Expr::Call { callee: "s".into(), args: vec![] }, "u32"),
+            check_mismatch(
+                &env,
+                &Expr::Call {
+                    callee: "s".into(),
+                    args: vec![]
+                },
+                "u32"
+            ),
             Some("string".into())
         );
         // Same type ⇒ no mismatch; blank return / unknown expected ⇒ accept (None).
         assert_eq!(
-            check_mismatch(&env, &Expr::Call { callee: "n".into(), args: vec![] }, "u32"),
+            check_mismatch(
+                &env,
+                &Expr::Call {
+                    callee: "n".into(),
+                    args: vec![]
+                },
+                "u32"
+            ),
             None
         );
         assert_eq!(
-            check_mismatch(&env, &Expr::Call { callee: "blank".into(), args: vec![] }, "u32"),
+            check_mismatch(
+                &env,
+                &Expr::Call {
+                    callee: "blank".into(),
+                    args: vec![]
+                },
+                "u32"
+            ),
             None
         );
         assert_eq!(
-            check_mismatch(&env, &Expr::Call { callee: "s".into(), args: vec![] }, ""),
+            check_mismatch(
+                &env,
+                &Expr::Call {
+                    callee: "s".into(),
+                    args: vec![]
+                },
+                ""
+            ),
             None
         );
     }
@@ -1317,24 +1369,54 @@ mod tests {
         // constructor (the annotation begins with the container name even though `Ty` wraps it as a
         // generic) — this is what the typed-`?` check compares against the enclosing return.
         assert_eq!(
-            synth_container_kind(&env, &Expr::Call { callee: "ropt".into(), args: vec![] }),
+            synth_container_kind(
+                &env,
+                &Expr::Call {
+                    callee: "ropt".into(),
+                    args: vec![]
+                }
+            ),
             Some("Option".into())
         );
         assert_eq!(
-            synth_container_kind(&env, &Expr::Call { callee: "rres".into(), args: vec![] }),
+            synth_container_kind(
+                &env,
+                &Expr::Call {
+                    callee: "rres".into(),
+                    args: vec![]
+                }
+            ),
             Some("Result".into())
         );
         // A non-container return, a blank return, and an unknown call all resolve toward accept (None).
         assert_eq!(
-            synth_container_kind(&env, &Expr::Call { callee: "rint".into(), args: vec![] }),
+            synth_container_kind(
+                &env,
+                &Expr::Call {
+                    callee: "rint".into(),
+                    args: vec![]
+                }
+            ),
             None
         );
         assert_eq!(
-            synth_container_kind(&env, &Expr::Call { callee: "rblank".into(), args: vec![] }),
+            synth_container_kind(
+                &env,
+                &Expr::Call {
+                    callee: "rblank".into(),
+                    args: vec![]
+                }
+            ),
             None
         );
         assert_eq!(
-            synth_container_kind(&env, &Expr::Call { callee: "who".into(), args: vec![] }),
+            synth_container_kind(
+                &env,
+                &Expr::Call {
+                    callee: "who".into(),
+                    args: vec![]
+                }
+            ),
             None
         );
     }
@@ -1349,12 +1431,23 @@ mod tests {
         fns.insert("rblank".to_string(), String::new());
         let structs = BTreeMap::new();
         let env = empty_env(&vars, &fns, &structs);
-        let try_of = |callee: &str| Expr::Try(Box::new(Expr::Call { callee: callee.into(), args: vec![] }));
+        let try_of = |callee: &str| {
+            Expr::Try(Box::new(Expr::Call {
+                callee: callee.into(),
+                args: vec![],
+            }))
+        };
         // `let x: string = rres()?` — the `?` unwraps `Result<u32, string>` to its Ok type `u32`,
         // which does NOT flow where `string` is expected. Before the Try arm the operator resolved to
         // `Any` (accept) and this leak of a wrong-typed unwrap was invisible.
-        assert_eq!(check_mismatch(&env, &try_of("rres"), "string"), Some("u32".into()));
-        assert_eq!(check_mismatch(&env, &try_of("ropt"), "string"), Some("u32".into()));
+        assert_eq!(
+            check_mismatch(&env, &try_of("rres"), "string"),
+            Some("u32".into())
+        );
+        assert_eq!(
+            check_mismatch(&env, &try_of("ropt"), "string"),
+            Some("u32".into())
+        );
         // The matching annotation accepts: `let x: u32 = rres()?` is exactly the Ok type.
         assert_eq!(check_mismatch(&env, &try_of("rres"), "u32"), None);
         assert_eq!(check_mismatch(&env, &try_of("ropt"), "u32"), None);

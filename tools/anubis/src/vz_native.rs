@@ -68,8 +68,8 @@ impl NativePosture {
 /// that does not parse + typecheck has no proof to confine from, so it is refused (identical gate to
 /// `vz confine`).
 pub fn derive_native_posture(program: &str, allow_hosts: &[String]) -> Result<NativePosture> {
-    let src = std::fs::read_to_string(program)
-        .map_err(|e| anyhow!("read program `{program}`: {e}"))?;
+    let src =
+        std::fs::read_to_string(program).map_err(|e| anyhow!("read program `{program}`: {e}"))?;
     let ast = anubis_compiler::parse_source(&src)
         .map_err(|e| anyhow!("ANUBIS_VZNATIVE_PARSE_FAILED: {e}"))?;
     let mode = crate::first_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
@@ -84,12 +84,17 @@ pub fn derive_native_posture(program: &str, allow_hosts: &[String]) -> Result<Na
         anubis_compiler::package::confinement::derive_confinement("program", "0.0.0", &src)
             .map_err(|e| anyhow!("{e}"))?;
 
-    let net_present = manifest.capabilities_present.iter().any(|c| c == "net.send");
+    let net_present = manifest
+        .capabilities_present
+        .iter()
+        .any(|c| c == "net.send");
     // Fail-closed lattice: net-free OR unbounded effect set → most restrictive (zero-NIC air-gap).
     if !net_present || !manifest.effects_bounded {
         Ok(NativePosture::ZeroNicAirGap)
     } else {
-        Ok(NativePosture::PerHostnameEgress { allow_hosts: allow_hosts.to_vec() })
+        Ok(NativePosture::PerHostnameEgress {
+            allow_hosts: allow_hosts.to_vec(),
+        })
     }
 }
 
@@ -241,7 +246,11 @@ mod tests {
         let root = tmp.path();
 
         // net-free => zero-NIC air-gap
-        let nf = write(root, "nf.anb", "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n");
+        let nf = write(
+            root,
+            "nf.anb",
+            "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n",
+        );
         assert_eq!(
             derive_native_posture(&nf, &[]).unwrap(),
             NativePosture::ZeroNicAirGap
@@ -256,7 +265,9 @@ mod tests {
         let hosts = vec!["a.example".to_string()];
         assert_eq!(
             derive_native_posture(&nu, &hosts).unwrap(),
-            NativePosture::PerHostnameEgress { allow_hosts: hosts.clone() }
+            NativePosture::PerHostnameEgress {
+                allow_hosts: hosts.clone()
+            }
         );
 
         // net-USING but UNBOUNDED (a closure the effect walk cannot resolve): the unbounded bit
@@ -276,7 +287,11 @@ mod tests {
         );
 
         // a program that does not pass `anubis check` is refused (no proof to confine from).
-        let bad = write(root, "bad.anb", "fn bad() { let x = undefined_zzz_symbol; }\nfn main() { bad(); }\n");
+        let bad = write(
+            root,
+            "bad.anb",
+            "fn bad() { let x = undefined_zzz_symbol; }\nfn main() { bad(); }\n",
+        );
         let err = derive_native_posture(&bad, &[]).unwrap_err().to_string();
         assert!(
             err.contains("ANUBIS_VZNATIVE_UNVERIFIED"),
