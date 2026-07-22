@@ -1,32 +1,29 @@
 #!/usr/bin/env bash
-# Phase-4 taint-selfhost gate — the differential that pins the Anubis-authored TYPE engine against the
-# Rust taint engine. Sibling of run_effect_selfhost_gate.sh; same shadow → opt-in → default-flip arc:
-# a permanent 0-disagreement invariant that must hold before the Anubis type pass can be promoted.
+# Phase-4 taint-selfhost gate — the differential that pins the Anubis-authored TAINT engine against the
+# Rust taint engine. Sibling of run_effect_selfhost_gate.sh; a permanent 0-disagreement invariant.
 #
 # Two engines, one program each:
-#   (A) Rust  : `anubis check <f>`  — compiler/src/middle/mod.rs sink-gate ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY (:5493-5518)
-#               (expr_taint_source_m + is_sink, default Safe lane).
-#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- types <f>` — the
-#               self-hosted taint_check port (tnt_source + sh_is_sink over the intraprocedural source->sink path).
+#   (A) Rust  : `anubis check <f>`  — compiler/src/middle/mod.rs sink-gate ANUBIS_TAINTED_SINK_WITHOUT_
+#               DECLASSIFY (:5493) + the INTERPROC param→sink consult ANUBIS_INTERPROC_SINK (:5746/:5770),
+#               default Safe lane.
+#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- taint <f>` — the self-hosted
+#               taint_check port: intraprocedural source→sink (tnt_source + sh_is_sink, slice 1) PLUS the
+#               interprocedural param→sink + return-taint summary fixpoint + call-site consult (slice 2).
 #
-# PRIMARY ORACLE (0-disagreement invariant): the two independently-derived source->sink
-# PAIR sets must be IDENTICAL. Extraction is ANCHORED to the phrase
-# "type mismatch: expected `E`, got `G`", UNIQUE to the ported let-binding ANUBIS_TYPE_MISMATCH site.
-# That anchor DELIBERATELY EXCLUDES the sibling type-mismatch shapes slice 1 does NOT port (assignment
-# 'type mismatch on assign…', argument 'type mismatch: argument…', struct-field, operator/index), so the
-# gate isolates exactly the ported surface — the literal analog of the effect gate anchoring on
-# "function `F` uses effect `X`" to isolate the effect lane. Per-FILE set (SH diags carry no fn
-# attribution yet); slice 2 moves to per-(fn) pairs once return/arg checks add attribution.
+# PRIMARY ORACLE (0-disagreement invariant): the two independently-derived diagnostic-message sets must
+# be IDENTICAL. Extraction (extract_taint) anchors on the TWO ported phrases: the intraproc
+# "tainted flow from `S` to sink `Y`" AND the interproc "tainted flow from `S` into parameter N of `F`,
+# which reaches a sink without declassify". Per-FILE set.
 #
-# SECONDARY ORACLE: the Anubis `types` pass accept/reject (exit code) must match the fixture's
-# `// EXPECT:` marker — pinning that the corpus exercises both verdicts and that the self-hosted verdict
-# is correct per each fixture's intent.
+# SECONDARY ORACLE: the Anubis `taint` pass accept/reject (exit code) must match the fixture's
+# `// EXPECT:` marker.
 #
-# SCOPE (honest boundary): SH's inference is a strict UNDER-approximation of Rust's (returns ""/accept
-# for Call/Index/FieldAccess/IfExpr/Match, no float-literal arm — SH cannot lex `1.5`), so SH ⊆ Rust
-# holds by construction (no spurious mismatch). The generics/traits/typed-`?`/HM-union-find checks are
-# structurally UNREACHABLE in the SH grammar (no <T:Bound>/trait/impl/`?`), named in the ROADMAP as
-# [NEEDS-HUMAN] parser-growth decisions, not effort residuals. This gate pins the SH subset.
+# SCOPE (honest boundary): the SH taint engine is a strict UNDER-approximation of Rust's — a general
+# (non-io-source) call, composite (List/Map/EnumInit), closure, and the closure/container/method
+# INTERPROC granularity all yield "" (deferred) — so SH ⊆ Rust holds by construction (no spurious). The
+# interproc summary tracks param-flow through Var/Binary/Unary/Index/FieldAccess + simple lets/assigns +
+# transitive direct calls (a fixpoint); closure/container interproc is the tolerated INCOMPLETE residual.
+# This gate pins the SH subset (exact on the curated fixtures; whole-corpus SH ⊆ Rust is a separate sweep).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -40,7 +37,10 @@ cargo build -q --release -p anubis
 # "type mismatch: expected `E`, got `G`" phrasing — as sorted-unique `E:G` lines so a per-file union
 # cannot mask a per-site divergence.
 extract_taint() {
-  { grep -oE 'tainted flow from `.*` to sink `[^`]+`' || true; } | sort -u
+  # Two ported phrases: intraprocedural (source -> sink in one fn) AND interprocedural (source -> a
+  # callee param that reaches a sink; ANUBIS_INTERPROC_SINK, mod.rs:5770). Greedy `.*` for the source
+  # label so a nested-backtick source (`io source `input``) is captured whole.
+  { grep -oE 'tainted flow from `.*` to sink `[^`]+`|tainted flow from `.*` into parameter [0-9]+ of `[^`]+`, which reaches a sink without declassify' || true; } | sort -u
 }
 
 agree=0; disagree=0; expect_ok=0; expect_bad=0; n=0
@@ -82,5 +82,5 @@ if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ]; then
   echo "TAINT_SELFHOST_GATE: FAIL"
   exit 1
 fi
-echo "TAINT_SELFHOST_GATE: PASS (0 disagreements; Anubis-authored taint engine == Rust taint engine on the intraprocedural source→sink surface)"
+echo "TAINT_SELFHOST_GATE: PASS (0 disagreements; Anubis-authored taint engine == Rust taint engine on the intra- + interprocedural source→sink surface)"
 exit 0

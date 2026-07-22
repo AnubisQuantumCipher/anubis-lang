@@ -1489,6 +1489,22 @@ fn sh_is_io_taint_source(n) {
 
 fn tnt_or(a, b) { if a != "" { return a; } return b; }
 fn tnt_io_src(cn) { if sh_is_io_taint_source(cn) { return "io source `" + cn + "`"; } return ""; }
+// The taint label of a CALL result: an io source directly, OR (interproc return-propagation) the label
+// of a tainted arg passed at a RETURN position of `cn` — so `fwd(input())` where `fn fwd(x){return x}`
+// carries input()'s taint out of the call. Reads the `$R$fn$pos` flags seeded into `scope`.
+fn tnt_call_src(cn, a, scope) {
+    let s = tnt_io_src(cn);
+    if s != "" { return s; }
+    let i = 0;
+    while i < len(a) {
+        if get(scope, "$R$" + cn + "$" + ("" + i), false) {
+            let asrc = tnt_source(a[i], scope);
+            if asrc != "" { return asrc; }
+        }
+        i = i + 1;
+    }
+    return "";
+}
 
 // The taint-source LABEL of an expr (mirrors expr_taint_source_m Var/Binary/Unary/Index/FieldAccess/
 // io-source-Call arms), or "" if clean. Composite (List/Map/EnumInit), general-call, closure, and
@@ -1500,7 +1516,7 @@ fn tnt_source(e, scope) {
         Expr::Unary { op: o, expr: x } => tnt_source(x, scope),
         Expr::Index { base: b, index: ix } => tnt_or(tnt_source(b, scope), tnt_source(ix, scope)),
         Expr::FieldAccess { base: b, field: f } => tnt_source(b, scope),
-        Expr::Call { callee: cn, args: a } => tnt_io_src(cn),
+        Expr::Call { callee: cn, args: a } => tnt_call_src(cn, a, scope),
         _ => "",
     };
 }
@@ -1555,6 +1571,18 @@ fn taint_walk_call(cn, a, scope, diags) {
             }
             i = i + 1;
         }
+    }
+    // INTERPROCEDURAL sink (mod.rs:5746): `cn` is a user fn whose param j reaches a sink; a tainted arg
+    // at position j is a leak at the call boundary — byte-identical ANUBIS_INTERPROC_SINK.
+    let j = 0;
+    while j < len(a) {
+        if get(scope, "$S$" + cn + "$" + ("" + j), false) {
+            let src = tnt_source(a[j], scope);
+            if src != "" {
+                push(diags, "ANUBIS_INTERPROC_SINK: safe mode tainted flow from `" + src + "` into parameter " + ("" + j) + " of `" + cn + "`, which reaches a sink without declassify");
+            }
+        }
+        j = j + 1;
     }
     return diags;
 }
@@ -1616,13 +1644,234 @@ fn taint_stmt_for(vr, it, b, scope, diags) {
     return [scope, diags];
 }
 
+// ===== TAINT ENGINE slice 2 (Anubis-authored) — INTERPROCEDURAL summaries =====
+// Ports the DIRECT case of Rust's param->sink (compute_param_sinks/body_param_sinks) + param->return
+// (compute_param_return_taint/body_param_returns) summaries and the call-site consult (mod.rs:5746 ->
+// byte-identical ANUBIS_INTERPROC_SINK). A per-fn FIXPOINT computes, for each fn, which PARAM POSITIONS
+// reach a sink and which are returned; both flatten into scope flags ($S$fn$pos / $R$fn$pos) that the
+// intraproc walker reads at call sites. CONSERVATIVE (subset of Rust): param-flow through Var/Binary/
+// Unary/Index/FieldAccess + simple lets/assigns + transitive calls; closures/containers/method interproc
+// stay deferred (SH UNDER-reports vs Rust => SH subset Rust, no spurious). Uses only emitted-interpreter
+// builtins (keys/get/has_key/len/push).
+fn pmap0() { let m = {}; return m; }
+fn pmap_one(k) { let m = {}; m[k] = true; return m; }
+fn pmap_union(a, b) {
+    let ks = keys(b);
+    let i = 0;
+    while i < len(ks) { a[ks[i]] = true; i = i + 1; }
+    return a;
+}
+fn pmap_eq(a, b) {
+    let ka = keys(a);
+    if len(ka) != len(keys(b)) { return false; }
+    let i = 0;
+    while i < len(ka) { if has_key(b, ka[i]) == false { return false; } i = i + 1; }
+    return true;
+}
+
+// PARAM POSITIONS whose value flows into `e` (which formals derive e). `sm_ret` = fn->return-positions
+// for the transitive `return f(p)` case; `pscope` = local -> param-pos set.
+fn sum_pflow(e, pscope, sm_ret) {
+    return match e {
+        Expr::Var(nm) => get(pscope, nm, pmap0()),
+        Expr::Binary { op: o, lhs: l, rhs: r } => pmap_union(sum_pflow(l, pscope, sm_ret), sum_pflow(r, pscope, sm_ret)),
+        Expr::Unary { op: o, expr: x } => sum_pflow(x, pscope, sm_ret),
+        Expr::Index { base: b, index: ix } => pmap_union(sum_pflow(b, pscope, sm_ret), sum_pflow(ix, pscope, sm_ret)),
+        Expr::FieldAccess { base: b, field: f } => sum_pflow(b, pscope, sm_ret),
+        Expr::Call { callee: cn, args: a } => sum_call_pflow(cn, a, pscope, sm_ret),
+        _ => pmap0(),
+    };
+}
+fn sum_call_pflow(cn, a, pscope, sm_ret) {
+    let acc = pmap0();
+    if has_key(sm_ret, cn) {
+        let rp = sm_ret[cn];
+        let i = 0;
+        while i < len(a) {
+            if has_key(rp, "" + i) { acc = pmap_union(acc, sum_pflow(a[i], pscope, sm_ret)); }
+            i = i + 1;
+        }
+    }
+    return acc;
+}
+
+// Union the param-flow of every SUNK arg reachable in `e` into `sinkacc` (builtin sinks + transitive
+// callee sink-params). Recurses into sub-exprs.
+fn sum_exprs_sinks(es, pscope, sm_sink, sm_ret, sinkacc) {
+    let i = 0;
+    while i < len(es) { sinkacc = sum_expr_sinks(es[i], pscope, sm_sink, sm_ret, sinkacc); i = i + 1; }
+    return sinkacc;
+}
+fn sum_expr_sinks(e, pscope, sm_sink, sm_ret, sinkacc) {
+    return match e {
+        Expr::Call { callee: cn, args: a } => sum_call_sinks(cn, a, pscope, sm_sink, sm_ret, sinkacc),
+        Expr::Binary { op: o, lhs: l, rhs: r } => sum_expr_sinks(r, pscope, sm_sink, sm_ret, sum_expr_sinks(l, pscope, sm_sink, sm_ret, sinkacc)),
+        Expr::Unary { op: o, expr: x } => sum_expr_sinks(x, pscope, sm_sink, sm_ret, sinkacc),
+        Expr::Index { base: b, index: ix } => sum_expr_sinks(ix, pscope, sm_sink, sm_ret, sum_expr_sinks(b, pscope, sm_sink, sm_ret, sinkacc)),
+        Expr::List { elements: els } => sum_exprs_sinks(els, pscope, sm_sink, sm_ret, sinkacc),
+        Expr::Range { start: s, end: en } => sum_expr_sinks(en, pscope, sm_sink, sm_ret, sum_expr_sinks(s, pscope, sm_sink, sm_ret, sinkacc)),
+        Expr::Map { keys: k, vals: vs } => sum_exprs_sinks(vs, pscope, sm_sink, sm_ret, sum_exprs_sinks(k, pscope, sm_sink, sm_ret, sinkacc)),
+        Expr::MethodCall { recv: r, method: m, args: a } => sum_exprs_sinks(a, pscope, sm_sink, sm_ret, sum_expr_sinks(r, pscope, sm_sink, sm_ret, sinkacc)),
+        Expr::FieldAccess { base: b, field: f } => sum_expr_sinks(b, pscope, sm_sink, sm_ret, sinkacc),
+        _ => sinkacc,
+    };
+}
+fn sum_call_sinks(cn, a, pscope, sm_sink, sm_ret, sinkacc) {
+    sinkacc = sum_exprs_sinks(a, pscope, sm_sink, sm_ret, sinkacc);
+    if sh_is_sink(cn) {
+        let i = 0;
+        while i < len(a) { sinkacc = pmap_union(sinkacc, sum_pflow(a[i], pscope, sm_ret)); i = i + 1; }
+    } else {
+        if has_key(sm_sink, cn) {
+            let sp = sm_sink[cn];
+            let i = 0;
+            while i < len(a) {
+                if has_key(sp, "" + i) { sinkacc = pmap_union(sinkacc, sum_pflow(a[i], pscope, sm_ret)); }
+                i = i + 1;
+            }
+        }
+    }
+    return sinkacc;
+}
+
+// Statement walker for the summary: thread [pscope, sinkacc, retacc].
+fn sum_walk_stmts(ss, pscope, sm_sink, sm_ret, sinkacc, retacc) {
+    let i = 0;
+    while i < len(ss) {
+        let r = sum_walk_stmt(ss[i], pscope, sm_sink, sm_ret, sinkacc, retacc);
+        pscope = r[0]; sinkacc = r[1]; retacc = r[2];
+        i = i + 1;
+    }
+    return [pscope, sinkacc, retacc];
+}
+fn sum_walk_stmt(s, pscope, sm_sink, sm_ret, sinkacc, retacc) {
+    return match s {
+        Stmt::Let { name: nm, ty: t, init: iv } => sum_stmt_let(nm, iv, pscope, sm_sink, sm_ret, sinkacc, retacc),
+        Stmt::Return { value: v } => sum_stmt_return(v, pscope, sm_sink, sm_ret, sinkacc, retacc),
+        Stmt::ExprStmt { expr: e } => [pscope, sum_expr_sinks(e, pscope, sm_sink, sm_ret, sinkacc), retacc],
+        Stmt::If { cond: c, then_: t, else_: el, has_else: he } => sum_stmt_if(c, t, el, he, pscope, sm_sink, sm_ret, sinkacc, retacc),
+        Stmt::While { cond: c, body: b } => sum_stmt_loop(c, b, pscope, sm_sink, sm_ret, sinkacc, retacc),
+        Stmt::For { var: vr, iter: it, body: b } => sum_stmt_loop(it, b, pscope, sm_sink, sm_ret, sinkacc, retacc),
+        Stmt::Assign { target: tg, value: v } => sum_stmt_assign(tg, v, pscope, sm_sink, sm_ret, sinkacc, retacc),
+        _ => [pscope, sinkacc, retacc],
+    };
+}
+fn sum_set(pscope, nm, val) { pscope[nm] = val; return pscope; }
+fn sum_stmt_let(nm, iv, pscope, sm_sink, sm_ret, sinkacc, retacc) {
+    sinkacc = sum_expr_sinks(iv, pscope, sm_sink, sm_ret, sinkacc);
+    pscope[nm] = sum_pflow(iv, pscope, sm_ret);
+    return [pscope, sinkacc, retacc];
+}
+fn sum_stmt_assign(tg, v, pscope, sm_sink, sm_ret, sinkacc, retacc) {
+    sinkacc = sum_expr_sinks(v, pscope, sm_sink, sm_ret, sinkacc);
+    pscope = match tg {
+        Expr::Var(nm) => sum_set(pscope, nm, sum_pflow(v, pscope, sm_ret)),
+        _ => pscope,
+    };
+    return [pscope, sinkacc, retacc];
+}
+fn sum_stmt_return(v, pscope, sm_sink, sm_ret, sinkacc, retacc) {
+    sinkacc = sum_expr_sinks(v, pscope, sm_sink, sm_ret, sinkacc);
+    retacc = pmap_union(retacc, sum_pflow(v, pscope, sm_ret));
+    return [pscope, sinkacc, retacc];
+}
+fn sum_stmt_if(c, t, el, he, pscope, sm_sink, sm_ret, sinkacc, retacc) {
+    sinkacc = sum_expr_sinks(c, pscope, sm_sink, sm_ret, sinkacc);
+    let rt = sum_walk_stmts(t, pscope, sm_sink, sm_ret, sinkacc, retacc);
+    sinkacc = rt[1]; retacc = rt[2];
+    if he {
+        let re = sum_walk_stmts(el, pscope, sm_sink, sm_ret, sinkacc, retacc);
+        sinkacc = re[1]; retacc = re[2];
+    }
+    return [pscope, sinkacc, retacc];
+}
+fn sum_stmt_loop(hd, b, pscope, sm_sink, sm_ret, sinkacc, retacc) {
+    sinkacc = sum_expr_sinks(hd, pscope, sm_sink, sm_ret, sinkacc);
+    let r = sum_walk_stmts(b, pscope, sm_sink, sm_ret, sinkacc, retacc);
+    return [pscope, r[1], r[2]];
+}
+fn sum_seed_params(params) {
+    let ps = {};
+    let i = 0;
+    while i < len(params) { ps[params[i]["name"]] = pmap_one("" + i); i = i + 1; }
+    return ps;
+}
+// Fixpoint over all fns: recompute each fn's [sink-positions, return-positions] until stable (a fn's
+// summary grows when a callee's summary grows). Guard bounds the iterations (at most #fns rounds needed).
+fn tnt_compute_summaries(items) {
+    let sm_sink = {};
+    let sm_ret = {};
+    let i = 0;
+    while i < len(items) {
+        if items[i]["kind"] == "Fn" { sm_sink[items[i]["name"]] = pmap0(); sm_ret[items[i]["name"]] = pmap0(); }
+        i = i + 1;
+    }
+    let changed = true;
+    let guard = 0;
+    while changed && guard < 300 {
+        changed = false;
+        guard = guard + 1;
+        let j = 0;
+        while j < len(items) {
+            if items[j]["kind"] == "Fn" {
+                let f = items[j];
+                let nm = f["name"];
+                let pscope = sum_seed_params(f["params"]);
+                let r = sum_walk_stmts(f["body"], pscope, sm_sink, sm_ret, pmap0(), pmap0());
+                let ps2 = r[0];
+                let sinkacc = r[1];
+                let retacc = r[2];
+                let bd = f["body"];
+                if len(bd) > 0 {
+                    // implicit-tail return (a trailing bare expr is the return value).
+                    retacc = match bd[len(bd) - 1] {
+                        Stmt::ExprStmt { expr: e } => pmap_union(retacc, sum_pflow(e, ps2, sm_ret)),
+                        _ => retacc,
+                    };
+                }
+                if pmap_eq(sinkacc, sm_sink[nm]) == false { sm_sink[nm] = sinkacc; changed = true; }
+                if pmap_eq(retacc, sm_ret[nm]) == false { sm_ret[nm] = retacc; changed = true; }
+            }
+            j = j + 1;
+        }
+    }
+    return [sm_sink, sm_ret];
+}
+// Flatten the two summary maps into read-only scope FLAGS the intraproc walker consults at call sites:
+// `$S$<fn>$<pos>` = param pos reaches a sink; `$R$<fn>$<pos>` = param pos is returned. `$` can't start a
+// real var name, so no collision with taint labels.
+fn tnt_flatten_flags(sm_sink, sm_ret) {
+    let flags = {};
+    let fs = keys(sm_sink);
+    let i = 0;
+    while i < len(fs) {
+        let sp = keys(sm_sink[fs[i]]);
+        let k = 0;
+        while k < len(sp) { flags["$S$" + fs[i] + "$" + sp[k]] = true; k = k + 1; }
+        i = i + 1;
+    }
+    let fr = keys(sm_ret);
+    let j = 0;
+    while j < len(fr) {
+        let rp = keys(sm_ret[fr[j]]);
+        let k = 0;
+        while k < len(rp) { flags["$R$" + fr[j] + "$" + rp[k]] = true; k = k + 1; }
+        j = j + 1;
+    }
+    return flags;
+}
+
 fn taint_check(ast) {
     let diags = [];
     let items = ast["items"];
+    // Interprocedural pass: compute param->sink + param->return summaries, then seed each fn's scope with
+    // the read-only flags so a call site can see a callee whose param reaches a sink / is returned.
+    let sums = tnt_compute_summaries(items);
+    let flags = tnt_flatten_flags(sums[0], sums[1]);
     let i = 0;
     while i < len(items) {
         if items[i]["kind"] == "Fn" {
-            let scope = {};
+            let scope = flags;
             diags = taint_walk_stmts(items[i]["body"], scope, diags);
         }
         i = i + 1;

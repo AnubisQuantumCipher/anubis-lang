@@ -1,0 +1,3 @@
+// EXPECT: FAIL
+fn leak(x) uses(proc.exec) { shell(x); }
+fn main() uses(proc.exec, io.read) { leak(input()); }

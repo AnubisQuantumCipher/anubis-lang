@@ -1,0 +1,3 @@
+// EXPECT: PASS
+fn leak(x) uses(proc.exec) { shell(x); }
+fn main() uses(proc.exec) { leak("safe"); }

@@ -1,0 +1,3 @@
+// EXPECT: FAIL
+fn fwd(x) { return x; }
+fn main() uses(proc.exec, io.read) { shell(fwd(input())); }

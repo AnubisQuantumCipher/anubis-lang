@@ -89,4 +89,16 @@
 #     fixtures: 12 slice-1 + 8 arg/return incl. the nested-return spurious guard) and TAINT_SELFHOST_GATE;
 #     whole-corpus SH ⊆ Rust 512 .anb / 12 emitters / 0 spurious. Self-compile stays clean (every SH fn is
 #     UNTYPED → both new checks short-circuit on empty annotations → 0 new self-diagnostics).
-d7776b5a1f00dd4f258b95b4c58a64988664a36040e43ce88626b550f41c0539
+#   d7776b5a…0539 -> a01a1e8b…2b69  (2026-07-21, Phase-4 #114 TAINT engine slice 2 — INTERPROCEDURAL)
+#     Trigger: the SH taint engine gained INTERPROCEDURAL summaries — a per-fn fixpoint computes param→SINK
+#     (compute_param_sinks/body_param_sinks) + param→RETURN (compute_param_return_taint/body_param_returns),
+#     flattened into `$S$fn$pos`/`$R$fn$pos` scope flags the intraproc walker consults at call sites to emit
+#     byte-identical ANUBIS_INTERPROC_SINK (mod.rs:5770) + return-propagation. `fn leak(x){shell(x)}
+#     leak(input())` and transitive `a→b→shell` now REJECT (matching Rust) where slice-1 stayed silent.
+#     SH ⊆ Rust by construction (`sum_pflow` ⊆ `expr_param_flow`; closure/container/method interproc
+#     deferred). Seal PASS (stage2==stage3, 9/9), all gates green incl TAINT_SELFHOST_GATE (0 disagreements,
+#     13/13 fixtures: 7 slice-1 + 6 interproc k08-k13) now on the intra- + INTERPROC surface; host self-host
+#     gate 9/9 (interproc code uses only emitted-interpreter builtins keys/get/has_key/len/push); whole-
+#     corpus SH ⊆ Rust 512 .anb / ~15 emitters / 0 spurious. Phase 4: ALL 3 engines self-hosted AND matching
+#     Rust (effect DIFFERENTIAL-COMPLETE, type arg/return, taint interprocedural).
+a01a1e8b0ea1ade16a608d0c0d632db223a4f4cda101e099233696ca78fe2b69

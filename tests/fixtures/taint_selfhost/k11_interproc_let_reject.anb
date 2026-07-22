@@ -1,0 +1,3 @@
+// EXPECT: FAIL
+fn leak(x) uses(net.send) { let y = x; send(y); }
+fn main() uses(net.send, io.read) { leak(input()); }

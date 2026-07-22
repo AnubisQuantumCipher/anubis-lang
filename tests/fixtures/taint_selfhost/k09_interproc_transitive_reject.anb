@@ -1,0 +1,4 @@
+// EXPECT: FAIL
+fn a(x) uses(proc.exec) { b(x); }
+fn b(x) uses(proc.exec) { shell(x); }
+fn main() uses(proc.exec, io.read) { a(input()); }
