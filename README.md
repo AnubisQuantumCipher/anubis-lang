@@ -4,6 +4,7 @@
 
 <br><br>
 
+[![CI](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml/badge.svg?branch=a-plus-maturity%2F20260705-1649)](https://github.com/AnubisQuantumCipher/anubis-lang/actions/workflows/ci.yml)
 ![Built with Rust](https://img.shields.io/badge/built_with-Rust-000000?logo=rust&logoColor=white)
 ![Self-host](https://img.shields.io/badge/self--host-byte--identical_fixpoint-2ea44f)
 ![Formal gate](https://img.shields.io/badge/Lean_4_core-150%2B_theorems,_no_sorry%2Faxiom-8250df)
