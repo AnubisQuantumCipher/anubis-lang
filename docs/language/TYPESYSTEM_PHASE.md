@@ -30,9 +30,11 @@ the originating brief was partly stale.
   existing static `ANUBIS_TRY_OUTSIDE_RESULT` at `mod.rs:788`).
 
 **What this phase does NOT claim**
-- **The checker stays Rust.** No Anubis-language port of `Ty`/unification/checker this phase — that is
-  the *next* phase, set up by keeping the unification core deliberately portable. `anubis_sh.anb` and
-  the frozen JSON projection are untouched.
+- **The checker stays Rust.** No Anubis-language port of `Ty`/unification/checker *this* phase — that
+  was set up as the next phase by keeping the unification core deliberately portable, and it has since
+  LANDED (Phase 4, #109/#112 — see "Next phase — DONE" below): the assignability surface is now
+  Anubis-authored in `anubis_sh.anb`, differential-gated 0-disagreement vs Rust. This phase's own
+  outputs (`anubis_sh.anb` at the time, the frozen JSON projection) were untouched by *this* Rust work.
 - **The solver still declines floats.** Floats stay opaque in QF_BV/QF_ABV; richer *typing* of floats
   buys the solver no float reasoning. `ANUBIS_FLOAT_CONTRACT_UNMODELED` remains the honest diagnostic.
 - **New checks are additive rejection power only.** Every new diagnostic is a *tightening*, gated

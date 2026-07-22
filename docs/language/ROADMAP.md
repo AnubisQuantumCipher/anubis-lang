@@ -182,7 +182,10 @@ VM-validated slice):
    parser change; typed `?` is now closed at both variable and call-return positions by `3536581`).
 
 Every slice: reproduce-before-certify where it's a soundness fix, shadow-first for a new check,
-VM-validated via `scripts/vm/run-slice.sh`, fixpoint held at `dc680001`.
+VM-validated via `scripts/vm/run-slice.sh`. The self-host fixpoint held at `dc680001` through Phases
+0–3; porting the effect/type/taint engines into `anubis_sh.anb` (Phase 4) deliberately re-seals it per
+slice — the current VM fixpoint is pinned in `scripts/vm/EXPECTED_FIXPOINT_VM` (`a01a1e8b`), the host
+fixpoint is `c640badd`, and each re-baseline is a logged change, never a silent drift.
 
 ### Working discipline (unchanged, every slice)
 Every heavy build runs in the tart macOS VM via `scripts/vm/run-slice.sh` (the host twice hit a
