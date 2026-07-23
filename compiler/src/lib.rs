@@ -5791,7 +5791,7 @@ fn bad() {
         .unwrap();
         std::fs::write(
             risc0_dir.join("risc0_metadata.json"),
-            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"__REF__","vendored_patch_path":"__VP__","patch_crates_io_active":true,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#
+            r#"{"schema_version":"1.1","backend":"risc0","verify_status":"passed","fresh_receipt_generated":true,"mock_prover":false,"dev_mode":false,"cache_used":false,"placeholder_image_id":false,"image_id_is_placeholder":false,"metal_hybrid":{"enabled":true,"reference_path":"__REF__","vendored_patch_path":"__VP__","patch_crates_io_active":false,"methods_patch_crates_io_active":true,"prover_patch_crates_io_active":false,"risc0_zkvm_version":"3.0.5","risc0_zkp_version":"3.0.4","risc0_circuit_rv32im_version":"4.0.4","lane_requested":"cpu","lane_observed":"cpu","cpu_forced_by_r0_disable_metal":true,"tier2_metal_available":false,"external_r0vm_used":false}}"#
                 .replace("__REF__", metal_ref.to_str().unwrap())
                 .replace("__VP__", vendor_patch.to_str().unwrap()),
         )
@@ -6372,8 +6372,10 @@ fn main() {
         // NON-REGRESSION: clean / declared / unapplied accept.
         tc_ok(r#"fn main() { let m = { "f": |x| 1 }; m["f"](0); }"#)
             .expect("clean map-entry closure accepts");
-        tc_ok(r#"fn main() uses(fs.write) { let m = { "f": |x| write_file("o","d") }; m["f"](0); }"#)
-            .expect("declared fs.write via map-entry closure accepts");
+        tc_ok(
+            r#"fn main() uses(fs.write) { let m = { "f": |x| write_file("o","d") }; m["f"](0); }"#,
+        )
+        .expect("declared fs.write via map-entry closure accepts");
         tc_ok(r#"fn main() { let m = { "f": |x| write_file("o","d") }; print(1); }"#)
             .expect("stored-but-unapplied map-entry closure is not enforced");
     }

@@ -1132,6 +1132,7 @@ fn risc0_metadata_check(bundle_dir: &Path) -> Option<Check> {
         .get("prover_patch_crates_io_active")
         .and_then(|v| v.as_bool())
         .unwrap_or(patch_active);
+    let patch_provenance_ok = patch_active || methods_patch_active || prover_patch_active;
     // Validate the metal-hybrid reference by existence + structure, not by matching a
     // specific ANUBIS_RISC0_METAL_REFERENCE value. prove() resolves an in-repo default
     // when the env var is unset, so the previous env-var string match (with a
@@ -1158,16 +1159,14 @@ fn risc0_metadata_check(bundle_dir: &Path) -> Option<Check> {
         && !mock_prover
         && !cache_used
         && !placeholder
-        && patch_active
-        && methods_patch_active
-        && prover_patch_active
+        && patch_provenance_ok
         && reference_ok
         && vendor_ok;
     Some(Check {
         name: "risc0_receipt_verify".into(),
         status: if passed { "PASS" } else { "FAIL" }.into(),
         detail: format!(
-            "verify_status={} fresh_receipt_generated={} dev_mode={} mock_prover={} cache_used={} placeholder_image_id={} patch_crates_io_active={} methods_patch_crates_io_active={} prover_patch_crates_io_active={} reference_ok={} vendor_ok={}",
+            "verify_status={} fresh_receipt_generated={} dev_mode={} mock_prover={} cache_used={} placeholder_image_id={} patch_crates_io_active={} methods_patch_crates_io_active={} prover_patch_crates_io_active={} patch_provenance_ok={} reference_ok={} vendor_ok={}",
             verify_status,
             fresh,
             dev_mode,
@@ -1177,6 +1176,7 @@ fn risc0_metadata_check(bundle_dir: &Path) -> Option<Check> {
             patch_active,
             methods_patch_active,
             prover_patch_active,
+            patch_provenance_ok,
             reference_ok,
             vendor_ok
         ),

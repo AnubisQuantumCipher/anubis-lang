@@ -2,7 +2,7 @@
 
 **Baseline (2026-07-05):** C-grade real prototype per ANUBIS_REALITY_AUDIT.md — the *starting* point, not the current state.
 
-**Live status is well past this baseline.** The living phase tracker is [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md): Phases 0–2 done; 3/5/6/8 at DoD; **Phase 4 (port checker into Anubis) at DoD — all three semantic engines (effect, type, taint) self-hosted and differential-matching the Rust checker**; Phase 7 advanced (native Lean-verified SMT solver); Phases 9–10 `[NEEDS-HUMAN]`.
+**Live status is well past this baseline.** The living language tracker is [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md), where phases 0–10 are already documented at the language/freeze level. For this repo-governing A+ roadmap, **Phase 9 is DONE on Thursday, July 23, 2026**: `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` returned `PASS (15/15 passed, 0 failed, 0 skipped)`, with G14 executed in a disposable tart guest. **Phase 10 is also DONE the same day** via [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md) and [`A_PLUS_CLOSEOUT.md`](A_PLUS_CLOSEOUT.md). **A+ is still NOT CLAIMED** on this checkout because no current `implementer/a_plus_audit_run/*/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` artifact exists in tree.
 
 **Target:** A+ when all 15 gates in A_PLUS_ACCEPTANCE_CRITERIA.md pass + A15 hostile audit clean.
 
@@ -54,10 +54,16 @@
 - A_PLUS_REALITY_AUDIT.md + CLAIM_MATRIX + STEP_STATUS.
 
 ## Phase 9 — Sealed Final Audit
-`scripts/audit_a_plus.sh` + repro + examples.
-Produce final A_PLUS_* reports + exact verdict block.
+**DONE (Thursday, July 23, 2026).**
+- `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` → `PASS (15/15 passed, 0 failed, 0 skipped)`.
+- Exact verdict block: [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md)
+- Sealed evidence mirror: `implementer/a_plus_audit_run/20260723-152552/final_sealed_audit/`
+- G14 offensive gate: `PASS (20/20)` with `isolation: tart-disposable-guest`
 
 ## Phase 10 — Closeout
-Exact report per plan. Only A+ if gates + A15 say so.
+**DONE (Thursday, July 23, 2026).**
+- Final reports: [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md), [`A_PLUS_CLOSEOUT.md`](A_PLUS_CLOSEOUT.md)
+- Truth surfaces refreshed to current front-door status.
+- Honest boundary preserved: only claim A+ when gates **and** a current A15 hostile audit say so.
 
 **No claims without evidence. No merge without A15 reproduction.**

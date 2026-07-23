@@ -125,7 +125,7 @@ anubis vz fuzz target.anb --iterations 100000 --allow-research
 - `anubis pack-xor --input FILE` — lab packer (T6)
 - `anubis exploit-new / exploit-run` — exploit modules
 - `anubis module-list` / `offensive-doctor --json`
-- Gate: `bash scripts/run_offensive_platform_gate.sh` (16 checks)
+- Gate: `bash scripts/run_offensive_platform_gate.sh` (20 checks; host entrypoint runs in a disposable tart guest by default)
 
 See `docs/language/OFFENSIVE_PLATFORM.md`.
 

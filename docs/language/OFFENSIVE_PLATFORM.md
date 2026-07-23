@@ -18,6 +18,9 @@ Protocol default: **`aop-2`** (AES-256-GCM encrypted beacons).
 | **T7** | Operator web console + RBAC (`role_can_queue` / `role_can_admin`) | **REAL** |
 
 Gate: `bash scripts/run_offensive_platform_gate.sh` → **20/20 PASS**.
+Host entrypoint is VZ-isolated by default: it clones a disposable tart guest from `anubis-xcode`,
+runs the full gate inside the guest, pulls the report back to the host, and deletes the guest unless
+explicitly kept.
 
 ### Industry control plane (wired, not dead scaffolding)
 

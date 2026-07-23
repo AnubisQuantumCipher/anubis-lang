@@ -17823,9 +17823,8 @@ pub(crate) fn normalize_effect_name(raw: &str) -> String {
     let s = raw.trim().to_ascii_lowercase();
     match s.as_str() {
         "fs.read" | "file_read" | "read_file" | "open" => "fs.read".into(),
-        "fs.write" | "file_write" | "write_file" | "append_file" | "delete_file" | "remove_file" => {
-            "fs.write".into()
-        }
+        "fs.write" | "file_write" | "write_file" | "append_file" | "delete_file"
+        | "remove_file" => "fs.write".into(),
         "net.send" | "net.connect" | "network" | "send" | "connect" | "network_send" => {
             "net.send".into()
         }
