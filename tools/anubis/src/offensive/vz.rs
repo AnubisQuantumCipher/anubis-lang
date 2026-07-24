@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 const VMCTL_ENV: &str = "ANUBIS_VMCTL_PATH";
 const DEFAULT_VMCTL: &str = "vmctl";
-const WORKSPACE_ROOT_ENV: &str = "HERMES_WORKSPACE_ROOT";
+const WORKSPACE_ROOT_ENV: &str = "ANUBIS_WORKSPACE_ROOT";
 const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 const EXPORTS_PREFIX: &str = "/exports/anubis-offensive";
 
@@ -77,7 +77,7 @@ pub struct VzLabConfig {
 impl Default for VzLabConfig {
     fn default() -> Self {
         Self {
-            guest_name: "hermes-security-lab".into(),
+            guest_name: "anubis-xcode".into(),
             engage_dir: PathBuf::from("out/engagements/lab"),
             sync_sources: true,
             network: VzNetwork::Off,
@@ -120,17 +120,43 @@ fn which_vmctl() -> Result<PathBuf> {
 }
 
 fn workspace_root() -> Option<String> {
-    std::env::var(WORKSPACE_ROOT_ENV).ok().or_else(|| {
-        let p = dirs::home_dir()?.join("hermes-workspace");
-        p.exists().then(|| p.display().to_string())
-    })
+    if let Ok(root) = std::env::var(WORKSPACE_ROOT_ENV) {
+        if !root.is_empty() {
+            return Some(root);
+        }
+    }
+    // Anubis Lang tree only (cwd walk, then known install path).
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = cwd.as_path();
+        loop {
+            if dir.join("Cargo.toml").is_file()
+                && (dir.join("tools/anubis").is_dir() || dir.join("AGENTS.md").is_file())
+            {
+                return Some(dir.display().to_string());
+            }
+            match dir.parent() {
+                Some(p) => dir = p,
+                None => break,
+            }
+        }
+    }
+    let candidates = [
+        PathBuf::from("/Users/sicarii/anubis-lang"),
+        dirs::home_dir()?.join("anubis-lang"),
+    ];
+    for p in candidates {
+        if p.is_dir() {
+            return Some(p.display().to_string());
+        }
+    }
+    None
 }
 
 fn run_vmctl(args: &[&str]) -> Result<std::process::Output> {
     let bin = vmctl_bin();
     let mut cmd = Command::new(&bin);
     if let Some(root) = workspace_root() {
-        cmd.env(WORKSPACE_ROOT_ENV, root);
+        cmd.env(WORKSPACE_ROOT_ENV, &root);
     }
     cmd.args(args);
     let output = cmd
@@ -185,10 +211,10 @@ pub fn find_offensive_guest(preferred: Option<&str>) -> Result<VzGuest> {
             "ANUBIS_VZ_GUEST_NOT_RUNNING: `{name}` is not running"
         ));
     }
-    // Prefer hermes-security-lab, then any running guest
+    // Prefer anubis-xcode golden base, then any running guest
     if let Some(g) = guests
         .iter()
-        .find(|g| g.name == "hermes-security-lab" && g.running)
+        .find(|g| g.name == "anubis-xcode" && g.running)
     {
         return Ok(g.clone());
     }
@@ -492,7 +518,9 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         Vec::new()
     };
     let running: Vec<_> = guests.iter().filter(|g| g.running).collect();
-    let offensive_ready = running.iter().any(|g| g.name == "hermes-security-lab");
+    let offensive_ready = running
+        .iter()
+        .any(|g| g.name == "anubis-xcode" || g.name.starts_with("anubis-offensive-gate-"));
     let mut guest_list = Vec::new();
     for g in &guests {
         guest_list.push(serde_json::json!({
@@ -505,8 +533,8 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
             "network": g.network,
         }));
     }
-    let exports_path = workspace_root()
-        .map(|r| PathBuf::from(r).join("vm/exports/hermes-security-lab/anubis-offensive"));
+    let exports_path =
+        workspace_root().map(|r| PathBuf::from(r).join("vm/exports/anubis-xcode/anubis-offensive"));
     let exports_exist = exports_path.as_ref().map(|p| p.exists()).unwrap_or(false);
     let toolchain_staged = exports_path
         .as_ref()

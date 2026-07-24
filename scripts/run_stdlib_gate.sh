@@ -38,8 +38,11 @@ BIN=./target/release/anubis
 # Always rebuild so the release binary matches the embedded stdlib under test.
 cargo build -q --release -p anubis
 
+# Prefer pure stdout lines (ignore "anubis run: compiling…" banners).
+stdout_lines() { grep -E '^(true|false|-?[0-9]+)$' "$1" 2>/dev/null || true; }
+
 if "$BIN" run tests/fixtures/stdlib/math_collections.anb --out "$OUT/math_run" >"$OUT/math_run.log" 2>&1 \
-  && grep -q "42" "$OUT/math_run.log"; then
+  && stdout_lines "$OUT/math_run.log" | grep -qx '42'; then
   pass=$((pass+1))
   note "math_collections_run: PASS"
 else
@@ -89,7 +92,7 @@ fi
 
 # 4c) Broad export smoke
 if "$BIN" run tests/fixtures/stdlib/edges_all_modules.anb --out "$OUT/edges_run" >"$OUT/edges_run.log" 2>&1 \
-  && grep -q "42" "$OUT/edges_run.log"; then
+  && stdout_lines "$OUT/edges_run.log" | grep -qx '42'; then
   pass=$((pass+1))
   note "edges_all_modules: PASS"
 else
@@ -113,7 +116,7 @@ fn main() {
 }
 ANB
 if "$BIN" run "$OUT/crypto_smoke.anb" --out "$OUT/crypto_run" >"$OUT/crypto_run.log" 2>&1 \
-  && grep -q "true" "$OUT/crypto_run.log"; then
+  && stdout_lines "$OUT/crypto_run.log" | grep -qx 'true'; then
   pass=$((pass+1))
   note "std_crypto: PASS"
 else
@@ -130,43 +133,42 @@ fn main() {
   print(crypto::password_verify("nope", s));
 }
 ANB
-if "$BIN" run "$OUT/password_smoke.anb" --out "$OUT/password_run" >"$OUT/password_run.log" 2>&1 \
-  && head -1 "$OUT/password_run.log" | grep -q 'true' \
-  && sed -n '2p' "$OUT/password_run.log" | grep -q 'false'; then
+# Capture pure program stdout lines only (banners break naive head -1).
+"$BIN" run "$OUT/password_smoke.anb" --out "$OUT/password_run" >"$OUT/password_run.log" 2>&1 || true
+_pw0=$(stdout_lines "$OUT/password_run.log" | sed -n '1p')
+_pw1=$(stdout_lines "$OUT/password_run.log" | sed -n '2p')
+if [[ "$_pw0" == "true" && "$_pw1" == "false" ]]; then
   pass=$((pass+1))
   note "std_crypto_password: PASS"
 else
   fail=$((fail+1))
-  note "std_crypto_password: FAIL"
+  note "std_crypto_password: FAIL (got: '${_pw0:-}' '${_pw1:-}'; see $OUT/password_run.log)"
 fi
 
 # 5) std.pwn gold crash (optional if vuln_local present)
 if [[ -x poc_kit/bin/vuln_local ]]; then
+  # PoC prints crash flag on first pure-numeric line (`1`); isolation banners must not count.
   if "$BIN" run examples/security/poc_stdlib_overflow.anb --allow-research --out "$OUT/poc" >"$OUT/poc.log" 2>&1 \
-    && head -1 "$OUT/poc.log" | grep -q '^1$'; then
+    && stdout_lines "$OUT/poc.log" | head -1 | grep -qx '1' \
+    && grep -qE 'crashed:[[:space:]]*1|verdict:[[:space:]]*IMPACT' "$OUT/poc.log"; then
     pass=$((pass+1))
     note "poc_stdlib_overflow: PASS"
   else
     fail=$((fail+1))
-    note "poc_stdlib_overflow: FAIL"
+    note "poc_stdlib_overflow: FAIL (see $OUT/poc.log)"
   fi
 else
   note "poc_stdlib_overflow: SKIP (build with bash poc_kit/build_vuln.sh)"
 fi
 
-# 6) Evidence bundle on pure std program
-if "$BIN" check tests/fixtures/stdlib/math_collections.anb --evidence --out "$OUT/evidence" >"$OUT/evidence.log" 2>&1; then
+# 6) Evidence bundle on pure std program (must check-clean + emit MANIFEST)
+if "$BIN" check tests/fixtures/stdlib/math_collections.anb --evidence --out "$OUT/evidence" >"$OUT/evidence.log" 2>&1 \
+  && ls "$OUT"/evidence/evidence-*/MANIFEST.sha256 >/dev/null 2>&1; then
   pass=$((pass+1))
   note "evidence: PASS"
 else
-  # check may still write partial — count PASS only if evidence dir exists
-  if ls "$OUT"/evidence/evidence-*/MANIFEST.sha256 >/dev/null 2>&1; then
-    pass=$((pass+1))
-    note "evidence: PASS (bundle present)"
-  else
-    fail=$((fail+1))
-    note "evidence: FAIL"
-  fi
+  fail=$((fail+1))
+  note "evidence: FAIL (check+manifest required; see $OUT/evidence.log)"
 fi
 
 total=$((pass+fail))

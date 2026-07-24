@@ -2,18 +2,23 @@
 //! party for the integer contract lane. ZERO external solver dependency (std only). During rollout,
 //! z3 stays the authority and this runs in SHADOW mode (`compiler` compares the two and fails closed
 //! on any disagreement), so a bug here can never certify a false contract. Once the differential gate
-//! is sustained at zero disagreements AND the bit-blaster is machine-checked in Lean, the compiler can
-//! flip to native-authoritative, shrinking the trusted computing base by all of z3.
+//! is sustained at zero disagreements, the bit-blaster is machine-checked in Lean, **and every Unsat
+//! carries a verified RUP/LRAT certificate**, the compiler can flip to native-authoritative (still
+//! opt-in until soak), shrinking the trusted computing base by all of z3 for the proven integer
+//! fragment.
 //!
-//! Pipeline: SMT-LIB2 text → `bv::Formula` (parse) → CNF (bit-blast) → `sat::Cnf::solve` → verdict.
+//! Pipeline: SMT-LIB2 text → `bv::Formula` (parse) → CNF (bit-blast) → `sat::Cnf::solve` →
+//! RUP cert check on Unsat / model replay on Sat → verdict.
 
 pub mod blast;
 pub mod bv;
 pub mod fp;
 pub mod fragment;
+pub mod lrat;
 pub mod parse;
 pub mod sat;
 
+use lrat::check_proof;
 use sat::{Cnf, SatResult};
 
 /// Default decision budget (max DPLL decisions). Sized so easy obligations decide fast and hard ones
@@ -75,14 +80,16 @@ pub fn native_check_sat_model(smt: &str) -> Option<NativeVerdict> {
 /// AUTHORITATIVE verdict (Phase-7 TCB minimization). Identical to [`native_check_sat_model`] EXCEPT it
 /// first applies the proof-backed fragment gate ([`fragment::is_proven_authoritative`]): if the
 /// obligation touches any op whose bit-blast is not machine-checked in `formal/Anubis/BitBlast.lean`
-/// (`Sub`/`Neg`/bitwise/`Ashr`/`SignExtend`/div-rem/`Ite`/var×var-`Mul`), it returns `None` (defer)
-/// rather than a native verdict.
+/// (div-rem / var×var-`Mul` / other deferred ops), it returns `None` (defer) rather than a native
+/// verdict.
 ///
-/// The compiler uses THIS on the native-authoritative path, where — in the z3-absent window — a native
-/// `Unsat` is trusted as a proof with no cross-check. The gate guarantees that trust rests only on a
-/// PROVEN blast. The un-gated [`native_check_sat_model`] stays available for SHADOW mode (every verdict
-/// there is cross-checked against z3 and fails closed on disagreement), so the full blaster keeps its
-/// differential coverage. Gating is always sound: it only ever turns a `Some` into `None`.
+/// On the native-authoritative path (z3-absent window), a native `Unsat` is trusted only when:
+/// 1. every op is in the proven fragment, and
+/// 2. the CDCL engine produced a RUP/LRAT certificate that [`lrat::check_proof`] accepts.
+///
+/// SAT still requires independent `bv::Formula::eval` model replay. Division remains deferred by
+/// design. The un-gated [`native_check_sat_model`] uses the same Unsat-cert check so no Unsat leaves
+/// this crate without a verified certificate.
 pub fn native_check_sat_model_authoritative(smt: &str) -> Option<NativeVerdict> {
     let formula = parse::parse_smt2(smt)?;
     if !fragment::is_proven_authoritative(&formula) {
@@ -97,7 +104,14 @@ pub fn native_check_sat_model_budget(smt: &str, budget: u64) -> Option<NativeVer
     let mut cnf = Cnf::new();
     let map = blast::blast_with_map(&formula, &mut cnf)?;
     match cnf.solve(budget) {
-        SatResult::Unsat => Some(NativeVerdict::Unsat),
+        // Fail-closed: never trust Unsat without an independently verified RUP certificate.
+        SatResult::Unsat(cert) => {
+            if check_proof(&cert) {
+                Some(NativeVerdict::Unsat)
+            } else {
+                None
+            }
+        }
         SatResult::Unknown => None,
         SatResult::Sat(assign) => {
             // Read each declared bit-vector's value out of the assignment (LSB first). A variable
@@ -208,5 +222,26 @@ mod tests {
         let proven = "(set-logic QF_BV)\n(declare-const x (_ BitVec 64))\n\
                       (assert (not (bvule x x)))\n(check-sat)\n";
         assert_eq!(native_check_sat_model(proven), Some(NativeVerdict::Unsat));
+    }
+
+    #[test]
+    fn authoritative_unsat_requires_valid_cert_path() {
+        // ¬(x ≤ x) is unsat on the proven fragment; authoritative must return Unsat
+        // (which only happens after lrat::check_proof accepts the CDCL certificate).
+        let proven = "(set-logic QF_BV)\n(declare-const x (_ BitVec 32))\n\
+                      (assert (not (bvule x x)))\n(check-sat)\n";
+        assert_eq!(
+            native_check_sat_model_authoritative(proven),
+            Some(NativeVerdict::Unsat)
+        );
+        assert_eq!(native_check_sat_authoritative(proven), Some(false));
+    }
+
+    #[test]
+    fn authoritative_defers_division() {
+        // bvsdiv is deferred by design — not in the proven fragment.
+        let smt = "(set-logic QF_BV)\n(declare-const x (_ BitVec 32))\n\
+                   (assert (not (= (bvsdiv x (_ bv1 32)) x)))\n(check-sat)\n";
+        assert_eq!(native_check_sat_model_authoritative(smt), None);
     }
 }

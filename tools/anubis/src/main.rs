@@ -807,8 +807,8 @@ enum Commands {
 
     /// Execute a command inside a VZ guest (network-isolated, crash-isolated).
     VzExec {
-        /// Guest name (default: hermes-security-lab).
-        #[arg(long, default_value = "hermes-security-lab")]
+        /// Guest name (default: anubis-xcode).
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         /// Command to run inside the guest.
         #[arg(long)]
@@ -827,7 +827,7 @@ enum Commands {
     VzExploit {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         /// Path to exploit module JSON.
         #[arg(long)]
@@ -840,7 +840,7 @@ enum Commands {
     VzFuzz {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         #[arg(long)]
         target: String,
@@ -856,7 +856,7 @@ enum Commands {
     VzAgentTest {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         #[arg(long, default_value = "vz-agent0")]
         name: String,
@@ -870,7 +870,7 @@ enum Commands {
     VzC2Cycle {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         #[arg(long, default_value = "vz-c2-agent")]
         agent_name: String,
@@ -884,7 +884,7 @@ enum Commands {
     VzStress {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         #[arg(long)]
         json: bool,
@@ -892,7 +892,7 @@ enum Commands {
 
     /// Start a VZ guest (network-isolated by default).
     VzStart {
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         /// Network mode: off (default), loopback, nat.
         #[arg(long, default_value = "off")]
@@ -901,7 +901,7 @@ enum Commands {
 
     /// Stop a VZ guest.
     VzStop {
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
     },
 
@@ -909,7 +909,7 @@ enum Commands {
     VzSync {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         /// Project root to sync from (default: current directory).
         #[arg(long, default_value = ".")]
@@ -918,7 +918,7 @@ enum Commands {
 
     /// Run the Anubis test suite inside a VZ guest.
     VzTestSuite {
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         /// Optional test filter pattern.
         #[arg(long)]
@@ -929,7 +929,7 @@ enum Commands {
 
     /// Snapshot a VZ guest for reproducible offensive testing.
     VzSnapshot {
-        #[arg(long, default_value = "hermes-security-lab")]
+        #[arg(long, default_value = "anubis-xcode")]
         guest: String,
         #[arg(long)]
         label: String,

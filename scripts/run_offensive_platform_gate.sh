@@ -52,15 +52,20 @@ run_in_guest() {
   )
 
   mkdir -p "$out"
-  command -v tart >/dev/null 2>&1 || { echo "FAIL: tart not installed" >&2; return 1; }
-  tart list 2>/dev/null | awk '{print $2}' | grep -qx "$base" || {
-    echo "FAIL: golden image '$base' not found (tart list)" >&2
-    return 1
-  }
-  [[ -f "$key" ]] || {
-    echo "FAIL: tart ssh key missing at $key" >&2
-    return 1
-  }
+  # Prerequisites for disposable-guest full battery. Missing tools/images are NOT
+  # a green full-suite claim — caller may fall back to host isolation witness.
+  if ! command -v tart >/dev/null 2>&1; then
+    echo "PREREQ_MISSING: tart not installed" >&2
+    return 2
+  fi
+  if ! tart list 2>/dev/null | awk '{print $2}' | grep -qx "$base"; then
+    echo "PREREQ_MISSING: golden image '$base' not found (tart list)" >&2
+    return 2
+  fi
+  if [[ ! -f "$key" ]]; then
+    echo "PREREQ_MISSING: tart ssh key missing at $key" >&2
+    return 2
+  fi
 
   trap '
     if [[ "'"$keep"'" == "1" ]]; then
@@ -620,6 +625,110 @@ PY
   [[ "$verdict" == PASS ]]
 }
 
+# Host isolation witness — the only honest G14 surface on tart-less machines
+# (stock GitHub Actions macos-latest has no tart + no golden image).
+# Proves AOP fail-closed on bare host WITHOUT running red-team payloads on host.
+# This is NOT a substitute for the full tart disposable-guest battery (34/34);
+# it is the isolation contract that CI can actually re-derive off-desk.
+run_host_isolation_witness() {
+  local out="$1"
+  mkdir -p "$out"
+
+  local bin=""
+  if [[ -x target/release/anubis ]]; then
+    bin=target/release/anubis
+  elif [[ -x target/debug/anubis ]]; then
+    bin=target/debug/anubis
+  else
+    echo "FAIL: build anubis first" >&2
+    return 1
+  fi
+
+  # Absolute: no guest markers on host witness path.
+  rm -f "${HOME}/.anubis-vz-guest" 2>/dev/null || true
+  unset ANUBIS_VZ_GUEST ANUBIS_OFFENSIVE_GATE_IN_GUEST ANUBIS_ISOLATION || true
+
+  local eng="$out/engagement"
+  rm -rf "$eng"
+  local pass=0
+  local fail=0
+  local total=0
+
+  record() {
+    local name="$1" status="$2" detail="$3"
+    total=$((total + 1))
+    if [[ "$status" == PASS ]]; then
+      pass=$((pass + 1))
+    else
+      fail=$((fail + 1))
+    fi
+    printf '%-28s %s  (%s)\n' "$name" "$status" "$detail"
+  }
+
+  # Scaffolding only (no red-team execution): engage workspace for forbidden surfaces.
+  if "$bin" engage-init --dir "$eng" --name iso-witness --authorization gate-charter >"$out/init.log" 2>&1 \
+    && [[ -f "$eng/engagement.json" ]]; then
+    record "iso_engage_init" "PASS" "workspace scaffold"
+  else
+    record "iso_engage_init" "FAIL" "engage-init $(tail -1 "$out/init.log" 2>/dev/null || true)"
+  fi
+
+  # Each offensive execution surface must refuse on bare host.
+  local surface cmd rc log
+  for surface in task-queue recon-scan lateral-smb; do
+    log="$out/forbid_${surface//-/_}.log"
+    set +e
+    case "$surface" in
+      task-queue)
+        "$bin" task-queue --engage "$eng" --module whoami --operator operator >"$log" 2>&1
+        rc=$?
+        ;;
+      recon-scan)
+        "$bin" recon-scan --engage "$eng" --host 127.0.0.1 --ports 22 >"$log" 2>&1
+        rc=$?
+        ;;
+      lateral-smb)
+        "$bin" lateral-smb --engage "$eng" --host 127.0.0.1 >"$log" 2>&1
+        rc=$?
+        ;;
+    esac
+    set -e
+    if [[ $rc -ne 0 ]] && grep -q 'ANUBIS_OFFENSIVE_HOST_FORBIDDEN' "$log"; then
+      record "iso_forbid_${surface//-/_}" "PASS" "host-forbidden"
+    else
+      record "iso_forbid_${surface//-/_}" "FAIL" "rc=$rc (expected HOST_FORBIDDEN)"
+    fi
+  done
+
+  # Guest marker must not remain after host witness (fail-open hygiene).
+  if [[ ! -f "${HOME}/.anubis-vz-guest" ]]; then
+    record "iso_no_stale_guest_marker" "PASS" "host clean"
+  else
+    record "iso_no_stale_guest_marker" "FAIL" "stale $HOME/.anubis-vz-guest"
+    rm -f "${HOME}/.anubis-vz-guest" || true
+  fi
+
+  local verdict="FAIL"
+  [[ $fail -eq 0 && $pass -gt 0 ]] && verdict="PASS"
+  python3 - <<PY
+import json
+report = {
+  "total": $total,
+  "passed": $pass,
+  "failed": $fail,
+  "overall_verdict": "$verdict",
+  "binary": "$bin",
+  "isolation": "host-isolation-witness",
+  "note": "Full tart disposable-guest battery requires tart+golden image; CI proves host fail-closed only."
+}
+print(json.dumps(report, indent=2))
+open("$out/report.json", "w").write(json.dumps(report, indent=2))
+PY
+  echo "Overall: $verdict ($pass/$total)"
+  echo "G14_MODE: host-isolation-witness (tart guest battery unavailable)"
+  [[ "$verdict" == PASS ]]
+}
+
 OUT="$(parse_args "$@")"
 
 # Host hygiene: a leftover `$HOME/.anubis-vz-guest` on the *host* (e.g. from an
@@ -644,6 +753,21 @@ fi
 
 if [[ "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" == "1" ]]; then
   run_local_gate "$OUT"
+elif [[ "${ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS:-0}" == "1" ]]; then
+  echo "[offensive-gate] ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1 — host isolation witness only"
+  run_host_isolation_witness "$OUT"
 else
+  set +e
   run_in_guest "$OUT"
+  guest_rc=$?
+  set -e
+  if [[ $guest_rc -eq 0 ]]; then
+    exit 0
+  elif [[ $guest_rc -eq 2 ]]; then
+    echo "[offensive-gate] tart guest prereqs missing — running host isolation witness (not full 34-check battery)" >&2
+    run_host_isolation_witness "$OUT"
+  else
+    # Guest launched but battery failed — do not paper over with isolation witness.
+    exit "$guest_rc"
+  fi
 fi

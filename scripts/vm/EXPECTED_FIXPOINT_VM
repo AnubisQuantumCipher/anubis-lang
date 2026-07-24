@@ -101,4 +101,11 @@
 #     gate 9/9 (interproc code uses only emitted-interpreter builtins keys/get/has_key/len/push); whole-
 #     corpus SH ⊆ Rust 512 .anb / ~15 emitters / 0 spurious. Phase 4: ALL 3 engines self-hosted AND matching
 #     Rust (effect DIFFERENTIAL-COMPLETE, type arg/return, taint interprocedural).
-a01a1e8b0ea1ade16a608d0c0d632db223a4f4cda101e099233696ca78fe2b69
+#   a01a1e8b…2b69 -> 189ac496…5fc8  (2026-07-24, heavy-gate re-seal after AOP isolation + harness debt)
+#     Trigger: post–Phase-4 commits (runtime delete_file/cap surfaces, map-entry closure launder
+#     close, AOP tart-mandatory offensive gate, hermes→anubis VZ renames) without anubis_sh.anb
+#     edit. Host selfhost still stage2==stage3 PASS (9/9); host binary fixpoint
+#     9030e24b…780c (macOS host). VM battery all EXIT=0 (language 244/244, security 123/123,
+#     stdlib 11/11, shadow unexpected=0, seal 9/9, dogfood 3/3, effect/capset/type/taint SH 0-disagreements).
+#     Absolute VM binary digest moved → deliberate re-baseline (not silent drift).
+189ac49618ccf193008ba81648caeb37657a348f7c39d111ffd6aad9a6b95fc8

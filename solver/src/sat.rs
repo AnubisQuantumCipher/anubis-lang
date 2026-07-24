@@ -6,8 +6,14 @@
 //! `Unknown` (NOT a verdict), which the caller maps to "defer to z3". So the solver is SOUND by
 //! construction: it only ever answers `Sat` (with a witnessed model) or `Unsat` when it has actually
 //! decided the formula (SAT = a full satisfying assignment; UNSAT = a conflict derived at decision
-//! level 0, i.e. a resolution refutation); anything it cannot finish within budget is `Unknown`,
-//! never a guessed verdict.
+//! level 0, i.e. a root refutation **with a checkable RUP/LRAT certificate**); anything it cannot
+//! finish within budget is `Unknown`, never a guessed verdict.
+//!
+//! Every `Unsat` carries a self-contained [`crate::lrat::UnsatCert`]: the original DIMACS CNF plus a
+//! sequence of RUP-derived clauses ending in the empty clause. Callers must run
+//! [`crate::lrat::check_proof`] before trusting the verdict (the library API does this).
+
+use crate::lrat::{LratStep, UnsatCert};
 
 /// A boolean variable, 0-indexed.
 pub type Var = usize;
@@ -58,10 +64,26 @@ enum LBool {
 pub enum SatResult {
     /// Satisfiable, with a full model (one bool per variable).
     Sat(Vec<bool>),
-    /// Unsatisfiable — decided (a real proof of no model within the finite bit-vector domain).
-    Unsat,
+    /// Unsatisfiable — decided, with a self-contained RUP certificate of the root refutation.
+    Unsat(UnsatCert),
     /// Not decided within the budget — the caller must fall back (to z3). Never a guessed verdict.
     Unknown,
+}
+
+/// DIMACS encoding of a solver literal (`var+1`, negated if negative polarity).
+#[inline]
+fn lit_dimacs(l: Lit) -> i32 {
+    let v = (l.var() + 1) as i32;
+    if l.is_neg() {
+        -v
+    } else {
+        v
+    }
+}
+
+#[inline]
+fn clause_dimacs(lits: &[Lit]) -> Vec<i32> {
+    lits.iter().map(|&l| lit_dimacs(l)).collect()
 }
 
 /// A CNF instance built incrementally.
@@ -94,8 +116,14 @@ impl Cnf {
 
     /// Solve with a *conflict* budget (max number of conflicts before giving up). Returns `Unknown`
     /// if the budget is exhausted — sound: an undecided formula is never a verdict.
+    ///
+    /// On `Unsat`, the certificate's `original` is the post-simplify CNF (no tautologies) and
+    /// `steps` is a RUP derivation ending in the empty clause.
     pub fn solve(&self, budget: u64) -> SatResult {
         let mut solver = Solver::new(self.num_vars);
+        let mut original: Vec<Vec<i32>> = Vec::with_capacity(self.clauses.len());
+        let mut next_id: u32 = 1;
+
         // Load and lightly simplify the clause database.
         for raw in &self.clauses {
             let mut lits: Vec<Lit> = Vec::with_capacity(raw.len());
@@ -113,12 +141,32 @@ impl Cnf {
             if tautology {
                 continue;
             }
+            let dimacs = clause_dimacs(&lits);
+            original.push(dimacs);
+            next_id += 1;
             match lits.len() {
-                0 => return SatResult::Unsat, // empty clause ⇒ UNSAT
+                0 => {
+                    // Empty clause in the formula ⇒ UNSAT with trivial empty RUP step.
+                    return SatResult::Unsat(UnsatCert {
+                        num_vars: self.num_vars,
+                        original,
+                        steps: vec![LratStep {
+                            id: next_id,
+                            lits: vec![],
+                        }],
+                    });
+                }
                 1 => {
                     // Unit clause: assign at decision level 0. Conflicting units ⇒ UNSAT.
                     if !solver.add_unit(lits[0]) {
-                        return SatResult::Unsat;
+                        return SatResult::Unsat(UnsatCert {
+                            num_vars: self.num_vars,
+                            original,
+                            steps: vec![LratStep {
+                                id: next_id,
+                                lits: vec![],
+                            }],
+                        });
                     }
                 }
                 _ => {
@@ -126,7 +174,7 @@ impl Cnf {
                 }
             }
         }
-        solver.search(budget)
+        solver.search(budget, original, next_id)
     }
 }
 
@@ -587,10 +635,14 @@ impl Solver {
     }
 
     /// The CDCL search loop, bounded by a conflict budget.
-    fn search(&mut self, budget: u64) -> SatResult {
+    ///
+    /// `original` / `next_id` track the certificate: every learned clause is appended as a RUP
+    /// step; a decision-level-0 conflict closes with an empty-clause step.
+    fn search(&mut self, budget: u64, original: Vec<Vec<i32>>, mut next_id: u32) -> SatResult {
         let mut conflicts_since_restart: u64 = 0;
         let mut restart_num: u64 = 1;
         let mut restart_limit = luby(restart_num) * RESTART_BASE;
+        let mut steps: Vec<LratStep> = Vec::new();
 
         loop {
             match self.propagate() {
@@ -598,14 +650,29 @@ impl Solver {
                     self.conflicts += 1;
                     conflicts_since_restart += 1;
                     if self.decision_level() == 0 {
-                        // A conflict with no decisions in play is a root refutation ⇒ UNSAT.
-                        return SatResult::Unsat;
+                        // Root refutation: all prior learned steps + empty clause.
+                        steps.push(LratStep {
+                            id: next_id,
+                            lits: vec![],
+                        });
+                        return SatResult::Unsat(UnsatCert {
+                            num_vars: self.num_vars,
+                            original,
+                            steps,
+                        });
                     }
                     if self.conflicts > budget {
                         return SatResult::Unknown;
                     }
                     let (learnt, bt_level) = self.analyze(confl);
                     self.cancel_until(bt_level);
+                    // Emit the learned clause as a RUP step (1-UIP clauses are RUP-implied).
+                    let dimacs = clause_dimacs(&learnt);
+                    steps.push(LratStep {
+                        id: next_id,
+                        lits: dimacs,
+                    });
+                    next_id += 1;
                     if learnt.len() == 1 {
                         self.enqueue(learnt[0], None);
                     } else {
@@ -663,7 +730,15 @@ mod tests {
         let mut c = Cnf::new();
         c.new_var();
         c.add_clause(vec![]);
-        assert_eq!(c.solve(1000), SatResult::Unsat);
+        match c.solve(1000) {
+            SatResult::Unsat(cert) => {
+                assert!(
+                    crate::lrat::check_proof(&cert),
+                    "empty-clause cert must verify"
+                );
+            }
+            other => panic!("expected Unsat, got {other:?}"),
+        }
     }
 
     #[test]
@@ -673,7 +748,15 @@ mod tests {
         let x = c.new_var();
         c.add_clause(vec![Lit::pos(x)]);
         c.add_clause(vec![Lit::new(x, true)]);
-        assert_eq!(c.solve(1000), SatResult::Unsat);
+        match c.solve(1000) {
+            SatResult::Unsat(cert) => {
+                assert!(
+                    crate::lrat::check_proof(&cert),
+                    "unit-conflict cert must verify"
+                );
+            }
+            other => panic!("expected Unsat, got {other:?}"),
+        }
     }
 
     #[test]
@@ -708,7 +791,12 @@ mod tests {
         c.add_clause(vec![Lit::pos(p1)]);
         c.add_clause(vec![Lit::pos(p2)]);
         c.add_clause(vec![Lit::new(p1, true), Lit::new(p2, true)]);
-        assert_eq!(c.solve(1000), SatResult::Unsat);
+        match c.solve(1000) {
+            SatResult::Unsat(cert) => {
+                assert!(crate::lrat::check_proof(&cert), "pigeon-2 cert must verify");
+            }
+            other => panic!("expected Unsat, got {other:?}"),
+        }
     }
 
     #[test]
@@ -734,7 +822,15 @@ mod tests {
                 }
             }
         }
-        assert_eq!(c.solve(100_000), SatResult::Unsat);
+        match c.solve(100_000) {
+            SatResult::Unsat(cert) => {
+                assert!(
+                    crate::lrat::check_proof(&cert),
+                    "pigeon-4x3 cert must verify"
+                );
+            }
+            other => panic!("expected Unsat, got {other:?}"),
+        }
     }
 
     /// Deterministic xorshift64 RNG — no external crate.
@@ -804,7 +900,11 @@ mod tests {
                         disagreements += 1;
                     }
                 }
-                SatResult::Unsat => {
+                SatResult::Unsat(cert) => {
+                    assert!(
+                        crate::lrat::check_proof(&cert),
+                        "every CDCL Unsat must carry a valid RUP cert"
+                    );
                     checked += 1;
                     if bf {
                         disagreements += 1;

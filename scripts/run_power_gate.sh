@@ -52,21 +52,47 @@ PY
 then record "proof_assert_range" "PASS" "private x public bounds"; else record "proof_assert_range" "FAIL" "see assert_ok.log"; fi
 
 # 3) Engagement receipts chain
+# Isolation: task-queue / lateral-smb are AOP host-forbidden (require VZ guest markers).
+# Host-allowed control plane: engage-init, receipt-verify.
+# For the receipt chain we run the AOP queue steps under the same lab guest markers
+# used by scripts/run_offensive_platform_gate.sh (ANUBIS_VZ_GUEST / GATE_IN_GUEST),
+# without permanently spoofing ~/.anubis-vz-guest on the host.
 ENG="$OUT/engage"
 rm -rf "$ENG"
 "$BIN" engage-init --dir "$ENG" --name power --authorization power-gate >/dev/null
-"$BIN" task-queue --engage "$ENG" --module whoami --operator operator >/dev/null
-"$BIN" lateral-smb --engage "$ENG" --host 127.0.0.1 >/dev/null
+
+# 3a) Host isolation honesty: task-queue must FAIL closed on bare host (no guest env).
 set +e
+env -u ANUBIS_VZ_GUEST -u ANUBIS_OFFENSIVE_GATE_IN_GUEST -u ANUBIS_ISOLATION \
+  "$BIN" task-queue --engage "$ENG" --module whoami --operator operator \
+  >"$OUT/task_queue_host_forbid.log" 2>&1
+hq_rc=$?
+set -e
+if [[ $hq_rc -ne 0 ]] && grep -q 'ANUBIS_OFFENSIVE_HOST_FORBIDDEN' "$OUT/task_queue_host_forbid.log"; then
+  record "aop_host_isolation" "PASS" "task-queue host-forbidden"
+else
+  record "aop_host_isolation" "FAIL" "rc=$hq_rc (expected OFFENSIVE_HOST_FORBIDDEN)"
+fi
+
+# 3b) Receipt chain under guest markers (lab path; matches offensive platform gate local mode).
+set +e
+ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 ANUBIS_ISOLATION=tart-disposable-guest \
+  "$BIN" task-queue --engage "$ENG" --module whoami --operator operator \
+  >"$OUT/task_queue_guest.log" 2>&1
+tq_rc=$?
+ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 ANUBIS_ISOLATION=tart-disposable-guest \
+  "$BIN" lateral-smb --engage "$ENG" --host 127.0.0.1 \
+  >"$OUT/lateral_smb_guest.log" 2>&1
+ls_rc=$?
 "$BIN" receipt-verify --engage "$ENG" --json >"$OUT/receipts.json" 2>&1
 rrc=$?
 set -e
-if [[ $rrc -eq 0 ]] && grep -q '"count": 3' "$OUT/receipts.json"; then
-  record "engagement_receipts" "PASS" "chain count=3"
+if [[ $tq_rc -eq 0 && $ls_rc -eq 0 && $rrc -eq 0 ]] && grep -q '"count": 3' "$OUT/receipts.json"; then
+  record "engagement_receipts" "PASS" "chain count=3 (guest markers)"
 else
-  record "engagement_receipts" "FAIL" "rc=$rrc $(cat $OUT/receipts.json | tr '\n' ' ')"
+  record "engagement_receipts" "FAIL" "tq=$tq_rc ls=$ls_rc rv=$rrc $(tr '\n' ' ' <"$OUT/receipts.json" 2>/dev/null)"
 fi
-# Tamper tip → must fail
+# Tamper tip → must fail (host receipt-verify is control-plane)
 if [[ -f "$ENG/evidence/receipts/tip.json" ]]; then
   echo '{"seq":99,"receipt_hash":"deadbeef"}' > "$ENG/evidence/receipts/tip.json"
   set +e

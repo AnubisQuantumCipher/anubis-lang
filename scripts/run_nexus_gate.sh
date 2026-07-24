@@ -55,7 +55,7 @@ import re, sys, json
 path = sys.argv[1]
 outj = sys.argv[2]
 text = open(path).read()
-# lines like:   # 1  hermes-coder    kind=2  ALLOW   taint=...
+# lines like:   # 1  agent-label    kind=2  ALLOW   taint=...
 pat = re.compile(r"^\s*#\s*(\d+)\s+\S+\s+kind=\d+\s+(ALLOW|WATCH|HOLD|DENY|ABORT)\b", re.M)
 rows = pat.findall(text)
 labels = [lab for _, lab in rows]

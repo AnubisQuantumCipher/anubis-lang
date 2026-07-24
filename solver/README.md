@@ -46,7 +46,11 @@ SMT-LIB2 text ──parse──▶ bv::Formula ──bit-blast──▶ CNF ─�
   and `div`/`rem` are still declined (→ `None` → z3).
 - **`sat.rs`** — a **CDCL** SAT engine (watched literals, 1-UIP clause learning, VSIDS, Luby restarts)
   bounded by a *conflict* budget; over budget → `Unknown` (decline). `Unsat` is only ever returned via a
-  conflict at decision level 0 (a root refutation), so a "proof" is sound by construction.
+  conflict at decision level 0 (a root refutation), and every Unsat carries a self-contained
+  **RUP/LRAT certificate** (original DIMACS CNF + derived clauses ending in empty).
+- **`lrat.rs`** — a pure, independent RUP checker. No CDCL. `check_proof` accepts a certificate only if
+  every step is reverse-unit-propagation and the terminal step is the empty clause. Adversarial
+  forgeries (truncated, SAT formulas with forged empty, non-RUP learned clauses) are rejected.
 
 ## The one entry point
 
@@ -55,14 +59,16 @@ anubis_solver::native_check_sat(smt: &str) -> Option<bool>
 ```
 
 - `Some(true)`  — **SAT**: a model of `assumptions ∧ ¬property` exists → the property is **not** proven
-  (a counterexample). Same meaning as z3 answering `sat`.
-- `Some(false)` — **UNSAT**: no model → the property is **proven**. Same as z3 `unsat`.
-- `None`        — the solver **declines**: out-of-fragment, or undecided within budget → defer to z3.
+  (a counterexample). Same meaning as z3 answering `sat`. Model is replayed by independent `eval`.
+- `Some(false)` — **UNSAT**: no model → the property is **proven**. Same as z3 `unsat`. Returned only
+  when CDCL emits a certificate **and** `lrat::check_proof` accepts it. Missing/invalid cert → `None`.
+- `None`        — the solver **declines**: out-of-fragment, undecided within budget, or Unsat cert
+  failed verification → defer to z3.
 
-**Soundness is structural.** A definite verdict is returned *only* when the input parsed as pure
-QF_BV, every term bit-blasted with a supported gate, and the SAT engine actually decided the CNF.
-Anything else is `None`. So this can sit in front of z3 without ever changing a verdict z3 would not
-also give — *provided the bit-blaster is correct*, which is what the validation below establishes.
+**Soundness is structural.** A definite Unsat is returned *only* when the input parsed as pure QF_BV
+(or a BV-lowered subset), every term bit-blasted with a supported gate, the SAT engine produced a
+root refutation, **and** the independent RUP checker verified the certificate. SAT requires model
+replay. Anything else is `None`.
 
 ## Rollout: shadow → opt-in authoritative → default flip
 
@@ -73,23 +79,25 @@ There are three compiler modes, each a strictly bolder step, all gated:
   primary proof stream), z3 stays authoritative, disagreements fail `scripts/run_native_shadow_gate.sh`.
   Current: **243/293 real obligations decided by native, 0 disagreements** (the 50 deferrals are the
   non-BV float/string/array obligations).
-- **`ANUBIS_NATIVE_AUTHORITATIVE=1` (opt-in):** native *decides* every QF_BV obligation it can, and z3
-  is consulted only as a fail-closed cross-check while present. With z3 **absent**, native alone
-  carries the integer lane — the actual TCB drop. `scripts/run_native_authoritative_gate.sh` proves
-  this is safe: **verdict-equivalent to z3 over the whole corpus (326 files, 0 mismatches, 0
-  disagreements)**, and native alone (z3 hidden) proves the passing int fixture and rejects the
-  violating one, while the default mode without z3 fails (z3 was load-bearing). The default flip
-  follows after soak.
+- **`ANUBIS_NATIVE_AUTHORITATIVE=1` (opt-in):** native *decides* every **proof-backed fragment**
+  obligation it can (see `fragment.rs`), and z3 is consulted only as a fail-closed cross-check while
+  present. With z3 **absent**, native alone carries that fragment — Unsat only with a **verified RUP
+  certificate**. `scripts/run_native_authoritative_gate.sh` proves this is safe (cert suite + corpus
+  equivalence + z3-hidden demo + Lean drift). **Division and var×var mul stay deferred by design.**
+  The **default flip is now possible** after this certificate path soaks green; the compiler default
+  remains z3 until that product step.
 
 ## How we know it's correct (and why it can't cause a false accept)
 
-1. **Shadow, don't trust.** During rollout **z3 stays the authority** — the native answer is only
-   *compared*, and any disagreement fails the cross-check gate. In authoritative mode native's verdict
-   is used but every one is still cross-checked against z3 while it is present (a disagreement fails
-   *closed* — reject). A native bug is *caught*, never silently *trusted*.
+1. **Shadow, don't trust.** During rollout **z3 stays the authority by default** — the native answer is
+   only *compared* under shadow/authoritative-with-z3, and any disagreement fails closed. In
+   z3-absent authoritative mode, trust rests on proven blast + **verified Unsat certificate** (or
+   SAT model replay), not on an uncheckable CDCL claim.
    - **SAT is self-replayed.** A native `sat` (counterexample) is returned only after the reconstructed
      model is re-verified by an *independent* concrete evaluator (`bv::Formula::eval`, sharing no code
-     with the bit-blaster or SAT engine) — the native equivalent of the z3 counterexample replay.
+     with the bit-blaster or SAT engine).
+   - **UNSAT is certified.** A native `unsat` is returned only after `lrat::check_proof` accepts the
+     CDCL-emitted RUP derivation ending in the empty clause.
 2. **Differential vs z3.** `tests/differential.rs` runs thousands of random QF_BV formulas plus
    hand-crafted 64-bit edge cases (wrapping overflow, signed `MIN`, the u32 mask, extract, sign-extend)
    through both native and z3 and asserts they agree wherever native decides. Current: **2000 small +
@@ -104,14 +112,16 @@ There are three compiler modes, each a strictly bolder step, all gated:
    offset-binary identity `flipMsb_val`). All depend only on the three standard Lean core axioms — no
    `sorry`/`admit`/`native_decide`.
 
-Only once the cross-check gate is sustained at zero disagreements **and** the bit-blaster is fully
-mechanized does the compiler flip to native-authoritative, dropping z3 from the trusted base for the
-integer lane.
+**Certificate residual (closed):** CDCL Unsat now emits RUP/LRAT and is independently verified.
+**Default flip residual (product soak):** compiler still defaults to z3; flip when
+`run_native_authoritative_gate.sh` stays green under soak and operators choose to change the default.
+Division / var×var mul remain deferred forever-or-until-proven — not part of this residual.
 
 ## Status / next
 
 - ✅ parser, bit-blaster, `native_check_sat`, differential + corpus shadow.
-- ✅ adder **and** comparator machine-checked in Lean (`rippleCarry_spec`, `ult_correct`).
-- ✅ CDCL engine (watched literals, 1-UIP learning, VSIDS, Luby restarts) — wide 32-bit formulas
-  decide in-budget (600/600, 0 deferred).
-- ⬜ native lanes for floats / strings / arrays; the z3-authoritative flip.
+- ✅ adder **and** comparator (and the rest of the proven fragment) machine-checked in Lean.
+- ✅ CDCL engine (watched literals, 1-UIP learning, VSIDS, Luby restarts).
+- ✅ **RUP/LRAT Unsat certificates** + independent checker (`lrat.rs`); Unsat fail-closed without them.
+- ⬜ product soak then optional default flip of `ANUBIS_NATIVE_AUTHORITATIVE` (not automatic).
+- ⬜ division / var×var mul remain deferred by design; float arithmetic / non-eq string ops still z3.

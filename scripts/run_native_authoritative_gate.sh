@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Phase-7 z3-authoritative flip gate. Proves the native QF_BV solver can CARRY the integer lane:
 #
+#   0. RUP/LRAT CERT SUITE — every Unsat from CDCL carries a checkable certificate; adversarial
+#      forgeries are rejected (`cargo test -p anubis-solver lrat`).
 #   1. VERDICT EQUIVALENCE — `anubis check` over the whole corpus, default mode vs
 #      `ANUBIS_NATIVE_AUTHORITATIVE=1` (z3 present, so every native verdict is cross-checked and any
 #      disagreement fails closed + prints ANUBIS_NATIVE_DISAGREE). Requires: identical per-file exit
@@ -8,14 +10,32 @@
 #   2. TCB-DROP DEMO — with z3 REMOVED from PATH: the pure-int proving fixture still checks green and
 #      the violating fixture is still rejected under the flag, while WITHOUT the flag the same
 #      z3-less check fails (proving z3 really was load-bearing before, i.e. the flip is what drops it).
+#      Unsat under this path requires a verified RUP certificate (fail-closed if missing/invalid).
 #
-# Exit 0 = z3 is demonstrably droppable for the integer lane (equivalence + demo hold).
+# Exit 0 = z3 is demonstrably droppable for the integer lane (cert + equivalence + demo hold).
+# Does NOT flip the compiler default; that remains a product soak step after this gate stays green.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 BIN=./target/release/anubis
 
 CARGO_BUILD_JOBS=6 cargo build -q --release -p anubis
+
+# ---- Certificate path (RUP/LRAT emit + independent checker) ----
+cert_fail=0
+if ! cargo test -q -p anubis-solver lrat -- --test-threads=4; then
+  echo "FATAL: anubis-solver lrat certificate tests failed"
+  cert_fail=1
+fi
+if ! cargo test -q -p anubis-solver sat:: -- --test-threads=4; then
+  echo "FATAL: anubis-solver sat tests failed (Unsat cert emission)"
+  cert_fail=1
+fi
+if [ "$cert_fail" -ne 0 ]; then
+  echo "NATIVE_AUTHORITATIVE_GATE: FAIL (certificate suite)"
+  exit 1
+fi
+echo "NATIVE_AUTHORITATIVE cert suite: PASS (lrat + sat Unsat certificates)"
 
 command -v z3 >/dev/null || { echo "FATAL: z3 not on PATH — the equivalence half needs it"; exit 1; }
 command -v timeout >/dev/null || { echo "FATAL: coreutils timeout missing"; exit 1; }
