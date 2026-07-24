@@ -1,0 +1,11 @@
+step	status	evidence	note
+a15_frontdoor	PASS	gate_report.json	15/15 PASS on 2026-07-24; out/a_plus_a15_frontdoor_20260724-154145
+a15_g14_offensive_t9	PASS	g14_offensive/report.json	34/34 tart-disposable-guest (was 20/20 at phase9 seal)
+a15_host_isolation	PASS	GATING_EVIDENCE.log	stale ~/.anubis-vz-guest fail-open fixed; host forbid re-verified
+a15_guest_rebuild	PASS	scripts/run_offensive_platform_gate.sh	always cargo build --release -p anubis in guest hop
+a15_clippy_t9	PASS	attck.rs + opsec.rs	manual_pattern + manual_clamp fixed
+a15_rust_min_stack	PASS	.cargo/config.toml + audit_unified.sh	clap unit tests no longer stack-overflow
+a15_hostile_findings_open	NONE	A15_FULL_LANGUAGE_AUDIT.md	F1–F4 remediated and re-sealed
+phase9_historical	DONE	out/a_plus_phase9_final_rerun_20260723	prior 15/15 still on disk
+phase10_closeout	DONE	A_PLUS_CLOSEOUT.md	docs lane complete; A+ now supported by this A15
+a_plus_label	CLAIMED	A15_FULL_LANGUAGE_AUDIT.md + gate_report.json	gates green + current A15 clean after remediation

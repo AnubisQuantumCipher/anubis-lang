@@ -211,7 +211,7 @@ Anubis carries a full, **engagement-scoped** offensive platform for authorized s
 | **Engagement platform (AOP)** | ✅ | scoped workspaces (`engage-init`, authorization charter), an HTTP/JSON C2 listener, beacon `agent-generate`, task queue, and a **fail-closed action-receipt hash chain** (`receipt-verify`) — every action is accountable |
 | **Isolated execution** | ✅ | `vz-exploit` / `vz-fuzz` / `vz-c2-cycle` / `vz-stress` run the whole battery inside a crash- and egress-isolated guest — no host risk |
 | **Reporting** | ✅ | `anubis bounty-report` turns an evidence bundle into a structured responsible-disclosure report |
-| **High-risk primitives** | 🟡 | process injection and Windows lateral movement are **PLAN_ONLY** (emit a plan, never execute) — a deliberate safety boundary |
+| **High-risk primitives** | 🟡 | process injection is **PLAN_ONLY by default**; live inject requires double authorization. SMB/WinRM lateral remains **PLAN_ONLY** (never executes) |
 
 ### 📦 Evidence, packages & crypto — sign the truth, ship it, re-check it
 

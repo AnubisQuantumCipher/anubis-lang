@@ -1,10 +1,10 @@
 # A+ Final Report
 
-**Date:** Thursday, July 23, 2026  
+**Date:** Friday, July 24, 2026  
 **Branch:** `a-plus-maturity/20260705-1649`  
-**HEAD:** `2e44f7e779c69432533b317e1ab4dfcd8a5fc668`
+**Tree base HEAD:** `39a07ec827a6893e48d671f974adf9040896a368`
 
-## Phase 9 Verdict
+## Phase 9 Verdict (historical)
 
 Command:
 
@@ -12,19 +12,35 @@ Command:
 bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723
 ```
 
+Result (2026-07-23):
+
+```text
+Overall: PASS (15/15 passed, 0 failed, 0 skipped)
+```
+
+G14 at that seal: **20/20** with `isolation: tart-disposable-guest`.
+
+## A15 re-seal Verdict (current)
+
+Command:
+
+```bash
+bash scripts/audit_a_plus.sh --out out/a_plus_a15_frontdoor_20260724-154145
+```
+
 Result:
 
 ```text
 Overall: PASS (15/15 passed, 0 failed, 0 skipped)
-Report: out/a_plus_phase9_final_rerun_20260723/gate_report.json
-Log: out/a_plus_phase9_final_rerun_20260723/gate_log.txt
+Report: out/a_plus_a15_frontdoor_20260724-154145/gate_report.json
+Log: out/a_plus_a15_frontdoor_20260724-154145/gate_log.txt
 ```
 
 Gate summary:
 
 - `G1_fmt` PASS
 - `G2_clippy` PASS
-- `G3_test` PASS (`643` tests passed)
+- `G3_test` PASS (`649` tests passed)
 - `G4_build_release` PASS
 - `G5_language_fixtures` PASS (`244/244`)
 - `G6_turing_core` PASS (`13/13`)
@@ -35,24 +51,15 @@ Gate summary:
 - `G11_enum_match` PASS
 - `G12_for_in` PASS
 - `G13_lang_trio` PASS
-- `G14_offensive` PASS (`20/20`)
+- `G14_offensive` PASS (`34/34`)
 - `G15_dogfood_feel` PASS (`8/8`)
 
-## Offensive Isolation
-
-The host entrypoint for `scripts/run_offensive_platform_gate.sh` is now VZ-isolated by default.
-
-Evidence:
-
-- `out/a_plus_phase9_final_rerun_20260723/g14_offensive/report.json`
-- `out/a_plus_phase9_final_rerun_20260723/g14_offensive/isolation.json`
-
-Observed result:
+## Offensive Isolation (current)
 
 ```json
 {
-  "total": 20,
-  "passed": 20,
+  "total": 34,
+  "passed": 34,
   "failed": 0,
   "overall_verdict": "PASS",
   "binary": "target/release/anubis",
@@ -60,22 +67,15 @@ Observed result:
 }
 ```
 
-The host only cloned `anubis-xcode`, synced the tree, ran the gate inside the guest, collected the
-report, and discarded the guest.
+T9 surfaces (ATT&CK, OPSEC, recon, malleable, campaign, purple, phish PLAN_ONLY, LOLBAS) are included in the 34 checks. Host orchestration remains VZ-only for AOP execution; PoC kit host gold path is preserved.
 
-## What Changed In This Closeout
+## A15 artifact
 
-- `scripts/run_offensive_platform_gate.sh` now routes the host entrypoint through a disposable tart guest.
-- `compiler/src/evidence/mod.rs` now treats the current REAL RISC0 methods-patch provenance as sufficient for `risc0_receipt_verify`, so fresh verified receipts no longer false-fail G11/G12/G13.
-- Committed rustfmt drift in `compiler/src/lib.rs` and `compiler/src/middle/mod.rs` was removed.
+- `implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md`
+- Hostile findings F1–F4 documented, fixed, and re-verified
 
-## Boundaries
+## A+ claim
 
-This is a REAL front-door pass for the current tree on Thursday, July 23, 2026.
+**CLAIMED** for this seal: front door 15/15 + current A15 clean after remediation.
 
-This is **not** an A+ claim by itself. A+ still requires a current A15 hostile-audit artifact with no
-mandatory failures.
-
-Sealed evidence mirror:
-
-- `implementer/a_plus_audit_run/20260723-152552/final_sealed_audit/`
+Not claimed: freeze §5 residuals, hosted Metal proving, absolute trusting-trust closure.

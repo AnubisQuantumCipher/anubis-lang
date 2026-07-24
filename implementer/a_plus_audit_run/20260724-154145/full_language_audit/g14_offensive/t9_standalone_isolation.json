@@ -1,0 +1,10 @@
+{
+  "isolation": "tart-disposable-guest",
+  "base": "anubis-xcode",
+  "guest": "anubis-offensive-gate-32811",
+  "ip": "192.168.64.234",
+  "cpu": 8,
+  "memory_mib": 24576,
+  "guest_log": "guest_stdout.log",
+  "guest_out": "out/offensive_gate_guest"
+}

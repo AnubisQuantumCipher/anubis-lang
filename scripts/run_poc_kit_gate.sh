@@ -101,9 +101,17 @@ fi
 
 verdict="FAIL"
 [[ $fail -eq 0 && $pass -gt 0 ]] && verdict="PASS"
+# Isolation honesty: this gate exercises the in-repo gold lab on whatever machine
+# runs it. Prefer primary crash evidence from `anubis vz exploit|fuzz` (Apple VZ).
+iso_label="host-lab-gold-poc_kit"
+if [[ "${ANUBIS_VZ_GUEST:-0}" == "1" || "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" == "1" ]]; then
+  iso_label="tart-disposable-guest"
+fi
 echo "" >> "$report"
 echo "  ]," >> "$report"
 echo "  \"total\": $total, \"passed\": $pass, \"failed\": $fail," >> "$report"
+echo "  \"isolation\": \"$iso_label\"," >> "$report"
+echo "  \"prefer_primary_evidence\": \"anubis vz exploit|fuzz --base anubis-xcode\"," >> "$report"
 echo "  \"overall_verdict\": \"$verdict\"" >> "$report"
 echo "}" >> "$report"
 

@@ -25,8 +25,8 @@ See `MATURITY_CLAIM_MATRIX.md` for historical gate rows. Living freeze:
 | Third-party / multi-party reproduction | **REAL** | 2 independent strangers, hash agreement — [`phase9_independent_witness/`](language/phase9_independent_witness/) |
 | DDC toolchain diversity (max) | **REAL** | DDC **34/34**; residual: same-author C sources (not TT-total) |
 | Hosted CI front door (15-gate, no Metal prove) | **REAL** | `.github/workflows/ci.yml` on `macos-latest` |
-| A+ front door on the current tree (2026-07-23) | **REAL** | `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` → **15/15 PASS**; mirror under `implementer/a_plus_audit_run/20260723-152552/final_sealed_audit/` |
-| A+ label (full gates + current A15 hostile audit) | **NOT CLAIMED** | no current `implementer/a_plus_audit_run/*/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` artifact exists in this checkout on Thursday, July 23, 2026 |
+| A+ front door (2026-07-24 A15 re-seal) | **REAL** | `bash scripts/audit_a_plus.sh --out out/a_plus_a15_frontdoor_20260724-154145` → **15/15 PASS**; G14 **34/34** tart guest |
+| A+ label (full gates + current A15 hostile audit) | **REAL** | `implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` + STEP_STATUS + gate_report (F1–F4 remediated) |
 | Hosted CI Metal **proving** | **NOT CLAIMED** | needs Apple Silicon GPU runners |
 | Production-grade (1.0 frozen surface) | **REAL** | SPEC_1_0 + ≥2 showcase domains (NEXUS, Vault, settlement) |
 | General-purpose language (all features forever) | **PARTIAL** | 1.0 freeze is scoped; residuals listed in SPEC_1_0 §5 |

@@ -68,6 +68,17 @@ pub struct Engagement {
     /// mTLS certs generated under engagement/certs (ready; HTTP listener remains default).
     #[serde(default)]
     pub mtls_ready: bool,
+    /// When true, `listen --mtls` / `listen` with this flag enables full rustls mTLS.
+    /// Default false — plain HTTP remains the default listener path.
+    #[serde(default)]
+    pub mtls_listen: bool,
+    /// Double-authorization second half for live process inject.
+    /// Must be true (or program == "red_team") AND CLI `--allow-research-inject`.
+    #[serde(default)]
+    pub allow_live_inject: bool,
+    /// When any operator has a non-empty token_hash, HTTP privileged routes require tokens.
+    #[serde(default)]
+    pub token_auth_enabled: bool,
     #[serde(default)]
     pub operators: Vec<Operator>,
     pub notes: String,
@@ -129,6 +140,9 @@ impl Engagement {
             jitter_pct: 20,
             encrypt_beacons: true,
             mtls_ready: false,
+            mtls_listen: false,
+            allow_live_inject: false,
+            token_auth_enabled: false,
             operators: vec![
                 Operator {
                     name: "admin".into(),
@@ -253,11 +267,100 @@ impl Engagement {
         Ok(())
     }
 
+    /// Multi-operator token auth: if the named operator has a token_hash, require a match.
+    /// Operators with empty token_hash remain local/unauthenticated (lab default).
+    pub fn assert_operator_token(&self, operator: &str, token: Option<&str>) -> Result<()> {
+        let op = self
+            .operators
+            .iter()
+            .find(|o| o.name == operator)
+            .ok_or_else(|| anyhow!("ANUBIS_RBAC_UNKNOWN_OPERATOR: {operator}"))?;
+        if op.token_hash.is_empty() {
+            if self.token_auth_enabled {
+                // Global token auth on, but this operator was not issued a token — deny
+                // privileged use unless they get one issued.
+                return Err(anyhow!(
+                    "ANUBIS_TOKEN_NOT_ISSUED: operator `{operator}` has no token_hash; run operator-token-issue"
+                ));
+            }
+            return Ok(());
+        }
+        let Some(t) = token.filter(|s| !s.trim().is_empty()) else {
+            return Err(anyhow!(
+                "ANUBIS_TOKEN_REQUIRED: operator `{operator}` requires X-Anubis-Token / --token"
+            ));
+        };
+        let h = crypto::hash_token(t.trim());
+        if h != op.token_hash {
+            return Err(anyhow!("ANUBIS_TOKEN_INVALID: operator `{operator}`"));
+        }
+        Ok(())
+    }
+
+    /// Role + optional token gate for privileged console/CLI actions.
+    pub fn assert_auth(&self, operator: &str, min: Role, token: Option<&str>) -> Result<()> {
+        self.assert_role(operator, min)?;
+        self.assert_operator_token(operator, token)
+    }
+
+    /// Second half of double authorization for live inject.
+    pub fn live_inject_engagement_authorized(&self) -> bool {
+        self.allow_live_inject || self.program.eq_ignore_ascii_case("red_team")
+    }
+
     pub fn rehash(&mut self) {
         self.content_hash.clear();
         let body = serde_json::to_vec(self).unwrap_or_default();
         self.content_hash = hex::encode(Sha256::digest(&body));
     }
+}
+
+/// Issue (or rotate) an API token for an operator. Returns cleartext once; only the hash is stored.
+pub fn operator_token_issue(engage_dir: &Path, operator: &str) -> Result<(String, Engagement)> {
+    let path = if engage_dir.is_dir() {
+        engage_dir.join("engagement.json")
+    } else {
+        engage_dir.to_path_buf()
+    };
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| anyhow!("ANUBIS_ENGAGE_LOAD: {}: {e}", path.display()))?;
+    let mut eng: Engagement =
+        serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_ENGAGE_PARSE: {e}"))?;
+    let token = crypto::issue_token();
+    let hash = crypto::hash_token(&token);
+    let op = eng
+        .operators
+        .iter_mut()
+        .find(|o| o.name == operator)
+        .ok_or_else(|| anyhow!("ANUBIS_RBAC_UNKNOWN_OPERATOR: {operator}"))?;
+    op.token_hash = hash;
+    eng.token_auth_enabled = eng.operators.iter().any(|o| !o.token_hash.is_empty());
+    eng.rehash();
+    fs::write(&path, serde_json::to_string_pretty(&eng)?)?;
+    Ok((token, eng))
+}
+
+/// Clear token_hash for an operator (disables token gate for that operator).
+pub fn operator_token_revoke(engage_dir: &Path, operator: &str) -> Result<Engagement> {
+    let path = if engage_dir.is_dir() {
+        engage_dir.join("engagement.json")
+    } else {
+        engage_dir.to_path_buf()
+    };
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| anyhow!("ANUBIS_ENGAGE_LOAD: {}: {e}", path.display()))?;
+    let mut eng: Engagement =
+        serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_ENGAGE_PARSE: {e}"))?;
+    let op = eng
+        .operators
+        .iter_mut()
+        .find(|o| o.name == operator)
+        .ok_or_else(|| anyhow!("ANUBIS_RBAC_UNKNOWN_OPERATOR: {operator}"))?;
+    op.token_hash.clear();
+    eng.token_auth_enabled = eng.operators.iter().any(|o| !o.token_hash.is_empty());
+    eng.rehash();
+    fs::write(&path, serde_json::to_string_pretty(&eng)?)?;
+    Ok(eng)
 }
 
 pub fn engage_init(dir: &Path, name: &str, authorization: &str) -> Result<PathBuf> {
@@ -350,6 +453,9 @@ pub fn engage_status(path: &Path) -> Result<serde_json::Value> {
         "network_egress": eng.network_egress,
         "encrypt_beacons": eng.encrypt_beacons,
         "mtls_ready": eng.mtls_ready,
+        "mtls_listen": eng.mtls_listen,
+        "allow_live_inject": eng.allow_live_inject,
+        "token_auth_enabled": eng.token_auth_enabled,
         "jitter_pct": eng.jitter_pct,
         "sleep_ms": eng.sleep_ms,
         "operators": eng.operators,

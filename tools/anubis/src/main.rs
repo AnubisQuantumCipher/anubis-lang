@@ -1,6 +1,8 @@
 //! anubis CLI - the main user-facing tool
 //! Supports: anubis --help, anubis build [--evidence|--bounty] <file>
 
+#![recursion_limit = "256"]
+
 mod offensive;
 mod poc_kit;
 mod proof_input;
@@ -504,13 +506,16 @@ enum Commands {
         json: bool,
     },
 
-    /// Start engagement-scoped C2 listener (HTTP/JSON protocol aop-1).
+    /// Start engagement-scoped C2 listener (HTTP/JSON aop-2; optional rustls mTLS).
     Listen {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
         /// Run until killed (required for real C2 session).
         #[arg(long, default_value_t = true)]
         foreground: bool,
+        /// Enable full rustls mTLS handshake (client cert required). HTTP remains default.
+        #[arg(long, default_value_t = false)]
+        mtls: bool,
     },
 
     /// Generate an engagement-bound beacon agent binary.
@@ -537,6 +542,27 @@ enum Commands {
         args: String,
         /// Operator identity for RBAC (must be Operator or Admin).
         #[arg(long, default_value = "operator")]
+        operator: String,
+        /// Operator API token (required when that operator has a token_hash).
+        #[arg(long, default_value = "")]
+        token: String,
+    },
+
+    /// Issue (or rotate) a multi-operator API token. Prints cleartext once; stores SHA-256 only.
+    OperatorTokenIssue {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        operator: String,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Revoke an operator API token (clears token_hash).
+    OperatorTokenRevoke {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
         operator: String,
     },
 
@@ -585,14 +611,19 @@ enum Commands {
         label: String,
     },
 
-    /// T2: process inject plan only (research-gated, not executed).
+    /// T2: process inject — PLAN_ONLY by default; live under double authorization.
     InjectPlan {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
+        /// Target PID (0 = spawn cooperative lab victim loader).
         #[arg(long)]
         pid: u32,
         #[arg(long)]
         shellcode: PathBuf,
+        /// First half of double authorization for live inject.
+        /// Second half: engagement.program=red_team OR engagement.allow_live_inject=true.
+        #[arg(long, default_value_t = false)]
+        allow_research_inject: bool,
     },
 
     /// T4: lateral SSH to an in-scope lateral host.
@@ -663,6 +694,100 @@ enum Commands {
     ReceiptVerify {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+
+    // ── T9: Elite red-team control plane (ATT&CK / OPSEC / campaign / purple) ──
+    /// MITRE ATT&CK kill-chain catalog mapped to AOP surfaces.
+    AttckCatalog {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Map a free-text action/module name to ATT&CK technique IDs.
+    AttckMap {
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// OPSEC score for an engagement (elite hygiene checklist).
+    OpsecScore {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Scoped recon: local operator environment + engagement scope facts.
+    ReconHostinfo {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Scoped port recon of an in-engagement host (VZ guest required).
+    ReconScan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Comma-separated ports (default common lab set).
+        #[arg(long, default_value = "")]
+        ports: String,
+    },
+
+    /// Write default malleable C2 HTTP profile under engagement/profiles/.
+    MalleableInit {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "aop-default-jquery")]
+        name: String,
+    },
+
+    /// Validate a malleable C2 profile JSON file.
+    MalleableValidate {
+        #[arg(long)]
+        profile: PathBuf,
+    },
+
+    /// Write full-spectrum campaign playbook (JSON + Markdown) under engagement/campaigns/.
+    CampaignInit {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+    },
+
+    /// Show campaign playbook status for an engagement.
+    CampaignStatus {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Purple-team report: ATT&CK coverage + detection gaps from engagement receipts.
+    PurpleReport {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(short, long, default_value = "out/engagements/lab/loot/purple")]
+        out: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Phishing / social-engineering campaign PLAN_ONLY (never sends mail).
+    PhishPlan {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        engage: PathBuf,
+        #[arg(long, default_value = "user")]
+        target_role: String,
+        #[arg(long, default_value = "password_reset")]
+        theme: String,
+    },
+
+    /// Living-off-the-land (LOLBAS) technique catalog — PLAN_ONLY.
+    LolbasCatalog {
         #[arg(long)]
         json: bool,
     },
@@ -1929,6 +2054,8 @@ fn main() -> Result<()> {
 (parse/typecheck-only fuzz was removed; it produced false crashes)"
                 )
             })?;
+            // Gold poc_kit targets: host lab OK. Arbitrary targets: VZ required.
+            offensive::isolation::require_fuzz_allowed(&target)?;
             println!(
                 "anubis fuzz --target {} --runs {} --max-len {} --seed {} (process-mutation v1)",
                 target.display(),
@@ -2090,9 +2217,23 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Listen { engage, foreground } => {
+        Commands::Listen {
+            engage,
+            foreground,
+            mtls,
+        } => {
+            offensive::require_vz_offensive("listen")?;
             let eng = offensive::load_engagement(&engage)?;
-            offensive::listener::listener_start(&eng, &engage, foreground)
+            offensive::listener::listener_start_with(
+                &eng,
+                &engage,
+                offensive::listener::ListenOpts {
+                    mtls: mtls || eng.mtls_listen,
+                },
+            )?;
+            // foreground flag retained for API compatibility (listener always blocks).
+            let _ = foreground;
+            Ok(())
         }
         Commands::AgentGenerate {
             engage,
@@ -2100,6 +2241,7 @@ fn main() -> Result<()> {
             os,
             sleep_ms,
         } => {
+            offensive::require_vz_offensive("agent-generate")?;
             let eng = offensive::load_engagement(&engage)?;
             let bin = offensive::agent::agent_generate(offensive::agent::AgentGenerateOpts {
                 engage: &eng,
@@ -2128,9 +2270,16 @@ fn main() -> Result<()> {
             module,
             args,
             operator,
+            token,
         } => {
+            offensive::require_vz_offensive("task-queue")?;
             let eng = offensive::load_engagement(&engage)?;
-            offensive::console::role_can_queue(&eng, &operator).map_err(|e| anyhow!("{e}"))?;
+            let tok = if token.trim().is_empty() {
+                None
+            } else {
+                Some(token.as_str())
+            };
+            eng.assert_auth(&operator, offensive::engagement::Role::Operator, tok)?;
             let arg_list: Vec<String> = if args.trim().is_empty() {
                 vec![]
             } else {
@@ -2157,6 +2306,59 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Commands::OperatorTokenIssue {
+            engage,
+            operator,
+            json,
+        } => {
+            let (token, eng) = offensive::operator_token_issue(&engage, &operator)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "operator_token_issue",
+                "admin",
+                serde_json::json!({
+                    "operator": operator,
+                    "token_hash_prefix": eng.operators.iter()
+                        .find(|o| o.name == operator)
+                        .map(|o| o.token_hash.chars().take(12).collect::<String>())
+                        .unwrap_or_default(),
+                }),
+            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "operator": operator,
+                        "token": token,
+                        "token_hash": offensive::crypto::hash_token(&token),
+                        "token_auth_enabled": eng.token_auth_enabled,
+                        "note": "Store the token securely; it is not written to disk in cleartext.",
+                    }))?
+                );
+            } else {
+                println!("operator={operator}");
+                println!("token={token}");
+                println!("token_auth_enabled={}", eng.token_auth_enabled);
+                println!("(cleartext shown once; engagement.json stores SHA-256 only)");
+            }
+            Ok(())
+        }
+        Commands::OperatorTokenRevoke { engage, operator } => {
+            let eng = offensive::operator_token_revoke(&engage, &operator)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "operator_token_revoke",
+                "admin",
+                serde_json::json!({ "operator": operator }),
+            );
+            println!(
+                "revoked token for operator={operator}; token_auth_enabled={}",
+                eng.token_auth_enabled
+            );
+            Ok(())
+        }
         Commands::ModuleList { json } => {
             if json {
                 println!(
@@ -2178,6 +2380,7 @@ fn main() -> Result<()> {
             module,
             out,
         } => {
+            offensive::require_vz_offensive("exploit-run")?;
             let eng = offensive::load_engagement(&engage)?;
             let report = offensive::exploit::exploit_run(&eng, &module, &out)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -2196,9 +2399,12 @@ fn main() -> Result<()> {
                     "encrypted_beacons_aop2": "REAL",
                     "agent_keys_jitter": "REAL",
                     "mtls_cert_material": "REAL",
+                    "mtls_rustls_handshake": "REAL",
                     "operator_console": "REAL",
                     "rbac_roles": "REAL",
+                    "multi_operator_token_auth": "REAL",
                     "dns_transport_lab": "REAL",
+                    "dns_doh_c2_codec": "REAL",
                     "uds_pipe_transport": "REAL",
                     "agent_generate": "REAL",
                     "task_queue": "REAL",
@@ -2206,6 +2412,7 @@ fn main() -> Result<()> {
                     "exploit_modules": "REAL",
                     "persist_launchagent": "REAL",
                     "inject_plan_only": "REAL",
+                    "inject_live_double_auth": "REAL",
                     "lateral_ssh_scoped": "REAL",
                     "lateral_smb_plan_only": "REAL",
                     "rop_pattern_gadgets": "REAL",
@@ -2223,6 +2430,15 @@ fn main() -> Result<()> {
                     "vz_agent_test": "REAL",
                     "vz_c2_cycle": "REAL",
                     "vz_stress_battery": "REAL",
+                    "attck_kill_chain_catalog": "REAL",
+                    "opsec_score": "REAL",
+                    "recon_hostinfo": "REAL",
+                    "recon_scan_scoped": "REAL",
+                    "malleable_c2_profile": "REAL",
+                    "campaign_playbook": "REAL",
+                    "purple_team_report": "REAL",
+                    "phish_plan_only": "REAL",
+                    "lolbas_catalog_plan_only": "REAL",
                 },
                 "vz": offensive::vz::vz_doctor().unwrap_or_else(|_| serde_json::json!({"vz_available": false})),
                 "security_fixture_contract": {
@@ -2231,6 +2447,7 @@ fn main() -> Result<()> {
                     "false_green_rejected": !poc_kit::security_fixture_matches(true, true, true, false),
                     "fail_without_needle_ok": poc_kit::security_fixture_matches(true, true, false, false),
                 },
+                "isolation": offensive::isolation::isolation_status_json(),
                 "policy": {
                     "fail_closed_scope": true,
                     "default_loopback_c2": true,
@@ -2238,14 +2455,27 @@ fn main() -> Result<()> {
                     "evidence_native": true,
                     "encrypt_beacons_default": true,
                     "smb_lateral_never_executes": true,
+                    "inject_default_plan_only": true,
+                    "inject_live_requires_double_authorization": true,
+                    "http_default_mtls_opt_in": true,
+                    "aop_platform_requires_apple_virtualization": true,
+                    "poc_kit_host_lab_gold_allowed": true,
+                    "fuzz_non_poc_kit_requires_vz": true,
+                    "host_never_executes_aop_c2": true,
+                    "phish_never_auto_sends": true,
+                    "lolbas_never_auto_executes": true,
                 },
-                "note": "AOP T1–T7 lab surfaces. SMB lateral is PLAN_ONLY (no execution). Not unscoped malware.",
+                "note": "AOP T1–T9: C2/inject/lateral VZ-only; PoC kit host gold preserved; ATT&CK/OPSEC/campaign/purple/malleable/phish/lolbas REAL.",
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 println!("Anubis Offensive Platform doctor");
                 println!("  protocol: {}", offensive::protocol::PROTOCOL_VERSION);
+                println!(
+                    "  isolation: in_vz_guest={} aop_c2=VZ-only poc_kit_host_lab=allowed",
+                    offensive::in_vz_guest()
+                );
                 if let Some(obj) = report["surfaces"].as_object() {
                     for (k, v) in obj {
                         println!("  {k}: {v}");
@@ -2259,6 +2489,7 @@ fn main() -> Result<()> {
             agent,
             label,
         } => {
+            offensive::require_vz_offensive("persist-launchagent")?;
             let eng = offensive::load_engagement(&engage)?;
             let path =
                 offensive::persistence::generate_launch_agent(&eng, &engage, &agent, &label)?;
@@ -2269,9 +2500,28 @@ fn main() -> Result<()> {
             engage,
             pid,
             shellcode,
+            allow_research_inject,
         } => {
+            offensive::require_vz_offensive("inject-plan")?;
             let eng = offensive::load_engagement(&engage)?;
-            let plan = offensive::persistence::inject_plan(&eng, pid, &shellcode)?;
+            let plan = offensive::persistence::inject_plan(
+                &eng,
+                &engage,
+                pid,
+                &shellcode,
+                allow_research_inject,
+            )?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                if plan.get("executed").and_then(|v| v.as_bool()) == Some(true) {
+                    "inject_live"
+                } else {
+                    "inject_plan"
+                },
+                "operator",
+                plan.clone(),
+            );
             println!("{}", serde_json::to_string_pretty(&plan)?);
             Ok(())
         }
@@ -2281,6 +2531,7 @@ fn main() -> Result<()> {
             user,
             cmd,
         } => {
+            offensive::require_vz_offensive("lateral-ssh")?;
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_ssh(&eng, &host, &user, &cmd)?;
             let _ = offensive::seal_action(
@@ -2294,6 +2545,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::LateralSmb { engage, host } => {
+            offensive::require_vz_offensive("lateral-smb")?;
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_smb_plan(&eng, &host)?;
             let _ = offensive::seal_action(
@@ -2327,6 +2579,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PackXor { engage, input } => {
+            offensive::require_vz_offensive("pack-xor")?;
             let eng = offensive::load_engagement(&engage)?;
             eng.assert_path(&input)?;
             let packs = engage.join("packs");
@@ -2342,6 +2595,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::StringScramble { text } => {
+            offensive::require_vz_offensive("string-scramble")?;
             let r = offensive::packer::scramble_string(&text);
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
@@ -2358,6 +2612,221 @@ fn main() -> Result<()> {
             }
             if report.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 return Err(anyhow!("ANUBIS_RECEIPT_VERIFY_FAILED"));
+            }
+            Ok(())
+        }
+
+        // ── T9: elite control plane ──
+        Commands::AttckCatalog { json } => {
+            let cat = offensive::attck::catalog_json();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&cat)?);
+            } else {
+                println!("AOP ATT&CK catalog (kill-chain mapped)");
+                if let Some(arr) = cat["kill_chain"].as_array() {
+                    for tac in arr {
+                        println!(
+                            "  {} {} (order {})",
+                            tac["tactic_id"].as_str().unwrap_or(""),
+                            tac["tactic"].as_str().unwrap_or(""),
+                            tac["order"]
+                        );
+                        if let Some(techs) = tac["techniques"].as_array() {
+                            for t in techs {
+                                println!(
+                                    "    - {} {} [{}]",
+                                    t["id"].as_str().unwrap_or(""),
+                                    t["name"].as_str().unwrap_or(""),
+                                    t["execution_mode"].as_str().unwrap_or("")
+                                );
+                            }
+                        }
+                    }
+                }
+                println!("techniques: {}", cat["technique_count"]);
+            }
+            Ok(())
+        }
+        Commands::AttckMap { action, json } => {
+            let m = offensive::attck::map_action_json(&action);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&m)?);
+            } else {
+                println!("action: {}", action);
+                if let Some(ids) = m["technique_ids"].as_array() {
+                    for id in ids {
+                        println!("  {}", id.as_str().unwrap_or(""));
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::OpsecScore { engage, json } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let score = offensive::opsec::score_engagement(&eng);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&score)?);
+            } else {
+                println!(
+                    "OPSEC grade={} score={} ({})",
+                    score["grade"],
+                    score["score"],
+                    score["recommendation"].as_str().unwrap_or("")
+                );
+                if let Some(fs) = score["findings"].as_array() {
+                    for f in fs {
+                        println!(
+                            "  [{}] {}: {}",
+                            f["severity"].as_str().unwrap_or(""),
+                            f["code"].as_str().unwrap_or(""),
+                            f["message"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::ReconHostinfo { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let r = offensive::recon::recon_hostinfo(&eng)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::ReconScan {
+            engage,
+            host,
+            ports,
+        } => {
+            offensive::require_vz_offensive("recon-scan")?;
+            let eng = offensive::load_engagement(&engage)?;
+            let port_list: Option<Vec<u16>> = if ports.trim().is_empty() {
+                None
+            } else {
+                Some(
+                    ports
+                        .split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect(),
+                )
+            };
+            let ports_ref = port_list.as_deref();
+            let r = offensive::recon::recon_scan(&eng, &host, ports_ref)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "recon_scan",
+                "operator",
+                r.clone(),
+            );
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::MalleableInit { engage, name } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let path = offensive::malleable::write_default(&engage, &name)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "malleable_init",
+                "operator",
+                serde_json::json!({ "path": path.display().to_string(), "name": name }),
+            );
+            println!("malleable profile: {}", path.display());
+            Ok(())
+        }
+        Commands::MalleableValidate { profile } => {
+            let r = offensive::malleable::validate_file(&profile)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Commands::CampaignInit { engage } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let path = offensive::campaign::write_playbook(&eng, &engage)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "campaign_init",
+                "operator",
+                serde_json::json!({ "path": path.display().to_string() }),
+            );
+            println!("campaign playbook: {}", path.display());
+            println!(
+                "  markdown: {}",
+                engage.join("campaigns/full_spectrum.md").display()
+            );
+            Ok(())
+        }
+        Commands::CampaignStatus { engage, json } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let st = offensive::campaign::status_json(&eng, &engage)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&st)?);
+            } else {
+                println!(
+                    "campaign ok={} playbook={} phases={}",
+                    st["ok"], st["playbook"], st["phases"]
+                );
+            }
+            Ok(())
+        }
+        Commands::PurpleReport { engage, out, json } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let report = offensive::purple::purple_report(&eng, &engage, &out)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "purple_report",
+                "operator",
+                serde_json::json!({
+                    "out": out.display().to_string(),
+                    "covered": report["techniques_covered"],
+                }),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("purple report: {}/purple_report.md", out.display());
+                println!(
+                    "  covered techniques: {}",
+                    report["techniques_covered"]
+                        .as_array()
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  detection gaps: {}",
+                    report["detection_gaps"]
+                        .as_array()
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                );
+            }
+            Ok(())
+        }
+        Commands::PhishPlan {
+            engage,
+            target_role,
+            theme,
+        } => {
+            let eng = offensive::load_engagement(&engage)?;
+            let plan = offensive::phish::phish_plan(&eng, &engage, &target_role, &theme)?;
+            let _ = offensive::seal_action(
+                &engage,
+                &eng.engagement_id,
+                "phish_plan",
+                "operator",
+                plan.clone(),
+            );
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+            Ok(())
+        }
+        Commands::LolbasCatalog { json } => {
+            let cat = offensive::lolbas::catalog_json();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&cat)?);
+            } else {
+                println!("LOLBAS catalog status={}", cat["status"]);
+                println!("{}", serde_json::to_string_pretty(&cat)?);
             }
             Ok(())
         }
@@ -3558,6 +4027,11 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             input_file,
             args,
         } => {
+            if allow_research {
+                // PoC kit path: packing + gold target_run (docs/language/POC_KIT.md).
+                // AOP C2 stays VZ-only; research run is host-lab-allowed with VZ preferred.
+                offensive::isolation::require_research_run_allowed("run --allow-research")?;
+            }
             let src = std::fs::read_to_string(&input)?;
             // Verification lane: fail closed on undeclared capability I/O before emitting/running.
             if verified {
@@ -4647,12 +5121,16 @@ fn run_anubis_source(
     let work_exe = if !cache_disabled && cached_exe.is_file() {
         cached_exe.clone() // cache hit — no cargo
     } else {
+        // Visible progress: cargo build is silent and can take 1–3s; without this, interactive
+        // `anubis run` looks hung before any program output appears.
+        eprintln!("anubis run: compiling native binary (first build ~1–3s)...");
         let tmp_exe = work.join("anubis_run");
         // Native run links audited crypto crates (argon2, chacha20poly1305, hmac, …).
         if let Err(e) = compile_native_rust_to_exe(&rust_source, &tmp_exe) {
             let _ = std::fs::remove_dir_all(&work);
             return Err(e);
         }
+        eprintln!("anubis run: compile done");
         // Publish to the cache atomically (copy to a staging name on the same filesystem, then
         // rename), capped so the cache cannot grow without bound.
         if !cache_disabled && std::fs::create_dir_all(&cache_dir).is_ok() {
@@ -4671,31 +5149,90 @@ fn run_anubis_source(
         tmp_exe
     };
 
-    // Inherit the parent's stdin so `input()` / `read_line()` work (piped or interactive).
-    // `output()` would otherwise close the child's stdin, making every stdin read return EOF.
-    // stdout/stderr stay captured (for the run evidence bundle) — only stdin is forwarded.
-    //
-    // Run under a wall-clock budget (default 3600s, the work-class-timeout invariant; override
-    // with ANUBIS_RUN_TIMEOUT_SECS, 0 to disable). A runaway or infinite-loop program is SIGKILLed
-    // and reaped instead of hanging `anubis run` forever and orphaning a CPU-pinning child.
+    // Run under a wall-clock budget (default 3600s; override with ANUBIS_RUN_TIMEOUT_SECS, 0 = off).
     let timeout = resolved_run_timeout();
     let mut cmd = std::process::Command::new(&work_exe);
-    cmd.args(args).stdin(std::process::Stdio::inherit());
+    cmd.args(args);
     // Unified proof-input surface: forward the resolved values as the native ANUBIS_PROOF_INPUTS env
     // so `run` and `prove` consume the identical --input-json/--input-file format.
     if let Some(env_str) = proof_inputs_env {
         cmd.env("ANUBIS_PROOF_INPUTS", env_str);
     }
-    let capped = run_child_capped(cmd, timeout).map_err(|e| anyhow!("run spawn failed: {}", e))?;
-    if capped.timed_out {
-        let _ = std::fs::remove_dir_all(&work);
-        let secs = timeout.map(|d| d.as_secs()).unwrap_or(0);
-        return Err(anyhow!(
-            "ANUBIS_RUN_TIMEOUT: program exceeded its {secs}s wall-clock budget and was killed. \
-             Raise ANUBIS_RUN_TIMEOUT_SECS for a longer run, or set it to 0 to disable the cap."
-        ));
-    }
-    let output = capped.output;
+
+    // Interactive TTY: inherit stdin AND stdout/stderr so the user sees prints live while typing
+    // (e.g. Snake). The old path piped stdout and only printed after the child exited — so an
+    // interactive program looked completely frozen until quit. Non-TTY (tests, CI, pipes) keeps
+    // the capped capture path for evidence and EXPECT: PASS checks.
+    use std::io::IsTerminal;
+    let live_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+
+    let (stdout, stderr, exit_code, status_success) = if live_tty {
+        eprintln!("anubis run: program ready (interactive — output streams live)");
+        cmd.stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow!("run spawn failed: {}", e))?;
+        // Honor the same wall-clock budget as the capped path, without swallowing stdout.
+        let status = if let Some(limit) = timeout {
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(st)) => break st,
+                    Ok(None) if start.elapsed() < limit => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Ok(None) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = std::fs::remove_dir_all(&work);
+                        let secs = limit.as_secs();
+                        return Err(anyhow!(
+                            "ANUBIS_RUN_TIMEOUT: program exceeded its {secs}s wall-clock budget and was killed. \
+                             Raise ANUBIS_RUN_TIMEOUT_SECS for a longer run, or set it to 0 to disable the cap."
+                        ));
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(&work);
+                        return Err(anyhow!("run wait failed: {}", e));
+                    }
+                }
+            }
+        } else {
+            child
+                .wait()
+                .map_err(|e| anyhow!("run wait failed: {}", e))?
+        };
+        // Live path already printed to the terminal; leave capture empty so the caller does not
+        // double-print.
+        (
+            String::new(),
+            String::new(),
+            status.code(),
+            status.success(),
+        )
+    } else {
+        // Capture path: inherit stdin (piped/EOF), pipe stdout/stderr for evidence + tests.
+        cmd.stdin(std::process::Stdio::inherit());
+        let capped =
+            run_child_capped(cmd, timeout).map_err(|e| anyhow!("run spawn failed: {}", e))?;
+        if capped.timed_out {
+            let _ = std::fs::remove_dir_all(&work);
+            let secs = timeout.map(|d| d.as_secs()).unwrap_or(0);
+            return Err(anyhow!(
+                "ANUBIS_RUN_TIMEOUT: program exceeded its {secs}s wall-clock budget and was killed. \
+                 Raise ANUBIS_RUN_TIMEOUT_SECS for a longer run, or set it to 0 to disable the cap."
+            ));
+        }
+        let output = capped.output;
+        (
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+            output.status.code(),
+            output.status.success(),
+        )
+    };
 
     // Copy artifacts into `out/` for inspection (each write is a complete file, so even a
     // concurrent copy resolves to one full version rather than a corrupt interleave).
@@ -4711,10 +5248,10 @@ fn run_anubis_source(
         source_hash: sha256_bytes(source.as_bytes()),
         artifact: exe_path,
         rust_source: rs_path,
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
-        status_success: output.status.success(),
+        stdout,
+        stderr,
+        exit_code,
+        status_success,
     })
 }
 

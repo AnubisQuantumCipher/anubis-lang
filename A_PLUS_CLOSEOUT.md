@@ -1,35 +1,36 @@
 # A+ Closeout
 
-**Date:** Thursday, July 23, 2026  
+**Date:** Friday, July 24, 2026 (A15 re-seal)  
 **Branch:** `a-plus-maturity/20260705-1649`  
-**HEAD:** `2e44f7e779c69432533b317e1ab4dfcd8a5fc668`
+**Tree base HEAD:** `39a07ec827a6893e48d671f974adf9040896a368`  
+**Working tree note:** T9 offensive surfaces + isolation/stack fixes present at seal time
 
 ## Status
 
-- **Phase 9 — DONE:** `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` returned `PASS (15/15 passed, 0 failed, 0 skipped)`.
-- **Phase 10 — DONE:** roadmap, claim, matrix, and offensive-gate docs were refreshed to match the current front-door truth and the new VZ-isolated G14 path.
+- **Phase 9 — DONE:** historical seal `out/a_plus_phase9_final_rerun_20260723` (15/15; G14 was 20/20).
+- **Phase 10 — DONE:** roadmap + truth surfaces + closeout reports.
+- **A15 — DONE (current):** `implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md`
+- **Front door re-derived:** `bash scripts/audit_a_plus.sh --out out/a_plus_a15_frontdoor_20260724-154145` → **PASS (15/15)**; G14 **34/34** tart guest.
+- **A+ label — CLAIMED** on this seal (gates + current A15 clean after remediation of F1–F4).
 
 ## Evidence Package
 
-- Fresh front-door report: `out/a_plus_phase9_final_rerun_20260723/gate_report.json`
-- Fresh front-door log: `out/a_plus_phase9_final_rerun_20260723/gate_log.txt`
-- VZ-isolated offensive gate evidence: `out/a_plus_phase9_final_rerun_20260723/g14_offensive/`
-- Mirrored audit bundle: `implementer/a_plus_audit_run/20260723-152552/final_sealed_audit/`
-- Summary report: `A_PLUS_FINAL_REPORT.md`
+| Artifact | Path |
+|----------|------|
+| A15 audit | `implementer/a_plus_audit_run/20260724-154145/full_language_audit/` |
+| A15 front door | `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` |
+| G14 / T9 | `…/g14_offensive/report.json` (34/34) |
+| Standalone T9 | `out/a15_offensive_t9_20260724-152746/report.json` |
+| Prior Phase 9 | `out/a_plus_phase9_final_rerun_20260723/` |
+| Final report | `A_PLUS_FINAL_REPORT.md` |
 
-## Honest Boundary
+## Hostile findings closed in this seal
 
-The current checkout does **not** contain a current
-`implementer/a_plus_audit_run/*/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` artifact.
+1. Host fail-open via stale `~/.anubis-vz-guest` — host entrypoint hygiene.
+2. Guest stale binary skipping T9 CLI — always rebuild in guest hop.
+3. Clippy failures on T9 modules — fixed.
+4. Clap unit-test stack overflow — `RUST_MIN_STACK=16MiB`.
 
-Therefore:
+## Honest boundary
 
-- the fresh 15/15 gate pass is **REAL**
-- the phase-9/10 closeout is **REAL**
-- the global label **A+ is NOT CLAIMED** on Thursday, July 23, 2026 until a current A15 hostile audit
-  is present and clean
-
-## Worktree Note
-
-This closeout was executed on the current working tree atop HEAD `2e44f7e779c69432533b317e1ab4dfcd8a5fc668`.
-User-owned local changes outside this closeout remained in place; nothing was reverted.
+A+ here means: **unified G1–G15 green on a re-derived run** and a **current A15 writeup with no open mandatory failures**. It does **not** mean every freeze §5 residual is closed, Metal proving in hosted CI, or infinite multi-party stranger coverage.

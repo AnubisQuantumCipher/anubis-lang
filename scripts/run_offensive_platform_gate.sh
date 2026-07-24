@@ -103,9 +103,13 @@ export CARGO_INCREMENTAL=0
 export RUST_MIN_STACK=67108864
 ulimit -n 65536 2>/dev/null || true
 cd "$HOME/anubis-lang"
-if [[ ! -x target/release/anubis ]]; then
-  cargo build --release -p anubis
-fi
+# Always rebuild: a leftover target/release/anubis from a prior guest hop can
+# pre-date T9 CLI surfaces and false-fail the 34-check gate (unrecognized subcommands).
+cargo build --release -p anubis
+export ANUBIS_VZ_GUEST=1
+export ANUBIS_OFFENSIVE_GATE_IN_GUEST=1
+export ANUBIS_ISOLATION=tart-disposable-guest
+touch "$HOME/.anubis-vz-guest" 2>/dev/null || true
 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 bash scripts/run_offensive_platform_gate.sh --out out/offensive_gate_guest
 REMOTE
   rc=$?
@@ -142,6 +146,15 @@ EOF
 run_local_gate() {
   local out="$1"
   mkdir -p "$out"
+
+  # Guest marker: offensive execution is forbidden on bare host.
+  # When this function runs under ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 (tart guest
+  # hop or explicit lab), export the full isolation contract.
+  if [[ "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" == "1" ]]; then
+    export ANUBIS_VZ_GUEST=1
+    export ANUBIS_ISOLATION="${ANUBIS_ISOLATION:-tart-disposable-guest}"
+    touch "${HOME}/.anubis-vz-guest" 2>/dev/null || true
+  fi
 
   local bin=""
   if [[ -x target/release/anubis ]]; then
@@ -260,6 +273,32 @@ PY
     record "t2_inject_plan" "FAIL" "rc=$irc"
   fi
 
+  # Live inject under double authorization (pid 0 = lab victim loader).
+  python3 - <<PY
+import json
+p="$eng/engagement.json"
+d=json.load(open(p))
+d["allow_live_inject"]=True
+open(p,"w").write(json.dumps(d,indent=2))
+PY
+  set +e
+  "$bin" inject-plan --engage "$eng" --pid 0 --shellcode "$out/sc.bin" --allow-research-inject >"$out/inject_live.json" 2>&1
+  local ilrc=$?
+  set -e
+  if [[ $ilrc -eq 0 ]] && grep -q EXECUTED "$out/inject_live.json" && grep -q '"executed": true' "$out/inject_live.json"; then
+    record "t2_inject_live_double_auth" "PASS" "live under double auth"
+  else
+    record "t2_inject_live_double_auth" "FAIL" "rc=$ilrc $(head -c 160 "$out/inject_live.json" | tr '\n' ' ')"
+  fi
+  # restore default inject gate
+  python3 - <<PY
+import json
+p="$eng/engagement.json"
+d=json.load(open(p))
+d["allow_live_inject"]=False
+open(p,"w").write(json.dumps(d,indent=2))
+PY
+
   if [[ -S "$eng/aop.sock" ]] || grep -q 'uds listener' "$out/listen.log"; then
     record "t3_uds" "PASS" "uds transport"
   else
@@ -269,6 +308,95 @@ PY
     record "t3_dns" "PASS" "dns transport attempted"
   else
     record "t3_dns" "FAIL" "no dns"
+  fi
+
+  # DNS/DoH codec (HTTP remains default; DoH is an HTTP path on the same listener).
+  # Restart is not required — the prior listen cycle already exercised multi-transport.
+  # Probe codec via a fresh short-lived listener if port free; otherwise mark from doctor.
+  set +e
+  "$bin" engage-init --dir "$out/eng_doh" --name dohgate --authorization gate-doh >"$out/doh_init.log" 2>&1
+  python3 - <<PY
+import json
+p="$out/eng_doh/engagement.json"
+d=json.load(open(p))
+d["c2_bind"]="127.0.0.1:14446"
+d["dns_bind"]="127.0.0.1:55354"
+d["uds_path"]="$out/eng_doh/aop.sock"
+open(p,"w").write(json.dumps(d,indent=2))
+PY
+  pkill -f 'anubis listen' 2>/dev/null || true
+  sleep 0.3
+  "$bin" listen --engage "$out/eng_doh" >"$out/doh_listen.log" 2>&1 &
+  local dpid=$!
+  sleep 1.0
+  local doh_res
+  doh_res="$(curl -s -X POST http://127.0.0.1:14446/doh -H 'Content-Type: application/json' -d '{"qname":"0.1.p.x.aop.c2"}' 2>/dev/null || echo '{}')"
+  local health_doh
+  health_doh="$(curl -s http://127.0.0.1:14446/health 2>/dev/null || echo '{}')"
+  kill "$dpid" 2>/dev/null
+  wait 2>/dev/null
+  set -e
+  if echo "$doh_res" | grep -q '"ok":true' && echo "$health_doh" | grep -q aop-dns-v1; then
+    record "t3_dns_doh_codec" "PASS" "DoH + dns codec"
+  else
+    record "t3_dns_doh_codec" "FAIL" "doh=$doh_res health=$health_doh"
+  fi
+
+  # Multi-operator token auth
+  set +e
+  "$bin" operator-token-issue --engage "$eng" --operator operator --json >"$out/tok.json" 2>&1
+  local trc=$?
+  set -e
+  if [[ $trc -eq 0 ]] && grep -q token "$out/tok.json"; then
+    local tok
+    tok="$(python3 -c 'import json;print(json.load(open("'"$out"'/tok.json"))["token"])')"
+    set +e
+    "$bin" task-queue --engage "$eng" --module whoami --operator operator >"$out/tok_deny.log" 2>&1
+    local td=$?
+    "$bin" task-queue --engage "$eng" --module whoami --operator operator --token "$tok" >"$out/tok_ok.log" 2>&1
+    local to=$?
+    set -e
+    if [[ $td -ne 0 ]] && grep -qi TOKEN "$out/tok_deny.log" && [[ $to -eq 0 ]]; then
+      record "t7_operator_token_auth" "PASS" "deny without / allow with token"
+    else
+      record "t7_operator_token_auth" "FAIL" "deny_rc=$td ok_rc=$to"
+    fi
+  else
+    record "t7_operator_token_auth" "FAIL" "issue rc=$trc"
+  fi
+
+  # mTLS opt-in handshake (HTTP remains default path above)
+  set +e
+  python3 - <<PY
+import json
+p="$out/eng_doh/engagement.json"
+d=json.load(open(p))
+d["c2_bind"]="127.0.0.1:14447"
+open(p,"w").write(json.dumps(d,indent=2))
+PY
+  pkill -f 'anubis listen' 2>/dev/null || true
+  sleep 0.3
+  "$bin" listen --engage "$out/eng_doh" --mtls >"$out/mtls_listen.log" 2>&1 &
+  local mpid=$!
+  sleep 1.2
+  python3 - <<PY >"$out/mtls.json" 2>"$out/mtls.err"
+import json, ssl, urllib.request
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.check_hostname = False
+ctx.load_verify_locations("$out/eng_doh/certs/ca.crt.pem")
+ctx.load_cert_chain("$out/eng_doh/certs/client.crt.pem", "$out/eng_doh/certs/client.key.pem")
+r = urllib.request.urlopen("https://127.0.0.1:14447/health", context=ctx, timeout=5)
+body = r.read().decode()
+print(json.dumps({"mtls_ok": "ok" in body and "true" in body}))
+PY
+  local mrc=$?
+  kill "$mpid" 2>/dev/null
+  wait 2>/dev/null
+  set -e
+  if [[ $mrc -eq 0 ]] && grep -q '"mtls_ok": true' "$out/mtls.json"; then
+    record "t1_mtls_rustls" "PASS" "rustls mTLS handshake"
+  else
+    record "t1_mtls_rustls" "FAIL" "rc=$mrc $(head -c 120 "$out/mtls.err" | tr '\n' ' ')"
   fi
 
   set +e
@@ -366,6 +494,113 @@ PY
     record "scope_targets" "FAIL" "no allowed_targets"
   fi
 
+  # ── T9 elite control plane ──
+  set +e
+  "$bin" attck-catalog --json >"$out/attck.json" 2>&1
+  local ac=$?
+  set -e
+  if [[ $ac -eq 0 ]] && grep -q aop-attck-v1 "$out/attck.json" && grep -q T1071 "$out/attck.json"; then
+    record "t9_attck_catalog" "PASS" "kill-chain catalog"
+  else
+    record "t9_attck_catalog" "FAIL" "rc=$ac"
+  fi
+
+  set +e
+  "$bin" opsec-score --engage "$eng" --json >"$out/opsec.json" 2>&1
+  local oc=$?
+  set -e
+  if [[ $oc -eq 0 ]] && grep -q aop-opsec-v1 "$out/opsec.json" && grep -q grade "$out/opsec.json"; then
+    record "t9_opsec_score" "PASS" "opsec scored"
+  else
+    record "t9_opsec_score" "FAIL" "rc=$oc"
+  fi
+
+  set +e
+  "$bin" malleable-init --engage "$eng" --name gate_profile >"$out/mall.log" 2>&1
+  local mc=$?
+  set -e
+  if [[ $mc -eq 0 ]] && ls "$eng/profiles"/*.json >/dev/null 2>&1; then
+    record "t9_malleable" "PASS" "profile written"
+  else
+    record "t9_malleable" "FAIL" "rc=$mc"
+  fi
+
+  set +e
+  "$bin" campaign-init --engage "$eng" >"$out/camp.log" 2>&1
+  local cc=$?
+  set -e
+  if [[ $cc -eq 0 && -f "$eng/campaigns/full_spectrum.json" && -f "$eng/campaigns/full_spectrum.md" ]]; then
+    record "t9_campaign" "PASS" "playbook json+md"
+  else
+    record "t9_campaign" "FAIL" "rc=$cc"
+  fi
+
+  set +e
+  "$bin" phish-plan --engage "$eng" --theme password_reset >"$out/phish.json" 2>&1
+  local pc=$?
+  set -e
+  if [[ $pc -eq 0 ]] && grep -q PLAN_ONLY "$out/phish.json" && grep -q '"executed": false' "$out/phish.json"; then
+    record "t9_phish_plan" "PASS" "plan-only never sends"
+  else
+    record "t9_phish_plan" "FAIL" "rc=$pc"
+  fi
+
+  set +e
+  "$bin" lolbas-catalog --json >"$out/lolbas.json" 2>&1
+  local lc=$?
+  set -e
+  if [[ $lc -eq 0 ]] && grep -q PLAN_ONLY "$out/lolbas.json" && grep -q T1218 "$out/lolbas.json"; then
+    record "t9_lolbas" "PASS" "catalog plan-only"
+  else
+    record "t9_lolbas" "FAIL" "rc=$lc"
+  fi
+
+  set +e
+  "$bin" purple-report --engage "$eng" --out "$eng/loot/purple" --json >"$out/purple.json" 2>&1
+  local prc=$?
+  set -e
+  if [[ $prc -eq 0 ]] && grep -q aop-purple-v1 "$out/purple.json" && [[ -f "$eng/loot/purple/purple_report.md" ]]; then
+    record "t9_purple_report" "PASS" "coverage + gaps"
+  else
+    record "t9_purple_report" "FAIL" "rc=$prc"
+  fi
+
+  set +e
+  "$bin" recon-hostinfo --engage "$eng" >"$out/recon_hi.json" 2>&1
+  local rh=$?
+  set -e
+  if [[ $rh -eq 0 ]] && grep -q aop-recon-v1 "$out/recon_hi.json"; then
+    record "t9_recon_hostinfo" "PASS" "scope facts"
+  else
+    record "t9_recon_hostinfo" "FAIL" "rc=$rh"
+  fi
+
+  set +e
+  "$bin" recon-scan --engage "$eng" --host 127.0.0.1 --ports 22,80 >"$out/recon_scan.json" 2>&1
+  local rs=$?
+  set -e
+  if [[ $rs -eq 0 ]] && grep -q open_ports "$out/recon_scan.json"; then
+    record "t9_recon_scan" "PASS" "scoped scan"
+  else
+    # Host path of this gate hop may still be VZ-marked when IN_GUEST=1
+    if [[ $rs -ne 0 ]] && grep -q OFFENSIVE_HOST_FORBIDDEN "$out/recon_scan.json" 2>/dev/null; then
+      record "t9_recon_scan" "FAIL" "host forbid unexpected under guest markers"
+    else
+      record "t9_recon_scan" "FAIL" "rc=$rs $(head -c 120 "$out/recon_scan.json" | tr '\n' ' ')"
+    fi
+  fi
+
+  set +e
+  "$bin" offensive-doctor --json >"$out/doctor_t9.json" 2>&1
+  set -e
+  if grep -q attck_kill_chain_catalog "$out/doctor_t9.json" \
+    && grep -q purple_team_report "$out/doctor_t9.json" \
+    && grep -q malleable_c2_profile "$out/doctor_t9.json"; then
+    record "t9_doctor_surfaces" "PASS" "T9 surfaces REAL"
+  else
+    record "t9_doctor_surfaces" "FAIL" "missing T9 surfaces"
+  fi
+
   local verdict="FAIL"
   [[ $fail -eq 0 && $pass -gt 0 ]] && verdict="PASS"
   python3 - <<PY
@@ -386,6 +621,26 @@ PY
 }
 
 OUT="$(parse_args "$@")"
+
+# Host hygiene: a leftover `$HOME/.anubis-vz-guest` on the *host* (e.g. from an
+# accidental IN_GUEST=1 local run) makes `in_vz_guest()` true and fail-opens AOP
+# on bare metal. Only guest hops may create that marker; host entrypoint strips it.
+if [[ "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" != "1" ]]; then
+  if [[ -f "${HOME}/.anubis-vz-guest" ]]; then
+    echo "[offensive-gate] removing stale host guest marker ${HOME}/.anubis-vz-guest (isolation fail-open)" >&2
+    rm -f "${HOME}/.anubis-vz-guest"
+  fi
+  unset ANUBIS_VZ_GUEST ANUBIS_OFFENSIVE_GATE_IN_GUEST || true
+  # Keep ANUBIS_ISOLATION only if it does not claim guest membership on host.
+  if [[ -n "${ANUBIS_ISOLATION:-}" ]]; then
+    case "${ANUBIS_ISOLATION}" in
+      *tart*|*vz*|*virtualization*)
+        echo "[offensive-gate] clearing host ANUBIS_ISOLATION=${ANUBIS_ISOLATION} (guest-claiming)" >&2
+        unset ANUBIS_ISOLATION
+        ;;
+    esac
+  fi
+fi
 
 if [[ "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" == "1" ]]; then
   run_local_gate "$OUT"

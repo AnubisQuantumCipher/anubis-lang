@@ -1,0 +1,35 @@
+=== A15 GATING EVIDENCE 2026-07-24T19:59:02Z ===
+HEAD=39a07ec827a6893e48d671f974adf9040896a368
+branch=a-plus-maturity/20260705-1649
+frontdoor=out/a_plus_a15_frontdoor_20260724-154145
+
+--- gate_report ---
+{"timestamp":"20260724-154145","pass":15,"fail":0,"skip":0,"total":15,"verdict":"PASS","gates":[{"gate":"G1_fmt","status":"PASS","detail":"no formatting diffs"},{"gate":"G2_clippy","status":"PASS","detail":"zero warnings/errors"},{"gate":"G3_test","status":"PASS","detail":"649 tests passed"},{"gate":"G4_build_release","status":"PASS","detail":"release binary built"},{"gate":"G5_language_fixtures","status":"PASS","detail":"Overall: PASS (244/244)"},{"gate":"G6_turing_core","status":"PASS","detail":"Overall: PASS (13/13)"},{"gate":"G7_pca","status":"PASS","detail":"Overall: PASS (13/13)"},{"gate":"G8_security_fixtures","status":"PASS","detail":"Overall: PASS"},{"gate":"G9_poc_kit","status":"PASS","detail":"Overall: PASS (4/4)"},{"gate":"G10_prove","status":"PASS","detail":"Overall: PASS (11/11)"},{"gate":"G11_enum_match","status":"PASS","detail":"enum/match gate clean"},{"gate":"G12_for_in","status":"PASS","detail":"for-in gate clean"},{"gate":"G13_lang_trio","status":"PASS","detail":"lang trio gate clean"},{"gate":"G14_offensive","status":"PASS","detail":"Overall: PASS (34/34)"},{"gate":"G15_dogfood_feel","status":"PASS","detail":"8/8 programs ran"}]}
+
+--- g14 ---
+{
+  "total": 34,
+  "passed": 34,
+  "failed": 0,
+  "overall_verdict": "PASS",
+  "binary": "target/release/anubis",
+  "isolation": "tart-disposable-guest"
+}{
+  "isolation": "tart-disposable-guest",
+  "base": "anubis-xcode",
+  "guest": "anubis-offensive-gate-50860",
+  "ip": "192.168.64.235",
+  "cpu": 8,
+  "memory_mib": 24576,
+  "guest_log": "guest_stdout.log",
+  "guest_out": "out/offensive_gate_guest"
+}
+
+--- host isolation recheck ---
+in_vz_guest False
+Error: ANUBIS_OFFENSIVE_HOST_FORBIDDEN: `recon-scan` is red-team/offensive platform execution and must run inside an Apple Virtualization guest (tart / Virtualization.framework), never on the host.
+
+recon_host_rc=0
+
+--- phase9 historical seal still 15/15 ---
+15 of 15

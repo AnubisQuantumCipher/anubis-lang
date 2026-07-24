@@ -99,6 +99,13 @@ anubis fuzz --target ./my_local_parser --runs 1000 --max-len 256 --seed 1 --out 
 2. `@research` / `@poc` / `@fuzz` still require authorization metadata (typecheck).
 3. Targets must be local filesystem paths. No `http://`, no raw network sinks in this kit.
 4. Gold fixtures use an intentionally vulnerable binary under `poc_kit/` — not third-party production hosts.
+5. **Isolation (advance, no regression):**
+   - **Host lab (documented):** packing smoke + gold `poc_kit/bin/vuln_local` crash PoC + fuzz against `poc_kit/…` — still works (`run_poc_kit_gate.sh`).
+   - **Preferred primary crash evidence:** disposable Apple VZ guest  
+     `anubis vz exploit --allow-research --base anubis-xcode examples/security/poc_local_overflow.anb`  
+     `anubis vz fuzz --allow-research --base anubis-xcode poc_kit/bin/vuln_local`
+   - **Fuzz of non–`poc_kit` targets** requires VZ (or `ANUBIS_POC_LAB_HOST=1` emergency override).
+   - **AOP C2 / inject / lateral** are separate and **always VZ-only** (`ANUBIS_OFFENSIVE_HOST_FORBIDDEN` on host).
 
 ## Honest boundary
 

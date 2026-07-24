@@ -2,9 +2,9 @@
 
 **Baseline (2026-07-05):** C-grade real prototype per ANUBIS_REALITY_AUDIT.md — the *starting* point, not the current state.
 
-**Live status is well past this baseline.** The living language tracker is [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md), where phases 0–10 are already documented at the language/freeze level. For this repo-governing A+ roadmap, **Phase 9 is DONE on Thursday, July 23, 2026**: `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` returned `PASS (15/15 passed, 0 failed, 0 skipped)`, with G14 executed in a disposable tart guest. **Phase 10 is also DONE the same day** via [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md) and [`A_PLUS_CLOSEOUT.md`](A_PLUS_CLOSEOUT.md). **A+ is still NOT CLAIMED** on this checkout because no current `implementer/a_plus_audit_run/*/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` artifact exists in tree.
+**Live status is well past this baseline.** The living language tracker is [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md), where phases 0–10 are already documented at the language/freeze level. For this repo-governing A+ roadmap, **Phase 9 is DONE** (`out/a_plus_phase9_final_rerun_20260723`, 15/15; G14 was 20/20). **Phase 10 is DONE** via [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md) and [`A_PLUS_CLOSEOUT.md`](A_PLUS_CLOSEOUT.md). **A15 is DONE (2026-07-24):** [`implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md`](implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md) with re-derived front door `out/a_plus_a15_frontdoor_20260724-154145` → **15/15 PASS**, G14 **34/34**. **A+ is CLAIMED** on that seal (hostile findings F1–F4 remediated and re-verified).
 
-**Target:** A+ when all 15 gates in A_PLUS_ACCEPTANCE_CRITERIA.md pass + A15 hostile audit clean.
+**Target met:** all 15 gates in A_PLUS_ACCEPTANCE_CRITERIA.md pass + A15 hostile audit clean (after remediation).
 
 ## Phase 0 (done in plan mode)
 - Recon, audits read, plan written + approved.
@@ -54,16 +54,17 @@
 - A_PLUS_REALITY_AUDIT.md + CLAIM_MATRIX + STEP_STATUS.
 
 ## Phase 9 — Sealed Final Audit
-**DONE (Thursday, July 23, 2026).**
-- `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` → `PASS (15/15 passed, 0 failed, 0 skipped)`.
+**DONE (Thursday, July 23, 2026; re-confirmed under A15 2026-07-24).**
+- Historical: `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` → `PASS (15/15)`.
+- Current re-seal: `out/a_plus_a15_frontdoor_20260724-154145` → `PASS (15/15)`; G14 **34/34**.
 - Exact verdict block: [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md)
-- Sealed evidence mirror: `implementer/a_plus_audit_run/20260723-152552/final_sealed_audit/`
-- G14 offensive gate: `PASS (20/20)` with `isolation: tart-disposable-guest`
+- A15 package: `implementer/a_plus_audit_run/20260724-154145/full_language_audit/`
+- Prior mirror: `implementer/a_plus_audit_run/20260723-152552/final_sealed_audit/`
 
 ## Phase 10 — Closeout
-**DONE (Thursday, July 23, 2026).**
+**DONE (Thursday, July 23, 2026; A+ label sealed Friday, July 24, 2026).**
 - Final reports: [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md), [`A_PLUS_CLOSEOUT.md`](A_PLUS_CLOSEOUT.md)
 - Truth surfaces refreshed to current front-door status.
-- Honest boundary preserved: only claim A+ when gates **and** a current A15 hostile audit say so.
+- A15 hostile audit present and clean after remediation of F1–F4 (isolation fail-open, stale guest binary, clippy, stack).
 
-**No claims without evidence. No merge without A15 reproduction.**
+**No claims without evidence. A+ requires gates + current A15 — both present on 2026-07-24 seal.**

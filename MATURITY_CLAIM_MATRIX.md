@@ -24,8 +24,8 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Interprocedural contract composition (Phase-3 D) | REAL (solver path) | `fn_contracts` + requires@ obligations + ensures assume at `let` call sites | existing contract/solver tests | No separate `ANUBIS_CALLEE_REQUIRES_UNMET` code; unmet requires = failed obligation. |
 | Research lowering requires assume bound from AST | REAL (current gate) | backends/native/mod.rs:94 + lib.rs research_lowering_requires... | cargo test research_lowering_requires... | Brittle gate |
 | Unborn git at start of a+ work | REAL | git rev-parse --verify HEAD (pre-init) | (recorded in plan) | Baseline commit 4a2c462 on a-plus-maturity/20260705-1649 |
-| 643 tests pass, clean fmt/clippy | REAL | `out/a_plus_phase9_final_rerun_20260723/gate_report.json` + `out/a_plus_phase9_final_rerun_20260723/g3_test.log` | `cargo test --all` ; `cargo fmt -- --check` ; `cargo clippy --all-targets -- -D warnings` | Reconciled Thursday, July 23, 2026 |
-| Full 15 unified gates | REAL | `out/a_plus_phase9_final_rerun_20260723/gate_report.json` → 15/15 PASS, 0 FAIL, 0 SKIP | `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` | Reconciled Thursday, July 23, 2026; canonical runner. `scripts/audit_a_plus.sh` remains the thin fail-closed alias to `scripts/audit_unified.sh`. G14 now runs through the VZ-isolated host wrapper in `scripts/run_offensive_platform_gate.sh`; exact verdict block in `A_PLUS_FINAL_REPORT.md`. |
+| 649 tests pass, clean fmt/clippy | REAL | `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` + G3 log | `cargo test --all` ; `cargo fmt -- --check` ; `cargo clippy --all-targets -- -D warnings` | Reconciled Friday, July 24, 2026 (A15); RUST_MIN_STACK=16MiB for large clap CLI unit tests |
+| Full 15 unified gates | REAL | `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` → 15/15 PASS, 0 FAIL, 0 SKIP | `bash scripts/audit_a_plus.sh --out out/a_plus_a15_frontdoor_20260724-154145` | A15 re-seal Friday, July 24, 2026. G14 is VZ-isolated **34/34** (T9 included). Exact verdict in `A_PLUS_FINAL_REPORT.md` + A15 audit dir. |
 | Gate 7 solver faithful semantics (BV, defs, no free vars) | REAL | middle/mod.rs check_obligations + smt build + tests | cargo test solver ; cat smt | Per var widths, derived (= ), BV ops |
 | Gate 7 counterexample replay + hostile failure detection | REAL (fixed 2026-07-11 — was a fabricated attestation) | `replay_counterexample`/`parse_z3_model` (middle/mod.rs) + evidence/mod.rs `solver_replay.json` | `cargo test -p anubis-compiler real_counterexample_replay` ; `anubis check ... --evidence` then `cat */analysis/solver_replay.json` | Was a substring hack (`model.contains("x")`, hardcoded `#x0000000f`/`"15"`) shipping a fake `replay_valid` into every PCA bundle's `solver_replay.json`, with a tautological test. Now: parses z3's concrete witness, pins every variable to it on top of the SAME assumptions+¬assertion the solver decided, and asks z3 to re-decide the fully-ground formula — real model-substitution + re-execution, sound for QF_BV. Verified: prove gate 11/11, PCA gate 13/13 |
 | Gate 7 u8 BitVec 8 + explicit semantics | REAL | width tracking + u8 fixture + smt | cargo run check ...overflow_u8 ; cat smt | BitVec 8 declare, 8 bit lits, wrapping |
@@ -101,17 +101,30 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Engagement scope fail-closed | REAL | engage-init/status | `anubis engage-init` | kill date + authorization |
 | aop-2 AES-GCM encrypted beacons | REAL | live whoami result protocol aop-2 | gate `t1_encrypted_c2` | PSK in engagement |
 | Agent keys + jitter | REAL | agent meta key_id + jitter_pct | `agent-generate` | sleep jitter in agent |
-| mTLS cert material | REAL | `certs/server.crt.pem` | engage-init | ready; HTTP default |
+| mTLS cert material | REAL | `certs/{ca,server,client}.{crt,key}.pem` | engage-init | CA+server+client |
+| Full rustls mTLS handshake | REAL | `listen --mtls` + client cert `/health` | gate `t1_mtls_rustls` / local smoke | HTTP remains default |
 | HTTP C2 + operator console | REAL | `GET /` HTML | gate `t7_console` | RBAC roles |
+| Multi-operator token auth | REAL | `token_hash` + issue/revoke | gate `t7_operator_token_auth` | cleartext never stored |
 | DNS + UDS transports | REAL | listen log multi-transport | gate t3_* | lab DNS/UDS |
+| DNS/DoH C2 codec (`aop-dns-v1`) | REAL | `/doh` + UDP TXT | gate `t3_dns_doh_codec` | QNAME base32 + DoH |
 | LaunchAgent persistence | REAL | `persistence/*.plist` | `persist-launchagent` | install script included |
-| Inject plan-only | REAL | PLAN_ONLY JSON | `inject-plan` | no silent inject |
+| Inject plan-only (default) | REAL | PLAN_ONLY JSON | `inject-plan` | no silent inject |
+| Live inject under double authorization | REAL | EXECUTED + loot/inject | gate `t2_inject_live_double_auth` | CLI flag + engagement half |
 | Lateral SSH scoped | REAL | external deny | `lateral-ssh` | allowed_lateral_hosts |
 | ROP pattern/gadgets/browser | REAL | pattern-offset found | pattern-*/gadget-*/browser-harness | lab browser localhost only |
 | XOR packer | REAL | packs/*.xor.pack | `pack-xor` | lab packer |
 | Exploit modules + PoC kit | REAL | exploit success | exploit-run | crash oracle |
-| Offensive gate | REAL | `out/a_plus_phase9_final_rerun_20260723/g14_offensive/report.json` + `g14_offensive/isolation.json` | `bash scripts/run_offensive_platform_gate.sh --out out/offensive_gate_vz_test2` | T1–T7 PASS 20/20. Host entrypoint is VZ-isolated by default (`isolation: tart-disposable-guest`), reconciled Thursday, July 23, 2026 |
-| Full rustls mTLS handshake / live inject execute | PLANNED/PARTIAL | OFFENSIVE_PLATFORM.md | — | inject remains PLAN_ONLY by design |
+| Offensive gate | REAL | gate report + isolation | `bash scripts/run_offensive_platform_gate.sh` | VZ-isolated host entrypoint; deeper surfaces gated |
+| Host forbids AOP red-team execution | REAL | `ANUBIS_OFFENSIVE_HOST_FORBIDDEN` | listen/inject/lateral without VZ | Apple Virtualization guest required |
+| PoC kit host gold lab | REAL | packing + target_run + fuzz poc_kit | `run_poc_kit_gate` 4/4 | Prefer `vz exploit\|fuzz` for primary evidence |
+| Fuzz non-poc_kit requires VZ | REAL | `ANUBIS_FUZZ_HOST_FORBIDDEN` | fuzz `/tmp/not_poc` on host | Advance isolation |
+| ATT&CK kill-chain catalog (T9) | REAL | `aop-attck-v1` | `anubis attck-catalog --json` | Mapped to AOP surfaces |
+| OPSEC score (T9) | REAL | `aop-opsec-v1` | `anubis opsec-score --engage …` | Elite checklist |
+| Malleable C2 profile (T9) | REAL | profiles/*.json | `malleable-init` / `malleable-validate` | Lab traffic shaping |
+| Campaign playbook (T9) | REAL | campaigns/full_spectrum.{json,md} | `campaign-init` | Full-spectrum phases |
+| Purple-team report (T9) | REAL | purple_report.md | `purple-report` | ATT&CK coverage + gaps |
+| Phish / LOLBAS PLAN_ONLY (T9) | REAL | executed:false | `phish-plan` / `lolbas-catalog` | Never auto-sends / auto-execs |
+| Recon scoped (T9) | REAL | hostinfo host; scan VZ-only | `recon-hostinfo` / `recon-scan` | Fail-closed scope |
 | SMB/WinRM lateral **execution** | NOT CLAIMED | `lateral-smb` CLI | `anubis lateral-smb --host …` | **PLAN_ONLY**: structured plan, `executed=false`, no SMB sockets |
 | RBAC queue + admin status | REAL | listener `/task` + `/admin/status` + `task-queue --operator` | gate `t7_rbac_queue` | `role_can_queue` / `role_can_admin` wired |
 | Structured `allowed_targets` | REAL | engage-status + scope | gate `scope_targets` | Host/Cidr/LocalPath kinds |
@@ -660,7 +673,9 @@ closed or explicitly marked DEFERRED with precise scope.
 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|
-| Unified gate suite (one command, all gates, stranger can run) | REAL | `scripts/audit_unified.sh` — 15 gates (G1-G15), JSON report | `bash scripts/audit_a_plus.sh --out out/a_plus_phase9_final_rerun_20260723` → 15/15 PASS, 0 FAIL, 0 SKIP | Thursday, July 23, 2026 rerun. G14 is VZ-isolated on the host entrypoint; G15 ran 8/8 `examples/feel/*` programs |
+| Unified gate suite (one command, all gates, stranger can run) | REAL | `scripts/audit_unified.sh` — 15 gates (G1-G15), JSON report | `bash scripts/audit_a_plus.sh --out out/a_plus_a15_frontdoor_20260724-154145` → 15/15 PASS, 0 FAIL, 0 SKIP | Friday, July 24, 2026 A15 re-seal. G14 **34/34** VZ guest; G15 8/8 `examples/feel/*` |
+| A15 hostile full-language audit (current) | REAL | `implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` | re-run `bash scripts/audit_a_plus.sh` + compare gate_report | Documents F1–F4 (host fail-open marker, stale guest binary, clippy, stack) fixed and re-sealed |
+| Offensive platform T1–T9 gate | REAL | `out/a15_offensive_t9_20260724-152746/report.json` + suite G14 | `bash scripts/run_offensive_platform_gate.sh` | **34/34** PASS, `isolation=tart-disposable-guest` |
 | CI runs the real front door (not a weak subset) | REAL | `.github/workflows/ci.yml` execs `scripts/audit_a_plus.sh` on `macos-latest`; guarded by `ci_workflow_enforces_the_real_gate_suite_not_a_weak_subset` | `cargo test -p anubis-compiler ci_workflow_enforces` | Replaced the old 4-command subset (`cargo test` w/o `--all`, `clippy` w/o `--all-targets`, never ran G5-G15). Suite is self-contained on a stock runner: G10 is cold-VERIFY only (no risc0 prover / Metal), so CI is a public off-desk cold-verify witness. **Metal _proving_ in CI still NOT CLAIMED** (needs Apple-Silicon GPU); CI green not yet observed on GitHub from here — verified the runner locally (15/15) |
 | Zero hard-coded author paths in Rust/TOML source | REAL | `grep -rn "sicarii/Desktop" --include="*.rs" --include="*.toml"` → 0 hits | `grep -rn "sicarii/Desktop" --include="*.rs" --include="*.toml" \| grep -v .claude/worktrees/` | All paths use `ANUBIS_RISC0_METAL_REFERENCE` env var |
 | Cargo fmt + clippy + 643 tests green | REAL | `cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test --all` | `bash scripts/audit_unified.sh` (G1-G3) | Thursday, July 23, 2026 rerun: `G3_test` reported `643 tests passed` |

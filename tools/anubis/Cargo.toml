@@ -27,6 +27,10 @@ aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
 rcgen = "0.13"
+# AOP mTLS listener (opt-in; plain HTTP remains default bind path).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
 risc0-zkvm = { version = "=3.0.5", features = ["prove", "std", "disable-dev-mode"] }
 risc0-circuit-rv32im = { version = "=4.0.4", features = ["prove"] }
 
