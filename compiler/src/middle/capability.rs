@@ -40,7 +40,9 @@
 //! interprocedurally for the two named shapes: (1) a callee that returns a non-exportable mint
 //! seeds the caller's binding as non-exportable; (2) a callee formal that reaches a public sink
 //! without `cap_export` causes the call site to treat the corresponding arg as an export check.
-//! Closure capture of caps and deep HO rebind remain residual.
+//! **Peel-of-param:** a formal may be released with well-formed `cap_export(param, "reason")`
+//! (params never authorize effects; kind stays `None`). Deep HO rebind and ambient interproc
+//! causal spend remain residual.
 
 use crate::frontend::{Expr, ForSource, Pattern, Stmt};
 use std::collections::{BTreeMap, BTreeSet};
@@ -99,6 +101,9 @@ struct Lin<'a> {
     /// (`let arr = [s]` / struct / map). Index/field project to an export sink is EXPORT —
     /// closes store-then-project laundering (dual-use seal).
     container_ne: BTreeSet<String>,
+    /// Formal parameter names for this function. Used only for peel-of-param (`cap_export` on a
+    /// formal that is not yet a Live NE local). Params never authorize effects.
+    params: BTreeSet<String>,
 }
 
 impl Lin<'_> {
@@ -201,10 +206,10 @@ pub(crate) fn check_program(
 
 /// Check one function body for capability linearity AND effect authorization (verified mode).
 /// `params` seed the scope as unknown-provenance names for *authorization* (a param never
-/// authorizes an effect). Non-exportable sealedness uses [`CapProgramSummary`] for call/return
-/// edges. Pure: returns findings.
+/// authorizes an effect) and as peelable formals for `cap_export`. Non-exportable sealedness
+/// uses [`CapProgramSummary`] for call/return edges. Pure: returns findings.
 pub(crate) fn check_linearity(
-    _params: &[(String, String)],
+    params: &[(String, String)],
     body: &[Stmt],
     verified: bool,
     span: (usize, usize),
@@ -213,6 +218,7 @@ pub(crate) fn check_linearity(
     _fn_name: &str,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let param_names: BTreeSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
     let mut lin = Lin {
         verified,
         span,
@@ -220,6 +226,7 @@ pub(crate) fn check_linearity(
         all_fns,
         summary,
         container_ne: BTreeSet::new(),
+        params: param_names,
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
@@ -748,8 +755,12 @@ fn formals_export_and_container_stores(
                 }
             }
             Expr::Call { callee, args } if callee == CAP_EXPORT => {
-                if let Some(Expr::Var(src)) = args.first() {
-                    peel_name(src, sealed, containers);
+                // Only well-formed peels (non-empty string reason) unseal the formal.
+                let reason_ok = matches!(args.get(1), Some(Expr::StrLiteral(r)) if !r.is_empty());
+                if reason_ok {
+                    if let Some(Expr::Var(src)) = args.first() {
+                        peel_name(src, sealed, containers);
+                    }
                 }
                 sealed.remove(name);
                 containers.remove(name);
@@ -895,8 +906,12 @@ fn formals_export_and_container_stores(
         match e {
             Expr::Call { callee, args } => {
                 if callee == CAP_EXPORT {
-                    if let Some(Expr::Var(src)) = args.first() {
-                        peel_name(src, sealed, containers);
+                    let reason_ok =
+                        matches!(args.get(1), Some(Expr::StrLiteral(r)) if !r.is_empty());
+                    if reason_ok {
+                        if let Some(Expr::Var(src)) = args.first() {
+                            peel_name(src, sealed, containers);
+                        }
                     }
                 } else if is_export_sink(callee) {
                     for a in args {
@@ -1296,6 +1311,9 @@ fn causal_spend(effect: &str, caps: &mut CapMap, lin: &mut Lin) {
 
 /// Well-formed `cap_export(src, "reason")`: on success consume `src` and return peeled Live
 /// exportable token. Malformed → diagnostic, leave source unpeeled (if still Live).
+///
+/// Peel-of-param: a formal that is not yet a Live NE local may still be released — interproc
+/// may pass NE into that slot; params never authorize effects (`kind: None`).
 fn apply_cap_export(args: &[Expr], caps: &mut CapMap, lin: &mut Lin) -> Option<CapToken> {
     let src_name = match args.first() {
         Some(Expr::Var(n)) => n.clone(),
@@ -1334,8 +1352,19 @@ fn apply_cap_export(args: &[Expr], caps: &mut CapMap, lin: &mut Lin) -> Option<C
             }
             None
         }
+        // Peel-of-param: formal not tracked as Live NE local — still allow well-formed peel.
+        None if reason_ok && lin.params.contains(&src_name) => {
+            for a in args.iter().skip(2) {
+                walk_expr(a, caps, lin);
+            }
+            Some(CapToken {
+                state: CapState::Live,
+                kind: None,
+                non_exportable: false,
+            })
+        }
         _ => {
-            // Empty reason, exportable token, unknown provenance, etc. — no peel.
+            // Empty reason, exportable token, non-param unknown provenance, etc. — no peel.
             lin.export_malformed();
             for a in args.iter().skip(1) {
                 walk_expr(a, caps, lin);
@@ -2482,6 +2511,90 @@ fn f() { let y = send(3); }"#;
             codes(src, true).is_empty(),
             "peel-before-call must accept, got {:?}",
             codes(src, true)
+        );
+    }
+
+    /// Peel-of-param: callee peels formal then prints — call site must accept (formal not exporting).
+    #[test]
+    fn nonexportable_peel_of_param_then_print_accepts() {
+        let src = r#"
+            fn release(s) {
+                let e = cap_export(s, "audit");
+                print(e);
+            }
+            fn f() {
+                let s = cap_acquire_nonexportable("fs.write");
+                release(s);
+            }
+        "#;
+        for verified in [false, true] {
+            let c = codes(src, verified);
+            assert!(
+                c.is_empty(),
+                "peel-of-param then print must accept, verified={verified}, got {c:?}"
+            );
+        }
+    }
+
+    /// Peel-of-param in-place: `cap_export(s, "reason"); print(s)` rebinds formal as exportable.
+    #[test]
+    fn nonexportable_peel_of_param_inplace_then_print_accepts() {
+        let src = r#"
+            fn release(s) {
+                cap_export(s, "audit");
+                print(s);
+            }
+            fn f() {
+                let s = cap_acquire_nonexportable("fs.write");
+                release(s);
+            }
+        "#;
+        assert!(
+            codes(src, true).is_empty(),
+            "inplace peel-of-param must accept, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    /// Dual: empty reason on formal is MALFORMED; formal still sealed so print(s) EXPORT at call.
+    #[test]
+    fn nonexportable_peel_of_param_empty_reason_is_malformed() {
+        let src = r#"
+            fn release(s) {
+                let e = cap_export(s, "");
+                print(s);
+            }
+            fn f() {
+                let s = cap_acquire_nonexportable("fs.write");
+                release(s);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT_MALFORMED"),
+            "empty-reason peel-of-param must be MALFORMED, got {c:?}"
+        );
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "empty peel must leave formal exporting at call site, got {c:?}"
+        );
+    }
+
+    /// Dual: non-param unknown provenance still cannot peel.
+    #[test]
+    fn nonexportable_peel_of_return_unknown_is_malformed() {
+        let src = r#"
+            fn get() { return 1; }
+            fn f() {
+                let x = get();
+                let e = cap_export(x, "audit");
+                print(e);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT_MALFORMED"),
+            "peel of non-param unknown must MALFORMED, got {c:?}"
         );
     }
 
