@@ -6746,6 +6746,63 @@ fn main() {
         .expect("symbolic index over clean closures must accept");
     }
 
+    /// Nested container application residual (Phase A 2026-07-25): `outer[0][0](…)` and
+    /// `b.fs[i](…)` previously ACCEPTED secret-capturing lambdas because CallExpr only
+    /// resolved Index with a Var base (not nested Index/FieldAccess chains).
+    #[test]
+    fn nested_container_closure_application_fails_closed() {
+        // Nested literal path.
+        let err = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let outer = [[|x| send("h", 80, k)]];
+                outer[0][0](0);
+            }"#,
+        )
+        .expect_err("nested literal index secret-capturing lambda must reject");
+        assert!(
+            err.contains("ANUBIS_SECRET") || err.contains("secret"),
+            "nested lit: expected secret diagnostic, got: {err}"
+        );
+        // Nested symbolic outer index.
+        let err2 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let i = 0;
+                let outer = [[|x| send("h", 80, k)]];
+                outer[i][0](0);
+            }"#,
+        )
+        .expect_err("nested symbolic index secret-capturing lambda must reject");
+        assert!(
+            err2.contains("ANUBIS_SECRET") || err2.contains("secret"),
+            "nested sym: expected secret diagnostic, got: {err2}"
+        );
+        // Struct field holding a list of closures + symbolic index.
+        let err3 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let i = 0;
+                let b = { fs: [|x| send("h", 80, k)] };
+                b.fs[i](0);
+            }"#,
+        )
+        .expect_err("struct-field list + symbolic index secret capture must reject");
+        assert!(
+            err3.contains("ANUBIS_SECRET") || err3.contains("secret"),
+            "field+sym: expected secret diagnostic, got: {err3}"
+        );
+        // Clean nested path still accepts (no false reject).
+        tc_ok(
+            r#"fn main() uses(net.send) {
+                let i = 0;
+                let outer = [[|x| send("h", 80, 1)]];
+                outer[i][0](0);
+            }"#,
+        )
+        .expect("clean nested container application must accept");
+    }
+
     #[test]
     fn map_entry_closure_application_is_enforced() {
         // SECURITY (Phase-9 closeout): map-keyed closures applied via `m["f"](0)` or bare-key

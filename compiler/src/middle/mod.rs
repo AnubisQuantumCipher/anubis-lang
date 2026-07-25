@@ -384,8 +384,41 @@ fn symbolic_index_capturing_closure(
     if matches!(index.as_ref(), Expr::StrLiteral(_) | Expr::Literal(_)) {
         return None;
     }
-    let (root, _) = flatten_access_path(base)?;
-    let b = scope.get(&root)?;
+    let (root, _) = flatten_access_path(base).or_else(|| {
+        // Nested chain with symbolic outer: still recover the Var root.
+        access_chain_root(base).map(|r| (r, String::new()))
+    })?;
+    any_capturing_field_closure(&root, scope, ctx)
+}
+
+/// Var root of an Index/FieldAccess chain (ignores whether indices are literal).
+fn access_chain_root(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Var(n) => Some(n.clone()),
+        Expr::FieldAccess { base, .. } | Expr::Index { base, .. } => access_chain_root(base),
+        _ => None,
+    }
+}
+
+/// True when `e` is an Index/FieldAccess chain containing a non-literal index segment.
+fn access_chain_has_symbolic_index(e: &Expr) -> bool {
+    match e {
+        Expr::Index { base, index } => {
+            !matches!(index.as_ref(), Expr::Literal(_) | Expr::StrLiteral(_))
+                || access_chain_has_symbolic_index(base)
+        }
+        Expr::FieldAccess { base, .. } => access_chain_has_symbolic_index(base),
+        _ => false,
+    }
+}
+
+/// First secret/taint-capturing lambda stored under `root`'s `field_closures` (any nested path).
+fn any_capturing_field_closure(
+    root: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<Box<Expr>> {
+    let b = scope.get(root)?;
     for lam in b.field_closures.values() {
         if let Expr::Lambda { params, body } = lam.as_ref() {
             let mut inner = scope.clone();
@@ -393,7 +426,7 @@ fn symbolic_index_capturing_closure(
                 inner.remove(p);
             }
             seed_body_local_lambdas(body, &mut inner);
-            let captures_secret = expr_secret_source_m(
+            let captures = expr_secret_source_m(
                 body,
                 &inner,
                 &ctx.secret_fns,
@@ -409,9 +442,35 @@ fn symbolic_index_capturing_closure(
                     &ctx.method_tainting_fns,
                 )
                 .is_some();
-            if captures_secret {
+            if captures {
                 return Some(lam.clone());
             }
+        }
+    }
+    None
+}
+
+/// Resolve a lambda applied via container path (`arr[0](…)`, `outer[0][0](…)`, `b.fs[i](…)`,
+/// `m["k"](…)`). Concrete literal paths use `flatten_access_path` keys (`"0.0"`, `"fs.0"`).
+/// Any symbolic index in the chain fail-closes to a capturing element under the root if one exists.
+fn resolve_applied_container_lambda(
+    callee: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<Box<Expr>> {
+    // Concrete nested path: outer[0][0] → ("outer", "0.0").
+    if let Some((root, path)) = flatten_access_path(callee) {
+        if path.is_empty() {
+            return scope.get(&root).and_then(|b| b.closure_lambda.clone());
+        }
+        return scope
+            .get(&root)
+            .and_then(|b| b.field_closures.get(&path).cloned());
+    }
+    // Symbolic segment in chain: fail-closed over all nested field_closures under the root.
+    if access_chain_has_symbolic_index(callee) {
+        if let Some(root) = access_chain_root(callee) {
+            return any_capturing_field_closure(&root, scope, ctx);
         }
     }
     None
@@ -7334,66 +7393,45 @@ fn analyze_expr_effect(
                     }
                 }
             }
-            // Task #48-d: a closure stored in a LIST ELEMENT (`let arr = [|x| write_file(..)]`) or
-            // MAP ENTRY (`let m = { "f": |x| write_file(..) }`) applied via `arr[0](0)` / `m["f"](0)` —
-            // a `CallExpr` on an `Index` — otherwise hides its body. Descend into the stored closure
-            // (keyed by the concrete int index OR string key in `field_closures`).
-            // Symbolic index (non-literal): fail-closed — if the container holds ANY secret/tainted-
-            // capturing closure, analyze the application as that capturing element (j1 twin of
-            // `let g = arr[i]` via symbolic_index_capturing_closure). Clean containers still accept.
-            if let Expr::Index { base, index } = callee.as_ref() {
-                if let Expr::Var(bname) = base.as_ref() {
-                    let key_opt: Option<String> = match index.as_ref() {
-                        Expr::Literal(idx) => Some(idx.trim().to_string()),
-                        Expr::StrLiteral(s) => Some(s.clone()),
-                        _ => None,
-                    };
-                    let lam_opt: Option<Box<Expr>> = if let Some(key) = key_opt {
-                        scope
-                            .get(bname)
-                            .and_then(|b| b.field_closures.get(&key).cloned())
-                    } else {
-                        // Symbolic index: over-approx to a capturing element if any exists.
-                        let idx_init = Expr::Index {
-                            base: base.clone(),
-                            index: index.clone(),
-                        };
-                        symbolic_index_capturing_closure(&idx_init, scope, ctx)
-                    };
-                    if let Some(lam) = lam_opt {
-                        if let Expr::Lambda { params, body } = lam.as_ref() {
-                            let mut local = scope.clone();
-                            // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
-                            // arr[0](input())` runs with x = the tainted arg (else the arg's label was
-                            // dropped and the index-applied closure laundered it — hunt wf_e67160a7).
-                            for (j, p) in params.iter().enumerate() {
-                                let (pt, ps) = match args.get(j) {
-                                    Some(a) => (
-                                        expr_taint_source_m(
-                                            a,
-                                            scope,
-                                            &ctx.tainting_fns,
-                                            &ctx.param_return_taint,
-                                            &ctx.method_tainting_fns,
-                                        ),
-                                        expr_secret_source_m(
-                                            a,
-                                            scope,
-                                            &ctx.secret_fns,
-                                            &ctx.param_return_taint,
-                                            &ctx.method_secret_fns,
-                                        )
-                                        .is_some(),
+            // Task #48-d + nested-path residual (2026-07-25): a closure stored in a LIST ELEMENT,
+            // MAP ENTRY, or NESTED container (`outer[0][0](0)`, `b.fs[i](0)`) applied via CallExpr
+            // must descend into the stored body. Concrete paths use flatten keys (`"0.0"`, `"fs.0"`);
+            // any symbolic index in the chain fail-closes to a capturing element under the root.
+            if matches!(
+                callee.as_ref(),
+                Expr::Index { .. } | Expr::FieldAccess { .. }
+            ) {
+                if let Some(lam) = resolve_applied_container_lambda(callee, scope, ctx) {
+                    if let Expr::Lambda { params, body } = lam.as_ref() {
+                        let mut local = scope.clone();
+                        // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
+                        // arr[0](input())` runs with x = the tainted arg (else the arg's label was
+                        // dropped and the index-applied closure laundered it — hunt wf_e67160a7).
+                        for (j, p) in params.iter().enumerate() {
+                            let (pt, ps) = match args.get(j) {
+                                Some(a) => (
+                                    expr_taint_source_m(
+                                        a,
+                                        scope,
+                                        &ctx.tainting_fns,
+                                        &ctx.param_return_taint,
+                                        &ctx.method_tainting_fns,
                                     ),
-                                    None => (None, false),
-                                };
-                                local.insert(
-                                    p.clone(),
-                                    labelled_param_binding(p, pt.is_some(), pt, ps),
-                                );
-                            }
-                            analyze_expr_effect(body, mode, &local, effects, ctx);
+                                    expr_secret_source_m(
+                                        a,
+                                        scope,
+                                        &ctx.secret_fns,
+                                        &ctx.param_return_taint,
+                                        &ctx.method_secret_fns,
+                                    )
+                                    .is_some(),
+                                ),
+                                None => (None, false),
+                            };
+                            local
+                                .insert(p.clone(), labelled_param_binding(p, pt.is_some(), pt, ps));
                         }
+                        analyze_expr_effect(body, mode, &local, effects, ctx);
                     }
                 }
             }
