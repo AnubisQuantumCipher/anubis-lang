@@ -131,6 +131,20 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Derive a macOS entitlement / App Sandbox **profile** from a program's proven effect set.
+    /// Pure function of source; sealed into evidence bundles and re-derived on verify.
+    /// Honesty: derived profile, **not** OS-enforced until the binary is codesigned with the plist.
+    Entitlements {
+        /// Program `.anb` to derive the profile for.
+        program: PathBuf,
+        /// Write JSON profile to this path (default: stdout).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Also write a minimal `program.entitlements` plist next to --out (or cwd).
+        #[arg(long)]
+        plist: Option<PathBuf>,
+    },
+
     /// Run a directory (or file) of `.anb` test programs, checking each against its
     /// `// EXPECT: PASS|FAIL` and optional `// ERROR_CONTAINS: <text>` directives. Only entry
     /// files (those with a `fn main`) are run; library modules are skipped.
@@ -3960,6 +3974,11 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             }
             Ok(())
         }
+        Commands::Entitlements {
+            program,
+            out,
+            plist,
+        } => run_entitlements_cmd(&program, out.as_deref(), plist.as_deref()),
         Commands::RuntimeProbe {
             json,
             evidence,
@@ -4302,6 +4321,91 @@ fn write_capabilities_evidence(out: &Path, report: &serde_json::Value) -> Result
         sha256_of_file_or("MISSING", &md_path)
     );
     std::fs::write(out.join("MANIFEST.sha256"), manifest)?;
+    Ok(())
+}
+
+/// Derive a language→OS entitlement profile. Fail closed if the program does not typecheck
+/// (no proven effect set). Claim is **derived + re-derivable**, not host-enforced until codesign.
+fn run_entitlements_cmd(
+    program: &Path,
+    out: Option<&Path>,
+    plist: Option<&Path>,
+) -> Result<()> {
+    let src = std::fs::read_to_string(program)
+        .map_err(|e| anyhow!("read program `{}`: {e}", program.display()))?;
+    let ast = parse_source(&src).map_err(|e| anyhow!("ANUBIS_ENTITLEMENT_PARSE_FAILED: {e}"))?;
+    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    typecheck(ast, mode).map_err(|e| {
+        anyhow!(
+            "ANUBIS_ENTITLEMENT_UNVERIFIED: refusing to derive an entitlement profile from a \
+             program that does not pass `anubis check` — the profile is only meaningful as a \
+             consequence of a passing check: {e}"
+        )
+    })?;
+    let profile = anubis_compiler::package::entitlements::derive_entitlement_profile(
+        "program", "0.0.0", &src,
+    )
+    .map_err(|e| anyhow!("{e}"))?;
+    let json = serde_json::to_string_pretty(&profile).map_err(|e| anyhow!("{e}"))?;
+
+    eprintln!(
+        "[anubis entitlements] OS entitlement/sandbox profile derived from the program's PROVEN effect set:"
+    );
+    eprintln!("  effects_bounded : {}", profile.effects_bounded);
+    eprintln!(
+        "  capabilities    : {}",
+        if profile.capabilities_present.is_empty() {
+            "(none proven — maximally restrictive)".to_string()
+        } else {
+            profile.capabilities_present.join(", ")
+        }
+    );
+    eprintln!(
+        "  sandbox         : on={} network.client={} network.server={} file_read={} file_write={} process_exec={}",
+        profile.sandbox.enabled,
+        profile.sandbox.network_client,
+        profile.sandbox.network_server,
+        profile.sandbox.file_read,
+        profile.sandbox.file_write,
+        profile.sandbox.process_exec,
+    );
+    eprintln!(
+        "  honesty         : apple_enforced_claim=false on every key — derived profile, not enforced until signed"
+    );
+    for e in &profile.entitlements {
+        if e.enabled || e.key.contains("network") || e.key.contains("app-sandbox") {
+            eprintln!(
+                "  {:<55} enabled={}  (claim={})",
+                e.key, e.enabled, e.apple_enforced_claim
+            );
+        }
+    }
+
+    if let Some(path) = out {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(path, &json)?;
+        eprintln!("  wrote {}", path.display());
+    } else {
+        println!("{json}");
+    }
+
+    if let Some(plist_path) = plist {
+        let xml = anubis_compiler::package::entitlements::entitlement_plist_xml(&profile);
+        if let Some(parent) = plist_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(plist_path, xml)?;
+        eprintln!(
+            "  wrote {} (for codesign --entitlements; OS enforcement still needs_human)",
+            plist_path.display()
+        );
+    }
     Ok(())
 }
 

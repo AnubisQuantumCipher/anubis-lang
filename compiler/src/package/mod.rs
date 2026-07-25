@@ -5,6 +5,7 @@
 
 pub mod cache;
 pub mod confinement;
+pub mod entitlements;
 pub mod lock;
 pub mod merkle;
 pub mod proof;

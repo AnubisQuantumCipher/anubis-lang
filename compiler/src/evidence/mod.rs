@@ -184,6 +184,14 @@ pub fn build_evidence_bundle_tree(
     if let Ok(cm) = crate::package::confinement::derive_confinement("package", "0.0.0", &source) {
         let _ = crate::package::confinement::write_confinement_to_evidence_dir(&dir, &cm);
     }
+    // Effect-derived macOS entitlement / App Sandbox profile — OS-facing policy from the same proven
+    // capability set as confinement. Sealed + re-derived on verify (fail-closed on forge). Honesty:
+    // apple_enforced_claim is false; OS enforcement requires codesign (needs_human residual).
+    if let Ok(ep) =
+        crate::package::entitlements::derive_entitlement_profile("package", "0.0.0", &source)
+    {
+        let _ = crate::package::entitlements::write_entitlement_profile_to_evidence_dir(&dir, &ep);
+    }
     // Optional multi-leaf listing for re-verify of Merkle source_hash.
     if files.len() > 1 {
         let leaves: Vec<serde_json::Value> = files
@@ -760,10 +768,34 @@ pub fn verify_pca(dir: &Path) -> Result<bool, String> {
             true // legacy bundle without a confinement manifest
         }
     };
+    // Entitlement profile cross-check: same fail-closed re-derive as confinement. A forged
+    // network.client-enabled profile over a net-free source cannot survive re-derivation.
+    let entitlement_ok = {
+        let ep_path = dir.join(crate::package::entitlements::ENTITLEMENT_PROFILE_FILENAME);
+        if ep_path.exists() {
+            match std::fs::read_to_string(&ep_path)
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    serde_json::from_str::<crate::package::entitlements::EntitlementProfile>(&s)
+                        .map_err(|e| e.to_string())
+                }) {
+                Ok(sealed) => {
+                    crate::package::entitlements::verify_entitlement_profile_matches_source(
+                        &source, &sealed,
+                    )
+                    .is_ok()
+                }
+                Err(_) => false,
+            }
+        } else {
+            true // legacy bundle without an entitlement profile
+        }
+    };
     Ok(hashes_ok
         && source_bound
         && sig_ok
         && confine_ok
+        && entitlement_ok
         && claim_semantically_matches(&fresh, &recorded))
 }
 
