@@ -3259,6 +3259,70 @@ fn bad(x: i64) -> i64
         );
     }
 
+    /// Anubis wrap-safety (AoRTE-lite): contracted `x+1` without a bound fails with WRAP_RISK +
+    /// CEX + possible fix — SPARK-style overflow finding, Anubis counterexample repair.
+    #[test]
+    fn wrap_safety_flags_unbounded_increment_with_possible_fix() {
+        let src = r#"
+fn increment(x: i64) -> i64
+    ensures(result == x + 1)
+{
+    return x + 1;
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks
+            .into_iter()
+            .filter(|c| c.status == "FAIL")
+            .collect();
+        assert!(
+            fails.iter().any(|c| c.name.starts_with("wrap-safety:")),
+            "must emit wrap-safety obligation: {fails:?}"
+        );
+        assert!(
+            fails.iter().any(|c| {
+                middle::classify_assertion_fail(c) == middle::AssertionFailKind::WrapRisk
+            }),
+            "must classify as WrapRisk: {fails:?}"
+        );
+        let msg = middle::format_check_failures(&fails);
+        assert!(
+            msg.contains("ANUBIS_WRAP_RISK") || msg.contains("wrap-safety:"),
+            "diagnostic: {msg}"
+        );
+        assert!(
+            msg.contains("possible fix") && msg.contains("requires(x <"),
+            "must suggest requires from CEX: {msg}"
+        );
+        assert!(
+            msg.contains("9223372036854775807") || msg.contains("i64::MAX"),
+            "must show MAX witness: {msg}"
+        );
+    }
+
+    /// Bounded increment: wrap-safety + ensures both prove.
+    #[test]
+    fn wrap_safety_passes_when_requires_excludes_max() {
+        let src = r#"
+fn increment(x: i64) -> i64
+    requires(x < 9223372036854775807)
+    ensures(result == x + 1)
+    ensures(result > x)
+{
+    return x + 1;
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks.iter().all(|c| c.status != "FAIL"),
+            "bounded increment must fully prove: {checks:?}"
+        );
+    }
+
     /// Float sat models must replay (pin FloatingPoint values), not false-fire REPLAY_MISMATCH.
     #[test]
     fn float_counterexample_replays_and_classifies_disproved() {

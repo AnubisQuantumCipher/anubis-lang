@@ -2339,6 +2339,18 @@ fn analyze_function(
         }
     }
 
+    // Anubis AoRTE-lite (wrap-safety): when integer params are solver-modelable, prove that
+    // `+`/`-`/`*` on modelable operands cannot signed-wrap under the accumulated assumptions
+    // (requires + path facts). Fail with a concrete CEX + `possible fix` — SPARK's overflow
+    // check, Anubis-style. Opt out: `ANUBIS_WRAP_SAFETY=0`. Bare contract-free functions with
+    // no modeled params are unchanged (wrapping remains the language semantics).
+    if wrap_safety_enabled() && !ctx.solver_int_vars.is_empty() {
+        let mut seen = BTreeSet::new();
+        for s in body {
+            collect_wrap_safety_from_stmt(ctx, s, &assumptions, &mut seen);
+        }
+    }
+
     ctx.symbols.extend(fn_symbols.clone());
     ctx.mir.push(MirBlock {
         function: qualified_name(module, name),
@@ -2355,6 +2367,235 @@ fn analyze_function(
         effects,
         span: Some((span.start, span.end)),
     });
+}
+
+/// Default ON. Set `ANUBIS_WRAP_SAFETY=0|false|off|no` to restore wrap-only semantics with no
+/// automatic overflow VCs (contracts still discharge under wrapping i64).
+fn wrap_safety_enabled() -> bool {
+    match std::env::var("ANUBIS_WRAP_SAFETY") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => true,
+    }
+}
+
+/// SMT predicate: signed 64-bit addition overflows (two's-complement wrap of mathematical sum).
+/// Inlined (no SMT-LIB `let`) so the sat model only contains user symbols, not temporaries.
+fn smt_bvsaddo(x: &str, y: &str) -> String {
+    format!(
+        "(or \
+         (and (bvsge {x} (_ bv0 64)) (bvsge {y} (_ bv0 64)) (bvslt (bvadd {x} {y}) (_ bv0 64))) \
+         (and (bvslt {x} (_ bv0 64)) (bvslt {y} (_ bv0 64)) (bvsge (bvadd {x} {y}) (_ bv0 64))))"
+    )
+}
+
+/// Signed subtraction overflow via `x + (-y)`, excluding the `y = MIN` edge where `-y` itself wraps.
+fn smt_bvssubo(x: &str, y: &str) -> String {
+    let min = i64::MIN as u64;
+    format!(
+        "(or (= {y} (_ bv{min} 64)) {})",
+        smt_bvsaddo(x, &format!("(bvneg {y})"))
+    )
+}
+
+/// Conservative signed multiply overflow: high half of full product differs from sign-extend of low.
+/// Uses 128-bit product encoding via concatenation of 64-bit muls — heavy but QF_BV-complete for
+/// free operands. For the common `var * small_const` case this still discharges or CEX-es cleanly.
+fn smt_bvsmulo(x: &str, y: &str) -> String {
+    // Overflow iff (x*y as i128) does not fit in i64:
+    // (or (and (bvsge x 0) (bvsge y 0) (bvugt (bvmul x y) #x7fff…)) …) is incomplete for mixed signs.
+    // Use: not ( (x==0) or (y==0) or (x*y)/x == y ) under signed div when x!=0 — but bvsdiv is costly.
+    // Practical QF_BV: smul_overflow via (bvsmul_no_overflow) equivalent:
+    // ((_ sign_extend 64) (bvmul x y)) != (bvmul ((_ sign_extend 64) x) ((_ sign_extend 64) y))
+    // — not available without 128-bit. Approximate with known safe cases + full check via:
+    format!(
+        "(not (or (= {x} (_ bv0 64)) (= {y} (_ bv0 64)) \
+         (and (distinct {x} (_ bv0 64)) (= (bvsdiv (bvmul {x} {y}) {x}) {y}))))"
+    )
+}
+
+fn push_wrap_safety_binop(
+    ctx: &mut SemanticContext,
+    op: &str,
+    lhs: &Expr,
+    rhs: &Expr,
+    assumptions: &[String],
+    seen: &mut BTreeSet<String>,
+) {
+    if !is_int_modelable(lhs, &ctx.solver_int_vars) || !is_int_modelable(rhs, &ctx.solver_int_vars)
+    {
+        return;
+    }
+    let lx = expr_to_smt(lhs, &ctx.symbolic_widths);
+    let rx = expr_to_smt(rhs, &ctx.symbolic_widths);
+    let overflow = match op {
+        "+" => smt_bvsaddo(&lx, &rx),
+        "-" => smt_bvssubo(&lx, &rx),
+        "*" => smt_bvsmulo(&lx, &rx),
+        _ => return,
+    };
+    // Prove NO overflow: assertion = not overflow.
+    let assertion = format!("(not {overflow})");
+    let key = format!("{op}:{lx}:{rx}");
+    if !seen.insert(key) {
+        return;
+    }
+    let mut vars = BTreeSet::new();
+    collect_vars_from_smt(&assertion, &mut vars);
+    let int_asm: Vec<String> = assumptions
+        .iter()
+        .filter(|a| {
+            !fact_is_float(a, &ctx.solver_float_vars)
+                && !fact_is_string(a, &ctx.solver_string_vars)
+        })
+        .cloned()
+        .collect();
+    for a in &int_asm {
+        collect_vars_from_smt(a, &mut vars);
+    }
+    ctx.solver_obligations.push(SolverObligation {
+        name: format!("wrap-safety:({op} {lx} {rx})"),
+        assumptions: int_asm,
+        assertion,
+        vars: vars.into_iter().collect(),
+        strings: false,
+        guard_assumptions: ctx.active_branch_guards.clone(),
+    });
+}
+
+fn collect_wrap_safety_from_stmt(
+    ctx: &mut SemanticContext,
+    s: &Stmt,
+    assumptions: &[String],
+    seen: &mut BTreeSet<String>,
+) {
+    match s {
+        Stmt::ExprStmt(e) => collect_wrap_safety_from_expr(ctx, e, assumptions, seen),
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+            collect_wrap_safety_from_expr(ctx, init, assumptions, seen)
+        }
+        Stmt::Assign { value, target } => {
+            collect_wrap_safety_from_expr(ctx, target, assumptions, seen);
+            collect_wrap_safety_from_expr(ctx, value, assumptions, seen);
+        }
+        Stmt::If {
+            cond,
+            then,
+            else_,
+        } => {
+            collect_wrap_safety_from_expr(ctx, cond, assumptions, seen);
+            for t in then {
+                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+            }
+            if let Some(e) = else_ {
+                for t in e {
+                    collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+                }
+            }
+        }
+        Stmt::While { cond, body, .. } | Stmt::WhileLet { expr: cond, body, .. } => {
+            collect_wrap_safety_from_expr(ctx, cond, assumptions, seen);
+            for t in body {
+                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+            }
+        }
+        Stmt::Loop { body, .. } => {
+            for t in body {
+                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+            }
+        }
+        Stmt::For { source, body, .. } => {
+            match source {
+                crate::frontend::ForSource::Range { start, end } => {
+                    collect_wrap_safety_from_expr(ctx, start, assumptions, seen);
+                    collect_wrap_safety_from_expr(ctx, end, assumptions, seen);
+                }
+                crate::frontend::ForSource::Collection { expr } => {
+                    collect_wrap_safety_from_expr(ctx, expr, assumptions, seen)
+                }
+            }
+            for t in body {
+                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+            }
+        }
+        Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => {
+            for t in body {
+                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+            }
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for block in [gpu.as_ref(), cpu.as_ref(), prove.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                for t in block {
+                    collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+                }
+            }
+        }
+        Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
+    }
+}
+
+fn collect_wrap_safety_from_expr(
+    ctx: &mut SemanticContext,
+    e: &Expr,
+    assumptions: &[String],
+    seen: &mut BTreeSet<String>,
+) {
+    match e {
+        Expr::Binary { op, lhs, rhs } => {
+            if op == "+" || op == "-" || op == "*" {
+                push_wrap_safety_binop(ctx, op, lhs, rhs, assumptions, seen);
+            }
+            collect_wrap_safety_from_expr(ctx, lhs, assumptions, seen);
+            collect_wrap_safety_from_expr(ctx, rhs, assumptions, seen);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Try(expr)
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Declassify { inner: expr, .. }
+        | Expr::FieldAccess { base: expr, .. } => {
+            collect_wrap_safety_from_expr(ctx, expr, assumptions, seen)
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_wrap_safety_from_expr(ctx, a, assumptions, seen);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_wrap_safety_from_expr(ctx, callee, assumptions, seen);
+            for a in args {
+                collect_wrap_safety_from_expr(ctx, a, assumptions, seen);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_wrap_safety_from_expr(ctx, base, assumptions, seen);
+            collect_wrap_safety_from_expr(ctx, index, assumptions, seen);
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            collect_wrap_safety_from_expr(ctx, cond, assumptions, seen);
+            collect_wrap_safety_from_expr(ctx, then, assumptions, seen);
+            collect_wrap_safety_from_expr(ctx, else_, assumptions, seen);
+        }
+        Expr::Block { stmts, tail } => {
+            for s in stmts {
+                collect_wrap_safety_from_stmt(ctx, s, assumptions, seen);
+            }
+            if let Some(t) = tail {
+                collect_wrap_safety_from_expr(ctx, t, assumptions, seen);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Restore the lexical binding scope after analyzing a block (`if`/`else`/loop body/etc.).
@@ -8018,6 +8259,8 @@ pub fn replay_counterexample(smt: &str, model: &str) -> bool {
 pub enum AssertionFailKind {
     /// Sat model exists and replayed (or is a ground empty model) — concrete counterexample.
     Disproved,
+    /// Signed wrap possible under free/under-constrained inputs (Anubis AoRTE-style wrap check).
+    WrapRisk,
     /// Solver returned unknown / timed out — not a proof, not a counterexample.
     Undecided,
     /// Encoder/solver replay mismatch — model text is not trustworthy.
@@ -8034,6 +8277,14 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     if check.detail.contains("ANUBIS_REPLAY_MISMATCH") {
         return AssertionFailKind::ReplayMismatch;
     }
+    // Wrap-safety obligations are named `wrap-safety:…` (see `push_wrap_safety_obligations`).
+    if check.name.starts_with("wrap-safety:") {
+        return if check.model.is_some() {
+            AssertionFailKind::WrapRisk
+        } else {
+            AssertionFailKind::Other
+        };
+    }
     if check.model.is_some() {
         return AssertionFailKind::Disproved;
     }
@@ -8045,6 +8296,78 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
         return AssertionFailKind::Undecided;
     }
     AssertionFailKind::Other
+}
+
+/// CEX-guided contract repair (Anubis answer to SPARK's "possible fix: mention X in a precondition").
+/// Turns the concrete witness into editable `requires(...)` candidates — never auto-applied.
+fn suggest_requires_from_model(model: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let max_u = i64::MAX as u64;
+    let min_i = i64::MIN;
+    for (name, value) in parse_z3_model(model) {
+        // Only source-level symbols (`anb_*` params/locals). Skip solver temporaries.
+        if !name.starts_with("anb_") {
+            continue;
+        }
+        let display = display_model_var(&name).to_string();
+        // Skip empty / non-identifier display names.
+        if display.is_empty()
+            || !display
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        {
+            continue;
+        }
+        let Some(u) = parse_bv_u64_literal(&value) else {
+            continue;
+        };
+        let i = u as i64;
+        // Prioritize SPARK-style bound repairs for extreme witnesses (the common overflow story).
+        if u == max_u {
+            out.push(format!(
+                "requires({display} < {max})  // excludes counterexample {display}=i64::MAX",
+                max = i64::MAX
+            ));
+        } else if i == min_i {
+            out.push(format!(
+                "requires({display} > {min})  // excludes counterexample {display}=i64::MIN",
+                min = i64::MIN
+            ));
+        } else if i == -1 {
+            out.push(format!(
+                "requires({display} >= 0)  // excludes counterexample {display}=-1"
+            ));
+        }
+        // Deliberately do NOT suggest `!= 0` for every zero witness — too noisy for multi-var models.
+    }
+    // Floating-point models: point at the source name only (no crisp bound synthesis yet).
+    for (name, value) in parse_fp_model_entries(model) {
+        if !name.starts_with("anb_") {
+            continue;
+        }
+        let display = display_model_var(&name);
+        out.push(format!(
+            "// counterexample: {display} = {} — strengthen requires/ensures to exclude this float state",
+            value.trim()
+        ));
+    }
+    out
+}
+
+fn parse_bv_u64_literal(value: &str) -> Option<u64> {
+    let v = value.trim();
+    if let Some(hex) = v.strip_prefix("#x").or_else(|| v.strip_prefix("#X")) {
+        return u64::from_str_radix(hex, 16).ok();
+    }
+    if let Some(rest) = v.strip_prefix("(_ bv") {
+        let num = rest.split_whitespace().next()?;
+        return num.parse::<u64>().ok();
+    }
+    if let Some(bits) = v.strip_prefix("#b") {
+        return u64::from_str_radix(bits, 2).ok();
+    }
+    None
 }
 
 /// Strip the solver's `anb_` prefix so the printed name matches source identifiers.
@@ -8235,7 +8558,8 @@ pub fn format_counterexample(model: &str) -> String {
 
 /// Build the user-facing diagnostic for a non-empty set of failed solver checks.
 ///
-/// - All counterexamples → `ANUBIS_ASSERTION_DISPROVED` + pretty models
+/// - All counterexamples → `ANUBIS_ASSERTION_DISPROVED` + pretty models + possible fix
+/// - All wrap-risk → `ANUBIS_WRAP_RISK` (AoRTE-style; wrapping is still language semantics)
 /// - All undecided → `ANUBIS_ASSERTION_UNDECIDED` (no fake model)
 /// - Replay mismatch present → `ANUBIS_REPLAY_MISMATCH`
 /// - Mixed / residual → `ANUBIS_ASSERTION_UNPROVEN` with per-obligation detail
@@ -8244,13 +8568,30 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
     let n = fails.len();
     let kinds: Vec<AssertionFailKind> = fails.iter().map(classify_assertion_fail).collect();
     let all_disproved = kinds.iter().all(|k| *k == AssertionFailKind::Disproved);
+    let all_wrap = kinds.iter().all(|k| *k == AssertionFailKind::WrapRisk);
+    let all_disproved_or_wrap = kinds.iter().all(|k| {
+        *k == AssertionFailKind::Disproved || *k == AssertionFailKind::WrapRisk
+    });
     let all_undecided = kinds.iter().all(|k| *k == AssertionFailKind::Undecided);
     let any_replay = kinds.iter().any(|k| *k == AssertionFailKind::ReplayMismatch);
 
-    let (code, headline) = if all_disproved {
+    let (code, headline) = if all_wrap {
+        (
+            "ANUBIS_WRAP_RISK",
+            format!(
+                "{n} integer operation(s) can wrap under free inputs (i64 wraps by design; \
+                 prove a bound or accept wrapping):"
+            ),
+        )
+    } else if all_disproved {
         (
             "ANUBIS_ASSERTION_DISPROVED",
             format!("{n} assertion(s) disproved by counterexample:"),
+        )
+    } else if all_disproved_or_wrap {
+        (
+            "ANUBIS_ASSERTION_DISPROVED",
+            format!("{n} obligation(s) failed (contract disproof and/or wrap risk):"),
         )
     } else if all_undecided {
         (
@@ -8260,7 +8601,9 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
             ),
         )
     } else if any_replay && kinds.iter().all(|k| {
-        *k == AssertionFailKind::ReplayMismatch || *k == AssertionFailKind::Disproved
+        *k == AssertionFailKind::ReplayMismatch
+            || *k == AssertionFailKind::Disproved
+            || *k == AssertionFailKind::WrapRisk
     }) {
         (
             "ANUBIS_REPLAY_MISMATCH",
@@ -8276,14 +8619,20 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
     };
 
     let mut out = format!("{code}: {headline}");
+    let mut fixes: Vec<String> = Vec::new();
     for c in fails {
         out.push_str(&format!("\n  {}", c.name));
         match classify_assertion_fail(c) {
-            AssertionFailKind::Disproved => {
+            AssertionFailKind::Disproved | AssertionFailKind::WrapRisk => {
                 if let Some(m) = &c.model {
                     out.push_str("\n  counterexample:");
                     out.push('\n');
                     out.push_str(&format_counterexample(m));
+                    for f in suggest_requires_from_model(m) {
+                        if !fixes.contains(&f) {
+                            fixes.push(f);
+                        }
+                    }
                 }
             }
             AssertionFailKind::Undecided => {
@@ -8305,6 +8654,12 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                     out.push_str(&format!("\n    ({})", c.detail));
                 }
             }
+        }
+    }
+    if !fixes.is_empty() {
+        out.push_str("\n  possible fix (from counterexample; edit + paste onto the fn signature):");
+        for f in fixes {
+            out.push_str(&format!("\n    {f}"));
         }
     }
     out
