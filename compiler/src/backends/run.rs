@@ -1690,6 +1690,102 @@ fn anubis_net_connect(host: AnubisValue, port: AnubisValue) -> AnubisValue {
         Err(e) => panic!("ANUBIS_IO_ERROR: connect({}): {}", addr, e),
     }
 }
+// HTTP over cleartext TCP (stdlib-only). `https://` fails closed — no TLS in the pure run seed.
+// URL shape: http://host[:port]/path[?query]] — path defaults to `/`.
+fn anubis_http_parse_url(url: &str) -> (String, u16, String) {
+    let rest = if let Some(r) = url.strip_prefix("http://") {
+        r
+    } else if url.starts_with("https://") {
+        panic!(
+            "ANUBIS_IO_ERROR: http_get/http_post support cleartext http:// only (no TLS in anubis run seed); got {}",
+            url
+        );
+    } else {
+        panic!(
+            "ANUBIS_IO_ERROR: http_get/http_post URL must start with http:// (got {})",
+            url
+        );
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], rest[i..].to_string()),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() {
+        panic!("ANUBIS_IO_ERROR: http URL missing host: {}", url);
+    }
+    let (host, port) = if let Some(i) = authority.rfind(':') {
+        // IPv6 in brackets not supported in this minimal parser — fail closed.
+        if authority.starts_with('[') {
+            panic!(
+                "ANUBIS_IO_ERROR: http_get/http_post does not parse IPv6 authorities: {}",
+                url
+            );
+        }
+        let (h, p) = authority.split_at(i);
+        let pnum: u16 = p[1..].parse().unwrap_or_else(|_| {
+            panic!("ANUBIS_IO_ERROR: invalid port in URL: {}", url);
+        });
+        (h.to_string(), pnum)
+    } else {
+        (authority.to_string(), 80u16)
+    };
+    let path = if path.is_empty() { "/".to_string() } else { path };
+    (host, port, path)
+}
+fn anubis_http_exchange(method: &str, url: AnubisValue, body: Option<AnubisValue>) -> AnubisValue {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let url_s = url.display_string();
+    let (host, port, path) = anubis_http_parse_url(&url_s);
+    let addr = format!("{}:{}", host, port);
+    let mut stream = match TcpStream::connect(&addr) {
+        Ok(s) => s,
+        Err(e) => panic!("ANUBIS_IO_ERROR: http connect({}): {}", addr, e),
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    let body_s = body.map(|b| b.display_string()).unwrap_or_default();
+    let req = if method == "POST" {
+        format!(
+            "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            path,
+            host,
+            body_s.len(),
+            body_s
+        )
+    } else {
+        format!(
+            "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            path, host
+        )
+    };
+    if let Err(e) = stream.write_all(req.as_bytes()) {
+        panic!("ANUBIS_IO_ERROR: http write({}): {}", addr, e);
+    }
+    let mut buf = Vec::new();
+    if let Err(e) = stream.read_to_end(&mut buf) {
+        panic!("ANUBIS_IO_ERROR: http read({}): {}", addr, e);
+    }
+    let raw = String::from_utf8_lossy(&buf);
+    // Split headers/body on first blank line; return body only (fail-closed if malformed).
+    if let Some(idx) = raw.find("\r\n\r\n") {
+        anubis_mk_str(raw[idx + 4..].to_string())
+    } else if let Some(idx) = raw.find("\n\n") {
+        anubis_mk_str(raw[idx + 2..].to_string())
+    } else {
+        panic!(
+            "ANUBIS_IO_ERROR: http response missing header/body separator from {}",
+            addr
+        );
+    }
+}
+fn anubis_http_get(url: AnubisValue) -> AnubisValue {
+    anubis_http_exchange("GET", url, None)
+}
+fn anubis_http_post(url: AnubisValue, body: AnubisValue) -> AnubisValue {
+    anubis_http_exchange("POST", url, Some(body))
+}
 
 // ---- Higher-order functions over closures ----
 
@@ -2569,13 +2665,8 @@ fn is_non_run_builtin(callee: &str) -> bool {
             | "system"
             | "memcpy"
             | "sql"
-            // `http_get`/`http_post` are checker-recognized network egress with NO runtime lowering
-            // (only raw `send`/`connect` have `anubis_net_*` helpers), exactly like `shell`/`exec` —
-            // so the unknown-call gate accepts them, they carry the `net.send` effect + the trifecta
-            // leg-3 + the `is_egress_sink` value-flow, and `run` refuses them as unsupported native
-            // lowering. Executing an http egress is a documented later (runtime-networking) concern.
-            | "http_get"
-            | "http_post"
+            // `http_get`/`http_post` lower via `anubis_http_*` (cleartext http:// only).
+            // `shell`/`exec` remain non-run by design.
     )
 }
 
@@ -3029,6 +3120,14 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "connect" if args.len() == 2 => Ok(format!("anubis_net_connect({}, {})", args[0], args[1])),
         "connect" => Err(unsupported_run(
             "`connect` expects 2 arguments (host, port)",
+        )),
+        "http_get" if args.len() == 1 => Ok(format!("anubis_http_get({})", args[0])),
+        "http_get" => Err(unsupported_run("`http_get` expects 1 argument (url)")),
+        "http_post" if args.len() == 2 => {
+            Ok(format!("anubis_http_post({}, {})", args[0], args[1]))
+        }
+        "http_post" => Err(unsupported_run(
+            "`http_post` expects 2 arguments (url, body)",
         )),
         "time" | "time_now" | "now" => fixed("anubis_time_now", callee, args, 0),
         "rand" | "rand_gen" | "random" => fixed("anubis_rand_gen", callee, args, 0),
@@ -6784,6 +6883,84 @@ mod run_tests {
         assert_eq!(
             lines[1], "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
             "HMAC-SHA256(key, fox)"
+        );
+    }
+
+    #[test]
+    fn http_get_and_post_lower_against_local_listener() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel::<String>();
+        thread::spawn(move || {
+            // Serve one GET then one POST (order matches the Anubis program below).
+            for expected_method in ["GET", "POST"] {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = tx.send(req.clone());
+                assert!(
+                    req.starts_with(expected_method),
+                    "expected {expected_method} request, got: {req}"
+                );
+                let body = if expected_method == "GET" {
+                    "hello-get"
+                } else {
+                    "hello-post"
+                };
+                let resp = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        // Small settle so the accept thread is ready.
+        thread::sleep(Duration::from_millis(50));
+        let src = format!(
+            r#"fn main() uses(net.send) {{
+                let g = http_get("http://127.0.0.1:{port}/ping");
+                print(g);
+                let p = http_post("http://127.0.0.1:{port}/echo", "payload");
+                print(p);
+            }}"#
+        );
+        let out = compile_and_run_source(&src, false, &[]).expect("compile+run http");
+        assert!(
+            out.status.success(),
+            "http program failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(lines, vec!["hello-get".to_string(), "hello-post".to_string()]);
+
+        // Confirm both methods actually hit the listener (not a fake).
+        let r1 = rx.recv_timeout(Duration::from_secs(5)).expect("get req");
+        let r2 = rx.recv_timeout(Duration::from_secs(5)).expect("post req");
+        assert!(r1.contains("GET /ping"), "GET path: {r1}");
+        assert!(r2.contains("POST /echo"), "POST path: {r2}");
+        assert!(r2.contains("payload"), "POST body: {r2}");
+    }
+
+    #[test]
+    fn http_https_fails_closed() {
+        run_expect_trap(
+            r#"fn main() uses(net.send) {
+                let _ = http_get("https://example.com/");
+            }"#,
+            "ANUBIS_IO_ERROR",
         );
     }
 }
