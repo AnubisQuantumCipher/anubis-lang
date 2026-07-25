@@ -62,6 +62,12 @@ pub enum VzCmd {
         /// Bind-mount a host directory into the guest (`--dir name:/host/path`), repeatable.
         #[arg(long)]
         dir: Vec<String>,
+        /// Hostname allow-list for net.send apply (staged DNS-pinned policy; tart stays host-only).
+        #[arg(long = "allow-host")]
+        allow_host: Vec<String>,
+        /// Explicit residual: allow full tart NAT when net.send is proved (default is host-only).
+        #[arg(long, default_value_t = false)]
+        allow_open_nat: bool,
         /// Slice-2: derive confinement from this program and APPLY tart args (e.g. `--net-host`)
         /// to the live boot. Writes `confinement_applied.json` (or `--applied-out`).
         #[arg(long)]
@@ -83,6 +89,12 @@ pub enum VzCmd {
         detach: bool,
         #[arg(long)]
         dir: Vec<String>,
+        /// Hostname allow-list (staged); requires proved net.send.
+        #[arg(long = "allow-host")]
+        allow_host: Vec<String>,
+        /// Explicit residual open NAT when net.send proved.
+        #[arg(long, default_value_t = false)]
+        allow_open_nat: bool,
         #[arg(long)]
         applied_out: Option<String>,
     },
@@ -335,21 +347,29 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             no_graphics,
             detach,
             dir,
+            allow_host,
+            allow_open_nat,
             confine,
             applied_out,
         } => {
             let mut confine_args: Vec<String> = Vec::new();
-            // When --confine is set, mounts are posture-filtered (fail-closed); otherwise pass-through.
+            // When --confine is set, mounts/network are posture-filtered (fail-closed).
             let mut run_mounts: Vec<String> = dir.clone();
             if let Some(prog) = confine {
-                let (applied, _) = crate::vz_apply::build_applied(&prog, &dir)?;
+                let eng = crate::vz_apply::ApplyEngagement {
+                    mounts: dir.clone(),
+                    allow_hosts: allow_host.clone(),
+                    allow_open_nat,
+                };
+                let (applied, _) = crate::vz_apply::build_applied(&prog, &eng)?;
                 let out_path = applied_out
                     .as_ref()
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(|| std::path::PathBuf::from(crate::vz_apply::APPLIED_FILENAME));
                 crate::vz_apply::write_applied(&applied, Some(&out_path))?;
                 eprintln!(
-                    "[anubis vz run --confine] applied tart_args=[{}] mount_posture={} mounts={} → {}",
+                    "[anubis vz run --confine] mode={} tart_args=[{}] mount_posture={} mounts={} → {}",
+                    applied.network_apply_mode,
                     applied.tart_args.join(" "),
                     applied.mount_posture,
                     applied.mounts.len(),
@@ -394,9 +414,16 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             no_graphics,
             detach,
             dir,
+            allow_host,
+            allow_open_nat,
             applied_out,
         } => {
-            let (applied, _) = crate::vz_apply::build_applied(&program, &dir)?;
+            let eng = crate::vz_apply::ApplyEngagement {
+                mounts: dir.clone(),
+                allow_hosts: allow_host.clone(),
+                allow_open_nat,
+            };
+            let (applied, _) = crate::vz_apply::build_applied(&program, &eng)?;
             let out_path = applied_out
                 .as_ref()
                 .map(std::path::PathBuf::from)
@@ -408,7 +435,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 crate::vz_apply::apply_and_run(
                     &program,
                     &vm,
-                    &dir,
+                    &eng,
                     no_graphics,
                     detach,
                     Some(&out_path),

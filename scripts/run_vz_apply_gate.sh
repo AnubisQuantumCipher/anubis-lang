@@ -26,7 +26,9 @@ if "--net-host" not in args:
     print("note: no --net-host in tart_args", args)
 assert app.get("mount_posture") == "none", app.get("mount_posture")
 assert "host-only" in (app.get("network_posture") or ""), app.get("network_posture")
-print("applied_ok", args, "mount_posture", app.get("mount_posture"))
+assert app.get("network_apply_mode") == "host-only", app.get("network_apply_mode")
+assert app.get("network_tart_enforced") is True, app.get("network_tart_enforced")
+print("applied_ok", args, "mount_posture", app.get("mount_posture"), "net_mode", app.get("network_apply_mode"))
 PY
 
 # Fail-closed: engagement mount on net-free / mount:none program must be denied.
@@ -40,6 +42,18 @@ grep -q 'ANUBIS_APPLY_MOUNT_DENIED' "$OUT/mount_deny.err" || {
   exit 1
 }
 echo "mount_deny_ok"
+
+# Fail-closed: net-free + --allow-host must be denied (network dual of mounts).
+if "$ANUBIS" vz apply "$DEMO" --allow-host 127.0.0.1 --applied-out "$OUT/net_should_fail.json" 2>"$OUT/net_deny.err"; then
+  echo "expected ANUBIS_APPLY_NET_DENIED for host-only + --allow-host" >&2
+  exit 1
+fi
+grep -q 'ANUBIS_APPLY_NET_DENIED' "$OUT/net_deny.err" || {
+  echo "net deny missing ANUBIS_APPLY_NET_DENIED:" >&2
+  cat "$OUT/net_deny.err" >&2
+  exit 1
+}
+echo "net_deny_ok"
 
 # Unit tests for apply + egress gateway
 cargo test -p anubis vz_apply 2>&1 | tee "$OUT/unit_apply.log"
