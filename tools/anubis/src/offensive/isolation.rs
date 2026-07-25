@@ -15,12 +15,17 @@
 //! Advance: fuzz against a **non–poc_kit** local target requires VZ (or
 //! explicit `ANUBIS_POC_LAB_HOST=1`).
 //!
-//! Guest markers (any one):
+//! Guest markers (any one — **explicit Anubis markers only**):
 //! - `ANUBIS_VZ_GUEST=1`
 //! - `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`
 //! - `ANUBIS_ISOLATION` contains `tart` / `vz` / `virtualization`
 //! - `/etc/anubis-vz-guest` or `$HOME/.anubis-vz-guest`
-//! - `kern.hv_vmm_present=1`
+//!
+//! **Not** a guest marker: `kern.hv_vmm_present=1` alone. GitHub Actions
+//! `macos-latest` runners are themselves VMs and report hv_vmm_present=1; treating
+//! that as "Anubis disposable guest" fail-opened AOP on public CI (G14 isolation
+//! witness saw task-queue/recon-scan succeed with rc=0). Guest hops must set an
+//! explicit Anubis marker (tart gate already exports `ANUBIS_VZ_GUEST=1`).
 
 use anyhow::{anyhow, Result};
 use serde_json::json;
@@ -45,9 +50,8 @@ pub fn in_vz_guest() -> bool {
             return true;
         }
     }
-    if hv_vmm_present() {
-        return true;
-    }
+    // Do NOT treat kern.hv_vmm_present alone as guest membership — CI runners
+    // and many developer VMs set it without being Anubis tart disposable guests.
     false
 }
 
@@ -229,9 +233,10 @@ pub fn isolation_status_json() -> serde_json::Value {
             "ANUBIS_OFFENSIVE_GATE_IN_GUEST=1",
             "ANUBIS_ISOLATION=*tart*|*vz*",
             "/etc/anubis-vz-guest",
-            "$HOME/.anubis-vz-guest",
-            "kern.hv_vmm_present=1"
+            "$HOME/.anubis-vz-guest"
         ],
+        // Informational only — NOT a guest marker (GHA macos runners set this).
+        "hv_vmm_present_observed": hv_vmm_present(),
         "golden_base": "anubis-xcode",
         "ssh_key": "~/.ssh/tart_anubis",
         "poc_gold_target": "poc_kit/bin/vuln_local",
