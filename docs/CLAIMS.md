@@ -19,7 +19,7 @@ or (d) **not claimed**.
 | Solver correctness (supported int fragment) | **re-run 2026-07-25:** `bash scripts/run_native_authoritative_gate.sh` → `NATIVE_AUTHORITATIVE_GATE: PASS` (cert + corpus ≡ + TCB-drop + opt-out control + fragment danger) | Division + var×var mul deferred; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Native CDCL Unsat RUP certificate | **re-run 2026-07-25:** `cargo test -p anubis-solver lrat` → **16 passed**; `check_proof` required for every `NativeVerdict::Unsat` | Pure independent RUP; division deferred |
 | Native solver as compiler **default** (no env) | **CLAIMED 2026-07-25** | `native_authoritative()` default ON; soak `out/native_default_flip_soak_20260725/`; decision `out/native_default_flip_seal_20260725/DECISION.md`; gate PASS post-flip |
-| Native authoritative division / var×var mul | **not claimed** | Deferred by design (`fragment.rs`) |
+| Native authoritative division / var×var mul | **not claimed** (general) | Fragment still defers `Sdiv`/`Srem`/var×var `Mul`; const nonneg÷`2^k` encoder rewrite only |
 | Evidence bundle + tamper detection | package gate path `scripts/run_package_gate.sh` (seal history); unit evidence/tamper tests | Re-run package gate for live CI claims |
 | RISC0 receipt path (in-process) | prove/verify path + A15 gate history; shape + `Receipt::verify` API | Hosted Metal proving **not claimed** |
 | Metal parity (local Apple Silicon) | local Tier-2 parity history in A15 / doctor | Not hosted GPU prove |
@@ -35,7 +35,11 @@ or (d) **not claimed**.
 | A+ hostile audit package | **sealed:** `implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` + STEP_STATUS | Independent of freestanding maturity adjectives |
 | Lean formal core | **re-run 2026-07-24:** `bash scripts/run_formal_gate.sh` → `FORMAL_GATE: PASS` | Lean 4.32.0; no Mathlib |
 | Pure-Anubis formal SAT kernel demo | **re-run 2026-07-25:** `bash scripts/run_formal_kernel_gate.sh` → `FORMAL_KERNEL_GATE: PASS` (kernel + hard tests + independent Python oracle 12/12) | Demo / education surface; not the production native SMT (`solver/`) |
-| `http_get` / `http_post` native `run` | **re-run 2026-07-25:** `cargo test -p anubis-compiler http_` → 2 passed | Cleartext `http://` only; TLS not in run seed |
+| `http_get` / `http_post` native `run` | **re-run 2026-07-25:** `cargo test -p anubis-compiler http_` → 3 passed | Cleartext TCP; HTTPS via host `curl` (system TLS TCB) |
+| VZ slice-2 apply (tart args + applied artifact) | **re-run 2026-07-25:** `bash scripts/run_vz_apply_gate.sh` → `VZ_APPLY_GATE: PASS` | Applied schema separate from sealed `anubis.confinement.v1` |
+| Hostname egress policy (DNS pin / deny-all) | **re-run 2026-07-25:** `cargo test -p anubis vz_egress` → pass | Policy compiled; live fd pump at native-boot |
+| Hosted Metal prove job | **workflow present** `.github/workflows/metal-prove.yml`; gate skip on stock hosts | Claim only with self-hosted Metal runner + `ANUBIS_REQUIRE_METAL=1` |
+| Author-diversity architecture lane | **re-run 2026-07-25:** `bash scripts/run_author_diversity_gate.sh` → PASS | TT-total **not claimed** (same-human residual) |
 | Hosted CI Metal **proving** | **not claimed** | Needs Apple Silicon GPU runners |
 | “Production-grade” / industry-ready blanket | **not claimed** as a freestanding stamp | 1.0 freeze is scoped (SPEC_1_0 + showcases); residuals in freeze §5 |
 | General-purpose language (all features forever) | **partial** | 1.0 freeze scoped; residuals in SPEC_1_0 §5 |

@@ -7,6 +7,8 @@ mod offensive;
 mod poc_kit;
 mod proof_input;
 mod vz;
+mod vz_apply;
+mod vz_egress_gateway;
 mod vz_native;
 
 use anubis_compiler::{

@@ -9226,6 +9226,24 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
 }
 
 #[allow(clippy::only_used_in_recursion)]
+
+fn pow2_shift_k_from_smt_rhs(rhs_smt: &str) -> Option<u32> {
+    let s = rhs_smt.trim();
+    let rest = s.strip_prefix("(_ bv")?.strip_suffix(" 64)")?;
+    let n: u64 = rest.parse().ok()?;
+    if n == 0 || n.count_ones() != 1 {
+        return None;
+    }
+    Some(n.trailing_zeros())
+}
+fn smt_bv_const_nonneg(smt: &str) -> bool {
+    let s = smt.trim();
+    let Some(rest) = s.strip_prefix("(_ bv").and_then(|r| r.strip_suffix(" 64)")) else {
+        return false;
+    };
+    rest.parse::<u64>().ok().is_some_and(|n| n < (1u64 << 63))
+}
+
 fn expr_to_smt_with_width(
     e: &Expr,
     widths: &BTreeMap<String, u32>,
@@ -9292,12 +9310,24 @@ fn expr_to_smt_with_width(
                         amt = amt
                     )
                 }
-                // Division/modulo, reached only with a non-zero literal divisor (is_int_modelable).
-                // bvsdiv = truncated toward zero and bvsdiv(MIN,-1)=MIN, matching i64::wrapping_div;
-                // bvsrem takes the sign of the dividend, matching i64::wrapping_rem (NOT bvsmod,
-                // which takes the sign of the divisor).
-                "/" => format!("(bvsdiv {} {})", l, r),
-                "%" => format!("(bvsrem {} {})", l, r),
+                // Division/modulo (non-zero literal divisor only — is_int_modelable).
+                // Pow2 rewrite: nonneg *const* dividend + divisor 2^k → proven bvlshr/bvand.
+                // Free dividends keep bvsdiv/bvsrem (native fragment defers them).
+                "/" => {
+                    if let (Some(k), true) = (pow2_shift_k_from_smt_rhs(&r), smt_bv_const_nonneg(&l)) {
+                        format!("(bvlshr {} (_ bv{} 64))", l, k)
+                    } else {
+                        format!("(bvsdiv {} {})", l, r)
+                    }
+                }
+                "%" => {
+                    if let (Some(k), true) = (pow2_shift_k_from_smt_rhs(&r), smt_bv_const_nonneg(&l)) {
+                        let mask = (1u64 << k).wrapping_sub(1);
+                        format!("(bvand {} (_ bv{} 64))", l, mask)
+                    } else {
+                        format!("(bvsrem {} {})", l, r)
+                    }
+                }
                 _ => format!("({} {} {})", op, l, r),
             }
         }

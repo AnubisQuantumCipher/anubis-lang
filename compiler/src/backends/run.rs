@@ -1690,19 +1690,17 @@ fn anubis_net_connect(host: AnubisValue, port: AnubisValue) -> AnubisValue {
         Err(e) => panic!("ANUBIS_IO_ERROR: connect({}): {}", addr, e),
     }
 }
-// HTTP over cleartext TCP (stdlib-only). `https://` fails closed — no TLS in the pure run seed.
-// URL shape: http://host[:port]/path[?query]] — path defaults to `/`.
-fn anubis_http_parse_url(url: &str) -> (String, u16, String) {
-    let rest = if let Some(r) = url.strip_prefix("http://") {
-        r
-    } else if url.starts_with("https://") {
-        panic!(
-            "ANUBIS_IO_ERROR: http_get/http_post support cleartext http:// only (no TLS in anubis run seed); got {}",
-            url
-        );
+// HTTP: cleartext over pure std TCP; HTTPS via host `curl` (system TLS TCB — SecureTransport/
+// LibreSSL/OpenSSL depending on host). Same honesty as package-registry HTTPS. No DIY TLS.
+// URL shape: http(s)://host[:port]/path[?query]] — path defaults to `/`.
+fn anubis_http_parse_url(url: &str) -> (bool, String, u16, String) {
+    let (https, rest) = if let Some(r) = url.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (false, r)
     } else {
         panic!(
-            "ANUBIS_IO_ERROR: http_get/http_post URL must start with http:// (got {})",
+            "ANUBIS_IO_ERROR: http_get/http_post URL must start with http:// or https:// (got {})",
             url
         );
     };
@@ -1713,8 +1711,8 @@ fn anubis_http_parse_url(url: &str) -> (String, u16, String) {
     if authority.is_empty() {
         panic!("ANUBIS_IO_ERROR: http URL missing host: {}", url);
     }
+    let default_port = if https { 443u16 } else { 80u16 };
     let (host, port) = if let Some(i) = authority.rfind(':') {
-        // IPv6 in brackets not supported in this minimal parser — fail closed.
         if authority.starts_with('[') {
             panic!(
                 "ANUBIS_IO_ERROR: http_get/http_post does not parse IPv6 authorities: {}",
@@ -1727,17 +1725,45 @@ fn anubis_http_parse_url(url: &str) -> (String, u16, String) {
         });
         (h.to_string(), pnum)
     } else {
-        (authority.to_string(), 80u16)
+        (authority.to_string(), default_port)
     };
     let path = if path.is_empty() { "/".to_string() } else { path };
-    (host, port, path)
+    (https, host, port, path)
+}
+/// HTTPS via host curl — body only on stdout; fail-closed on non-zero exit.
+fn anubis_http_via_curl(method: &str, url: &str, body: Option<&str>) -> AnubisValue {
+    use std::process::Command;
+    let mut cmd = Command::new("curl");
+    cmd.args(["-fsSL", "--max-time", "30", "-X", method, url]);
+    if let Some(b) = body {
+        cmd.args(["-H", "Content-Type: application/octet-stream", "--data-binary", b]);
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            anubis_mk_str(String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        Ok(out) => panic!(
+            "ANUBIS_IO_ERROR: https curl failed (exit {:?}): {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(e) => panic!(
+            "ANUBIS_IO_ERROR: https requires host `curl` on PATH (system TLS TCB): {}",
+            e
+        ),
+    }
 }
 fn anubis_http_exchange(method: &str, url: AnubisValue, body: Option<AnubisValue>) -> AnubisValue {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::time::Duration;
     let url_s = url.display_string();
-    let (host, port, path) = anubis_http_parse_url(&url_s);
+    let (https, host, port, path) = anubis_http_parse_url(&url_s);
+    let body_s = body.map(|b| b.display_string());
+    if https {
+        // Rebuild absolute URL for curl (preserves original form).
+        return anubis_http_via_curl(method, &url_s, body_s.as_deref());
+    }
     let addr = format!("{}:{}", host, port);
     let mut stream = match TcpStream::connect(&addr) {
         Ok(s) => s,
@@ -1745,14 +1771,14 @@ fn anubis_http_exchange(method: &str, url: AnubisValue, body: Option<AnubisValue
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-    let body_s = body.map(|b| b.display_string()).unwrap_or_default();
+    let body_owned = body_s.unwrap_or_default();
     let req = if method == "POST" {
         format!(
             "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             path,
             host,
-            body_s.len(),
-            body_s
+            body_owned.len(),
+            body_owned
         )
     } else {
         format!(
@@ -1768,7 +1794,6 @@ fn anubis_http_exchange(method: &str, url: AnubisValue, body: Option<AnubisValue
         panic!("ANUBIS_IO_ERROR: http read({}): {}", addr, e);
     }
     let raw = String::from_utf8_lossy(&buf);
-    // Split headers/body on first blank line; return body only (fail-closed if malformed).
     if let Some(idx) = raw.find("\r\n\r\n") {
         anubis_mk_str(raw[idx + 4..].to_string())
     } else if let Some(idx) = raw.find("\n\n") {
@@ -6955,10 +6980,40 @@ mod run_tests {
     }
 
     #[test]
-    fn http_https_fails_closed() {
+    fn http_https_via_system_curl() {
+        // Network-dependent: skip if offline / curl blocked.
+        if std::process::Command::new("curl")
+            .args(["-fsSL", "--max-time", "10", "-o", "/dev/null", "https://example.com/"])
+            .status()
+            .map(|s| !s.success())
+            .unwrap_or(true)
+        {
+            eprintln!("skip http_https_via_system_curl: host cannot reach https://example.com/");
+            return;
+        }
+        let out = compile_and_run_source(
+            r#"fn main() uses(net.send) {
+                let b = http_get("https://example.com/");
+                // example.com returns HTML; non-empty body is the witness.
+                print(len(b) > 0);
+            }"#,
+            false,
+            &[],
+        )
+        .expect("compile+run https");
+        assert!(
+            out.status.success(),
+            "https program failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "true");
+    }
+
+    #[test]
+    fn http_bad_scheme_fails_closed() {
         run_expect_trap(
             r#"fn main() uses(net.send) {
-                let _ = http_get("https://example.com/");
+                let _ = http_get("ftp://example.com/");
             }"#,
             "ANUBIS_IO_ERROR",
         );

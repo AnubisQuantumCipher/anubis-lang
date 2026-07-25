@@ -1,0 +1,36 @@
+# Hosted Metal *proving* — only meaningful on a self-hosted Apple Silicon runner
+# with Metal + the patched risc0 Metal HAL. Stock macos-latest is NOT claimed.
+#
+# Attach a runner with labels: self-hosted, macOS, ARM64, metal
+# Then this job enforces Gate-11 style metal-hybrid observation.
+name: metal-prove
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["a-plus-maturity/**"]
+    paths:
+      - "scripts/check_metal_parity.sh"
+      - "scripts/run_metal_prove_gate.sh"
+      - "tools/anubis/**"
+      - ".github/workflows/metal-prove.yml"
+
+jobs:
+  metal-hybrid-prove:
+    # Does not run on github-hosted stock runners by default (no matching labels).
+    runs-on: [self-hosted, macOS, ARM64, metal]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Metal prove gate (require)
+        env:
+          ANUBIS_REQUIRE_METAL: "1"
+          ANUBIS_METAL_GATE_ALLOW_SKIP: "0"
+        run: |
+          cargo build --release -p anubis
+          bash scripts/run_metal_prove_gate.sh out/ci_metal_prove
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metal-prove-evidence
+          path: out/ci_metal_prove

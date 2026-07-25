@@ -112,12 +112,22 @@ pub fn native_preflight(program: &str, allow_hosts: &[String]) -> Result<()> {
             "  enforcement : FULLY ENFORCED — the guest has no network interface at all (structural \
              air-gap the instant it boots). This is what tart's --net-host cannot express."
         ),
-        NativePosture::PerHostnameEgress { .. } => eprintln!(
-            "  enforcement : SUBSTRATE ENFORCED / GATEWAY STAGED — the guest's only link is a \
-             host-held datagram socket (VZFileHandleNetworkDeviceAttachment). The userspace \
-             DNS-pinned per-hostname frame filter over that socket is the remaining engineering \
-             ([STAGED], not yet enforcing)."
-        ),
+        NativePosture::PerHostnameEgress { allow_hosts } => {
+            // Policy compiles here (DNS pin + deny-all when empty). Live fd pump attaches at native-boot.
+            match crate::vz_egress_gateway::EgressPolicy::from_allow_hosts(allow_hosts) {
+                Ok(pol) => eprintln!(
+                    "  enforcement : SUBSTRATE ENFORCED / GATEWAY POLICY COMPILED — \
+                     VZFileHandleNetworkDeviceAttachment + DNS-pinned allow-list ({} IPv4). \
+                     Empty allow-list = deny-all. Live frame pump on the host fd is wired at \
+                     `native-boot`; preflight proves policy + substrate only.",
+                    pol.allowed_ipv4.len()
+                ),
+                Err(e) => eprintln!(
+                    "  enforcement : SUBSTRATE ENFORCED / GATEWAY POLICY ERROR — {e} \
+                     (fail-closed: fix --allow-host or leave empty for deny-all)"
+                ),
+            }
+        }
     }
 
     build_validate_instantiate(&posture)?;

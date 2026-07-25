@@ -62,6 +62,29 @@ pub enum VzCmd {
         /// Bind-mount a host directory into the guest (`--dir name:/host/path`), repeatable.
         #[arg(long)]
         dir: Vec<String>,
+        /// Slice-2: derive confinement from this program and APPLY tart args (e.g. `--net-host`)
+        /// to the live boot. Writes `confinement_applied.json` (or `--applied-out`).
+        #[arg(long)]
+        confine: Option<String>,
+        /// Where to write the applied confinement artifact (default: ./confinement_applied.json).
+        #[arg(long)]
+        applied_out: Option<String>,
+    },
+    /// Slice-2: derive confinement and emit the applied artifact WITHOUT booting (dry-run apply).
+    Apply {
+        /// Program to derive confinement from.
+        program: String,
+        /// Optional tart VM name — if set and tart is available, also boots with applied flags.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value_t = true)]
+        no_graphics: bool,
+        #[arg(long)]
+        detach: bool,
+        #[arg(long)]
+        dir: Vec<String>,
+        #[arg(long)]
+        applied_out: Option<String>,
     },
     /// Print the IP address of a running VM.
     Ip { name: String },
@@ -121,7 +144,7 @@ pub enum VzCmd {
     /// canonical effects), and print it as JSON. Fails closed: a program that does not pass
     /// `anubis check` has no proof to derive confinement from, so it is refused. The same manifest is
     /// sealed + re-derivable in every `anubis build --evidence` bundle. This never boots a VM;
-    /// APPLYING the derived flags to a live guest is `vz exploit --confine` (a follow-up).
+    /// APPLYING the derived flags is `vz run --confine` / `vz apply` (slice-2).
     Confine {
         /// The program `.anb` to derive confinement for.
         program: String,
@@ -299,10 +322,30 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             no_graphics,
             detach,
             dir,
+            confine,
+            applied_out,
         } => {
+            let mut confine_args: Vec<String> = Vec::new();
+            if let Some(prog) = confine {
+                let (applied, _) = crate::vz_apply::build_applied(&prog, &dir)?;
+                let out_path = applied_out
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::PathBuf::from(crate::vz_apply::APPLIED_FILENAME));
+                crate::vz_apply::write_applied(&applied, Some(&out_path))?;
+                eprintln!(
+                    "[anubis vz run --confine] applied tart_args=[{}] → {}",
+                    applied.tart_args.join(" "),
+                    out_path.display()
+                );
+                confine_args = applied.tart_args;
+            }
             let mut args = vec![s("run"), name.clone()];
             if no_graphics {
                 args.push(s("--no-graphics"));
+            }
+            for a in &confine_args {
+                args.push(a.clone());
             }
             for d in &dir {
                 args.push(s("--dir"));
@@ -326,6 +369,34 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 );
                 tart_run(&args)
             }
+        }
+        VzCmd::Apply {
+            program,
+            name,
+            no_graphics,
+            detach,
+            dir,
+            applied_out,
+        } => {
+            let (applied, _) = crate::vz_apply::build_applied(&program, &dir)?;
+            let out_path = applied_out
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from(crate::vz_apply::APPLIED_FILENAME));
+            crate::vz_apply::write_applied(&applied, Some(&out_path))?;
+            println!("{}", serde_json::to_string_pretty(&applied)?);
+            eprintln!("[anubis vz apply] wrote {}", out_path.display());
+            if let Some(vm) = name {
+                crate::vz_apply::apply_and_run(
+                    &program,
+                    &vm,
+                    &dir,
+                    no_graphics,
+                    detach,
+                    Some(&out_path),
+                )?;
+            }
+            Ok(())
         }
         VzCmd::Ip { name } => {
             let ip = tart_capture(&[s("ip"), name])?;
