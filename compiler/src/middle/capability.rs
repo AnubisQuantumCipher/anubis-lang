@@ -49,7 +49,8 @@
 //! from a different function) still self-authorize.
 //! **Deep HO rebind (linear closures):** a lambda that free-uses a Live capability *moves*
 //! those tokens into the closure binding; the binding is linear — second application is
-//! `ANUBIS_CAPABILITY_REUSE`. Container-stored closures remain residual.
+//! `ANUBIS_CAPABILITY_REUSE`. List/array containers that hold capturing lambdas are also
+//! linear (container apply / project-bind).
 
 use crate::frontend::{Expr, ForSource, Pattern, Stmt};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1980,6 +1981,73 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             return;
         }
     }
+    // Project-bind from a linear-closure container: `let g = arr[0]` MOVEs the container's
+    // linear token onto `g` (second apply of g or residual arr is REUSE).
+    if let Expr::Index { base, index } = init {
+        if let Expr::Var(src) = base.as_ref() {
+            if let Some(st) = lin.linear_closures.get(src).copied() {
+                walk_expr(index, caps, lin);
+                match st {
+                    CapState::Live => {
+                        lin.linear_closures
+                            .insert(src.clone(), CapState::Consumed);
+                        lin.linear_closures
+                            .insert(target.to_string(), CapState::Live);
+                    }
+                    CapState::Consumed => {
+                        lin.reuse(src);
+                        lin.linear_closures.remove(target);
+                    }
+                }
+                caps.remove(target);
+                return;
+            }
+        }
+        // Non-linear-closure index: fall through to generic NE/walk path.
+    }
+    // Array of capturing lambdas: free Live caps MOVE into the *container* as one linear token.
+    if let Expr::ArrayLiteral { elements } = init {
+        let mut held = BTreeSet::new();
+        let mut any_capturing = false;
+        for el in elements {
+            if let Expr::Lambda { body, .. } = el {
+                let mut h = BTreeSet::new();
+                free_live_caps_in_expr(body, caps, &mut h);
+                if !h.is_empty() {
+                    any_capturing = true;
+                    held.extend(h);
+                    let saved = lin.container_ne.clone();
+                    walk_export_seals(body, caps, lin);
+                    lin.container_ne = saved;
+                }
+            }
+        }
+        if any_capturing {
+            for name in &held {
+                if let Some(t) = caps.get(name).cloned() {
+                    if t.state == CapState::Live {
+                        caps.insert(
+                            name.clone(),
+                            CapToken {
+                                state: CapState::Consumed,
+                                kind: t.kind,
+                                non_exportable: t.non_exportable,
+                            },
+                        );
+                    }
+                }
+            }
+            for el in elements {
+                if !matches!(el, Expr::Lambda { .. }) {
+                    walk_expr(el, caps, lin);
+                }
+            }
+            lin.linear_closures
+                .insert(target.to_string(), CapState::Live);
+            caps.remove(target);
+            return;
+        }
+    }
     // Snapshot NE embedding *before* walk consumes element tokens, then mark container.
     let holds_ne = expr_holds_live_ne(init, caps, &lin.container_ne);
     walk_expr(init, caps, lin);
@@ -2306,6 +2374,12 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             // Method form: `arr.push(ne)` / `m.insert(k, ne)`.
             if let Expr::FieldAccess { base, field, .. } = &**callee {
                 note_container_ne_mutation(field, args, Some(base), caps, lin);
+            }
+            // Container apply: `arr[0](…)` spends the container's linear-closure token.
+            if let Expr::Index { base, .. } = &**callee {
+                if let Expr::Var(n) = base.as_ref() {
+                    apply_linear_closure(n, lin);
+                }
             }
             walk_expr(callee, caps, lin);
             for a in args {
@@ -3325,7 +3399,6 @@ fn f() { let y = send(3); }"#;
         );
     }
 
-    #[test]
     /// Deep HO: double apply of a cap-capturing closure is REUSE.
     #[test]
     fn linear_closure_double_apply_is_reuse() {
@@ -3392,6 +3465,47 @@ fn f() { let y = send(3); }"#;
             g(0);
         }"#;
         assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
+    }
+
+    /// Container-stored capturing lambda: double apply via index is REUSE.
+    #[test]
+    fn linear_closure_in_list_double_apply_is_reuse() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let arr = [|x| { cap_use(s); }];
+            arr[0](0);
+            arr[0](0);
+        }"#;
+        assert_eq!(codes(src, false), ["ANUBIS_CAPABILITY_REUSE"]);
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
+    }
+
+    /// Project-bind from list then double-apply alias is REUSE.
+    #[test]
+    fn linear_closure_list_project_bind_double_apply_is_reuse() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let arr = [|x| { cap_use(s); }];
+            let g = arr[0];
+            g(0);
+            g(0);
+        }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
+    }
+
+    /// Dual: single index-apply of container-capturing lambda accepts.
+    #[test]
+    fn linear_closure_in_list_single_apply_accepts() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let arr = [|x| { cap_use(s); }];
+            arr[0](0);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "single list apply must accept, got {:?}",
+            codes(src, true)
+        );
     }
 
     #[test]
