@@ -501,6 +501,8 @@ fn for_each_export_child(stmt: &Stmt, mut visit: impl FnMut(ExportReachable<'_>)
 }
 
 /// Formal indices that reach print/send/http_*/write_file as data without a prior cap_export peel.
+/// Also tracks store-then-project: formals pushed/inserted/literal-stored into named containers
+/// whose projection (`arr[i]` / `m[k]` / the container itself) reaches an export sink.
 fn formals_reaching_export_sink(
     params: &[(String, String)],
     body: &[Stmt],
@@ -510,31 +512,164 @@ fn formals_reaching_export_sink(
     for (i, (n, _)) in params.iter().enumerate() {
         sealed.insert(n.clone(), i);
     }
+    // name -> formal indices stored into this container (store-then-project / push / insert)
+    let mut containers: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     let mut exported = BTreeSet::new();
-    fn peel_name(name: &str, sealed: &mut BTreeMap<String, usize>) {
+    fn peel_name(
+        name: &str,
+        sealed: &mut BTreeMap<String, usize>,
+        containers: &mut BTreeMap<String, BTreeSet<usize>>,
+    ) {
         sealed.remove(name);
+        containers.remove(name);
     }
-    /// Mirror `check_export_arg` aggregate peel so print((s,1)) marks formal s.
-    fn on_export_arg(e: &Expr, sealed: &BTreeMap<String, usize>, exported: &mut BTreeSet<usize>) {
+    /// Formal indices embedded in `e` (direct sealed var, known container, aggregate,
+    /// project from container, or if/match/block value-position).
+    fn formals_in_expr(
+        e: &Expr,
+        sealed: &BTreeMap<String, usize>,
+        containers: &BTreeMap<String, BTreeSet<usize>>,
+    ) -> BTreeSet<usize> {
+        match e {
+            Expr::Var(n) => {
+                let mut out = BTreeSet::new();
+                if let Some(i) = sealed.get(n) {
+                    out.insert(*i);
+                }
+                if let Some(idxs) = containers.get(n) {
+                    out.extend(idxs.iter().copied());
+                }
+                out
+            }
+            Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+                elements
+                    .iter()
+                    .flat_map(|el| formals_in_expr(el, sealed, containers))
+                    .collect()
+            }
+            Expr::StructLiteral { fields, .. } => fields
+                .iter()
+                .flat_map(|(_, v)| formals_in_expr(v, sealed, containers))
+                .collect(),
+            Expr::MapLiteral { entries, .. } => entries
+                .iter()
+                .flat_map(|(_, v)| formals_in_expr(v, sealed, containers))
+                .collect(),
+            // Project-bind: `let x = arr[0]` after arr holds formal → x carries those formals.
+            Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
+                formals_in_expr(base, sealed, containers)
+            }
+            Expr::If {
+                then, else_, ..
+            }
+            | Expr::IfLet {
+                then, else_, ..
+            } => {
+                let mut out = formals_in_expr(then, sealed, containers);
+                out.extend(formals_in_expr(else_, sealed, containers));
+                out
+            }
+            Expr::Match { arms, .. } => arms
+                .iter()
+                .flat_map(|arm| formals_in_expr(&arm.body, sealed, containers))
+                .collect(),
+            Expr::Block { tail, .. } => tail
+                .as_ref()
+                .map(|t| formals_in_expr(t, sealed, containers))
+                .unwrap_or_default(),
+            Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
+                formals_in_expr(expr, sealed, containers)
+            }
+            _ => BTreeSet::new(),
+        }
+    }
+    /// Seed container tracking for free/method `push` / `insert` of sealed formals.
+    fn note_formal_container_mutation(
+        name: &str,
+        args: &[Expr],
+        method_base: Option<&Expr>,
+        sealed: &BTreeMap<String, usize>,
+        containers: &mut BTreeMap<String, BTreeSet<usize>>,
+    ) {
+        let (container, value) = match name {
+            "push" => {
+                let cont = method_base.or_else(|| args.first());
+                let val = if method_base.is_some() {
+                    args.first()
+                } else {
+                    args.get(1)
+                };
+                (cont, val)
+            }
+            "insert" => {
+                let cont = method_base.or_else(|| args.first());
+                let val = if method_base.is_some() {
+                    args.get(1)
+                } else {
+                    args.get(2)
+                };
+                (cont, val)
+            }
+            _ => return,
+        };
+        let (Some(container), Some(value)) = (container, value) else {
+            return;
+        };
+        let idxs = formals_in_expr(value, sealed, containers);
+        if idxs.is_empty() {
+            return;
+        }
+        // Named root: free/method push/insert on `arr` or `arrs[0]` → seed root.
+        if let Some(root) = place_root_var(container) {
+            containers.entry(root.to_string()).or_default().extend(idxs);
+        }
+    }
+    /// Mirror `check_export_arg` aggregate + container project so print(arr[0]) marks formal s.
+    fn on_export_arg(
+        e: &Expr,
+        sealed: &BTreeMap<String, usize>,
+        containers: &BTreeMap<String, BTreeSet<usize>>,
+        exported: &mut BTreeSet<usize>,
+    ) {
         match e {
             Expr::Var(n) => {
                 if let Some(i) = sealed.get(n) {
                     exported.insert(*i);
                 }
+                if let Some(idxs) = containers.get(n) {
+                    exported.extend(idxs.iter().copied());
+                }
             }
             Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
                 for el in elements {
-                    on_export_arg(el, sealed, exported);
+                    on_export_arg(el, sealed, containers, exported);
                 }
             }
             Expr::StructLiteral { fields, .. } => {
                 for (_, v) in fields {
-                    on_export_arg(v, sealed, exported);
+                    on_export_arg(v, sealed, containers, exported);
                 }
             }
             Expr::MapLiteral { entries, .. } => {
                 for (_, v) in entries {
-                    on_export_arg(v, sealed, exported);
+                    on_export_arg(v, sealed, containers, exported);
+                }
+            }
+            Expr::Index { base, index } => {
+                on_export_arg(base, sealed, containers, exported);
+                on_export_arg(index, sealed, containers, exported);
+                if let Expr::Var(n) = &**base {
+                    if let Some(idxs) = containers.get(n) {
+                        exported.extend(idxs.iter().copied());
+                    }
+                }
+            }
+            Expr::FieldAccess { base, .. } => {
+                on_export_arg(base, sealed, containers, exported);
+                if let Expr::Var(n) = &**base {
+                    if let Some(idxs) = containers.get(n) {
+                        exported.extend(idxs.iter().copied());
+                    }
                 }
             }
             Expr::If {
@@ -543,21 +678,21 @@ fn formals_reaching_export_sink(
             | Expr::IfLet {
                 then, else_, ..
             } => {
-                on_export_arg(then, sealed, exported);
-                on_export_arg(else_, sealed, exported);
+                on_export_arg(then, sealed, containers, exported);
+                on_export_arg(else_, sealed, containers, exported);
             }
             Expr::Match { arms, .. } => {
                 for arm in arms {
-                    on_export_arg(&arm.body, sealed, exported);
+                    on_export_arg(&arm.body, sealed, containers, exported);
                 }
             }
             Expr::Block { tail, .. } => {
                 if let Some(t) = tail {
-                    on_export_arg(t, sealed, exported);
+                    on_export_arg(t, sealed, containers, exported);
                 }
             }
             Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
-                on_export_arg(expr, sealed, exported);
+                on_export_arg(expr, sealed, containers, exported);
             }
             _ => {}
         }
@@ -566,6 +701,7 @@ fn formals_reaching_export_sink(
         name: &str,
         init: &Expr,
         sealed: &mut BTreeMap<String, usize>,
+        containers: &mut BTreeMap<String, BTreeSet<usize>>,
         exported: &mut BTreeSet<usize>,
     ) {
         match init {
@@ -573,19 +709,33 @@ fn formals_reaching_export_sink(
                 if let Some(i) = sealed.get(src).cloned() {
                     sealed.remove(src);
                     sealed.insert(name.to_string(), i);
+                    containers.remove(name);
+                } else if let Some(idxs) = containers.get(src).cloned() {
+                    // MOVE of an NE-carrying *container*
+                    containers.remove(src);
+                    containers.insert(name.to_string(), idxs);
+                    sealed.remove(name);
                 } else {
                     sealed.remove(name);
+                    containers.remove(name);
                 }
             }
             Expr::Call { callee, args } if callee == CAP_EXPORT => {
                 if let Some(Expr::Var(src)) = args.first() {
-                    peel_name(src, sealed);
+                    peel_name(src, sealed, containers);
                 }
                 sealed.remove(name);
+                containers.remove(name);
             }
             other => {
                 // Scan for export of sealed formals *before* dropping the name's tracking.
-                walk_expr_export(other, sealed, exported);
+                walk_expr_export(other, sealed, containers, exported);
+                let idxs = formals_in_expr(other, sealed, containers);
+                if !idxs.is_empty() {
+                    containers.insert(name.to_string(), idxs);
+                } else {
+                    containers.remove(name);
+                }
                 sealed.remove(name);
             }
         }
@@ -593,41 +743,59 @@ fn formals_reaching_export_sink(
     fn walk(
         stmts: &[Stmt],
         sealed: &mut BTreeMap<String, usize>,
+        containers: &mut BTreeMap<String, BTreeSet<usize>>,
         exported: &mut BTreeSet<usize>,
     ) {
         for s in stmts {
             match s {
                 // Formal MOVE / peel bookkeeping — still must scan non-move inits.
                 Stmt::Let { name, init, .. } => {
-                    rebind_or_scan_init(name, init, sealed, exported);
+                    rebind_or_scan_init(name, init, sealed, containers, exported);
                 }
                 Stmt::LetPattern { init, .. } => {
                     // Pattern binds are not formals; still scan init for print(formal).
-                    walk_expr_export(init, sealed, exported);
-                    // Drop any sealed names rebound by the pattern? unknown names only.
+                    walk_expr_export(init, sealed, containers, exported);
                 }
                 Stmt::Assign {
                     target: Expr::Var(name),
                     value,
                 } => {
-                    rebind_or_scan_init(name, value, sealed, exported);
+                    rebind_or_scan_init(name, value, sealed, containers, exported);
                 }
                 Stmt::Assign { target, value } => {
-                    walk_expr_export(target, sealed, exported);
-                    walk_expr_export(value, sealed, exported);
+                    // Place-write: `arr[i] = formal` / `b.f = formal` seeds container formals.
+                    let idxs = formals_in_expr(value, sealed, containers);
+                    if !idxs.is_empty() {
+                        if let Some(root) = place_root_var(target) {
+                            containers
+                                .entry(root.to_string())
+                                .or_default()
+                                .extend(idxs);
+                        }
+                    }
+                    walk_expr_export(target, sealed, containers, exported);
+                    walk_expr_export(value, sealed, containers, exported);
                 }
-                Stmt::ExprStmt(e) => walk_expr_export(e, sealed, exported),
+                Stmt::ExprStmt(e) => walk_expr_export(e, sealed, containers, exported),
                 // Branch merge: peels in then do not poison else (clone sealed per arm).
-                // Headers always scanned on the pre-branch sealed map.
+                // Container stores union fail-closed into the parent (any-arm NE store sticks).
                 Stmt::If {
                     cond, then, else_, ..
                 } => {
-                    walk_expr_export(cond, sealed, exported);
+                    walk_expr_export(cond, sealed, containers, exported);
                     let mut s1 = sealed.clone();
-                    walk(then, &mut s1, exported);
+                    let mut c1 = containers.clone();
+                    walk(then, &mut s1, &mut c1, exported);
+                    for (k, v) in c1 {
+                        containers.entry(k).or_default().extend(v);
+                    }
                     if let Some(el) = else_ {
                         let mut s2 = sealed.clone();
-                        walk(el, &mut s2, exported);
+                        let mut c2 = containers.clone();
+                        walk(el, &mut s2, &mut c2, exported);
+                        for (k, v) in c2 {
+                            containers.entry(k).or_default().extend(v);
+                        }
                     }
                 }
                 Stmt::While {
@@ -635,17 +803,17 @@ fn formals_reaching_export_sink(
                     body,
                     invariant,
                 } => {
-                    walk_expr_export(cond, sealed, exported);
+                    walk_expr_export(cond, sealed, containers, exported);
                     for inv in invariant {
-                        walk_expr_export(inv, sealed, exported);
+                        walk_expr_export(inv, sealed, containers, exported);
                     }
-                    walk(body, sealed, exported);
+                    walk(body, sealed, containers, exported);
                 }
                 Stmt::Loop { body, invariant } => {
                     for inv in invariant {
-                        walk_expr_export(inv, sealed, exported);
+                        walk_expr_export(inv, sealed, containers, exported);
                     }
-                    walk(body, sealed, exported);
+                    walk(body, sealed, containers, exported);
                 }
                 Stmt::For {
                     source,
@@ -655,34 +823,34 @@ fn formals_reaching_export_sink(
                 } => {
                     match source {
                         ForSource::Range { start, end } => {
-                            walk_expr_export(start, sealed, exported);
-                            walk_expr_export(end, sealed, exported);
+                            walk_expr_export(start, sealed, containers, exported);
+                            walk_expr_export(end, sealed, containers, exported);
                         }
                         ForSource::Collection { expr } => {
-                            walk_expr_export(expr, sealed, exported);
+                            walk_expr_export(expr, sealed, containers, exported);
                         }
                     }
                     for inv in invariant {
-                        walk_expr_export(inv, sealed, exported);
+                        walk_expr_export(inv, sealed, containers, exported);
                     }
-                    walk(body, sealed, exported);
+                    walk(body, sealed, containers, exported);
                 }
                 Stmt::WhileLet { expr, body, .. } => {
-                    walk_expr_export(expr, sealed, exported);
-                    walk(body, sealed, exported);
+                    walk_expr_export(expr, sealed, containers, exported);
+                    walk(body, sealed, containers, exported);
                 }
                 Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
-                    walk(body, sealed, exported);
+                    walk(body, sealed, containers, exported);
                 }
                 Stmt::HybridBlock { gpu, cpu, prove } => {
                     if let Some(b) = gpu {
-                        walk(b, sealed, exported);
+                        walk(b, sealed, containers, exported);
                     }
                     if let Some(b) = cpu {
-                        walk(b, sealed, exported);
+                        walk(b, sealed, containers, exported);
                     }
                     if let Some(b) = prove {
-                        walk(b, sealed, exported);
+                        walk(b, sealed, containers, exported);
                     }
                 }
                 Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
@@ -692,32 +860,38 @@ fn formals_reaching_export_sink(
     fn walk_expr_export(
         e: &Expr,
         sealed: &mut BTreeMap<String, usize>,
+        containers: &mut BTreeMap<String, BTreeSet<usize>>,
         exported: &mut BTreeSet<usize>,
     ) {
         match e {
             Expr::Call { callee, args } => {
                 if callee == CAP_EXPORT {
                     if let Some(Expr::Var(src)) = args.first() {
-                        peel_name(src, sealed);
+                        peel_name(src, sealed, containers);
                     }
                 } else if is_export_sink(callee) {
                     for a in args {
-                        on_export_arg(a, sealed, exported);
+                        on_export_arg(a, sealed, containers, exported);
                     }
                 }
+                // Store-then-project via free push/insert of sealed formals.
+                note_formal_container_mutation(callee, args, None, sealed, containers);
                 for a in args {
-                    walk_expr_export(a, sealed, exported);
+                    walk_expr_export(a, sealed, containers, exported);
                 }
             }
             Expr::CallExpr { callee, args } => {
-                walk_expr_export(callee, sealed, exported);
+                if let Expr::FieldAccess { base, field, .. } = &**callee {
+                    note_formal_container_mutation(field, args, Some(base), sealed, containers);
+                }
+                walk_expr_export(callee, sealed, containers, exported);
                 for a in args {
-                    walk_expr_export(a, sealed, exported);
+                    walk_expr_export(a, sealed, containers, exported);
                 }
             }
             Expr::Binary { lhs, rhs, .. } => {
-                walk_expr_export(lhs, sealed, exported);
-                walk_expr_export(rhs, sealed, exported);
+                walk_expr_export(lhs, sealed, containers, exported);
+                walk_expr_export(rhs, sealed, containers, exported);
             }
             Expr::Unary { expr, .. }
             | Expr::Cast { expr, .. }
@@ -725,32 +899,34 @@ fn formals_reaching_export_sink(
             | Expr::Declassify { inner: expr, .. }
             | Expr::Assume(expr)
             | Expr::Assert(expr)
-            | Expr::Try(expr) => walk_expr_export(expr, sealed, exported),
+            | Expr::Try(expr) => walk_expr_export(expr, sealed, containers, exported),
             Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
                 for el in elements {
-                    walk_expr_export(el, sealed, exported);
+                    walk_expr_export(el, sealed, containers, exported);
                 }
             }
             Expr::StructLiteral { fields, .. } => {
                 for (_, v) in fields {
-                    walk_expr_export(v, sealed, exported);
+                    walk_expr_export(v, sealed, containers, exported);
                 }
             }
             Expr::MapLiteral { entries, .. } => {
                 for (k, v) in entries {
-                    walk_expr_export(k, sealed, exported);
-                    walk_expr_export(v, sealed, exported);
+                    walk_expr_export(k, sealed, containers, exported);
+                    walk_expr_export(v, sealed, containers, exported);
                 }
             }
             Expr::Index { base, index } => {
-                walk_expr_export(base, sealed, exported);
-                walk_expr_export(index, sealed, exported);
+                walk_expr_export(base, sealed, containers, exported);
+                walk_expr_export(index, sealed, containers, exported);
             }
-            Expr::FieldAccess { base, .. } => walk_expr_export(base, sealed, exported),
+            Expr::FieldAccess { base, .. } => {
+                walk_expr_export(base, sealed, containers, exported)
+            }
             Expr::Block { stmts, tail } => {
-                walk(stmts, sealed, exported);
+                walk(stmts, sealed, containers, exported);
                 if let Some(t) = tail {
-                    walk_expr_export(t, sealed, exported);
+                    walk_expr_export(t, sealed, containers, exported);
                 }
             }
             Expr::If {
@@ -762,26 +938,28 @@ fn formals_reaching_export_sink(
                 else_,
                 ..
             } => {
-                walk_expr_export(cond, sealed, exported);
-                walk_expr_export(then, sealed, exported);
-                walk_expr_export(else_, sealed, exported);
+                walk_expr_export(cond, sealed, containers, exported);
+                walk_expr_export(then, sealed, containers, exported);
+                walk_expr_export(else_, sealed, containers, exported);
             }
             Expr::Match {
                 scrutinee, arms, ..
             } => {
-                walk_expr_export(scrutinee, sealed, exported);
+                walk_expr_export(scrutinee, sealed, containers, exported);
                 for arm in arms {
                     if let Some(g) = &arm.guard {
-                        walk_expr_export(g, sealed, exported);
+                        walk_expr_export(g, sealed, containers, exported);
                     }
-                    walk_expr_export(&arm.body, sealed, exported);
+                    walk_expr_export(&arm.body, sealed, containers, exported);
                 }
             }
-            Expr::Lambda { body, .. } => walk_expr_export(body, sealed, exported),
+            Expr::Lambda { body, .. } => {
+                walk_expr_export(body, sealed, containers, exported)
+            }
             _ => {}
         }
     }
-    walk(body, &mut sealed, &mut exported);
+    walk(body, &mut sealed, &mut containers, &mut exported);
     exported
 }
 
@@ -869,13 +1047,15 @@ fn note_container_ne_mutation(
     if !expr_holds_live_ne(value, caps, &lin.container_ne) {
         return;
     }
-    if let Expr::Var(n) = container {
-        lin.container_ne.insert(n.clone());
+    // Named root: `push(arr, v)` or `push(arrs[0], v)` → seed `arr` / `arrs`.
+    if let Some(root) = place_root_var(container) {
+        lin.container_ne.insert(root.to_string());
     }
 }
 
 /// True if `expr` is a Live non-exportable token, a known NE-carrying container, or an
 /// aggregate that embeds either (pre-consume snapshot for store-then-project tracking).
+/// Also: project from NE container (`arr[i]` / `b.f`), if/match/block value-position init.
 fn expr_holds_live_ne(expr: &Expr, caps: &CapMap, container_ne: &BTreeSet<String>) -> bool {
     match expr {
         Expr::Var(n) => {
@@ -895,6 +1075,30 @@ fn expr_holds_live_ne(expr: &Expr, caps: &CapMap, container_ne: &BTreeSet<String
         Expr::MapLiteral { entries, .. } => entries
             .iter()
             .any(|(_, v)| expr_holds_live_ne(v, caps, container_ne)),
+        // Project-bind: `let x = arr[0]` after arr holds NE must seed x.
+        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
+            expr_holds_live_ne(base, caps, container_ne)
+                || matches!(&**base, Expr::Var(n) if container_ne.contains(n))
+        }
+        // if/match/block value-position container init (mirror taint/field_closures seed).
+        Expr::If {
+            then, else_, ..
+        }
+        | Expr::IfLet {
+            then, else_, ..
+        } => {
+            expr_holds_live_ne(then, caps, container_ne)
+                || expr_holds_live_ne(else_, caps, container_ne)
+        }
+        Expr::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| expr_holds_live_ne(&arm.body, caps, container_ne)),
+        Expr::Block { stmts: _, tail } => tail
+            .as_ref()
+            .is_some_and(|t| expr_holds_live_ne(t, caps, container_ne)),
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
+            expr_holds_live_ne(expr, caps, container_ne)
+        }
         _ => false,
     }
 }
@@ -1547,11 +1751,18 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
         // Non-exportable sealedness: definition-site walk of lambda bodies for export sinks
         // that mention free Live non_exportable tokens (does not consume — export check only).
         // Linearity of captured caps at application remains residual for HO rebind.
-        Expr::Lambda { body, .. } => walk_export_seals(body, caps, lin),
+        // Local container_ne seeds (store-then-project of free NE) must not leak to outer.
+        Expr::Lambda { body, .. } => {
+            let saved = lin.container_ne.clone();
+            walk_export_seals(body, caps, lin);
+            lin.container_ne = saved;
+        }
     }
 }
 
 /// Export-seal walk: fire ANUBIS_CAPABILITY_EXPORT on sinks, without consuming tokens.
+/// Also seeds `container_ne` for free-NE store-then-project inside lambda bodies
+/// (`let arr = [s]; print(arr[0])` / `push(arr, s)`).
 fn walk_export_seals(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
     match expr {
         Expr::Call { callee, args } => {
@@ -1569,11 +1780,16 @@ fn walk_export_seals(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                     }
                 }
             }
+            // Seed container_ne *before* nested walks (mirror walk_expr).
+            note_container_ne_mutation(callee, args, None, caps, lin);
             for a in args {
                 walk_export_seals(a, caps, lin);
             }
         }
         Expr::CallExpr { callee, args } => {
+            if let Expr::FieldAccess { base, field, .. } = &**callee {
+                note_container_ne_mutation(field, args, Some(base), caps, lin);
+            }
             walk_export_seals(callee, caps, lin);
             for a in args {
                 walk_export_seals(a, caps, lin);
@@ -1647,19 +1863,91 @@ fn walk_export_seals(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                 walk_export_seals(t, caps, lin);
             }
         }
-        Expr::Lambda { body, .. } => walk_export_seals(body, caps, lin),
+        Expr::Lambda { body, .. } => {
+            // Nested lambda: outer free NE still visible via caps; local container_ne
+            // seeds do not leak back to the outer export-seal frame.
+            let saved = lin.container_ne.clone();
+            walk_export_seals(body, caps, lin);
+            lin.container_ne = saved;
+        }
         _ => {}
     }
 }
 
 fn walk_export_seals_stmts(stmts: &[Stmt], caps: &CapMap, lin: &mut Lin) {
-    // Shared control-flow decomposition with formals_reaching_export_sink
-    // (for_each_export_child) — headers and bodies stay in lockstep.
+    // Seed container_ne on Let/Assign/push (store-then-project of free NE), then walk
+    // export-reachable positions via the shared for_each_export_child shape for CF headers.
     for s in stmts {
-        for_each_export_child(s, |child| match child {
-            ExportReachable::Expr(e) => walk_export_seals(e, caps, lin),
-            ExportReachable::Stmts(ss) => walk_export_seals_stmts(ss, caps, lin),
-        });
+        match s {
+            Stmt::Let { name, init, .. } => {
+                let holds = expr_holds_live_ne(init, caps, &lin.container_ne);
+                walk_export_seals(init, caps, lin);
+                if holds {
+                    lin.container_ne.insert(name.clone());
+                } else if let Expr::Var(src) = init {
+                    if lin.container_ne.contains(src) {
+                        lin.container_ne.remove(src);
+                        lin.container_ne.insert(name.clone());
+                    } else {
+                        lin.container_ne.remove(name);
+                    }
+                } else {
+                    lin.container_ne.remove(name);
+                }
+            }
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
+                let holds = expr_holds_live_ne(value, caps, &lin.container_ne);
+                walk_export_seals(value, caps, lin);
+                if holds {
+                    lin.container_ne.insert(name.clone());
+                } else if let Expr::Var(src) = value {
+                    if lin.container_ne.contains(src) {
+                        lin.container_ne.remove(src);
+                        lin.container_ne.insert(name.clone());
+                    } else {
+                        lin.container_ne.remove(name);
+                    }
+                } else {
+                    lin.container_ne.remove(name);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                if expr_holds_live_ne(value, caps, &lin.container_ne) {
+                    if let Some(root) = place_root_var(target) {
+                        lin.container_ne.insert(root.to_string());
+                    }
+                }
+                walk_export_seals(target, caps, lin);
+                walk_export_seals(value, caps, lin);
+            }
+            Stmt::ExprStmt(e) => walk_export_seals(e, caps, lin),
+            Stmt::If {
+                cond, then, else_, ..
+            } => {
+                walk_export_seals(cond, caps, lin);
+                let base_c = lin.container_ne.clone();
+                walk_export_seals_stmts(then, caps, lin);
+                let then_c = lin.container_ne.clone();
+                lin.container_ne = base_c.clone();
+                if let Some(el) = else_ {
+                    walk_export_seals_stmts(el, caps, lin);
+                }
+                let else_c = lin.container_ne.clone();
+                lin.container_ne = then_c.union(&else_c).cloned().collect();
+                if else_.is_none() {
+                    lin.container_ne = lin.container_ne.union(&base_c).cloned().collect();
+                }
+            }
+            other => {
+                for_each_export_child(other, |child| match child {
+                    ExportReachable::Expr(e) => walk_export_seals(e, caps, lin),
+                    ExportReachable::Stmts(ss) => walk_export_seals_stmts(ss, caps, lin),
+                });
+            }
+        }
     }
 }
 
@@ -2523,5 +2811,234 @@ fn f() { let y = send(3); }"#;
             fn f() { let s = mint(); print(s); }
         "#;
         assert!(codes(src, true).is_empty());
+    }
+
+    #[test]
+    fn nonexportable_formal_push_then_index_print_is_export() {
+        // Interproc store-then-project: formal s → push(arr,s) → print(arr[0]).
+        let src = r#"
+            fn leak(s) {
+                let arr = [];
+                push(arr, s);
+                print(arr[0]);
+            }
+            fn f() {
+                let t = cap_acquire_nonexportable("fs.write");
+                leak(t);
+            }
+        "#;
+        for verified in [false, true] {
+            let c = codes(src, verified);
+            assert!(
+                c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+                "formal push-then-index must EXPORT, verified={verified}, got {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonexportable_formal_store_then_index_print_is_export() {
+        let src = r#"
+            fn leak(s) {
+                let arr = [s];
+                print(arr[0]);
+            }
+            fn f() {
+                let t = cap_acquire_nonexportable("fs.write");
+                leak(t);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "formal store-then-index must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_formal_push_then_index_print_is_not_export() {
+        let src = r#"
+            fn leak(s) {
+                let arr = [];
+                push(arr, s);
+                print(arr[0]);
+            }
+            fn f() {
+                let t = cap_acquire("fs.read");
+                leak(t);
+            }
+        "#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable formal push-then-index must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_lambda_store_then_project_print_is_export() {
+        // Free NE stored into local container inside lambda body, then projected.
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| {
+                let arr = [s];
+                print(arr[0]);
+            };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "lambda store-then-project free NE must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_lambda_push_then_project_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| {
+                let arr = [];
+                push(arr, s);
+                print(arr[0]);
+            };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "lambda push-then-project free NE must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_lambda_store_then_project_print_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let g = |x| {
+                let arr = [c];
+                print(arr[0]);
+            };
+            g(0);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable lambda store-then-project must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_project_bind_then_print_is_export() {
+        // Hostile A15: let x = arr[0]; print(x) must not launder NE.
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let arr = [s];
+            let x = arr[0];
+            print(x);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "project-bind then print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_formal_project_bind_then_print_is_export() {
+        let src = r#"
+            fn leak(s) {
+                let arr = [s];
+                let x = arr[0];
+                print(x);
+            }
+            fn f() {
+                let t = cap_acquire_nonexportable("fs.write");
+                leak(t);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "formal project-bind then print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_if_expr_store_then_index_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let arr = if true { [s] } else { [] };
+            print(arr[0]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "if-expr container store must EXPORT on project, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_formal_if_expr_store_then_index_print_is_export() {
+        let src = r#"
+            fn leak(s) {
+                let arr = if true { [s] } else { [] };
+                print(arr[0]);
+            }
+            fn f() {
+                let t = cap_acquire_nonexportable("fs.write");
+                leak(t);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "formal if-expr store must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_push_nested_place_then_print_is_export() {
+        // push(arrs[0], s) seeds root arrs; project must EXPORT.
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let arrs = [[]];
+            push(arrs[0], s);
+            print(arrs[0][0]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "push on nested place must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_project_bind_then_print_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let arr = [c];
+            let x = arr[0];
+            print(x);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable project-bind must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn ordinary_if_expr_store_then_index_print_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let arr = if true { [c] } else { [] };
+            print(arr[0]);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable if-expr store must not EXPORT, got {:?}",
+            codes(src, true)
+        );
     }
 }
