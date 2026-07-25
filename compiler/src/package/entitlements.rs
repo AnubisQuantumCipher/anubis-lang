@@ -295,21 +295,43 @@ pub fn derive_entitlement_profile(
     })
 }
 
-/// Render a minimal XML entitlements plist from the profile (byte-stable key order).
+/// Render a codesign-ready XML entitlements plist from the profile (byte-stable key order).
+///
+/// Boolean keys emit `<true/>`. `keychain-access-groups` emits a string array (Apple requires
+/// an array of group IDs, not a bare bool).
 pub fn entitlement_plist_xml(profile: &EntitlementProfile) -> String {
+    entitlement_plist_xml_with_team(profile, None)
+}
+
+/// Like [`entitlement_plist_xml`], but when `team_id` is set (e.g. `M454G64BS4`), emits
+/// `keychain-access-groups` as `["TEAMID.anubis.capability"]` for real codesign.
+pub fn entitlement_plist_xml_with_team(
+    profile: &EntitlementProfile,
+    team_id: Option<&str>,
+) -> String {
     let mut lines = vec![
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
         "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">".to_string(),
         "<plist version=\"1.0\">".to_string(),
         "<dict>".to_string(),
     ];
-    // Only emit boolean keys that are enabled (conservative codesign input).
     let mut enabled: Vec<&EntitlementKey> =
         profile.entitlements.iter().filter(|e| e.enabled).collect();
     enabled.sort_by(|a, b| a.key.cmp(&b.key));
     for e in enabled {
         lines.push(format!("\t<key>{}</key>", e.key));
-        lines.push("\t<true/>".to_string());
+        if e.key == "keychain-access-groups" {
+            // Array form required by codesign / Keychain ACL.
+            let group = match team_id {
+                Some(t) if !t.is_empty() => format!("{t}.anubis.capability"),
+                _ => "anubis.capability".to_string(),
+            };
+            lines.push("\t<array>".to_string());
+            lines.push(format!("\t\t<string>{group}</string>"));
+            lines.push("\t</array>".to_string());
+        } else {
+            lines.push("\t<true/>".to_string());
+        }
     }
     lines.push("</dict>".to_string());
     lines.push("</plist>".to_string());

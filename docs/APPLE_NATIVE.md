@@ -80,23 +80,35 @@ let e = cap_export(s, "audit reason");            // peel (string-literal reason
 print(e);                                         // OK after export
 ```
 
-Claimed: static non-exportable mint, export sinks, well-formed peel; macOS **runtime bind attempt**
-for `cap_acquire_nonexportable` (Keychain generic-password item by default; Secure Enclave EC key
-when `ANUBIS_KEYCHAIN_SE=1`); `keychain_se_probe` reports 0=soft / 1=keychain / 2=se; entitlement
-profile derives keychain-access-groups + secure-enclave keys when NE is present.
+Claimed:
 
-**Not claimed:** production SE isolation without codesign (`apple_enforced_claim` remains false);
-interprocedural sealedness beyond the sealed formal/container tables; guest zkVM Keychain (soft only).
+- Static non-exportable mint, export sinks, well-formed peel.
+- macOS runtime bind for `cap_acquire_nonexportable`:
+  - soft tokens always (`ANUBIS_KEYCHAIN_CAPS=0`)
+  - Keychain generic-password items (`__anubis_cap_ne_kc:…`) when bind succeeds
+  - Secure Enclave EC key handles (`__anubis_cap_ne_se:…`) when `ANUBIS_KEYCHAIN_SE=1` and hardware allows
+- **Signed run path:** `compile_sign_and_run_source` codesigns the lowered binary with
+  `resolve_codesign_identity()` (Apple Development when present) and safe CLI entitlements
+  (App Sandbox off; **no** restricted SE entitlement that AMFI-kills unsigned binaries).
+  Under a Development identity, NE mint yields `kc:` (proven unit).
+- Packaging profile still derives `keychain-access-groups` + `com.apple.developer.secure-enclave`
+  for `.app` codesign (still `apple_enforced_claim: false` until you ship a signed app).
+
+**Not claimed:** App Store / notarized distribution packaging; restricted SE entitlement under a
+provisioned app ID without human portal setup; zkVM guest Keychain (soft only).
 
 ```bash
-# Soft path (CI contract)
+# Soft path
 ANUBIS_KEYCHAIN_CAPS=0 anubis run prog.anb
 
-# Prefer Keychain bind (default on macOS native run)
+# Keychain bind (unsigned may soft-fallback; signed path prefers kc:)
 ANUBIS_KEYCHAIN_CAPS=1 anubis run prog.anb
 
-# Prefer Secure Enclave key handle when available
+# Optional SE attempt
 ANUBIS_KEYCHAIN_SE=1 anubis run prog.anb
+
+# Optional identity override for signed library path / gates
+export ANUBIS_CODESIGN_IDENTITY='Apple Development: you@example.com (XXXX)'
 
 bash scripts/run_keychain_se_gate.sh
 ```

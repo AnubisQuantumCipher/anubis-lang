@@ -4508,6 +4508,165 @@ lto = false
     )
 }
 
+/// Codesign a macOS binary with the given entitlements plist.
+/// `identity` is `"-"` for ad-hoc or an Apple Development identity name.
+#[cfg(target_os = "macos")]
+pub fn codesign_macos_binary(
+    exe: &std::path::Path,
+    entitlements_plist: &std::path::Path,
+    identity: &str,
+) -> Result<()> {
+    let out = std::process::Command::new("codesign")
+        .args([
+            "--force",
+            "--sign",
+            identity,
+            "--entitlements",
+        ])
+        .arg(entitlements_plist)
+        .arg(exe)
+        .output()
+        .map_err(|e| anyhow!("codesign spawn failed: {e}"))?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "ANUBIS_CODESIGN_FAILED: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Prefer `ANUBIS_CODESIGN_IDENTITY`, else first quoted `Apple Development: …` identity, else ad-hoc `"-"`.
+#[cfg(target_os = "macos")]
+pub fn resolve_codesign_identity() -> String {
+    if let Ok(id) = std::env::var("ANUBIS_CODESIGN_IDENTITY") {
+        if !id.trim().is_empty() {
+            return id.trim().to_string();
+        }
+    }
+    let out = std::process::Command::new("security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .output();
+    if let Ok(out) = out {
+        let s = String::from_utf8_lossy(&out.stdout);
+        for line in s.lines() {
+            // `  1) HASH "Apple Development: email (XXXX)"`
+            if !line.contains("Apple Development:") {
+                continue;
+            }
+            if let Some(start) = line.find('"') {
+                let rest = &line[start + 1..];
+                if let Some(end) = rest.find('"') {
+                    return rest[..end].to_string();
+                }
+            }
+        }
+    }
+    "-".to_string()
+}
+
+/// TeamIdentifier after signing (from `codesign -dvvv`). None for ad-hoc.
+#[cfg(target_os = "macos")]
+pub fn codesign_team_id_of(exe: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("codesign")
+        .args(["-dvvv"])
+        .arg(exe)
+        .output()
+        .ok()?;
+    // codesign writes details to stderr
+    let s = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("TeamIdentifier=") {
+            let t = rest.trim();
+            if t != "not set" && !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Minimal entitlements for signed CLI `anubis run` binaries.
+/// Restricted keys (e.g. `com.apple.developer.secure-enclave`) kill unsigned/ad-hoc processes
+/// under AMFI — omit them. App Sandbox is off (bare CLI, not a .app container).
+#[cfg(target_os = "macos")]
+pub fn signed_run_keychain_entitlements_xml() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.get-task-allow</key>
+	<true/>
+</dict>
+</plist>
+"#
+    .to_string()
+}
+
+/// Compile Anubis source → native binary → codesign with NE Keychain/SE entitlements → run.
+/// On non-macOS, falls back to unsigned `compile_and_run_source`.
+///
+/// Evidence for the signed Keychain bind path (partial SE when hardware + identity allow).
+pub fn compile_sign_and_run_source(
+    src: &str,
+    allow_research: bool,
+    args: &[String],
+) -> Result<std::process::Output> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return compile_and_run_source(src, allow_research, args);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ast = crate::frontend::parse_source(src)
+            .map_err(|e| anyhow!("parse failed: {e}"))?;
+        let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
+        let dir = std::env::temp_dir().join(format!("anubis-signed-run-{}", anubis_unique_suffix()));
+        std::fs::create_dir_all(&dir)?;
+        let exe = dir.join("anubis_run");
+        compile_native_rust_to_exe(&rust_source, &exe)?;
+
+        // Safe CLI entitlements (no restricted SE key — that AMFI-kills without provisioning).
+        let plist = signed_run_keychain_entitlements_xml();
+        let plist_path = dir.join("program.entitlements");
+        std::fs::write(&plist_path, &plist)?;
+        let identity = resolve_codesign_identity();
+        codesign_macos_binary(&exe, &plist_path, &identity)?;
+
+        // Prefer Keychain bind under signed identity.
+        // Do NOT set ANUBIS_KEYCHAIN_ACCESS_GROUP by default: login-keychain generic
+        // passwords work without an access group; a team-prefixed group requires an
+        // app id / provisioning match and soft-fails otherwise.
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args(args)
+            .stdin(std::process::Stdio::null())
+            .env("ANUBIS_KEYCHAIN_CAPS", "1")
+            .env_remove("ANUBIS_KEYCHAIN_ACCESS_GROUP");
+        if std::env::var_os("ANUBIS_KEYCHAIN_SE")
+            .map(|v| v != "0" && v != "false")
+            .unwrap_or(false)
+        {
+            cmd.env("ANUBIS_KEYCHAIN_SE", "1");
+        }
+        let _team = codesign_team_id_of(&exe); // available for forensics / future ACL slice
+        let capped = run_child_capped(cmd, resolved_run_timeout())
+            .map_err(|e| anyhow!("run spawn failed: {e}"))?;
+        if std::env::var_os("ANUBIS_KEEP_SIGNED_RUN").is_none() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        if capped.timed_out {
+            return Err(anyhow!("ANUBIS_RUN_TIMEOUT: signed program exceeded wall-clock budget"));
+        }
+        Ok(capped.output)
+    }
+}
+
 /// Compile lowered native Rust (with audited crypto) into `out_exe` via cargo.
 pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) -> Result<()> {
     let suffix = anubis_unique_suffix().replace('-', "_");
@@ -7094,5 +7253,44 @@ mod run_tests {
             stdout.contains("__anubis_cap:fs.read"),
             "exportable token missing: {stdout}"
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn keychain_se_signed_run_binds_keychain() {
+        // Signed compile→codesign(Apple Development)→run must mint a Keychain-backed NE token.
+        let out = compile_sign_and_run_source(
+            r#"fn main() {
+                let p = keychain_se_probe();
+                print(p);
+                let s = cap_acquire_nonexportable("fs.write");
+                print(s);
+            }"#,
+            false,
+            &[],
+        )
+        .expect("signed compile+run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "signed run failed:\nstdout={stdout}\nstderr={stderr}"
+        );
+        // Under a real Development identity, Keychain bind is expected (not soft).
+        // Ad-hoc-only hosts may soft-fallback — accept soft only when identity is "-".
+        let id = resolve_codesign_identity();
+        if id != "-" {
+            assert!(
+                stdout.contains("__anubis_cap_ne_kc:") || stdout.contains("__anubis_cap_ne_se:"),
+                "expected Keychain/SE bind under Development identity {id:?}, got: {stdout}"
+            );
+        } else {
+            assert!(
+                stdout.contains("__anubis_cap_ne_soft:")
+                    || stdout.contains("__anubis_cap_ne_kc:")
+                    || stdout.contains("__anubis_cap_ne_se:"),
+                "expected NE token: {stdout}"
+            );
+        }
     }
 }

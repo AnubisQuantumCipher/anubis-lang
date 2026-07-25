@@ -148,6 +148,7 @@ extern "C" {
     static kSecPrivateKeyAttrs: *const std::ffi::c_void;
     static kSecAttrAccessible: *const std::ffi::c_void;
     static kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly: *const std::ffi::c_void;
+    static kSecAttrAccessGroup: *const std::ffi::c_void;
 }
 
 #[cfg(target_os = "macos")]
@@ -223,18 +224,30 @@ fn anubis_kc_mint_keychain_account(kind: &str, account: &str) -> Result<String, 
             payload.as_ptr(),
             payload.len() as isize,
         );
-        let attrs = anubis_kc_dict(&[
+        // Optional access group from signed-run path (ANUBIS_KEYCHAIN_ACCESS_GROUP=TEAM.anubis.capability).
+        let group_env = std::env::var("ANUBIS_KEYCHAIN_ACCESS_GROUP").ok();
+        let group_cf = group_env
+            .as_ref()
+            .map(|g| anubis_kc_cfstr(g));
+        let mut pairs: Vec<(*const std::ffi::c_void, *const std::ffi::c_void)> = vec![
             (kSecClass, kSecClassGenericPassword),
             (kSecAttrService, service),
             (kSecAttrAccount, acct),
             (kSecValueData, data),
             (kSecAttrAccessible, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly),
-        ]);
+        ];
+        if let Some(g) = group_cf {
+            pairs.push((kSecAttrAccessGroup, g));
+        }
+        let attrs = anubis_kc_dict(&pairs);
         let status = SecItemAdd(attrs, std::ptr::null_mut());
         CFRelease(attrs);
         CFRelease(service);
         CFRelease(acct);
         CFRelease(data);
+        if let Some(g) = group_cf {
+            CFRelease(g);
+        }
         if status == errSecSuccess || status == errSecDuplicateItem {
             Ok(format!("__anubis_cap_ne_kc:{account}"))
         } else {
