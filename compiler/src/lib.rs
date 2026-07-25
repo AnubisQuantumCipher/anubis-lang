@@ -3323,6 +3323,72 @@ fn increment(x: i64) -> i64
         );
     }
 
+    /// Free×free `*` wrap-safety is skipped (native QF_BV hung on free smul encodings).
+    /// This only asserts we do not *emit* a wrap-safety obligation for free×free — not a full
+    /// `check_obligations` of free mul ensures (native can still be slow on free `bvmul` posts).
+    #[test]
+    fn wrap_safety_skips_free_mul_obligation() {
+        let src = r#"
+fn mul(x: i64, y: i64) -> i64
+    ensures(result == x * y)
+{
+    return x * y;
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        // Inspect obligations without solving: rebuild via typecheck only has solver_obligations
+        // populated after typecheck's internal check path… typecheck does push obligations.
+        let wrap: Vec<_> = ir
+            .solver_obligations
+            .iter()
+            .filter(|o| o.name.starts_with("wrap-safety:") && o.name.contains("*"))
+            .collect();
+        assert!(
+            wrap.is_empty(),
+            "must not emit free×free wrap-safety (hang risk): {wrap:?}"
+        );
+    }
+
+    /// variable × constant: wrap-safety uses a cheap range and must CEX when unbounded.
+    #[test]
+    fn wrap_safety_mul_by_const_flags_unbounded() {
+        let src = r#"
+fn mul2(x: i64) -> i64
+    ensures(result == x * 2)
+{
+    return x * 2;
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks.into_iter().filter(|c| c.status == "FAIL").collect();
+        assert!(
+            fails.iter().any(|c| c.name.starts_with("wrap-safety:")),
+            "x*2 unbounded must wrap-risk: {fails:?}"
+        );
+    }
+
+    /// `x + 0` never signed-wraps — wrap-safety must prove, not false-alarm.
+    #[test]
+    fn wrap_safety_add_zero_is_safe() {
+        let src = r#"
+fn f(x: i64) -> i64
+    ensures(result == x)
+{
+    return x + 0;
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks.iter().all(|c| c.status != "FAIL"),
+            "x+0 must not wrap-risk: {checks:?}"
+        );
+    }
+
     /// Float sat models must replay (pin FloatingPoint values), not false-fire REPLAY_MISMATCH.
     #[test]
     fn float_counterexample_replays_and_classifies_disproved() {

@@ -69,6 +69,10 @@ ANUBIS_WRAP_RISK: 1 integer operation(s) can wrap under free inputs …
 - **Opt out:** `ANUBIS_WRAP_SAFETY=0` (restore “wrap only, no automatic VC”).
 - **Bare** functions with **no** modeled params still **pass** (language wrap unchanged).
 - **Bounded** `requires(x < MAX)` + ensures → **check passed**.
+- **Ops covered:** signed `+` and `-` always (when operands modelable); `*` only for
+  **variable × constant** (cheap closed-form range). Free×free `*` is **skipped** —
+  free smul overflow encodings hung the native solver (2026-07-25 regression); not a
+  silent “proved safe,” just “not checked yet.”
 
 This is the honest dual of SPARK’s overflow check:
 

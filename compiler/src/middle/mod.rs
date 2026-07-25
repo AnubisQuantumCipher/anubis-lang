@@ -2400,20 +2400,67 @@ fn smt_bvssubo(x: &str, y: &str) -> String {
     )
 }
 
-/// Conservative signed multiply overflow: high half of full product differs from sign-extend of low.
-/// Uses 128-bit product encoding via concatenation of 64-bit muls — heavy but QF_BV-complete for
-/// free operands. For the common `var * small_const` case this still discharges or CEX-es cleanly.
-fn smt_bvsmulo(x: &str, y: &str) -> String {
-    // Overflow iff (x*y as i128) does not fit in i64:
-    // (or (and (bvsge x 0) (bvsge y 0) (bvugt (bvmul x y) #x7fff…)) …) is incomplete for mixed signs.
-    // Use: not ( (x==0) or (y==0) or (x*y)/x == y ) under signed div when x!=0 — but bvsdiv is costly.
-    // Practical QF_BV: smul_overflow via (bvsmul_no_overflow) equivalent:
-    // ((_ sign_extend 64) (bvmul x y)) != (bvmul ((_ sign_extend 64) x) ((_ sign_extend 64) y))
-    // — not available without 128-bit. Approximate with known safe cases + full check via:
-    format!(
-        "(not (or (= {x} (_ bv0 64)) (= {y} (_ bv0 64)) \
-         (and (distinct {x} (_ bv0 64)) (= (bvsdiv (bvmul {x} {y}) {x}) {y}))))"
-    )
+/// Parse a decimal integer literal expression for wrap-safety constant-factor mul.
+fn wrap_safety_const_i64(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Literal(s) => s.trim().parse::<i64>().ok(),
+        Expr::Unary { op, expr } if op == "-" => {
+            wrap_safety_const_i64(expr).and_then(|n| n.checked_neg())
+        }
+        _ => None,
+    }
+}
+
+/// Inclusive i64 range for `x` such that `x * c` does not signed-wrap.
+fn i64_mul_safe_range(c: i64) -> Option<(i64, i64)> {
+    if c == 0 || c == 1 {
+        return Some((i64::MIN, i64::MAX));
+    }
+    if c == -1 {
+        // MIN * -1 overflows; every other x is fine.
+        return Some((i64::MIN + 1, i64::MAX));
+    }
+    let c128 = c as i128;
+    let min_prod = i64::MIN as i128;
+    let max_prod = i64::MAX as i128;
+    // x must satisfy min_prod <= x*c <= max_prod (flip bounds when c < 0).
+    let (a, b) = if c128 > 0 {
+        (
+            div_ceil_i128(min_prod, c128),
+            div_floor_i128(max_prod, c128),
+        )
+    } else {
+        (
+            div_ceil_i128(max_prod, c128),
+            div_floor_i128(min_prod, c128),
+        )
+    };
+    if a > b {
+        return None;
+    }
+    let lo = a.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    let hi = b.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    Some((lo, hi))
+}
+
+fn div_floor_i128(a: i128, b: i128) -> i128 {
+    let q = a / b;
+    let r = a % b;
+    if r != 0 && (a < 0) != (b < 0) {
+        q - 1
+    } else {
+        q
+    }
+}
+
+fn div_ceil_i128(a: i128, b: i128) -> i128 {
+    let q = a / b;
+    let r = a % b;
+    if r != 0 && (a < 0) == (b < 0) {
+        q + 1
+    } else {
+        q
+    }
 }
 
 fn push_wrap_safety_binop(
@@ -2430,14 +2477,36 @@ fn push_wrap_safety_binop(
     }
     let lx = expr_to_smt(lhs, &ctx.symbolic_widths);
     let rx = expr_to_smt(rhs, &ctx.symbolic_widths);
-    let overflow = match op {
-        "+" => smt_bvsaddo(&lx, &rx),
-        "-" => smt_bvssubo(&lx, &rx),
-        "*" => smt_bvsmulo(&lx, &rx),
+    // Assertion = "this op does NOT signed-wrap" (proved or CEX).
+    let assertion = match op {
+        "+" => format!("(not {})", smt_bvsaddo(&lx, &rx)),
+        "-" => format!("(not {})", smt_bvssubo(&lx, &rx)),
+        "*" => {
+            // Free×free smul is intentionally skipped (native QF_BV hung on bvsdiv / 128-bit
+            // product encodings, 2026-07-25). Variable×constant uses a cheap closed-form range.
+            let (var_smt, c) = match (wrap_safety_const_i64(lhs), wrap_safety_const_i64(rhs)) {
+                (Some(_), Some(_)) => return, // pure constant — fold elsewhere
+                (Some(c), None) => (rx.clone(), c),
+                (None, Some(c)) => (lx.clone(), c),
+                (None, None) => return, // free×free: skip (no hang)
+            };
+            if c == 0 || c == 1 {
+                return; // *0 / *1 never signed-wrap
+            }
+            match i64_mul_safe_range(c) {
+                None => "false".to_string(), // no x makes c*x fit — always wrap
+                Some((lo, hi)) if lo == i64::MIN && hi == i64::MAX => return,
+                Some((lo, hi)) => {
+                    let lo_u = lo as u64;
+                    let hi_u = hi as u64;
+                    format!(
+                        "(and (bvsge {var_smt} (_ bv{lo_u} 64)) (bvsle {var_smt} (_ bv{hi_u} 64)))"
+                    )
+                }
+            }
+        }
         _ => return,
     };
-    // Prove NO overflow: assertion = not overflow.
-    let assertion = format!("(not {overflow})");
     let key = format!("{op}:{lx}:{rx}");
     if !seen.insert(key) {
         return;
@@ -8338,6 +8407,12 @@ fn suggest_requires_from_model(model: &str) -> Vec<String> {
             out.push(format!(
                 "requires({display} >= 0)  // excludes counterexample {display}=-1"
             ));
+        } else if i == (1i64 << 62) || u == (1u64 << 62) {
+            // Common wrap CEX for `x * 2` (and similar half-range factors).
+            out.push(format!(
+                "requires({display} < {})  // excludes wrap-prone half-range CEX",
+                1i64 << 62
+            ));
         }
         // Deliberately do NOT suggest `!= 0` for every zero witness — too noisy for multi-var models.
     }
@@ -10493,6 +10568,11 @@ fn collect_vars_from_smt(smt: &str, vars: &mut BTreeSet<String>) {
                     | "define"
                     | "fun"
                     | "_"
+                    // Used by wrap-safety smul overflow (128-bit product encoding).
+                    | "extract"
+                    | "sign_extend"
+                    | "zero_extend"
+                    | "distinct"
             )
         {
             continue;
