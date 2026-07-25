@@ -278,7 +278,10 @@ fn deliberate(initial: i64, stimuli: list, max_cycles: i64) -> Certificate
         let prev = state;
         let mut total = 0;
         for s in stimuli {
-            let r = clamp(s * 3, 0, 999);
+            // Clamp before scale so free list elements cannot wrap on `* 3`
+            // (wrap-safety models for-bound ints; `s * 3` under free s is WRAP_RISK).
+            let s_safe = clamp(s, 0, 333);
+            let r = s_safe * 3;
             total = total + r
         }
         let mean = if n > 0 { total / n } else { 0 };
