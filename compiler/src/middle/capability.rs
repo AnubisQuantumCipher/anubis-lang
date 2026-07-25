@@ -42,7 +42,7 @@
 //! without `cap_export` causes the call site to treat the corresponding arg as an export check.
 //! Closure capture of caps and deep HO rebind remain residual.
 
-use crate::frontend::{Expr, ForSource, Stmt};
+use crate::frontend::{Expr, ForSource, Pattern, Stmt};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Exportable capability constructor (unforgeable: nothing else mints a tracked token).
@@ -600,8 +600,11 @@ fn is_export_sink(callee: &str) -> bool {
     EXPORT_SINKS.contains(&callee)
 }
 
-/// If `expr` is a bare var naming a Live non-exportable token, or a call of a function that
-/// returns non-exportable, fire EXPORT (does not consume).
+/// If `expr` names a Live non-exportable token (directly or nested in a value-position
+/// aggregate), or is a call of a function that returns non-exportable, fire EXPORT
+/// (does not consume). Peels list/tuple, struct, map, enum, if/match/block tails so
+/// `print((s, 1))` / `print([s])` / `print(Box { c: s })` cannot launder past a bare-var
+/// check. Index/field *after* a prior store remains residual (tracking lost on consume).
 fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
     match expr {
         Expr::Var(name) => {
@@ -616,6 +619,47 @@ fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                 && lin.summary.returns_nonexportable.contains(callee) =>
         {
             lin.export(callee);
+        }
+        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+            for e in elements {
+                check_export_arg(e, caps, lin);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                check_export_arg(e, caps, lin);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (_, v) in entries {
+                check_export_arg(v, caps, lin);
+            }
+        }
+        Expr::If {
+            then, else_, ..
+        } => {
+            check_export_arg(then, caps, lin);
+            check_export_arg(else_, caps, lin);
+        }
+        Expr::IfLet {
+            then, else_, ..
+        } => {
+            check_export_arg(then, caps, lin);
+            check_export_arg(else_, caps, lin);
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                check_export_arg(&arm.body, caps, lin);
+            }
+        }
+        Expr::Block { tail, .. } => {
+            if let Some(t) = tail {
+                check_export_arg(t, caps, lin);
+            }
+        }
+        // Grouping / unary wrappers that preserve a value position.
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
+            check_export_arg(expr, caps, lin);
         }
         _ => {}
     }
@@ -815,9 +859,32 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
     match stmt {
         Stmt::Let { name, init, .. } => rebind(name, init, caps, lin),
         Stmt::LetPattern { pattern, init, .. } => {
-            walk_expr(init, caps, lin);
-            for n in pattern.bound_names() {
-                caps.remove(&n); // destructured bindings are not capabilities
+            // Positional list/tuple destructure: MOVE each Binding element the same way
+            // `let a = s` would (so NE sealedness survives `let (a, _) = (s, 1)`).
+            // Nested / non-list patterns stay residual: walk init and drop tracking.
+            match (pattern, init) {
+                (Pattern::List(pats), Expr::ArrayLiteral { elements })
+                    if pats.iter().all(|p| {
+                        matches!(p, Pattern::Binding(_) | Pattern::Wildcard)
+                    }) =>
+                {
+                    for (i, p) in pats.iter().enumerate() {
+                        match (p, elements.get(i)) {
+                            (Pattern::Binding(name), Some(e)) => rebind(name, e, caps, lin),
+                            (Pattern::Wildcard, Some(e)) => walk_expr(e, caps, lin),
+                            _ => {}
+                        }
+                    }
+                    for e in elements.iter().skip(pats.len()) {
+                        walk_expr(e, caps, lin);
+                    }
+                }
+                _ => {
+                    walk_expr(init, caps, lin);
+                    for n in pattern.bound_names() {
+                        caps.remove(&n);
+                    }
+                }
             }
         }
         Stmt::Assign { target, value } => {
@@ -1219,7 +1286,9 @@ fn walk_export_seals(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
 fn walk_export_seals_stmts(stmts: &[Stmt], caps: &CapMap, lin: &mut Lin) {
     for s in stmts {
         match s {
-            Stmt::Let { init, .. } | Stmt::Assign { value: init, .. } => {
+            Stmt::Let { init, .. }
+            | Stmt::Assign { value: init, .. }
+            | Stmt::LetPattern { init, .. } => {
                 walk_export_seals(init, caps, lin);
             }
             Stmt::ExprStmt(e) => walk_export_seals(e, caps, lin),
@@ -1706,6 +1775,76 @@ fn f() { let y = send(3); }"#;
         assert!(
             codes(src, true).is_empty(),
             "exportable mint in while must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_tuple_arg_to_print_is_export() {
+        // Aggregate peel: print((s, 1)) must not launder past bare-var check.
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            print((s, 1));
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "tuple-wrapped NE print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_list_literal_arg_to_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            print([s]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "list-wrapped NE print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_let_pattern_move_print_is_export() {
+        // Positional destructure MOVE: let (a, _) = (s, 1); print(a)
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let (a, b) = (s, 1);
+            print(a);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "LetPattern move of NE must keep sealedness, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_tuple_arg_to_print_is_not_export() {
+        // Clean dual: exportable mint may appear inside aggregate args.
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            print((c, 1));
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable mint in tuple must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn ordinary_let_pattern_move_print_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let (a, b) = (c, 1);
+            print(a);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable LetPattern move must not EXPORT, got {:?}",
             codes(src, true)
         );
     }
