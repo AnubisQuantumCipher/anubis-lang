@@ -79,7 +79,9 @@ ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
 
 Fix it — subtract only where it can't underflow — and the **same solver proves the fix correct**. That counterexample is the evidence: [`examples/showcase/ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb).
 
-> **Honest boundary.** Anubis's `u32` is a bounded 64-bit integer with *signed* arithmetic, so the failure it proves is "the count goes below zero," not "wraps to 4 billion" — the same bug, stated in the language's real semantics. An obligation the solver cannot decide within budget also **fails closed** (undecided ≠ proved).
+**Wrap-safety (Anubis AoRTE-lite).** When the checker already models your integer params, it also proves that `+`/`-`/`*` cannot *signed-wrap* under free inputs — or it fails with `ANUBIS_WRAP_RISK`, the concrete witness, and a paste-ready `possible fix: requires(x < …)`. That is SPARK’s overflow story with Anubis counterexamples. Opt out: `ANUBIS_WRAP_SAFETY=0`. Honest SPARK comparison: [`docs/SPARK_VS_ANUBIS.md`](docs/SPARK_VS_ANUBIS.md).
+
+> **Honest boundary.** Anubis's `u32` is a bounded 64-bit integer with *signed* arithmetic, so the failure it proves is "the count goes below zero," not "wraps to 4 billion" — the same bug, stated in the language's real semantics. An obligation the solver cannot decide within budget also **fails closed** (undecided ≠ proved). Runtime still **wraps** unless you bound inputs.
 
 ---
 
