@@ -37,8 +37,8 @@ any Apple artifact from Anubis source.
 - CoreML or Neural Engine model execution.
 - ZirOS verified Metal Lean/Verus proof artifacts carried into Anubis.
 - iCloud Drive artifact lifecycle or Keychain-backed key management.
-- Keychain / Secure Enclave–backed linear capability tokens (named residual after the
-  entitlement-profile spine).
+- Keychain / Secure Enclave **hardware** binding of linear capability tokens (static
+  non-exportable mint/export is shipped; SE isolation is residual).
 
 ## Effect-derived entitlement profile
 
@@ -66,7 +66,22 @@ What is **not** claimed (residual honesty):
   entitlements and App Sandbox enablement (`needs_human`).
 - Toolchain VZ entitlement (`com.apple.security.virtualization`) is intentionally **not**
   mixed into the language-derived app profile.
-- Path-level sandbox allow-lists and Keychain/SE-backed linear caps are residuals.
+- Path-level sandbox allow-lists are residual.
+
+## Non-exportable linear capabilities (static)
+
+Language-level dual of “secrets do not leave” for **authority tokens**:
+
+```text
+let s = cap_acquire_nonexportable("fs.write");  // may authorize by causal spend
+send("h", 80, "payload");                         // OK if kind matches (token not an arg)
+print(s);                                         // ANUBIS_CAPABILITY_EXPORT
+let e = cap_export(s, "audit reason");            // peel (string-literal reason)
+print(e);                                         // OK after export
+```
+
+Claimed: static non-exportable mint, export sinks, well-formed peel.  
+**Not claimed:** Keychain item create/lookup, Secure Enclave hardware isolation, interprocedural sealedness.
 
 ## Capability Command
 

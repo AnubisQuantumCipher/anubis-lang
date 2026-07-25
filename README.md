@@ -200,6 +200,7 @@ Status: ✅ **real** (implemented + gated) · 🟡 **partial** (real slices, hon
 |---|---|---|
 | **Effect-derived confinement** | ✅ | `anubis vz confine <program>` derives an Apple Virtualization isolation manifest **from the program's proven effect set** — a second boundary consistent-*by-construction* with `anubis check`, sealed into evidence bundles and **re-derived on verify** (a forged grant fails closed) |
 | **Effect-derived entitlement profile** | ✅ | `anubis entitlements <program>` derives a macOS App Sandbox / entitlement profile from the **same** proven effect set; sealed + re-derived on verify. **Derived profile, not enforced until signed** (`apple_enforced_claim: false`) |
+| **Non-exportable linear caps (static)** | ✅ | `cap_acquire_nonexportable` + `cap_export`; token cannot flow as data to public sinks without release; causal spend still works. Keychain/SE hardware **not claimed** |
 | **VM lifecycle (tart lane)** | ✅ | `anubis vz` create / boot / exec / snapshot / stop / delete — the full Virtualization.framework lifecycle behind one CLI, on Apple Silicon |
 | **Native VZ backend** | 🟡 | a direct `objc2-virtualization` binding (`vz native-preflight`): a proven-net-free program gets a **true zero-NIC air-gap** (0 network devices, hypervisor-enforced); per-hostname egress is substrate-staged. Needs one **unrestricted** entitlement, applied by a **local ad-hoc signature** — `scripts/build_signed_anubis.sh`, **no Apple Developer account** ([details](docs/APPLE_NATIVE.md#code-signing--the-do-i-need-an-apple-developer-account-question)) |
 
