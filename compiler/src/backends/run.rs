@@ -613,11 +613,29 @@ fn lower_program_with_entry(
     } else {
         ANUBIS_AUDITED_CRYPTO_RS.to_string()
     };
+    // Keychain/SE runtime is native-only (Security.framework). RISC0 guest keeps soft tokens.
+    let keychain_se = if guest_proof_inputs {
+        // Guest: soft nonexportable mint only (no Security.framework in zkVM).
+        r#"
+fn anubis_keychain_se_probe() -> AnubisValue { AnubisValue::Int(0) }
+fn anubis_cap_acquire(kind: AnubisValue) -> AnubisValue {
+    anubis_mk_str(format!("__anubis_cap:{}", kind.display_string()))
+}
+fn anubis_cap_acquire_nonexportable(kind: AnubisValue) -> AnubisValue {
+    anubis_mk_str(format!("__anubis_cap_ne_soft:{}", kind.display_string()))
+}
+fn anubis_cap_export(cap: AnubisValue, _reason: AnubisValue) -> AnubisValue { cap }
+"#
+        .to_string()
+    } else {
+        ANUBIS_KEYCHAIN_SE_RS.to_string()
+    };
     Ok(format!(
-        "{header}{prelude}\n{core}\n{crypto}\n{poc}\n{proof}\n{functions}\n{entry}",
+        "{header}{prelude}\n{core}\n{keychain}\n{crypto}\n{poc}\n{proof}\n{functions}\n{entry}",
         header = "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\n",
         prelude = prelude,
         core = ANUBIS_CORE_RUNTIME_RS,
+        keychain = keychain_se,
         crypto = crypto_runtime,
         poc = poc_kit_runtime,
         proof = proof_input_runtime,
@@ -632,6 +650,8 @@ const ANUBIS_PURE_CRYPTO_RS: &str = include_str!("pure_crypto_runtime.inc.rs");
 const ANUBIS_PASSWORD_CRYPTO_PURE_RS: &str = include_str!("password_crypto_runtime.inc.rs");
 /// Native `anubis run`: audited crates only (argon2, chacha20poly1305, hmac, sha2, hkdf, …).
 const ANUBIS_AUDITED_CRYPTO_RS: &str = include_str!("audited_crypto_runtime.inc.rs");
+/// Keychain / Secure Enclave bind for non-exportable caps (macOS; soft fallback elsewhere).
+const ANUBIS_KEYCHAIN_SE_RS: &str = include_str!("keychain_se_runtime.inc.rs");
 
 /// The Anubis runtime value model + operator helpers, shared by native `run` and RISC0
 /// guest lowering. Emitted verbatim into every generated Rust program.
@@ -1621,16 +1641,7 @@ fn anubis_delete_file(path: AnubisValue) -> AnubisValue {
         Err(e) => panic!("ANUBIS_IO_ERROR: delete_file({}): {}", p, e),
     }
 }
-/// Mint a linear capability token (verified-lane authority). Runtime token is an opaque string;
-/// use-once / unforgeability is enforced by `anubis check --verified` (middle/capability.rs).
-fn anubis_cap_acquire(kind: AnubisValue) -> AnubisValue {
-    anubis_mk_str(format!("__anubis_cap:{}", kind.display_string()))
-}
-/// Language-level peel of non_exportable (static check); runtime is identity on the token.
-/// Keychain/SE hardware residual not claimed.
-fn anubis_cap_export(cap: AnubisValue, _reason: AnubisValue) -> AnubisValue {
-    cap
-}
+// Capability mint/export/Keychain-SE bind: see keychain_se_runtime.inc.rs (injected after core).
 
 /// Consume a capability token. Linearity is checked at `check --verified`; runtime is the
 /// authorized use-once sink so programs with caps lower and execute.
@@ -2773,6 +2784,7 @@ pub fn is_builtin_name(name: &str) -> bool {
                 | "cap_acquire_nonexportable"
                 | "cap_export"
                 | "cap_use"
+                | "keychain_se_probe"
                 | "secret_source"
         )
         || is_proof_input_builtin(name)
@@ -3105,11 +3117,13 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "append_file" => fixed("anubis_append_file", callee, args, 2),
         "delete_file" | "remove_file" => fixed("anubis_delete_file", callee, args, 1),
         "open" => fixed("anubis_open", callee, args, 1),
-        // Verified-lane linear capabilities + confidentiality mint — now fully executable
-        "cap_acquire" | "cap_acquire_nonexportable" => fixed("anubis_cap_acquire", callee, args, 1),
-        // Language-level peel of non_exportable (static check); runtime is a no-op identity on the token.
+        // Verified-lane linear capabilities + confidentiality mint — fully executable.
+        // nonexportable uses Keychain/SE bind on macOS (see keychain_se_runtime.inc.rs).
+        "cap_acquire" => fixed("anubis_cap_acquire", callee, args, 1),
+        "cap_acquire_nonexportable" => fixed("anubis_cap_acquire_nonexportable", callee, args, 1),
         "cap_export" => fixed("anubis_cap_export", callee, args, 2),
         "cap_use" => fixed("anubis_cap_use", callee, args, 1),
+        "keychain_se_probe" => fixed("anubis_keychain_se_probe", callee, args, 0),
         "secret_source" => fixed("anubis_secret_source", callee, args, 1),
         // Cryptography (SHA-256 / HMAC-SHA256) — pure std in emitted runtime
         // Cryptography — RWC-aligned surface (pure embedded runtime; no cargo deps in `anubis run`)
@@ -7036,6 +7050,49 @@ mod run_tests {
                 let _ = http_get("ftp://example.com/");
             }"#,
             "ANUBIS_IO_ERROR",
+        );
+    }
+
+    #[test]
+    fn keychain_se_probe_and_ne_acquire_run() {
+        // Soft path (opt-out of Keychain) must always run.
+        // SAFETY: test-only env override for deterministic soft tokens.
+        unsafe {
+            std::env::set_var("ANUBIS_KEYCHAIN_CAPS", "0");
+            std::env::set_var("ANUBIS_KEYCHAIN_SE", "0");
+        }
+        let out = compile_and_run_source(
+            r#"fn main() {
+                let p = keychain_se_probe();
+                print(p);
+                let s = cap_acquire_nonexportable("fs.write");
+                print(s);
+                let c = cap_acquire("fs.read");
+                print(c);
+            }"#,
+            false,
+            &[],
+        )
+        .expect("compile+run soft keychain path");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains('0') || stdout.contains('1') || stdout.contains('2'),
+            "probe line missing: {stdout}"
+        );
+        assert!(
+            stdout.contains("__anubis_cap_ne_soft:")
+                || stdout.contains("__anubis_cap_ne_kc:")
+                || stdout.contains("__anubis_cap_ne_se:"),
+            "ne token missing: {stdout}"
+        );
+        assert!(
+            stdout.contains("__anubis_cap:fs.read"),
+            "exportable token missing: {stdout}"
         );
     }
 }

@@ -36,9 +36,9 @@ any Apple artifact from Anubis source.
 - A real UMPG scheduler/executor inside Anubis.
 - CoreML or Neural Engine model execution.
 - ZirOS verified Metal Lean/Verus proof artifacts carried into Anubis.
-- iCloud Drive artifact lifecycle or Keychain-backed key management.
-- Keychain / Secure Enclave **hardware** binding of linear capability tokens (static
-  non-exportable mint/export is shipped; SE isolation is residual).
+- iCloud Drive artifact lifecycle (sync / multi-device).
+- **Production** Secure Enclave isolation of linear caps under a signed App Sandbox identity
+  (runtime Keychain/SE *attempt* is shipped — see below; soft-fallback when unsigned).
 
 ## Effect-derived entitlement profile
 
@@ -80,8 +80,26 @@ let e = cap_export(s, "audit reason");            // peel (string-literal reason
 print(e);                                         // OK after export
 ```
 
-Claimed: static non-exportable mint, export sinks, well-formed peel.  
-**Not claimed:** Keychain item create/lookup, Secure Enclave hardware isolation, interprocedural sealedness.
+Claimed: static non-exportable mint, export sinks, well-formed peel; macOS **runtime bind attempt**
+for `cap_acquire_nonexportable` (Keychain generic-password item by default; Secure Enclave EC key
+when `ANUBIS_KEYCHAIN_SE=1`); `keychain_se_probe` reports 0=soft / 1=keychain / 2=se; entitlement
+profile derives keychain-access-groups + secure-enclave keys when NE is present.
+
+**Not claimed:** production SE isolation without codesign (`apple_enforced_claim` remains false);
+interprocedural sealedness beyond the sealed formal/container tables; guest zkVM Keychain (soft only).
+
+```bash
+# Soft path (CI contract)
+ANUBIS_KEYCHAIN_CAPS=0 anubis run prog.anb
+
+# Prefer Keychain bind (default on macOS native run)
+ANUBIS_KEYCHAIN_CAPS=1 anubis run prog.anb
+
+# Prefer Secure Enclave key handle when available
+ANUBIS_KEYCHAIN_SE=1 anubis run prog.anb
+
+bash scripts/run_keychain_se_gate.sh
+```
 
 ## Capability Command
 

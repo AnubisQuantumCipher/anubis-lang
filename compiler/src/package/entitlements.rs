@@ -14,10 +14,10 @@
 //! - Under-grant: prefer denying network / file / exec when the mapping is ambiguous.
 //! - Toolchain VZ entitlements (`com.apple.security.virtualization`) are **not** mixed into the
 //!   language-derived app profile.
-//! - Keychain / Secure Enclave–backed linear caps are a **permanent residual** of this
-//!   profile: Anubis claims static non-exportable + causal spend only. Binding a live
-//!   Keychain/SE item as the linear token is out of the language TCB and is **not**
-//!   planned as a silent default claim (would require signed host + SE attestation).
+//! - Keychain / Secure Enclave: runtime may *attempt* bind for `cap_acquire_nonexportable`
+//!   on macOS (`keychain_se_runtime.inc.rs`). This profile now **derives** keychain-related
+//!   keys when NE is present. Host enforcement still requires codesign
+//!   (`apple_enforced_claim: false`); SE attestation of a production app is residual.
 
 use crate::frontend::parse_source;
 use crate::package::merkle;
@@ -80,6 +80,12 @@ pub struct EntitlementProfile {
     pub notes: Vec<String>,
 }
 
+/// True when source mentions the non-exportable capability mint (string scan is enough for
+/// entitlement derivation; the checker remains the sealedness authority).
+fn source_uses_nonexportable_cap(source: &str) -> bool {
+    source.contains("cap_acquire_nonexportable")
+}
+
 /// Derive the entitlement / sandbox profile from source. Parse failure → Err, no profile.
 pub fn derive_entitlement_profile(
     package: &str,
@@ -94,6 +100,7 @@ pub fn derive_entitlement_profile(
 
     let has = |c: &str| caps.contains(c);
     let effects_bounded = !open;
+    let uses_ne_caps = source_uses_nonexportable_cap(source);
 
     // Restrictive defaults when unbounded or capability absent.
     let net_client = !open && has("net.send");
@@ -173,6 +180,26 @@ pub fn derive_entitlement_profile(
         });
     }
 
+    // Non-exportable caps → derive keychain-access posture (still not OS-enforced until signed).
+    if uses_ne_caps {
+        entitlements.push(EntitlementKey {
+            key: "keychain-access-groups".into(),
+            enabled: true,
+            reason: "cap_acquire_nonexportable present — runtime may bind NE tokens to Keychain/SE; \
+                     access-group must match codesign identity (needs_human)"
+                .into(),
+            apple_enforced_claim: false,
+        });
+        entitlements.push(EntitlementKey {
+            key: "com.apple.developer.secure-enclave".into(),
+            enabled: true,
+            reason: "cap_acquire_nonexportable present — SE path when ANUBIS_KEYCHAIN_SE=1 and \
+                     hardware/entitlements allow (soft fallback otherwise)"
+                .into(),
+            apple_enforced_claim: false,
+        });
+    }
+
     // Sort entitlements by key for byte-stable JSON (PartialEq on re-derive).
     entitlements.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -191,11 +218,18 @@ pub fn derive_entitlement_profile(
         "apple_enforced_claim is false on every key: derivation is not host enforcement".to_string(),
         "toolchain VZ entitlement com.apple.security.virtualization is intentionally absent from this app profile"
             .to_string(),
-        "PERMANENT RESIDUAL: Keychain / Secure Enclave–backed linear capabilities are not \
-         claimed — language TCB is static non-exportable + causal spend only; SE item bind \
-         requires host signing + attestation outside this profile"
+        "Keychain/SE: runtime may bind cap_acquire_nonexportable on macOS (kc:/se: tokens); \
+         production SE isolation still needs codesign + access groups + operator attestation \
+         (not claimed by derivation alone)"
             .to_string(),
     ];
+    if uses_ne_caps {
+        needs_human.push(
+            "non-exportable caps: codesign with keychain-access-groups and (if SE) \
+             com.apple.developer.secure-enclave; unsigned CLI may soft-fallback"
+                .to_string(),
+        );
+    }
     if open {
         sandbox_notes.push(
             "effects UNBOUNDED — network/file/exec all denied (fail-closed on minimum knowledge)"
@@ -408,6 +442,37 @@ mod tests {
             verify_entitlement_profile_matches_source(src, &forged).is_err(),
             "forged network.client on net-free source must fail closed (ANUBIS_ENTITLEMENT_DRIFT)"
         );
+    }
+
+    #[test]
+    fn nonexportable_cap_derives_keychain_and_se_keys() {
+        let src = r#"fn main() {
+            let s = cap_acquire_nonexportable("fs.write");
+            cap_use(s);
+        }
+"#;
+        let m = derive_entitlement_profile("pkg", "0.0.0", src).unwrap();
+        let kc = m
+            .entitlements
+            .iter()
+            .find(|e| e.key == "keychain-access-groups")
+            .expect("keychain-access-groups");
+        assert!(kc.enabled);
+        assert!(!kc.apple_enforced_claim);
+        let se = m
+            .entitlements
+            .iter()
+            .find(|e| e.key == "com.apple.developer.secure-enclave")
+            .expect("secure-enclave key");
+        assert!(se.enabled);
+        assert!(!se.apple_enforced_claim);
+        // Net-free NE program must not invent network.client.
+        let net = m
+            .entitlements
+            .iter()
+            .find(|e| e.key == "com.apple.security.network.client")
+            .unwrap();
+        assert!(!net.enabled);
     }
 
     #[test]
