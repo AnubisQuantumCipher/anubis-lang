@@ -618,6 +618,7 @@ fn lower_program_with_entry(
         // Guest: soft nonexportable mint only (no Security.framework in zkVM).
         r#"
 fn anubis_keychain_se_probe() -> AnubisValue { AnubisValue::Int(0) }
+fn anubis_keychain_se_last_bind() -> AnubisValue { anubis_mk_str("soft".to_string()) }
 fn anubis_cap_acquire(kind: AnubisValue) -> AnubisValue {
     anubis_mk_str(format!("__anubis_cap:{}", kind.display_string()))
 }
@@ -2785,6 +2786,7 @@ pub fn is_builtin_name(name: &str) -> bool {
                 | "cap_export"
                 | "cap_use"
                 | "keychain_se_probe"
+                | "keychain_se_last_bind"
                 | "secret_source"
         )
         || is_proof_input_builtin(name)
@@ -3124,6 +3126,7 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "cap_export" => fixed("anubis_cap_export", callee, args, 2),
         "cap_use" => fixed("anubis_cap_use", callee, args, 1),
         "keychain_se_probe" => fixed("anubis_keychain_se_probe", callee, args, 0),
+        "keychain_se_last_bind" => fixed("anubis_keychain_se_last_bind", callee, args, 0),
         "secret_source" => fixed("anubis_secret_source", callee, args, 1),
         // Cryptography (SHA-256 / HMAC-SHA256) — pure std in emitted runtime
         // Cryptography — RWC-aligned surface (pure embedded runtime; no cargo deps in `anubis run`)

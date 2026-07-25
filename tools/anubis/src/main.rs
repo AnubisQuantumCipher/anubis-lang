@@ -14,8 +14,8 @@ mod vz_native;
 use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
-        compile_native_rust_to_exe, lower_program_to_guest, lower_program_to_rust,
-        resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
+        compile_native_rust_to_exe, compile_sign_and_run_source, lower_program_to_guest,
+        lower_program_to_rust, resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, generate_keypair, pca_signature_status,
@@ -260,6 +260,12 @@ enum Commands {
         /// Verification lane (Phase-3 C5): require `uses(...)` for capability I/O before run.
         #[arg(long)]
         verified: bool,
+
+        /// macOS: codesign the lowered binary (Apple Development when available) and prefer
+        /// Keychain bind for `cap_acquire_nonexportable` (`kc:` tokens). Uses safe CLI
+        /// entitlements (App Sandbox off). On non-macOS this is a no-op.
+        #[arg(long)]
+        sign: bool,
 
         /// Proof inputs as a JSON object — the SAME format `prove --input-json` takes, e.g. '{"n":5}'.
         /// So a program that both runs natively AND proves uses ONE input format for both commands.
@@ -4026,6 +4032,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             json,
             allow_research,
             verified,
+            sign,
             input_json,
             input_file,
             args,
@@ -4043,6 +4050,11 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 typecheck_ex(ast, mode, true)
                     .map_err(|e| anyhow!("verified check failed: {}", e))?;
             }
+            // Auto-sign on macOS when program uses non-exportable caps (Keychain bind path).
+            let want_sign = sign
+                || (cfg!(target_os = "macos")
+                    && src.contains("cap_acquire_nonexportable")
+                    && std::env::var_os("ANUBIS_RUN_NO_SIGN").is_none());
             // Proof-input ergonomics: resolve the SAME JSON surface `prove` accepts (--input-json /
             // --input-file) through the identical canonicalizing path, then hand it to the run child as
             // the native ANUBIS_PROOF_INPUTS env — so a program that both runs and proves has ONE input
@@ -4054,14 +4066,25 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 )?;
                 proof_inputs_env_string(&pin.values)?
             };
-            let outcome = run_anubis_source(
-                &input,
-                &src,
-                &out,
-                allow_research,
-                &args,
-                proof_env.as_deref(),
-            )?;
+            let outcome = if want_sign {
+                run_anubis_source_signed(
+                    &input,
+                    &src,
+                    &out,
+                    allow_research,
+                    &args,
+                    proof_env.as_deref(),
+                )?
+            } else {
+                run_anubis_source(
+                    &input,
+                    &src,
+                    &out,
+                    allow_research,
+                    &args,
+                    proof_env.as_deref(),
+                )?
+            };
             if evidence {
                 write_run_evidence(&out, &outcome)?;
             }
@@ -5136,6 +5159,75 @@ fn proof_inputs_env_string(
             .collect::<Vec<_>>()
             .join(","),
     ))
+}
+
+/// Signed macOS path: codesign lowered binary + prefer Keychain for NE caps.
+/// Falls back to unsigned run on non-macOS.
+fn run_anubis_source_signed(
+    input: &Path,
+    source: &str,
+    out: &Path,
+    allow_research: bool,
+    args: &[String],
+    proof_inputs_env: Option<&str>,
+) -> Result<RunOutcome> {
+    let (ast, _ws) = load_program_items(input, source)?;
+    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    if !matches!(mode, Mode::Safe) && !allow_research {
+        return Err(anyhow!(
+            "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
+        ));
+    }
+    let _typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+    std::fs::create_dir_all(out)?;
+    let rs_path = out.join("anubis_run.rs");
+    let exe_path = out.join("anubis_run");
+
+    #[cfg(target_os = "macos")]
+    {
+        eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
+        let rust_source = lower_program_to_rust(&ast.items, allow_research)
+            .map_err(|e| anyhow!("{e}"))?;
+        let _ = std::fs::write(&rs_path, &rust_source);
+        if let Some(pin) = proof_inputs_env {
+            // SAFETY: process-local env for child inherit of proof inputs.
+            unsafe { std::env::set_var("ANUBIS_PROOF_INPUTS", pin) };
+        }
+        let output = compile_sign_and_run_source(source, allow_research, args)
+            .map_err(|e| anyhow!("{e}"))?;
+        if proof_inputs_env.is_some() {
+            unsafe { std::env::remove_var("ANUBIS_PROOF_INPUTS") };
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let _ = std::fs::write(
+            out.join("signed_run.json"),
+            serde_json::json!({
+                "signed": true,
+                "keychain_caps": true,
+                "exit_code": output.status.code(),
+                "stdout": stdout,
+                "stderr": stderr,
+            })
+            .to_string(),
+        );
+        return Ok(RunOutcome {
+            input: input.to_path_buf(),
+            mode: mode_name(mode).to_string(),
+            source_hash: sha256_bytes(source.as_bytes()),
+            artifact: exe_path,
+            rust_source: rs_path,
+            stdout,
+            stderr,
+            exit_code: output.status.code(),
+            status_success: output.status.success(),
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (rs_path, exe_path);
+        run_anubis_source(input, source, out, allow_research, args, proof_inputs_env)
+    }
 }
 
 fn run_anubis_source(
@@ -6376,6 +6468,7 @@ mod tests {
                 json,
                 allow_research,
                 verified,
+                sign,
                 input_json,
                 input_file,
                 args,
@@ -6386,6 +6479,7 @@ mod tests {
                 assert_eq!(out, PathBuf::from("out/run-test"));
                 assert!(evidence);
                 assert!(!verified);
+                assert!(!sign);
                 assert!(json);
                 assert!(!allow_research);
                 assert_eq!(args, vec!["alice".to_string()]);

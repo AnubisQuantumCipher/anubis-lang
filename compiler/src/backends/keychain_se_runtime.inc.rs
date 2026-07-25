@@ -9,6 +9,29 @@
 //   required for host-enforced isolation (`apple_enforced_claim` remains false until signed).
 // - Guest / non-macOS: soft only.
 
+// Last NE mint bind mode for this process: "soft" | "kc" | "se" (not secret material).
+static ANUBIS_LAST_NE_BIND: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn anubis_keychain_se_note_bind(mode: &str) {
+    if let Ok(mut g) = ANUBIS_LAST_NE_BIND.lock() {
+        *g = mode.to_string();
+    }
+}
+
+/// Last `cap_acquire_nonexportable` bind mode for this process (`soft` / `kc` / `se`).
+/// Does not take a token argument — not an export of capability material.
+fn anubis_keychain_se_last_bind() -> AnubisValue {
+    let s = ANUBIS_LAST_NE_BIND
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    if s.is_empty() {
+        anubis_mk_str("none".to_string())
+    } else {
+        anubis_mk_str(s)
+    }
+}
+
 /// Probe result: 0 = soft-only, 1 = Keychain bind available, 2 = Secure Enclave path available.
 fn anubis_keychain_se_probe() -> AnubisValue {
     AnubisValue::Int(anubis_keychain_se_probe_i64())
@@ -42,6 +65,7 @@ fn anubis_cap_acquire_nonexportable(kind: AnubisValue) -> AnubisValue {
             .unwrap_or(false)
         {
             if let Ok(tok) = anubis_kc_mint_se(&k) {
+                anubis_keychain_se_note_bind("se");
                 return anubis_mk_str(tok);
             }
         }
@@ -51,11 +75,13 @@ fn anubis_cap_acquire_nonexportable(kind: AnubisValue) -> AnubisValue {
             .unwrap_or(true);
         if want_kc {
             if let Ok(tok) = anubis_kc_mint_keychain(&k) {
+                anubis_keychain_se_note_bind("kc");
                 return anubis_mk_str(tok);
             }
         }
     }
     let nonce = anubis_kc_nonce();
+    anubis_keychain_se_note_bind("soft");
     anubis_mk_str(format!("__anubis_cap_ne_soft:{k}:{nonce}"))
 }
 

@@ -1,0 +1,25 @@
+// Non-exportable capability + Keychain bind (macOS signed run).
+//
+//   ./target/release/anubis check examples/showcase/keychain_ne_cap/main.anb
+//   ./target/release/anubis run examples/showcase/keychain_ne_cap/main.anb --out out/keychain_ne_cap
+//
+// Auto-signs on macOS for NE programs. Prints bind mode (soft/kc/se), not the token itself.
+
+fn main() uses(fs.write) {
+    // Host probe: 0 soft-only, 1 Keychain, 2 Secure Enclave
+    print(keychain_se_probe());
+
+    // Mint NE authority — does not print the token (export-seal).
+    let secret_cap = cap_acquire_nonexportable("fs.write");
+    // Bind mode of that mint (not capability material).
+    print(keychain_se_last_bind());
+
+    // Causal spend: write without putting the token in the write_file args.
+    let _ = write_file("out/keychain_ne_cap_demo.txt", "sealed-by-ne-cap\n");
+    cap_use(secret_cap);
+    print(1);
+
+    let ordinary = cap_acquire("fs.read");
+    cap_use(ordinary);
+    print(2);
+}
