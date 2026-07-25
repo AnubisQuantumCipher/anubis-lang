@@ -46,7 +46,10 @@
 //! builtin without a local string-literal acquire of that kind, and that is called from another
 //! function, records the effect in `caller_pays_effects`. The effect site defers; each call site
 //! must causal-spend a live matching-kind token (composed through callees). Roots (never called
-//! from a different function) still self-authorize. Deep HO rebind remains residual.
+//! from a different function) still self-authorize.
+//! **Deep HO rebind (linear closures):** a lambda that free-uses a Live capability *moves*
+//! those tokens into the closure binding; the binding is linear — second application is
+//! `ANUBIS_CAPABILITY_REUSE`. Container-stored closures remain residual.
 
 use crate::frontend::{Expr, ForSource, Pattern, Stmt};
 use std::collections::{BTreeMap, BTreeSet};
@@ -110,6 +113,9 @@ struct Lin<'a> {
     params: BTreeSet<String>,
     /// Current function name (caller-pays lookup + diagnostics).
     fn_name: String,
+    /// Locals bound to lambdas that captured ≥1 free Live capability. Linear: first apply
+    /// or MOVE consumes; second apply → REUSE. Closes deep HO rebind of use-once tokens.
+    linear_closures: BTreeMap<String, CapState>,
 }
 
 impl Lin<'_> {
@@ -178,13 +184,13 @@ pub(crate) struct CapProgramSummary {
     caller_pays_effects: BTreeMap<String, BTreeSet<String>>,
 }
 
+type CapFnRef<'a> = (&'a str, &'a [(String, String)], &'a [Stmt], (usize, usize));
+
 /// Check every function: linearity + verified causal spend + interproc non_exportable sealedness.
-pub(crate) fn check_program(
-    items: &[crate::frontend::Item],
-    verified: bool,
-) -> Vec<Finding> {
+#[cfg(test)]
+pub(crate) fn check_program(items: &[crate::frontend::Item], verified: bool) -> Vec<Finding> {
     let mut all_fns = BTreeSet::new();
-    let mut fns: Vec<(&str, &[(String, String)], &[Stmt], (usize, usize))> = Vec::new();
+    let mut fns: Vec<CapFnRef<'_>> = Vec::new();
     for item in items {
         if let crate::frontend::Item::Fn {
             name,
@@ -195,20 +201,19 @@ pub(crate) fn check_program(
         } = item
         {
             all_fns.insert(name.clone());
-            fns.push((name.as_str(), params.as_slice(), body.as_slice(), (span.start, span.end)));
+            fns.push((
+                name.as_str(),
+                params.as_slice(),
+                body.as_slice(),
+                (span.start, span.end),
+            ));
         }
     }
     let summary = build_cap_program_summary_from_fns(&fns, &all_fns);
     let mut out = Vec::new();
     for (name, params, body, span) in fns {
         out.extend(check_linearity(
-            params,
-            body,
-            verified,
-            span,
-            &all_fns,
-            &summary,
-            name,
+            params, body, verified, span, &all_fns, &summary, name,
         ));
     }
     out
@@ -238,6 +243,7 @@ pub(crate) fn check_linearity(
         container_ne: BTreeSet::new(),
         params: param_names,
         fn_name: fn_name.to_string(),
+        linear_closures: BTreeMap::new(),
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
@@ -246,7 +252,7 @@ pub(crate) fn check_linearity(
 
 pub(crate) fn program_summary(items: &[crate::frontend::Item]) -> CapProgramSummary {
     let mut all_fns = BTreeSet::new();
-    let mut fns: Vec<(&str, &[(String, String)], &[Stmt], (usize, usize))> = Vec::new();
+    let mut fns: Vec<CapFnRef<'_>> = Vec::new();
     collect_fn_refs(items, &mut all_fns, &mut fns);
     build_cap_program_summary_from_fns(&fns, &all_fns)
 }
@@ -254,7 +260,7 @@ pub(crate) fn program_summary(items: &[crate::frontend::Item]) -> CapProgramSumm
 fn collect_fn_refs<'a>(
     items: &'a [crate::frontend::Item],
     all_fns: &mut BTreeSet<String>,
-    fns: &mut Vec<(&'a str, &'a [(String, String)], &'a [Stmt], (usize, usize))>,
+    fns: &mut Vec<CapFnRef<'a>>,
 ) {
     for item in items {
         match item {
@@ -300,7 +306,7 @@ fn collect_fn_refs<'a>(
 }
 
 pub(crate) fn build_cap_program_summary_from_fns(
-    fns: &[(&str, &[(String, String)], &[Stmt], (usize, usize))],
+    fns: &[CapFnRef<'_>],
     all_fns: &BTreeSet<String>,
 ) -> CapProgramSummary {
     let mut summary = CapProgramSummary::default();
@@ -322,9 +328,7 @@ pub(crate) fn build_cap_program_summary_from_fns(
             if stores.is_empty() {
                 summary.container_stores.remove(*name);
             } else {
-                summary
-                    .container_stores
-                    .insert((*name).to_string(), stores);
+                summary.container_stores.insert((*name).to_string(), stores);
             }
         }
         if summary.container_stores == before_stores && summary.exports_formals == before_exports {
@@ -533,7 +537,10 @@ fn collect_body_cap_facts(
             | Expr::Assume(expr)
             | Expr::Assert(expr)
             | Expr::Try(expr) => walk_expr(expr, all_fns, de, acq, callees),
-            Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+            Expr::ArrayLiteral { elements }
+            | Expr::EnumConstruct {
+                fields: elements, ..
+            } => {
                 for el in elements {
                     walk_expr(el, all_fns, de, acq, callees);
                 }
@@ -570,7 +577,9 @@ fn collect_body_cap_facts(
                 walk_expr(then, all_fns, de, acq, callees);
                 walk_expr(else_, all_fns, de, acq, callees);
             }
-            Expr::Match { scrutinee, arms, .. } => {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
                 walk_expr(scrutinee, all_fns, de, acq, callees);
                 for arm in arms {
                     if let Some(g) = &arm.guard {
@@ -828,12 +837,13 @@ fn formals_export_and_container_stores(
                 }
                 out
             }
-            Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
-                elements
-                    .iter()
-                    .flat_map(|el| formals_in_expr(el, sealed, containers))
-                    .collect()
-            }
+            Expr::ArrayLiteral { elements }
+            | Expr::EnumConstruct {
+                fields: elements, ..
+            } => elements
+                .iter()
+                .flat_map(|el| formals_in_expr(el, sealed, containers))
+                .collect(),
             Expr::StructLiteral { fields, .. } => fields
                 .iter()
                 .flat_map(|(_, v)| formals_in_expr(v, sealed, containers))
@@ -846,12 +856,7 @@ fn formals_export_and_container_stores(
             Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
                 formals_in_expr(base, sealed, containers)
             }
-            Expr::If {
-                then, else_, ..
-            }
-            | Expr::IfLet {
-                then, else_, ..
-            } => {
+            Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
                 let mut out = formals_in_expr(then, sealed, containers);
                 out.extend(formals_in_expr(else_, sealed, containers));
                 out
@@ -927,7 +932,10 @@ fn formals_export_and_container_stores(
                     exported.extend(idxs.iter().copied());
                 }
             }
-            Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+            Expr::ArrayLiteral { elements }
+            | Expr::EnumConstruct {
+                fields: elements, ..
+            } => {
                 for el in elements {
                     on_export_arg(el, sealed, containers, exported);
                 }
@@ -959,12 +967,7 @@ fn formals_export_and_container_stores(
                     }
                 }
             }
-            Expr::If {
-                then, else_, ..
-            }
-            | Expr::IfLet {
-                then, else_, ..
-            } => {
+            Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
                 on_export_arg(then, sealed, containers, exported);
                 on_export_arg(else_, sealed, containers, exported);
             }
@@ -973,11 +976,10 @@ fn formals_export_and_container_stores(
                     on_export_arg(&arm.body, sealed, containers, exported);
                 }
             }
-            Expr::Block { tail, .. } => {
-                if let Some(t) = tail {
-                    on_export_arg(t, sealed, containers, exported);
-                }
+            Expr::Block { tail: Some(t), .. } => {
+                on_export_arg(t, sealed, containers, exported);
             }
+            Expr::Block { tail: None, .. } => {}
             Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
                 on_export_arg(expr, sealed, containers, exported);
             }
@@ -1060,10 +1062,7 @@ fn formals_export_and_container_stores(
                     let idxs = formals_in_expr(value, sealed, containers);
                     if !idxs.is_empty() {
                         if let Some(root) = place_root_var(target) {
-                            containers
-                                .entry(root.to_string())
-                                .or_default()
-                                .extend(idxs);
+                            containers.entry(root.to_string()).or_default().extend(idxs);
                         }
                     }
                     walk_expr_export(target, sealed, containers, exported, known);
@@ -1221,7 +1220,10 @@ fn formals_export_and_container_stores(
             | Expr::Assume(expr)
             | Expr::Assert(expr)
             | Expr::Try(expr) => walk_expr_export(expr, sealed, containers, exported, known),
-            Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+            Expr::ArrayLiteral { elements }
+            | Expr::EnumConstruct {
+                fields: elements, ..
+            } => {
                 for el in elements {
                     walk_expr_export(el, sealed, containers, exported, known);
                 }
@@ -1400,11 +1402,12 @@ fn expr_holds_live_ne(expr: &Expr, caps: &CapMap, container_ne: &BTreeSet<String
                 Some(t) if t.state == CapState::Live && t.non_exportable
             ) || container_ne.contains(n)
         }
-        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
-            elements
-                .iter()
-                .any(|e| expr_holds_live_ne(e, caps, container_ne))
-        }
+        Expr::ArrayLiteral { elements }
+        | Expr::EnumConstruct {
+            fields: elements, ..
+        } => elements
+            .iter()
+            .any(|e| expr_holds_live_ne(e, caps, container_ne)),
         Expr::StructLiteral { fields, .. } => fields
             .iter()
             .any(|(_, e)| expr_holds_live_ne(e, caps, container_ne)),
@@ -1417,12 +1420,7 @@ fn expr_holds_live_ne(expr: &Expr, caps: &CapMap, container_ne: &BTreeSet<String
                 || matches!(&**base, Expr::Var(n) if container_ne.contains(n))
         }
         // if/match/block value-position container init (mirror taint/field_closures seed).
-        Expr::If {
-            then, else_, ..
-        }
-        | Expr::IfLet {
-            then, else_, ..
-        } => {
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
             expr_holds_live_ne(then, caps, container_ne)
                 || expr_holds_live_ne(else_, caps, container_ne)
         }
@@ -1477,7 +1475,10 @@ fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                 }
             }
         }
-        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+        Expr::ArrayLiteral { elements }
+        | Expr::EnumConstruct {
+            fields: elements, ..
+        } => {
             for e in elements {
                 check_export_arg(e, caps, lin);
             }
@@ -1492,15 +1493,11 @@ fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                 check_export_arg(v, caps, lin);
             }
         }
-        Expr::If {
-            then, else_, ..
-        } => {
+        Expr::If { then, else_, .. } => {
             check_export_arg(then, caps, lin);
             check_export_arg(else_, caps, lin);
         }
-        Expr::IfLet {
-            then, else_, ..
-        } => {
+        Expr::IfLet { then, else_, .. } => {
             check_export_arg(then, caps, lin);
             check_export_arg(else_, caps, lin);
         }
@@ -1509,11 +1506,8 @@ fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                 check_export_arg(&arm.body, caps, lin);
             }
         }
-        Expr::Block { tail, .. } => {
-            if let Some(t) = tail {
-                check_export_arg(t, caps, lin);
-            }
-        }
+        Expr::Block { tail: Some(t), .. } => check_export_arg(t, caps, lin),
+        Expr::Block { tail: None, .. } => {}
         // Grouping / unary wrappers that preserve a value position.
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } | Expr::Try(expr) => {
             check_export_arg(expr, caps, lin);
@@ -1638,11 +1632,238 @@ fn apply_cap_export(args: &[Expr], caps: &mut CapMap, lin: &mut Lin) -> Option<C
     }
 }
 
+/// Free Live capability names referenced inside a lambda body (explicit `cap_use` or any
+/// occurrence of a tracked Live name). Used to MOVE those tokens into a linear closure.
+fn free_live_caps_in_expr(expr: &Expr, caps: &CapMap, out: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Var(n) => {
+            if matches!(
+                caps.get(n),
+                Some(t) if t.state == CapState::Live
+            ) {
+                out.insert(n.clone());
+            }
+        }
+        Expr::Call { callee, args } => {
+            if callee == CAP_USE {
+                if let Some(Expr::Var(n)) = args.first() {
+                    if matches!(
+                        caps.get(n),
+                        Some(t) if t.state == CapState::Live
+                    ) {
+                        out.insert(n.clone());
+                    }
+                }
+            }
+            for a in args {
+                free_live_caps_in_expr(a, caps, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            free_live_caps_in_expr(callee, caps, out);
+            for a in args {
+                free_live_caps_in_expr(a, caps, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            free_live_caps_in_expr(lhs, caps, out);
+            free_live_caps_in_expr(rhs, caps, out);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Declassify { inner: expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Try(expr) => free_live_caps_in_expr(expr, caps, out),
+        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+            for e in elements {
+                free_live_caps_in_expr(e, caps, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                free_live_caps_in_expr(v, caps, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (_, v) in entries {
+                free_live_caps_in_expr(v, caps, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            free_live_caps_in_expr(base, caps, out);
+            free_live_caps_in_expr(index, caps, out);
+        }
+        Expr::FieldAccess { base, .. } => free_live_caps_in_expr(base, caps, out),
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            free_live_caps_in_expr(cond, caps, out);
+            free_live_caps_in_expr(then, caps, out);
+            free_live_caps_in_expr(else_, caps, out);
+        }
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            free_live_caps_in_expr(scrutinee, caps, out);
+            free_live_caps_in_expr(then, caps, out);
+            free_live_caps_in_expr(else_, caps, out);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            free_live_caps_in_expr(scrutinee, caps, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    free_live_caps_in_expr(g, caps, out);
+                }
+                free_live_caps_in_expr(&arm.body, caps, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            for s in stmts {
+                free_live_caps_in_stmt(s, caps, out);
+            }
+            if let Some(t) = tail {
+                free_live_caps_in_expr(t, caps, out);
+            }
+        }
+        Expr::Lambda { body, .. } => free_live_caps_in_expr(body, caps, out),
+        _ => {}
+    }
+}
+
+fn free_live_caps_in_stmt(stmt: &Stmt, caps: &CapMap, out: &mut BTreeSet<String>) {
+    match stmt {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+            free_live_caps_in_expr(init, caps, out);
+        }
+        Stmt::Assign { target, value } => {
+            free_live_caps_in_expr(target, caps, out);
+            free_live_caps_in_expr(value, caps, out);
+        }
+        Stmt::ExprStmt(e) => free_live_caps_in_expr(e, caps, out),
+        Stmt::If {
+            cond, then, else_, ..
+        } => {
+            free_live_caps_in_expr(cond, caps, out);
+            for s in then {
+                free_live_caps_in_stmt(s, caps, out);
+            }
+            if let Some(el) = else_ {
+                for s in el {
+                    free_live_caps_in_stmt(s, caps, out);
+                }
+            }
+        }
+        Stmt::While {
+            cond,
+            body,
+            invariant,
+            ..
+        } => {
+            free_live_caps_in_expr(cond, caps, out);
+            for inv in invariant {
+                free_live_caps_in_expr(inv, caps, out);
+            }
+            for s in body {
+                free_live_caps_in_stmt(s, caps, out);
+            }
+        }
+        Stmt::Loop { body, invariant, .. } => {
+            for inv in invariant {
+                free_live_caps_in_expr(inv, caps, out);
+            }
+            for s in body {
+                free_live_caps_in_stmt(s, caps, out);
+            }
+        }
+        Stmt::For {
+            source,
+            body,
+            invariant,
+            ..
+        } => {
+            match source {
+                ForSource::Range { start, end } => {
+                    free_live_caps_in_expr(start, caps, out);
+                    free_live_caps_in_expr(end, caps, out);
+                }
+                ForSource::Collection { expr } => free_live_caps_in_expr(expr, caps, out),
+            }
+            for inv in invariant {
+                free_live_caps_in_expr(inv, caps, out);
+            }
+            for s in body {
+                free_live_caps_in_stmt(s, caps, out);
+            }
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            free_live_caps_in_expr(expr, caps, out);
+            for s in body {
+                free_live_caps_in_stmt(s, caps, out);
+            }
+        }
+        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+            for s in body {
+                free_live_caps_in_stmt(s, caps, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// MOVE free Live caps into a linear closure binding; mark free caps Consumed.
+fn seal_linear_closure(target: &str, body: &Expr, caps: &mut CapMap, lin: &mut Lin) {
+    let mut held = BTreeSet::new();
+    free_live_caps_in_expr(body, caps, &mut held);
+    // Always export-seal NE free uses at definition (existing path).
+    let saved = lin.container_ne.clone();
+    walk_export_seals(body, caps, lin);
+    lin.container_ne = saved;
+    if held.is_empty() {
+        lin.linear_closures.remove(target);
+        return;
+    }
+    for name in &held {
+        if let Some(t) = caps.get(name).cloned() {
+            if t.state == CapState::Live {
+                caps.insert(
+                    name.clone(),
+                    CapToken {
+                        state: CapState::Consumed,
+                        kind: t.kind,
+                        non_exportable: t.non_exportable,
+                    },
+                );
+            }
+        }
+    }
+    lin.linear_closures
+        .insert(target.to_string(), CapState::Live);
+}
+
+/// Apply a named linear closure: first call consumes it; second → REUSE.
+fn apply_linear_closure(name: &str, lin: &mut Lin) {
+    match lin.linear_closures.get(name).copied() {
+        Some(CapState::Live) => {
+            lin.linear_closures
+                .insert(name.to_string(), CapState::Consumed);
+        }
+        Some(CapState::Consumed) => lin.reuse(name),
+        None => {}
+    }
+}
+
 /// Rebind `target` to the value of `init`, applying MOVE semantics when `init` is a bare tracked
 /// capability variable, MINT when it is acquire / nonexportable, PEEL when `cap_export(...)`, and
 /// otherwise walking `init` (which consumes any capabilities inside it) and dropping any prior
 /// tracking of `target`.
 fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
+    // Drop prior linear-closure tracking on overwrite.
+    lin.linear_closures.remove(target);
     if is_acquire(init) {
         let mut kind: Option<String> = None;
         let non_exportable = is_nonexportable_acquire(init);
@@ -1676,7 +1897,29 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             return;
         }
     }
+    if let Expr::Lambda { body, .. } = init {
+        seal_linear_closure(target, body, caps, lin);
+        caps.remove(target); // lambda binding is not a token; linear_closures tracks it
+        return;
+    }
     if let Expr::Var(src) = init {
+        // MOVE of a linear closure binding (HO rebind).
+        if let Some(st) = lin.linear_closures.get(src).copied() {
+            match st {
+                CapState::Live => {
+                    lin.linear_closures
+                        .insert(src.clone(), CapState::Consumed);
+                    lin.linear_closures
+                        .insert(target.to_string(), CapState::Live);
+                }
+                CapState::Consumed => {
+                    lin.reuse(src);
+                    lin.linear_closures.remove(target);
+                }
+            }
+            caps.remove(target);
+            return;
+        }
         // MOVE of an NE-carrying *container* (not a token): transfer the container flag.
         if lin.container_ne.contains(src) {
             lin.container_ne.remove(src);
@@ -1763,9 +2006,9 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
             // Nested / non-list patterns stay residual: walk init and drop tracking.
             match (pattern, init) {
                 (Pattern::List(pats), Expr::ArrayLiteral { elements })
-                    if pats.iter().all(|p| {
-                        matches!(p, Pattern::Binding(_) | Pattern::Wildcard)
-                    }) =>
+                    if pats
+                        .iter()
+                        .all(|p| matches!(p, Pattern::Binding(_) | Pattern::Wildcard)) =>
                 {
                     for (i, p) in pats.iter().enumerate() {
                         match (p, elements.get(i)) {
@@ -1990,6 +2233,8 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                 }
                 return;
             }
+            // Linear closure application (deep HO): g(…) consumes the closure binding.
+            apply_linear_closure(callee, lin);
             // Export check BEFORE walking args (so Live non_exportable is still visible).
             if is_export_sink(callee) && !lin.all_fns.contains(callee) {
                 for a in args {
@@ -2134,14 +2379,29 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                 walk_expr(t, caps, lin);
             }
         }
-        // Non-exportable sealedness: definition-site walk of lambda bodies for export sinks
-        // that mention free Live non_exportable tokens (does not consume — export check only).
-        // Linearity of captured caps at application remains residual for HO rebind.
-        // Local container_ne seeds (store-then-project of free NE) must not leak to outer.
+        // Non-exportable sealedness first (while free NE is still Live), then MOVE free Live
+        // caps into the ephemeral lambda (consumed). Let-bound lambdas use seal_linear_closure.
+        // Local container_ne seeds must not leak to outer.
         Expr::Lambda { body, .. } => {
             let saved = lin.container_ne.clone();
             walk_export_seals(body, caps, lin);
             lin.container_ne = saved;
+            let mut held = BTreeSet::new();
+            free_live_caps_in_expr(body, caps, &mut held);
+            for name in &held {
+                if let Some(t) = caps.get(name).cloned() {
+                    if t.state == CapState::Live {
+                        caps.insert(
+                            name.clone(),
+                            CapToken {
+                                state: CapState::Consumed,
+                                kind: t.kind,
+                                non_exportable: t.non_exportable,
+                            },
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -3063,6 +3323,75 @@ fn f() { let y = send(3); }"#;
             c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
             "while-body capture send must EXPORT, got {c:?}"
         );
+    }
+
+    #[test]
+    /// Deep HO: double apply of a cap-capturing closure is REUSE.
+    #[test]
+    fn linear_closure_double_apply_is_reuse() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let g = |x| { cap_use(s); };
+            g(0);
+            g(0);
+        }"#;
+        assert_eq!(codes(src, false), ["ANUBIS_CAPABILITY_REUSE"]);
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
+    }
+
+    /// Deep HO: move closure then double-apply the alias is REUSE.
+    #[test]
+    fn linear_closure_move_then_double_apply_is_reuse() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let g = |x| { cap_use(s); };
+            let h = g;
+            h(0);
+            h(0);
+        }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
+    }
+
+    /// Dual: single apply of capturing closure accepts.
+    #[test]
+    fn linear_closure_single_apply_accepts() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let g = |x| { cap_use(s); };
+            g(0);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "single apply must accept, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    /// Dual: non-capturing closure may be applied twice.
+    #[test]
+    fn noncapturing_closure_double_apply_accepts() {
+        let src = r#"fn f() {
+            let g = |x| { let _ = x; };
+            g(0);
+            g(1);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "non-capturing double apply must accept, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    /// After move to h, original g is consumed — apply g is REUSE.
+    #[test]
+    fn linear_closure_apply_after_move_is_reuse() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let g = |x| { cap_use(s); };
+            let h = g;
+            g(0);
+        }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
     }
 
     #[test]
