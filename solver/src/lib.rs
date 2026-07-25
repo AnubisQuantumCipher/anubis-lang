@@ -1,11 +1,15 @@
 //! Anubis native SMT decision procedure — a from-scratch QF_BV solver that replaces the z3 third
-//! party for the integer contract lane. ZERO external solver dependency (std only). During rollout,
-//! z3 stays the authority and this runs in SHADOW mode (`compiler` compares the two and fails closed
-//! on any disagreement), so a bug here can never certify a false contract. Once the differential gate
-//! is sustained at zero disagreements, the bit-blaster is machine-checked in Lean, **and every Unsat
-//! carries a verified RUP/LRAT certificate**, the compiler can flip to native-authoritative (still
-//! opt-in until soak), shrinking the trusted computing base by all of z3 for the proven integer
-//! fragment.
+//! party for the integer contract lane. ZERO external solver dependency (std only).
+//!
+//! **Unsat fail-closed:** every public path that returns a native Unsat does so only after
+//! [`lrat::check_proof`] accepts a self-contained RUP certificate from CDCL. Missing or invalid
+//! cert → `None` (defer). **Sat fail-closed:** models are re-checked by independent
+//! [`bv::Formula::eval`] replay.
+//!
+//! **Authority (product default flip 2026-07-25):** the compiler uses
+//! [`native_check_sat_model_authoritative`] by default (proven fragment + cert/replay). z3 remains
+//! a fail-closed cross-check when present. Opt out with `ANUBIS_NATIVE_AUTHORITATIVE=0`.
+//! Division / var×var mul stay deferred by design.
 //!
 //! Pipeline: SMT-LIB2 text → `bv::Formula` (parse) → CNF (bit-blast) → `sat::Cnf::solve` →
 //! RUP cert check on Unsat / model replay on Sat → verdict.

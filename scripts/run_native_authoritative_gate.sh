@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Phase-7 z3-authoritative flip gate. Proves the native QF_BV solver can CARRY the integer lane:
+# Phase-7 native SMT authority gate (post default-flip 2026-07-25).
 #
-#   0. RUP/LRAT CERT SUITE — every Unsat from CDCL carries a checkable certificate; adversarial
-#      forgeries are rejected (`cargo test -p anubis-solver lrat`).
-#   1. VERDICT EQUIVALENCE — `anubis check` over the whole corpus, default mode vs
-#      `ANUBIS_NATIVE_AUTHORITATIVE=1` (z3 present, so every native verdict is cross-checked and any
-#      disagreement fails closed + prints ANUBIS_NATIVE_DISAGREE). Requires: identical per-file exit
-#      codes AND zero disagreement lines.
-#   2. TCB-DROP DEMO — with z3 REMOVED from PATH: the pure-int proving fixture still checks green and
-#      the violating fixture is still rejected under the flag, while WITHOUT the flag the same
-#      z3-less check fails (proving z3 really was load-bearing before, i.e. the flip is what drops it).
-#      Unsat under this path requires a verified RUP certificate (fail-closed if missing/invalid).
+#   0. RUP CERT SUITE — every Unsat from CDCL carries a checkable certificate; adversarial
+#      forgeries are rejected (`cargo test -p anubis-solver lrat` + sat Unsat emission).
+#   1. VERDICT EQUIVALENCE — default mode vs explicit `ANUBIS_NATIVE_AUTHORITATIVE=1` over the
+#      corpus (z3 present ⇒ native verdicts are cross-checked; disagreement fails closed).
+#      Requires: identical per-file exit codes AND zero ANUBIS_NATIVE_DISAGREE lines.
+#   2. TCB-DROP DEMO — with z3 REMOVED from PATH:
+#        - default (native-authoritative) proves the good int fixture and rejects the bad one;
+#        - opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` makes the same good fixture FAIL (z3 still
+#          load-bearing when native is disabled);
+#        - danger op (unproven blast) fails closed z3-free on the default path.
+#      Unsat requires a verified RUP certificate (fail-closed if missing/invalid).
 #
-# Exit 0 = z3 is demonstrably droppable for the integer lane (cert + equivalence + demo hold).
-# Does NOT flip the compiler default; that remains a product soak step after this gate stays green.
+# Exit 0 = native default is safe for the proven integer fragment (cert + equivalence + demo).
+# Opt out of default: ANUBIS_NATIVE_AUTHORITATIVE=0.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -36,6 +37,7 @@ if [ "$cert_fail" -ne 0 ]; then
   exit 1
 fi
 echo "NATIVE_AUTHORITATIVE cert suite: PASS (lrat + sat Unsat certificates)"
+echo "NATIVE_AUTHORITATIVE: Unsat requires verified RUP cert (lrat::check_proof); fragment gate required; default=ON (opt-out ANUBIS_NATIVE_AUTHORITATIVE=0)"
 
 command -v z3 >/dev/null || { echo "FATAL: z3 not on PATH — the equivalence half needs it"; exit 1; }
 command -v timeout >/dev/null || { echo "FATAL: coreutils timeout missing"; exit 1; }
@@ -75,19 +77,22 @@ DANGER_FIX=tests/fixtures/native_authoritative/int_contract_danger_defers.anb
 demo_fail=0
 
 set +e
-PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=1 "$BIN" check "$PASS_FIX" >/dev/null 2>&1
-[ $? -eq 0 ] || { echo "DEMO FAIL: native-authoritative could not prove $PASS_FIX without z3"; demo_fail=1; }
-PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=1 "$BIN" check "$FAIL_FIX" >/dev/null 2>&1
-[ $? -ne 0 ] || { echo "DEMO FAIL: native-authoritative ACCEPTED the violating $FAIL_FIX without z3"; demo_fail=1; }
-# Control: without the flag, a z3-less check of the SAME green fixture must fail — z3 was load-bearing.
+# Default path is native-authoritative (no env required).
 PATH=/nonexistent "$BIN" check "$PASS_FIX" >/dev/null 2>&1
-[ $? -ne 0 ] || { echo "DEMO FAIL: default mode passed WITHOUT z3 — control invalid (z3 not load-bearing?)"; demo_fail=1; }
+[ $? -eq 0 ] || { echo "DEMO FAIL: default native-authoritative could not prove $PASS_FIX without z3"; demo_fail=1; }
+PATH=/nonexistent "$BIN" check "$FAIL_FIX" >/dev/null 2>&1
+[ $? -ne 0 ] || { echo "DEMO FAIL: default native-authoritative ACCEPTED the violating $FAIL_FIX without z3"; demo_fail=1; }
+# Explicit =1 must match default.
+PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=1 "$BIN" check "$PASS_FIX" >/dev/null 2>&1
+[ $? -eq 0 ] || { echo "DEMO FAIL: ANUBIS_NATIVE_AUTHORITATIVE=1 could not prove $PASS_FIX without z3"; demo_fail=1; }
+# Control: opt-out restores z3 dependence — z3-less check of the green fixture must FAIL.
+PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=0 "$BIN" check "$PASS_FIX" >/dev/null 2>&1
+[ $? -ne 0 ] || { echo "DEMO FAIL: opt-out ANUBIS_NATIVE_AUTHORITATIVE=0 still passed WITHOUT z3 — opt-out broken"; demo_fail=1; }
 # FRAGMENT-GATE SOUNDNESS: the danger fixture's property is TRUE (so it PASSES with z3), but its op is
-# unproven, so z3-free + authoritative it must FAIL CLOSED (native declines, no z3 to defer to). This is
-# what proves native's z3-free authority is bounded to the machine-checked fragment, not the full blaster.
+# unproven, so z3-free + authoritative it must FAIL CLOSED (native declines, no z3 to defer to).
 "$BIN" check "$DANGER_FIX" >/dev/null 2>&1
 [ $? -eq 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX should PASS with z3 present (property is true)"; demo_fail=1; }
-PATH=/nonexistent ANUBIS_NATIVE_AUTHORITATIVE=1 "$BIN" check "$DANGER_FIX" >/dev/null 2>&1
+PATH=/nonexistent "$BIN" check "$DANGER_FIX" >/dev/null 2>&1
 [ $? -ne 0 ] || { echo "DEMO FAIL: danger fixture $DANGER_FIX proved z3-free on an UNPROVEN blast — the fragment gate did not fire"; demo_fail=1; }
 set -e
 
@@ -113,7 +118,7 @@ for deferred in Ashr SignExtend Udiv Urem Sdiv Srem; do
 done
 
 if [ "$mismatches" = 0 ] && [ "$disagreements" = 0 ] && [ "$demo_fail" = 0 ] && [ "$drift_fail" = 0 ]; then
-  echo "NATIVE_AUTHORITATIVE_GATE: PASS (verdict-equivalent on $n files; native alone proves+rejects the int fixtures with z3 hidden; fragment gate fails closed on an unproven op; allow-list ↔ Lean proofs in sync)"
+  echo "NATIVE_AUTHORITATIVE_GATE: PASS (cert suite + fragment/TCB-drop demo + verdict-equivalent on $n files, mismatches=0 disagreements=0; default native z3-hidden proves/rejects; opt-out=0 restores z3 dependence; danger op fails closed; allow-list ↔ Lean; DEFAULT=native-authoritative)"
   exit 0
 fi
 echo "NATIVE_AUTHORITATIVE_GATE: FAIL"

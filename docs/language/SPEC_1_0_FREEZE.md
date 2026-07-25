@@ -58,7 +58,7 @@ Anything not listed here is experimental / research unless later promoted by MIN
 ## 5. Explicit residuals (not 1.0-blocking; not “closed forever”)
 
 - Escaping-closure class: **map-entry application closed 2026-07-22** (`map_entry_closure_application_is_enforced`); remaining symbolic-index / deep-nested forms are fail-closed residuals (SH ⊆ Rust under-report where still open)
-- Native SMT default flip (opt-in authoritative int lane; Unsat cross-check residual)
+- Native SMT default flip **DONE 2026-07-25** (native-authoritative by default + verified RUP Unsat cert; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`; division still deferred)
 - VZ slice-2 live booted guest apply; hostname frame filter STAGED
 - `http_get`/`http_post` check-only (no run lowering)
 - Hosted CI Metal *proving* (local Metal REAL; CI is cold-verify front door)

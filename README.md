@@ -151,12 +151,13 @@ Most verifiers lean on **Z3** — a large, external, unverified C++ trusted base
 The [`solver/`](solver/) crate is a **from-scratch QF_BV decision procedure with zero external dependency** (`std` only, empty `[dependencies]`): an SMT-LIB2 parser, a Tseitin bit-blaster, and a CDCL SAT engine (watched literals, 1-UIP learning, VSIDS, Luby restarts). And every bit-blast the authoritative path relies on is **machine-checked in Lean 4 core** (no Mathlib) — the ripple-carry adder, all eight signed/unsigned comparators, equality, bitwise `& | ^ ~`, negation, both shifts, and the structural ops — the **entire operation surface a real integer contract emits, except division**, each proven equal to the runtime's `i64` semantics.
 
 ```bash
-ANUBIS_NATIVE_AUTHORITATIVE=1 anubis check <int-contract>.anb   # decides the integer lane with Z3 removed from PATH
-bash scripts/run_native_authoritative_gate.sh                   # verdict-equivalent to Z3 across the corpus, 0 disagreements
+anubis check <int-contract>.anb                                 # native-authoritative by default (proven int fragment)
+ANUBIS_NATIVE_AUTHORITATIVE=0 anubis check <int-contract>.anb   # opt out → z3-only authority
+bash scripts/run_native_authoritative_gate.sh                   # cert + ≡ Z3 corpus + TCB-drop + fragment danger
 bash scripts/run_formal_gate.sh                                 # 150+ Lean 4 theorems across 14 modules, no sorry/admit/axiom
 ```
 
-> **Honest boundary.** The flip is **opt-in**; by default Z3 stays the authority and **cross-checks every native verdict, failing closed on any disagreement**. What is proven today is the *encoding*. Dropping Z3 entirely awaits a checkable UNSAT certificate from the CDCL search — a residual that is named, not hidden.
+> **Honest boundary.** **Default (2026-07-25):** native-authoritative on the machine-checked integer fragment — Unsat only after a **verified pure RUP certificate** (`solver/src/lrat.rs`), Sat only after independent model replay. Z3 **cross-checks every native verdict when present**, failing closed on disagreement. **Opt out:** `ANUBIS_NATIVE_AUTHORITATIVE=0`. Division / var×var mul stay z3-deferred.
 
 ---
 
@@ -268,7 +269,7 @@ An 11-phase maturity arc; the living source of truth is [`docs/language/ROADMAP.
 | **4 — Port checker into Anubis** | 🟢 At DoD | all three semantic engines — **effect, type, taint** — are now Anubis-authored in `selfhost/` and **match the Rust checker** (each differential-gated 0-disagreement and VM-sealed); parse + codegen were already self-hosted. Residuals are structural (type HM/generics — unreachable in the self-host grammar) or deferred-precision (taint closure/container interproc, where the self-hosted engine soundly under-reports) |
 | **5 — Mechanized soundness** | 🟢 At DoD | 150+ Lean 4 theorems across 14 modules: encoding soundness, the native bit-blaster, non-interference, effect soundness — no `sorry`/`admit`/`axiom` |
 | **6 — Proof-carrying packages** | 🟢 At DoD | signed bundles, re-derived-on-verify summaries, contract enforcement across dependencies |
-| **7 — Minimize TCB** | 🟢 Advanced | the native, machine-checked SMT solver (Z3 droppable for integers, opt-in); residual: a mechanized UNSAT certificate + a second independently-authored frontend |
+| **7 — Minimize TCB** | 🟢 Advanced | native QF_BV solver + Lean bit-blast + **verified RUP Unsat cert**; **default = native-authoritative** (opt-out `=0`); residual: second independently-authored frontend; division deferred |
 | **8 — Developer experience** | 🟢 At DoD | LSP, formatter, REPL, doc-gen, tree-sitter, tutorial, spec — `run_dx_gate.sh` (15/15) |
 | **9 — External reproduction** | 🟢 Done (witnessed) | independent clean-clone stranger run recorded: selfhost 9/9, repro 6/6 (Docker hermetic), DDC 34/34, fixtures 244/244, formal PASS — [`docs/language/phase9_independent_witness/`](docs/language/phase9_independent_witness/) |
 | **10 — Production 1.0** | 🟢 Done (freeze) | [`SPEC_1_0_FREEZE.md`](docs/language/SPEC_1_0_FREEZE.md) + [`SEMVER_1_0_POLICY.md`](docs/language/SEMVER_1_0_POLICY.md); multi-party Phase 9 witnesses; package/DX gates green |
@@ -328,7 +329,7 @@ anubis vz confine examples/showcase/vz_confine_demo.anb    # isolation manifest 
 Anubis states exactly what it proves and what it does not:
 
 - **`check` certifies contracts, not the absence of every runtime trap.** A contract-free function's in-body `assert` over its **integer** parameters is now modeled and enforced (state the precondition or it is disproved); a float/string assert the solver cannot model stays runtime-enforced (fail-open) — a documented, actively-narrowed stance.
-- **The native-solver flip is opt-in** until the CDCL engine emits a checkable UNSAT certificate; by default Z3 is the authority and cross-checks every verdict.
+- **Native SMT is authoritative by default** on the proven fragment (RUP-certified Unsat; model-replayed Sat). Z3 still cross-checks when present. Opt out with `ANUBIS_NATIVE_AUTHORITATIVE=0`.
 - **Generics are runtime-erased**, multi-file `import` resolution is in progress, and implicit-flow is warned rather than rejected — each an explicit, fails-closed boundary, not a hidden gap.
 - **The offensive platform is for authorized engagements**, isolated in VZ guests, with the riskiest primitives PLAN_ONLY and every action receipted.
 - **Phases 9–10 (independent-stranger reproduction, a frozen 1.0 spec) are open** — neither is marked done; both are operator/third-party commitments, not code. (Phase 4 — self-hosting the effect/type/taint engines — reached DoD: all three now match the Rust checker on the self-host-expressible surface, differential-gated and sealed.)

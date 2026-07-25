@@ -48,9 +48,12 @@ SMT-LIB2 text ──parse──▶ bv::Formula ──bit-blast──▶ CNF ─�
   bounded by a *conflict* budget; over budget → `Unknown` (decline). `Unsat` is only ever returned via a
   conflict at decision level 0 (a root refutation), and every Unsat carries a self-contained
   **RUP/LRAT certificate** (original DIMACS CNF + derived clauses ending in empty).
-- **`lrat.rs`** — a pure, independent RUP checker. No CDCL. `check_proof` accepts a certificate only if
-  every step is reverse-unit-propagation and the terminal step is the empty clause. Adversarial
-  forgeries (truncated, SAT formulas with forged empty, non-RUP learned clauses) are rejected.
+- **`lrat.rs`** — a pure, independent **RUP** checker (LRAT-shaped emission: clause additions only;
+  **no deletion steps**, no RAT/DRAT). No CDCL, no watches, no solver state. `check_proof` accepts a
+  certificate only if every clause is well-formed (DIMACS vars in range, no zero/complementary
+  pairs), every step is reverse-unit-propagation w.r.t. the accumulated database, and the terminal
+  step is the empty clause. Adversarial forgeries (truncated, SAT formulas with forged empty, non-RUP
+  learned clauses, wrong variable numbering) are rejected.
 
 ## The one entry point
 
@@ -70,22 +73,15 @@ anubis_solver::native_check_sat(smt: &str) -> Option<bool>
 root refutation, **and** the independent RUP checker verified the certificate. SAT requires model
 replay. Anything else is `None`.
 
-## Rollout: shadow → opt-in authoritative → default flip
+## Rollout: shadow → authoritative default (flipped 2026-07-25)
 
-There are three compiler modes, each a strictly bolder step, all gated:
-
-- **Default (shadow off):** z3 decides everything; the stock pipeline, unchanged.
-- **`ANUBIS_NATIVE_SHADOW=1`:** native runs *alongside* z3 on every obligation (now including the
-  primary proof stream), z3 stays authoritative, disagreements fail `scripts/run_native_shadow_gate.sh`.
-  Current: **243/293 real obligations decided by native, 0 disagreements** (the 50 deferrals are the
-  non-BV float/string/array obligations).
-- **`ANUBIS_NATIVE_AUTHORITATIVE=1` (opt-in):** native *decides* every **proof-backed fragment**
-  obligation it can (see `fragment.rs`), and z3 is consulted only as a fail-closed cross-check while
-  present. With z3 **absent**, native alone carries that fragment — Unsat only with a **verified RUP
-  certificate**. `scripts/run_native_authoritative_gate.sh` proves this is safe (cert suite + corpus
-  equivalence + z3-hidden demo + Lean drift). **Division and var×var mul stay deferred by design.**
-  The **default flip is now possible** after this certificate path soaks green; the compiler default
-  remains z3 until that product step.
+- **Default (native-authoritative):** native *decides* every **proof-backed fragment** obligation
+  (see `fragment.rs`); z3 is a fail-closed cross-check when present. With z3 **absent**, native alone
+  carries that fragment — Unsat only with a **verified RUP certificate**. Gate:
+  `scripts/run_native_authoritative_gate.sh`.
+- **Opt out:** `ANUBIS_NATIVE_AUTHORITATIVE=0` restores z3-only authority (pre-flip).
+- **`ANUBIS_NATIVE_SHADOW=1`:** still available for explicit shadow logging / disagreement hunts.
+- **Division and var×var mul stay deferred by design.**
 
 ## How we know it's correct (and why it can't cause a false accept)
 
@@ -112,16 +108,16 @@ There are three compiler modes, each a strictly bolder step, all gated:
    offset-binary identity `flipMsb_val`). All depend only on the three standard Lean core axioms — no
    `sorry`/`admit`/`native_decide`.
 
-**Certificate residual (closed):** CDCL Unsat now emits RUP/LRAT and is independently verified.
-**Default flip residual (product soak):** compiler still defaults to z3; flip when
-`run_native_authoritative_gate.sh` stays green under soak and operators choose to change the default.
-Division / var×var mul remain deferred forever-or-until-proven — not part of this residual.
+**Certificate residual (closed):** CDCL Unsat emits RUP and is independently verified.
+**Default flip (done 2026-07-25):** compiler defaults to native-authoritative; opt out with `=0`.
+Division / var×var mul remain deferred forever-or-until-proven.
 
 ## Status / next
 
 - ✅ parser, bit-blaster, `native_check_sat`, differential + corpus shadow.
 - ✅ adder **and** comparator (and the rest of the proven fragment) machine-checked in Lean.
 - ✅ CDCL engine (watched literals, 1-UIP learning, VSIDS, Luby restarts).
-- ✅ **RUP/LRAT Unsat certificates** + independent checker (`lrat.rs`); Unsat fail-closed without them.
-- ⬜ product soak then optional default flip of `ANUBIS_NATIVE_AUTHORITATIVE` (not automatic).
+- ✅ **RUP Unsat certificates** (LRAT-shaped, no deletions) + independent pure checker (`lrat.rs`);
+  Unsat fail-closed without a verifying cert.
+- ✅ **Default flip (2026-07-25):** native-authoritative by default; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`.
 - ⬜ division / var×var mul remain deferred by design; float arithmetic / non-eq string ops still z3.

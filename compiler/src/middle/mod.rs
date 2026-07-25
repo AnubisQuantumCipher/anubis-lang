@@ -7321,15 +7321,13 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     // Phase-7 z3-authoritative flip (opt-in): the native QF_BV solver decides the PRIMARY obligation
     // when it can — but ONLY over the PROOF-BACKED FRAGMENT. `native_check_sat_model_authoritative`
     // applies `fragment::is_proven_authoritative`, so a native verdict is returned only when EVERY op
-    // has a machine-checked bit-blast in BitBlast.lean (adder; const-mul; const+barrel shl/lshr; not,
-    // concat, extract, zero_extend; all eight comparators via ult/slt/ule/sle_correct; equality via
-    // eqBits_correct). Unproven ops (Sub/Neg/bitwise/Ashr/SignExtend/div-rem/Ite/var×var-Mul) DEFER to
-    // z3. So UNSAT (proven) — the trust-critical direction, especially in the z3-absent window where it
-    // is uncross-checked — rests only on a proven blast plus the CDCL engine's sound-by-construction
-    // UNSAT (level-0 refutation). SAT (counterexample) is the reject direction and its model is
-    // re-verified by the solver's OWN independent evaluator before return (the native replay). While z3
-    // is on PATH every native verdict is additionally cross-checked and a disagreement fails CLOSED.
-    // Native declines (out-of-fragment, float/string/array, over-budget) fall through to z3 unchanged.
+    // has a machine-checked bit-blast in BitBlast.lean. Unproven ops (div-rem / var×var-Mul / …) DEFER
+    // to z3. UNSAT (the trust-critical direction, especially z3-absent) requires ALL of: (1) proven
+    // fragment, (2) CDCL UnsatCert (root refutation), (3) independent `lrat::check_proof` accept —
+    // missing/invalid cert → native declines (`None`), never a bare Unsat. SAT (counterexample) is
+    // re-verified by independent `bv::Formula::eval` before return. While z3 is on PATH every native
+    // verdict is additionally cross-checked and a disagreement fails CLOSED. Native declines
+    // (out-of-fragment, float/string/array, over-budget, cert reject) fall through to z3 unchanged.
     if native_authoritative() {
         match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
@@ -7578,13 +7576,24 @@ fn parse_z3_model(model: &str) -> BTreeMap<String, String> {
     bindings
 }
 
-/// Phase-7 z3-authoritative flip (opt-in, `ANUBIS_NATIVE_AUTHORITATIVE=1`): when set, any obligation
-/// the native QF_BV solver fully decides uses the NATIVE verdict. While z3 is still on PATH it is run
-/// as a cross-check and any disagreement fails CLOSED (reject + loud alarm) — so the soak period has
-/// no unchecked trust. When z3 is absent, the native verdict alone carries the integer lane: that is
-/// the TCB drop this whole phase builds toward. Off by default — the stock pipeline is unchanged.
+/// Phase-7 native SMT authority (**default ON** after product flip 2026-07-25).
+///
+/// When authoritative, any obligation the native QF_BV solver fully decides uses the NATIVE
+/// verdict — Unsat only after fragment gate + verified RUP cert (`lrat::check_proof`), Sat only
+/// after independent model replay. While z3 is on PATH it is run as a fail-closed cross-check.
+/// When z3 is absent, native alone carries the proven fragment (TCB drop).
+///
+/// **Opt out** (restore z3-only authority): `ANUBIS_NATIVE_AUTHORITATIVE=0|false|off|no`.
+/// Explicit `=1|true|on|yes` also forces on (useful in docs/scripts).
 fn native_authoritative() -> bool {
-    std::env::var("ANUBIS_NATIVE_AUTHORITATIVE").as_deref() == Ok("1")
+    match std::env::var("ANUBIS_NATIVE_AUTHORITATIVE") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        // Product default flip: native-authoritative on proven fragment unless opted out.
+        Err(_) => true,
+    }
 }
 
 /// Bare z3 spawn returning the trimmed first line of stdout (`sat`/`unsat`/`unknown`/`(error…`), or
