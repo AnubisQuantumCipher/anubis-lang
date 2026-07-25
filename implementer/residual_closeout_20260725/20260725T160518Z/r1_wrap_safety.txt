@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-5243668692475a3f)
+
+running 6 tests
+test tests::wrap_safety_free_mul_proves_when_both_factors_bounded ... ok
+test tests::wrap_safety_free_mul_fail_closed_offline ... ok
+test tests::wrap_safety_mul_by_const_flags_unbounded ... ok
+test tests::wrap_safety_add_zero_is_safe ... ok
+test tests::wrap_safety_flags_unbounded_increment_with_possible_fix ... ok
+test tests::wrap_safety_passes_when_requires_excludes_max ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 580 filtered out; finished in 0.39s
+

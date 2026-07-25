@@ -1,0 +1,2 @@
+anubis check examples/showcase/vz_confine_demo.anb (evidence=false, verified=false)
+check passed

@@ -1,0 +1,42 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-5243668692475a3f)
+
+running 35 tests
+test middle::capability::tests::explicit_cap_use_without_effect_still_linear ... ok
+test middle::capability::tests::aggregate_double_use_is_reuse ... ok
+test middle::capability::tests::empty_reason_cap_export_does_not_peel ... ok
+test middle::capability::tests::missing_on_provable_non_capability ... ok
+test middle::capability::tests::both_branches_consume_is_linear_not_reuse ... ok
+test middle::capability::tests::loop_carried_consume_rejects_in_verified_only ... ok
+test middle::capability::tests::branch_dual_default_accepts_verified_rejects ... ok
+test middle::capability::tests::ordinary_acquire_token_as_print_arg_is_not_export ... ok
+test middle::capability::tests::move_preserves_nonexportable ... ok
+test middle::capability::tests::move_on_rebind_keeps_the_token_singular ... ok
+test middle::capability::tests::non_literal_acquisition_kind_does_not_authorize ... ok
+test middle::capability::tests::straight_line_double_use_is_reuse_in_both_lanes ... ok
+test middle::capability::tests::used_once_and_surrendered_accept ... ok
+test middle::capability::tests::nonexportable_double_spend_is_reuse ... ok
+test middle::capability::tests::nonexportable_token_as_print_arg_is_export ... ok
+test middle::capability::tests::nonexportable_token_as_send_payload_is_export ... ok
+test middle::capability::tests::verified_effect_without_acquisition_is_unauthorized ... ok
+test middle::capability::tests::verified_effect_with_live_matching_token_is_authorized ... ok
+test middle::capability::tests::nonexportable_causal_spend_without_token_in_args_accepts ... ok
+test middle::capability::tests::verified_wrong_kind_live_token_does_not_authorize ... ok
+test middle::capability::tests::param_capability_does_not_authorize_an_effect ... ok
+test middle::capability::tests::user_fn_shadowing_a_builtin_name_is_not_a_performed_effect ... ok
+test middle::capability::tests::verified_effect_then_cap_use_is_reuse ... ok
+test middle::capability::tests::nonexportable_cap_use_is_not_export ... ok
+test middle::capability::tests::wellformed_cap_export_peels_then_print_accepts ... ok
+test tests::capability_aggregate_double_use_rejects ... ok
+test tests::capability_move_on_rebind_keeps_token_singular ... ok
+test tests::capability_branch_dual_default_accepts_verified_rejects ... ok
+test tests::verified_lane_requires_uses_for_capability_io ... ok
+test tests::capability_loop_carried_rejects_in_verified_only ... ok
+test tests::verified_effect_requires_a_genuinely_acquired_capability ... ok
+test tests::capability_reuse_and_missing_reject_in_both_lanes ... ok
+test tests::verified_no_privileged_effect_needs_no_capability ... ok
+test tests::buried_privileged_call_is_a_capability_bypass_now_closed ... ok
+test tests::capability_used_once_surrendered_and_unknown_provenance_accept ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 551 filtered out; finished in 0.00s
+

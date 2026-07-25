@@ -6839,6 +6839,46 @@ fn main() {
             }"#,
         )
         .expect("clean nested bind application must accept");
+        // Intermediate sub-container bind residual (skeptic 2026-07-25):
+        // `let mid = outer[0]; mid[0](0)` must re-key outer's field_closures `"0.0"` → mid `"0"`.
+        let err5 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let outer = [[|x| send("h", 80, k)]];
+                let mid = outer[0];
+                mid[0](0);
+            }"#,
+        )
+        .expect_err("intermediate literal mid-bind secret capture must reject");
+        assert!(
+            err5.contains("ANUBIS_SECRET") || err5.contains("secret"),
+            "mid lit: expected secret diagnostic, got: {err5}"
+        );
+        // Symbolic intermediate sub-container bind (union-project first segments).
+        let err6 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let i = 0;
+                let outer = [[|x| send("h", 80, k)]];
+                let mid = outer[i];
+                mid[0](0);
+            }"#,
+        )
+        .expect_err("intermediate symbolic mid-bind secret capture must reject");
+        assert!(
+            err6.contains("ANUBIS_SECRET") || err6.contains("secret"),
+            "mid sym: expected secret diagnostic, got: {err6}"
+        );
+        // Clean intermediate mid-bind still accepts (no false reject).
+        tc_ok(
+            r#"fn main() uses(net.send) {
+                let i = 0;
+                let outer = [[|x| send("h", 80, 1)]];
+                let mid = outer[i];
+                mid[0](0);
+            }"#,
+        )
+        .expect("clean intermediate mid-bind application must accept");
     }
 
     #[test]

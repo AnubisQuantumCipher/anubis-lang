@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/anubis_compiler-5243668692475a3f)
+
+running 7 tests
+test package::entitlements::tests::net_send_bounded_enables_network_client_posture ... ok
+test package::entitlements::tests::fs_write_tracks_read_write_posture ... ok
+test package::entitlements::tests::net_free_program_disables_network_client ... ok
+test package::entitlements::tests::plist_only_lists_enabled_keys_sorted ... ok
+test package::entitlements::tests::shell_does_not_auto_enable_exec_entitlement ... ok
+test package::entitlements::tests::no_apple_enforced_claim_on_any_key ... ok
+test package::entitlements::tests::re_derive_matches_and_catches_forged_network ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 579 filtered out; finished in 0.00s
+

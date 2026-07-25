@@ -446,6 +446,92 @@ fn any_capturing_field_closure(
     None
 }
 
+/// Project nested `field_closures` under concrete path `prefix` onto a new binding.
+/// Keys `"0.0"`, `"0.1"` with prefix `"0"` become `"0"`, `"1"` — so `let mid = outer[0]` then
+/// `mid[0](…)` resolves the nested lambda (sub-container bind residual).
+fn project_field_closures(
+    root: &str,
+    prefix: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> BTreeMap<String, Box<Expr>> {
+    let mut out = BTreeMap::new();
+    let Some(b) = scope.get(root) else {
+        return out;
+    };
+    if prefix.is_empty() {
+        return b.field_closures.clone();
+    }
+    let dotted = format!("{prefix}.");
+    for (k, lam) in &b.field_closures {
+        if let Some(rest) = k.strip_prefix(&dotted) {
+            out.insert(rest.to_string(), lam.clone());
+        }
+    }
+    out
+}
+
+/// Symbolic sub-container bind `let mid = outer[i]`: union projections under every first path
+/// segment (fail-closed over-approx of which element was selected).
+fn project_field_closures_symbolic_union(
+    root: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> BTreeMap<String, Box<Expr>> {
+    let mut out = BTreeMap::new();
+    let Some(b) = scope.get(root) else {
+        return out;
+    };
+    let mut firsts: BTreeSet<String> = BTreeSet::new();
+    for k in b.field_closures.keys() {
+        firsts.insert(k.split('.').next().unwrap_or(k).to_string());
+    }
+    for f in firsts {
+        for (k, lam) in project_field_closures(root, &f, scope) {
+            // Prefer a capturing lambda if several first-segments project onto the same key.
+            let capt = lambda_expr_captures_secret_or_taint(&lam, scope, ctx);
+            match out.get(&k) {
+                Some(_) if !capt => {}
+                Some(prev) if lambda_expr_captures_secret_or_taint(prev, scope, ctx) => {}
+                _ => {
+                    out.insert(k, lam);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn lambda_expr_captures_secret_or_taint(
+    lam: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> bool {
+    let Expr::Lambda { params, body } = lam else {
+        return false;
+    };
+    let mut inner = scope.clone();
+    for p in params {
+        inner.remove(p);
+    }
+    seed_body_local_lambdas(body, &mut inner);
+    expr_secret_source_m(
+        body,
+        &inner,
+        &ctx.secret_fns,
+        &ctx.param_return_taint,
+        &ctx.method_secret_fns,
+    )
+    .is_some()
+        || expr_taint_source_m(
+            body,
+            &inner,
+            &ctx.tainting_fns,
+            &ctx.param_return_taint,
+            &ctx.method_tainting_fns,
+        )
+        .is_some()
+}
+
 /// Resolve a lambda applied via container path (`arr[0](…)`, `outer[0][0](…)`, `b.fs[i](…)`,
 /// `m["k"](…)`). Concrete literal paths use `flatten_access_path` keys (`"0.0"`, `"fs.0"`).
 /// Any symbolic index in the chain fail-closes to a capturing element under the root if one exists.
@@ -4519,21 +4605,27 @@ fn analyze_stmts(
                 // secret/tainted-capturing closure binds `g` to a capturing element (fail-closed).
                 // Covers flat `arr[i]`, nested `outer[i][0]`, and `b.fs[i]` bind twins of direct apply.
                 let cl = cl.or_else(|| symbolic_index_capturing_closure(init, scope, ctx));
-                // Task #48: closures stored in this binding's STRUCT FIELDS (`let b = S { f: |x| ... }`),
-                // keyed field → lambda, so `b.f(0)` can descend into the field-closure body. A field value
-                // that is an inline lambda, or a var bound to a closure, is recorded; an alias `let b2 = b`
-                // propagates b's field-closures. (Nested-struct fields / reassignment are residuals.)
-                // Also holds LIST-ELEMENT closures (`let arr = [|x| ...]`) keyed by the element index as
-                // a string, so `arr[0](0)` (a `CallExpr` on an `Index`) descends the same way (#48-d).
-                // Closures stored anywhere in this binding's container structure, keyed by dotted
-                // access path (`collect_container_closures`) so `b.f(0)` / `arr[0](0)` / `o.inner.f(0)`
-                // / `arr[0].f(0)` / `m["k"](0)` all descend into the stored closure body. An alias
-                // `let b2 = b` inherits b's paths.
+                // Task #48: closures stored in this binding's STRUCT FIELDS / LIST / MAP, keyed by
+                // dotted access path. Alias `let b2 = b` inherits b's paths.
+                // Sub-container bind residual close (2026-07-25): `let mid = outer[0]` must re-key
+                // outer's `"0.0"` → mid's `"0"` so `mid[0](…)` still sees the nested lambda.
+                // Symbolic `let mid = outer[i]`: union-project all first-segments (fail-closed).
                 let fclos: BTreeMap<String, Box<Expr>> = match init {
                     Expr::Var(v) => scope
                         .get(v)
                         .map(|b| b.field_closures.clone())
                         .unwrap_or_default(),
+                    Expr::Index { .. } | Expr::FieldAccess { .. } => {
+                        if access_chain_has_symbolic_index(init) {
+                            access_chain_root(init)
+                                .map(|r| project_field_closures_symbolic_union(&r, scope, ctx))
+                                .unwrap_or_default()
+                        } else {
+                            flatten_access_path(init)
+                                .map(|(root, path)| project_field_closures(&root, &path, scope))
+                                .unwrap_or_default()
+                        }
+                    }
                     _ => {
                         let mut m = BTreeMap::new();
                         collect_container_closures(init, "", scope, &mut m);
