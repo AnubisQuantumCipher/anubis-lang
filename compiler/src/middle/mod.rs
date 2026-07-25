@@ -11092,6 +11092,13 @@ fn smt_bv_const_nonneg(smt: &str) -> bool {
     rest.parse::<u64>().ok().is_some_and(|n| n < (1u64 << 63))
 }
 
+/// Parse `(_ bvN 64)` as u64 when present (for const-fold of `/` `%`).
+fn smt_bv_const_u64(smt: &str) -> Option<u64> {
+    let s = smt.trim();
+    let rest = s.strip_prefix("(_ bv")?.strip_suffix(" 64)")?;
+    rest.parse().ok()
+}
+
 #[allow(clippy::only_used_in_recursion)]
 fn expr_to_smt_with_width(
     e: &Expr,
@@ -11160,34 +11167,54 @@ fn expr_to_smt_with_width(
                     )
                 }
                 // Division/modulo (non-zero literal divisor only — is_int_modelable).
-                // Pow2 rewrite when dividend is non-negative (const or requires-proven var) and
-                // divisor is 2^k → proven bvlshr/bvand (native-authoritative). General bvsdiv
-                // stays deferred for free/signed dividends.
+                // 1) Both sides ground consts → fold to a single bv literal (no bvsdiv in SMT;
+                //    native-authoritative; matches i64 wrapping_div/wrapping_rem).
+                // 2) Pow2 rewrite when dividend is non-negative (const or requires-proven var)
+                //    and divisor is 2^k → proven bvlshr/bvand.
+                // 3) Else raw bvsdiv/bvsrem (native defers; z3 may still decide).
                 "/" => {
-                    let k = pow2_shift_k_from_smt_rhs(&r);
-                    let nonneg = smt_bv_const_nonneg(&l)
-                        || matches!(
-                            lhs.as_ref(),
-                            Expr::Var(v) if widths.contains_key(&nonneg_mark(v))
-                        );
-                    if let (Some(k), true) = (k, nonneg) {
-                        format!("(bvlshr {} (_ bv{} 64))", l, k)
+                    if let (Some(lv), Some(rv)) = (smt_bv_const_u64(&l), smt_bv_const_u64(&r)) {
+                        if rv != 0 {
+                            let q = (lv as i64).wrapping_div(rv as i64) as u64;
+                            format!("(_ bv{} 64)", q)
+                        } else {
+                            format!("(bvsdiv {} {})", l, r)
+                        }
                     } else {
-                        format!("(bvsdiv {} {})", l, r)
+                        let k = pow2_shift_k_from_smt_rhs(&r);
+                        let nonneg = smt_bv_const_nonneg(&l)
+                            || matches!(
+                                lhs.as_ref(),
+                                Expr::Var(v) if widths.contains_key(&nonneg_mark(v))
+                            );
+                        if let (Some(k), true) = (k, nonneg) {
+                            format!("(bvlshr {} (_ bv{} 64))", l, k)
+                        } else {
+                            format!("(bvsdiv {} {})", l, r)
+                        }
                     }
                 }
                 "%" => {
-                    let k = pow2_shift_k_from_smt_rhs(&r);
-                    let nonneg = smt_bv_const_nonneg(&l)
-                        || matches!(
-                            lhs.as_ref(),
-                            Expr::Var(v) if widths.contains_key(&nonneg_mark(v))
-                        );
-                    if let (Some(k), true) = (k, nonneg) {
-                        let mask = (1u64 << k).wrapping_sub(1);
-                        format!("(bvand {} (_ bv{} 64))", l, mask)
+                    if let (Some(lv), Some(rv)) = (smt_bv_const_u64(&l), smt_bv_const_u64(&r)) {
+                        if rv != 0 {
+                            let rem = (lv as i64).wrapping_rem(rv as i64) as u64;
+                            format!("(_ bv{} 64)", rem)
+                        } else {
+                            format!("(bvsrem {} {})", l, r)
+                        }
                     } else {
-                        format!("(bvsrem {} {})", l, r)
+                        let k = pow2_shift_k_from_smt_rhs(&r);
+                        let nonneg = smt_bv_const_nonneg(&l)
+                            || matches!(
+                                lhs.as_ref(),
+                                Expr::Var(v) if widths.contains_key(&nonneg_mark(v))
+                            );
+                        if let (Some(k), true) = (k, nonneg) {
+                            let mask = (1u64 << k).wrapping_sub(1);
+                            format!("(bvand {} (_ bv{} 64))", l, mask)
+                        } else {
+                            format!("(bvsrem {} {})", l, r)
+                        }
                     }
                 }
                 _ => format!("({} {} {})", op, l, r),

@@ -824,6 +824,56 @@ fn is_export_sink(callee: &str) -> bool {
     EXPORT_SINKS.contains(&callee)
 }
 
+/// Root variable of a place (`arr[i].f` → `arr`). Used for index/field NE stores.
+fn place_root_var(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Var(n) => Some(n.as_str()),
+        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => place_root_var(base),
+        _ => None,
+    }
+}
+
+/// Seed `container_ne` when push/insert stores a Live NE value into a named container.
+/// `method_base` is `Some` for `arr.push(v)` / `m.insert(k,v)`; free forms use `args[0]` as container.
+fn note_container_ne_mutation(
+    name: &str,
+    args: &[Expr],
+    method_base: Option<&Expr>,
+    caps: &CapMap,
+    lin: &mut Lin,
+) {
+    let (container, value) = match name {
+        "push" => {
+            let cont = method_base.or_else(|| args.first());
+            let val = if method_base.is_some() {
+                args.first()
+            } else {
+                args.get(1)
+            };
+            (cont, val)
+        }
+        "insert" => {
+            let cont = method_base.or_else(|| args.first());
+            let val = if method_base.is_some() {
+                args.get(1) // m.insert(k, v)
+            } else {
+                args.get(2) // insert(m, k, v)
+            };
+            (cont, val)
+        }
+        _ => return,
+    };
+    let (Some(container), Some(value)) = (container, value) else {
+        return;
+    };
+    if !expr_holds_live_ne(value, caps, &lin.container_ne) {
+        return;
+    }
+    if let Expr::Var(n) = container {
+        lin.container_ne.insert(n.clone());
+    }
+}
+
 /// True if `expr` is a Live non-exportable token, a known NE-carrying container, or an
 /// aggregate that embeds either (pre-consume snapshot for store-then-project tracking).
 fn expr_holds_live_ne(expr: &Expr, caps: &CapMap, container_ne: &BTreeSet<String>) -> bool {
@@ -1176,6 +1226,12 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
             if let Expr::Var(name) = target {
                 rebind(name, value, caps, lin);
             } else {
+                // Place-write: `arr[i] = ne` / `b.f = ne` seeds container_ne on the root var.
+                if expr_holds_live_ne(value, caps, &lin.container_ne) {
+                    if let Some(root) = place_root_var(target) {
+                        lin.container_ne.insert(root.to_string());
+                    }
+                }
                 walk_expr(target, caps, lin);
                 walk_expr(value, caps, lin);
             }
@@ -1386,6 +1442,9 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                     }
                 }
             }
+            // Store-then-project: free `push(arr, ne)` / `insert(m, k, ne)` seed container_ne
+            // *before* args are consumed, so later arr[i]/m[k] to export sinks fail closed.
+            note_container_ne_mutation(callee, args, None, caps, lin);
             for a in args {
                 walk_expr(a, caps, lin);
             }
@@ -1409,6 +1468,10 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             }
         }
         Expr::CallExpr { callee, args } => {
+            // Method form: `arr.push(ne)` / `m.insert(k, ne)`.
+            if let Expr::FieldAccess { base, field, .. } = &**callee {
+                note_container_ne_mutation(field, args, Some(base), caps, lin);
+            }
             walk_expr(callee, caps, lin);
             for a in args {
                 walk_expr(a, caps, lin);
@@ -2362,6 +2425,81 @@ fn f() { let y = send(3); }"#;
         assert!(
             codes(src, true).is_empty(),
             "exportable store-then-index must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_push_then_index_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let arr = [];
+            push(arr, s);
+            print(arr[0]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "push-then-index NE must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_method_push_then_index_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let arr = [];
+            arr.push(s);
+            print(arr[0]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "method push-then-index NE must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_insert_then_get_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let m = {};
+            insert(m, "k", s);
+            print(m["k"]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "insert-then-get NE must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_push_then_print_container_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let arr = [];
+            push(arr, s);
+            print(arr);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "push-then-print container must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_push_then_index_print_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let arr = [];
+            push(arr, c);
+            print(arr[0]);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable push-then-index must not EXPORT, got {:?}",
             codes(src, true)
         );
     }
