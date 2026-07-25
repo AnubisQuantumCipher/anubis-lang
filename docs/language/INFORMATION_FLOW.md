@@ -68,9 +68,11 @@ not a soft warning. Covered control forms (same assignment pattern):
 
 - `let x: i64 = secret` / `x = secret` when `x` is annotated public → **`ANUBIS_SECRET_TO_PUBLIC`**
 - `b.n = secret` / `a[i] = secret` when the root is annotated public → **`ANUBIS_SECRET_TO_PUBLIC`**
+- secret argument into an **explicitly typed public** formal (`fn take(x: i64)`) → **`ANUBIS_SECRET_TO_PUBLIC`**
 - `return secret` with an explicit public `-> T` → **`ANUBIS_SECRET_TO_PUBLIC`**
 - unannotated `let x = secret` still flow-sensitively labels `x` secret (no laundering by annotation);
-  unannotated containers MAY-label on place write (egress still catches)
+  unannotated containers MAY-label on place write (egress still catches);
+  untyped formals (`fn f(x)`) still use the interproc egress summary (not forced secret-to-public)
 
 Escape hatches:
 

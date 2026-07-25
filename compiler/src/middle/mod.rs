@@ -5982,6 +5982,31 @@ fn analyze_expr_effect(
                                 });
                             }
                         }
+                        // Safe-mode: secret argument into an **explicitly public** formal is label
+                        // laundering at the call boundary (dual of public-typed let/assign).
+                        // Untyped formals (`fn f(x)`) keep the prior interproc egress summary style —
+                        // only typed public formals (`x: i64`) force secret<T> or declassify.
+                        // Escape: `secret<T>` param or declassify at the call site.
+                        if mode == Mode::Safe
+                            && !expected.is_empty()
+                            && !is_secret_type(Some(expected))
+                            && expr_secret_source_m(
+                                arg,
+                                scope,
+                                &ctx.secret_fns,
+                                &ctx.param_return_taint,
+                                &ctx.method_secret_fns,
+                            )
+                            .is_some()
+                        {
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
+                                message: format!(
+                                    "secret value passed as argument {i} of `{callee}` into public formal type `{expected}` — confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason)."
+                                ),
+                                span: None,
+                            });
+                        }
                     }
                 }
             }

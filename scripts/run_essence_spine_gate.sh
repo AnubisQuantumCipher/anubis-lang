@@ -53,7 +53,8 @@ for st_rej in \
   examples/security/secret_to_public_let_rejects.anb \
   examples/security/secret_to_public_return_rejects.anb \
   examples/security/secret_to_public_field_rejects.anb \
-  examples/security/secret_to_public_index_rejects.anb
+  examples/security/secret_to_public_index_rejects.anb \
+  examples/security/secret_to_public_call_rejects.anb
 do
   base="$(basename "$st_rej" .anb)"
   if ! "$ANUBIS" check "$st_rej" >"$OUT/${base}.txt" 2>&1; then
@@ -70,7 +71,8 @@ for if_ok in \
   examples/security/implicit_flow_secret_local_accepts.anb \
   examples/security/implicit_flow_for_secret_local_accepts.anb \
   examples/security/implicit_flow_return_secret_accepts.anb \
-  examples/security/secret_to_public_declassify_accepts.anb
+  examples/security/secret_to_public_declassify_accepts.anb \
+  examples/security/secret_to_public_call_accepts.anb
 do
   base="$(basename "$if_ok" .anb)"
   if "$ANUBIS" check "$if_ok" >"$OUT/${base}.txt" 2>&1; then

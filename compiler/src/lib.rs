@@ -7340,6 +7340,39 @@ fn main() {
 "#;
         typecheck(parse_source(unann).unwrap(), Mode::Safe)
             .expect("unannotated place write tracks secret without public-type laundering");
+
+        // Call-boundary dual: secret arg into public formal.
+        let call = r#"
+fn take(x: i64) { }
+fn main() {
+    let bal: secret<i64> = 1;
+    take(bal);
+}
+"#;
+        let err = typecheck(parse_source(call).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret arg into public formal must reject");
+        assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "call: {err}");
+
+        let call_ok = r#"
+fn take(x: secret<i64>) { }
+fn main() {
+    let bal: secret<i64> = 1;
+    take(bal);
+}
+"#;
+        typecheck(parse_source(call_ok).unwrap(), Mode::Safe)
+            .expect("secret arg into secret formal is ok");
+
+        let call_declass = r#"
+fn take(x: i64) { }
+fn main() {
+    let bal: secret<i64> = 1;
+    take(declassify(bal, "p", "r"));
+}
+"#;
+        typecheck(parse_source(call_declass).unwrap(), Mode::Safe)
+            .expect("declassify at call site is ok");
     }
 
     /// Public return under secret PC is the return dual of public-local assign (binary extraction).
