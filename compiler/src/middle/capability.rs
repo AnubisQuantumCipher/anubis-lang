@@ -156,6 +156,11 @@ pub(crate) struct CapProgramSummary {
     returns_nonexportable: BTreeSet<String>,
     /// User function → formal indices that flow as data to an export sink without peel.
     exports_formals: BTreeMap<String, BTreeSet<usize>>,
+    /// User function → container formal index → value formal indices stored into it
+    /// (push/insert/literal/place of formal into formal container). Call sites seed
+    /// `container_ne` on the corresponding args when value args hold Live NE.
+    /// Direct-callee only (transitive stash-through-mid is residual unless composed).
+    container_stores: BTreeMap<String, BTreeMap<usize, BTreeSet<usize>>>,
 }
 
 /// Check every function: linearity + verified causal spend + interproc non_exportable sealedness.
@@ -281,11 +286,31 @@ pub(crate) fn build_cap_program_summary_from_fns(
     all_fns: &BTreeSet<String>,
 ) -> CapProgramSummary {
     let mut summary = CapProgramSummary::default();
-    // Formals that reach export sinks are independent of the return-NE fixpoint.
-    for (name, params, body, _) in fns {
-        let exported = formals_reaching_export_sink(params, body);
-        if !exported.is_empty() {
-            summary.exports_formals.insert((*name).to_string(), exported);
+    // Fixpoint: container stores + export formals compose through callees
+    // (stash(arr,s){push}; leak calls stash then print(arr[0])).
+    loop {
+        let before_stores = summary.container_stores.clone();
+        let before_exports = summary.exports_formals.clone();
+        for (name, params, body, _) in fns {
+            let (exported, stores) =
+                formals_export_and_container_stores(params, body, &summary.container_stores);
+            if exported.is_empty() {
+                summary.exports_formals.remove(*name);
+            } else {
+                summary
+                    .exports_formals
+                    .insert((*name).to_string(), exported);
+            }
+            if stores.is_empty() {
+                summary.container_stores.remove(*name);
+            } else {
+                summary
+                    .container_stores
+                    .insert((*name).to_string(), stores);
+            }
+        }
+        if summary.container_stores == before_stores && summary.exports_formals == before_exports {
+            break;
         }
     }
     // Fixpoint: returns_nonexportable may depend on callees.
@@ -500,13 +525,14 @@ fn for_each_export_child(stmt: &Stmt, mut visit: impl FnMut(ExportReachable<'_>)
     }
 }
 
-/// Formal indices that reach print/send/http_*/write_file as data without a prior cap_export peel.
-/// Also tracks store-then-project: formals pushed/inserted/literal-stored into named containers
-/// whose projection (`arr[i]` / `m[k]` / the container itself) reaches an export sink.
-fn formals_reaching_export_sink(
+/// Formal export-sink reachability + formal-container store summary for one function body.
+/// `known_container_stores` is the program summary so far (callee formal-container maps).
+/// Returns `(exporting_formal_idxs, container_formal_idx → value_formal_idxs)`.
+fn formals_export_and_container_stores(
     params: &[(String, String)],
     body: &[Stmt],
-) -> BTreeSet<usize> {
+    known_container_stores: &BTreeMap<String, BTreeMap<usize, BTreeSet<usize>>>,
+) -> (BTreeSet<usize>, BTreeMap<usize, BTreeSet<usize>>) {
     // name -> formal index still sealed (not peeled)
     let mut sealed: BTreeMap<String, usize> = BTreeMap::new();
     for (i, (n, _)) in params.iter().enumerate() {
@@ -703,6 +729,7 @@ fn formals_reaching_export_sink(
         sealed: &mut BTreeMap<String, usize>,
         containers: &mut BTreeMap<String, BTreeSet<usize>>,
         exported: &mut BTreeSet<usize>,
+        known: &BTreeMap<String, BTreeMap<usize, BTreeSet<usize>>>,
     ) {
         match init {
             Expr::Var(src) => {
@@ -729,7 +756,7 @@ fn formals_reaching_export_sink(
             }
             other => {
                 // Scan for export of sealed formals *before* dropping the name's tracking.
-                walk_expr_export(other, sealed, containers, exported);
+                walk_expr_export(other, sealed, containers, exported, known);
                 let idxs = formals_in_expr(other, sealed, containers);
                 if !idxs.is_empty() {
                     containers.insert(name.to_string(), idxs);
@@ -745,22 +772,23 @@ fn formals_reaching_export_sink(
         sealed: &mut BTreeMap<String, usize>,
         containers: &mut BTreeMap<String, BTreeSet<usize>>,
         exported: &mut BTreeSet<usize>,
+        known: &BTreeMap<String, BTreeMap<usize, BTreeSet<usize>>>,
     ) {
         for s in stmts {
             match s {
                 // Formal MOVE / peel bookkeeping — still must scan non-move inits.
                 Stmt::Let { name, init, .. } => {
-                    rebind_or_scan_init(name, init, sealed, containers, exported);
+                    rebind_or_scan_init(name, init, sealed, containers, exported, known);
                 }
                 Stmt::LetPattern { init, .. } => {
                     // Pattern binds are not formals; still scan init for print(formal).
-                    walk_expr_export(init, sealed, containers, exported);
+                    walk_expr_export(init, sealed, containers, exported, known);
                 }
                 Stmt::Assign {
                     target: Expr::Var(name),
                     value,
                 } => {
-                    rebind_or_scan_init(name, value, sealed, containers, exported);
+                    rebind_or_scan_init(name, value, sealed, containers, exported, known);
                 }
                 Stmt::Assign { target, value } => {
                     // Place-write: `arr[i] = formal` / `b.f = formal` seeds container formals.
@@ -773,26 +801,26 @@ fn formals_reaching_export_sink(
                                 .extend(idxs);
                         }
                     }
-                    walk_expr_export(target, sealed, containers, exported);
-                    walk_expr_export(value, sealed, containers, exported);
+                    walk_expr_export(target, sealed, containers, exported, known);
+                    walk_expr_export(value, sealed, containers, exported, known);
                 }
-                Stmt::ExprStmt(e) => walk_expr_export(e, sealed, containers, exported),
+                Stmt::ExprStmt(e) => walk_expr_export(e, sealed, containers, exported, known),
                 // Branch merge: peels in then do not poison else (clone sealed per arm).
                 // Container stores union fail-closed into the parent (any-arm NE store sticks).
                 Stmt::If {
                     cond, then, else_, ..
                 } => {
-                    walk_expr_export(cond, sealed, containers, exported);
+                    walk_expr_export(cond, sealed, containers, exported, known);
                     let mut s1 = sealed.clone();
                     let mut c1 = containers.clone();
-                    walk(then, &mut s1, &mut c1, exported);
+                    walk(then, &mut s1, &mut c1, exported, known);
                     for (k, v) in c1 {
                         containers.entry(k).or_default().extend(v);
                     }
                     if let Some(el) = else_ {
                         let mut s2 = sealed.clone();
                         let mut c2 = containers.clone();
-                        walk(el, &mut s2, &mut c2, exported);
+                        walk(el, &mut s2, &mut c2, exported, known);
                         for (k, v) in c2 {
                             containers.entry(k).or_default().extend(v);
                         }
@@ -803,17 +831,17 @@ fn formals_reaching_export_sink(
                     body,
                     invariant,
                 } => {
-                    walk_expr_export(cond, sealed, containers, exported);
+                    walk_expr_export(cond, sealed, containers, exported, known);
                     for inv in invariant {
-                        walk_expr_export(inv, sealed, containers, exported);
+                        walk_expr_export(inv, sealed, containers, exported, known);
                     }
-                    walk(body, sealed, containers, exported);
+                    walk(body, sealed, containers, exported, known);
                 }
                 Stmt::Loop { body, invariant } => {
                     for inv in invariant {
-                        walk_expr_export(inv, sealed, containers, exported);
+                        walk_expr_export(inv, sealed, containers, exported, known);
                     }
-                    walk(body, sealed, containers, exported);
+                    walk(body, sealed, containers, exported, known);
                 }
                 Stmt::For {
                     source,
@@ -823,34 +851,34 @@ fn formals_reaching_export_sink(
                 } => {
                     match source {
                         ForSource::Range { start, end } => {
-                            walk_expr_export(start, sealed, containers, exported);
-                            walk_expr_export(end, sealed, containers, exported);
+                            walk_expr_export(start, sealed, containers, exported, known);
+                            walk_expr_export(end, sealed, containers, exported, known);
                         }
                         ForSource::Collection { expr } => {
-                            walk_expr_export(expr, sealed, containers, exported);
+                            walk_expr_export(expr, sealed, containers, exported, known);
                         }
                     }
                     for inv in invariant {
-                        walk_expr_export(inv, sealed, containers, exported);
+                        walk_expr_export(inv, sealed, containers, exported, known);
                     }
-                    walk(body, sealed, containers, exported);
+                    walk(body, sealed, containers, exported, known);
                 }
                 Stmt::WhileLet { expr, body, .. } => {
-                    walk_expr_export(expr, sealed, containers, exported);
-                    walk(body, sealed, containers, exported);
+                    walk_expr_export(expr, sealed, containers, exported, known);
+                    walk(body, sealed, containers, exported, known);
                 }
                 Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
-                    walk(body, sealed, containers, exported);
+                    walk(body, sealed, containers, exported, known);
                 }
                 Stmt::HybridBlock { gpu, cpu, prove } => {
                     if let Some(b) = gpu {
-                        walk(b, sealed, containers, exported);
+                        walk(b, sealed, containers, exported, known);
                     }
                     if let Some(b) = cpu {
-                        walk(b, sealed, containers, exported);
+                        walk(b, sealed, containers, exported, known);
                     }
                     if let Some(b) = prove {
-                        walk(b, sealed, containers, exported);
+                        walk(b, sealed, containers, exported, known);
                     }
                 }
                 Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
@@ -862,6 +890,7 @@ fn formals_reaching_export_sink(
         sealed: &mut BTreeMap<String, usize>,
         containers: &mut BTreeMap<String, BTreeSet<usize>>,
         exported: &mut BTreeSet<usize>,
+        known: &BTreeMap<String, BTreeMap<usize, BTreeSet<usize>>>,
     ) {
         match e {
             Expr::Call { callee, args } => {
@@ -876,22 +905,45 @@ fn formals_reaching_export_sink(
                 }
                 // Store-then-project via free push/insert of sealed formals.
                 note_formal_container_mutation(callee, args, None, sealed, containers);
+                // Compose callee formal-container stores into this function's containers map.
+                if let Some(stores) = known.get(callee) {
+                    for (&cont_i, val_idxs) in stores {
+                        let Some(cont_arg) = args.get(cont_i) else {
+                            continue;
+                        };
+                        let Some(cont_root) = place_root_var(cont_arg) else {
+                            continue;
+                        };
+                        let mut held = BTreeSet::new();
+                        for &vi in val_idxs {
+                            if let Some(va) = args.get(vi) {
+                                held.extend(formals_in_expr(va, sealed, containers));
+                            }
+                        }
+                        if !held.is_empty() {
+                            containers
+                                .entry(cont_root.to_string())
+                                .or_default()
+                                .extend(held);
+                        }
+                    }
+                }
                 for a in args {
-                    walk_expr_export(a, sealed, containers, exported);
+                    walk_expr_export(a, sealed, containers, exported, known);
                 }
             }
             Expr::CallExpr { callee, args } => {
                 if let Expr::FieldAccess { base, field, .. } = &**callee {
                     note_formal_container_mutation(field, args, Some(base), sealed, containers);
                 }
-                walk_expr_export(callee, sealed, containers, exported);
+                walk_expr_export(callee, sealed, containers, exported, known);
                 for a in args {
-                    walk_expr_export(a, sealed, containers, exported);
+                    walk_expr_export(a, sealed, containers, exported, known);
                 }
             }
             Expr::Binary { lhs, rhs, .. } => {
-                walk_expr_export(lhs, sealed, containers, exported);
-                walk_expr_export(rhs, sealed, containers, exported);
+                walk_expr_export(lhs, sealed, containers, exported, known);
+                walk_expr_export(rhs, sealed, containers, exported, known);
             }
             Expr::Unary { expr, .. }
             | Expr::Cast { expr, .. }
@@ -899,34 +951,34 @@ fn formals_reaching_export_sink(
             | Expr::Declassify { inner: expr, .. }
             | Expr::Assume(expr)
             | Expr::Assert(expr)
-            | Expr::Try(expr) => walk_expr_export(expr, sealed, containers, exported),
+            | Expr::Try(expr) => walk_expr_export(expr, sealed, containers, exported, known),
             Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
                 for el in elements {
-                    walk_expr_export(el, sealed, containers, exported);
+                    walk_expr_export(el, sealed, containers, exported, known);
                 }
             }
             Expr::StructLiteral { fields, .. } => {
                 for (_, v) in fields {
-                    walk_expr_export(v, sealed, containers, exported);
+                    walk_expr_export(v, sealed, containers, exported, known);
                 }
             }
             Expr::MapLiteral { entries, .. } => {
                 for (k, v) in entries {
-                    walk_expr_export(k, sealed, containers, exported);
-                    walk_expr_export(v, sealed, containers, exported);
+                    walk_expr_export(k, sealed, containers, exported, known);
+                    walk_expr_export(v, sealed, containers, exported, known);
                 }
             }
             Expr::Index { base, index } => {
-                walk_expr_export(base, sealed, containers, exported);
-                walk_expr_export(index, sealed, containers, exported);
+                walk_expr_export(base, sealed, containers, exported, known);
+                walk_expr_export(index, sealed, containers, exported, known);
             }
             Expr::FieldAccess { base, .. } => {
-                walk_expr_export(base, sealed, containers, exported)
+                walk_expr_export(base, sealed, containers, exported, known)
             }
             Expr::Block { stmts, tail } => {
-                walk(stmts, sealed, containers, exported);
+                walk(stmts, sealed, containers, exported, known);
                 if let Some(t) = tail {
-                    walk_expr_export(t, sealed, containers, exported);
+                    walk_expr_export(t, sealed, containers, exported, known);
                 }
             }
             Expr::If {
@@ -938,29 +990,44 @@ fn formals_reaching_export_sink(
                 else_,
                 ..
             } => {
-                walk_expr_export(cond, sealed, containers, exported);
-                walk_expr_export(then, sealed, containers, exported);
-                walk_expr_export(else_, sealed, containers, exported);
+                walk_expr_export(cond, sealed, containers, exported, known);
+                walk_expr_export(then, sealed, containers, exported, known);
+                walk_expr_export(else_, sealed, containers, exported, known);
             }
             Expr::Match {
                 scrutinee, arms, ..
             } => {
-                walk_expr_export(scrutinee, sealed, containers, exported);
+                walk_expr_export(scrutinee, sealed, containers, exported, known);
                 for arm in arms {
                     if let Some(g) = &arm.guard {
-                        walk_expr_export(g, sealed, containers, exported);
+                        walk_expr_export(g, sealed, containers, exported, known);
                     }
-                    walk_expr_export(&arm.body, sealed, containers, exported);
+                    walk_expr_export(&arm.body, sealed, containers, exported, known);
                 }
             }
             Expr::Lambda { body, .. } => {
-                walk_expr_export(body, sealed, containers, exported)
+                walk_expr_export(body, sealed, containers, exported, known)
             }
             _ => {}
         }
     }
-    walk(body, &mut sealed, &mut containers, &mut exported);
-    exported
+    walk(
+        body,
+        &mut sealed,
+        &mut containers,
+        &mut exported,
+        known_container_stores,
+    );
+    // Map formal-name containers back to formal indices for interproc call-site seeding.
+    let mut container_stores: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for (i, (n, _)) in params.iter().enumerate() {
+        if let Some(idxs) = containers.get(n) {
+            if !idxs.is_empty() {
+                container_stores.insert(i, idxs.clone());
+            }
+        }
+    }
+    (exported, container_stores)
 }
 
 /// A capability read-occurrence: `Live` → `Consumed`; a second consume is a reuse.
@@ -1642,6 +1709,23 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                     for &i in idxs {
                         if let Some(a) = args.get(i) {
                             check_export_arg(a, caps, lin);
+                        }
+                    }
+                }
+                // Interproc container mutation: callee formal container receives formal NE values
+                // (e.g. stash(arr,s){push(arr,s)}). Seed caller's container arg *before* consume.
+                if let Some(stores) = lin.summary.container_stores.get(callee) {
+                    for (&cont_i, val_idxs) in stores {
+                        let value_holds_ne = val_idxs.iter().any(|&vi| {
+                            args.get(vi)
+                                .is_some_and(|a| expr_holds_live_ne(a, caps, &lin.container_ne))
+                        });
+                        if value_holds_ne {
+                            if let Some(cont_arg) = args.get(cont_i) {
+                                if let Some(root) = place_root_var(cont_arg) {
+                                    lin.container_ne.insert(root.to_string());
+                                }
+                            }
                         }
                     }
                 }
@@ -3038,6 +3122,101 @@ fn f() { let y = send(3); }"#;
         assert!(
             codes(src, true).is_empty(),
             "exportable if-expr store must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_interproc_stash_push_then_index_print_is_export() {
+        // Direct-callee container mutation: stash(arr,s){push(arr,s)}; print(arr[0]).
+        let src = r#"
+            fn stash(arr, s) {
+                push(arr, s);
+            }
+            fn leak(s) {
+                let arr = [];
+                stash(arr, s);
+                print(arr[0]);
+            }
+            fn f() {
+                let t = cap_acquire_nonexportable("fs.write");
+                leak(t);
+            }
+        "#;
+        for verified in [false, true] {
+            let c = codes(src, verified);
+            assert!(
+                c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+                "interproc stash push must EXPORT, verified={verified}, got {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonexportable_interproc_stash_insert_then_get_print_is_export() {
+        let src = r#"
+            fn put(m, s) {
+                insert(m, "k", s);
+            }
+            fn leak(s) {
+                let m = {};
+                put(m, s);
+                print(m["k"]);
+            }
+            fn f() {
+                let t = cap_acquire_nonexportable("fs.write");
+                leak(t);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "interproc stash insert must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_interproc_stash_method_push_then_index_print_is_export() {
+        let src = r#"
+            fn stash(arr, s) {
+                arr.push(s);
+            }
+            fn leak(s) {
+                let arr = [];
+                stash(arr, s);
+                print(arr[0]);
+            }
+            fn f() {
+                let t = cap_acquire_nonexportable("fs.write");
+                leak(t);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "interproc method-push stash must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_interproc_stash_push_then_index_print_is_not_export() {
+        let src = r#"
+            fn stash(arr, s) {
+                push(arr, s);
+            }
+            fn leak(s) {
+                let arr = [];
+                stash(arr, s);
+                print(arr[0]);
+            }
+            fn f() {
+                let t = cap_acquire("fs.read");
+                leak(t);
+            }
+        "#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable interproc stash must not EXPORT, got {:?}",
             codes(src, true)
         );
     }
