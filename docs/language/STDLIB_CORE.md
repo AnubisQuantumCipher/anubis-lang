@@ -17,7 +17,7 @@ imported via `import std.<module>` and exercised by `scripts/run_stdlib_gate.sh`
 - assume(e) : REAL
 - assert(e) : REAL
 - len(x) : REAL in `anubis run` (list/string length)
-- hash_sha256 : PLANNED
+- hash_sha256 : REAL (alias of `sha256` / `sha256_hex` → `anubis_sha256`; NIST vector unit in run.rs)
 
 ### Proof surface (prove --backend risc0; also native run stubs)
 
