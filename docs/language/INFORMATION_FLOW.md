@@ -128,11 +128,12 @@ The historically deep shapes are now covered too (closed 2026-07-20):
   formal is carried to the call site (a lambda param that *shadows* the formal is correctly dropped, so
   `[|k| k]` does not false-reject).
 
-Where a closure is selected from a container by a genuinely **symbolic** index or key, there is no
-residual gap because the analysis **fails closed**: if the container holds any secret/tainted-capturing
-closure, the indirect application is treated as the leak it may be — and precisely so, since the same
-shape with no capturing closure still compiles. Reproducers and the discriminating clean cases are in the
-soundness-hunt notes.
+Where a closure is selected from a container by a genuinely **symbolic** index or key, the analysis
+**fails closed**: if the container holds any secret/tainted-capturing closure, both
+`let g = arr[i]; g(…)` and direct `arr[i](…)` treat the application as the leak it may be — and
+precisely so, since the same shape with no capturing closure still compiles. (Direct application was
+closed 2026-07-25; the let-bind path was j1 / 2026-07-20.) Reproducers:
+`symbolic_index_secret_capturing_list_application_fails_closed` and the discriminating clean case.
 
 **How `--verified` relates (stated precisely — it is NOT a stronger taint tracer).** The `--verified`
 lane runs the *same* information-flow analysis as Safe mode, so it shares these residuals. What it adds
