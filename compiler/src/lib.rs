@@ -3368,6 +3368,23 @@ fn mul2(x: i64) -> i64
             fails.iter().any(|c| c.name.starts_with("wrap-safety:")),
             "x*2 unbounded must wrap-risk: {fails:?}"
         );
+        // Always emit a half-range-style possible fix from the obligation (not only when CEX hits 2^62).
+        let msg = middle::format_check_failures(&fails);
+        assert!(
+            msg.contains("ANUBIS_WRAP_RISK") && msg.contains("possible fix"),
+            "mul-by-const wrap must include possible fix: {msg}"
+        );
+        assert!(
+            msg.contains("requires(x")
+                && (msg.contains("4611686018427387903")
+                    || msg.contains("<= ")
+                    || msg.contains(">= ")),
+            "possible fix must bound x for *2: {msg}"
+        );
+        assert!(
+            !msg.lines().any(|l| l.trim_start().starts_with("distinct ")),
+            "pretty model must not print junk symbol distinct: {msg}"
+        );
     }
 
     /// `x + 0` never signed-wraps — wrap-safety must prove, not false-alarm.

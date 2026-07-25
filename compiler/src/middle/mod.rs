@@ -8367,6 +8367,125 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
     AssertionFailKind::Other
 }
 
+/// Parse `(_ bvN 64)` or decimal from a wrap-safety obligation fragment.
+fn parse_wrap_smt_const(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("(_ bv") {
+        let num = rest.split_whitespace().next()?;
+        let u = num.parse::<u64>().ok()?;
+        return Some(u as i64);
+    }
+    s.parse::<i64>().ok()
+}
+
+/// Variable display name from an SMT atom (`anb_x` → `x`).
+fn wrap_smt_var_display(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.starts_with("(_") || s.starts_with('#') {
+        return None;
+    }
+    if !s
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return None;
+    }
+    // Reject SMT keywords that sometimes leak into models / obligation text.
+    if matches!(
+        s,
+        "distinct" | "extract" | "sign_extend" | "zero_extend" | "true" | "false"
+    ) {
+        return None;
+    }
+    Some(display_model_var(s).to_string())
+}
+
+/// From a wrap-safety obligation name, emit paste-ready requires for var×const mul (and simple +1).
+/// Name shape: `wrap-safety:(op lhs rhs)` with SMT atoms (e.g. `anb_x`, `(_ bv2 64)`).
+fn suggest_requires_from_wrap_obligation(name: &str) -> Vec<String> {
+    let Some(rest) = name.strip_prefix("wrap-safety:") else {
+        return vec![];
+    };
+    let rest = rest.trim();
+    let Some(rest) = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')) else {
+        return vec![];
+    };
+    // Split op + two args (args may contain spaces: `(_ bv2 64)`).
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    for ch in rest.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ' ' if depth == 0 => {
+                if !cur.is_empty() {
+                    parts.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    if parts.len() != 3 {
+        return vec![];
+    }
+    let op = parts[0].as_str();
+    let a = parts[1].as_str();
+    let b = parts[2].as_str();
+    match op {
+        "*" => {
+            let (var_d, c) = match (parse_wrap_smt_const(a), parse_wrap_smt_const(b)) {
+                (Some(c), None) => match wrap_smt_var_display(b) {
+                    Some(d) => (d, c),
+                    None => return vec![],
+                },
+                (None, Some(c)) => match wrap_smt_var_display(a) {
+                    Some(d) => (d, c),
+                    None => return vec![],
+                },
+                _ => return vec![],
+            };
+            if c == 0 || c == 1 {
+                return vec![];
+            }
+            match i64_mul_safe_range(c) {
+                Some((lo, hi)) if lo == i64::MIN && hi == i64::MAX => vec![],
+                Some((lo, hi)) if lo == i64::MIN => {
+                    vec![format!(
+                        "requires({var_d} <= {hi})  // no signed wrap for {var_d} * {c}"
+                    )]
+                }
+                Some((lo, hi)) if hi == i64::MAX => {
+                    vec![format!(
+                        "requires({var_d} >= {lo})  // no signed wrap for {var_d} * {c}"
+                    )]
+                }
+                Some((lo, hi)) => vec![format!(
+                    "requires({var_d} >= {lo} && {var_d} <= {hi})  // no signed wrap for {var_d} * {c}"
+                )],
+                None => vec![format!(
+                    "// {var_d} * {c} always signed-wraps in i64 — rethink the factor or use wider math"
+                )],
+            }
+        }
+        "+" | "-" => {
+            // Defer to model-based MAX/MIN heuristics (usually enough for ±1).
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
 /// CEX-guided contract repair (Anubis answer to SPARK's "possible fix: mention X in a precondition").
 /// Turns the concrete witness into editable `requires(...)` candidates — never auto-applied.
 fn suggest_requires_from_model(model: &str) -> Vec<String> {
@@ -8388,6 +8507,12 @@ fn suggest_requires_from_model(model: &str) -> Vec<String> {
         {
             continue;
         }
+        if matches!(
+            display.as_str(),
+            "distinct" | "extract" | "sign_extend" | "zero_extend"
+        ) {
+            continue;
+        }
         let Some(u) = parse_bv_u64_literal(&value) else {
             continue;
         };
@@ -8407,11 +8532,12 @@ fn suggest_requires_from_model(model: &str) -> Vec<String> {
             out.push(format!(
                 "requires({display} >= 0)  // excludes counterexample {display}=-1"
             ));
-        } else if i == (1i64 << 62) || u == (1u64 << 62) {
+        } else if i == (1i64 << 62) || u == (1u64 << 62) || i == -((1i64) << 62) {
             // Common wrap CEX for `x * 2` (and similar half-range factors).
             out.push(format!(
-                "requires({display} < {})  // excludes wrap-prone half-range CEX",
-                1i64 << 62
+                "requires({display} < {} && {display} > {})  // half-range style bound for *2-class wrap",
+                1i64 << 62,
+                -((1i64) << 62)
             ));
         }
         // Deliberately do NOT suggest `!= 0` for every zero witness — too noisy for multi-var models.
@@ -8589,10 +8715,40 @@ fn parse_fp_model_entries(model: &str) -> BTreeMap<String, String> {
 ///     head = 0x00000000c0000000  (3221225472)
 ///     tail = 0x0000000000000000  (0)
 /// ```
+fn is_pretty_model_symbol(name: &str) -> bool {
+    // Prefer solver-prefixed source symbols; drop SMT junk (`distinct`, etc.).
+    if name.starts_with("anb_") {
+        return true;
+    }
+    let d = display_model_var(name);
+    if matches!(
+        d,
+        "distinct"
+            | "extract"
+            | "sign_extend"
+            | "zero_extend"
+            | "true"
+            | "false"
+            | "sat"
+            | "model"
+    ) {
+        return false;
+    }
+    // Unprefixed source-like identifiers only (no raw BV ops).
+    d.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && d.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 pub fn format_counterexample(model: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let bv = parse_z3_model(model);
     for (name, value) in &bv {
+        if !is_pretty_model_symbol(name) {
+            continue;
+        }
         lines.push(format!(
             "    {} = {}",
             display_model_var(name),
@@ -8602,7 +8758,7 @@ pub fn format_counterexample(model: &str) -> String {
     let fp = parse_fp_model_entries(model);
     for (name, value) in &fp {
         // Avoid double-listing if a name somehow appeared in both maps.
-        if bv.contains_key(name) {
+        if bv.contains_key(name) || !is_pretty_model_symbol(name) {
             continue;
         }
         lines.push(format!("    {} = {}", display_model_var(name), value.trim()));
@@ -8699,6 +8855,17 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
         out.push_str(&format!("\n  {}", c.name));
         match classify_assertion_fail(c) {
             AssertionFailKind::Disproved | AssertionFailKind::WrapRisk => {
+                // Wrap-safety: always synthesize range requires from the obligation
+                // (var×const mul), independent of whether the CEX hit MAX/half-range.
+                if matches!(classify_assertion_fail(c), AssertionFailKind::WrapRisk)
+                    || c.name.starts_with("wrap-safety:")
+                {
+                    for f in suggest_requires_from_wrap_obligation(&c.name) {
+                        if !fixes.contains(&f) {
+                            fixes.push(f);
+                        }
+                    }
+                }
                 if let Some(m) = &c.model {
                     out.push_str("\n  counterexample:");
                     out.push('\n');
