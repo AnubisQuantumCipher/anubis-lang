@@ -41,8 +41,12 @@
 //! seeds the caller's binding as non-exportable; (2) a callee formal that reaches a public sink
 //! without `cap_export` causes the call site to treat the corresponding arg as an export check.
 //! **Peel-of-param:** a formal may be released with well-formed `cap_export(param, "reason")`
-//! (params never authorize effects; kind stays `None`). Deep HO rebind and ambient interproc
-//! causal spend remain residual.
+//! (params never authorize effects; kind stays `None`).
+//! **Ambient interproc causal spend (caller-pays):** a function that performs a privileged
+//! builtin without a local string-literal acquire of that kind, and that is called from another
+//! function, records the effect in `caller_pays_effects`. The effect site defers; each call site
+//! must causal-spend a live matching-kind token (composed through callees). Roots (never called
+//! from a different function) still self-authorize. Deep HO rebind remains residual.
 
 use crate::frontend::{Expr, ForSource, Pattern, Stmt};
 use std::collections::{BTreeMap, BTreeSet};
@@ -104,6 +108,8 @@ struct Lin<'a> {
     /// Formal parameter names for this function. Used only for peel-of-param (`cap_export` on a
     /// formal that is not yet a Live NE local). Params never authorize effects.
     params: BTreeSet<String>,
+    /// Current function name (caller-pays lookup + diagnostics).
+    fn_name: String,
 }
 
 impl Lin<'_> {
@@ -166,6 +172,10 @@ pub(crate) struct CapProgramSummary {
     /// `container_ne` on the corresponding args when value args hold Live NE.
     /// Direct-callee only (transitive stash-through-mid is residual unless composed).
     container_stores: BTreeMap<String, BTreeMap<usize, BTreeSet<usize>>>,
+    /// User function → privileged effect kinds the function (transitively) needs a caller to
+    /// causal-spend. Built for functions called from a *different* function; roots self-authorize.
+    /// Local string-literal acquire of kind K removes K from that function's pays set.
+    caller_pays_effects: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Check every function: linearity + verified causal spend + interproc non_exportable sealedness.
@@ -215,7 +225,7 @@ pub(crate) fn check_linearity(
     span: (usize, usize),
     all_fns: &BTreeSet<String>,
     summary: &CapProgramSummary,
-    _fn_name: &str,
+    fn_name: &str,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     let param_names: BTreeSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
@@ -227,6 +237,7 @@ pub(crate) fn check_linearity(
         summary,
         container_ne: BTreeSet::new(),
         params: param_names,
+        fn_name: fn_name.to_string(),
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
@@ -335,7 +346,250 @@ pub(crate) fn build_cap_program_summary_from_fns(
             break;
         }
     }
+    // Caller-pays ambient interproc causal spend.
+    // - direct privileged builtins not covered by local string-literal acquire
+    // - composed through callees (fixpoint)
+    // - only for functions called from a *different* function (roots self-authorize;
+    //   self-recursion alone does not mark external).
+    let mut direct_effects: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut local_acquires: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut callees_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut externally_called: BTreeSet<String> = BTreeSet::new();
+    for (name, _params, body, _) in fns {
+        let mut de = BTreeSet::new();
+        let mut acq = BTreeSet::new();
+        let mut callees = BTreeSet::new();
+        collect_body_cap_facts(body, all_fns, &mut de, &mut acq, &mut callees);
+        for g in &callees {
+            if g != *name {
+                externally_called.insert(g.clone());
+            }
+        }
+        direct_effects.insert((*name).to_string(), de);
+        local_acquires.insert((*name).to_string(), acq);
+        callees_of.insert((*name).to_string(), callees);
+    }
+    let mut pays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    loop {
+        let before = pays.clone();
+        for (name, _, _, _) in fns {
+            let mut set = direct_effects.get(*name).cloned().unwrap_or_default();
+            if let Some(cs) = callees_of.get(*name) {
+                for g in cs {
+                    if let Some(gp) = pays.get(g) {
+                        set.extend(gp.iter().cloned());
+                    }
+                }
+            }
+            if let Some(acq) = local_acquires.get(*name) {
+                for k in acq {
+                    set.remove(k);
+                }
+            }
+            // Roots (never called from another fn) must self-authorize — not in pays map.
+            if externally_called.contains(*name) && !set.is_empty() {
+                pays.insert((*name).to_string(), set);
+            } else {
+                pays.remove(*name);
+            }
+        }
+        if pays == before {
+            break;
+        }
+    }
+    summary.caller_pays_effects = pays;
     summary
+}
+
+/// Direct privileged builtins, local string-literal acquire kinds, and named user callees.
+fn collect_body_cap_facts(
+    body: &[Stmt],
+    all_fns: &BTreeSet<String>,
+    direct_effects: &mut BTreeSet<String>,
+    local_acquires: &mut BTreeSet<String>,
+    callees: &mut BTreeSet<String>,
+) {
+    fn walk_stmts(
+        stmts: &[Stmt],
+        all_fns: &BTreeSet<String>,
+        de: &mut BTreeSet<String>,
+        acq: &mut BTreeSet<String>,
+        callees: &mut BTreeSet<String>,
+    ) {
+        for s in stmts {
+            match s {
+                Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => {
+                    walk_expr(init, all_fns, de, acq, callees);
+                }
+                Stmt::Assign { target, value } => {
+                    walk_expr(target, all_fns, de, acq, callees);
+                    walk_expr(value, all_fns, de, acq, callees);
+                }
+                Stmt::ExprStmt(e) => walk_expr(e, all_fns, de, acq, callees),
+                Stmt::If {
+                    cond, then, else_, ..
+                } => {
+                    walk_expr(cond, all_fns, de, acq, callees);
+                    walk_stmts(then, all_fns, de, acq, callees);
+                    if let Some(el) = else_ {
+                        walk_stmts(el, all_fns, de, acq, callees);
+                    }
+                }
+                Stmt::While {
+                    cond,
+                    body,
+                    invariant,
+                } => {
+                    walk_expr(cond, all_fns, de, acq, callees);
+                    for inv in invariant {
+                        walk_expr(inv, all_fns, de, acq, callees);
+                    }
+                    walk_stmts(body, all_fns, de, acq, callees);
+                }
+                Stmt::Loop { body, invariant } => {
+                    for inv in invariant {
+                        walk_expr(inv, all_fns, de, acq, callees);
+                    }
+                    walk_stmts(body, all_fns, de, acq, callees);
+                }
+                Stmt::For {
+                    source,
+                    body,
+                    invariant,
+                    ..
+                } => {
+                    match source {
+                        ForSource::Range { start, end } => {
+                            walk_expr(start, all_fns, de, acq, callees);
+                            walk_expr(end, all_fns, de, acq, callees);
+                        }
+                        ForSource::Collection { expr } => {
+                            walk_expr(expr, all_fns, de, acq, callees);
+                        }
+                    }
+                    for inv in invariant {
+                        walk_expr(inv, all_fns, de, acq, callees);
+                    }
+                    walk_stmts(body, all_fns, de, acq, callees);
+                }
+                Stmt::WhileLet { expr, body, .. } => {
+                    walk_expr(expr, all_fns, de, acq, callees);
+                    walk_stmts(body, all_fns, de, acq, callees);
+                }
+                Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                    walk_stmts(body, all_fns, de, acq, callees);
+                }
+                Stmt::HybridBlock { gpu, cpu, prove } => {
+                    if let Some(b) = gpu {
+                        walk_stmts(b, all_fns, de, acq, callees);
+                    }
+                    if let Some(b) = cpu {
+                        walk_stmts(b, all_fns, de, acq, callees);
+                    }
+                    if let Some(b) = prove {
+                        walk_stmts(b, all_fns, de, acq, callees);
+                    }
+                }
+                Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
+            }
+        }
+    }
+    fn walk_expr(
+        e: &Expr,
+        all_fns: &BTreeSet<String>,
+        de: &mut BTreeSet<String>,
+        acq: &mut BTreeSet<String>,
+        callees: &mut BTreeSet<String>,
+    ) {
+        match e {
+            Expr::Call { callee, args } => {
+                if callee == CAP_ACQUIRE || callee == CAP_ACQUIRE_NONEXPORTABLE {
+                    if let Some(Expr::StrLiteral(k)) = args.first() {
+                        acq.insert(super::normalize_effect_name(k));
+                    }
+                } else if all_fns.contains(callee) {
+                    callees.insert(callee.clone());
+                } else if let Some(effect) = super::effects::builtin_effect_of(callee) {
+                    de.insert(effect.to_string());
+                }
+                for a in args {
+                    walk_expr(a, all_fns, de, acq, callees);
+                }
+            }
+            Expr::CallExpr { callee, args } => {
+                walk_expr(callee, all_fns, de, acq, callees);
+                for a in args {
+                    walk_expr(a, all_fns, de, acq, callees);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                walk_expr(lhs, all_fns, de, acq, callees);
+                walk_expr(rhs, all_fns, de, acq, callees);
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Cast { expr, .. }
+            | Expr::Tainted { inner: expr, .. }
+            | Expr::Declassify { inner: expr, .. }
+            | Expr::Assume(expr)
+            | Expr::Assert(expr)
+            | Expr::Try(expr) => walk_expr(expr, all_fns, de, acq, callees),
+            Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+                for el in elements {
+                    walk_expr(el, all_fns, de, acq, callees);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, v) in fields {
+                    walk_expr(v, all_fns, de, acq, callees);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for (_, v) in entries {
+                    walk_expr(v, all_fns, de, acq, callees);
+                }
+            }
+            Expr::Index { base, index } => {
+                walk_expr(base, all_fns, de, acq, callees);
+                walk_expr(index, all_fns, de, acq, callees);
+            }
+            Expr::FieldAccess { base, .. } => walk_expr(base, all_fns, de, acq, callees),
+            Expr::If {
+                cond, then, else_, ..
+            } => {
+                walk_expr(cond, all_fns, de, acq, callees);
+                walk_expr(then, all_fns, de, acq, callees);
+                walk_expr(else_, all_fns, de, acq, callees);
+            }
+            Expr::IfLet {
+                scrutinee,
+                then,
+                else_,
+                ..
+            } => {
+                walk_expr(scrutinee, all_fns, de, acq, callees);
+                walk_expr(then, all_fns, de, acq, callees);
+                walk_expr(else_, all_fns, de, acq, callees);
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                walk_expr(scrutinee, all_fns, de, acq, callees);
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        walk_expr(g, all_fns, de, acq, callees);
+                    }
+                    walk_expr(&arm.body, all_fns, de, acq, callees);
+                }
+            }
+            Expr::Block { stmts, tail } => {
+                walk_stmts(stmts, all_fns, de, acq, callees);
+                if let Some(t) = tail {
+                    walk_expr(t, all_fns, de, acq, callees);
+                }
+            }
+            Expr::Lambda { body, .. } => walk_expr(body, all_fns, de, acq, callees),
+            _ => {}
+        }
+    }
+    walk_stmts(body, all_fns, direct_effects, local_acquires, callees);
 }
 
 /// Whether this body can return a non-exportable token (mint, move alias, or call of NE-returning fn).
@@ -1285,7 +1539,9 @@ fn provably_non_capability(expr: &Expr) -> bool {
 }
 
 /// Causal spend: consume one Live token whose kind matches `effect` (verified only).
-/// Deterministic: lexicographically first matching name. No match → UNAUTHORIZED.
+/// Deterministic: lexicographically first matching name.
+/// No local match → if this function is in `caller_pays_effects` for `effect`, defer to callers;
+/// otherwise UNAUTHORIZED.
 fn causal_spend(effect: &str, caps: &mut CapMap, lin: &mut Lin) {
     let mut matches: Vec<String> = caps
         .iter()
@@ -1304,6 +1560,14 @@ fn causal_spend(effect: &str, caps: &mut CapMap, lin: &mut Lin) {
                 },
             );
         }
+    } else if lin
+        .summary
+        .caller_pays_effects
+        .get(&lin.fn_name)
+        .map(|s| s.contains(effect))
+        .unwrap_or(false)
+    {
+        // Ambient interproc: callers causal-spend at the call site.
     } else {
         lin.unauthorized(effect);
     }
@@ -1734,6 +1998,15 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             }
             // Interproc: callee formals that reach export sinks → check corresponding args.
             if lin.all_fns.contains(callee) {
+                // Caller-pays: ambient interproc causal spend for callee's uncovered effects.
+                if lin.verified {
+                    if let Some(effects) = lin.summary.caller_pays_effects.get(callee) {
+                        // Deterministic order for multi-effect callees.
+                        for effect in effects.iter() {
+                            causal_spend(effect, caps, lin);
+                        }
+                    }
+                }
                 if let Some(idxs) = lin.summary.exports_formals.get(callee) {
                     for &i in idxs {
                         if let Some(a) = args.get(i) {
@@ -2219,9 +2492,100 @@ mod tests {
 
     #[test]
     fn param_capability_does_not_authorize_an_effect() {
+        // Params still never authorize (forge closed). Root with no external caller self-auth.
         let src = r#"fn f(netcap) { send("h", 80, "x"); }"#;
         assert!(codes(src, false).is_empty());
         assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
+    }
+
+    /// Ambient interproc causal spend: caller holds matching token; callee has no local mint.
+    #[test]
+    fn interproc_caller_pays_ambient_causal_spend_accepts() {
+        let src = r#"
+            fn helper() { send("h", 80, "x"); }
+            fn f() {
+                let n = cap_acquire("net.send");
+                helper();
+            }
+        "#;
+        assert!(
+            codes(src, true).is_empty(),
+            "caller-pays ambient must accept, got {:?}",
+            codes(src, true)
+        );
+        assert!(codes(src, false).is_empty());
+    }
+
+    /// Dual: caller without token still UNAUTHORIZED at call site.
+    #[test]
+    fn interproc_caller_pays_without_token_is_unauthorized() {
+        let src = r#"
+            fn helper() { send("h", 80, "x"); }
+            fn f() { helper(); }
+        "#;
+        assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
+    }
+
+    /// Local acquire in callee covers effect — caller need not pay.
+    #[test]
+    fn interproc_callee_local_acquire_covers_without_caller_token() {
+        let src = r#"
+            fn helper() {
+                let n = cap_acquire("net.send");
+                send("h", 80, "x");
+            }
+            fn f() { helper(); }
+        "#;
+        assert!(
+            codes(src, true).is_empty(),
+            "callee-local acquire must cover, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    /// Transitive mid: caller pays once at outer call.
+    #[test]
+    fn interproc_caller_pays_through_mid_accepts() {
+        let src = r#"
+            fn helper() { send("h", 80, "x"); }
+            fn mid() { helper(); }
+            fn f() {
+                let n = cap_acquire("net.send");
+                mid();
+            }
+        "#;
+        assert!(
+            codes(src, true).is_empty(),
+            "transitive caller-pays must accept, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    /// After caller-pays spend, second call without fresh token is unauthorized.
+    #[test]
+    fn interproc_caller_pays_double_call_is_unauthorized() {
+        let src = r#"
+            fn helper() { send("h", 80, "x"); }
+            fn f() {
+                let n = cap_acquire("net.send");
+                helper();
+                helper();
+            }
+        "#;
+        assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
+    }
+
+    /// NE token ambient interproc spend (export-seal orthogonal).
+    #[test]
+    fn interproc_caller_pays_nonexportable_token_accepts() {
+        let src = r#"
+            fn helper() { send("h", 80, "x"); }
+            fn f() {
+                let n = cap_acquire_nonexportable("net.send");
+                helper();
+            }
+        "#;
+        assert!(codes(src, true).is_empty());
     }
 
     #[test]
