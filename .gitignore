@@ -72,3 +72,7 @@ hello.txt
 # Landing page — held out of the tree until its figures are reconciled to the gates.
 # `git add -f site/` to include it once it is honest.
 site/
+
+# Generated demo binaries / harness scratch (never commit)
+examples/programs/snake/bin/
+tests/fixtures/stdlib/_scratch_clean.txt

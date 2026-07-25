@@ -14,7 +14,7 @@ or (d) **not claimed**.
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security fixtures + `cargo test -p anubis-compiler` taint suite; see matrix rows for interproc slices | Flow analysis residual: reassignment-insensitive (UNSUPPORTED.md) |
+| Safe taint enforcement | security fixtures + `cargo test -p anubis-compiler` taint suite; see matrix rows for interproc slices | Reassignment residual **closed** (UNSUPPORTED.md); remaining: field-granular taint + deep escaping-closure forms (fail-closed / documented) |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system |
 | Solver correctness (supported int fragment) | **re-run 2026-07-25:** `bash scripts/run_native_authoritative_gate.sh` → `NATIVE_AUTHORITATIVE_GATE: PASS` (cert + corpus ≡ + TCB-drop + opt-out control + fragment danger) | Division + var×var mul deferred; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Native CDCL Unsat RUP certificate | **re-run 2026-07-25:** `cargo test -p anubis-solver lrat` → **16 passed**; `check_proof` required for every `NativeVerdict::Unsat` | Pure independent RUP; division deferred |

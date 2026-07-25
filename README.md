@@ -253,6 +253,12 @@ trigger-happy** — the same program with the leak removed passes.
 | [`vz_confine_demo.anb`](examples/showcase/vz_confine_demo.anb) | **the proof drives the hypervisor** — `vz confine` derives isolation from the program's proven effect set |
 | [`amnesia_unlearning_witness.anb`](examples/showcase/amnesia_unlearning_witness.anb) | a **machine-unlearning deletion witness** — `run --allow-research` over before/after manifests: verdict PASS on a clean purge, FAIL when data is retained ([how to run](examples/showcase/AMNESIA.md)) |
 | [`ennead_consensus_kernel.anb`](examples/industry/ennead_consensus_kernel.anb) | Z3 proves a **BFT consensus kernel can't split-brain** (quorum-intersection, with a negative control) |
+| [`hall_of_two_truths.anb`](examples/hall_of_two_truths.anb) | language stress demo — structs/enums/maps/sort/hash-chain journal; `check` + `run` |
+| [`hermes_dual_path_seal.anb`](examples/hermes_dual_path_seal.anb) | dual-path agreement seal (fact/sum/collatz/risk journal → Clear) |
+| [`anpu_recursive_sdf_renderer.anb`](examples/anpu_recursive_sdf_renderer.anb) | recursive SDF ray-march + deterministic receipt (`ANUBIS_PROOF_INPUTS=proof_mode=0,challenge=0`) |
+| [`programs/formal_kernel/`](examples/programs/formal_kernel/) | pure-Anubis SAT kernel + independent Python oracle (12/12) |
+| [`programs/double_entry_ledger/`](examples/programs/double_entry_ledger/) · [`expense_ledger/`](examples/programs/expense_ledger/) | accounting demos with balance invariants under `check`/`run` |
+| [`programs/snake/`](examples/programs/snake/) | pure-Anubis Snake (`play.sh` caches native binary for instant board) |
 
 ---
 
