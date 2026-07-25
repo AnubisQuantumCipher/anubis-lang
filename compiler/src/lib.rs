@@ -3129,6 +3129,179 @@ fn bad() {
         ));
     }
 
+    /// Regression lock (2026-07-25): a sat model is DISPROVED with a pretty-printed witness,
+    /// never the conflated `ANUBIS_ASSERTION_UNPROVEN` "or undecided" message.
+    #[test]
+    fn counterexample_diagnostic_is_disproved_with_pretty_model() {
+        let src = r#"
+fn bad(x: i64) -> i64
+    requires(x > 0)
+    ensures(result > 100)
+{
+    return x;
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks
+            .into_iter()
+            .filter(|c| c.status == "FAIL")
+            .collect();
+        assert!(
+            !fails.is_empty(),
+            "false ensures must fail: {:?}",
+            fails
+        );
+        assert!(
+            fails.iter().all(|c| {
+                middle::classify_assertion_fail(c) == middle::AssertionFailKind::Disproved
+            }),
+            "sat model must classify as Disproved, not Undecided/Other: {:?}",
+            fails
+        );
+        let msg = middle::format_check_failures(&fails);
+        assert!(
+            msg.starts_with("ANUBIS_ASSERTION_DISPROVED:"),
+            "must use DISPROVED code, got: {msg}"
+        );
+        assert!(
+            !msg.contains("ANUBIS_ASSERTION_UNPROVEN"),
+            "must not fall back to conflated UNPROVEN: {msg}"
+        );
+        assert!(
+            !msg.contains("or undecided within budget"),
+            "must not conflate disproof with timeout: {msg}"
+        );
+        assert!(
+            msg.contains("counterexample:"),
+            "must label the witness: {msg}"
+        );
+        // Pretty: source name `x` (not only `anb_x`), hex + decimal.
+        assert!(
+            msg.contains("x = 0x") || msg.lines().any(|l| l.trim_start().starts_with("x = ")),
+            "pretty model must show source-level var name: {msg}"
+        );
+        // Model value for requires(x>0) ∧ ¬(result>100) with result=x is some x in 1..=100.
+        assert!(
+            fails.iter().any(|c| c.model.as_ref().is_some_and(|m| {
+                middle::format_counterexample(m).contains("0x")
+            })),
+            "pretty printer must render hex: {:?}",
+            fails
+        );
+    }
+
+    /// Regression lock: undecided/timeout-shaped fails must not claim a counterexample.
+    #[test]
+    fn undecided_fail_classifies_without_fake_counterexample() {
+        let check = middle::SolverCheck {
+            name: "ensures:(hard)".into(),
+            status: "FAIL".into(),
+            detail: "solver could not decide this contract within its time budget (z3 \
+                 returned `unknown`, typically a hard symbolic division/remainder); failing \
+                 closed — an undecided postcondition is not a proof. Restate it as a simpler \
+                 or better-bounded obligation"
+                .into(),
+            model: None,
+            smt: String::new(),
+        };
+        assert_eq!(
+            middle::classify_assertion_fail(&check),
+            middle::AssertionFailKind::Undecided
+        );
+        let msg = middle::format_check_failures(&[check]);
+        assert!(
+            msg.starts_with("ANUBIS_ASSERTION_UNDECIDED:"),
+            "got: {msg}"
+        );
+        assert!(
+            !msg.contains("counterexample:"),
+            "undecided must not invent a counterexample label: {msg}"
+        );
+        assert!(
+            !msg.contains("ANUBIS_ASSERTION_DISPROVED"),
+            "undecided must not use DISPROVED: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_counterexample_renders_hex_and_signed_decimal() {
+        let model = "sat\n(\n  (define-fun anb_head () (_ BitVec 64)\n    #x00000000c0000000)\n  \
+             (define-fun anb_tail () (_ BitVec 64)\n    #x0000000000000000)\n)\n";
+        let pretty = middle::format_counterexample(model);
+        assert!(
+            pretty.contains("head = 0x00000000c0000000"),
+            "hex: {pretty}"
+        );
+        assert!(
+            pretty.contains("3221225472"),
+            "decimal: {pretty}"
+        );
+        assert!(
+            pretty.contains("tail = 0x0000000000000000"),
+            "tail: {pretty}"
+        );
+        assert!(
+            !pretty.contains("anb_head"),
+            "must strip anb_ prefix: {pretty}"
+        );
+        // Signed high-bit value
+        let neg = "(define-fun anb_a () (_ BitVec 64) #x8000000000000001)";
+        let pretty_neg = middle::format_counterexample(neg);
+        assert!(
+            pretty_neg.contains("a = 0x8000000000000001"),
+            "{pretty_neg}"
+        );
+        assert!(
+            pretty_neg.contains("(-9223372036854775807)"),
+            "signed decimal: {pretty_neg}"
+        );
+    }
+
+    /// Float sat models must replay (pin FloatingPoint values), not false-fire REPLAY_MISMATCH.
+    #[test]
+    fn float_counterexample_replays_and_classifies_disproved() {
+        // Float params are modelable only inside a contracted function (requires/ensures).
+        let src = r#"
+fn f(x: f64) requires(x < 4.0) {
+    assert(x > 4.0);
+}
+fn main() { f(3.0); }
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks
+            .into_iter()
+            .filter(|c| c.status == "FAIL")
+            .collect();
+        assert!(!fails.is_empty(), "false float assert must fail: {fails:?}");
+        for f in &fails {
+            assert_eq!(
+                middle::classify_assertion_fail(f),
+                middle::AssertionFailKind::Disproved,
+                "float sat must be Disproved not ReplayMismatch: {f:?}"
+            );
+            if let Some(m) = &f.model {
+                assert!(
+                    middle::replay_counterexample(&f.smt, m),
+                    "float model must re-verify under FP pin: model={m} smt={}",
+                    f.smt
+                );
+            }
+        }
+        let msg = middle::format_check_failures(&fails);
+        assert!(
+            msg.starts_with("ANUBIS_ASSERTION_DISPROVED:"),
+            "got: {msg}"
+        );
+        assert!(
+            !msg.contains("ANUBIS_REPLAY_MISMATCH"),
+            "must not mis-label a real float CEX: {msg}"
+        );
+    }
+
     #[test]
     fn phase4_divisor_maybe_zero_is_named_and_shifts_use_bvashr() {
         // A1 residual: unguarded variable divisor → ANUBIS_DIVISOR_MAYBE_ZERO (not a silent cert).

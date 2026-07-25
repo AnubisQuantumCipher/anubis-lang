@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Regression (audit wf_c70fcc39): an in-body `assert` containing a TRUNCATING cast (`x as u8`) inside a
 // CONTRACTED function. is_int_modelable formerly DECLINED the truncating cast (modeling it as identity
 // was unsound), so the assert matched no solver lane and was SILENTLY DROPPED (fail-open) while the

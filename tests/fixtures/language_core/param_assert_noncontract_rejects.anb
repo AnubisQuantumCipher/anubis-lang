@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Regression (design decision 2026-07-21, hunt wf_7451545b): an in-body `assert(P)` over an INTEGER
 // PARAMETER of a NON-contract function was formerly param-opaque. The checker modeled parameters only
 // for functions that DECLARE a `requires`/`ensures`, so here `x` was an unknown symbol, `x < 0` was

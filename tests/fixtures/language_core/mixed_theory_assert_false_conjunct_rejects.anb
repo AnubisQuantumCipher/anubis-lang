@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Mixed-theory assert decomposition: a conjunction `A && B` whose conjuncts live in DIFFERENT solver
 // lanes (a string equality `s == "a"` and an integer equality `1 == 2`) used to match no single lane
 // and pass vacuously (deferred wholesale to the runtime) — a fail-open where even a modelable-FALSE

@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_LOOP_INVARIANT_UNVERIFIABLE|ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_LOOP_INVARIANT_UNVERIFIABLE
 // Soundness (hunt 2026-07-19): sibling of the struct-literal case — a `break` inside a map-literal
 // entry must escape the loop-invariant scan (the MapLiteral arm in `expr_escapes_loop`). Otherwise
 // `assert(x == 10)` is falsely proven while the loop exits at x == 0.

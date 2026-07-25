@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // A1 SOUNDNESS GATE (the ziros-flagged trap): the range-injection is gated on the RAW unsigned spelling
 // (`unsigned_mask_width` -> u8/u16/u32), NOT `normalize` (which collapses `int`/`i64`/all signed types to
 // `u32`). A SIGNED `int` parameter is NOT masked at runtime (a param holds any i64, e.g. -1), so its range

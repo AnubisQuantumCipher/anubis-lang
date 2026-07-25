@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // A1 CALL-SITE COERCION SOUNDNESS (task #50): masking a u32 param at the runtime boundary changes the
 // param's value relative to the caller's argument. When a caller composes a u32 callee's `ensures` with
 // an OUT-OF-RANGE argument, the argument must be masked (the runtime masks it at the callee's entry:

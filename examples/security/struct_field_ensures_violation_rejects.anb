@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Operator item 7: a struct-field postcondition the body violates is REJECTED by the solver.
 struct R { status: i64 }
 fn mk() -> R ensures(result.status == 1) { return R { status: 0 }; }

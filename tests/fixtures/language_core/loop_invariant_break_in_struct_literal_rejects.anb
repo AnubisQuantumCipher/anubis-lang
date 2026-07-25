@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_LOOP_INVARIANT_UNVERIFIABLE|ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_LOOP_INVARIANT_UNVERIFIABLE
 // Soundness (hunt 2026-07-19): a `break` embedded in a struct-literal field value must be visible to
 // the loop-invariant escape scan. Without the StructLiteral arm in `expr_escapes_loop`, the loop was
 // modeled as running to completion and `assert(x == 10)` was falsely proven, though the `break` exits

@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Task B soundness guard: threading the branch guard must NOT mask a genuinely-false branch contract. This
 // function returns `a` on BOTH arms but claims `result >= b`; with a=3,b=5 the result is 3 < 5, so the
 // contract is false and the solver must still produce a counterexample. The added path-condition premise

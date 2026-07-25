@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN|ANUBIS_CONTRACT_UNPROVABLE
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Item 2 soundness discriminator: a guard on `b` cannot prove a postcondition about `a` — the escape
 // negation `!(b < 0)` is irrelevant to `result >= a`, so this MUST reject.
 fn bad2(a: i64, b: i64) -> i64 ensures(result >= a) {

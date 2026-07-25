@@ -15,10 +15,11 @@
 //  concrete counterexample — a `head`/`tail` pair that drives the count negative:
 //
 //      $ anubis check examples/showcase/ring_buffer_underflow.anb
-//      ANUBIS_ASSERTION_UNPROVEN: ensures:(bvsge (bvsub anb_tail anb_head) 0)
+//      ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+//        ensures:(bvsge (bvsub anb_tail anb_head) (_ bv0 64))
 //        counterexample:
-//          anb_head = 0x00000000c0000000
-//          anb_tail = 0x0000000000000000
+//          head = 0x00000000c0000000  (3221225472)
+//          tail = 0x0000000000000000  (0)
 //
 //  head = 3_221_225_472, tail = 0  →  tail - head is negative. There it is: the
 //  wraparound state your tests never hit. That counterexample is worth more than a

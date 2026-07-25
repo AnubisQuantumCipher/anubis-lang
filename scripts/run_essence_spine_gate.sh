@@ -116,7 +116,7 @@ fi
 
 # 3. Counterexample mint (essence: value, not shrug)
 if ! "$ANUBIS" check examples/showcase/ring_buffer_underflow.anb >/tmp/ess_rb.txt 2>&1; then
-  if grep -qi 'counterexample\|ANUBIS_ASSERTION_UNPROVEN\|unproven' /tmp/ess_rb.txt; then
+  if grep -qi 'counterexample\|ANUBIS_ASSERTION_DISPROVED\|unproven' /tmp/ess_rb.txt; then
     ok "ring_buffer counterexample (disproof)"
   else
     ko "ring_buffer (expected disproof)"; tail -8 /tmp/ess_rb.txt

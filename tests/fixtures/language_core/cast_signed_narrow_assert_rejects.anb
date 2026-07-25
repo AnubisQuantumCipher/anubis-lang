@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Regression (cast re-hunt wf_39911ef5): the SIGNED sibling of the truncating-cast false-accept. An
 // in-body `assert` containing a signed narrow cast (`x as i8`/`i16`/`i32`) inside a CONTRACTED function
 // was silently DROPPED (fail-open) — is_int_modelable declined it, so a green `check` certified a

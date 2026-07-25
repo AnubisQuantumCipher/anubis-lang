@@ -1316,14 +1316,12 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
         let ast = parse_source(src).map_err(|e| anyhow!("parse: {e}"))?;
         let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("check: {e}"))?;
         let obs = SymbolicEngine::check_obligations(&typed);
-        for c in &obs {
-            if c.status == "FAIL" {
-                return Err(anyhow!(
-                    "ANUBIS_ASSERTION_UNPROVEN: {} — {}",
-                    c.name,
-                    c.detail
-                ));
-            }
+        let fails: Vec<_> = obs.into_iter().filter(|c| c.status == "FAIL").collect();
+        if !fails.is_empty() {
+            return Err(anyhow!(
+                "{}",
+                anubis_compiler::middle::format_check_failures(&fails)
+            ));
         }
         Ok(ast)
     };
@@ -1671,25 +1669,17 @@ fn main() -> Result<()> {
             // FAIL-CLOSED BY DEFAULT: verify every `requires`/`ensures`/`assert` contract obligation
             // before emitting an artifact — the SAME solver pass `anubis check` runs. Without this a
             // false contract slipped silently into a build ("build complete", no warning). `--no-verify`
-            // is the escape for an in-progress program. This mirrors the Check command's verdict exactly
-            // (a `FAIL` obligation = disproved by counterexample or undecided within budget).
+            // is the escape for an in-progress program. Honest codes: DISPROVED (has model) vs
+            // UNDECIDED (timeout) vs residual UNPROVEN — never conflate them.
             if !no_verify {
-                let disproven: Vec<String> = SymbolicEngine::check_obligations(&tainted)
+                let fails: Vec<_> = SymbolicEngine::check_obligations(&tainted)
                     .into_iter()
                     .filter(|c| c.status == "FAIL")
-                    .map(|c| match &c.model {
-                        Some(m) => format!("{} (counterexample: {})", c.name, m),
-                        None => c.name.clone(),
-                    })
                     .collect();
-                if !disproven.is_empty() {
+                if !fails.is_empty() {
                     return Err(anyhow!(
-                        "ANUBIS_ASSERTION_UNPROVEN: refusing to build — the solver could not verify \
-                         {} contract obligation(s) (disproved with a counterexample, or undecided \
-                         within budget): {}. Fix the contract, or re-run with `--no-verify` to build \
-                         anyway (the program's proof surface will be unverified).",
-                        disproven.len(),
-                        disproven.join("; ")
+                        "{}",
+                        anubis_compiler::middle::format_build_check_failures(&fails)
                     ));
                 }
                 println!("✓ contract obligations verified (fail-closed; pass --no-verify to skip)");
@@ -1914,23 +1904,16 @@ fn main() -> Result<()> {
             // assert(x > 20)`) must fail the check — a proof-carrying language does not accept a
             // program whose own asserted proof is false. The evidence bundle already recorded this;
             // here it becomes the command's verdict (and exit code), not just a bundle field.
+            // Codes: DISPROVED (concrete model) ≠ UNDECIDED (timeout) ≠ residual UNPROVEN.
             if check_error.is_none() {
                 if let Some(t) = &tainted {
-                    let disproven: Vec<String> = SymbolicEngine::check_obligations(t)
+                    let fails: Vec<_> = SymbolicEngine::check_obligations(t)
                         .into_iter()
                         .filter(|c| c.status == "FAIL")
-                        .map(|c| match &c.model {
-                            Some(m) => format!("{} (counterexample: {})", c.name, m),
-                            None => c.name.clone(),
-                        })
                         .collect();
-                    if !disproven.is_empty() {
-                        check_error = Some(format!(
-                            "ANUBIS_ASSERTION_UNPROVEN: the solver could not verify {} assertion(s) \
-                             (disproved with a counterexample, or undecided within budget): {}",
-                            disproven.len(),
-                            disproven.join("; ")
-                        ));
+                    if !fails.is_empty() {
+                        check_error =
+                            Some(anubis_compiler::middle::format_check_failures(&fails));
                     }
                 }
             }

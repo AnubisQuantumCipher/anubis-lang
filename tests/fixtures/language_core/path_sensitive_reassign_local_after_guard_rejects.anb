@@ -1,5 +1,5 @@
 // EXPECT: FAIL
-// ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN|ANUBIS_CONTRACT_UNPROVABLE
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
 // Same stale-escape false proof but over a mutable LOCAL (the params-only anti-launder did not cover
 // it): `let mut y = x; if y < 0 { return 0; } y = 0 - 7; return y;` returns -7 at runtime.
 fn f(x: i64) -> i64 ensures(result >= 0) {

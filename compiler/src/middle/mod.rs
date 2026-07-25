@@ -7963,16 +7963,19 @@ fn native_shadow_compare(smt: &str, z3_ans: Option<&str>) {
 /// ground formula `unsat`, and this returns `false`. Unlike the model text, this does not depend on
 /// variable names or on any pre-known "bad" values; it re-derives the answer from the query itself.
 pub fn replay_counterexample(smt: &str, model: &str) -> bool {
-    let bindings = parse_z3_model(model);
+    let bv_bindings = parse_z3_model(model);
+    // FloatingPoint witnesses must pin too — BitVec-only parse used to leave FP models empty,
+    // fail closed as "unparseable", and falsely fire ANUBIS_REPLAY_MISMATCH on real float CEX.
+    let fp_bindings = parse_fp_model_entries(model);
     let base = match smt.find("(check-sat)") {
         Some(idx) => &smt[..idx],
         None => smt,
     };
     // Ground formulas (no free constants) decide `sat` with an empty model `()`. That is a real
-    // counterexample: re-check the base query alone. Open formulas must produce parseable BitVec
-    // bindings — without them we cannot pin a witness and fail closed (a bare re-check of an open
-    // formula would stay `sat` even when the model text was garbage).
-    if bindings.is_empty() {
+    // counterexample: re-check the base query alone. Open formulas must produce parseable
+    // BitVec and/or FloatingPoint bindings — without them we cannot pin a witness and fail closed
+    // (a bare re-check of an open formula would stay `sat` even when the model text was garbage).
+    if bv_bindings.is_empty() && fp_bindings.is_empty() {
         let has_declare = base.contains("declare-const") || base.contains("declare-fun");
         if has_declare {
             return false;
@@ -7991,13 +7994,338 @@ pub fn replay_counterexample(smt: &str, model: &str) -> bool {
         return matches!(z3_check_sat_raw(&replay_smt).as_deref(), Some("sat"));
     }
     let mut replay_smt = base.to_string();
-    for (name, value) in &bindings {
+    for (name, value) in &bv_bindings {
+        replay_smt.push_str(&format!("(assert (= {name} {value}))\n"));
+    }
+    for (name, value) in &fp_bindings {
         replay_smt.push_str(&format!("(assert (= {name} {value}))\n"));
     }
     replay_smt.push_str("(check-sat)\n");
     matches!(z3_check_sat_raw(&replay_smt).as_deref(), Some("sat"))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Counterexample presentation + honest fail classification
+//
+// Product rule (locked 2026-07-25): a sat model is a DISPROOF, not "unproven".
+// An undecided obligation is UNDECIDED, not a counterexample. Pretty-print the
+// model so a human can read source-level names and decimal values without
+// decoding raw SMT-LIB. Never regress this into the conflated UNPROVEN path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// How a failed solver check should be diagnosed to the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssertionFailKind {
+    /// Sat model exists and replayed (or is a ground empty model) — concrete counterexample.
+    Disproved,
+    /// Solver returned unknown / timed out — not a proof, not a counterexample.
+    Undecided,
+    /// Encoder/solver replay mismatch — model text is not trustworthy.
+    ReplayMismatch,
+    /// Residual fail-closed path (vacuous assumptions, malformed SMT, …).
+    Other,
+}
+
+/// Classify one failed `SolverCheck` without guessing from free-form prose alone.
+pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
+    if check.status != "FAIL" {
+        return AssertionFailKind::Other;
+    }
+    if check.detail.contains("ANUBIS_REPLAY_MISMATCH") {
+        return AssertionFailKind::ReplayMismatch;
+    }
+    if check.model.is_some() {
+        return AssertionFailKind::Disproved;
+    }
+    if check.detail.contains("time budget")
+        || check.detail.contains("could not decide")
+        || check.detail.contains("undecided")
+        || check.detail.contains("returned `unknown`")
+    {
+        return AssertionFailKind::Undecided;
+    }
+    AssertionFailKind::Other
+}
+
+/// Strip the solver's `anb_` prefix so the printed name matches source identifiers.
+fn display_model_var(name: &str) -> &str {
+    name.strip_prefix("anb_").unwrap_or(name)
+}
+
+/// Render a BitVec model literal as `0x…  (decimal)` with signed decimal when the high bit is set.
+fn render_bv_model_value(value: &str) -> String {
+    let v = value.trim();
+    // `#x…` / `#X…`
+    if let Some(hex) = v
+        .strip_prefix("#x")
+        .or_else(|| v.strip_prefix("#X"))
+    {
+        if let Ok(u) = u64::from_str_radix(hex, 16) {
+            let hex_pad = format!("0x{hex:0>16}");
+            let i = u as i64;
+            if i < 0 {
+                return format!("{hex_pad}  ({i})");
+            }
+            return format!("{hex_pad}  ({u})");
+        }
+        return format!("0x{hex}");
+    }
+    // `(_ bvN 64)`
+    if let Some(rest) = v.strip_prefix("(_ bv") {
+        let num = rest.split_whitespace().next().unwrap_or("");
+        if let Ok(u) = num.parse::<u64>() {
+            let i = u as i64;
+            let hex_pad = format!("0x{u:016x}");
+            if i < 0 {
+                return format!("{hex_pad}  ({i})");
+            }
+            return format!("{hex_pad}  ({u})");
+        }
+    }
+    // `#b…` binary
+    if let Some(bits) = v.strip_prefix("#b") {
+        if let Ok(u) = u64::from_str_radix(bits, 2) {
+            let i = u as i64;
+            let hex_pad = format!("0x{u:016x}");
+            if i < 0 {
+                return format!("{hex_pad}  ({i})");
+            }
+            return format!("{hex_pad}  ({u})");
+        }
+    }
+    v.to_string()
+}
+
+/// Parse FloatingPoint `define-fun` entries for pretty-print (replay stays BitVec-only).
+fn parse_fp_model_entries(model: &str) -> BTreeMap<String, String> {
+    let mut bindings = BTreeMap::new();
+    const MARK: &str = "(define-fun ";
+    let mut cursor = model;
+    while let Some(rel) = cursor.find(MARK) {
+        let after_mark = &cursor[rel + MARK.len()..];
+        let Some(name) = after_mark.split_whitespace().next() else {
+            break;
+        };
+        let name = name.to_string();
+        // Look for FloatingPoint return type on this define-fun.
+        let Some(fp_rel) = after_mark.find("(_ FloatingPoint") else {
+            // Advance past this define-fun name so we don't loop forever.
+            cursor = &after_mark[name.len()..];
+            continue;
+        };
+        // Ensure this FloatingPoint tag is before the next define-fun (belongs to this entry).
+        if let Some(next) = after_mark.find(MARK) {
+            if fp_rel > next {
+                cursor = &after_mark[name.len()..];
+                continue;
+            }
+        }
+        let after_type_start = &after_mark[fp_rel..];
+        // The type form is `(_ FloatingPoint W E)` — walk parens to its close, then capture value.
+        let mut depth = 0i32;
+        let mut end_type = None;
+        for (i, ch) in after_type_start.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_type = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(et) = end_type else {
+            break;
+        };
+        let after_type = after_type_start[et + 1..].trim_start();
+        // Value is either a nested `(…)` form or a bare atom, then the define-fun's `)`.
+        let (value, tail) = if after_type.starts_with('(') {
+            let mut depth = 0i32;
+            let mut end_val = None;
+            for (i, ch) in after_type.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_val = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match end_val {
+                Some(close) => {
+                    let value = after_type[..=close].trim().to_string();
+                    let after_value = after_type[close + 1..].trim_start();
+                    let tail = after_value.strip_prefix(')').unwrap_or(after_value);
+                    (value, tail)
+                }
+                None => break,
+            }
+        } else {
+            match after_type.find(')') {
+                Some(close) => (
+                    after_type[..close].trim().to_string(),
+                    &after_type[close + 1..],
+                ),
+                None => break,
+            }
+        };
+        if !value.is_empty() {
+            bindings.insert(name, value);
+        }
+        cursor = tail;
+    }
+    bindings
+}
+
+/// Human-readable multi-line counterexample body (no leading code). Values are source-named.
+///
+/// Example:
+/// ```text
+///     head = 0x00000000c0000000  (3221225472)
+///     tail = 0x0000000000000000  (0)
+/// ```
+pub fn format_counterexample(model: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let bv = parse_z3_model(model);
+    for (name, value) in &bv {
+        lines.push(format!(
+            "    {} = {}",
+            display_model_var(name),
+            render_bv_model_value(value)
+        ));
+    }
+    let fp = parse_fp_model_entries(model);
+    for (name, value) in &fp {
+        // Avoid double-listing if a name somehow appeared in both maps.
+        if bv.contains_key(name) {
+            continue;
+        }
+        lines.push(format!("    {} = {}", display_model_var(name), value.trim()));
+    }
+    if lines.is_empty() {
+        // Ground sat with empty model `()` — still a real counterexample, no free vars.
+        let looks_empty = !model.contains("define-fun")
+            && (model.contains("sat")
+                || model.trim() == "()"
+                || model.contains("(\n)")
+                || model.contains("( )"));
+        if looks_empty {
+            return "    (no free variables — ground counterexample)".to_string();
+        }
+        // Unparsed model: indent raw text rather than drop the witness.
+        let raw = model.trim();
+        if raw.is_empty() {
+            return "    (empty model)".to_string();
+        }
+        return raw
+            .lines()
+            .map(|l| format!("    {l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    lines.join("\n")
+}
+
+/// Build the user-facing diagnostic for a non-empty set of failed solver checks.
+///
+/// - All counterexamples → `ANUBIS_ASSERTION_DISPROVED` + pretty models
+/// - All undecided → `ANUBIS_ASSERTION_UNDECIDED` (no fake model)
+/// - Replay mismatch present → `ANUBIS_REPLAY_MISMATCH`
+/// - Mixed / residual → `ANUBIS_ASSERTION_UNPROVEN` with per-obligation detail
+pub fn format_check_failures(fails: &[SolverCheck]) -> String {
+    debug_assert!(!fails.is_empty());
+    let n = fails.len();
+    let kinds: Vec<AssertionFailKind> = fails.iter().map(classify_assertion_fail).collect();
+    let all_disproved = kinds.iter().all(|k| *k == AssertionFailKind::Disproved);
+    let all_undecided = kinds.iter().all(|k| *k == AssertionFailKind::Undecided);
+    let any_replay = kinds.iter().any(|k| *k == AssertionFailKind::ReplayMismatch);
+
+    let (code, headline) = if all_disproved {
+        (
+            "ANUBIS_ASSERTION_DISPROVED",
+            format!("{n} assertion(s) disproved by counterexample:"),
+        )
+    } else if all_undecided {
+        (
+            "ANUBIS_ASSERTION_UNDECIDED",
+            format!(
+                "{n} assertion(s) undecided within solver budget (not a proof, not a counterexample):"
+            ),
+        )
+    } else if any_replay && kinds.iter().all(|k| {
+        *k == AssertionFailKind::ReplayMismatch || *k == AssertionFailKind::Disproved
+    }) {
+        (
+            "ANUBIS_REPLAY_MISMATCH",
+            format!("{n} assertion(s) failed closed (model replay mismatch):"),
+        )
+    } else {
+        (
+            "ANUBIS_ASSERTION_UNPROVEN",
+            format!(
+                "{n} assertion(s) not verified (mixed disproof / undecided / residual fail-closed):"
+            ),
+        )
+    };
+
+    let mut out = format!("{code}: {headline}");
+    for c in fails {
+        out.push_str(&format!("\n  {}", c.name));
+        match classify_assertion_fail(c) {
+            AssertionFailKind::Disproved => {
+                if let Some(m) = &c.model {
+                    out.push_str("\n  counterexample:");
+                    out.push('\n');
+                    out.push_str(&format_counterexample(m));
+                }
+            }
+            AssertionFailKind::Undecided => {
+                out.push_str("\n    (solver returned unknown / hit time budget)");
+                if !c.detail.is_empty() {
+                    out.push_str(&format!("\n    detail: {}", c.detail));
+                }
+            }
+            AssertionFailKind::ReplayMismatch => {
+                out.push_str("\n    (ANUBIS_REPLAY_MISMATCH — model did not re-verify)");
+                if let Some(m) = &c.model {
+                    out.push_str("\n  raw model (untrusted):");
+                    out.push('\n');
+                    out.push_str(&format_counterexample(m));
+                }
+            }
+            AssertionFailKind::Other => {
+                if !c.detail.is_empty() {
+                    out.push_str(&format!("\n    ({})", c.detail));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Build-path variant: same classification, with an explicit "refusing to build" lead-in.
+pub fn format_build_check_failures(fails: &[SolverCheck]) -> String {
+    let body = format_check_failures(fails);
+    // Insert refuse note after the code prefix.
+    if let Some((code, rest)) = body.split_once(": ") {
+        format!(
+            "{code}: refusing to build — {rest}\n  Fix the contract, or re-run with `--no-verify` \
+             to build anyway (the program's proof surface will be unverified)."
+        )
+    } else {
+        format!(
+            "{body}\n  Fix the contract, or re-run with `--no-verify` to build anyway \
+             (the program's proof surface will be unverified)."
+        )
+    }
+}
 
 fn expr_to_smt(e: &Expr, widths: &BTreeMap<String, u32>) -> String {
     expr_to_smt_with_width(e, widths, None)
