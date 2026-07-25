@@ -4524,6 +4524,16 @@ fn analyze_stmts(
                         ctx.known_bindings.insert(n);
                     }
                     if let Some(guard) = &arm.guard {
+                        // Secret guard is a PC even when scrutinee is public.
+                        let mut assigned = BTreeSet::new();
+                        expr_assigned_roots(&arm.body, &mut assigned);
+                        reject_implicit_flow_under_secret_pc(
+                            mode,
+                            expr_is_secret_pc(guard, &arm_scope, ctx),
+                            &assigned,
+                            scope,
+                            ctx,
+                        );
                         analyze_expr_effect(guard, mode, &arm_scope, effects, ctx);
                     }
                     let mut arm_asm = snap_asm.clone();
@@ -5387,6 +5397,29 @@ fn analyze_stmts(
                 invariant,
             } => {
                 effects.push("loop".into());
+                // Implicit-flow: secret range bound or collection + public assign encodes iteration count.
+                {
+                    let secret_for_pc = match source {
+                        crate::frontend::ForSource::Range { start, end } => {
+                            expr_is_secret_pc(start, scope, ctx)
+                                || expr_is_secret_pc(end, scope, ctx)
+                        }
+                        crate::frontend::ForSource::Collection { expr } => {
+                            expr_is_secret_pc(expr, scope, ctx)
+                        }
+                    };
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(body, &mut assigned);
+                    // Loop counter binding is not a public-local leak of the secret bound by itself.
+                    assigned.remove(var);
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        secret_for_pc,
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
+                }
                 // Phase-3: verify a `for i in start..end invariant(P) { body }` loop by DESUGARING to the
                 // exactly-equivalent `let i = start; while i < end invariant(P) { body; i = i + 1 }` and
                 // reusing verify_while_invariants — a range `for` IS that `while` (i binds start, runs while
@@ -6438,6 +6471,19 @@ fn analyze_expr_effect(
         Expr::If {
             cond, then, else_, ..
         } => {
+            // Value-position dual of Stmt::If: `let _ = if secret { b0 = 1; 0 } else { 0 }`.
+            {
+                let mut assigned = BTreeSet::new();
+                expr_assigned_roots(then, &mut assigned);
+                expr_assigned_roots(else_, &mut assigned);
+                reject_implicit_flow_under_secret_pc(
+                    mode,
+                    expr_is_secret_pc(cond, scope, ctx),
+                    &assigned,
+                    scope,
+                    ctx,
+                );
+            }
             analyze_expr_effect(cond, mode, scope, effects, ctx);
             analyze_expr_effect(then, mode, scope, effects, ctx);
             analyze_expr_effect(else_, mode, scope, effects, ctx);
@@ -6461,11 +6507,35 @@ fn analyze_expr_effect(
                 &ctx.method_secret_fns,
             )
             .is_some();
+            // Value-position dual: secret scrutinee + assign in arm; also secret *guard* as PC.
+            {
+                let mut assigned_under_secret_scrut = BTreeSet::new();
+                for arm in arms {
+                    expr_assigned_roots(&arm.body, &mut assigned_under_secret_scrut);
+                }
+                reject_implicit_flow_under_secret_pc(
+                    mode,
+                    ss,
+                    &assigned_under_secret_scrut,
+                    scope,
+                    ctx,
+                );
+            }
             for arm in arms {
                 let mut local = scope.clone();
                 seed_effect_pattern(&mut local, &arm.pattern, &st, ss);
                 propagate_pattern_closures(&mut local, scrutinee, &arm.pattern);
                 if let Some(guard) = &arm.guard {
+                    // Guard is a secret PC even when the scrutinee is public (`n if n > secret`).
+                    let mut assigned = BTreeSet::new();
+                    expr_assigned_roots(&arm.body, &mut assigned);
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        expr_is_secret_pc(guard, &local, ctx),
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
                     analyze_expr_effect(guard, mode, &local, effects, ctx);
                 }
                 analyze_expr_effect(&arm.body, mode, &local, effects, ctx);
@@ -6494,6 +6564,13 @@ fn analyze_expr_effect(
                 &ctx.method_secret_fns,
             )
             .is_some();
+            // Value-position dual of statement-position if-let.
+            {
+                let mut assigned = BTreeSet::new();
+                expr_assigned_roots(then, &mut assigned);
+                expr_assigned_roots(else_, &mut assigned);
+                reject_implicit_flow_under_secret_pc(mode, ss, &assigned, scope, ctx);
+            }
             let mut local = scope.clone();
             seed_effect_pattern(&mut local, pattern, &st, ss);
             propagate_pattern_closures(&mut local, scrutinee, pattern);
@@ -7066,7 +7143,28 @@ fn walk_block_effects(
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
-            Stmt::For { source, body, .. } => {
+            Stmt::For { var, source, body, .. } => {
+                {
+                    let secret_for_pc = match source {
+                        crate::frontend::ForSource::Range { start, end } => {
+                            expr_is_secret_pc(start, scope, ctx)
+                                || expr_is_secret_pc(end, scope, ctx)
+                        }
+                        crate::frontend::ForSource::Collection { expr } => {
+                            expr_is_secret_pc(expr, scope, ctx)
+                        }
+                    };
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(body, &mut assigned);
+                    assigned.remove(var);
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        secret_for_pc,
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
+                }
                 match source {
                     crate::frontend::ForSource::Range { start, end } => {
                         analyze_expr_effect(start, mode, scope, effects, ctx);

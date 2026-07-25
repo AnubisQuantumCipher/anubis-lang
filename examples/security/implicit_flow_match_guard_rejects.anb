@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Public scrutinee + secret match guard + public assign is still secret-PC extraction.
+fn main() {
+    let bal: secret<i64> = 1;
+    let x = 5;
+    let mut b0 = 0;
+    match x {
+        n if n > bal => { b0 = 1; }
+        _ => { b0 = 0; }
+    }
+}

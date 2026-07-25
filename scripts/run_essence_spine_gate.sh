@@ -23,20 +23,39 @@ note "thesis: claims become re-checkable artifacts; green check never certifies 
 note ""
 
 # 1. Implicit-flow identity (confidentiality assignment pattern)
-if ! "$ANUBIS" check examples/security/implicit_flow_rejects.anb >/tmp/ess_if_rej.txt 2>&1; then
-  if grep -q 'ANUBIS_IMPLICIT_FLOW' /tmp/ess_if_rej.txt; then
-    ok "implicit_flow_rejects (compile error)"
+# Reject fixtures: each must FAIL with ANUBIS_IMPLICIT_FLOW (stmt/value/for/guard coverage).
+for if_rej in \
+  examples/security/implicit_flow_rejects.anb \
+  examples/security/implicit_flow_while_rejects.anb \
+  examples/security/implicit_flow_match_rejects.anb \
+  examples/security/implicit_flow_iflet_rejects.anb \
+  examples/security/implicit_flow_for_rejects.anb \
+  examples/security/implicit_flow_value_if_rejects.anb \
+  examples/security/implicit_flow_value_match_rejects.anb \
+  examples/security/implicit_flow_match_guard_rejects.anb
+do
+  base="$(basename "$if_rej" .anb)"
+  if ! "$ANUBIS" check "$if_rej" >"$OUT/${base}.txt" 2>&1; then
+    if grep -q 'ANUBIS_IMPLICIT_FLOW' "$OUT/${base}.txt"; then
+      ok "${base} (compile error)"
+    else
+      ko "${base} (wrong error)"; tail -5 "$OUT/${base}.txt"
+    fi
   else
-    ko "implicit_flow_rejects (wrong error)"; cat /tmp/ess_if_rej.txt | tail -5
+    ko "${base} (should FAIL)"
   fi
-else
-  ko "implicit_flow_rejects (should FAIL)"
-fi
-if "$ANUBIS" check examples/security/implicit_flow_secret_local_accepts.anb >/tmp/ess_if_ok.txt 2>&1; then
-  ok "implicit_flow_secret_local_accepts"
-else
-  ko "implicit_flow_secret_local_accepts"; tail -5 /tmp/ess_if_ok.txt
-fi
+done
+for if_ok in \
+  examples/security/implicit_flow_secret_local_accepts.anb \
+  examples/security/implicit_flow_for_secret_local_accepts.anb
+do
+  base="$(basename "$if_ok" .anb)"
+  if "$ANUBIS" check "$if_ok" >"$OUT/${base}.txt" 2>&1; then
+    ok "$base"
+  else
+    ko "$base"; tail -5 "$OUT/${base}.txt"
+  fi
+done
 
 # 2. Flagship showcases
 if "$ANUBIS" check examples/showcase/nexus/nexus_cognitive_kernel.anb >/tmp/ess_nx.txt 2>&1; then

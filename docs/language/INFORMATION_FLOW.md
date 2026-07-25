@@ -56,9 +56,11 @@ returned, or applied. A classical **implicit** channel is: branch on a secret, a
 As of **2026-07-25**, Safe mode **rejects** that pattern with **`ANUBIS_IMPLICIT_FLOW`** (compile error),
 not a soft warning. Covered control forms (same assignment pattern):
 
-- `if` / `else` on a secret condition
+- `if` / `else` on a secret condition (statement- and value-position)
 - `while` / `while let` on a secret condition or scrutinee
-- statement-position `match` / `if let` on a secret scrutinee
+- `for` over a secret range bound or secret collection
+- `match` / `if let` on a secret scrutinee (statement- and value-position)
+- match arms with a **secret guard** even when the scrutinee is public
 
 Escape hatches:
 

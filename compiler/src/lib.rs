@@ -7238,6 +7238,80 @@ fn main() {
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "if-let: {err}");
     }
 
+    /// Value-position if/match, secret for-bounds, secret match-guard (false-accepts after stmt-only close).
+    #[test]
+    fn implicit_secret_pc_value_for_guard_assignment_rejected() {
+        let expr_if = r#"
+fn main() {
+    let bal: secret<i64> = 250000;
+    let mut b0 = 0;
+    let _ = if bal > 200000 { b0 = 1; 1 } else { 0 };
+}
+"#;
+        let err = typecheck(parse_source(expr_if).unwrap(), Mode::Safe)
+            .err()
+            .expect("value-if secret PC must reject");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "expr-if: {err}");
+
+        let value_match = r#"
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut b0 = 0;
+    let _ = match bal {
+        1 => { b0 = 1; 1 }
+        _ => { b0 = 0; 0 }
+    };
+}
+"#;
+        let err = typecheck(parse_source(value_match).unwrap(), Mode::Safe)
+            .err()
+            .expect("value-match secret PC must reject");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "value-match: {err}");
+
+        let for_src = r#"
+fn main() {
+    let n: secret<i64> = 3;
+    let mut b0 = 0;
+    for i in 0..n {
+        b0 = 1;
+    }
+}
+"#;
+        let err = typecheck(parse_source(for_src).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret for bound must reject public assign");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "for: {err}");
+
+        // Public range, no public assign of secret bits via body counter only — accept when no public assign
+        let for_ok = r#"
+fn main() {
+    let n: secret<i64> = 3;
+    let mut b0: secret<i64> = 0;
+    for i in 0..n {
+        b0 = 1;
+    }
+}
+"#;
+        typecheck(parse_source(for_ok).unwrap(), Mode::Safe)
+            .expect("secret local under secret for is ok");
+
+        let guard_src = r#"
+fn main() {
+    let bal: secret<i64> = 1;
+    let x = 5;
+    let mut b0 = 0;
+    match x {
+        n if n > bal => { b0 = 1; }
+        _ => { b0 = 0; }
+    }
+}
+"#;
+        let err = typecheck(parse_source(guard_src).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret match guard must reject public assign");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "guard: {err}");
+    }
+
     // ── Phase-2 leg-1 confidentiality FLOW: secret → egress = ANUBIS_SECRET_EXFILTRATION ──────────
     // The value-flow dual of the taint integrity flow. A value seeded by `secret_source(..)` that
     // actually REACHES a network/shell egress without a well-formed declassify() is exfiltration —

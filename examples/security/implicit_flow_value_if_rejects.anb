@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Value-position if under secret condition with public assign (let-bound dual of stmt if).
+fn main() {
+    let bal: secret<i64> = 250000;
+    let mut b0 = 0;
+    let _ = if bal > 200000 { b0 = 1; 1 } else { 0 };
+}

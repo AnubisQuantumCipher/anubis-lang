@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Value-position match on secret scrutinee with public assign in arm body.
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut b0 = 0;
+    let _ = match bal {
+        1 => { b0 = 1; 1 }
+        _ => { b0 = 0; 0 }
+    };
+}

@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Secret for-range bound + public assign encodes iteration count / binary extraction.
+fn main() {
+    let n: secret<i64> = 3;
+    let mut b0 = 0;
+    for i in 0..n {
+        b0 = 1;
+    }
+}
