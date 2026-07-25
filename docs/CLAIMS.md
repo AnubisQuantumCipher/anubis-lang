@@ -17,7 +17,7 @@ or (d) **not claimed**.
 | Safe taint enforcement | security fixtures + `cargo test -p anubis-compiler` taint suite; see matrix rows for interproc slices | Reassignment residual **closed** (UNSUPPORTED.md); remaining: field-granular taint + deep escaping-closure forms (fail-closed / documented) |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system |
 | Solver correctness (supported int fragment) | **re-run 2026-07-25:** `bash scripts/run_native_authoritative_gate.sh` → `NATIVE_AUTHORITATIVE_GATE: PASS` (cert + corpus ≡ + TCB-drop + opt-out control + fragment danger) | Division deferred; **var×var mul claimed** (see row below); opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
-| Implicit secret→public assignment / return (Safe) | **CLAIMED 2026-07-25** (assign + return under secret PC) | `ANUBIS_IMPLICIT_FLOW` reject on secret-PC **assign** (`if`/`while`/`while let`/`for`, stmt+value `match`/`if let`, secret match guards) and secret-PC **public return** (early `return` + value-if/match tail when `-> T` is public); escape `-> secret<T>` / secret-labelled value; fixtures `implicit_flow_*_rejects.anb` + accepts; unit `implicit_secret_pc_*`; security fixtures **135/135** | Residual: full PC-label join at every join (not Jif-total) |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25** | `ANUBIS_IMPLICIT_FLOW` (secret-PC assign/return); `ANUBIS_SECRET_TO_PUBLIC` (secret value into public-typed let/assign, or secret returned as explicit public `-> T`); escape `secret<T>` / `declassify`; fixtures `implicit_flow_*` + `secret_to_public_*`; units `implicit_secret_pc_*` + `secret_to_public_store_and_return_rejected`; security fixtures **139/139** | Residual: full PC-label join (not Jif-total); omitted `-> T` secret returns still use interproc egress checks |
 | Native CDCL Unsat RUP certificate | **re-run 2026-07-25:** `cargo test -p anubis-solver lrat` → **16 passed**; `check_proof` required for every `NativeVerdict::Unsat` | Pure independent RUP; division deferred |
 | Native solver as compiler **default** (no env) | **CLAIMED 2026-07-25** | `native_authoritative()` default ON; soak `out/native_default_flip_soak_20260725/`; decision `out/native_default_flip_seal_20260725/DECISION.md`; gate PASS post-flip |
 | Native authoritative **var×var mul** | **CLAIMED 2026-07-25** | `mulVar_correct` in BitBlast.lean + schoolbook `blast.rs::var_mul` + fragment admits; `run_native_authoritative_gate.sh` PASS |
@@ -80,7 +80,7 @@ bash scripts/run_essence_spine_gate.sh          # full (incl. native + formal)
 ESSENCE_SPINE_FAST=1 bash scripts/run_essence_spine_gate.sh   # flagships + IFC only
 ```
 
-**2026-07-25:** implicit secret-PC **assign and public return** reject (`ANUBIS_IMPLICIT_FLOW`); security fixtures **135/135**.
+**2026-07-25:** secret-PC assign/return (`ANUBIS_IMPLICIT_FLOW`) + explicit secret→public store/return (`ANUBIS_SECRET_TO_PUBLIC`); security fixtures **139/139**.
 
 ## Forbidden overclaims
 

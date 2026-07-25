@@ -3767,6 +3767,20 @@ fn analyze_stmts(
                 // `explicit_taint` — so `let k: secret<u64> = getenv("K")` is secret without a
                 // `secret_source(..)` wrapper.
                 let explicit_secret = is_secret_type(ty.as_deref());
+                // Safe-mode: secret value into a publicly annotated binding is label laundering
+                // (explicit flow dual of PC implicit flow). Escape: annotate `secret<T>` or declassify.
+                if mode == Mode::Safe
+                    && init_secret.is_some()
+                    && ty.as_deref().is_some_and(|t| !is_secret_type(Some(t)))
+                {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
+                        message: format!(
+                            "`{name}` is annotated with a public type but initialized from a secret value — confidentiality labels must not be dropped by annotation. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
+                        ),
+                        span: Some((span.start, span.end)),
+                    });
+                }
                 let tainted = explicit_taint || (init_taint.is_some() && declass_source.is_none());
                 let taint_source = if explicit_taint {
                     Some(name.clone())
@@ -4737,6 +4751,23 @@ fn analyze_stmts(
                         &ctx.method_secret_fns,
                     )
                     .is_some();
+                    // Safe-mode: secret RHS into a public-typed annotated binding is laundering.
+                    if mode == Mode::Safe
+                        && value_secret
+                        && ctx.annotated_vars.contains(name)
+                        && scope
+                            .get(name)
+                            .and_then(|b| b.info.ty.as_deref())
+                            .is_some_and(|t| !is_secret_type(Some(t)))
+                    {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
+                            message: format!(
+                                "`{name}` is a public-typed binding assigned a secret value — confidentiality labels must not be dropped by assignment. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
+                            ),
+                            span: None,
+                        });
+                    }
                     if let Some(b) = scope.get_mut(name) {
                         b.secret = value_secret;
                     }
@@ -11010,25 +11041,16 @@ fn reject_secret_pc_public_return(
         return;
     }
     let mut flagged = false;
-    let mut flag = |ctx: &mut SemanticContext| {
-        if flagged {
-            return;
-        }
-        flagged = true;
-        ctx.diagnostics.push(SemanticDiagnostic {
-            code: Some("ANUBIS_IMPLICIT_FLOW".into()),
-            message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
-                .into(),
-            span: None,
-        });
-    };
-    let val_is_secret = |val: &Expr, scope: &BTreeMap<String, ScopeBinding>, ctx: &SemanticContext| {
+    let secret_fns = ctx.secret_fns.clone();
+    let param_return_taint = ctx.param_return_taint.clone();
+    let method_secret_fns = ctx.method_secret_fns.clone();
+    let val_is_secret = |val: &Expr, scope: &BTreeMap<String, ScopeBinding>| {
         expr_secret_source_m(
             val,
             scope,
-            &ctx.secret_fns,
-            &ctx.param_return_taint,
-            &ctx.method_secret_fns,
+            &secret_fns,
+            &param_return_taint,
+            &method_secret_fns,
         )
         .is_some()
     };
@@ -11038,6 +11060,30 @@ fn reject_secret_pc_public_return(
                 .iter()
                 .any(|(c, _)| expr_is_secret_pc(c, scope, ctx))
         };
+    let emit_implicit = |ctx: &mut SemanticContext, flagged: &mut bool| {
+        if *flagged {
+            return;
+        }
+        *flagged = true;
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_IMPLICIT_FLOW".into()),
+            message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
+                .into(),
+            span: None,
+        });
+    };
+    let emit_secret_to_public = |ctx: &mut SemanticContext, flagged: &mut bool| {
+        if *flagged {
+            return;
+        }
+        *flagged = true;
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
+            message: "a secret value is returned through a public return type — confidentiality labels must not be dropped at the return boundary. Declare `-> secret<T>`, or interpose declassify(value, policy, reason)."
+                .into(),
+            span: None,
+        });
+    };
 
     // Explicit `return` under secret if/while path conditions.
     let mut rets = Vec::new();
@@ -11045,14 +11091,25 @@ fn reject_secret_pc_public_return(
         collect_returns_guarded(st, &[], &mut rets);
     }
     for (val, guards) in &rets {
-        if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope, ctx) {
-            flag(ctx);
+        if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope) {
+            emit_implicit(ctx, &mut flagged);
+        }
+    }
+
+    // Explicit flow: secret value through an **explicitly declared** public return type.
+    // Omitted `-> T` keeps the prior interproc summary style (method getters may mint secrets;
+    // callers are still checked at egress). Declared `-> i64` + return secret is laundering.
+    let public_ret = ret.is_some() && !is_secret_type(ret);
+    if public_ret {
+        for (val, _) in &rets {
+            if val_is_secret(val, scope) {
+                emit_secret_to_public(ctx, &mut flagged);
+            }
         }
     }
 
     // Function-tail value-if/match only when the fn declares a public return type (skips
     // unit-ish `main` / void bodies whose synthetic 0-tails would false-positive).
-    let public_ret = ret.is_some() && !is_secret_type(ret);
     let tail_is_secret_pc_value = public_ret
         && (matches!(
             body.last(),
@@ -11069,8 +11126,18 @@ fn reject_secret_pc_public_return(
         let mut tails = Vec::new();
         tail_values_guarded(body, true, &[], &mut tails);
         for (val, guards) in &tails {
-            if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope, ctx) {
-                flag(ctx);
+            if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope) {
+                emit_implicit(ctx, &mut flagged);
+            }
+        }
+    }
+    // Explicit-flow tail: last value is secret but declared return type is public.
+    if public_ret {
+        let mut tails = Vec::new();
+        tail_values_guarded(body, true, &[], &mut tails);
+        for (val, _) in &tails {
+            if val_is_secret(val, scope) {
+                emit_secret_to_public(ctx, &mut flagged);
             }
         }
     }

@@ -64,9 +64,15 @@ not a soft warning. Covered control forms (same assignment pattern):
 - **public function return** selected under a secret condition (`return 0|1` or value-if tail) when the
   declared return type is not `secret<T>`
 
+**Explicit flow (same Safe mode):** a secret **value** must not enter a public-typed location:
+
+- `let x: i64 = secret` / `x = secret` when `x` is annotated public → **`ANUBIS_SECRET_TO_PUBLIC`**
+- `return secret` with an explicit public `-> T` → **`ANUBIS_SECRET_TO_PUBLIC`**
+- unannotated `let x = secret` still flow-sensitively labels `x` secret (no laundering by annotation)
+
 Escape hatches:
 
-1. `declassify(value, policy, reason)` **before** any conditional that branches on the secret, or
+1. `declassify(value, policy, reason)` **before** any conditional that branches on the secret, or before a public store/return, or
 2. declare the assigned variable `secret<T>` so the label is preserved, or
 3. for returns: declare `-> secret<T>` (or return a secret-labelled value).
 

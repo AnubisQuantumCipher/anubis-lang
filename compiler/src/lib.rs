@@ -7238,6 +7238,72 @@ fn main() {
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "if-let: {err}");
     }
 
+    /// Explicit flow: secret value into public-typed store/return is label laundering.
+    #[test]
+    fn secret_to_public_store_and_return_rejected() {
+        let assign = r#"
+fn main() {
+    let bal: secret<i64> = 5;
+    let mut x: i64 = 0;
+    x = bal;
+}
+"#;
+        let err = typecheck(parse_source(assign).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret into public-typed assign must reject");
+        assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "assign: {err}");
+
+        let let_ann = r#"
+fn main() {
+    let bal: secret<i64> = 5;
+    let x: i64 = bal;
+}
+"#;
+        let err = typecheck(parse_source(let_ann).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret into public-typed let must reject");
+        assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "let: {err}");
+
+        let ret = r#"
+fn wrap(k: secret<i64>) -> i64 {
+    return k;
+}
+fn main() { let x = wrap(1); }
+"#;
+        let err = typecheck(parse_source(ret).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret return as public type must reject");
+        assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "return: {err}");
+
+        // Escape hatches
+        let declass = r#"
+fn main() {
+    let bal: secret<i64> = 5;
+    let mut x: i64 = 0;
+    x = declassify(bal, "policy", "reason");
+}
+"#;
+        typecheck(parse_source(declass).unwrap(), Mode::Safe).expect("declassify ok");
+
+        let secret_ann = r#"
+fn main() {
+    let bal: secret<i64> = 5;
+    let mut x: secret<i64> = 0;
+    x = bal;
+}
+"#;
+        typecheck(parse_source(secret_ann).unwrap(), Mode::Safe).expect("secret-to-secret ok");
+
+        // Unannotated flow-sensitive SET still accepted (label tracks; not public-typed laundering).
+        let infer = r#"
+fn main() {
+    let bal: secret<i64> = 5;
+    let x = bal;
+}
+"#;
+        typecheck(parse_source(infer).unwrap(), Mode::Safe).expect("inferred secret label ok");
+    }
+
     /// Public return under secret PC is the return dual of public-local assign (binary extraction).
     #[test]
     fn implicit_secret_pc_public_return_rejected() {

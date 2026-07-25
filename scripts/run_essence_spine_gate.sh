@@ -47,10 +47,28 @@ do
     ko "${base} (should FAIL)"
   fi
 done
+# Explicit secret→public laundering (distinct diagnostic code).
+for st_rej in \
+  examples/security/secret_to_public_assign_rejects.anb \
+  examples/security/secret_to_public_let_rejects.anb \
+  examples/security/secret_to_public_return_rejects.anb
+do
+  base="$(basename "$st_rej" .anb)"
+  if ! "$ANUBIS" check "$st_rej" >"$OUT/${base}.txt" 2>&1; then
+    if grep -q 'ANUBIS_SECRET_TO_PUBLIC' "$OUT/${base}.txt"; then
+      ok "${base} (compile error)"
+    else
+      ko "${base} (wrong error)"; tail -5 "$OUT/${base}.txt"
+    fi
+  else
+    ko "${base} (should FAIL)"
+  fi
+done
 for if_ok in \
   examples/security/implicit_flow_secret_local_accepts.anb \
   examples/security/implicit_flow_for_secret_local_accepts.anb \
-  examples/security/implicit_flow_return_secret_accepts.anb
+  examples/security/implicit_flow_return_secret_accepts.anb \
+  examples/security/secret_to_public_declassify_accepts.anb
 do
   base="$(basename "$if_ok" .anb)"
   if "$ANUBIS" check "$if_ok" >"$OUT/${base}.txt" 2>&1; then
