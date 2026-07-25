@@ -47,19 +47,22 @@ label (fixed 2026-07-20; an empty policy/reason was a silent bypass). Every decl
 auditable statement of *which* policy authorised the release and *why*; a compliance reviewer can grep the
 evidence bundle for them.
 
-## Implicit flow is WARNED, not silently ignored
+## Implicit flow is REJECTED on the assignment pattern (Safe mode)
 
 `secret<T>` tracks **explicit** data flow — a secret directly passed, copied, computed on, contained,
-returned, or applied. It does **not** track **implicit** flow: a conditional that branches on a secret can
-encode secret bits in the value of a non-secret variable (`if balance > 200000 { bit = 1 }`), which then
-passes every egress check. This is the same trade-off Jif, FlowCaml, FlowDroid, and Joana make — full
-non-interference requires label propagation through control-flow joins and causes severe over-tainting.
+returned, or applied. A classical **implicit** channel is: branch on a secret, assign a public local
+(`if balance > 200000 { bit = 1 }`), then exfiltrate `bit`.
 
-Anubis does not silently ignore it: when a branch guarded by a secret condition assigns to a non-secret
-variable, the checker emits a non-blocking **`ANUBIS_IMPLICIT_FLOW_WARNING`** (surfaced on stderr) naming
-the variable, so the developer knows `secret<T>` guards explicit flow only. It does not reject (that is the
-weeks-months implicit-label version). To close the implicit channel, interpose a `declassify` *before* any
-conditional that branches on the secret, or declare the assigned variable `secret<T>`.
+As of **2026-07-25**, Safe mode **rejects** that pattern with **`ANUBIS_IMPLICIT_FLOW`** (compile error),
+not a soft warning. Escape hatches:
+
+1. `declassify(value, policy, reason)` **before** any conditional that branches on the secret, or
+2. declare the assigned variable `secret<T>` so the label is preserved.
+
+**Honest residual:** full program-counter label propagation at every join (Jif/FlowCaml-style) is still
+not implemented — that would taint every variable after a secret branch. We close the high-value
+*assignment-under-secret-PC* pattern that NEXUS/Vault care about; residual deep forms stay fail-closed
+or documented.
 
 ## Contracts over secrets: proved without leaking
 

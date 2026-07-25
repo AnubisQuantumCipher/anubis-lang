@@ -13,7 +13,7 @@
 ![License](https://img.shields.io/badge/license-BUSL--1.1-blue)
 ![Status](https://img.shields.io/badge/status-pre--1.0_·_evidence--native-orange)
 
-*The one invariant everything else serves: a green `anubis check` never certifies a contract that `anubis run` violates.*
+*The one invariant everything else serves: a green `anubis check` never certifies a contract that `anubis run` violates — and secret bits never leave as a public compile-time fact.*
 
 </div>
 

@@ -456,7 +456,7 @@ struct SemanticContext {
     taint_traces: Vec<TaintTrace>,
     solver_obligations: Vec<SolverObligation>,
     diagnostics: Vec<SemanticDiagnostic>,
-    /// NON-BLOCKING warnings (e.g. `ANUBIS_IMPLICIT_FLOW_WARNING`). Never feed the `diagnostics`
+    /// NON-BLOCKING warnings (informational). Never feed the `diagnostics`
     /// Err-gate — a warning informs the developer without failing the check. Surfaced on the CLI and in
     /// the evidence bundle. Operator directive 2026-07-20: implicit information flow (a branch on a
     /// secret assigning a non-secret var) is warned, not rejected.
@@ -5029,13 +5029,12 @@ fn analyze_stmts(
                 }
             }
             Stmt::If { cond, then, else_ } => {
-                // Implicit-flow WARNING (operator directive 2026-07-20, non-blocking): a branch guarded by
-                // a SECRET condition that assigns to a NON-secret variable encodes secret bits in
-                // observable state — the classic implicit-flow / binary-extraction channel that explicit
-                // taint tracking (secret<T>) does not catch. Warn so the developer knows secret<T> guards
-                // EXPLICIT data flow only; do NOT reject (over-tainting the join is the weeks-months
-                // Jif/FlowCaml version). Fires once per guarded assignment; a var that IS already secret is
-                // fine (the label is preserved).
+                // Implicit-flow REJECT (Safe mode, 2026-07-25): a branch on a SECRET that assigns a
+                // NON-secret variable is the binary-extraction channel. Essence of Anubis is
+                // "secret leak = compile error" — warn-only left a classical hole. Fix: fail closed.
+                // Escape: declassify before the branch, or declare the assigned var secret<T>.
+                // Residual (honest): full PC-label propagation at joins is still the multi-week path;
+                // this closes the high-value assignment pattern without over-tainting every join.
                 if mode == Mode::Safe
                     && expr_secret_source_m(
                         cond,
@@ -5053,10 +5052,10 @@ fn analyze_stmts(
                     }
                     for v in assigned {
                         if !scope.get(&v).map(|b| b.secret).unwrap_or(false) {
-                            ctx.warnings.push(SemanticDiagnostic {
-                                code: Some("ANUBIS_IMPLICIT_FLOW_WARNING".into()),
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_IMPLICIT_FLOW".into()),
                                 message: format!(
-                                    "implicit information flow: `{v}` is assigned inside a branch guarded by a secret condition. secret<T> tracks EXPLICIT data flow only, so a value conditioned on a secret can encode secret bits — if `{v}` is later observed (print/send), it leaks (the binary-extraction attack). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
+                                    "`{v}` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
                                 ),
                                 span: None,
                             });
@@ -6975,10 +6974,7 @@ fn walk_block_effects(
             }
             Stmt::ExprStmt(e) => analyze_expr_effect(e, mode, scope, effects, ctx),
             Stmt::If { cond, then, else_ } => {
-                // Implicit-flow WARNING inside descended closure bodies (mirrors the
-                // analyze_stmts Stmt::If handler at L4651 — that path only fires for
-                // top-level function bodies; this path fires for lambda bodies reached
-                // via the #65 HOF descent / #47 var-bound closure descent).
+                // Implicit-flow REJECT inside descended closure bodies (mirrors analyze_stmts).
                 if mode == Mode::Safe
                     && expr_secret_source_m(
                         cond,
@@ -6996,10 +6992,10 @@ fn walk_block_effects(
                     }
                     for v in &assigned {
                         if !scope.get(v.as_str()).map(|b| b.secret).unwrap_or(false) {
-                            ctx.warnings.push(SemanticDiagnostic {
-                                code: Some("ANUBIS_IMPLICIT_FLOW_WARNING".into()),
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_IMPLICIT_FLOW".into()),
                                 message: format!(
-                                    "implicit information flow: `{v}` is assigned inside a branch guarded by a secret condition. secret<T> tracks EXPLICIT data flow only, so a value conditioned on a secret can encode secret bits — if `{v}` is later observed (print/send), it leaks (the binary-extraction attack). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
+                                    "`{v}` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
                                 ),
                                 span: None,
                             });

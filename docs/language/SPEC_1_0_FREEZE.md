@@ -58,6 +58,7 @@ Anything not listed here is experimental / research unless later promoted by MIN
 ## 5. Explicit residuals (not 1.0-blocking; not “closed forever”)
 
 - Escaping-closure class: **map-entry application closed 2026-07-22** (`map_entry_closure_application_is_enforced`); remaining symbolic-index / deep-nested forms are fail-closed residuals (SH ⊆ Rust under-report where still open)
+- Implicit secret-PC assignment to public locals: **REJECTED in Safe mode 2026-07-25** (`ANUBIS_IMPLICIT_FLOW`); residual is full PC-label join propagation (not claimed Jif-total)
 - Native SMT default flip **DONE 2026-07-25** (native-authoritative by default + verified RUP Unsat cert; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`). **var×var mul DONE** (`mulVar_correct` + schoolbook blast). **Division** still deferred in fragment except nonneg const÷`2^k` encoder rewrite to proven `bvlshr`/`bvand`
 - VZ slice-2 **live apply DONE 2026-07-25**: `anubis vz apply` / `vz run --confine`. DNS-pinned egress **policy + live frame pump** on `native-boot --kernel` (signed binary required)
 - `http_get`/`http_post` **run lowering DONE 2026-07-25**: cleartext pure-std TCP; **HTTPS via host `curl`** (system TLS TCB, same honesty as package registry)

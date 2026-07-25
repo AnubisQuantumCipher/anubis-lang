@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Secret-PC assignment to a public local is the binary-extraction channel.
+// Safe mode REJECTS (2026-07-25) — not warn-only.
+fn main() {
+    let bal: secret<i64> = 250000;
+    let mut b0 = 0;
+    if bal > 200000 {
+        b0 = 1;
+    }
+}

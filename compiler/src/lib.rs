@@ -7159,6 +7159,37 @@ fn main() { }"#;
         tc_lane(two, true).expect("secret + egress, no untrusted channel is two legs");
     }
 
+
+    #[test]
+    fn implicit_secret_pc_assignment_to_public_local_is_rejected() {
+        let src = r#"
+fn main() {
+    let bal: secret<i64> = 250000;
+    let mut b0 = 0;
+    if bal > 200000 { b0 = 1; }
+}
+"#;
+        let err = typecheck(parse_source(src).unwrap(), Mode::Safe)
+            .err()
+            .expect("implicit flow must reject");
+        assert!(
+            err.contains("ANUBIS_IMPLICIT_FLOW"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn implicit_secret_pc_assignment_to_secret_local_is_accepted() {
+        let src = r#"
+fn main() {
+    let bal: secret<i64> = 250000;
+    let mut b0: secret<i64> = 0;
+    if bal > 200000 { b0 = 1; }
+}
+"#;
+        typecheck(parse_source(src).unwrap(), Mode::Safe).expect("secret local ok");
+    }
+
     // ── Phase-2 leg-1 confidentiality FLOW: secret → egress = ANUBIS_SECRET_EXFILTRATION ──────────
     // The value-flow dual of the taint integrity flow. A value seeded by `secret_source(..)` that
     // actually REACHES a network/shell egress without a well-formed declassify() is exfiltration —
