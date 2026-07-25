@@ -377,17 +377,13 @@ fn symbolic_index_capturing_closure(
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) -> Option<Box<Expr>> {
-    let (base, index) = match init {
-        Expr::Index { base, index } => (base, index),
-        _ => return None,
-    };
-    if matches!(index.as_ref(), Expr::StrLiteral(_) | Expr::Literal(_)) {
+    // Fail-closed when ANY index in an Index/FieldAccess chain is non-literal — not only the
+    // outermost. Otherwise `let g = outer[i][0]; g(0)` accepts: outer key is literal so the old
+    // early-return fired, and flatten_access_path(base=outer[i]) failed on the symbolic segment.
+    if !access_chain_has_symbolic_index(init) {
         return None;
     }
-    let (root, _) = flatten_access_path(base).or_else(|| {
-        // Nested chain with symbolic outer: still recover the Var root.
-        access_chain_root(base).map(|r| (r, String::new()))
-    })?;
+    let root = access_chain_root(init)?;
     any_capturing_field_closure(&root, scope, ctx)
 }
 
@@ -4500,34 +4496,28 @@ fn analyze_stmts(
                             }
                         })
                     }
-                    // `let g = container[key]` — resolve the stored closure from the container's
-                    // `field_closures` so an INTERMEDIATE binding of a container closure
-                    // (`let g = m["a"]; g(0)`) descends the same as the direct `m["a"](0)`. The key is a
-                    // string literal (map) or an integer literal (list); a SYMBOLIC index is handled by
-                    // the fail-closed marking below (soundness hunt 2026-07-20 j1/j2).
-                    Expr::Index { base, index } => {
-                        let key = match index.as_ref() {
-                            Expr::StrLiteral(s) => Some(s.clone()),
-                            Expr::Literal(s) => Some(s.trim().to_string()),
-                            _ => None,
-                        };
-                        key.and_then(|k| {
-                            flatten_access_path(base).and_then(|(root, path)| {
-                                let full = if path.is_empty() {
-                                    k
+                    // `let g = container[key]` / nested `outer[0][0]` — resolve via full access path.
+                    // Concrete literal chains use flatten keys (`"0.0"`). Symbolic segment handled below.
+                    Expr::Index { .. } | Expr::FieldAccess { .. } => {
+                        if access_chain_has_symbolic_index(init) {
+                            None // j1 backstop below
+                        } else {
+                            flatten_access_path(init).and_then(|(root, path)| {
+                                if path.is_empty() {
+                                    scope.get(&root).and_then(|b| b.closure_lambda.clone())
                                 } else {
-                                    format!("{path}.{k}")
-                                };
-                                scope
-                                    .get(&root)
-                                    .and_then(|b| b.field_closures.get(&full).cloned())
+                                    scope
+                                        .get(&root)
+                                        .and_then(|b| b.field_closures.get(&path).cloned())
+                                }
                             })
-                        })
+                        }
                     }
                     _ => None,
                 };
-                // j1 backstop: a SYMBOLIC-index container binding whose container holds a
+                // j1 backstop: ANY symbolic index in the chain whose root holds a
                 // secret/tainted-capturing closure binds `g` to a capturing element (fail-closed).
+                // Covers flat `arr[i]`, nested `outer[i][0]`, and `b.fs[i]` bind twins of direct apply.
                 let cl = cl.or_else(|| symbolic_index_capturing_closure(init, scope, ctx));
                 // Task #48: closures stored in this binding's STRUCT FIELDS (`let b = S { f: |x| ... }`),
                 // keyed field → lambda, so `b.f(0)` can descend into the field-closure body. A field value

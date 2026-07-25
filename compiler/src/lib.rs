@@ -6801,6 +6801,44 @@ fn main() {
             }"#,
         )
         .expect("clean nested container application must accept");
+        // BIND twin of nested symbolic apply (skeptic gap): `let g = outer[i][0]; g(0)`.
+        let err4 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let i = 0;
+                let outer = [[|x| send("h", 80, k)]];
+                let g = outer[i][0];
+                g(0);
+            }"#,
+        )
+        .expect_err("nested bind-form symbolic index secret capture must reject");
+        assert!(
+            err4.contains("ANUBIS_SECRET") || err4.contains("secret"),
+            "bind twin: expected secret diagnostic, got: {err4}"
+        );
+        // Concrete nested bind still rejects secret capture.
+        assert!(
+            tc_ok(
+                r#"fn main() uses(net.send) {
+                    let k = secret_source("api");
+                    let outer = [[|x| send("h", 80, k)]];
+                    let g = outer[0][0];
+                    g(0);
+                }"#,
+            )
+            .is_err(),
+            "nested literal bind secret capture must reject"
+        );
+        // Clean nested bind still accepts.
+        tc_ok(
+            r#"fn main() uses(net.send) {
+                let i = 0;
+                let outer = [[|x| send("h", 80, 1)]];
+                let g = outer[i][0];
+                g(0);
+            }"#,
+        )
+        .expect("clean nested bind application must accept");
     }
 
     #[test]
