@@ -3113,7 +3113,8 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "secret_source" => fixed("anubis_secret_source", callee, args, 1),
         // Cryptography (SHA-256 / HMAC-SHA256) — pure std in emitted runtime
         // Cryptography — RWC-aligned surface (pure embedded runtime; no cargo deps in `anubis run`)
-        "sha256" | "sha256_hex" => fixed("anubis_sha256", callee, args, 1),
+        // hash_sha256 is the STDLIB_CORE name; sha256 / sha256_hex are aliases (NIST vector unit).
+        "sha256" | "sha256_hex" | "hash_sha256" => fixed("anubis_sha256", callee, args, 1),
         "sha256_bytes" => fixed("anubis_sha256_bytes_val", callee, args, 1),
         "bytes_hex" | "to_hex" => fixed("anubis_bytes_hex", callee, args, 1),
         "hmac_sha256" | "hmac_sha256_hex" => fixed("anubis_hmac_sha256", callee, args, 2),

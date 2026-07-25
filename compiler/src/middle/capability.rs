@@ -95,6 +95,10 @@ struct Lin<'a> {
     all_fns: &'a BTreeSet<String>,
     /// Program-level non_exportable sealedness summaries (return + exporting formals).
     summary: &'a CapProgramSummary,
+    /// Locals that hold non-exportable capability *values* inside aggregates after a store
+    /// (`let arr = [s]` / struct / map). Index/field project to an export sink is EXPORT —
+    /// closes store-then-project laundering (dual-use seal).
+    container_ne: BTreeSet<String>,
 }
 
 impl Lin<'_> {
@@ -210,6 +214,7 @@ pub(crate) fn check_linearity(
         findings: &mut findings,
         all_fns,
         summary,
+        container_ne: BTreeSet::new(),
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
@@ -819,11 +824,34 @@ fn is_export_sink(callee: &str) -> bool {
     EXPORT_SINKS.contains(&callee)
 }
 
+/// True if `expr` is a Live non-exportable token, a known NE-carrying container, or an
+/// aggregate that embeds either (pre-consume snapshot for store-then-project tracking).
+fn expr_holds_live_ne(expr: &Expr, caps: &CapMap, container_ne: &BTreeSet<String>) -> bool {
+    match expr {
+        Expr::Var(n) => {
+            matches!(
+                caps.get(n),
+                Some(t) if t.state == CapState::Live && t.non_exportable
+            ) || container_ne.contains(n)
+        }
+        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+            elements
+                .iter()
+                .any(|e| expr_holds_live_ne(e, caps, container_ne))
+        }
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|(_, e)| expr_holds_live_ne(e, caps, container_ne)),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .any(|(_, v)| expr_holds_live_ne(v, caps, container_ne)),
+        _ => false,
+    }
+}
+
 /// If `expr` names a Live non-exportable token (directly or nested in a value-position
-/// aggregate), or is a call of a function that returns non-exportable, fire EXPORT
-/// (does not consume). Peels list/tuple, struct, map, enum, if/match/block tails so
-/// `print((s, 1))` / `print([s])` / `print(Box { c: s })` cannot launder past a bare-var
-/// check. Index/field *after* a prior store remains residual (tracking lost on consume).
+/// aggregate), projects from an NE-carrying container (`arr[0]` after `arr=[s]`), or is a
+/// call of a function that returns non-exportable, fire EXPORT (does not consume).
 fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
     match expr {
         Expr::Var(name) => {
@@ -832,12 +860,32 @@ fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                     lin.export(name);
                 }
             }
+            if lin.container_ne.contains(name) {
+                lin.export(name);
+            }
         }
         Expr::Call { callee, .. }
             if lin.all_fns.contains(callee)
                 && lin.summary.returns_nonexportable.contains(callee) =>
         {
             lin.export(callee);
+        }
+        Expr::Index { base, index } => {
+            check_export_arg(base, caps, lin);
+            check_export_arg(index, caps, lin);
+            if let Expr::Var(n) = &**base {
+                if lin.container_ne.contains(n) {
+                    lin.export(n);
+                }
+            }
+        }
+        Expr::FieldAccess { base, .. } => {
+            check_export_arg(base, caps, lin);
+            if let Expr::Var(n) = &**base {
+                if lin.container_ne.contains(n) {
+                    lin.export(n);
+                }
+            }
         }
         Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
             for e in elements {
@@ -1015,6 +1063,13 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
         }
     }
     if let Expr::Var(src) = init {
+        // MOVE of an NE-carrying *container* (not a token): transfer the container flag.
+        if lin.container_ne.contains(src) {
+            lin.container_ne.remove(src);
+            lin.container_ne.insert(target.to_string());
+            caps.remove(target);
+            return;
+        }
         match caps.get(src).cloned() {
             Some(t) if t.state == CapState::Live => {
                 // MOVE: the token transfers from `src` to `target`, staying singular (kind + flag).
@@ -1034,15 +1089,18 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                         non_exportable: t.non_exportable,
                     },
                 );
+                lin.container_ne.remove(target);
                 return;
             }
             Some(t) if t.state == CapState::Consumed => {
                 lin.reuse(src);
                 caps.remove(target);
+                lin.container_ne.remove(target);
                 return;
             }
             _ => {
                 caps.remove(target);
+                lin.container_ne.remove(target);
                 return;
             }
         }
@@ -1061,11 +1119,19 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                     non_exportable: true,
                 },
             );
+            lin.container_ne.remove(target);
             return;
         }
     }
+    // Snapshot NE embedding *before* walk consumes element tokens, then mark container.
+    let holds_ne = expr_holds_live_ne(init, caps, &lin.container_ne);
     walk_expr(init, caps, lin);
     caps.remove(target); // rebinding to a non-capability drops any prior capability tracking
+    if holds_ne {
+        lin.container_ne.insert(target.to_string());
+    } else {
+        lin.container_ne.remove(target);
+    }
 }
 
 fn walk_stmts(stmts: &[Stmt], caps: &mut CapMap, lin: &mut Lin) {
@@ -1117,21 +1183,30 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
         Stmt::If { cond, then, else_ } => {
             walk_expr(cond, caps, lin);
             let base = caps.clone();
+            let base_c = lin.container_ne.clone();
             walk_stmts(then, caps, lin);
             let then_end = caps.clone();
+            let then_c = lin.container_ne.clone();
             *caps = base.clone();
+            lin.container_ne = base_c.clone();
             let else_end = if let Some(else_body) = else_ {
                 walk_stmts(else_body, caps, lin);
                 Some(caps.clone())
             } else {
                 None
             };
+            let else_c = lin.container_ne.clone();
             let has_implicit_arm = else_end.is_none();
             let mut ends = vec![then_end];
             if let Some(e) = else_end {
                 ends.push(e);
             }
             *caps = merge_branches(&base, &ends, has_implicit_arm, lin.verified);
+            // Fail-closed sealedness: NE-carrying container if *any* arm stores one.
+            lin.container_ne = then_c.union(&else_c).cloned().collect();
+            if has_implicit_arm {
+                lin.container_ne = lin.container_ne.union(&base_c).cloned().collect();
+            }
         }
         Stmt::While {
             cond,
@@ -2244,6 +2319,49 @@ fn f() { let y = send(3); }"#;
         assert!(
             codes(src, true).is_empty(),
             "exportable LetPattern move must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_store_then_index_print_is_export() {
+        // Dual-use seal: let arr = [s]; print(arr[0]) must not launder NE.
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let arr = [s];
+            print(arr[0]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "store-then-index NE must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_store_then_map_get_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let m = {"k": s};
+            print(m["k"]);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "store-then-map-get NE must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_store_then_index_print_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let arr = [c];
+            print(arr[0]);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable store-then-index must not EXPORT, got {:?}",
             codes(src, true)
         );
     }
