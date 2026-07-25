@@ -701,9 +701,14 @@ fn resolve_applied_container_lambda(
         if path.is_empty() {
             return scope.get(&root).and_then(|b| b.closure_lambda.clone());
         }
-        return scope
+        if let Some(lam) = scope
             .get(&root)
-            .and_then(|b| b.field_closures.get(&path).cloned());
+            .and_then(|b| b.field_closures.get(&path).cloned())
+        {
+            return Some(lam);
+        }
+        // Fail-closed: push/insert of capturing lambdas may not use a concrete path key.
+        return any_capturing_field_closure(&root, scope, ctx);
     }
     // Symbolic segment in chain: fail-closed over all nested field_closures under the root.
     if access_chain_has_symbolic_index(callee) {
@@ -4423,33 +4428,66 @@ fn apply_container_mutation_taint(
     method_tainting_fns: &BTreeSet<String>,
     method_secret_fns: &BTreeSet<String>,
 ) {
-    if let Expr::Call { callee, args } = expr {
-        if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 {
-            let root = assign_target_root(&args[0]).map(|s| s.to_string());
-            let any_taint = args[1..].iter().find_map(|a| {
-                expr_taint_source_m(
-                    a,
-                    scope,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                )
-            });
-            let any_secret = args[1..].iter().any(|a| {
-                expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns)
-                    .is_some()
-            });
-            if let Some(root) = root {
-                if let Some(b) = scope.get_mut(&root) {
-                    if let Some(src) = &any_taint {
-                        b.info.tainted = true;
-                        b.info.taint_source = Some(src.clone());
-                        b.info.declassified = false;
-                    }
-                    if any_secret {
-                        b.secret = true;
-                    }
+    // Free-call form: `push(xs, v)` / `insert(xs, k, v)` — container is args[0], values in args[1..].
+    // Method form: `xs.push(v)` / `xs.insert(k, v)` — container is receiver, values in all args.
+    let (root, value_args): (Option<String>, &[Expr]) = match expr {
+        Expr::Call { callee, args } if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 => {
+            (assign_target_root(&args[0]).map(|s| s.to_string()), &args[1..])
+        }
+        Expr::CallExpr { callee, args }
+            if matches!(
+                callee.as_ref(),
+                Expr::FieldAccess { field, .. } if field == "push" || field == "insert"
+            ) && !args.is_empty() =>
+        {
+            let root = match callee.as_ref() {
+                Expr::FieldAccess { base, .. } => {
+                    assign_target_root(base).map(|s| s.to_string())
                 }
+                _ => None,
+            };
+            (root, args.as_slice())
+        }
+        _ => return,
+    };
+    let any_taint = value_args.iter().find_map(|a| {
+        expr_taint_source_m(
+            a,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+        )
+    });
+    let any_secret = value_args.iter().any(|a| {
+        expr_secret_source_m(a, scope, secret_fns, param_return_taint, method_secret_fns).is_some()
+    });
+    // Collect lambdas to seed *before* mutably borrowing the root binding.
+    let mut seed_lams: Vec<Box<Expr>> = Vec::new();
+    for v in value_args {
+        match v {
+            Expr::Lambda { .. } => seed_lams.push(Box::new(v.clone())),
+            Expr::Var(n) => {
+                if let Some(lam) = scope.get(n).and_then(|bb| bb.closure_lambda.clone()) {
+                    seed_lams.push(lam);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(root) = root {
+        if let Some(b) = scope.get_mut(&root) {
+            if let Some(src) = &any_taint {
+                b.info.tainted = true;
+                b.info.taint_source = Some(src.clone());
+                b.info.declassified = false;
+            }
+            if any_secret {
+                b.secret = true;
+            }
+            for lam in seed_lams {
+                let key = format!("_p{}", b.field_closures.len());
+                b.field_closures.insert(key, lam);
             }
         }
     }

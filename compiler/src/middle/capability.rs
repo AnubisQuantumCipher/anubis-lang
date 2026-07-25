@@ -1112,9 +1112,130 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                 walk_expr(t, caps, lin);
             }
         }
-        // A lambda body is not analyzed here (definition-site): effects/linearity of a closure
-        // fire at application (unknown-provenance for captured caps is the residual).
-        Expr::Lambda { .. } => {}
+        // Non-exportable sealedness: definition-site walk of lambda bodies for export sinks
+        // that mention free Live non_exportable tokens (does not consume — export check only).
+        // Linearity of captured caps at application remains residual for HO rebind.
+        Expr::Lambda { body, .. } => walk_export_seals(body, caps, lin),
+    }
+}
+
+/// Export-seal walk: fire ANUBIS_CAPABILITY_EXPORT on sinks, without consuming tokens.
+fn walk_export_seals(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if is_export_sink(callee) && !lin.all_fns.contains(callee) {
+                for a in args {
+                    check_export_arg(a, caps, lin);
+                }
+            }
+            if lin.all_fns.contains(callee) {
+                if let Some(idxs) = lin.summary.exports_formals.get(callee) {
+                    for &i in idxs {
+                        if let Some(a) = args.get(i) {
+                            check_export_arg(a, caps, lin);
+                        }
+                    }
+                }
+            }
+            for a in args {
+                walk_export_seals(a, caps, lin);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            walk_export_seals(callee, caps, lin);
+            for a in args {
+                walk_export_seals(a, caps, lin);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            walk_export_seals(lhs, caps, lin);
+            walk_export_seals(rhs, caps, lin);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Tainted { inner: expr, .. }
+        | Expr::Declassify { inner: expr, .. }
+        | Expr::Assume(expr)
+        | Expr::Assert(expr)
+        | Expr::Try(expr) => walk_export_seals(expr, caps, lin),
+        Expr::ArrayLiteral { elements } => {
+            for e in elements {
+                walk_export_seals(e, caps, lin);
+            }
+        }
+        Expr::Index { base, index } => {
+            walk_export_seals(base, caps, lin);
+            walk_export_seals(index, caps, lin);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                walk_export_seals(e, caps, lin);
+            }
+        }
+        Expr::If {
+            cond, then, else_, ..
+        }
+        | Expr::IfLet {
+            scrutinee: cond,
+            then,
+            else_,
+            ..
+        } => {
+            walk_export_seals(cond, caps, lin);
+            walk_export_seals(then, caps, lin);
+            walk_export_seals(else_, caps, lin);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_export_seals(scrutinee, caps, lin);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    walk_export_seals(g, caps, lin);
+                }
+                walk_export_seals(&arm.body, caps, lin);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            for s in stmts {
+                match s {
+                    Stmt::Let { init, .. } | Stmt::Assign { value: init, .. } => {
+                        walk_export_seals(init, caps, lin);
+                    }
+                    Stmt::ExprStmt(e) => walk_export_seals(e, caps, lin),
+                    Stmt::If { then, else_, .. } => {
+                        walk_export_seals_stmts(then, caps, lin);
+                        if let Some(e) = else_ {
+                            walk_export_seals_stmts(e, caps, lin);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(t) = tail {
+                walk_export_seals(t, caps, lin);
+            }
+        }
+        Expr::Lambda { body, .. } => walk_export_seals(body, caps, lin),
+        _ => {}
+    }
+}
+
+fn walk_export_seals_stmts(stmts: &[Stmt], caps: &CapMap, lin: &mut Lin) {
+    for s in stmts {
+        match s {
+            Stmt::Let { init, .. } | Stmt::Assign { value: init, .. } => {
+                walk_export_seals(init, caps, lin);
+            }
+            Stmt::ExprStmt(e) => walk_export_seals(e, caps, lin),
+            Stmt::If { then, else_, .. } => {
+                walk_export_seals_stmts(then, caps, lin);
+                if let Some(e) = else_ {
+                    walk_export_seals_stmts(e, caps, lin);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1452,6 +1573,39 @@ fn f() { let y = send(3); }"#;
             codes(src, true).is_empty(),
             "peel-before-call must accept, got {:?}",
             codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_closure_capture_print_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| print(s);
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "closure capture print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_returned_closure_capture_print_is_export() {
+        let src = r#"
+            fn mk() {
+                let s = cap_acquire_nonexportable("fs.write");
+                return |x| print(s);
+            }
+            fn f() {
+                let g = mk();
+                g(0);
+            }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "returned closure capture must EXPORT at def, got {c:?}"
         );
     }
 

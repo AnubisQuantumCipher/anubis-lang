@@ -6987,6 +6987,41 @@ fn main() {
             }"#,
         )
         .expect("clean nested Stmt::If container application must accept");
+        // push residual: free `push(arr, |x| send(k))` and method `arr.push(...)`.
+        let err_push = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let mut arr = [];
+                push(arr, |x| send("h", 80, k));
+                arr[0](0);
+            }"#,
+        )
+        .expect_err("push free secret-capturing lambda must reject");
+        assert!(
+            err_push.contains("ANUBIS_SECRET") || err_push.contains("secret"),
+            "push free: expected secret diagnostic, got: {err_push}"
+        );
+        let err_push_m = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let mut arr = [];
+                arr.push(|x| send("h", 80, k));
+                arr[0](0);
+            }"#,
+        )
+        .expect_err("push method secret-capturing lambda must reject");
+        assert!(
+            err_push_m.contains("ANUBIS_SECRET") || err_push_m.contains("secret"),
+            "push method: expected secret diagnostic, got: {err_push_m}"
+        );
+        tc_ok(
+            r#"fn main() uses(net.send) {
+                let mut arr = [];
+                arr.push(|x| send("h", 80, 1));
+                arr[0](0);
+            }"#,
+        )
+        .expect("clean push method must accept");
     }
 
 
