@@ -1912,8 +1912,7 @@ fn main() -> Result<()> {
                         .filter(|c| c.status == "FAIL")
                         .collect();
                     if !fails.is_empty() {
-                        check_error =
-                            Some(anubis_compiler::middle::format_check_failures(&fails));
+                        check_error = Some(anubis_compiler::middle::format_check_failures(&fails));
                     }
                 }
             }
@@ -4309,11 +4308,7 @@ fn write_capabilities_evidence(out: &Path, report: &serde_json::Value) -> Result
 
 /// Derive a language→OS entitlement profile. Fail closed if the program does not typecheck
 /// (no proven effect set). Claim is **derived + re-derivable**, not host-enforced until codesign.
-fn run_entitlements_cmd(
-    program: &Path,
-    out: Option<&Path>,
-    plist: Option<&Path>,
-) -> Result<()> {
+fn run_entitlements_cmd(program: &Path, out: Option<&Path>, plist: Option<&Path>) -> Result<()> {
     let src = std::fs::read_to_string(program)
         .map_err(|e| anyhow!("read program `{}`: {e}", program.display()))?;
     let ast = parse_source(&src).map_err(|e| anyhow!("ANUBIS_ENTITLEMENT_PARSE_FAILED: {e}"))?;

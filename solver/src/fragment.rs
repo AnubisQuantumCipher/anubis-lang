@@ -311,7 +311,10 @@ mod tests {
     fn admits_var_times_var_mul() {
         let smt = "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
                    (assert (bvult (bvmul x y) x))(check-sat)";
-        assert!(gate(smt), "variable×variable multiply is schoolbook-proven authoritative");
+        assert!(
+            gate(smt),
+            "variable×variable multiply is schoolbook-proven authoritative"
+        );
     }
 
     #[test]

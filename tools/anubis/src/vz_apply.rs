@@ -13,6 +13,7 @@
 //!   - unrestricted-nat (net.send): default force host-only (not open NAT); `--allow-host` DNS-pins
 //!     then Softnet default-deny + `/32` allows when `softnet` is on PATH (`hostname-softnet`);
 //!     without Softnet → staged host-only fallback; `--allow-open-nat` is explicit residual.
+//!
 //! Applied network may be more restrictive than the language proof, never more open without opt-in.
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -153,7 +154,9 @@ pub fn filter_mounts_for_posture(
             for m in requested {
                 let forced = force_readonly_mount(m);
                 if forced != *m {
-                    adjusted.push(format!("{m} → {forced} (forced :ro by mount:read-only posture)"));
+                    adjusted.push(format!(
+                        "{m} → {forced} (forced :ro by mount:read-only posture)"
+                    ));
                 }
                 out.push(forced);
             }
@@ -287,15 +290,13 @@ pub fn filter_network_for_posture_with_softnet(
                     egress_pinned_ipv4: ipv4.clone(),
                     network_apply_mode: "hostname-softnet".into(),
                     network_tart_enforced: true,
-                    notes: vec![
-                        format!(
-                            "network apply: hostname-softnet — hosts DNS-pinned to {:?}; tart \
+                    notes: vec![format!(
+                        "network apply: hostname-softnet — hosts DNS-pinned to {:?}; tart \
                              --net-softnet-block=0.0.0.0/0 + --net-softnet-allow=<ip>/32 (Softnet \
                              destination CIDR enforcement). Residual: DNS rebinding after pin; \
                              not L7 hostname at packet time.",
-                            allow_hosts
-                        ),
-                    ],
+                        allow_hosts
+                    )],
                 });
             }
 
@@ -447,6 +448,7 @@ pub fn build_applied(
 }
 
 /// Convenience: mounts-only engagement (backward-compatible call sites).
+#[allow(dead_code)] // public API retained for callers outside this binary's unit tests
 pub fn build_applied_mounts_only(
     program: &str,
     mounts: &[String],
@@ -463,7 +465,10 @@ pub fn build_applied_mounts_only(
     )
 }
 
-pub fn write_applied(applied: &AppliedConfinement, out: Option<&Path>) -> Result<std::path::PathBuf> {
+pub fn write_applied(
+    applied: &AppliedConfinement,
+    out: Option<&Path>,
+) -> Result<std::path::PathBuf> {
     let path = match out {
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir()?.join(APPLIED_FILENAME),
@@ -681,7 +686,10 @@ mod tests {
         .expect("apply");
         assert_eq!(applied.allow_hosts, vec!["127.0.0.1".to_string()]);
         assert!(
-            applied.egress_pinned_ipv4.iter().any(|ip| ip == "127.0.0.1"),
+            applied
+                .egress_pinned_ipv4
+                .iter()
+                .any(|ip| ip == "127.0.0.1"),
             "pinned {:?}",
             applied.egress_pinned_ipv4
         );
@@ -743,7 +751,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(n.network_apply_mode, "hostname-softnet");
-        assert!(n.net_tart_flags.iter().any(|a| a.starts_with("--net-softnet")));
+        assert!(n
+            .net_tart_flags
+            .iter()
+            .any(|a| a.starts_with("--net-softnet")));
     }
 
     #[test]
@@ -785,8 +796,7 @@ mod tests {
 
     #[test]
     fn read_write_posture_allows_mounts_as_is() {
-        let (m, adj) =
-            filter_mounts_for_posture(&["ws:/tmp/data".into()], "read-write").unwrap();
+        let (m, adj) = filter_mounts_for_posture(&["ws:/tmp/data".into()], "read-write").unwrap();
         assert_eq!(m, vec!["ws:/tmp/data".to_string()]);
         assert!(adj.is_empty());
     }

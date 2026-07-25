@@ -105,8 +105,9 @@ pub fn derive_entitlement_profile(
     entitlements.push(EntitlementKey {
         key: "com.apple.security.app-sandbox".into(),
         enabled: true,
-        reason: "language-derived profiles default to App Sandbox ON (restrictive packaging posture)"
-            .into(),
+        reason:
+            "language-derived profiles default to App Sandbox ON (restrictive packaging posture)"
+                .into(),
         apple_enforced_claim: false,
     });
 
@@ -127,7 +128,8 @@ pub fn derive_entitlement_profile(
     entitlements.push(EntitlementKey {
         key: "com.apple.security.network.server".into(),
         enabled: network_server,
-        reason: "no language effect maps to inbound server sockets in this slice — always off".into(),
+        reason: "no language effect maps to inbound server sockets in this slice — always off"
+            .into(),
         apple_enforced_claim: false,
     });
 
@@ -161,8 +163,9 @@ pub fn derive_entitlement_profile(
         entitlements.push(EntitlementKey {
             key: "com.apple.security.temporary-exception.files.absolute-path.read-only".into(),
             enabled: false,
-            reason: "shell proven — no automatic unrestricted-exec entitlement; needs_human residual"
-                .into(),
+            reason:
+                "shell proven — no automatic unrestricted-exec entitlement; needs_human residual"
+                    .into(),
             apple_enforced_claim: false,
         });
     }

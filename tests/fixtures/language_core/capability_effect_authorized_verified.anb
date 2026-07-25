@@ -1,12 +1,11 @@
 // EXPECT: PASS
 // Phase-2 slice 3 accept-guard: a genuinely-acquired capability of the matching kind authorizes the
-// effect. `cap_acquire("net.send")` mints a real net capability held in scope; the token is used
-// once (linear). This is the properly-authorized program the check must NOT reject.
+// effect. `cap_acquire("net.send")` mints a real net capability held in scope; the privileged
+// effect is the causal spend (no trailing `cap_use` — that would be double-spend / REUSE).
 @verified
 fn f() uses(net.send) {
     let n = cap_acquire("net.send");
     send("host", 80, "payload");
-    cap_use(n);
 }
 
 fn main() { }

@@ -18,7 +18,8 @@ use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 /// Compiled egress policy: destination IPv4 addresses derived from allow-listed hostnames.
 #[derive(Debug, Clone)]
 pub struct EgressPolicy {
-    /// Original hostnames (for diagnostics).
+    /// Original hostnames (for diagnostics / operator replay).
+    #[allow(dead_code)]
     pub hosts: Vec<String>,
     /// Allowed IPv4 destinations (DNS-pinned at policy build).
     pub allowed_ipv4: HashSet<Ipv4Addr>,
@@ -41,7 +42,9 @@ impl EgressPolicy {
                 .map_err(|e| anyhow!("ANUBIS_EGRESS_DNS: resolve `{h}` failed: {e}"))?
                 .collect();
             if addrs.is_empty() {
-                return Err(anyhow!("ANUBIS_EGRESS_DNS: resolve `{h}` returned no addresses"));
+                return Err(anyhow!(
+                    "ANUBIS_EGRESS_DNS: resolve `{h}` returned no addresses"
+                ));
             }
             let mut got_v4 = false;
             for a in addrs {
@@ -89,6 +92,7 @@ impl EgressPolicy {
 }
 
 /// Build a minimal Ethernet+IPv4 frame for tests (zero MACs, IPv4 ethertype, dst IP).
+#[cfg(test)]
 pub fn test_ipv4_frame(dst: Ipv4Addr) -> Vec<u8> {
     let mut f = vec![0u8; 14 + 20];
     f[12] = 0x08;

@@ -2695,9 +2695,8 @@ fn is_non_run_builtin(callee: &str) -> bool {
             | "exec"
             | "system"
             | "memcpy"
-            | "sql"
-            // `http_get`/`http_post` lower via `anubis_http_*` (cleartext http:// only).
-            // `shell`/`exec` remain non-run by design.
+            | "sql" // `http_get`/`http_post` lower via `anubis_http_*` (cleartext http:// only).
+                    // `shell`/`exec` remain non-run by design.
     )
 }
 
@@ -6979,7 +6978,10 @@ mod run_tests {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        assert_eq!(lines, vec!["hello-get".to_string(), "hello-post".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["hello-get".to_string(), "hello-post".to_string()]
+        );
 
         // Confirm both methods actually hit the listener (not a fake).
         let r1 = rx.recv_timeout(Duration::from_secs(5)).expect("get req");
@@ -6993,7 +6995,14 @@ mod run_tests {
     fn http_https_via_system_curl() {
         // Network-dependent: skip if offline / curl blocked.
         if std::process::Command::new("curl")
-            .args(["-fsSL", "--max-time", "10", "-o", "/dev/null", "https://example.com/"])
+            .args([
+                "-fsSL",
+                "--max-time",
+                "10",
+                "-o",
+                "/dev/null",
+                "https://example.com/",
+            ])
             .status()
             .map(|s| !s.success())
             .unwrap_or(true)

@@ -260,11 +260,7 @@ pub fn native_boot(
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn boot_with_kernel(
-    posture: &NativePosture,
-    kernel: &str,
-    initrd: Option<&str>,
-) -> Result<()> {
+fn boot_with_kernel(posture: &NativePosture, kernel: &str, initrd: Option<&str>) -> Result<()> {
     use objc2::rc::Retained;
     use objc2::AnyThread;
     use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
@@ -282,9 +278,9 @@ fn boot_with_kernel(
     }
 
     let policy = match posture {
-        NativePosture::PerHostnameEgress { allow_hosts } => {
-            Some(crate::vz_egress_gateway::EgressPolicy::from_allow_hosts(allow_hosts)?)
-        }
+        NativePosture::PerHostnameEgress { allow_hosts } => Some(
+            crate::vz_egress_gateway::EgressPolicy::from_allow_hosts(allow_hosts)?,
+        ),
         NativePosture::ZeroNicAirGap => None,
     };
     let allow_count = policy.as_ref().map(|p| p.allowed_ipv4.len()).unwrap_or(0);
@@ -383,11 +379,7 @@ fn boot_with_kernel(
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn boot_with_kernel(
-    _posture: &NativePosture,
-    _kernel: &str,
-    _initrd: Option<&str>,
-) -> Result<()> {
+fn boot_with_kernel(_posture: &NativePosture, _kernel: &str, _initrd: Option<&str>) -> Result<()> {
     Err(anyhow!(
         "ANUBIS_VZNATIVE_UNSUPPORTED_HOST: native-boot requires Apple Silicon macOS"
     ))

@@ -899,7 +899,8 @@ fn f() { let y = send(3); }"#;
     #[test]
     fn nonexportable_causal_spend_without_token_in_args_accepts() {
         // Authorize effect ambiently; token is NOT a sink argument.
-        let src = r#"fn f() { let n = cap_acquire_nonexportable("net.send"); send("h", 80, "x"); }"#;
+        let src =
+            r#"fn f() { let n = cap_acquire_nonexportable("net.send"); send("h", 80, "x"); }"#;
         assert!(codes(src, true).is_empty());
         assert!(codes(src, false).is_empty());
     }

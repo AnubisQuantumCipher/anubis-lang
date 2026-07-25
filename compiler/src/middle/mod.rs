@@ -2516,8 +2516,7 @@ fn push_wrap_safety_binop(
     let int_asm: Vec<String> = assumptions
         .iter()
         .filter(|a| {
-            !fact_is_float(a, &ctx.solver_float_vars)
-                && !fact_is_string(a, &ctx.solver_string_vars)
+            !fact_is_float(a, &ctx.solver_float_vars) && !fact_is_string(a, &ctx.solver_string_vars)
         })
         .cloned()
         .collect();
@@ -2532,6 +2531,41 @@ fn push_wrap_safety_binop(
         strings: false,
         guard_assumptions: ctx.active_branch_guards.clone(),
     });
+}
+
+/// Boolean path fact for wrap-safety under a loop/branch guard (comparisons / `&&` of them).
+/// Returns `None` when the guard is not integer-modelable — wrap then stays free under outer facts only.
+fn wrap_safety_path_fact(ctx: &SemanticContext, e: &Expr) -> Option<String> {
+    match e {
+        Expr::Binary { op, lhs, rhs }
+            if matches!(op.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=")
+                && is_int_modelable(lhs, &ctx.solver_int_vars)
+                && is_int_modelable(rhs, &ctx.solver_int_vars) =>
+        {
+            Some(expr_to_smt(e, &ctx.symbolic_widths))
+        }
+        Expr::Binary { op, lhs, rhs } if op == "&&" => {
+            match (
+                wrap_safety_path_fact(ctx, lhs),
+                wrap_safety_path_fact(ctx, rhs),
+            ) {
+                (Some(a), Some(b)) => Some(format!("(and {a} {b})")),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn wrap_safety_with_path_facts(
+    base: &[String],
+    facts: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut out = base.to_vec();
+    out.extend(facts);
+    out
 }
 
 fn collect_wrap_safety_from_stmt(
@@ -2549,33 +2583,84 @@ fn collect_wrap_safety_from_stmt(
             collect_wrap_safety_from_expr(ctx, target, assumptions, seen);
             collect_wrap_safety_from_expr(ctx, value, assumptions, seen);
         }
-        Stmt::If {
-            cond,
-            then,
-            else_,
-        } => {
+        Stmt::If { cond, then, else_ } => {
             collect_wrap_safety_from_expr(ctx, cond, assumptions, seen);
+            // Then/else arms only execute under the branch guard — include it so wrap-safety
+            // does not treat free inputs that the path condition already excludes.
+            let then_asm = match wrap_safety_path_fact(ctx, cond) {
+                Some(g) => wrap_safety_with_path_facts(assumptions, [g]),
+                None => assumptions.to_vec(),
+            };
             for t in then {
-                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+                collect_wrap_safety_from_stmt(ctx, t, &then_asm, seen);
             }
             if let Some(e) = else_ {
+                let else_asm = match wrap_safety_path_fact(ctx, cond) {
+                    Some(g) => wrap_safety_with_path_facts(assumptions, [format!("(not {g})")]),
+                    None => assumptions.to_vec(),
+                };
                 for t in e {
-                    collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+                    collect_wrap_safety_from_stmt(ctx, t, &else_asm, seen);
                 }
             }
         }
-        Stmt::While { cond, body, .. } | Stmt::WhileLet { expr: cond, body, .. } => {
+        Stmt::While {
+            cond,
+            body,
+            invariant,
+        } => {
             collect_wrap_safety_from_expr(ctx, cond, assumptions, seen);
+            for inv in invariant {
+                collect_wrap_safety_from_expr(ctx, inv, assumptions, seen);
+            }
+            // Body runs only while `cond` holds (and under verified/user invariants when present).
+            // Without this, free `i+1` wrap-safety CEXes with `i=MAX` even when `i < n` forbids it.
+            let mut body_facts = Vec::new();
+            if let Some(g) = wrap_safety_path_fact(ctx, cond) {
+                body_facts.push(g);
+            }
+            for inv in invariant {
+                if let Some(g) = wrap_safety_path_fact(ctx, inv) {
+                    body_facts.push(g);
+                }
+            }
+            let body_asm = wrap_safety_with_path_facts(assumptions, body_facts);
             for t in body {
-                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+                collect_wrap_safety_from_stmt(ctx, t, &body_asm, seen);
             }
         }
-        Stmt::Loop { body, .. } => {
+        Stmt::WhileLet {
+            expr: cond, body, ..
+        } => {
+            collect_wrap_safety_from_expr(ctx, cond, assumptions, seen);
+            // while-let PC is value/match shaped — cond may not be a pure int comparison.
+            let body_asm = match wrap_safety_path_fact(ctx, cond) {
+                Some(g) => wrap_safety_with_path_facts(assumptions, [g]),
+                None => assumptions.to_vec(),
+            };
             for t in body {
-                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+                collect_wrap_safety_from_stmt(ctx, t, &body_asm, seen);
             }
         }
-        Stmt::For { source, body, .. } => {
+        Stmt::Loop { body, invariant } => {
+            let mut body_facts = Vec::new();
+            for inv in invariant {
+                collect_wrap_safety_from_expr(ctx, inv, assumptions, seen);
+                if let Some(g) = wrap_safety_path_fact(ctx, inv) {
+                    body_facts.push(g);
+                }
+            }
+            let body_asm = wrap_safety_with_path_facts(assumptions, body_facts);
+            for t in body {
+                collect_wrap_safety_from_stmt(ctx, t, &body_asm, seen);
+            }
+        }
+        Stmt::For {
+            var,
+            source,
+            body,
+            invariant,
+        } => {
             match source {
                 crate::frontend::ForSource::Range { start, end } => {
                     collect_wrap_safety_from_expr(ctx, start, assumptions, seen);
@@ -2585,12 +2670,41 @@ fn collect_wrap_safety_from_stmt(
                     collect_wrap_safety_from_expr(ctx, expr, assumptions, seen)
                 }
             }
+            for inv in invariant {
+                collect_wrap_safety_from_expr(ctx, inv, assumptions, seen);
+            }
+            // The for-counter is loop-local and may already have been dropped from
+            // `solver_int_vars` after the loop's analysis. Temporarily re-admit it so body
+            // wrap-safety can use `start <= i < end` and invariants mentioning `i`.
+            let inserted_counter = ctx.solver_int_vars.insert(var.clone());
+            ctx.symbolic_widths.entry(var.clone()).or_insert(64);
+            // Range `for`: body sees `start <= var < end` (exclusive end), matching desugar cond.
+            let mut body_facts = Vec::new();
+            if let crate::frontend::ForSource::Range { start, end } = source {
+                if is_int_modelable(start, &ctx.solver_int_vars)
+                    && is_int_modelable(end, &ctx.solver_int_vars)
+                {
+                    let vs = smt_var(var);
+                    let ss = expr_to_smt(start, &ctx.symbolic_widths);
+                    let es = expr_to_smt(end, &ctx.symbolic_widths);
+                    body_facts.push(format!("(bvsge {vs} {ss})"));
+                    body_facts.push(format!("(bvslt {vs} {es})"));
+                }
+            }
+            for inv in invariant {
+                if let Some(g) = wrap_safety_path_fact(ctx, inv) {
+                    body_facts.push(g);
+                }
+            }
+            let body_asm = wrap_safety_with_path_facts(assumptions, body_facts);
             for t in body {
-                collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
+                collect_wrap_safety_from_stmt(ctx, t, &body_asm, seen);
+            }
+            if inserted_counter {
+                ctx.solver_int_vars.remove(var);
             }
         }
-        Stmt::ResearchBlock { body, .. }
-        | Stmt::ExploitBlock { body, .. } => {
+        Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
             for t in body {
                 collect_wrap_safety_from_stmt(ctx, t, assumptions, seen);
             }
@@ -7579,7 +7693,9 @@ fn walk_block_effects(
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
-            Stmt::For { var, source, body, .. } => {
+            Stmt::For {
+                var, source, body, ..
+            } => {
                 {
                     let secret_for_pc = match source {
                         crate::frontend::ForSource::Range { start, end } => {
@@ -8580,10 +8696,7 @@ fn display_model_var(name: &str) -> &str {
 fn render_bv_model_value(value: &str) -> String {
     let v = value.trim();
     // `#x…` / `#X…`
-    if let Some(hex) = v
-        .strip_prefix("#x")
-        .or_else(|| v.strip_prefix("#X"))
-    {
+    if let Some(hex) = v.strip_prefix("#x").or_else(|| v.strip_prefix("#X")) {
         if let Ok(u) = u64::from_str_radix(hex, 16) {
             let hex_pad = format!("0x{hex:0>16}");
             let i = u as i64;
@@ -8723,14 +8836,7 @@ fn is_pretty_model_symbol(name: &str) -> bool {
     let d = display_model_var(name);
     if matches!(
         d,
-        "distinct"
-            | "extract"
-            | "sign_extend"
-            | "zero_extend"
-            | "true"
-            | "false"
-            | "sat"
-            | "model"
+        "distinct" | "extract" | "sign_extend" | "zero_extend" | "true" | "false" | "sat" | "model"
     ) {
         return false;
     }
@@ -8738,8 +8844,7 @@ fn is_pretty_model_symbol(name: &str) -> bool {
     d.chars()
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && d.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && d.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 pub fn format_counterexample(model: &str) -> String {
@@ -8761,7 +8866,11 @@ pub fn format_counterexample(model: &str) -> String {
         if bv.contains_key(name) || !is_pretty_model_symbol(name) {
             continue;
         }
-        lines.push(format!("    {} = {}", display_model_var(name), value.trim()));
+        lines.push(format!(
+            "    {} = {}",
+            display_model_var(name),
+            value.trim()
+        ));
     }
     if lines.is_empty() {
         // Ground sat with empty model `()` — still a real counterexample, no free vars.
@@ -8800,11 +8909,11 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
     let kinds: Vec<AssertionFailKind> = fails.iter().map(classify_assertion_fail).collect();
     let all_disproved = kinds.iter().all(|k| *k == AssertionFailKind::Disproved);
     let all_wrap = kinds.iter().all(|k| *k == AssertionFailKind::WrapRisk);
-    let all_disproved_or_wrap = kinds.iter().all(|k| {
-        *k == AssertionFailKind::Disproved || *k == AssertionFailKind::WrapRisk
-    });
+    let all_disproved_or_wrap = kinds
+        .iter()
+        .all(|k| *k == AssertionFailKind::Disproved || *k == AssertionFailKind::WrapRisk);
     let all_undecided = kinds.iter().all(|k| *k == AssertionFailKind::Undecided);
-    let any_replay = kinds.iter().any(|k| *k == AssertionFailKind::ReplayMismatch);
+    let any_replay = kinds.contains(&AssertionFailKind::ReplayMismatch);
 
     let (code, headline) = if all_wrap {
         (
@@ -8831,11 +8940,13 @@ pub fn format_check_failures(fails: &[SolverCheck]) -> String {
                 "{n} assertion(s) undecided within solver budget (not a proof, not a counterexample):"
             ),
         )
-    } else if any_replay && kinds.iter().all(|k| {
-        *k == AssertionFailKind::ReplayMismatch
-            || *k == AssertionFailKind::Disproved
-            || *k == AssertionFailKind::WrapRisk
-    }) {
+    } else if any_replay
+        && kinds.iter().all(|k| {
+            *k == AssertionFailKind::ReplayMismatch
+                || *k == AssertionFailKind::Disproved
+                || *k == AssertionFailKind::WrapRisk
+        })
+    {
         (
             "ANUBIS_REPLAY_MISMATCH",
             format!("{n} assertion(s) failed closed (model replay mismatch):"),
@@ -8960,7 +9071,6 @@ fn nzdiv_mark(v: &str) -> String {
 fn nonneg_mark(v: &str) -> String {
     format!("\u{1}nonneg:{v}")
 }
-
 
 /// Sentinel key marking that a modeled INT builtin (`abs`/`min`/`max`/`len`) is SHADOWED in the current
 /// function by a user fn or a local (param/`let`) of the same name — the runtime calls THAT, not the
@@ -10461,8 +10571,6 @@ fn expr_to_smt_value(e: &Expr, widths: &BTreeMap<String, u32>) -> Option<String>
     }
 }
 
-#[allow(clippy::only_used_in_recursion)]
-
 fn pow2_shift_k_from_smt_rhs(rhs_smt: &str) -> Option<u32> {
     let s = rhs_smt.trim();
     let rest = s.strip_prefix("(_ bv")?.strip_suffix(" 64)")?;
@@ -10480,6 +10588,7 @@ fn smt_bv_const_nonneg(smt: &str) -> bool {
     rest.parse::<u64>().ok().is_some_and(|n| n < (1u64 << 63))
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn expr_to_smt_with_width(
     e: &Expr,
     widths: &BTreeMap<String, u32>,
@@ -12075,9 +12184,7 @@ fn reject_secret_pc_public_return(
     };
     let under_secret_guards =
         |guards: &[(Expr, bool)], scope: &BTreeMap<String, ScopeBinding>, ctx: &SemanticContext| {
-            guards
-                .iter()
-                .any(|(c, _)| expr_is_secret_pc(c, scope, ctx))
+            guards.iter().any(|(c, _)| expr_is_secret_pc(c, scope, ctx))
         };
     let emit_implicit = |ctx: &mut SemanticContext, flagged: &mut bool| {
         if *flagged {

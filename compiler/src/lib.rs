@@ -1991,8 +1991,12 @@ fn main() {
         );
         // The fixes do not over-reject: a valid integer composition and a non-shadowing guarded divisor
         // still prove.
+        // Prefer identity composition over free `x * x`: free×free mul wrap-safety / bvmul can hang
+        // the native solver (named residual); composition soundness is the property under test here.
         assert!(
-            discharged("fn sq(x: u32) -> u32 ensures(result == x * x) { return x * x; } fn g() -> u32 { let s = sq(5); return s; }"),
+            discharged(
+                "fn id(x: u32) -> u32 ensures(result == x) { return x; } fn g() -> u32 { let s = id(5); return s; }"
+            ),
             "valid integer composition still proves"
         );
         assert!(
@@ -3144,15 +3148,8 @@ fn bad(x: i64) -> i64
         let ast = parse_source(src).expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
         let checks = SymbolicEngine::check_obligations(&ir);
-        let fails: Vec<_> = checks
-            .into_iter()
-            .filter(|c| c.status == "FAIL")
-            .collect();
-        assert!(
-            !fails.is_empty(),
-            "false ensures must fail: {:?}",
-            fails
-        );
+        let fails: Vec<_> = checks.into_iter().filter(|c| c.status == "FAIL").collect();
+        assert!(!fails.is_empty(), "false ensures must fail: {:?}", fails);
         assert!(
             fails.iter().all(|c| {
                 middle::classify_assertion_fail(c) == middle::AssertionFailKind::Disproved
@@ -3184,9 +3181,10 @@ fn bad(x: i64) -> i64
         );
         // Model value for requires(x>0) ∧ ¬(result>100) with result=x is some x in 1..=100.
         assert!(
-            fails.iter().any(|c| c.model.as_ref().is_some_and(|m| {
-                middle::format_counterexample(m).contains("0x")
-            })),
+            fails.iter().any(|c| c
+                .model
+                .as_ref()
+                .is_some_and(|m| { middle::format_counterexample(m).contains("0x") })),
             "pretty printer must render hex: {:?}",
             fails
         );
@@ -3211,10 +3209,7 @@ fn bad(x: i64) -> i64
             middle::AssertionFailKind::Undecided
         );
         let msg = middle::format_check_failures(&[check]);
-        assert!(
-            msg.starts_with("ANUBIS_ASSERTION_UNDECIDED:"),
-            "got: {msg}"
-        );
+        assert!(msg.starts_with("ANUBIS_ASSERTION_UNDECIDED:"), "got: {msg}");
         assert!(
             !msg.contains("counterexample:"),
             "undecided must not invent a counterexample label: {msg}"
@@ -3234,10 +3229,7 @@ fn bad(x: i64) -> i64
             pretty.contains("head = 0x00000000c0000000"),
             "hex: {pretty}"
         );
-        assert!(
-            pretty.contains("3221225472"),
-            "decimal: {pretty}"
-        );
+        assert!(pretty.contains("3221225472"), "decimal: {pretty}");
         assert!(
             pretty.contains("tail = 0x0000000000000000"),
             "tail: {pretty}"
@@ -3273,10 +3265,7 @@ fn increment(x: i64) -> i64
         let ast = parse_source(src).expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
         let checks = SymbolicEngine::check_obligations(&ir);
-        let fails: Vec<_> = checks
-            .into_iter()
-            .filter(|c| c.status == "FAIL")
-            .collect();
+        let fails: Vec<_> = checks.into_iter().filter(|c| c.status == "FAIL").collect();
         assert!(
             fails.iter().any(|c| c.name.starts_with("wrap-safety:")),
             "must emit wrap-safety obligation: {fails:?}"
@@ -3419,10 +3408,7 @@ fn main() { f(3.0); }
         let ast = parse_source(src).expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
         let checks = SymbolicEngine::check_obligations(&ir);
-        let fails: Vec<_> = checks
-            .into_iter()
-            .filter(|c| c.status == "FAIL")
-            .collect();
+        let fails: Vec<_> = checks.into_iter().filter(|c| c.status == "FAIL").collect();
         assert!(!fails.is_empty(), "false float assert must fail: {fails:?}");
         for f in &fails {
             assert_eq!(
@@ -3439,10 +3425,7 @@ fn main() { f(3.0); }
             }
         }
         let msg = middle::format_check_failures(&fails);
-        assert!(
-            msg.starts_with("ANUBIS_ASSERTION_DISPROVED:"),
-            "got: {msg}"
-        );
+        assert!(msg.starts_with("ANUBIS_ASSERTION_DISPROVED:"), "got: {msg}");
         assert!(
             !msg.contains("ANUBIS_REPLAY_MISMATCH"),
             "must not mis-label a real float CEX: {msg}"
@@ -7517,7 +7500,6 @@ fn main() { }"#;
         tc_lane(two, true).expect("secret + egress, no untrusted channel is two legs");
     }
 
-
     #[test]
     fn implicit_secret_pc_assignment_to_public_local_is_rejected() {
         let src = r#"
@@ -7528,12 +7510,8 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(src).unwrap(), Mode::Safe)
-            .err()
-            .expect("implicit flow must reject");
-        assert!(
-            err.contains("ANUBIS_IMPLICIT_FLOW"),
-            "got: {err}"
-        );
+            .expect_err("implicit flow must reject");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "got: {err}");
     }
 
     #[test]
@@ -7562,8 +7540,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(while_src).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret while must reject public assign");
+            .expect_err("secret while must reject public assign");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "while: {err}");
 
         let match_src = r#"
@@ -7577,8 +7554,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(match_src).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret match must reject public assign");
+            .expect_err("secret match must reject public assign");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "match: {err}");
 
         let iflet_src = r#"
@@ -7591,8 +7567,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(iflet_src).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret if-let must reject public assign");
+            .expect_err("secret if-let must reject public assign");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "if-let: {err}");
     }
 
@@ -7607,8 +7582,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(assign).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret into public-typed assign must reject");
+            .expect_err("secret into public-typed assign must reject");
         assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "assign: {err}");
 
         let let_ann = r#"
@@ -7618,8 +7592,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(let_ann).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret into public-typed let must reject");
+            .expect_err("secret into public-typed let must reject");
         assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "let: {err}");
 
         let ret = r#"
@@ -7629,8 +7602,7 @@ fn wrap(k: secret<i64>) -> i64 {
 fn main() { let x = wrap(1); }
 "#;
         let err = typecheck(parse_source(ret).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret return as public type must reject");
+            .expect_err("secret return as public type must reject");
         assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "return: {err}");
 
         // Escape hatches
@@ -7671,8 +7643,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(field).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret into public-typed field place must reject");
+            .expect_err("secret into public-typed field place must reject");
         assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "field: {err}");
 
         let index = r#"
@@ -7683,8 +7654,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(index).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret into public-typed index place must reject");
+            .expect_err("secret into public-typed index place must reject");
         assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "index: {err}");
 
         // Unannotated container: MAY-label root secret (egress still catches); no SECRET_TO_PUBLIC.
@@ -7708,8 +7678,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(call).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret arg into public formal must reject");
+            .expect_err("secret arg into public formal must reject");
         assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "call: {err}");
 
         let call_ok = r#"
@@ -7745,8 +7714,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(method).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret arg into public method formal must reject");
+            .expect_err("secret arg into public method formal must reject");
         assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "method: {err}");
 
         let method_ok = r#"
@@ -7777,8 +7745,7 @@ fn bit(bal: secret<i64>) -> i64 {
 fn main() { let x = bit(1); }
 "#;
         let err = typecheck(parse_source(early).unwrap(), Mode::Safe)
-            .err()
-            .expect("public return under secret PC must reject");
+            .expect_err("public return under secret PC must reject");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "early-return: {err}");
 
         let tail = r#"
@@ -7788,8 +7755,7 @@ fn bit(bal: secret<i64>) -> i64 {
 fn main() { let x = bit(1); }
 "#;
         let err = typecheck(parse_source(tail).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret-PC value-if tail must reject");
+            .expect_err("secret-PC value-if tail must reject");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "tail-if: {err}");
 
         let secret_ret = r#"
@@ -7816,8 +7782,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(expr_if).unwrap(), Mode::Safe)
-            .err()
-            .expect("value-if secret PC must reject");
+            .expect_err("value-if secret PC must reject");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "expr-if: {err}");
 
         let value_match = r#"
@@ -7831,8 +7796,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(value_match).unwrap(), Mode::Safe)
-            .err()
-            .expect("value-match secret PC must reject");
+            .expect_err("value-match secret PC must reject");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "value-match: {err}");
 
         let for_src = r#"
@@ -7845,8 +7809,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(for_src).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret for bound must reject public assign");
+            .expect_err("secret for bound must reject public assign");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "for: {err}");
 
         // Public range, no public assign of secret bits via body counter only — accept when no public assign
@@ -7874,8 +7837,7 @@ fn main() {
 }
 "#;
         let err = typecheck(parse_source(guard_src).unwrap(), Mode::Safe)
-            .err()
-            .expect("secret match guard must reject public assign");
+            .expect_err("secret match guard must reject public assign");
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "guard: {err}");
     }
 

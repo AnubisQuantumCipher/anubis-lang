@@ -2,13 +2,12 @@
 // Phase-2 final slice accept-guard: leg 2 ABSENT — private read + external send with NO distinct
 // untrusted steering channel is two legs, a deliberate non-injectable egress. The send arg is a
 // constant so the value-flow taint check is also silent, isolating the point that two legs pass.
+// Privileged effects causally spend their matching tokens (no trailing cap_use).
 @verified
 fn agent() uses(fs.read, net.send) {
     let rcap = cap_acquire("fs.read");
     let scap = cap_acquire("net.send");
     let secret = read_file("fixed_config");
-    cap_use(rcap);
-    cap_use(scap);
     send("host", 80, "ping");
 }
 
