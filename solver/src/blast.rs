@@ -145,16 +145,12 @@ impl<'a> Blaster<'a> {
     }
 
     /// Multiply by a CONSTANT multiplier: `x * c = Σ_{i : bit i of c set} (x << i)`, accumulated with
-    /// the ripple adder (so the result is taken mod 2^w — exactly bit-vector multiply). One operand
-    /// must be a literal `Const`; multiplication is commutative and both-const folds through the same
-    /// path (the const operand is blasted to bits and shift-added). Variable × variable needs a full
-    /// multiplier array and is deferred (→ `None` → z3). Every gate used here — the shift (wire
-    /// re-indexing) and the ripple `add` — is already machine-checked in `formal/Anubis/BitBlast.lean`.
+    /// the ripple adder (so the result is taken mod 2^w — exactly bit-vector multiply).
     fn const_mul(&mut self, a: &Term, b: &Term) -> Option<Vec<Lit>> {
         let (x_term, c, w) = match (a, b) {
             (_, Term::Const(c, w)) => (a, *c, *w as usize),
             (Term::Const(c, w), _) => (b, *c, *w as usize),
-            _ => return None, // variable × variable → defer
+            _ => return None, // variable × variable → var_mul
         };
         let x = self.blast_term(x_term)?;
         if x.len() != w {
@@ -169,6 +165,27 @@ impl<'a> Blaster<'a> {
                 shifted[i..].copy_from_slice(&x[..w - i]);
                 acc = self.add(&acc, &shifted);
             }
+        }
+        Some(acc)
+    }
+
+    /// Variable × variable schoolbook multiply: `x * y = Σ_i (y[i] ? (x << i) : 0)` mod 2^w.
+    /// Reuses const left-shift wiring, per-bit AND, and the ripple adder — the same family Lean
+    /// checks for `mulConst` / `addBits` / `shlConst`. See `mulVar_correct` in BitBlast.lean.
+    fn var_mul(&mut self, a: &Term, b: &Term) -> Option<Vec<Lit>> {
+        let (av, bv) = (self.blast_term(a)?, self.blast_term(b)?);
+        if av.len() != bv.len() || av.is_empty() {
+            return None;
+        }
+        let w = av.len();
+        let ff = self.ff();
+        let mut acc = vec![ff; w];
+        for i in 0..w {
+            // partial = y[i] ? (x << i) : 0  — AND each bit of shifted x with selector y[i]
+            let mut shifted = vec![ff; w];
+            shifted[i..].copy_from_slice(&av[..w - i]);
+            let partial: Vec<Lit> = shifted.iter().map(|&bit| self.and2(bit, bv[i])).collect();
+            acc = self.add(&acc, &partial);
         }
         Some(acc)
     }
@@ -307,10 +324,9 @@ impl<'a> Blaster<'a> {
                 }
                 Some((0..av.len()).map(|i| self.mux(sel, av[i], bv[i])).collect())
             }
-            // Constant-multiplier multiply (one operand a literal): x * c = Σ (x << i) over the set
-            // bits i of c, accumulated mod 2^w. Variable × variable needs a full multiplier array and
-            // is still deferred. Division / remainder are still deferred to z3.
-            Term::Mul(a, b) => self.const_mul(a, b),
+            // Multiply: const path preferred (fewer gates); else schoolbook var×var.
+            // Division / remainder still deferred to z3 (no Lean blast proof yet).
+            Term::Mul(a, b) => self.const_mul(a, b).or_else(|| self.var_mul(a, b)),
             Term::Udiv(..) | Term::Urem(..) | Term::Sdiv(..) | Term::Srem(..) => {
                 let _ = w;
                 None

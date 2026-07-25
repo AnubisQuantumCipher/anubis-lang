@@ -36,10 +36,9 @@
 //!   gate is built on — the proven adder's own internal and/or/xor gates rely on the identical Tseitin
 //!   translation, and the CDCL engine consumes the same clauses. Admitting them adds no trust beyond
 //!   what TIER-1 already requires.
-//! * **DEFERRED (unproven wiring → z3):** `Ashr`, `SignExtend`, `Udiv`/`Urem`/`Sdiv`/`Srem`, and
-//!   variable×variable `Mul`. Each is a named follow-up proof; until its `*_correct` theorem lands,
-//!   z3 decides those obligations. (NOTE: the encoder wraps every `>>`/`<<` shift AMOUNT in
-//!   `(bvurem r 64)`, so `>>` obligations defer via `Urem` regardless of `Ashr`'s own status.)
+//! * **DEFERRED (unproven wiring → z3):** `Ashr`, `SignExtend`, `Udiv`/`Urem`/`Sdiv`/`Srem`.
+//!   Variable×variable `Mul` is TIER-1 via `mulVar_correct` (schoolbook array = const-mul family).
+//!   (NOTE: historical encoder `bvurem` on shift amounts was rewritten to proven extract/zext.)
 
 use crate::bv::{Formula, Pred, Term};
 
@@ -58,6 +57,7 @@ pub const PROVEN_OP_TAGS: &[&str] = &[
     // TIER-1 term wiring
     "Add",
     "MulConst",
+    "MulVar",
     "Shl",
     "Lshr",
     "Not",
@@ -117,14 +117,8 @@ fn term_ok(t: &Term) -> bool {
         // (the two's-complement subtractor is the same circuit the proven ult rests on).
         Term::Add(a, b) | Term::Sub(a, b) => term_ok(a) && term_ok(b),
         Term::Neg(a) => term_ok(a),
-        // Multiply is proven only for a CONSTANT multiplier (mulConst_correct); the blaster defers
-        // variable×variable. Require one operand constant AND — critically, not short-circuiting on the
-        // const check — the OTHER operand also proven (it may itself be a danger op).
-        Term::Mul(a, b) => {
-            (matches!(**a, Term::Const(_, _)) || matches!(**b, Term::Const(_, _)))
-                && term_ok(a)
-                && term_ok(b)
-        }
+        // Multiply: const path (mulConst_correct) or schoolbook var×var (mulVar_correct).
+        Term::Mul(a, b) => term_ok(a) && term_ok(b),
         // Shifts: proven for constant (shlConst/shrConstL) AND variable (barrel) amounts. BOTH the
         // shifted value AND the amount must be proven — a danger op frequently hides in the amount
         // (e.g. the runtime wraps it as `bvurem r 64`, which is DEFERRED, so real shifts defer here).
@@ -312,12 +306,18 @@ mod tests {
         }
     }
 
-    // Mul must not short-circuit: `2 * x` is fine, but `2 * (danger)` is not (covered above); and a
-    // var×var multiply (neither operand constant) is declined even though both operands are leaves.
+    // var×var mul is admitted when both operands are proven (mulVar_correct); danger still declines.
     #[test]
-    fn declines_var_times_var_mul() {
+    fn admits_var_times_var_mul() {
         let smt = "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
                    (assert (bvult (bvmul x y) x))(check-sat)";
-        assert!(!gate(smt), "variable×variable multiply must be declined");
+        assert!(gate(smt), "variable×variable multiply is schoolbook-proven authoritative");
+    }
+
+    #[test]
+    fn declines_var_mul_with_danger_operand() {
+        let smt = "(declare-const x (_ BitVec 64))(declare-const y (_ BitVec 64))\
+                   (assert (bvult (bvmul x (bvsdiv y (_ bv2 64))) x))(check-sat)";
+        assert!(!gate(smt), "mul of a danger (sdiv) operand must decline");
     }
 }

@@ -105,7 +105,7 @@ FRAG=solver/src/fragment.rs
 # Every admitted op's backing theorem/lemma must exist in BitBlast.lean.
 for thm in rippleCarry_spec ult_correct slt_correct ule_correct sle_correct eqBits_correct \
            andBits_correct orBits_correct xorBits_correct subBits_correct negBits_correct iteBits_correct \
-           mulConst_correct shlConst_correct barrelShl_correct shrConstL_correct barrelLshr_correct \
+           mulConst_correct mulVar_correct shlConst_correct barrelShl_correct shrConstL_correct barrelLshr_correct \
            bitsToNat_not bitsToNat_append_list bitsToNat_extract bitsToNat_append_replicate_false; do
   grep -q "\b$thm\b" "$LEAN" || { echo "DRIFT: fragment admits an op but its backing '$thm' is MISSING from $LEAN"; drift_fail=1; }
 done

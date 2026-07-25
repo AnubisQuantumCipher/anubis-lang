@@ -58,8 +58,8 @@ Anything not listed here is experimental / research unless later promoted by MIN
 ## 5. Explicit residuals (not 1.0-blocking; not “closed forever”)
 
 - Escaping-closure class: **map-entry application closed 2026-07-22** (`map_entry_closure_application_is_enforced`); remaining symbolic-index / deep-nested forms are fail-closed residuals (SH ⊆ Rust under-report where still open)
-- Native SMT default flip **DONE 2026-07-25** (native-authoritative by default + verified RUP Unsat cert; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`). **General** integer division / var×var mul still deferred in the fragment; nonneg **const** dividends with divisor `2^k` rewrite to proven `bvlshr`/`bvand` (encoder identity, not native `bvsdiv` authority)
-- VZ slice-2 **live apply DONE 2026-07-25**: `anubis vz apply` / `vz run --confine` emit `anubis.confinement.applied.v1` and pass tart args (e.g. `--net-host`). DNS-pinned egress **policy compiled** (`vz_egress_gateway`; empty = deny-all); live frame pump attaches at native-boot (kernel/initrd still optional host dep)
+- Native SMT default flip **DONE 2026-07-25** (native-authoritative by default + verified RUP Unsat cert; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`). **var×var mul DONE** (`mulVar_correct` + schoolbook blast). **Division** still deferred in fragment except nonneg const÷`2^k` encoder rewrite to proven `bvlshr`/`bvand`
+- VZ slice-2 **live apply DONE 2026-07-25**: `anubis vz apply` / `vz run --confine`. DNS-pinned egress **policy + live frame pump** on `native-boot --kernel` (signed binary required)
 - `http_get`/`http_post` **run lowering DONE 2026-07-25**: cleartext pure-std TCP; **HTTPS via host `curl`** (system TLS TCB, same honesty as package registry)
 - Hosted CI Metal *proving*: workflow `.github/workflows/metal-prove.yml` on self-hosted labels `self-hosted,macOS,ARM64,metal` + `scripts/run_metal_prove_gate.sh`. Stock GHA remains cold-verify; claim only when that job observes `metal-hybrid`
 - Author-diversity: DDC toolchain diversity REAL; **architecture lane** `selfhost/backend_independent/token_scan.c` + `run_author_diversity_gate.sh` PASS. **TT-total still not claimed** (same-human residual)

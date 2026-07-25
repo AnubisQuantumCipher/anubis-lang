@@ -165,6 +165,19 @@ pub enum VzCmd {
         #[arg(long = "allow-host")]
         allow_host: Vec<String>,
     },
+    /// NATIVE boot: same posture as native-preflight, with a real kernel (+ optional initrd).
+    /// Spawns the DNS-pinned egress frame pump for net-using programs. Requires signed binary.
+    NativeBoot {
+        program: String,
+        /// Path to a Linux kernel image for VZLinuxBootLoader.
+        #[arg(long)]
+        kernel: String,
+        /// Optional initrd path.
+        #[arg(long)]
+        initrd: Option<String>,
+        #[arg(long = "allow-host")]
+        allow_host: Vec<String>,
+    },
     /// Fuzz a target in a DISPOSABLE guest (clone → boot → sync → `anubis fuzz` inside → discard).
     Fuzz {
         target: String,
@@ -494,6 +507,12 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             program,
             allow_host,
         } => crate::vz_native::native_preflight(&program, &allow_host),
+        VzCmd::NativeBoot {
+            program,
+            kernel,
+            initrd,
+            allow_host,
+        } => crate::vz_native::native_boot(&program, &kernel, initrd.as_deref(), &allow_host),
         VzCmd::Fuzz {
             target,
             iterations,

@@ -622,6 +622,81 @@ theorem mulConst_correct (x : List Bool) (c : Nat) :
   unfold mulConst
   rw [(mulConst_aux x c x.length).2, Nat.mul_mod, Nat.mod_mod, ← Nat.mul_mod]
 
+/-! ### Variable × variable (schoolbook) multiply
+
+`blast.rs::var_mul` computes `x * y` as `Σ_i (y[i] ? (x << i) : 0)` mod `2^w` — the same
+shift-and-add family as `const_mul`, with the constant's bits replaced by the list bits of `y`.
+Mechanized as `mulVar_correct`. -/
+
+/-- `testBit` ↔ low bit of the shifted value. -/
+private theorem testBit_eq_div_mod (n i : Nat) :
+    (n.testBit i = true) ↔ (n / 2 ^ i % 2 = 1) := by
+  unfold Nat.testBit
+  rw [Nat.shiftRight_eq_div_pow, Nat.and_comm, Nat.and_one_is_mod]
+  constructor
+  · intro h
+    cases hmod : n / 2 ^ i % 2 with
+    | zero => simp [hmod] at h
+    | succ m => omega
+  · intro h; simp [h]
+
+/-- One fold step of schoolbook mul: add `x << i` iff bit `i` of the *value* of `y` is set.
+    Equivalent to `y.getD i false` by `bitsToNat_testBit` (the blaster's bit wire). -/
+def mulVarStep (x : List Bool) (yVal : Nat) (acc : List Bool) (i : Nat) : List Bool :=
+  if yVal.testBit i then addBits acc (shlConst x i) else acc
+
+/-- Variable multiply, matching `blast.rs::var_mul` (fold over bit indices `0 .. w-1`). -/
+def mulVar (x y : List Bool) : List Bool :=
+  (List.range x.length).foldl (mulVarStep x (bitsToNat y)) (List.replicate x.length false)
+
+/-- Accumulation invariant for schoolbook mul (parallel to `mulConst_aux`). -/
+theorem mulVar_aux (x : List Bool) (yVal : Nat) : ∀ n,
+    ((List.range n).foldl (mulVarStep x yVal) (List.replicate x.length false)).length = x.length
+    ∧ bitsToNat ((List.range n).foldl (mulVarStep x yVal) (List.replicate x.length false))
+        = bitsToNat x * (yVal % 2 ^ n) % 2 ^ x.length := by
+  intro n
+  induction n with
+  | zero =>
+      refine ⟨?_, ?_⟩
+      · simp [List.range_zero, List.foldl_nil, List.length_replicate]
+      · simp [List.range_zero, List.foldl_nil, bitsToNat_replicate_false, Nat.mod_one,
+          Nat.mul_zero, Nat.zero_mod]
+  | succ n ih =>
+      obtain ⟨hlen, hval⟩ := ih
+      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+      have hsl : (shlConst x n).length = x.length := shlConst_length x n
+      revert hlen hval
+      generalize (List.range n).foldl (mulVarStep x yVal) (List.replicate x.length false) = acc
+      intro hlen hval
+      unfold mulVarStep
+      by_cases hc : yVal / 2 ^ n % 2 = 1
+      · have hbit : yVal.testBit n = true := (testBit_eq_div_mod yVal n).2 hc
+        rw [if_pos hbit]
+        refine ⟨?_, ?_⟩
+        · rw [addBits, rippleCarry_length acc (shlConst x n) false (by rw [hlen, hsl])]
+          exact hlen
+        · rw [addBits_correct acc (shlConst x n) (by rw [hlen, hsl]), hlen, hval, shlConst_correct,
+            ← Nat.add_mod, ← Nat.mul_add, mod_two_pow_succ, hc, Nat.mul_one]
+      · have hbit : yVal.testBit n = false := by
+          have : yVal.testBit n ≠ true := fun ht => hc ((testBit_eq_div_mod yVal n).1 ht)
+          exact Bool.eq_false_iff.2 this
+        have h0 : yVal / 2 ^ n % 2 = 0 := by omega
+        rw [if_neg (by simp [hbit])]
+        refine ⟨hlen, ?_⟩
+        rw [hval, mod_two_pow_succ, h0, Nat.mul_zero, Nat.add_zero]
+
+/-- **Variable-multiply correctness (fully mechanized).** `⟦mulVar x y⟧ = (⟦x⟧ · ⟦y⟧) mod 2^w` —
+    SMT `bvmul` for free operands, matching `wrapping_mul`. Requires equal widths (the blaster's
+    equal-length gate). At `n = w`, `⟦y⟧ mod 2^w = ⟦y⟧` by `bitsToNat_lt`. -/
+theorem mulVar_correct (x y : List Bool) (hlen : x.length = y.length) :
+    bitsToNat (mulVar x y) = bitsToNat x * bitsToNat y % 2 ^ x.length := by
+  unfold mulVar
+  have h := mulVar_aux x (bitsToNat y) x.length
+  rw [h.2]
+  have hlt : bitsToNat y < 2 ^ x.length := by
+    rw [hlen]; exact bitsToNat_lt y
+  rw [Nat.mod_eq_of_lt hlt]
+
 /-! ### Variable (barrel) shift — left
 
 `blast.rs::var_shift(_, _, Left)` is a log-depth barrel shifter: for each bit `k` of the amount, it

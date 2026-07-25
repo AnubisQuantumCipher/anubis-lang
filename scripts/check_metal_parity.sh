@@ -75,13 +75,18 @@ for f in "${FIXTURES[@]}"; do
 
   echo "=== Fixture: $f ===" | tee -a "$LOG"
 
+  ANUBIS_BIN="${ANUBIS:-./target/release/anubis}"
+  if [[ ! -x "$ANUBIS_BIN" ]]; then
+    cargo build --release -p anubis 2>&1 | tee -a "$LOG"
+  fi
+
   # CPU lane
   echo "Prove CPU (R0_DISABLE_METAL=1 --lane cpu)..." | tee -a "$LOG"
-  env R0_DISABLE_METAL=1 cargo run --release -p anubis -- prove "$src" --backend risc0 --lane cpu --evidence --out "$cpu_out" 2>&1 | tee -a "$LOG" || true
+  env R0_DISABLE_METAL=1 "$ANUBIS_BIN" prove "$src" --backend risc0 --lane cpu --evidence --out "$cpu_out" 2>&1 | tee -a "$LOG" || true
 
   # Metal lane (unset disable; --lane metal-hybrid)
   echo "Prove Metal-hybrid (no R0_DISABLE --lane metal-hybrid)..." | tee -a "$LOG"
-  env -u R0_DISABLE_METAL cargo run --release -p anubis -- prove "$src" --backend risc0 --lane metal-hybrid --evidence --out "$metal_out" 2>&1 | tee -a "$LOG" || true
+  env -u R0_DISABLE_METAL "$ANUBIS_BIN" prove "$src" --backend risc0 --lane metal-hybrid --evidence --out "$metal_out" 2>&1 | tee -a "$LOG" || true
 
   # Verify both (use our verify-receipt if present, else rely on bundle status)
   cpu_receipt="$cpu_out/backend/risc0/receipt.bin"
@@ -92,11 +97,11 @@ for f in "${FIXTURES[@]}"; do
   cpu_verify="skipped"
   metal_verify="skipped"
   if [[ -f "$cpu_receipt" && -f "$cpu_id" ]]; then
-    cargo run --release -p anubis -- verify-receipt --receipt "$cpu_receipt" --image-id "$cpu_id" 2>&1 | tee -a "$LOG" || true
+    "$ANUBIS_BIN" verify-receipt --receipt "$cpu_receipt" --image-id "$cpu_id" 2>&1 | tee -a "$LOG" || true
     cpu_verify="attempted"
   fi
   if [[ -f "$metal_receipt" && -f "$metal_id" ]]; then
-    cargo run --release -p anubis -- verify-receipt --receipt "$metal_receipt" --image-id "$metal_id" 2>&1 | tee -a "$LOG" || true
+    "$ANUBIS_BIN" verify-receipt --receipt "$metal_receipt" --image-id "$metal_id" 2>&1 | tee -a "$LOG" || true
     metal_verify="attempted"
   fi
 

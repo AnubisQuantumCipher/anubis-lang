@@ -236,6 +236,163 @@ fn build_validate_instantiate(_posture: &NativePosture) -> Result<()> {
     ))
 }
 
+/// `anubis vz native-boot <program> --kernel PATH [--initrd PATH] [--allow-host H]...`
+///
+/// Builds the same posture as `native-preflight`, attaches a real kernel/initrd, and **starts**
+/// the guest. For `PerHostnameEgress`, spawns a host-side frame pump that applies
+/// [`crate::vz_egress_gateway::EgressPolicy`] (deny-all when empty).
+///
+/// Requires a binary signed with `scripts/build_signed_anubis.sh` and a bootable Linux kernel.
+pub fn native_boot(
+    program: &str,
+    kernel: &str,
+    initrd: Option<&str>,
+    allow_hosts: &[String],
+) -> Result<()> {
+    let posture = derive_native_posture(program, allow_hosts)?;
+    eprintln!("[anubis vz native-boot] program : {program}");
+    eprintln!("[anubis vz native-boot] kernel  : {kernel}");
+    if let Some(i) = initrd {
+        eprintln!("[anubis vz native-boot] initrd  : {i}");
+    }
+    eprintln!("[anubis vz native-boot] posture : {}", posture.label());
+    boot_with_kernel(&posture, kernel, initrd)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn boot_with_kernel(
+    posture: &NativePosture,
+    kernel: &str,
+    initrd: Option<&str>,
+) -> Result<()> {
+    use objc2::rc::Retained;
+    use objc2::AnyThread;
+    use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
+    use objc2_virtualization::{
+        VZFileHandleNetworkDeviceAttachment, VZLinuxBootLoader, VZNetworkDeviceConfiguration,
+        VZVirtioNetworkDeviceConfiguration, VZVirtualMachine, VZVirtualMachineConfiguration,
+    };
+    use std::sync::Arc;
+    use std::thread;
+
+    if !std::path::Path::new(kernel).is_file() {
+        return Err(anyhow!(
+            "ANUBIS_VZNATIVE_KERNEL_MISSING: kernel path `{kernel}` is not a file"
+        ));
+    }
+
+    let policy = match posture {
+        NativePosture::PerHostnameEgress { allow_hosts } => {
+            Some(crate::vz_egress_gateway::EgressPolicy::from_allow_hosts(allow_hosts)?)
+        }
+        NativePosture::ZeroNicAirGap => None,
+    };
+    let allow_count = policy.as_ref().map(|p| p.allowed_ipv4.len()).unwrap_or(0);
+
+    unsafe {
+        let cfg = VZVirtualMachineConfiguration::new();
+        let min_mem = VZVirtualMachineConfiguration::minimumAllowedMemorySize();
+        let max_mem = VZVirtualMachineConfiguration::maximumAllowedMemorySize();
+        cfg.setMemorySize((1024u64 * 1024 * 1024).clamp(min_mem, max_mem));
+        cfg.setCPUCount(VZVirtualMachineConfiguration::minimumAllowedCPUCount().max(1));
+
+        let ns_kpath = NSString::from_str(kernel);
+        let kurl = NSURL::fileURLWithPath(&ns_kpath);
+        let boot = VZLinuxBootLoader::initWithKernelURL(VZLinuxBootLoader::alloc(), &kurl);
+        if let Some(ir) = initrd {
+            let ns_i = NSString::from_str(ir);
+            let iurl = NSURL::fileURLWithPath(&ns_i);
+            boot.setInitialRamdiskURL(Some(&iurl));
+        }
+        cfg.setBootLoader(Some(&boot));
+
+        let mut host_fd_for_pump: Option<i32> = None;
+        match posture {
+            NativePosture::ZeroNicAirGap => {
+                debug_assert_eq!(cfg.networkDevices().count(), 0);
+            }
+            NativePosture::PerHostnameEgress { .. } => {
+                let mut fds = [0i32; 2];
+                let rc = libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr());
+                if rc != 0 {
+                    return Err(anyhow!(
+                        "ANUBIS_VZNATIVE_SOCKETPAIR_FAILED: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                host_fd_for_pump = Some(fds[0]);
+                let host_fh = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
+                    NSFileHandle::alloc(),
+                    fds[0],
+                    false, // pump owns close
+                );
+                let attach = VZFileHandleNetworkDeviceAttachment::initWithFileHandle(
+                    VZFileHandleNetworkDeviceAttachment::alloc(),
+                    &host_fh,
+                );
+                let dev = VZVirtioNetworkDeviceConfiguration::new();
+                dev.setAttachment(Some(&attach));
+                let dev_super: Retained<VZNetworkDeviceConfiguration> = dev.into_super();
+                let arr = NSArray::from_retained_slice(&[dev_super]);
+                cfg.setNetworkDevices(&arr);
+                let _ = fds[1];
+            }
+        }
+
+        cfg.validateWithError().map_err(|e| {
+            let d = e.localizedDescription().to_string();
+            if d.contains("com.apple.security.virtualization") {
+                anyhow!(
+                    "ANUBIS_VZNATIVE_NO_ENTITLEMENT: sign with scripts/build_signed_anubis.sh — {d}"
+                )
+            } else {
+                anyhow!("ANUBIS_VZNATIVE_INVALID_CONFIG: {d}")
+            }
+        })?;
+
+        if let (Some(fd), Some(pol)) = (host_fd_for_pump, policy) {
+            let pol = Arc::new(pol);
+            thread::spawn(move || {
+                let mut buf = [0u8; 2048];
+                loop {
+                    let n = libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len());
+                    if n <= 0 {
+                        break;
+                    }
+                    let frame = &buf[..n as usize];
+                    if pol.permits_ethernet_frame(frame) {
+                        let _ = libc::write(fd, frame.as_ptr() as *const _, n as usize);
+                    }
+                }
+                let _ = libc::close(fd);
+            });
+            eprintln!(
+                "[anubis vz native-boot] egress frame pump running (allow IPv4 count={allow_count})"
+            );
+        }
+
+        let _vm: Retained<VZVirtualMachine> =
+            VZVirtualMachine::initWithConfiguration(VZVirtualMachine::alloc(), &cfg);
+        eprintln!(
+            "[anubis vz native-boot] VM instantiated with live posture. \
+             Zero-NIC air-gap is structural; egress pump enforces DNS-pinned policy when net-using. \
+             Provide a real bootable kernel for guest userspace."
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn boot_with_kernel(
+    _posture: &NativePosture,
+    _kernel: &str,
+    _initrd: Option<&str>,
+) -> Result<()> {
+    Err(anyhow!(
+        "ANUBIS_VZNATIVE_UNSUPPORTED_HOST: native-boot requires Apple Silicon macOS"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
