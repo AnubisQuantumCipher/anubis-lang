@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Verified: live matching-kind token spent at the privileged effect (causal).
+@verified
+fn f() uses(net.send) {
+    let n = cap_acquire("net.send");
+    send("h", 80, "x");
+}
+fn main() {
+}

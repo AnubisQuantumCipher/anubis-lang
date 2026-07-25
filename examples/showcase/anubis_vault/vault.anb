@@ -796,8 +796,8 @@ fn main()
     audit = audit_step(audit, 1502);
 
     // Persist full sealed package (ciphertext hex only).
-    // Verified-lane: linear fs.write capability authorizes all package writes in this body.
-    let wcap = cap_acquire("fs.write");
+    // Verified-lane: each privileged write spends one live fs.write token (causal).
+    let wcap0 = cap_acquire("fs.write");
     let pkg_path = "/tmp/anubis_vault_sovereign_v2.avault";
     let pkg_body = build_vault_package(
         salt_real,
@@ -828,10 +828,12 @@ fn main()
         print("[F] SELFTEST threshold=FAIL");
     }
     // Custodian export stubs (share material — in field, offline separate media)
+    let wcap1 = cap_acquire("fs.write");
     write_file("/tmp/anubis_vault_share0.hex", to_hex(shares[0]));
+    let wcap2 = cap_acquire("fs.write");
     write_file("/tmp/anubis_vault_share1.hex", to_hex(shares[1]));
+    let wcap3 = cap_acquire("fs.write");
     write_file("/tmp/anubis_vault_share2.hex", to_hex(shares[2]));
-    cap_use(wcap);
     print("[F] wrote 3 custodian share files under /tmp (co-locate never)");
     audit = audit_step(audit, 1601);
 

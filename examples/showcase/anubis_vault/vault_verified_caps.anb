@@ -13,6 +13,6 @@ fn main() uses(io.print, fs.write) {
         "/tmp/anubis_vault_verified_cap_demo.txt",
         "ANUBIS_VAULT_VERIFIED_CAP\ncapability=fs.write spent once\n"
     );
-    cap_use(w);
+    // Causal spend: write_file consumes the live fs.write token (no trailing cap_use).
     print("verified-lane package write authorized (check + run)");
 }

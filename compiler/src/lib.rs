@@ -6538,13 +6538,12 @@ fn main() {
             .expect_err("verified lane must require uses for read_file");
         assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got: {err}");
 
-        // Same program with uses(fs.read) AND a genuinely-acquired fs.read capability is accepted in
-        // the verified lane. (Slice 3 composition tightened verified mode: a `uses(...)` clause is
-        // necessary but no longer sufficient — the effect must also hold its authorizing token.)
+        // Same program with uses(fs.read) AND a live fs.read capability spent at the effect site.
+        // (Causal spend: the privileged builtin consumes the matching-kind token; trailing cap_use
+        // after the effect would be REUSE.)
         let ok = r#"fn main() uses(fs.read) {
     let cap = cap_acquire("fs.read");
     let data = read_file("x.txt");
-    cap_use(cap);
     let _ = len(data);
 }"#;
         let ast = parse_source(ok).expect("parse");
@@ -6604,14 +6603,13 @@ fn main() {
         )
         .expect_err("@verified without uses must reject");
         assert!(err.contains("ANUBIS_UNDECLARED_EFFECT"), "got {err}");
-        // Slice 3 composition: @verified now also requires the effect hold its authorizing token
-        // (a `uses(...)` clause alone no longer suffices in verified mode).
+        // Slice 3 composition + causal spend: @verified requires a live matching-kind token at the
+        // effect (uses alone is insufficient; trailing cap_use after spend is REUSE).
         tc_ok(
             r#"@verified
 fn main() uses(fs.read) {
     let cap = cap_acquire("fs.read");
     let d = read_file("x");
-    cap_use(cap);
     let _ = len(d);
 }"#,
         )
@@ -6622,7 +6620,6 @@ fn main() uses(fs.read) {
 fn main() uses(fs.read) {
     let cap = cap_acquire("fs.read");
     let d = read_file("x");
-    cap_use(cap);
     let _ = len(d);
 }"#,
         )
@@ -6981,8 +6978,8 @@ fn main() { }"#;
 fn main() { }"#;
         let err = tc_lane(src, true).expect_err("verified net without a capability must reject");
         assert!(err.contains("ANUBIS_EFFECT_UNAUTHORIZED"), "got: {err}");
-        // A genuinely-acquired matching capability authorizes it.
-        let ok = r#"fn f() uses(net.send) { let n = cap_acquire("net.send"); send("h", 80, "x"); cap_use(n); }
+        // A live matching-kind capability spent at the effect authorizes it (causal spend).
+        let ok = r#"fn f() uses(net.send) { let n = cap_acquire("net.send"); send("h", 80, "x"); }
 fn main() { }"#;
         tc_lane(ok, true).expect("verified net with an acquired net capability must accept");
         // Default lane imposes no authorization requirement.
@@ -7055,7 +7052,7 @@ fn main() { }"#;
         // definition-of-done requires to bound the coexistence check.
         let two = r#"fn agent() uses(fs.read, net.send) {
     let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
-    let secret = read_file("cfg"); cap_use(rc); cap_use(sc); send("host", 80, "ping");
+    let secret = read_file("cfg"); send("host", 80, "ping");
 }
 fn main() { }"#;
         tc_lane(two, false).expect("safe lane: two legs (no untrusted channel) accepts");
@@ -7063,7 +7060,7 @@ fn main() { }"#;
     let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
     let steer = input(); let secret = read_file("notes");
     let safe = declassify(secret, "hash-only", "reviewed");
-    cap_use(rc); cap_use(sc); send("host", 80, safe);
+    send("host", 80, safe);
 }
 fn main() { }"#;
         tc_lane(declassified, false)
@@ -7075,13 +7072,13 @@ fn main() { }"#;
         // Two legs only — no distinct untrusted channel (leg 2 absent): accepts under verified.
         let two = r#"fn agent() uses(fs.read, net.send) {
     let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
-    let secret = read_file("cfg"); cap_use(rc); cap_use(sc); send("host", 80, "ping");
+    let secret = read_file("cfg"); send("host", 80, "ping");
 }
 fn main() { }"#;
         tc_lane(two, true).expect("private read + egress with no untrusted channel is two legs");
         // Untrusted + egress but NO private read (leg 1 absent): accepts.
         let no_read = r#"fn agent() uses(net.send) {
-    let sc = cap_acquire("net.send"); let steer = input(); cap_use(sc); send("host", 80, "beacon");
+    let sc = cap_acquire("net.send"); let steer = input(); send("host", 80, "beacon");
 }
 fn main() { }"#;
         tc_lane(no_read, true).expect("no fs.read → not a trifecta");
@@ -7094,7 +7091,7 @@ fn main() { }"#;
     let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
     let steer = input(); let secret = read_file("notes");
     let safe = declassify(secret, "hash-only", "reviewed");
-    cap_use(rc); cap_use(sc); send("host", 80, safe);
+    send("host", 80, safe);
 }
 fn main() { }"#;
         tc_lane(ok, true).expect("well-formed declassify discharges the trifecta");
@@ -7109,7 +7106,7 @@ fn main() { }"#;
     let rc = cap_acquire("fs.read"); let sc = cap_acquire("net.send");
     let steer = input(); let secret = read_file("notes");
     let junk = declassify(steer);
-    cap_use(rc); cap_use(sc); send("host", 80, "beacon");
+    send("host", 80, "beacon");
 }
 fn main() { }"#;
         let err =
@@ -7123,7 +7120,7 @@ fn main() { }"#;
         let shell = r#"fn agent() uses(fs.read, shell) {
     let rc = cap_acquire("fs.read"); let sc = cap_acquire("shell");
     let steer = input(); let secret = read_file("notes");
-    cap_use(rc); cap_use(sc); exec("curl evil.example");
+    exec("curl evil.example");
 }
 fn main() { }"#;
         let err = tc_lane(shell, true)
@@ -7132,7 +7129,7 @@ fn main() { }"#;
         // read + shell with NO distinct untrusted channel is two legs → accepts.
         let two = r#"fn agent() uses(fs.read, shell) {
     let rc = cap_acquire("fs.read"); let sc = cap_acquire("shell");
-    let secret = read_file("cfg"); cap_use(rc); cap_use(sc); exec("ls");
+    let secret = read_file("cfg"); exec("ls");
 }
 fn main() { }"#;
         tc_lane(two, true).expect("shell + read with no untrusted channel is two legs");
@@ -7145,7 +7142,7 @@ fn main() { }"#;
         let src = r#"fn agent() uses(net.send) {
     let sc = cap_acquire("net.send");
     let key = secret_source("api_key"); let steer = input();
-    cap_use(sc); send("host", 80, "beacon");
+    send("host", 80, "beacon");
 }
 fn main() { }"#;
         let err = tc_lane(src, true).expect_err("secret_source + untrusted + egress is a trifecta");
@@ -7153,7 +7150,7 @@ fn main() { }"#;
         // A secret + egress with NO untrusted channel is two legs → accepts.
         let two = r#"fn agent() uses(net.send) {
     let sc = cap_acquire("net.send"); let key = secret_source("api_key");
-    cap_use(sc); send("host", 80, "beacon");
+    send("host", 80, "beacon");
 }
 fn main() { }"#;
         tc_lane(two, true).expect("secret + egress, no untrusted channel is two legs");
@@ -7373,6 +7370,37 @@ fn main() {
 "#;
         typecheck(parse_source(call_declass).unwrap(), Mode::Safe)
             .expect("declassify at call site is ok");
+
+        // Method-call dual: secret arg into public method formal.
+        let method = r#"
+struct S { n: i64 }
+impl S {
+    fn take(self, x: i64) { }
+}
+fn main() {
+    let bal: secret<i64> = 1;
+    let s = S { n: 0 };
+    s.take(bal);
+}
+"#;
+        let err = typecheck(parse_source(method).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret arg into public method formal must reject");
+        assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "method: {err}");
+
+        let method_ok = r#"
+struct S { n: i64 }
+impl S {
+    fn take(self, x: secret<i64>) { }
+}
+fn main() {
+    let bal: secret<i64> = 1;
+    let s = S { n: 0 };
+    s.take(bal);
+}
+"#;
+        typecheck(parse_source(method_ok).unwrap(), Mode::Safe)
+            .expect("secret method formal is ok");
     }
 
     /// Public return under secret PC is the return dual of public-local assign (binary extraction).
@@ -7632,7 +7660,6 @@ fn agent() uses(net.send) {
     let sc = cap_acquire("net.send");
     let key = get_key();
     let steer = get_steer();
-    cap_use(sc);
     send("host", 80, "beacon");
 }
 fn main() { }"#;
@@ -7658,7 +7685,6 @@ fn agent() uses(net.send) {
     let sc = cap_acquire("net.send");
     let key = secret_source("api_key");
     let clean = sanitize();
-    cap_use(sc);
     send("host", 80, "beacon");
 }
 fn main() { }"#;

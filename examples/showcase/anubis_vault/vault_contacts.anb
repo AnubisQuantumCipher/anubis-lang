@@ -168,7 +168,7 @@ fn save_vault(path, salt_hex, verifier, rows) uses(fs.write) {
     }
     body = body + "END\n";
     write_file(path, body);
-    cap_use(w);
+    // Causal spend at write_file (verified lane).
     return len(rows);
 }
 
@@ -176,7 +176,7 @@ fn save_vault(path, salt_hex, verifier, rows) uses(fs.write) {
 fn load_vault(path) uses(fs.read) {
     let r = cap_acquire("fs.read");
     let text = read_file(path);
-    cap_use(r);
+    // Causal spend at read_file (verified lane).
     let lines = split(text, "\n");
     let mut salt_hex = "";
     let mut verifier = "";
@@ -353,10 +353,10 @@ fn cmd_destroy(path) uses(fs.write) {
     print("[destroy] overwriting then unlinking ${path}");
     // Overwrite with non-secret marker (no keys, no ciphertext), then unlink in-language.
     // Verified-lane: one linear fs.write authorizes overwrite + delete_file.
-    let w = cap_acquire("fs.write");
+    let w1 = cap_acquire("fs.write");
     write_file(path, "ANUBIS_VAULT_DESTROYED\n");
+    let w2 = cap_acquire("fs.write");
     delete_file(path);
-    cap_use(w);
     print("[destroy] DONE — path unlinked via delete_file (fs.write)");
     return 0;
 }

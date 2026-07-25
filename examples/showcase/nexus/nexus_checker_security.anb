@@ -72,16 +72,14 @@ fn controlled_disclosure(
 
 // ═══════════════════════════════════════════════════════════════════════════
 // III. CAPABILITY-GATED BROADCAST
-// @verified enforces: effect declared (uses), capability acquired before
-// use (cap_acquire), linear token consumed exactly once (cap_use),
-// lethal trifecta (fs.read + untrusted + net.send) not triggered.
+// @verified enforces: effect declared (uses), live matching-kind capability
+// spent at the privileged effect (causal spend), lethal trifecta not triggered.
 // ═══════════════════════════════════════════════════════════════════════════
 
 @verified
 fn broadcast_certificate(payload: i64) uses(net.send) {
     let cap = cap_acquire("net.send");
     send("mission_control", 9001, payload);
-    cap_use(cap)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

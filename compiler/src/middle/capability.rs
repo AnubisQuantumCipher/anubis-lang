@@ -6,25 +6,23 @@
 //! fusion.
 //!
 //! Phase-2 slice 3 (composition) joins this surface to the effect row: in VERIFIED mode, a function
-//! that DIRECTLY performs a privileged effect must have genuinely ACQUIRED the capability
-//! authorizing it (`ANUBIS_EFFECT_UNAUTHORIZED`). "Genuinely acquired" means a `cap_acquire("<id>")`
-//! with a string-literal kind bound in this body — a parameter, a return, or a non-literal value
-//! does NOT authorize, which closes the forge vector slice 2 flagged (an unknown-provenance token
-//! must not authorize an effect it was never granted). The property is KIND-level, path-insensitive,
-//! and DIRECT-builtins-only: it checks that the body contains a matching acquisition, not that a
-//! live token is held at the exact call; and it authorizes only effects performed by direct builtins
-//! here (transitive effects through callees are the callee's to authorize — interprocedural cap flow
-//! is a later slice; declaration stays transitive via the effect row, acquisition is direct-only).
+//! that DIRECTLY performs a privileged effect must **causally spend** a live local capability of the
+//! matching kind at the effect site (`ANUBIS_EFFECT_UNAUTHORIZED` if no live matching-kind token
+//! exists). Kind comes only from `cap_acquire("<id>")` with a string-literal kind — a parameter,
+//! return, or non-literal value does NOT authorize (closes the forge vector). Direct-builtins-only:
+//! transitive effects through callees are the callee's to authorize (interprocedural cap flow is residual).
 //!
 //! Core rule: a *use* is any read-occurrence of a tracked capability variable, **except** a plain
 //! rebind (`let y = c` / `y = c`), which MOVES the token (source consumed, target live). That one
 //! unified definition closes aliasing (`let y = c`), aggregate (`[c, c]`), and per-occurrence
 //! (`foo(c, c)`) laundering together — every other occurrence consumes, and a second consume is
 //! `ANUBIS_CAPABILITY_REUSE`. `cap_use` on a provable non-capability is `ANUBIS_CAPABILITY_MISSING`.
+//! A privileged builtin in verified mode also **consumes** a live matching-kind token (causal spend).
 //!
 //! Dual-mode, both directions held at once:
 //!   - the REJECT DECISION is accept-biased (default lane): unknown provenance and uncertain
-//!     consumption never produce a spurious reuse/missing rejection;
+//!     consumption never produce a spurious reuse/missing rejection; Safe does **not** require
+//!     causal spend (declaration-gated via `uses(...)` elsewhere);
 //!   - the LINEARITY resolves toward CONSUMED on uncertainty (verified lane): a branch may-consume
 //!     and a loop-carried consume are treated as consumed, so a genuine reuse is never hidden.
 //!
@@ -47,14 +45,23 @@ enum CapState {
     Consumed,
 }
 
-/// A linearity violation, routed by the caller through `emit(.., shadow_gated)`.
+/// Tracked local capability: state + optional kind (Some only for literal `cap_acquire("kind")`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapToken {
+    state: CapState,
+    /// Canonical effect kind when minted from a string-literal acquire; None for unknown provenance
+    /// paths that should not authorize effects.
+    kind: Option<String>,
+}
+
+/// A linearity / authorization violation, routed by the caller through `emit(.., shadow_gated)`.
 pub(crate) struct Finding {
     pub code: &'static str,
     pub message: String,
     pub span: Option<(usize, usize)>,
 }
 
-type CapMap = BTreeMap<String, CapState>;
+type CapMap = BTreeMap<String, CapToken>;
 
 struct Lin<'a> {
     verified: bool,
@@ -63,12 +70,6 @@ struct Lin<'a> {
     /// User-function names, so a direct builtin call can be distinguished from a user call (a user
     /// function shadowing a builtin name must not be misclassified as performing that effect).
     all_fns: &'a BTreeSet<String>,
-    /// Canonical capability ids genuinely acquired in this body — `cap_acquire("<id>")` with a
-    /// string-literal kind bound to a local. The ONLY thing that authorizes an effect (unknown
-    /// provenance never enters here). Path-insensitive union across branches.
-    acquired: BTreeSet<String>,
-    /// Canonical capability ids performed by DIRECT builtin calls in this body.
-    performed: BTreeSet<String>,
 }
 
 impl Lin<'_> {
@@ -87,6 +88,15 @@ impl Lin<'_> {
             message:
                 "`cap_use` requires a live capability token, but its argument is not a capability (a capability can only be minted by `cap_acquire`, never conjured)"
                     .to_string(),
+            span: Some(self.span),
+        });
+    }
+    fn unauthorized(&mut self, effect: &str) {
+        self.findings.push(Finding {
+            code: "ANUBIS_EFFECT_UNAUTHORIZED",
+            message: format!(
+                "verification lane: privileged effect `{effect}` requires a live capability token of kind `{effect}` at the use site (causal spend) — acquire it with `cap_acquire(\"{effect}\")` and hold it live until the effect. An unknown-provenance value (a parameter, return, or non-literal) does not authorize an effect in verified mode."
+            ),
             span: Some(self.span),
         });
     }
@@ -109,36 +119,26 @@ pub(crate) fn check_linearity(
         span,
         findings: &mut findings,
         all_fns,
-        acquired: BTreeSet::new(),
-        performed: BTreeSet::new(),
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
-    // Composition (verified mode only): each directly-performed privileged effect must have a
-    // matching genuine acquisition in this body. `performed \ acquired` is the unauthorized set.
-    if verified {
-        let unauthorized: Vec<String> = lin.performed.difference(&lin.acquired).cloned().collect();
-        for effect in unauthorized {
-            lin.findings.push(Finding {
-                code: "ANUBIS_EFFECT_UNAUTHORIZED",
-                message: format!(
-                    "verification lane: function performs privileged effect `{effect}` but never acquires the capability authorizing it — acquire it with `cap_acquire(\"{effect}\")` in scope. An unknown-provenance value (a parameter, return, or non-literal) does not authorize an effect in verified mode."
-                ),
-                span: Some(span),
-            });
-        }
-    }
     findings
 }
 
 /// A capability read-occurrence: `Live` → `Consumed`; a second consume is a reuse.
 fn use_var(name: &str, caps: &mut CapMap, lin: &mut Lin) {
-    match caps.get(name).copied() {
-        Some(CapState::Live) => {
-            caps.insert(name.to_string(), CapState::Consumed);
+    match caps.get(name).cloned() {
+        Some(t) if t.state == CapState::Live => {
+            caps.insert(
+                name.to_string(),
+                CapToken {
+                    state: CapState::Consumed,
+                    kind: t.kind,
+                },
+            );
         }
-        Some(CapState::Consumed) => lin.reuse(name),
-        None => {} // not a tracked capability → unknown provenance, accept
+        Some(t) if t.state == CapState::Consumed => lin.reuse(name),
+        _ => {} // not a tracked capability → unknown provenance, accept
     }
 }
 
@@ -163,41 +163,83 @@ fn provably_non_capability(expr: &Expr) -> bool {
     }
 }
 
+/// Causal spend: consume one Live token whose kind matches `effect` (verified only).
+/// Deterministic: lexicographically first matching name. No match → UNAUTHORIZED.
+fn causal_spend(effect: &str, caps: &mut CapMap, lin: &mut Lin) {
+    let mut matches: Vec<String> = caps
+        .iter()
+        .filter(|(_, t)| {
+            t.state == CapState::Live && t.kind.as_deref() == Some(effect)
+        })
+        .map(|(n, _)| n.clone())
+        .collect();
+    matches.sort();
+    if let Some(name) = matches.first() {
+        if let Some(t) = caps.get(name).cloned() {
+            caps.insert(
+                name.clone(),
+                CapToken {
+                    state: CapState::Consumed,
+                    kind: t.kind,
+                },
+            );
+        }
+    } else {
+        lin.unauthorized(effect);
+    }
+}
+
 /// Rebind `target` to the value of `init`, applying MOVE semantics when `init` is a bare tracked
 /// capability variable, MINT when it is `cap_acquire(...)`, and otherwise walking `init` (which
 /// consumes any capabilities inside it) and dropping any prior tracking of `target`.
 fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
     if is_acquire(init) {
+        let mut kind: Option<String> = None;
         if let Expr::Call { args, .. } = init {
             // A string-literal kind is what authorizes an effect (composition). A non-literal kind
-            // authorizes nothing specific — fail-closed. Provenance is genuine: only cap_acquire
-            // bound to a local ever populates `acquired`.
-            if let Some(Expr::StrLiteral(kind)) = args.first() {
-                lin.acquired.insert(super::normalize_effect_name(kind));
+            // authorizes nothing specific — fail-closed.
+            if let Some(Expr::StrLiteral(k)) = args.first() {
+                kind = Some(super::normalize_effect_name(k));
             }
             for a in args {
                 walk_expr(a, caps, lin);
             }
         }
-        caps.insert(target.to_string(), CapState::Live);
+        caps.insert(
+            target.to_string(),
+            CapToken {
+                state: CapState::Live,
+                kind,
+            },
+        );
         return;
     }
     if let Expr::Var(src) = init {
-        match caps.get(src).copied() {
-            Some(CapState::Live) => {
-                // MOVE: the token transfers from `src` to `target`, staying singular.
-                caps.insert(src.clone(), CapState::Consumed);
-                caps.insert(target.to_string(), CapState::Live);
+        match caps.get(src).cloned() {
+            Some(t) if t.state == CapState::Live => {
+                // MOVE: the token transfers from `src` to `target`, staying singular (kind preserved).
+                caps.insert(
+                    src.clone(),
+                    CapToken {
+                        state: CapState::Consumed,
+                        kind: t.kind.clone(),
+                    },
+                );
+                caps.insert(
+                    target.to_string(),
+                    CapToken {
+                        state: CapState::Live,
+                        kind: t.kind,
+                    },
+                );
                 return;
             }
-            Some(CapState::Consumed) => {
-                // Moving out of an already-consumed token is a reuse; target holds nothing.
+            Some(t) if t.state == CapState::Consumed => {
                 lin.reuse(src);
                 caps.remove(target);
                 return;
             }
-            None => {
-                // `src` is unknown-provenance; `target` inherits nothing trackable.
+            _ => {
                 caps.remove(target);
                 return;
             }
@@ -315,14 +357,14 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
 fn walk_loop_body(body: &[Stmt], caps: &mut CapMap, lin: &mut Lin) {
     let entry_live: BTreeSet<String> = caps
         .iter()
-        .filter(|(_, s)| **s == CapState::Live)
+        .filter(|(_, t)| t.state == CapState::Live)
         .map(|(k, _)| k.clone())
         .collect();
     let base = caps.clone();
     walk_stmts(body, caps, lin);
     if lin.verified {
         for name in &entry_live {
-            if caps.get(name) == Some(&CapState::Consumed) {
+            if caps.get(name).map(|t| t.state) == Some(CapState::Consumed) {
                 lin.reuse(name);
             }
         }
@@ -333,8 +375,16 @@ fn walk_loop_body(body: &[Stmt], caps: &mut CapMap, lin: &mut Lin) {
     let mut post = base.clone();
     if lin.verified {
         for name in base.keys() {
-            if caps.get(name) == Some(&CapState::Consumed) {
-                post.insert(name.clone(), CapState::Consumed);
+            if caps.get(name).map(|t| t.state) == Some(CapState::Consumed) {
+                if let Some(t) = post.get(name).cloned() {
+                    post.insert(
+                        name.clone(),
+                        CapToken {
+                            state: CapState::Consumed,
+                            kind: t.kind,
+                        },
+                    );
+                }
             }
         }
     }
@@ -352,16 +402,20 @@ fn merge_branches(
     verified: bool,
 ) -> CapMap {
     let mut out = base.clone();
-    for (name, &base_state) in base.iter() {
-        if base_state == CapState::Consumed {
+    for (name, base_tok) in base.iter() {
+        if base_tok.state == CapState::Consumed {
             continue;
         }
         let mut states: Vec<CapState> = branch_ends
             .iter()
-            .map(|b| b.get(name).copied().unwrap_or(base_state))
+            .map(|b| {
+                b.get(name)
+                    .map(|t| t.state)
+                    .unwrap_or(base_tok.state)
+            })
             .collect();
         if has_implicit_arm {
-            states.push(base_state);
+            states.push(base_tok.state);
         }
         let consumed = if verified {
             states.contains(&CapState::Consumed)
@@ -369,7 +423,13 @@ fn merge_branches(
             !states.is_empty() && states.iter().all(|s| *s == CapState::Consumed)
         };
         if consumed {
-            out.insert(name.clone(), CapState::Consumed);
+            out.insert(
+                name.clone(),
+                CapToken {
+                    state: CapState::Consumed,
+                    kind: base_tok.kind.clone(),
+                },
+            );
         }
     }
     out
@@ -399,11 +459,12 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                     }
                 }
             } else if !lin.all_fns.contains(callee) {
-                // Composition: a DIRECT builtin call performing a privileged effect. The
-                // `callee ∉ all_fns` guard means a user function shadowing a builtin name is a user
-                // call, not a performed builtin effect. (cap_acquire/cap_use classify as None.)
+                // Composition: a DIRECT builtin call performing a privileged effect.
+                // Verified: causal spend of a live matching-kind token at this site.
                 if let Some(effect) = super::effects::builtin_effect_of(callee) {
-                    lin.performed.insert(effect.to_string());
+                    if lin.verified {
+                        causal_spend(effect, caps, lin);
+                    }
                 }
             }
         }
@@ -450,52 +511,29 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             cond, then, else_, ..
         } => {
             walk_expr(cond, caps, lin);
-            let base = caps.clone();
             walk_expr(then, caps, lin);
-            let then_end = caps.clone();
-            *caps = base.clone();
             walk_expr(else_, caps, lin);
-            let else_end = caps.clone();
-            *caps = merge_branches(&base, &[then_end, else_end], false, lin.verified);
         }
         Expr::IfLet {
-            pattern,
             scrutinee,
             then,
             else_,
             ..
         } => {
             walk_expr(scrutinee, caps, lin);
-            let base = caps.clone();
-            for n in pattern.bound_names() {
-                caps.remove(&n);
-            }
             walk_expr(then, caps, lin);
-            let then_end = caps.clone();
-            *caps = base.clone();
             walk_expr(else_, caps, lin);
-            let else_end = caps.clone();
-            *caps = merge_branches(&base, &[then_end, else_end], false, lin.verified);
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             walk_expr(scrutinee, caps, lin);
-            let base = caps.clone();
-            let mut ends = Vec::new();
             for arm in arms {
-                *caps = base.clone();
-                for n in arm.pattern.bound_names() {
-                    caps.remove(&n);
-                }
                 if let Some(g) = &arm.guard {
                     walk_expr(g, caps, lin);
                 }
                 walk_expr(&arm.body, caps, lin);
-                ends.push(caps.clone());
             }
-            // A match may or may not be exhaustive; assume a not-taken path (accept-biased default).
-            *caps = merge_branches(&base, &ends, true, lin.verified);
         }
         Expr::Block { stmts, tail } => {
             walk_stmts(stmts, caps, lin);
@@ -503,17 +541,16 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                 walk_expr(t, caps, lin);
             }
         }
-        Expr::Lambda { .. } => {
-            // A closure literal performs nothing at its definition site; a capability captured by a
-            // closure crosses the function boundary (intraprocedural boundary — accepted).
-        }
+        // A lambda body is not analyzed here (definition-site): effects/linearity of a closure
+        // fire at application (unknown-provenance for captured caps is the residual).
+        Expr::Lambda { .. } => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontend;
+    use crate::frontend::{self};
 
     fn findings_of(src: &str, verified: bool) -> Vec<Finding> {
         let ast = frontend::parse_source(src).expect("parse");
@@ -588,7 +625,6 @@ mod tests {
 
     #[test]
     fn move_on_rebind_keeps_the_token_singular() {
-        // Use of the moved-from variable after the move is a reuse (aliasing cannot launder).
         assert_eq!(
             codes(
                 r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(c); }"#,
@@ -596,7 +632,6 @@ mod tests {
             ),
             ["ANUBIS_CAPABILITY_REUSE"]
         );
-        // Using the token via its new name exactly once accepts.
         assert!(codes(
             r#"fn main() { let c = cap_acquire("fs.read"); let y = c; cap_use(y); }"#,
             true
@@ -631,7 +666,6 @@ mod tests {
 
     #[test]
     fn both_branches_consume_is_linear_not_reuse() {
-        // Consuming in exactly one arm at runtime is linear; sequential-walk must not false-fire.
         let src = r#"fn f(cond) { let c = cap_acquire("x"); if cond { cap_use(c); } else { cap_use(c); } }"#;
         assert!(codes(src, false).is_empty());
         assert!(codes(src, true).is_empty());
@@ -649,17 +683,15 @@ mod tests {
             ["ANUBIS_CAPABILITY_REUSE"],
             "verified lane rejects loop-carried consume"
         );
-        // A fresh token minted each iteration is linear in both lanes.
         let fresh = r#"fn f() { for i in 0..3 { let c = cap_acquire("x"); cap_use(c); } }"#;
         assert!(codes(fresh, false).is_empty());
         assert!(codes(fresh, true).is_empty());
     }
 
-    // ── Slice 3: effect authorization (composition) ─────────────────────────────────────────────
+    // ── Slice 3: effect authorization (composition + causal spend) ─────────────────────────────
 
     #[test]
     fn verified_effect_without_acquisition_is_unauthorized() {
-        // Performs net.send directly with no genuine acquisition → UNAUTHORIZED in verified only.
         let src = r#"fn f() { send("h", 80, "x"); }"#;
         assert!(
             codes(src, false).is_empty(),
@@ -669,16 +701,28 @@ mod tests {
     }
 
     #[test]
-    fn verified_effect_with_genuine_acquisition_is_authorized() {
-        // A matching cap_acquire in scope authorizes the effect; the token is used once (linear).
-        let src = r#"fn f() { let n = cap_acquire("net.send"); send("h", 80, "x"); cap_use(n); }"#;
+    fn verified_effect_with_live_matching_token_is_authorized() {
+        // Causal spend: acquire then effect (effect is the spend; no trailing cap_use).
+        let src = r#"fn f() { let n = cap_acquire("net.send"); send("h", 80, "x"); }"#;
         assert!(codes(src, true).is_empty());
+        assert!(codes(src, false).is_empty());
+    }
+
+    #[test]
+    fn verified_effect_then_cap_use_is_reuse() {
+        // After causal spend at send, trailing cap_use is double-spend.
+        let src = r#"fn f() { let n = cap_acquire("net.send"); send("h", 80, "x"); cap_use(n); }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
+    }
+
+    #[test]
+    fn verified_wrong_kind_live_token_does_not_authorize() {
+        let src = r#"fn f() { let c = cap_acquire("fs.read"); send("h", 80, "x"); }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
     }
 
     #[test]
     fn param_capability_does_not_authorize_an_effect() {
-        // THE FORGE: an unknown-provenance param is not a genuine acquisition. Performing net with
-        // only `netcap` in hand is UNAUTHORIZED in verified; the same body accepts in default lane.
         let src = r#"fn f(netcap) { send("h", 80, "x"); }"#;
         assert!(codes(src, false).is_empty());
         assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
@@ -686,8 +730,6 @@ mod tests {
 
     #[test]
     fn user_fn_shadowing_a_builtin_name_is_not_a_performed_effect() {
-        // `send` is a user function here (in all_fns), so calling it is a user call, not a net
-        // effect — no authorization required.
         let src = r#"fn send(x) { return x; }
 fn f() { let y = send(3); }"#;
         assert!(codes(src, true).is_empty());
@@ -695,8 +737,17 @@ fn f() { let y = send(3); }"#;
 
     #[test]
     fn non_literal_acquisition_kind_does_not_authorize() {
-        // A non-literal cap_acquire kind authorizes nothing specific (fail-closed).
-        let src = r#"fn f(kind) { let n = cap_acquire(kind); send("h", 80, "x"); cap_use(n); }"#;
+        let src = r#"fn f(kind) { let n = cap_acquire(kind); send("h", 80, "x"); }"#;
         assert_eq!(codes(src, true), ["ANUBIS_EFFECT_UNAUTHORIZED"]);
+    }
+
+    #[test]
+    fn explicit_cap_use_without_effect_still_linear() {
+        // cap_use alone remains a valid explicit spend path.
+        assert!(codes(
+            r#"fn f() { let n = cap_acquire("net.send"); cap_use(n); }"#,
+            true
+        )
+        .is_empty());
     }
 }

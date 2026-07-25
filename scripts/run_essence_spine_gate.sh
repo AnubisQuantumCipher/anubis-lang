@@ -54,11 +54,29 @@ for st_rej in \
   examples/security/secret_to_public_return_rejects.anb \
   examples/security/secret_to_public_field_rejects.anb \
   examples/security/secret_to_public_index_rejects.anb \
-  examples/security/secret_to_public_call_rejects.anb
+  examples/security/secret_to_public_call_rejects.anb \
+  examples/security/secret_to_public_method_call_rejects.anb
 do
   base="$(basename "$st_rej" .anb)"
   if ! "$ANUBIS" check "$st_rej" >"$OUT/${base}.txt" 2>&1; then
     if grep -q 'ANUBIS_SECRET_TO_PUBLIC' "$OUT/${base}.txt"; then
+      ok "${base} (compile error)"
+    else
+      ko "${base} (wrong error)"; tail -5 "$OUT/${base}.txt"
+    fi
+  else
+    ko "${base} (should FAIL)"
+  fi
+done
+# Verified causal capability spend (must run under --verified semantics via @verified fixtures).
+for cap_rej in \
+  examples/security/cap_causal_no_token_rejects.anb \
+  examples/security/cap_causal_wrong_kind_rejects.anb \
+  examples/security/cap_causal_double_spend_rejects.anb
+do
+  base="$(basename "$cap_rej" .anb)"
+  if ! "$ANUBIS" check "$cap_rej" >"$OUT/${base}.txt" 2>&1; then
+    if grep -Eq 'ANUBIS_EFFECT_UNAUTHORIZED|ANUBIS_CAPABILITY_REUSE' "$OUT/${base}.txt"; then
       ok "${base} (compile error)"
     else
       ko "${base} (wrong error)"; tail -5 "$OUT/${base}.txt"
@@ -72,7 +90,9 @@ for if_ok in \
   examples/security/implicit_flow_for_secret_local_accepts.anb \
   examples/security/implicit_flow_return_secret_accepts.anb \
   examples/security/secret_to_public_declassify_accepts.anb \
-  examples/security/secret_to_public_call_accepts.anb
+  examples/security/secret_to_public_call_accepts.anb \
+  examples/security/secret_to_public_method_call_accepts.anb \
+  examples/security/cap_causal_spend_accepts.anb
 do
   base="$(basename "$if_ok" .anb)"
   if "$ANUBIS" check "$if_ok" >"$OUT/${base}.txt" 2>&1; then

@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CAPABILITY_REUSE
+// Verified: effect spends the token; trailing cap_use is double-spend.
+@verified
+fn f() uses(net.send) {
+    let n = cap_acquire("net.send");
+    send("h", 80, "x");
+    cap_use(n);
+}
+fn main() {
+}

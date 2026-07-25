@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_UNAUTHORIZED
+// Verified: privileged effect without a live matching-kind token.
+@verified
+fn f() uses(net.send) {
+    send("h", 80, "x");
+}
+fn main() {
+}

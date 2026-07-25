@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_UNAUTHORIZED
+// Verified: live token of wrong kind does not authorize the effect.
+@verified
+fn f() uses(net.send) {
+    let c = cap_acquire("fs.read");
+    send("h", 80, "x");
+}
+fn main() {
+}

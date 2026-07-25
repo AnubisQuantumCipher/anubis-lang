@@ -532,6 +532,9 @@ struct SemanticContext {
     enum_variants: BTreeMap<String, Vec<String>>,
     /// Function name → ordered parameter types (for call-site type checks).
     fn_params: BTreeMap<String, Vec<String>>,
+    /// Bare method name → ordered parameter types INCLUDING `self` at index 0 (method call-site
+    /// secret→public formal checks). Same-named methods across impls: last registration wins.
+    method_params: BTreeMap<String, Vec<String>>,
     /// Function name → declared return type (`-> T`, empty if omitted). A call-result binding may be
     /// modeled as a solver integer ONLY when this is an integer type — otherwise a float-returning
     /// callee (`frac -> f64`) would seed a float into the integer domain via composition.
@@ -1554,9 +1557,15 @@ fn analyze_function(
     }
 
     // A+ call-site typing: record this function's parameter types for later calls. Methods are
-    // NOT recorded — they are only reachable via `recv.m(...)`, never a bare call, so recording
-    // them would shadow a same-named stdlib builtin at free call sites.
-    if !is_method {
+    // NOT recorded in `fn_params` — they are only reachable via `recv.m(...)`, never a bare call,
+    // so recording them there would shadow a same-named stdlib builtin at free call sites.
+    // Method types go to `method_params` (bare name, self at index 0) for secret→public formal checks.
+    if is_method {
+        ctx.method_params.insert(
+            name.to_string(),
+            params.iter().map(|(_, ty)| ty.clone()).collect(),
+        );
+    } else {
         ctx.fn_params.insert(
             name.to_string(),
             params.iter().map(|(_, ty)| ty.clone()).collect(),
@@ -6815,6 +6824,34 @@ fn analyze_expr_effect(
             // body (#65); and a sink buried in non-linear control-flow inside a method's value-position
             // block (inherited from the summary walker's linear block handling).
             if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                // Safe-mode: secret arg into an explicitly public method formal (self-offset:
+                // call arg i → param type index i+1). Dual of free-fn secret→public formal.
+                if mode == Mode::Safe {
+                    if let Some(param_tys) = ctx.method_params.get(field).cloned() {
+                        for (i, arg) in args.iter().enumerate() {
+                            let expected = param_tys.get(i + 1).map(|s| s.as_str()).unwrap_or("");
+                            if !expected.is_empty()
+                                && !is_secret_type(Some(expected))
+                                && expr_secret_source_m(
+                                    arg,
+                                    scope,
+                                    &ctx.secret_fns,
+                                    &ctx.param_return_taint,
+                                    &ctx.method_secret_fns,
+                                )
+                                .is_some()
+                            {
+                                ctx.diagnostics.push(SemanticDiagnostic {
+                                    code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
+                                    message: format!(
+                                        "secret value passed as argument {i} of method `{field}` into public formal type `{expected}` — confidentiality labels must not be dropped at the call boundary. Declare the parameter `secret<T>`, or interpose declassify(value, policy, reason)."
+                                    ),
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                }
                 // Task #48 (aggregate closure): a closure stored in a struct field (`let b = S { f: |x|
                 // write_file(..) }`) and applied via `b.f(0)` otherwise hides its body from the Safe-mode
                 // taint/effect/capability enforcement — this arm treats `b.f(..)` as a METHOD call and
