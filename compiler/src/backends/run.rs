@@ -1626,6 +1626,12 @@ fn anubis_delete_file(path: AnubisValue) -> AnubisValue {
 fn anubis_cap_acquire(kind: AnubisValue) -> AnubisValue {
     anubis_mk_str(format!("__anubis_cap:{}", kind.display_string()))
 }
+/// Language-level peel of non_exportable (static check); runtime is identity on the token.
+/// Keychain/SE hardware residual not claimed.
+fn anubis_cap_export(cap: AnubisValue, _reason: AnubisValue) -> AnubisValue {
+    cap
+}
+
 /// Consume a capability token. Linearity is checked at `check --verified`; runtime is the
 /// authorized use-once sink so programs with caps lower and execute.
 fn anubis_cap_use(cap: AnubisValue) -> AnubisValue {
@@ -2765,6 +2771,8 @@ pub fn is_builtin_name(name: &str) -> bool {
                 // (anubis_cap_acquire / anubis_cap_use / anubis_secret_source). Kept here as a
                 // belt-and-braces name set if emit dispatch is ever probed with empty args only.
                 | "cap_acquire"
+                | "cap_acquire_nonexportable"
+                | "cap_export"
                 | "cap_use"
                 | "secret_source"
         )
@@ -3099,7 +3107,9 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "delete_file" | "remove_file" => fixed("anubis_delete_file", callee, args, 1),
         "open" => fixed("anubis_open", callee, args, 1),
         // Verified-lane linear capabilities + confidentiality mint — now fully executable
-        "cap_acquire" => fixed("anubis_cap_acquire", callee, args, 1),
+        "cap_acquire" | "cap_acquire_nonexportable" => fixed("anubis_cap_acquire", callee, args, 1),
+        // Language-level peel of non_exportable (static check); runtime is a no-op identity on the token.
+        "cap_export" => fixed("anubis_cap_export", callee, args, 2),
         "cap_use" => fixed("anubis_cap_use", callee, args, 1),
         "secret_source" => fixed("anubis_secret_source", callee, args, 1),
         // Cryptography (SHA-256 / HMAC-SHA256) — pure std in emitted runtime

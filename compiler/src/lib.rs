@@ -6350,6 +6350,47 @@ fn main() {
     }
 
     #[test]
+    fn symbolic_index_secret_capturing_list_application_fails_closed() {
+        // IFC residual close (2026-07-25): `arr[idx](0)` with a non-literal idx previously ACCEPTED
+        // even when an element captured a secret (docs claim fail-closed; only `let g = arr[i]`
+        // was wired via symbolic_index_capturing_closure). Concrete `arr[0](0)` already rejected.
+        let err = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let idx = 0;
+                let arr = [|x| send("h", 80, k), |x| send("h", 80, 0)];
+                arr[idx](0);
+            }"#,
+        )
+        .expect_err("symbolic index over secret-capturing list element must fail closed");
+        assert!(
+            err.contains("ANUBIS_SECRET") || err.contains("secret"),
+            "expected secret diagnostic, got: {err}"
+        );
+        // Literal index still rejects (regression).
+        assert!(
+            tc_ok(
+                r#"fn main() uses(net.send) {
+                    let k = secret_source("api");
+                    let arr = [|x| send("h", 80, k), |x| send("h", 80, 0)];
+                    arr[0](0);
+                }"#,
+            )
+            .is_err(),
+            "literal index secret capture must still reject"
+        );
+        // Clean container + symbolic index must ACCEPT (no false reject).
+        tc_ok(
+            r#"fn main() uses(net.send) {
+                let idx = 0;
+                let arr = [|x| send("h", 80, 1), |x| send("h", 80, 0)];
+                arr[idx](0);
+            }"#,
+        )
+        .expect("symbolic index over clean closures must accept");
+    }
+
+    #[test]
     fn map_entry_closure_application_is_enforced() {
         // SECURITY (Phase-9 closeout): map-keyed closures applied via `m["f"](0)` or bare-key
         // `m.f(0)` previously hid their bodies (Index arm only resolved int literals; MapLiteral

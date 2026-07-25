@@ -6751,8 +6751,10 @@ fn analyze_expr_effect(
             // Task #48-d: a closure stored in a LIST ELEMENT (`let arr = [|x| write_file(..)]`) or
             // MAP ENTRY (`let m = { "f": |x| write_file(..) }`) applied via `arr[0](0)` / `m["f"](0)` —
             // a `CallExpr` on an `Index` — otherwise hides its body. Descend into the stored closure
-            // (keyed by the concrete int index OR string key in `field_closures`). Only a concrete
-            // literal/string index on a Var base is resolved (a symbolic index is a residual).
+            // (keyed by the concrete int index OR string key in `field_closures`).
+            // Symbolic index (non-literal): fail-closed — if the container holds ANY secret/tainted-
+            // capturing closure, analyze the application as that capturing element (j1 twin of
+            // `let g = arr[i]` via symbolic_index_capturing_closure). Clean containers still accept.
             if let Expr::Index { base, index } = callee.as_ref() {
                 if let Expr::Var(bname) = base.as_ref() {
                     let key_opt: Option<String> = match index.as_ref() {
@@ -6760,44 +6762,51 @@ fn analyze_expr_effect(
                         Expr::StrLiteral(s) => Some(s.clone()),
                         _ => None,
                     };
-                    if let Some(key) = key_opt {
-                        if let Some(lam) = scope
+                    let lam_opt: Option<Box<Expr>> = if let Some(key) = key_opt {
+                        scope
                             .get(bname)
                             .and_then(|b| b.field_closures.get(&key).cloned())
-                        {
-                            if let Expr::Lambda { params, body } = lam.as_ref() {
-                                let mut local = scope.clone();
-                                // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
-                                // arr[0](input())` runs with x = the tainted arg (else the arg's label was
-                                // dropped and the index-applied closure laundered it — hunt wf_e67160a7).
-                                for (j, p) in params.iter().enumerate() {
-                                    let (pt, ps) = match args.get(j) {
-                                        Some(a) => (
-                                            expr_taint_source_m(
-                                                a,
-                                                scope,
-                                                &ctx.tainting_fns,
-                                                &ctx.param_return_taint,
-                                                &ctx.method_tainting_fns,
-                                            ),
-                                            expr_secret_source_m(
-                                                a,
-                                                scope,
-                                                &ctx.secret_fns,
-                                                &ctx.param_return_taint,
-                                                &ctx.method_secret_fns,
-                                            )
-                                            .is_some(),
+                    } else {
+                        // Symbolic index: over-approx to a capturing element if any exists.
+                        let idx_init = Expr::Index {
+                            base: base.clone(),
+                            index: index.clone(),
+                        };
+                        symbolic_index_capturing_closure(&idx_init, scope, ctx)
+                    };
+                    if let Some(lam) = lam_opt {
+                        if let Expr::Lambda { params, body } = lam.as_ref() {
+                            let mut local = scope.clone();
+                            // Bind each param to the applied ARGUMENT's label — `let arr=[|x| shell(x)];
+                            // arr[0](input())` runs with x = the tainted arg (else the arg's label was
+                            // dropped and the index-applied closure laundered it — hunt wf_e67160a7).
+                            for (j, p) in params.iter().enumerate() {
+                                let (pt, ps) = match args.get(j) {
+                                    Some(a) => (
+                                        expr_taint_source_m(
+                                            a,
+                                            scope,
+                                            &ctx.tainting_fns,
+                                            &ctx.param_return_taint,
+                                            &ctx.method_tainting_fns,
                                         ),
-                                        None => (None, false),
-                                    };
-                                    local.insert(
-                                        p.clone(),
-                                        labelled_param_binding(p, pt.is_some(), pt, ps),
-                                    );
-                                }
-                                analyze_expr_effect(body, mode, &local, effects, ctx);
+                                        expr_secret_source_m(
+                                            a,
+                                            scope,
+                                            &ctx.secret_fns,
+                                            &ctx.param_return_taint,
+                                            &ctx.method_secret_fns,
+                                        )
+                                        .is_some(),
+                                    ),
+                                    None => (None, false),
+                                };
+                                local.insert(
+                                    p.clone(),
+                                    labelled_param_binding(p, pt.is_some(), pt, ps),
+                                );
                             }
+                            analyze_expr_effect(body, mode, &local, effects, ctx);
                         }
                     }
                 }
