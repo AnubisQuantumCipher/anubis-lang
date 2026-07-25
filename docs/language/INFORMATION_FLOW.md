@@ -61,11 +61,14 @@ not a soft warning. Covered control forms (same assignment pattern):
 - `for` over a secret range bound or secret collection
 - `match` / `if let` on a secret scrutinee (statement- and value-position)
 - match arms with a **secret guard** even when the scrutinee is public
+- **public function return** selected under a secret condition (`return 0|1` or value-if tail) when the
+  declared return type is not `secret<T>`
 
 Escape hatches:
 
 1. `declassify(value, policy, reason)` **before** any conditional that branches on the secret, or
-2. declare the assigned variable `secret<T>` so the label is preserved.
+2. declare the assigned variable `secret<T>` so the label is preserved, or
+3. for returns: declare `-> secret<T>` (or return a secret-labelled value).
 
 **Honest residual:** full program-counter label propagation at every join (Jif/FlowCaml-style) is still
 not implemented — that would taint every variable after a secret branch. We close the high-value

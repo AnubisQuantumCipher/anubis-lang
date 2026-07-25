@@ -32,7 +32,9 @@ for if_rej in \
   examples/security/implicit_flow_for_rejects.anb \
   examples/security/implicit_flow_value_if_rejects.anb \
   examples/security/implicit_flow_value_match_rejects.anb \
-  examples/security/implicit_flow_match_guard_rejects.anb
+  examples/security/implicit_flow_match_guard_rejects.anb \
+  examples/security/implicit_flow_return_rejects.anb \
+  examples/security/implicit_flow_return_tail_rejects.anb
 do
   base="$(basename "$if_rej" .anb)"
   if ! "$ANUBIS" check "$if_rej" >"$OUT/${base}.txt" 2>&1; then
@@ -47,7 +49,8 @@ do
 done
 for if_ok in \
   examples/security/implicit_flow_secret_local_accepts.anb \
-  examples/security/implicit_flow_for_secret_local_accepts.anb
+  examples/security/implicit_flow_for_secret_local_accepts.anb \
+  examples/security/implicit_flow_return_secret_accepts.anb
 do
   base="$(basename "$if_ok" .anb)"
   if "$ANUBIS" check "$if_ok" >"$OUT/${base}.txt" 2>&1; then

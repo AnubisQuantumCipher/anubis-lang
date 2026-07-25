@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Value-if tail under secret condition with public branch values.
+fn bit(bal: secret<i64>) -> i64 {
+    if bal > 0 { 1 } else { 0 }
+}
+fn main() {
+    let x = bit(1);
+}

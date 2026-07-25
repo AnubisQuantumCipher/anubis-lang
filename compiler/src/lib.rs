@@ -7238,6 +7238,47 @@ fn main() {
         assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "if-let: {err}");
     }
 
+    /// Public return under secret PC is the return dual of public-local assign (binary extraction).
+    #[test]
+    fn implicit_secret_pc_public_return_rejected() {
+        let early = r#"
+fn bit(bal: secret<i64>) -> i64 {
+    if bal > 0 {
+        return 1;
+    }
+    return 0;
+}
+fn main() { let x = bit(1); }
+"#;
+        let err = typecheck(parse_source(early).unwrap(), Mode::Safe)
+            .err()
+            .expect("public return under secret PC must reject");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "early-return: {err}");
+
+        let tail = r#"
+fn bit(bal: secret<i64>) -> i64 {
+    if bal > 0 { 1 } else { 0 }
+}
+fn main() { let x = bit(1); }
+"#;
+        let err = typecheck(parse_source(tail).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret-PC value-if tail must reject");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "tail-if: {err}");
+
+        let secret_ret = r#"
+fn bit(bal: secret<i64>) -> secret<i64> {
+    if bal > 0 {
+        return 1;
+    }
+    return 0;
+}
+fn main() { let x = bit(1); }
+"#;
+        typecheck(parse_source(secret_ret).unwrap(), Mode::Safe)
+            .expect("-> secret<T> is the escape hatch");
+    }
+
     /// Value-position if/match, secret for-bounds, secret match-guard (false-accepts after stmt-only close).
     #[test]
     fn implicit_secret_pc_value_for_guard_assignment_rejected() {

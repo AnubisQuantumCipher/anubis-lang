@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Public return under secret PC is binary extraction (return dual of public-local assign).
+fn bit(bal: secret<i64>) -> i64 {
+    if bal > 0 {
+        return 1;
+    }
+    return 0;
+}
+fn main() {
+    let x = bit(1);
+}

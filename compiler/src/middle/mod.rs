@@ -1865,6 +1865,12 @@ fn analyze_function(
         ctx,
     );
 
+    // Implicit-flow: public return value chosen under a secret PC is binary extraction (return dual
+    // of public-local assign). Escape: `-> secret<T>` or return a secret-labelled value.
+    if mode == Mode::Safe {
+        reject_secret_pc_public_return(body, ret, &scope, ctx);
+    }
+
     // Phase-2 slice 2/3: capability-token LINEARITY + effect AUTHORIZATION. `check_linearity`
     // (middle/capability.rs) is the pure intraprocedural walk. Slice 2 (linearity): a
     // `cap_acquire`-minted token is used exactly once, non-duplicable (move-on-rebind), unforgeable
@@ -10988,6 +10994,257 @@ fn expr_is_simple(e: &Expr) -> bool {
             .all(|(k, v)| expr_is_simple(k) && expr_is_simple(v)),
         // Leaves: Var / Literal / StrLiteral / Symbolic / TaintSource / UnifiedBuffer / RawPtr / Other.
         _ => true,
+    }
+}
+
+/// Safe-mode: a **public** function return value selected under a secret PC encodes secret bits
+/// (the return dual of public-local assignment). Not full PC-join of every expression — only
+/// early `return` and function-tail values from secret-guarded if/match.
+fn reject_secret_pc_public_return(
+    body: &[Stmt],
+    ret: Option<&str>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    if is_secret_type(ret) {
+        return;
+    }
+    let mut flagged = false;
+    let mut flag = |ctx: &mut SemanticContext| {
+        if flagged {
+            return;
+        }
+        flagged = true;
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_IMPLICIT_FLOW".into()),
+            message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
+                .into(),
+            span: None,
+        });
+    };
+    let val_is_secret = |val: &Expr, scope: &BTreeMap<String, ScopeBinding>, ctx: &SemanticContext| {
+        expr_secret_source_m(
+            val,
+            scope,
+            &ctx.secret_fns,
+            &ctx.param_return_taint,
+            &ctx.method_secret_fns,
+        )
+        .is_some()
+    };
+    let under_secret_guards =
+        |guards: &[(Expr, bool)], scope: &BTreeMap<String, ScopeBinding>, ctx: &SemanticContext| {
+            guards
+                .iter()
+                .any(|(c, _)| expr_is_secret_pc(c, scope, ctx))
+        };
+
+    // Explicit `return` under secret if/while path conditions.
+    let mut rets = Vec::new();
+    for st in body {
+        collect_returns_guarded(st, &[], &mut rets);
+    }
+    for (val, guards) in &rets {
+        if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope, ctx) {
+            flag(ctx);
+        }
+    }
+
+    // Function-tail value-if/match only when the fn declares a public return type (skips
+    // unit-ish `main` / void bodies whose synthetic 0-tails would false-positive).
+    let public_ret = ret.is_some() && !is_secret_type(ret);
+    let tail_is_secret_pc_value = public_ret
+        && (matches!(
+            body.last(),
+            Some(Stmt::If { cond, .. }) if expr_is_secret_pc(cond, scope, ctx)
+        ) || matches!(
+            body.last(),
+            Some(Stmt::ExprStmt(
+                Expr::If { cond, .. }
+                    | Expr::IfLet { scrutinee: cond, .. }
+                    | Expr::Match { scrutinee: cond, .. }
+            )) if expr_is_secret_pc(cond, scope, ctx)
+        ));
+    if tail_is_secret_pc_value {
+        let mut tails = Vec::new();
+        tail_values_guarded(body, true, &[], &mut tails);
+        for (val, guards) in &tails {
+            if under_secret_guards(guards, scope, ctx) && !val_is_secret(val, scope, ctx) {
+                flag(ctx);
+            }
+        }
+    }
+
+    // Match/if-let on a secret scrutinee: returns under secret PC when guards omit the scrutinee.
+    for st in body {
+        reject_secret_scrutinee_returns_in_stmt(st, scope, ctx, &mut flagged);
+    }
+}
+
+fn reject_secret_scrutinee_returns_in_stmt(
+    s: &Stmt,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+    flagged: &mut bool,
+) {
+    match s {
+        Stmt::ExprStmt(e) | Stmt::Let { init: e, .. } | Stmt::LetPattern { init: e, .. } => {
+            reject_secret_scrutinee_returns_in_expr(e, scope, ctx, flagged);
+        }
+        Stmt::Assign { target, value } => {
+            reject_secret_scrutinee_returns_in_expr(target, scope, ctx, flagged);
+            reject_secret_scrutinee_returns_in_expr(value, scope, ctx, flagged);
+        }
+        Stmt::If { then, else_, .. } => {
+            for st in then {
+                reject_secret_scrutinee_returns_in_stmt(st, scope, ctx, flagged);
+            }
+            if let Some(e) = else_ {
+                for st in e {
+                    reject_secret_scrutinee_returns_in_stmt(st, scope, ctx, flagged);
+                }
+            }
+        }
+        Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => {
+            for st in body {
+                reject_secret_scrutinee_returns_in_stmt(st, scope, ctx, flagged);
+            }
+        }
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for b in [gpu, cpu, prove].into_iter().flatten() {
+                for st in b {
+                    reject_secret_scrutinee_returns_in_stmt(st, scope, ctx, flagged);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn reject_secret_scrutinee_returns_in_expr(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+    flagged: &mut bool,
+) {
+    if *flagged {
+        return;
+    }
+    let emit = |ctx: &mut SemanticContext, flagged: &mut bool| {
+        if *flagged {
+            return;
+        }
+        *flagged = true;
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_IMPLICIT_FLOW".into()),
+            message: "a public return value is selected under a secret condition — secret bits can encode into the return (binary-extraction). Interpose declassify before the secret branch, return a secret-labelled value, or declare `-> secret<T>`."
+                .into(),
+            span: None,
+        });
+    };
+    let secret_fns = ctx.secret_fns.clone();
+    let param_return_taint = ctx.param_return_taint.clone();
+    let method_secret_fns = ctx.method_secret_fns.clone();
+    let val_is_secret = |val: &Expr| {
+        expr_secret_source_m(
+            val,
+            scope,
+            &secret_fns,
+            &param_return_taint,
+            &method_secret_fns,
+        )
+        .is_some()
+    };
+    match e {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            let secret_scrut = expr_is_secret_pc(scrutinee, scope, ctx);
+            for arm in arms {
+                if secret_scrut {
+                    let mut rs = Vec::new();
+                    expr_returns(&arm.body, &mut rs);
+                    for r in rs {
+                        if !val_is_secret(&r) {
+                            emit(ctx, flagged);
+                            return;
+                        }
+                    }
+                }
+                if let Some(g) = &arm.guard {
+                    if expr_is_secret_pc(g, scope, ctx) {
+                        let mut rs = Vec::new();
+                        expr_returns(&arm.body, &mut rs);
+                        for r in rs {
+                            if !val_is_secret(&r) {
+                                emit(ctx, flagged);
+                                return;
+                            }
+                        }
+                    }
+                    reject_secret_scrutinee_returns_in_expr(g, scope, ctx, flagged);
+                }
+                reject_secret_scrutinee_returns_in_expr(&arm.body, scope, ctx, flagged);
+            }
+            reject_secret_scrutinee_returns_in_expr(scrutinee, scope, ctx, flagged);
+        }
+        Expr::IfLet {
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            if expr_is_secret_pc(scrutinee, scope, ctx) {
+                let mut rs = Vec::new();
+                expr_returns(then, &mut rs);
+                expr_returns(else_, &mut rs);
+                for r in rs {
+                    if !val_is_secret(&r) {
+                        emit(ctx, flagged);
+                        return;
+                    }
+                }
+            }
+            reject_secret_scrutinee_returns_in_expr(scrutinee, scope, ctx, flagged);
+            reject_secret_scrutinee_returns_in_expr(then, scope, ctx, flagged);
+            reject_secret_scrutinee_returns_in_expr(else_, scope, ctx, flagged);
+        }
+        Expr::If {
+            cond, then, else_, ..
+        } => {
+            reject_secret_scrutinee_returns_in_expr(cond, scope, ctx, flagged);
+            reject_secret_scrutinee_returns_in_expr(then, scope, ctx, flagged);
+            reject_secret_scrutinee_returns_in_expr(else_, scope, ctx, flagged);
+        }
+        Expr::Block { stmts, tail } => {
+            for st in stmts {
+                reject_secret_scrutinee_returns_in_stmt(st, scope, ctx, flagged);
+            }
+            if let Some(t) = tail {
+                reject_secret_scrutinee_returns_in_expr(t, scope, ctx, flagged);
+            }
+        }
+        Expr::Call { args, .. } | Expr::ArrayLiteral { elements: args } => {
+            for a in args {
+                reject_secret_scrutinee_returns_in_expr(a, scope, ctx, flagged);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            reject_secret_scrutinee_returns_in_expr(lhs, scope, ctx, flagged);
+            reject_secret_scrutinee_returns_in_expr(rhs, scope, ctx, flagged);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Try(expr)
+        | Expr::FieldAccess { base: expr, .. } => {
+            reject_secret_scrutinee_returns_in_expr(expr, scope, ctx, flagged);
+        }
+        _ => {}
     }
 }
 
