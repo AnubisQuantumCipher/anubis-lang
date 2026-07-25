@@ -50,6 +50,11 @@ pub struct AppliedConfinement {
     pub network_apply_mode: String,
     /// True only when tart argv enforces the net posture (`--net-host`). Hostname policy is staged.
     pub network_tart_enforced: bool,
+    /// HARD residual: Softnet `/32` allows are fixed at apply-time DNS pin.
+    /// Post-pin DNS rebinding is **not** enforced by tart Softnet (not L7 hostname).
+    /// Always `"rebind_after_pin"` when `egress_pinned_ipv4` is non-empty; else empty.
+    #[serde(default)]
+    pub dns_pin_residual: String,
     pub notes: Vec<String>,
 }
 
@@ -62,7 +67,20 @@ pub struct NetworkApply {
     pub egress_pinned_ipv4: Vec<String>,
     pub network_apply_mode: String,
     pub network_tart_enforced: bool,
+    /// See [`AppliedConfinement::dns_pin_residual`].
+    pub dns_pin_residual: String,
     pub notes: Vec<String>,
+}
+
+/// Hard residual tag when hostname policy was DNS-pinned at apply time.
+pub const DNS_PIN_RESIDUAL_REBIND: &str = "rebind_after_pin";
+
+fn dns_pin_residual_for(pinned: &[String]) -> String {
+    if pinned.is_empty() {
+        String::new()
+    } else {
+        DNS_PIN_RESIDUAL_REBIND.into()
+    }
 }
 
 /// Collect engagement-independent tart args from a derived core manifest.
@@ -240,6 +258,7 @@ pub fn filter_network_for_posture_with_softnet(
             egress_pinned_ipv4: vec![],
             network_apply_mode: "host-only".into(),
             network_tart_enforced: true,
+            dns_pin_residual: String::new(),
             notes: vec![
                 "network apply: host-only (tart --net-host enforced). Not a zero-NIC air-gap."
                     .into(),
@@ -262,6 +281,7 @@ pub fn filter_network_for_posture_with_softnet(
                 egress_pinned_ipv4: vec![],
                 network_apply_mode: "open-nat-opt-in".into(),
                 network_tart_enforced: false,
+                dns_pin_residual: String::new(),
                 notes: vec![
                     "network apply: open-nat-opt-in — full tart NAT, NOT a confinement. Explicit \
                      residual; Softnet not used."
@@ -281,6 +301,7 @@ pub fn filter_network_for_posture_with_softnet(
                 .collect();
             ipv4.sort();
             ipv4.dedup();
+            let pin_residual = dns_pin_residual_for(&ipv4);
 
             if softnet_available {
                 let flags = softnet_flags_for_pinned_ipv4(&ipv4);
@@ -290,13 +311,21 @@ pub fn filter_network_for_posture_with_softnet(
                     egress_pinned_ipv4: ipv4.clone(),
                     network_apply_mode: "hostname-softnet".into(),
                     network_tart_enforced: true,
-                    notes: vec![format!(
-                        "network apply: hostname-softnet — hosts DNS-pinned to {:?}; tart \
+                    dns_pin_residual: pin_residual.clone(),
+                    notes: vec![
+                        format!(
+                            "network apply: hostname-softnet — hosts DNS-pinned to {:?}; tart \
                              --net-softnet-block=0.0.0.0/0 + --net-softnet-allow=<ip>/32 (Softnet \
-                             destination CIDR enforcement). Residual: DNS rebinding after pin; \
-                             not L7 hostname at packet time.",
-                        allow_hosts
-                    )],
+                             destination CIDR enforcement).",
+                            allow_hosts
+                        ),
+                        format!(
+                            "HARD RESIDUAL dns_pin_residual={pin_residual}: Softnet enforces the \
+                             /32 set resolved at apply time only. Post-pin DNS rebinding is NOT \
+                             prevented (not L7 hostname). Re-run `vz apply` after DNS changes, or \
+                             use native-boot egress pump (DNS-pin at policy build, IP filter only)."
+                        ),
+                    ],
                 });
             }
 
@@ -307,11 +336,16 @@ pub fn filter_network_for_posture_with_softnet(
                 egress_pinned_ipv4: ipv4,
                 network_apply_mode: "hostname-policy-staged".into(),
                 network_tart_enforced: true,
+                dns_pin_residual: pin_residual,
                 notes: vec![
                     "network apply: hostname-policy-staged — softnet NOT on PATH; allow-list \
                      DNS-pinned and recorded but tart only enforces --net-host. Install Softnet \
                      (brew/cirruslabs) for CIDR-enforced allow-list on apply."
                         .into(),
+                    format!(
+                        "HARD RESIDUAL dns_pin_residual={DNS_PIN_RESIDUAL_REBIND}: pin is \
+                         apply-time only even when Softnet is later installed; re-apply to refresh."
+                    ),
                 ],
             });
         }
@@ -323,6 +357,7 @@ pub fn filter_network_for_posture_with_softnet(
             egress_pinned_ipv4: vec![],
             network_apply_mode: "host-only".into(),
             network_tart_enforced: true,
+            dns_pin_residual: String::new(),
             notes: vec![
                 "network apply: net.send proved but no --allow-open-nat / --allow-host — default \
                  fail-closed to host-only (not unrestricted NAT). Opt in to open NAT with \
@@ -442,6 +477,7 @@ pub fn build_applied(
         egress_pinned_ipv4: net.egress_pinned_ipv4,
         network_apply_mode: net.network_apply_mode,
         network_tart_enforced: net.network_tart_enforced,
+        dns_pin_residual: net.dns_pin_residual,
         notes,
     };
     Ok((applied, manifest))
@@ -664,6 +700,43 @@ mod tests {
             applied.tart_args
         );
         assert_eq!(applied.network_apply_mode, "host-only");
+    }
+
+    #[test]
+    fn softnet_dns_pin_records_hard_rebind_residual() {
+        // Regardless of softnet on PATH: any hostname pin records the rebind residual.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("net.anb");
+        fs::write(
+            &src,
+            r#"fn main() uses(net.send) { send("h", 80, "x"); }
+"#,
+        )
+        .unwrap();
+        let (applied, _) = build_applied(
+            src.to_str().unwrap(),
+            &ApplyEngagement {
+                allow_hosts: vec!["127.0.0.1".into()],
+                ..Default::default()
+            },
+        )
+        .expect("apply");
+        assert!(
+            !applied.egress_pinned_ipv4.is_empty(),
+            "must DNS-pin allow-host"
+        );
+        assert_eq!(
+            applied.dns_pin_residual, DNS_PIN_RESIDUAL_REBIND,
+            "HARD residual tag must be present whenever IPs are pinned"
+        );
+        assert!(
+            applied
+                .notes
+                .iter()
+                .any(|n| n.contains("HARD RESIDUAL") && n.contains("rebind")),
+            "notes must name HARD RESIDUAL rebind: {:?}",
+            applied.notes
+        );
     }
 
     #[test]

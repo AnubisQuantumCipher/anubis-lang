@@ -14,7 +14,10 @@
 //! - Under-grant: prefer denying network / file / exec when the mapping is ambiguous.
 //! - Toolchain VZ entitlements (`com.apple.security.virtualization`) are **not** mixed into the
 //!   language-derived app profile.
-//! - Keychain / Secure Enclave–backed linear caps are an explicit residual (not claimed here).
+//! - Keychain / Secure Enclave–backed linear caps are a **permanent residual** of this
+//!   profile: Anubis claims static non-exportable + causal spend only. Binding a live
+//!   Keychain/SE item as the linear token is out of the language TCB and is **not**
+//!   planned as a silent default claim (would require signed host + SE attestation).
 
 use crate::frontend::parse_source;
 use crate::package::merkle;
@@ -188,7 +191,9 @@ pub fn derive_entitlement_profile(
         "apple_enforced_claim is false on every key: derivation is not host enforcement".to_string(),
         "toolchain VZ entitlement com.apple.security.virtualization is intentionally absent from this app profile"
             .to_string(),
-        "Keychain / Secure Enclave–backed linear capabilities are residual — not claimed by this profile"
+        "PERMANENT RESIDUAL: Keychain / Secure Enclave–backed linear capabilities are not \
+         claimed — language TCB is static non-exportable + causal spend only; SE item bind \
+         requires host signing + attestation outside this profile"
             .to_string(),
     ];
     if open {

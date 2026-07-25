@@ -2411,6 +2411,157 @@ fn wrap_safety_const_i64(e: &Expr) -> Option<i64> {
     }
 }
 
+/// Offline free×free mul wrap-safety (no SMT).
+enum FreeMulOffline {
+    /// All four corner products of the factor intervals fit in i64 under assumptions.
+    ProvedSafe,
+    /// At least one free factor is unbounded or a corner overflows → WRAP_RISK.
+    Risk,
+}
+
+/// Parse a simple closed interval for `var_smt` from assumption facts
+/// (`bvsge`/`bvsle`/`bvsgt`/`bvslt` against `(_ bvN 64)`). Defaults to full i64.
+fn smt_var_i64_interval(assumptions: &[String], var_smt: &str) -> (i64, i64) {
+    let mut lo = i64::MIN;
+    let mut hi = i64::MAX;
+    let v = var_smt.trim();
+    for a in assumptions {
+        let a = a.trim();
+        // (bvsge VAR (_ bvN 64))  or  (bvsle VAR (_ bvN 64))
+        // (bvsgt VAR (_ bvN 64))  or  (bvslt VAR (_ bvN 64))
+        for (op, is_lower, strict) in [
+            ("bvsge", true, false),
+            ("bvsgt", true, true),
+            ("bvsle", false, false),
+            ("bvslt", false, true),
+        ] {
+            let prefix = format!("({op} {v} ");
+            if let Some(rest) = a.strip_prefix(&prefix).and_then(|r| r.strip_suffix(')')) {
+                if let Some(n) = parse_wrap_smt_const(rest.trim()) {
+                    if is_lower {
+                        let bound = if strict { n.saturating_add(1) } else { n };
+                        lo = lo.max(bound);
+                    } else {
+                        let bound = if strict { n.saturating_sub(1) } else { n };
+                        hi = hi.min(bound);
+                    }
+                }
+            }
+            // flipped: (bvsge (_ bvN 64) VAR) means VAR <= N
+            let prefix_flip = format!("({op} ");
+            if a.starts_with(&prefix_flip) && a.ends_with(&format!(" {v})")) {
+                // try extract const from middle
+                if let Some(mid) = a
+                    .strip_prefix(&prefix_flip)
+                    .and_then(|r| r.strip_suffix(&format!(" {v})")))
+                {
+                    if let Some(n) = parse_wrap_smt_const(mid.trim()) {
+                        // op applied as (op CONST VAR): bvsge c v => v <= c; bvsle c v => v >= c
+                        match op {
+                            "bvsge" => hi = hi.min(n),
+                            "bvsgt" => hi = hi.min(n.saturating_sub(1)),
+                            "bvsle" => lo = lo.max(n),
+                            "bvslt" => lo = lo.max(n.saturating_add(1)),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if lo > hi {
+        // Conflicting assumptions — treat as empty / risk (vacuous body still fail-closed).
+        return (i64::MIN, i64::MAX);
+    }
+    (lo, hi)
+}
+
+fn i64_interval_mul_fits(lo_x: i64, hi_x: i64, lo_y: i64, hi_y: i64) -> bool {
+    for &x in &[lo_x, hi_x] {
+        for &y in &[lo_y, hi_y] {
+            if x.checked_mul(y).is_none() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Interval for a *simple* SMT factor (const, bare var, or `bvadd`/`bvsub` of those).
+/// Complex unknown shapes return `None` → free×free treats as Risk (fail-closed).
+fn smt_factor_i64_interval(assumptions: &[String], smt: &str) -> Option<(i64, i64)> {
+    let s = smt.trim();
+    if let Some(n) = parse_wrap_smt_const(s) {
+        return Some((n, n));
+    }
+    // Bare variable atom.
+    if !s.contains('(') && !s.contains(' ') {
+        return Some(smt_var_i64_interval(assumptions, s));
+    }
+    // (bvadd A B) / (bvsub A B) — interval arithmetic on recursive factors.
+    for (op, is_sub) in [("bvadd ", false), ("bvsub ", true)] {
+        let tag = format!("({op}");
+        if let Some(inner) = s.strip_prefix(&tag).and_then(|r| r.strip_suffix(')')) {
+            let (a, b) = split_smt_two_args(inner)?;
+            let (la, ha) = smt_factor_i64_interval(assumptions, a)?;
+            let (lb, hb) = smt_factor_i64_interval(assumptions, b)?;
+            if is_sub {
+                // [la,ha] - [lb,hb] = [la-hb, ha-lb]
+                let c1 = la.checked_sub(hb)?;
+                let c2 = ha.checked_sub(lb)?;
+                return Some((c1.min(c2), c1.max(c2)));
+            } else {
+                let corners = [
+                    la.checked_add(lb)?,
+                    la.checked_add(hb)?,
+                    ha.checked_add(lb)?,
+                    ha.checked_add(hb)?,
+                ];
+                let lo = corners.iter().copied().min()?;
+                let hi = corners.iter().copied().max()?;
+                return Some((lo, hi));
+            }
+        }
+    }
+    None
+}
+
+fn split_smt_two_args(inner: &str) -> Option<(&str, &str)> {
+    let mut depth = 0i32;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ' ' if depth == 0 => {
+                let a = inner[..i].trim();
+                let b = inner[i + 1..].trim();
+                if !a.is_empty() && !b.is_empty() {
+                    return Some((a, b));
+                }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Free×free wrap-safety without SMT: prove offline from assumption intervals, else Risk.
+fn free_mul_offline_status(lx: &str, rx: &str, assumptions: &[String]) -> FreeMulOffline {
+    let Some((lo_x, hi_x)) = smt_factor_i64_interval(assumptions, lx) else {
+        return FreeMulOffline::Risk;
+    };
+    let Some((lo_y, hi_y)) = smt_factor_i64_interval(assumptions, rx) else {
+        return FreeMulOffline::Risk;
+    };
+    // Interval product of two closed integer ranges is determined by corners.
+    if i64_interval_mul_fits(lo_x, hi_x, lo_y, hi_y) {
+        FreeMulOffline::ProvedSafe
+    } else {
+        FreeMulOffline::Risk
+    }
+}
+
 /// Inclusive i64 range for `x` such that `x * c` does not signed-wrap.
 fn i64_mul_safe_range(c: i64) -> Option<(i64, i64)> {
     if c == 0 || c == 1 {
@@ -2482,27 +2633,38 @@ fn push_wrap_safety_binop(
         "+" => format!("(not {})", smt_bvsaddo(&lx, &rx)),
         "-" => format!("(not {})", smt_bvssubo(&lx, &rx)),
         "*" => {
-            // Free×free smul is intentionally skipped (native QF_BV hung on bvsdiv / 128-bit
-            // product encodings, 2026-07-25). Variable×constant uses a cheap closed-form range.
-            let (var_smt, c) = match (wrap_safety_const_i64(lhs), wrap_safety_const_i64(rhs)) {
+            // Variable×constant: cheap closed-form range (no SMT smul).
+            // Free×free: offline interval product under assumptions — never emit a free
+            // `bvmul` overflow query (native QF_BV hung on those encodings, 2026-07-25). Either
+            // both factors are bounded so all four corner products fit i64 (proved, skip), or
+            // fail-closed with assertion `false` (WRAP_RISK — not a silent skip / not a hang).
+            match (wrap_safety_const_i64(lhs), wrap_safety_const_i64(rhs)) {
                 (Some(_), Some(_)) => return, // pure constant — fold elsewhere
-                (Some(c), None) => (rx.clone(), c),
-                (None, Some(c)) => (lx.clone(), c),
-                (None, None) => return, // free×free: skip (no hang)
-            };
-            if c == 0 || c == 1 {
-                return; // *0 / *1 never signed-wrap
-            }
-            match i64_mul_safe_range(c) {
-                None => "false".to_string(), // no x makes c*x fit — always wrap
-                Some((lo, hi)) if lo == i64::MIN && hi == i64::MAX => return,
-                Some((lo, hi)) => {
-                    let lo_u = lo as u64;
-                    let hi_u = hi as u64;
-                    format!(
-                        "(and (bvsge {var_smt} (_ bv{lo_u} 64)) (bvsle {var_smt} (_ bv{hi_u} 64)))"
-                    )
+                (Some(c), None) | (None, Some(c)) => {
+                    let var_smt = if wrap_safety_const_i64(lhs).is_some() {
+                        rx.clone()
+                    } else {
+                        lx.clone()
+                    };
+                    if c == 0 || c == 1 {
+                        return; // *0 / *1 never signed-wrap
+                    }
+                    match i64_mul_safe_range(c) {
+                        None => "false".to_string(),
+                        Some((lo, hi)) if lo == i64::MIN && hi == i64::MAX => return,
+                        Some((lo, hi)) => {
+                            let lo_u = lo as u64;
+                            let hi_u = hi as u64;
+                            format!(
+                                "(and (bvsge {var_smt} (_ bv{lo_u} 64)) (bvsle {var_smt} (_ bv{hi_u} 64)))"
+                            )
+                        }
+                    }
                 }
+                (None, None) => match free_mul_offline_status(&lx, &rx, assumptions) {
+                    FreeMulOffline::ProvedSafe => return,
+                    FreeMulOffline::Risk => "false".to_string(),
+                },
             }
         }
         _ => return,
@@ -8486,6 +8648,11 @@ pub fn classify_assertion_fail(check: &SolverCheck) -> AssertionFailKind {
 /// Parse `(_ bvN 64)` or decimal from a wrap-safety obligation fragment.
 fn parse_wrap_smt_const(s: &str) -> Option<i64> {
     let s = s.trim();
+    // (bvneg (_ bvN 64)) — signed negative from requires(x >= -N)
+    if let Some(inner) = s.strip_prefix("(bvneg ").and_then(|r| r.strip_suffix(')')) {
+        let n = parse_wrap_smt_const(inner.trim())?;
+        return n.checked_neg();
+    }
     if let Some(rest) = s.strip_prefix("(_ bv") {
         let num = rest.split_whitespace().next()?;
         let u = num.parse::<u64>().ok()?;
@@ -8560,38 +8727,55 @@ fn suggest_requires_from_wrap_obligation(name: &str) -> Vec<String> {
     let b = parts[2].as_str();
     match op {
         "*" => {
-            let (var_d, c) = match (parse_wrap_smt_const(a), parse_wrap_smt_const(b)) {
-                (Some(c), None) => match wrap_smt_var_display(b) {
-                    Some(d) => (d, c),
-                    None => return vec![],
-                },
-                (None, Some(c)) => match wrap_smt_var_display(a) {
-                    Some(d) => (d, c),
-                    None => return vec![],
-                },
-                _ => return vec![],
-            };
-            if c == 0 || c == 1 {
-                return vec![];
-            }
-            match i64_mul_safe_range(c) {
-                Some((lo, hi)) if lo == i64::MIN && hi == i64::MAX => vec![],
-                Some((lo, hi)) if lo == i64::MIN => {
-                    vec![format!(
-                        "requires({var_d} <= {hi})  // no signed wrap for {var_d} * {c}"
-                    )]
+            match (parse_wrap_smt_const(a), parse_wrap_smt_const(b)) {
+                (Some(c), None) | (None, Some(c)) => {
+                    let var_d = if parse_wrap_smt_const(a).is_some() {
+                        wrap_smt_var_display(b)
+                    } else {
+                        wrap_smt_var_display(a)
+                    };
+                    let Some(var_d) = var_d else {
+                        return vec![];
+                    };
+                    if c == 0 || c == 1 {
+                        return vec![];
+                    }
+                    match i64_mul_safe_range(c) {
+                        Some((lo, hi)) if lo == i64::MIN && hi == i64::MAX => vec![],
+                        Some((lo, hi)) if lo == i64::MIN => {
+                            vec![format!(
+                                "requires({var_d} <= {hi})  // no signed wrap for {var_d} * {c}"
+                            )]
+                        }
+                        Some((lo, hi)) if hi == i64::MAX => {
+                            vec![format!(
+                                "requires({var_d} >= {lo})  // no signed wrap for {var_d} * {c}"
+                            )]
+                        }
+                        Some((lo, hi)) => vec![format!(
+                            "requires({var_d} >= {lo} && {var_d} <= {hi})  // no signed wrap for {var_d} * {c}"
+                        )],
+                        None => vec![format!(
+                            "// {var_d} * {c} always signed-wraps in i64 — rethink the factor or use wider math"
+                        )],
+                    }
                 }
-                Some((lo, hi)) if hi == i64::MAX => {
-                    vec![format!(
-                        "requires({var_d} >= {lo})  // no signed wrap for {var_d} * {c}"
-                    )]
+                (None, None) => {
+                    // Free×free: suggest a joint bound (floor(sqrt(2^63-1)) = 3037000499) that
+                    // is sufficient for both factors; not the only safe region.
+                    let xd = wrap_smt_var_display(a).unwrap_or_else(|| "x".into());
+                    let yd = wrap_smt_var_display(b).unwrap_or_else(|| "y".into());
+                    const SAFE: i64 = 3037000499; // floor(sqrt(i64::MAX as f64))
+                    vec![
+                        format!(
+                            "requires({xd} >= -{SAFE} && {xd} <= {SAFE})  // free×free mul: bound factor A"
+                        ),
+                        format!(
+                            "requires({yd} >= -{SAFE} && {yd} <= {SAFE})  // free×free mul: bound factor B (product then fits i64)"
+                        ),
+                    ]
                 }
-                Some((lo, hi)) => vec![format!(
-                    "requires({var_d} >= {lo} && {var_d} <= {hi})  // no signed wrap for {var_d} * {c}"
-                )],
-                None => vec![format!(
-                    "// {var_d} * {c} always signed-wraps in i64 — rethink the factor or use wider math"
-                )],
+                (Some(_), Some(_)) => vec![],
             }
         }
         "+" | "-" => {

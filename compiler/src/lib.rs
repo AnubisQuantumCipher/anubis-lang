@@ -3312,30 +3312,83 @@ fn increment(x: i64) -> i64
         );
     }
 
-    /// Free×free `*` wrap-safety is skipped (native QF_BV hung on free smul encodings).
-    /// This only asserts we do not *emit* a wrap-safety obligation for free×free — not a full
-    /// `check_obligations` of free mul ensures (native can still be slow on free `bvmul` posts).
+    /// Free×free `*`: offline fail-closed WRAP_RISK (no SMT smul hang), with possible fix.
+    /// No free `ensures(result == x*y)` — that post still uses solver smul and can be slow.
     #[test]
-    fn wrap_safety_skips_free_mul_obligation() {
+    fn wrap_safety_free_mul_fail_closed_offline() {
         let src = r#"
 fn mul(x: i64, y: i64) -> i64
-    ensures(result == x * y)
+    requires(true)
 {
     return x * y;
 }
 "#;
         let ast = parse_source(src).expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
-        // Inspect obligations without solving: rebuild via typecheck only has solver_obligations
-        // populated after typecheck's internal check path… typecheck does push obligations.
         let wrap: Vec<_> = ir
             .solver_obligations
             .iter()
             .filter(|o| o.name.starts_with("wrap-safety:") && o.name.contains("*"))
             .collect();
+        assert_eq!(
+            wrap.len(),
+            1,
+            "must emit offline free×free wrap-safety: {wrap:?}"
+        );
+        assert_eq!(
+            wrap[0].assertion, "false",
+            "free×free risk uses offline false (no SMT smul): {wrap:?}"
+        );
+        let checks = SymbolicEngine::check_obligations(&ir);
+        let fails: Vec<_> = checks.into_iter().filter(|c| c.status == "FAIL").collect();
+        assert!(
+            fails.iter().any(|c| {
+                c.name.starts_with("wrap-safety:")
+                    && middle::classify_assertion_fail(c) == middle::AssertionFailKind::WrapRisk
+            }),
+            "free×free must WRAP_RISK: {fails:?}"
+        );
+        let msg = middle::format_check_failures(&fails);
+        assert!(
+            msg.contains("ANUBIS_WRAP_RISK") && msg.contains("possible fix"),
+            "must diagnose + fix free×free: {msg}"
+        );
+        assert!(
+            msg.contains("3037000499") || msg.contains("free×free"),
+            "possible fix must bound free×free factors: {msg}"
+        );
+    }
+
+    /// Free×free with requires that bound both factors offline-proves wrap-safety (no WRAP_RISK).
+    /// Avoid free `ensures(x*y)` smul posts — this test is only the offline wrap-safety path.
+    #[test]
+    fn wrap_safety_free_mul_proves_when_both_factors_bounded() {
+        let src = r#"
+fn mul(x: i64, y: i64) -> i64
+    requires(x >= -1000)
+    requires(x <= 1000)
+    requires(y >= -1000)
+    requires(y <= 1000)
+{
+    return x * y;
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let wrap: Vec<_> = ir
+            .solver_obligations
+            .iter()
+            .filter(|o| o.name.starts_with("wrap-safety:") && o.name.contains("*"))
+            .collect();
+        // Offline proved → no wrap-safety obligation emitted (or assertion true skipped).
         assert!(
             wrap.is_empty(),
-            "must not emit free×free wrap-safety (hang risk): {wrap:?}"
+            "bounded free×free must offline-prove (no wrap-safety emit): {wrap:?}"
+        );
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks.iter().all(|c| c.status != "FAIL"),
+            "bounded free×free must not fail checks: {checks:?}"
         );
     }
 
