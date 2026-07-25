@@ -1,16 +1,23 @@
 //! Phase-2 slice 2: capability tokens as linear (use-once) values.
 //!
-//! A capability is an unforgeable linear token: minted only by `cap_acquire(...)`, used exactly
-//! once, non-duplicable, and surrendered when passed away. This module is the intraprocedural
-//! linearity checker that proves that discipline — the Austral half of the capability-and-effect
-//! fusion.
+//! A capability is an unforgeable linear token: minted only by `cap_acquire(...)` /
+//! `cap_acquire_nonexportable(...)`, used exactly once, non-duplicable, and surrendered when
+//! passed away. This module is the intraprocedural linearity checker that proves that discipline —
+//! the Austral half of the capability-and-effect fusion.
 //!
 //! Phase-2 slice 3 (composition) joins this surface to the effect row: in VERIFIED mode, a function
 //! that DIRECTLY performs a privileged effect must **causally spend** a live local capability of the
 //! matching kind at the effect site (`ANUBIS_EFFECT_UNAUTHORIZED` if no live matching-kind token
-//! exists). Kind comes only from `cap_acquire("<id>")` with a string-literal kind — a parameter,
-//! return, or non-literal value does NOT authorize (closes the forge vector). Direct-builtins-only:
-//! transitive effects through callees are the callee's to authorize (interprocedural cap flow is residual).
+//! exists). Kind comes only from a string-literal acquire kind — a parameter, return, or non-literal
+//! value does NOT authorize (closes the forge vector). Direct-builtins-only: transitive effects
+//! through callees are the callee's to authorize (interprocedural cap flow is residual).
+//!
+//! Non-exportable tokens (Depth / Keychain micro-slice): `cap_acquire_nonexportable("kind")` mints
+//! a token that may still **authorize** effects by causal spend (token not in the arg list), but
+//! must not flow **as data** to public sinks (`print` / `send` / `http_*` / `write_file`) without a
+//! well-formed `cap_export(c, "reason")` peel (`ANUBIS_CAPABILITY_EXPORT`). Ordinary
+//! `cap_acquire` stays exportable (compat). Keychain/SE hardware isolation is residual — not claimed
+//! by this static discipline.
 //!
 //! Core rule: a *use* is any read-occurrence of a tracked capability variable, **except** a plain
 //! rebind (`let y = c` / `y = c`), which MOVES the token (source consumed, target live). That one
@@ -22,7 +29,8 @@
 //! Dual-mode, both directions held at once:
 //!   - the REJECT DECISION is accept-biased (default lane): unknown provenance and uncertain
 //!     consumption never produce a spurious reuse/missing rejection; Safe does **not** require
-//!     causal spend (declaration-gated via `uses(...)` elsewhere);
+//!     causal spend (declaration-gated via `uses(...)` elsewhere); unknown-provenance never
+//!     invents `non_exportable` (accept-biased on sealedness);
 //!   - the LINEARITY resolves toward CONSUMED on uncertainty (verified lane): a branch may-consume
 //!     and a loop-carried consume are treated as consumed, so a genuine reuse is never hidden.
 //!
@@ -33,10 +41,18 @@
 use crate::frontend::{Expr, ForSource, Stmt};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The only capability constructor (unforgeable: nothing else mints a tracked token).
+/// Exportable capability constructor (unforgeable: nothing else mints a tracked token).
 const CAP_ACQUIRE: &str = "cap_acquire";
+/// Non-exportable mint: same as acquire, plus `non_exportable: true` (static; not Keychain/SE).
+const CAP_ACQUIRE_NONEXPORTABLE: &str = "cap_acquire_nonexportable";
+/// Peel non_exportable after a well-formed string-literal reason (mirror declassify discipline).
+const CAP_EXPORT: &str = "cap_export";
 /// The authorized capability consumer (requires a live token; consumes it).
 const CAP_USE: &str = "cap_use";
+
+/// Public sinks where a non-exportable token-as-argument is `ANUBIS_CAPABILITY_EXPORT`.
+/// Minimal under-grant list — do not invent OS-level sinks here.
+const EXPORT_SINKS: &[&str] = &["print", "send", "http_post", "http_get", "write_file"];
 
 /// Liveness of a tracked capability local within one function body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,13 +61,16 @@ enum CapState {
     Consumed,
 }
 
-/// Tracked local capability: state + optional kind (Some only for literal `cap_acquire("kind")`).
+/// Tracked local capability: state + optional kind + non-exportable flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CapToken {
     state: CapState,
     /// Canonical effect kind when minted from a string-literal acquire; None for unknown provenance
     /// paths that should not authorize effects.
     kind: Option<String>,
+    /// When true, token value must not appear as an argument to an export sink without
+    /// `cap_export`. Causal spend (ambient authorization) is still allowed.
+    non_exportable: bool,
 }
 
 /// A linearity / authorization violation, routed by the caller through `emit(.., shadow_gated)`.
@@ -86,7 +105,7 @@ impl Lin<'_> {
         self.findings.push(Finding {
             code: "ANUBIS_CAPABILITY_MISSING",
             message:
-                "`cap_use` requires a live capability token, but its argument is not a capability (a capability can only be minted by `cap_acquire`, never conjured)"
+                "`cap_use` requires a live capability token, but its argument is not a capability (a capability can only be minted by `cap_acquire` / `cap_acquire_nonexportable`, never conjured)"
                     .to_string(),
             span: Some(self.span),
         });
@@ -95,8 +114,26 @@ impl Lin<'_> {
         self.findings.push(Finding {
             code: "ANUBIS_EFFECT_UNAUTHORIZED",
             message: format!(
-                "verification lane: privileged effect `{effect}` requires a live capability token of kind `{effect}` at the use site (causal spend) — acquire it with `cap_acquire(\"{effect}\")` and hold it live until the effect. An unknown-provenance value (a parameter, return, or non-literal) does not authorize an effect in verified mode."
+                "verification lane: privileged effect `{effect}` requires a live capability token of kind `{effect}` at the use site (causal spend) — acquire it with `cap_acquire(\"{effect}\")` or `cap_acquire_nonexportable(\"{effect}\")` and hold it live until the effect. An unknown-provenance value (a parameter, return, or non-literal) does not authorize an effect in verified mode."
             ),
+            span: Some(self.span),
+        });
+    }
+    fn export(&mut self, name: &str) {
+        self.findings.push(Finding {
+            code: "ANUBIS_CAPABILITY_EXPORT",
+            message: format!(
+                "non-exportable capability `{name}` cannot flow as data to a public sink (print/send/http_*/write_file) — causal spend for effect authorization is still allowed when the token is not an argument; peel with `cap_export({name}, \"reason\")` before exporting the token value (language-level release; Keychain/SE hardware isolation is residual)"
+            ),
+            span: Some(self.span),
+        });
+    }
+    fn export_malformed(&mut self) {
+        self.findings.push(Finding {
+            code: "ANUBIS_CAPABILITY_EXPORT_MALFORMED",
+            message:
+                "`cap_export` requires a live non-exportable capability and a non-empty string-literal reason — malformed release does not peel the non-exportable flag"
+                    .to_string(),
             span: Some(self.span),
         });
     }
@@ -134,6 +171,7 @@ fn use_var(name: &str, caps: &mut CapMap, lin: &mut Lin) {
                 CapToken {
                     state: CapState::Consumed,
                     kind: t.kind,
+                    non_exportable: t.non_exportable,
                 },
             );
         }
@@ -142,9 +180,36 @@ fn use_var(name: &str, caps: &mut CapMap, lin: &mut Lin) {
     }
 }
 
-/// Whether `expr` is exactly `cap_acquire(...)` — the mint form for a `let`/assign initializer.
+/// Whether `expr` is exactly `cap_acquire(...)` or `cap_acquire_nonexportable(...)`.
 fn is_acquire(expr: &Expr) -> bool {
-    matches!(expr, Expr::Call { callee, .. } if callee == CAP_ACQUIRE)
+    matches!(
+        expr,
+        Expr::Call { callee, .. }
+            if callee == CAP_ACQUIRE || callee == CAP_ACQUIRE_NONEXPORTABLE
+    )
+}
+
+fn is_nonexportable_acquire(expr: &Expr) -> bool {
+    matches!(expr, Expr::Call { callee, .. } if callee == CAP_ACQUIRE_NONEXPORTABLE)
+}
+
+fn is_cap_export(expr: &Expr) -> bool {
+    matches!(expr, Expr::Call { callee, .. } if callee == CAP_EXPORT)
+}
+
+fn is_export_sink(callee: &str) -> bool {
+    EXPORT_SINKS.contains(&callee)
+}
+
+/// If `expr` is a bare var naming a Live non-exportable token, fire EXPORT (does not consume).
+fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
+    if let Expr::Var(name) = expr {
+        if let Some(t) = caps.get(name) {
+            if t.state == CapState::Live && t.non_exportable {
+                lin.export(name);
+            }
+        }
+    }
 }
 
 /// Whether `expr` is provably NOT a capability (a literal or pure arithmetic over such): the only
@@ -168,9 +233,7 @@ fn provably_non_capability(expr: &Expr) -> bool {
 fn causal_spend(effect: &str, caps: &mut CapMap, lin: &mut Lin) {
     let mut matches: Vec<String> = caps
         .iter()
-        .filter(|(_, t)| {
-            t.state == CapState::Live && t.kind.as_deref() == Some(effect)
-        })
+        .filter(|(_, t)| t.state == CapState::Live && t.kind.as_deref() == Some(effect))
         .map(|(n, _)| n.clone())
         .collect();
     matches.sort();
@@ -181,6 +244,7 @@ fn causal_spend(effect: &str, caps: &mut CapMap, lin: &mut Lin) {
                 CapToken {
                     state: CapState::Consumed,
                     kind: t.kind,
+                    non_exportable: t.non_exportable,
                 },
             );
         }
@@ -189,12 +253,65 @@ fn causal_spend(effect: &str, caps: &mut CapMap, lin: &mut Lin) {
     }
 }
 
+/// Well-formed `cap_export(src, "reason")`: on success consume `src` and return peeled Live
+/// exportable token. Malformed → diagnostic, leave source unpeeled (if still Live).
+fn apply_cap_export(args: &[Expr], caps: &mut CapMap, lin: &mut Lin) -> Option<CapToken> {
+    let src_name = match args.first() {
+        Some(Expr::Var(n)) => n.clone(),
+        _ => {
+            lin.export_malformed();
+            for a in args {
+                walk_expr(a, caps, lin);
+            }
+            return None;
+        }
+    };
+    let reason_ok = matches!(args.get(1), Some(Expr::StrLiteral(r)) if !r.is_empty());
+    match caps.get(&src_name).cloned() {
+        Some(t) if t.state == CapState::Live && t.non_exportable && reason_ok => {
+            caps.insert(
+                src_name,
+                CapToken {
+                    state: CapState::Consumed,
+                    kind: t.kind.clone(),
+                    non_exportable: true,
+                },
+            );
+            for a in args.iter().skip(2) {
+                walk_expr(a, caps, lin);
+            }
+            Some(CapToken {
+                state: CapState::Live,
+                kind: t.kind,
+                non_exportable: false,
+            })
+        }
+        Some(t) if t.state == CapState::Consumed => {
+            lin.reuse(&src_name);
+            for a in args.iter().skip(1) {
+                walk_expr(a, caps, lin);
+            }
+            None
+        }
+        _ => {
+            // Empty reason, exportable token, unknown provenance, etc. — no peel.
+            lin.export_malformed();
+            for a in args.iter().skip(1) {
+                walk_expr(a, caps, lin);
+            }
+            None
+        }
+    }
+}
+
 /// Rebind `target` to the value of `init`, applying MOVE semantics when `init` is a bare tracked
-/// capability variable, MINT when it is `cap_acquire(...)`, and otherwise walking `init` (which
-/// consumes any capabilities inside it) and dropping any prior tracking of `target`.
+/// capability variable, MINT when it is acquire / nonexportable, PEEL when `cap_export(...)`, and
+/// otherwise walking `init` (which consumes any capabilities inside it) and dropping any prior
+/// tracking of `target`.
 fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
     if is_acquire(init) {
         let mut kind: Option<String> = None;
+        let non_exportable = is_nonexportable_acquire(init);
         if let Expr::Call { args, .. } = init {
             // A string-literal kind is what authorizes an effect (composition). A non-literal kind
             // authorizes nothing specific — fail-closed.
@@ -210,19 +327,31 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             CapToken {
                 state: CapState::Live,
                 kind,
+                non_exportable,
             },
         );
         return;
     }
+    if is_cap_export(init) {
+        if let Expr::Call { args, .. } = init {
+            if let Some(peeled) = apply_cap_export(args, caps, lin) {
+                caps.insert(target.to_string(), peeled);
+            } else {
+                caps.remove(target);
+            }
+            return;
+        }
+    }
     if let Expr::Var(src) = init {
         match caps.get(src).cloned() {
             Some(t) if t.state == CapState::Live => {
-                // MOVE: the token transfers from `src` to `target`, staying singular (kind preserved).
+                // MOVE: the token transfers from `src` to `target`, staying singular (kind + flag).
                 caps.insert(
                     src.clone(),
                     CapToken {
                         state: CapState::Consumed,
                         kind: t.kind.clone(),
+                        non_exportable: t.non_exportable,
                     },
                 );
                 caps.insert(
@@ -230,6 +359,7 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                     CapToken {
                         state: CapState::Live,
                         kind: t.kind,
+                        non_exportable: t.non_exportable,
                     },
                 );
                 return;
@@ -382,6 +512,7 @@ fn walk_loop_body(body: &[Stmt], caps: &mut CapMap, lin: &mut Lin) {
                         CapToken {
                             state: CapState::Consumed,
                             kind: t.kind,
+                            non_exportable: t.non_exportable,
                         },
                     );
                 }
@@ -408,11 +539,7 @@ fn merge_branches(
         }
         let mut states: Vec<CapState> = branch_ends
             .iter()
-            .map(|b| {
-                b.get(name)
-                    .map(|t| t.state)
-                    .unwrap_or(base_tok.state)
-            })
+            .map(|b| b.get(name).map(|t| t.state).unwrap_or(base_tok.state))
             .collect();
         if has_implicit_arm {
             states.push(base_tok.state);
@@ -428,6 +555,7 @@ fn merge_branches(
                 CapToken {
                     state: CapState::Consumed,
                     kind: base_tok.kind.clone(),
+                    non_exportable: base_tok.non_exportable,
                 },
             );
         }
@@ -446,6 +574,21 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
         | Expr::RawPtr { .. }
         | Expr::Other(_) => {}
         Expr::Call { callee, args } => {
+            // In-place peel: `cap_export(s, "reason");` rebinds `s` to the exportable token.
+            if callee == CAP_EXPORT {
+                if let Some(peeled) = apply_cap_export(args, caps, lin) {
+                    if let Some(Expr::Var(n)) = args.first() {
+                        caps.insert(n.clone(), peeled);
+                    }
+                }
+                return;
+            }
+            // Export check BEFORE walking args (so Live non_exportable is still visible).
+            if is_export_sink(callee) && !lin.all_fns.contains(callee) {
+                for a in args {
+                    check_export_arg(a, caps, lin);
+                }
+            }
             for a in args {
                 walk_expr(a, caps, lin);
             }
@@ -749,5 +892,94 @@ fn f() { let y = send(3); }"#;
             true
         )
         .is_empty());
+    }
+
+    // ── Non-exportable capability (Depth / Keychain micro-slice primary) ───────────────────────
+
+    #[test]
+    fn nonexportable_causal_spend_without_token_in_args_accepts() {
+        // Authorize effect ambiently; token is NOT a sink argument.
+        let src = r#"fn f() { let n = cap_acquire_nonexportable("net.send"); send("h", 80, "x"); }"#;
+        assert!(codes(src, true).is_empty());
+        assert!(codes(src, false).is_empty());
+    }
+
+    #[test]
+    fn nonexportable_token_as_print_arg_is_export() {
+        let src = r#"fn f() { let s = cap_acquire_nonexportable("fs.write"); print(s); }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_EXPORT"]);
+        assert_eq!(codes(src, false), ["ANUBIS_CAPABILITY_EXPORT"]);
+    }
+
+    #[test]
+    fn nonexportable_token_as_send_payload_is_export() {
+        let src = r#"fn f() { let s = cap_acquire_nonexportable("net.send"); send("h", 80, s); }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "expected EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_acquire_token_as_print_arg_is_not_export() {
+        // Exportable mint: token-as-arg still just consumes (surrender), no EXPORT.
+        let src = r#"fn f() { let c = cap_acquire("fs.read"); print(c); }"#;
+        assert!(codes(src, true).is_empty());
+    }
+
+    #[test]
+    fn wellformed_cap_export_peels_then_print_accepts() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let e = cap_export(s, "audit: release for backup");
+            print(e);
+        }"#;
+        assert!(codes(src, true).is_empty());
+    }
+
+    #[test]
+    fn empty_reason_cap_export_does_not_peel() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let e = cap_export(s, "");
+            print(s);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT_MALFORMED"),
+            "expected MALFORMED, got {c:?}"
+        );
+        // s remains non_exportable Live → print(s) still EXPORT.
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "expected EXPORT on print(s), got {c:?}"
+        );
+    }
+
+    #[test]
+    fn move_preserves_nonexportable() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let y = s;
+            print(y);
+        }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_EXPORT"]);
+    }
+
+    #[test]
+    fn nonexportable_cap_use_is_not_export() {
+        let src = r#"fn f() { let s = cap_acquire_nonexportable("fs.read"); cap_use(s); }"#;
+        assert!(codes(src, true).is_empty());
+    }
+
+    #[test]
+    fn nonexportable_double_spend_is_reuse() {
+        let src = r#"fn f() {
+            let n = cap_acquire_nonexportable("net.send");
+            send("h", 80, "x");
+            cap_use(n);
+        }"#;
+        assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
     }
 }
