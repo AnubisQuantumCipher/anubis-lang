@@ -1247,6 +1247,18 @@ fn walk_export_seals(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
                 walk_export_seals(e, caps, lin);
             }
         }
+        Expr::FieldAccess { base, .. } => walk_export_seals(base, caps, lin),
+        Expr::EnumConstruct { fields, .. } => {
+            for e in fields {
+                walk_export_seals(e, caps, lin);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                walk_export_seals(k, caps, lin);
+                walk_export_seals(v, caps, lin);
+            }
+        }
         Expr::If {
             cond, then, else_, ..
         }
@@ -1292,20 +1304,61 @@ fn walk_export_seals_stmts(stmts: &[Stmt], caps: &CapMap, lin: &mut Lin) {
                 walk_export_seals(init, caps, lin);
             }
             Stmt::ExprStmt(e) => walk_export_seals(e, caps, lin),
-            Stmt::If { then, else_, .. } => {
+            // skeptic-1: seal If.cond as well as then/else (lambda bodies previously
+            // walked only the arms — `if print(s) { … }` fail-opened).
+            Stmt::If {
+                cond, then, else_, ..
+            } => {
+                walk_export_seals(cond, caps, lin);
                 walk_export_seals_stmts(then, caps, lin);
                 if let Some(e) = else_ {
                     walk_export_seals_stmts(e, caps, lin);
                 }
             }
-            // Loop bodies (skeptic-0): NE capture → print/send inside while/for/loop/while-let
-            // previously fell through `_` and fail-opened.
-            Stmt::While { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. }
-            | Stmt::WhileLet { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
+            // Loop bodies + cond/source/invariant exprs (skeptic-0/1): NE capture →
+            // print/send inside while/for/loop/while-let, or in the header expr.
+            Stmt::While {
+                cond,
+                body,
+                invariant,
+            } => {
+                walk_export_seals(cond, caps, lin);
+                for inv in invariant {
+                    walk_export_seals(inv, caps, lin);
+                }
+                walk_export_seals_stmts(body, caps, lin);
+            }
+            Stmt::Loop { body, invariant } => {
+                for inv in invariant {
+                    walk_export_seals(inv, caps, lin);
+                }
+                walk_export_seals_stmts(body, caps, lin);
+            }
+            Stmt::For {
+                source,
+                body,
+                invariant,
+                ..
+            } => {
+                match source {
+                    ForSource::Range { start, end } => {
+                        walk_export_seals(start, caps, lin);
+                        walk_export_seals(end, caps, lin);
+                    }
+                    ForSource::Collection { expr } => walk_export_seals(expr, caps, lin),
+                }
+                for inv in invariant {
+                    walk_export_seals(inv, caps, lin);
+                }
+                walk_export_seals_stmts(body, caps, lin);
+            }
+            Stmt::WhileLet {
+                expr, body, ..
+            } => {
+                walk_export_seals(expr, caps, lin);
+                walk_export_seals_stmts(body, caps, lin);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
                 walk_export_seals_stmts(body, caps, lin);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
@@ -1775,6 +1828,91 @@ fn f() { let y = send(3); }"#;
         assert!(
             codes(src, true).is_empty(),
             "exportable mint in while must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn nonexportable_print_in_if_cond_inside_lambda_is_export() {
+        // skeptic-1: If.cond must be sealed (not only then/else arms).
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { if print(s) { 1 } else { 0 }; };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "if-cond print of NE in lambda must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_print_in_while_cond_inside_lambda_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { while print(s) { break; } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "while-cond print of NE in lambda must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_print_in_for_source_inside_lambda_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { for i in print(s)..1 { break; } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "for-source print of NE in lambda must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_print_in_while_let_expr_inside_lambda_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { while let Some(y) = Some(print(s)) { break; } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "while-let expr print of NE in lambda must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_print_in_if_cond_inside_lambda_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let g = |x| { if print(c) { 1 } else { 0 }; };
+            g(0);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable mint in if-cond must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn ordinary_print_in_while_cond_inside_lambda_is_not_export() {
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let g = |x| { while print(c) { break; } };
+            g(0);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable mint in while-cond must not EXPORT, got {:?}",
             codes(src, true)
         );
     }
