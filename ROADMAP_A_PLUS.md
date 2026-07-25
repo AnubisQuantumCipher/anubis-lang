@@ -46,7 +46,7 @@
 - All old failure modes impossible.
 
 ## Phase 7 — Docs Honesty (A14)
-- All required docs with REAL/PARTIAL/... labels.
+- All required docs with under Command/PARTIAL/not claimed/... labels.
 - CLAIMS.md single source of truth.
 
 ## Phase 8 — Hostile Re-audits (A15)

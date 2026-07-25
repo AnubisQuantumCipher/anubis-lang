@@ -32,7 +32,7 @@ It is deliberately **dual-use**, because the two people who most need un-fakeabl
 
 Both trade in the same currency — **truth that survives adversarial scrutiny** — and Anubis is the machine that mints it. Defense and offense are two faces of one idea: establish, and sign, exactly what is true about a program.
 
-And Anubis earns the right to make those proofs by **trusting nothing it cannot check itself** — down to its own SMT solver (a native, Lean-verified core that already decides the integer lane with Z3 removed, opt-in), its own soundness (machine-checked in Lean 4), and its own compiler (self-hosted to a byte-identical fixpoint). It fails closed, everywhere, on purpose.
+And Anubis earns the right to make those proofs by **trusting nothing it cannot check itself** — down to its own SMT solver (a native, Lean-verified core that decides the integer lane by default with Z3 as fail-closed cross-check; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`), its own soundness (machine-checked in Lean 4), and its own compiler (self-hosted to a byte-identical fixpoint). It fails closed, everywhere, on purpose.
 
 > **Where it is:** a real, gated, pre-1.0 language with a working safe execution core, a fail-closed contract verifier, an offensive/evidence toolchain, and Apple-Silicon proving lanes. Every capability below is marked with an honest status and is traceable to a command, a gate, or a file. Nothing is marked done that isn't sealed.
 
@@ -172,7 +172,7 @@ Status: ✅ **real** (implemented + gated) · 🟡 **partial** (real slices, hon
 | **Contract checking** | ✅ | `requires` / `ensures` / `assert` discharged by SMT, with real solver counterexamples; `--suggest-contracts` infers clauses for you |
 | **Fail-closed build** | ✅ | `anubis build` runs the *same* verification and refuses on any unproven contract (`--no-verify` to opt out) |
 | **Contract lanes** | 🟡 | integer (exact i64) ✅ · float **comparison** · string **equality/length** · bounded arrays · loop invariants · struct fields — **everything outside the modeled fragment fails closed** |
-| **Native SMT solver** | ✅ | the zero-dependency, Lean-verified QF_BV solver above; Z3-droppable for the integer lane (opt-in) |
+| **Native SMT solver** | ✅ | the zero-dependency, Lean-verified QF_BV solver above; **default-authoritative** on the proven integer fragment (opt-out `=0`); Z3 cross-checks when present |
 | **Mechanized soundness** | ✅ | 150+ Lean 4 theorems across 14 modules: encoding soundness, the bit-blaster, Safe-mode non-interference, effect soundness — `run_formal_gate.sh` proves the build carries **no `sorry`/`admit`/`axiom`** |
 
 ### 🔒 Secure by construction — types that stop data from leaking
@@ -292,7 +292,7 @@ anubis run   examples/hello_normal.anb                     # execute the safe co
 
 # ── The gates (the discipline, runnable) ──────────────────────────────
 bash scripts/run_formal_gate.sh                            # Lean: 150+ theorems / 14 modules, no sorry/axiom
-bash scripts/run_native_authoritative_gate.sh              # native solver ≡ Z3, Z3 droppable
+bash scripts/run_native_authoritative_gate.sh              # native default-authoritative; ≡ Z3; opt-out=0
 bash scripts/run_selfhost_gate.sh out/selfhost             # stage0→3 bootstrap + fixpoint
 bash scripts/run_dx_gate.sh out/dx                         # LSP / fmt / repl / tree-sitter (15/15)
 

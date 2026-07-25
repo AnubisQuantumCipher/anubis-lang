@@ -69,5 +69,5 @@ See [`language/phase9_independent_witness/WITNESS.md`](language/phase9_independe
 - “Trusting-trust closed” / “backdoor-free”
 - “Hosted Metal proving”
 - “Public package registry”
-- Native solver as the **default** compiler path (still opt-in)
+- Native solver **default flip residual** (closed 2026-07-25 — default-authoritative; not listed as open)
 - Infinite multi-party coverage beyond recorded witnesses
