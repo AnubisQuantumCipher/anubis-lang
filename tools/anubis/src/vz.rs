@@ -339,6 +339,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             applied_out,
         } => {
             let mut confine_args: Vec<String> = Vec::new();
+            // When --confine is set, mounts are posture-filtered (fail-closed); otherwise pass-through.
+            let mut run_mounts: Vec<String> = dir.clone();
             if let Some(prog) = confine {
                 let (applied, _) = crate::vz_apply::build_applied(&prog, &dir)?;
                 let out_path = applied_out
@@ -347,11 +349,14 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     .unwrap_or_else(|| std::path::PathBuf::from(crate::vz_apply::APPLIED_FILENAME));
                 crate::vz_apply::write_applied(&applied, Some(&out_path))?;
                 eprintln!(
-                    "[anubis vz run --confine] applied tart_args=[{}] → {}",
+                    "[anubis vz run --confine] applied tart_args=[{}] mount_posture={} mounts={} → {}",
                     applied.tart_args.join(" "),
+                    applied.mount_posture,
+                    applied.mounts.len(),
                     out_path.display()
                 );
                 confine_args = applied.tart_args;
+                run_mounts = applied.mounts;
             }
             let mut args = vec![s("run"), name.clone()];
             if no_graphics {
@@ -360,7 +365,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             for a in &confine_args {
                 args.push(a.clone());
             }
-            for d in &dir {
+            for d in &run_mounts {
                 args.push(s("--dir"));
                 args.push(d.clone());
             }

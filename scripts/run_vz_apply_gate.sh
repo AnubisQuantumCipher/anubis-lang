@@ -23,10 +23,23 @@ assert app["source_merkle"]
 args = app.get("tart_args") or []
 # net-free demo must apply host-only
 if "--net-host" not in args:
-    # Some demos may declare net; still require schema + merkle
     print("note: no --net-host in tart_args", args)
-print("applied_ok", args)
+assert app.get("mount_posture") == "none", app.get("mount_posture")
+assert "host-only" in (app.get("network_posture") or ""), app.get("network_posture")
+print("applied_ok", args, "mount_posture", app.get("mount_posture"))
 PY
+
+# Fail-closed: engagement mount on net-free / mount:none program must be denied.
+if "$ANUBIS" vz apply "$DEMO" --dir 'ws:/tmp/ws' --applied-out "$OUT/should_fail.json" 2>"$OUT/mount_deny.err"; then
+  echo "expected ANUBIS_APPLY_MOUNT_DENIED for mount:none + --dir" >&2
+  exit 1
+fi
+grep -q 'ANUBIS_APPLY_MOUNT_DENIED' "$OUT/mount_deny.err" || {
+  echo "mount deny missing ANUBIS_APPLY_MOUNT_DENIED:" >&2
+  cat "$OUT/mount_deny.err" >&2
+  exit 1
+}
+echo "mount_deny_ok"
 
 # Unit tests for apply + egress gateway
 cargo test -p anubis vz_apply 2>&1 | tee "$OUT/unit_apply.log"
