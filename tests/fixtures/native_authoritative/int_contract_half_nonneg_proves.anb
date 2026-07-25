@@ -1,0 +1,12 @@
+// EXPECT: PASS
+// Nonneg + power-of-two `/ 2` rewrites to proven `bvlshr` — native-authoritative without z3.
+pub fn half_nonneg(x: int) -> int
+    requires(x >= 0)
+    ensures(result >= 0)
+{
+    return x / 2;
+}
+
+fn main() {
+    print(half_nonneg(10));
+}

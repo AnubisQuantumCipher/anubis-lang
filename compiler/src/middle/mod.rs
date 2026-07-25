@@ -1783,6 +1783,13 @@ fn analyze_function(
                     ctx.solver_int_vars.insert(nzdiv_mark(&v));
                 }
             }
+            if let Some(v) = requires_nonneg_var(req) {
+                if ctx.solver_int_vars.contains(&v) && !rebound.contains(&v) {
+                    ctx.solver_int_vars.insert(nonneg_mark(&v));
+                    // Sentinel width-0 key so the SMT encoder can see the mark without extra args.
+                    ctx.symbolic_widths.insert(nonneg_mark(&v), 0);
+                }
+            }
         }
     }
     // The precondition (parameter ranges + `requires`) dominates EVERY return; the body assumptions
@@ -7736,6 +7743,7 @@ pub fn replay_counterexample(smt: &str, model: &str) -> bool {
     matches!(z3_check_sat_raw(&replay_smt).as_deref(), Some("sat"))
 }
 
+
 fn expr_to_smt(e: &Expr, widths: &BTreeMap<String, u32>) -> String {
     expr_to_smt_with_width(e, widths, None)
 }
@@ -7767,6 +7775,12 @@ fn is_nonzero_int_literal(e: &Expr) -> bool {
 fn nzdiv_mark(v: &str) -> String {
     format!("\u{1}nzdiv:{v}")
 }
+
+/// Parameter/var proven non-negative by `requires` (sound pow2 `/` → `bvlshr`).
+fn nonneg_mark(v: &str) -> String {
+    format!("\u{1}nonneg:{v}")
+}
+
 
 /// Sentinel key marking that a modeled INT builtin (`abs`/`min`/`max`/`len`) is SHADOWED in the current
 /// function by a user fn or a local (param/`let`) of the same name — the runtime calls THAT, not the
@@ -7803,6 +7817,7 @@ fn seq_fixed_len(v: &str, int_vars: &BTreeSet<String>) -> Option<u64> {
 fn clear_binding_modelability(int_vars: &mut BTreeSet<String>, name: &str) {
     int_vars.remove(name);
     int_vars.remove(&nzdiv_mark(name));
+    int_vars.remove(&nonneg_mark(name));
     int_vars.remove(&seq_mark(name));
     let prefix = format!("\u{1}seqlen:{name}:");
     int_vars.retain(|m| !m.starts_with(&prefix));
@@ -8024,6 +8039,51 @@ fn requires_nonzero_var(req: &Expr) -> Option<String> {
         _ => false,
     };
     excludes_zero.then_some(var)
+}
+
+/// `requires(v >= 0)` / `v > -1` (and flipped forms).
+fn requires_nonneg_var(req: &Expr) -> Option<String> {
+    fn as_var(e: &Expr) -> Option<String> {
+        match e {
+            Expr::Var(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+    fn as_int_lit(e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Literal(l) => l.parse::<i64>().ok(),
+            Expr::Unary { op, expr } if op == "-" => match expr.as_ref() {
+                Expr::Literal(l) => l.parse::<i64>().ok().map(i64::wrapping_neg),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn flip(op: &str) -> &str {
+        match op {
+            ">" => "<",
+            ">=" => "<=",
+            "<" => ">",
+            "<=" => ">=",
+            other => other,
+        }
+    }
+    let Expr::Binary { op, lhs, rhs } = req else {
+        return None;
+    };
+    let (var, op, k) = if let (Some(v), Some(k)) = (as_var(lhs), as_int_lit(rhs)) {
+        (v, op.as_str(), k)
+    } else if let (Some(k), Some(v)) = (as_int_lit(lhs), as_var(rhs)) {
+        (v, flip(op.as_str()), k)
+    } else {
+        return None;
+    };
+    let implies_nonneg = match op {
+        ">=" => k >= 0,
+        ">" => k >= -1,
+        _ => false,
+    };
+    implies_nonneg.then_some(var)
 }
 
 fn is_int_modelable(e: &Expr, int_vars: &BTreeSet<String>) -> bool {
@@ -9307,17 +9367,30 @@ fn expr_to_smt_with_width(
                     )
                 }
                 // Division/modulo (non-zero literal divisor only — is_int_modelable).
-                // Pow2 rewrite: nonneg *const* dividend + divisor 2^k → proven bvlshr/bvand.
-                // Free dividends keep bvsdiv/bvsrem (native fragment defers them).
+                // Pow2 rewrite when dividend is non-negative (const or requires-proven var) and
+                // divisor is 2^k → proven bvlshr/bvand (native-authoritative). General bvsdiv
+                // stays deferred for free/signed dividends.
                 "/" => {
-                    if let (Some(k), true) = (pow2_shift_k_from_smt_rhs(&r), smt_bv_const_nonneg(&l)) {
+                    let k = pow2_shift_k_from_smt_rhs(&r);
+                    let nonneg = smt_bv_const_nonneg(&l)
+                        || matches!(
+                            lhs.as_ref(),
+                            Expr::Var(v) if widths.contains_key(&nonneg_mark(v))
+                        );
+                    if let (Some(k), true) = (k, nonneg) {
                         format!("(bvlshr {} (_ bv{} 64))", l, k)
                     } else {
                         format!("(bvsdiv {} {})", l, r)
                     }
                 }
                 "%" => {
-                    if let (Some(k), true) = (pow2_shift_k_from_smt_rhs(&r), smt_bv_const_nonneg(&l)) {
+                    let k = pow2_shift_k_from_smt_rhs(&r);
+                    let nonneg = smt_bv_const_nonneg(&l)
+                        || matches!(
+                            lhs.as_ref(),
+                            Expr::Var(v) if widths.contains_key(&nonneg_mark(v))
+                        );
+                    if let (Some(k), true) = (k, nonneg) {
                         let mask = (1u64 << k).wrapping_sub(1);
                         format!("(bvand {} (_ bv{} 64))", l, mask)
                     } else {

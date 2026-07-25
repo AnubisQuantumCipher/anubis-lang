@@ -61,11 +61,16 @@ else
   ko "ring_buffer (should disprove)"
 fi
 
-# 4. Confinement from proof
+# 4. Confinement from proof + check→confine→run vertical
 if "$ANUBIS" vz confine examples/showcase/vz_confine_demo.anb --out "$OUT/confine.json" >/tmp/ess_vz.txt 2>&1; then
   ok "vz confine"
 else
   ko "vz confine"; tail -8 /tmp/ess_vz.txt
+fi
+if bash scripts/run_check_confine_run_gate.sh "$OUT/ccr" >/tmp/ess_ccr.txt 2>&1; then
+  ok "check_confine_run vertical"
+else
+  ko "check_confine_run vertical"; tail -15 /tmp/ess_ccr.txt
 fi
 
 # 5–6. TCB spine (optional skip for quick local loops: ESSENCE_SPINE_FAST=1)

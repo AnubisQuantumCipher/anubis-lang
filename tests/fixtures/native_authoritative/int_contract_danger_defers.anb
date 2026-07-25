@@ -1,17 +1,13 @@
 // EXPECT: PASS
-// Phase-7 fragment-gate soundness demo, the FAIL-CLOSED direction. This postcondition is TRUE — a
-// nonnegative integer divided by 2 stays nonnegative — so with z3 present the check PASSES. But the
-// obligation lowers to `bvsdiv`, whose bit-blast is NOT in the machine-checked fragment (division is
-// deferred BY DESIGN). So under `ANUBIS_NATIVE_AUTHORITATIVE=1` with z3 REMOVED from PATH, the native
-// lane DECLINES (fragment gate → defer) and, with no z3 to fall through to, the check FAILS CLOSED
-// rather than certify a property on an unproven blast. That is the whole point of the gate: a z3-free
-// native proof rests only on proven wiring. (Contrast int_contract_proves.anb, whose every op —
-// bvadd, comparators, bitwise, sub/neg, ite, and now both shifts — is machine-checked.)
-pub fn half_nonneg(x: int) -> int
+// Phase-7 fragment-gate soundness demo (FAIL-CLOSED direction).
+// Non-power-of-two division (`/ 3`) is NOT in the machine-checked native fragment, so under
+// native-authoritative with z3 removed the lane DECLINES rather than certify on unproven blast.
+// (Contrast int_contract_half_nonneg_proves.anb: `/ 2` under requires(x>=0) rewrites to proven bvlshr.)
+pub fn third_nonneg(x: int) -> int
     requires(x >= 0)
     ensures(result >= 0)
 {
-    return x / 2;
+    return x / 3;
 }
 
 fn main() {
