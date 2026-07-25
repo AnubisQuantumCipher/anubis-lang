@@ -1,0 +1,142 @@
+fn fnv32(text) {
+    let hash = 2166136261;
+    for i in 0..len(text) {
+        hash = hash ^ ord(char_at(text, i));
+        hash = hash * 16777619 % 4294967296;
+        if hash < 0 {
+            hash = 0 - hash;
+        }
+    }
+    hash;
+}
+
+fn tagged_leaf(label, payload) {
+    fnv32("" + label + "::" + payload);
+}
+
+fn parent(left, right) {
+    fnv32("" + left + "|" + right);
+}
+
+fn parent_level(nodes) {
+    let out = [];
+    let i = 0;
+    while i < len(nodes) {
+        if i + 1 < len(nodes) {
+            push(out, parent(nodes[i], nodes[i + 1]));
+        } else {
+            push(out, parent(nodes[i], nodes[i]));
+        }
+        i = i + 2;
+    }
+    out;
+}
+
+fn tree_root(nodes) {
+    assert(len(nodes) > 0);
+    let level = nodes;
+    while len(level) > 1 {
+        level = parent_level(level);
+    }
+    level[0];
+}
+
+fn audit_path(nodes, wanted) {
+    let level = nodes;
+    let index = wanted;
+    let path = [];
+    while len(level) > 1 {
+        if index % 2 == 0 {
+            let sibling = if index + 1 < len(level) { level[index + 1] } else { level[index] };
+            push(path, [sibling, 0]);
+        } else {
+            push(path, [level[index - 1], 1]);
+        }
+        level = parent_level(level);
+        index = index / 2;
+    }
+    path;
+}
+
+fn fold_path(leaf_hash, path) {
+    let acc = leaf_hash;
+    for i in 0..len(path) {
+        if path[i][1] == 1 {
+            acc = parent(path[i][0], acc);
+        } else {
+            acc = parent(acc, path[i][0]);
+        }
+    }
+    acc;
+}
+
+fn factorial_leaves() {
+    let source = "let rec fact = fun n -> if n == 0 then 1 else n * fact (n - 1) in fact 6";
+    let tree = "(let rec fact = (fun n -> (if (n == 0) then 1 else (n * (fact (n - 1))))) in (fact 6))";
+    [tagged_leaf("src", source), tagged_leaf("type", "Int"), tagged_leaf("ast", tree), tagged_leaf("opt", tree), tagged_leaf("code", "1460788867"), tagged_leaf("value", "720"), tagged_leaf("steps", "86")];
+}
+
+fn observed_roots() {
+    [246468339, 2652654645, 2387722213, 326448849, 401496657, 612222305, 1304888166, 4108639455, 2950926177, 503722880, 242858004, 4178077595, 2351511355, 2313422673, 4287290614, 3874796732, 161892786];
+}
+
+fn observed_names() {
+    ["arith", "branch", "poly_id", "nested_let", "higher_order", "factorial", "fibonacci", "gcd", "power", "sum_to_n", "ackermann", "collatz_steps", "church_true_false", "constfold_beta", "poly_eq", "bool_from_cmp", "even_rec"];
+}
+
+fn roots_transcript(names, roots, source_sha256, binary_sha256) {
+    assert(len(names) == len(roots));
+    let text = "THOTH_ROOT_VECTOR_V2|source_sha256=" + source_sha256 + "|binary_sha256=" + binary_sha256;
+    for i in 0..len(roots) {
+        text = "" + text + "|" + i + ":" + names[i] + ":" + roots[i];
+    }
+    text;
+}
+
+fn main() {
+    let expected_factorial = 612222305;
+    let expected_master = 3388148633;
+    let expected_witness_sha256 = "3edbdc12440af10f590005909bae590a86601715af84e3b5fbbafd67f2273cf6";
+    let thoth_source_sha256 = "3cf3a615bbc3aaf8e84b092d58a4c537827c72182a4b9650202a5f19bf9aa3f0";
+    let anubis_binary_sha256 = "eb9613fd472dd2fc290f52039d80b7c98ab9ab36e425005bc8e993bf92e8586c";
+    let leaves = factorial_leaves();
+    let factorial = tree_root(leaves);
+    let value_path = audit_path(leaves, 5);
+    let value_proof = fold_path(leaves[5], value_path);
+    let tampered_value_proof = fold_path(leaves[5] + 1, value_path);
+    let roots = observed_roots();
+    let names = observed_names();
+    let master = tree_root(roots);
+    let changed_roots = observed_roots();
+    changed_roots[5] = changed_roots[5] + 1;
+    let changed_master = tree_root(changed_roots);
+    let reordered_roots = observed_roots();
+    let first = reordered_roots[0];
+    reordered_roots[0] = reordered_roots[1];
+    reordered_roots[1] = first;
+    let reordered_master = tree_root(reordered_roots);
+    let transcript = roots_transcript(names, roots, thoth_source_sha256, anubis_binary_sha256);
+    let witness_sha256 = domain_hash("CODEX_THOTH_EXTERNAL_WITNESS_V1", transcript);
+    assert(factorial == expected_factorial);
+    assert(value_proof == expected_factorial);
+    assert(tampered_value_proof != expected_factorial);
+    assert(master == expected_master);
+    assert(changed_master != expected_master);
+    assert(reordered_master != expected_master);
+    assert(witness_sha256 == expected_witness_sha256);
+    print("CODEX THOTH EXTERNAL WITNESS");
+    print("scope=selected_commitments_not_full_miniml_semantics");
+    print("fnv_security=demo_only_not_cryptographic");
+    print("" + "thoth_source_sha256=" + thoth_source_sha256);
+    print("" + "anubis_binary_sha256=" + anubis_binary_sha256);
+    print("" + "factorial_root=" + factorial);
+    print("" + "factorial_value_leaf=" + leaves[5]);
+    print("" + "factorial_path_depth=" + len(value_path));
+    print("" + "value_proof_ok=" + (value_proof == expected_factorial));
+    print("" + "tampered_value_rejected=" + (tampered_value_proof != expected_factorial));
+    print("" + "master_root=" + master);
+    print("" + "changed_case_rejected=" + (changed_master != expected_master));
+    print("" + "reordered_cases_rejected=" + (reordered_master != expected_master));
+    print("" + "root_vector_sha256=" + witness_sha256);
+    print("WITNESS_OK");
+}

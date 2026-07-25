@@ -1,0 +1,169 @@
+// hermes_dual_path_seal.anb
+//
+// ORIGINAL Hermes demo (not THOTH, not sealed_ledger).
+// Dual-path agreement journal:
+//   1) factorial(7) via recursive vs iterative product  — must agree
+//   2) sum(1..20) via closed form vs fold               — must agree
+//   3) collatz steps for 27 (iterative)                 — observed
+//   4) claim-stream risk over a small policy map
+//   5) rolling journal checksum over [fact, sum, col, risk]
+//   6) seal verdict from (paths_agree && risk band)
+//
+// EXPECT (six printed lines):
+//   5040     fact (both paths)
+//   210      sum  (both paths)
+//   111      collatz steps for 27
+//   14       cumulative claim risk
+//   6737     journal checksum
+//   0        verdict Clear (agree + risk < 20)
+//
+// Verdict codes: 0=Clear, 1=Watch, 2=Hold, 3=Disagree
+
+enum Seal {
+    Clear { fact: u32, sum: u32, risk: u32 },
+    Watch { fact: u32, sum: u32, risk: u32 },
+    Hold { fact: u32, sum: u32, risk: u32 },
+    Disagree { which: u32 },
+}
+
+// Recursive factorial (path A).
+fn fact_rec(n: u32) {
+    if n <= 1 {
+        return 1;
+    } else {
+        return n * fact_rec(n - 1);
+    }
+}
+
+// Iterative product factorial (path B).
+fn fact_iter(n: u32) {
+    let mut acc = 1;
+    let mut i = 1;
+    while i <= n {
+        acc = acc * i;
+        i = i + 1;
+    }
+    return acc;
+}
+
+// Closed-form triangular number n(n+1)/2 (path A for sum).
+fn sum_closed(n: u32) {
+    return (n * (n + 1)) / 2;
+}
+
+// Fold sum 1..n (path B for sum).
+fn sum_fold(n: u32) {
+    let mut acc = 0;
+    let mut i = 1;
+    while i <= n {
+        acc = acc + i;
+        i = i + 1;
+    }
+    return acc;
+}
+
+// Collatz step count from n down to 1.
+fn collatz_steps(start: u32) {
+    let mut n = start;
+    let mut k = 0;
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        k = k + 1;
+    }
+    return k;
+}
+
+// Rolling checksum: ((acc * 31) + x) % 10007
+fn roll_chk(xs: list, i: u32, n: u32, acc: u32) {
+    if i >= n {
+        return acc;
+    } else {
+        let x = xs[i];
+        let next = ((acc * 31) + x) % 10007;
+        return roll_chk(xs, i + 1, n, next);
+    }
+}
+
+// Collapse seal enum → public journal code.
+fn seal_code(s: Seal) {
+    return match s {
+        Seal::Clear { fact: _f, sum: _s, risk: _r } => 0,
+        Seal::Watch { fact: _f, sum: _s, risk: _r } => 1,
+        Seal::Hold { fact: _f, sum: _s, risk: _r } => 2,
+        Seal::Disagree { which: _w } => 3,
+    };
+}
+
+fn main() {
+    // ── Dual paths for factorial(7) ──────────────────────────────────────
+    let f_a = fact_rec(7);
+    let f_b = fact_iter(7);
+    let fact_ok = f_a == f_b;
+
+    // ── Dual paths for sum(1..20) ────────────────────────────────────────
+    let s_a = sum_closed(20);
+    let s_b = sum_fold(20);
+    let sum_ok = s_a == s_b;
+
+    // ── Collatz steps for 27 ─────────────────────────────────────────────
+    let col = collatz_steps(27);
+
+    // ── Claim stream risk (policy map: allow=1, watch=3, deny=7, freeze=13)
+    // Stream codes: allow, allow, watch, allow, deny, allow → 1+1+3+1+7+1 = 14
+    let weights = {
+        "allow": 1,
+        "watch": 3,
+        "deny": 7,
+        "freeze": 13
+    };
+    // Order for risk 14: allow+allow+watch+allow+deny+allow = 1+1+3+1+7+1
+    let names = ["allow", "allow", "watch", "allow", "deny", "allow"];
+    let mut risk = 0;
+    let mut i = 0;
+    let n = len(names);
+    while i < n {
+        let name = names[i];
+        risk = risk + weights[name];
+        i = i + 1;
+    }
+
+    // ── Journal checksum over [fact, sum, col, risk] ─────────────────────
+    let journal = [f_a, s_a, col, risk];
+    let chk = roll_chk(journal, 0, len(journal), 0);
+
+    // ── Seal verdict ─────────────────────────────────────────────────────
+    let sealed = if !fact_ok {
+        Seal::Disagree { which: 1 }
+    } else if !sum_ok {
+        Seal::Disagree { which: 2 }
+    } else if risk < 20 {
+        Seal::Clear { fact: f_a, sum: s_a, risk: risk }
+    } else if risk < 30 {
+        Seal::Watch { fact: f_a, sum: s_a, risk: risk }
+    } else {
+        Seal::Hold { fact: f_a, sum: s_a, risk: risk }
+    };
+    let code = seal_code(sealed);
+
+    // Public journal (six lines).
+    print(f_a);
+    print(s_a);
+    print(col);
+    print(risk);
+    print(chk);
+    print(code);
+
+    // Explicit agreement flag as last observable for grepping.
+    let agree = if fact_ok {
+        if sum_ok { 1 } else { 0 }
+    } else {
+        0
+    };
+    print(agree);
+
+    return code;
+}

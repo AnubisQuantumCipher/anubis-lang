@@ -1,0 +1,641 @@
+// ANPU: a recursive signed-distance-field renderer written entirely in Anubis.
+//
+// The scene is data: a recursive Shape value. The native lane interprets that
+// value for every ray, marches through the implicit geometry, estimates surface
+// normals, shades the result, replays the render, and seals a deterministic
+// receipt. The RISC0 lane executes a bounded miniature ray-march over the same
+// scene and commits its measurements to a verified public journal. No
+// precomputed picture or proof result is embedded below.
+//
+// Native artwork:
+//   ANUBIS_PROOF_INPUTS=proof_mode=0,challenge=0 \
+//     ./target/release/anubis run examples/anpu_recursive_sdf_renderer.anb
+//
+// Program-bound ZK certificate:
+//   ./target/release/anubis prove examples/anpu_recursive_sdf_renderer.anb \
+//     --backend risc0 --lane cpu \
+//     --input-json '{"proof_mode":1,"challenge":2026}' --evidence
+
+struct V3 {
+    x: float,
+    y: float,
+    z: float,
+}
+
+struct Surface {
+    distance: float,
+    material: int,
+}
+
+struct MarchHit {
+    hit: bool,
+    point: V3,
+    distance: float,
+    material: int,
+    steps: int,
+}
+
+struct RenderResult {
+    frame: string,
+    hits: int,
+    rays: int,
+    total_steps: int,
+    peak_steps: int,
+    digest: string,
+}
+
+struct ProofCertificate {
+    rays: int,
+    hits: int,
+    total_steps: int,
+    peak_steps: int,
+    fingerprint: int,
+}
+
+enum Shape {
+    Sphere {
+        center: V3,
+        radius: float,
+        material: int,
+    },
+    Box {
+        center: V3,
+        half_size: V3,
+        material: int,
+    },
+    TorusZ {
+        center: V3,
+        major_radius: float,
+        minor_radius: float,
+        material: int,
+    },
+    Plane {
+        height: float,
+        material: int,
+    },
+    Union {
+        left: Shape,
+        right: Shape,
+    },
+    SmoothUnion {
+        left: Shape,
+        right: Shape,
+        softness: float,
+    },
+    Subtract {
+        solid: Shape,
+        cutter: Shape,
+    },
+    RotateY {
+        child: Shape,
+        angle: float,
+    },
+}
+
+fn v3(x: float, y: float, z: float) -> V3 {
+    V3 { x: x, y: y, z: z }
+}
+
+fn add(a: V3, b: V3) -> V3 {
+    v3(a.x + b.x, a.y + b.y, a.z + b.z)
+}
+
+fn sub(a: V3, b: V3) -> V3 {
+    v3(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+
+fn scale(a: V3, amount: float) -> V3 {
+    v3(a.x * amount, a.y * amount, a.z * amount)
+}
+
+fn dot(a: V3, b: V3) -> float {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn length(a: V3) -> float {
+    sqrt(dot(a, a))
+}
+
+fn normalize(a: V3) -> V3 {
+    let magnitude = length(a);
+    if magnitude < 0.000001 {
+        v3(0.0, 1.0, 0.0)
+    } else {
+        scale(a, 1.0 / magnitude)
+    }
+}
+
+fn fmin(a: float, b: float) -> float {
+    if a < b { a } else { b }
+}
+
+fn fmax(a: float, b: float) -> float {
+    if a > b { a } else { b }
+}
+
+fn imin(a: int, b: int) -> int {
+    if a < b { a } else { b }
+}
+
+fn imax(a: int, b: int) -> int {
+    if a > b { a } else { b }
+}
+
+fn choose_closer(a: Surface, b: Surface) -> Surface {
+    if a.distance < b.distance { a } else { b }
+}
+
+fn sample(shape: Shape, point: V3) -> Surface {
+    match shape {
+        Shape::Sphere { center, radius, material } => {
+            Surface {
+                distance: length(sub(point, center)) - radius,
+                material: material,
+            }
+        },
+        Shape::Box { center, half_size, material } => {
+            let local = sub(point, center);
+            let q = v3(
+                abs(local.x) - half_size.x,
+                abs(local.y) - half_size.y,
+                abs(local.z) - half_size.z,
+            );
+            let outside = length(v3(fmax(q.x, 0.0), fmax(q.y, 0.0), fmax(q.z, 0.0)));
+            let inside = fmin(fmax(q.x, fmax(q.y, q.z)), 0.0);
+            Surface { distance: outside + inside, material: material }
+        },
+        Shape::TorusZ { center, major_radius, minor_radius, material } => {
+            let local = sub(point, center);
+            let radial = sqrt(local.x * local.x + local.y * local.y) - major_radius;
+            Surface {
+                distance: sqrt(radial * radial + local.z * local.z) - minor_radius,
+                material: material,
+            }
+        },
+        Shape::Plane { height, material } => {
+            Surface { distance: point.y - height, material: material }
+        },
+        Shape::Union { left, right } => {
+            choose_closer(sample(left, point), sample(right, point))
+        },
+        Shape::SmoothUnion { left, right, softness } => {
+            let a = sample(left, point);
+            let b = sample(right, point);
+            let blend = clamp(0.5 + 0.5 * (b.distance - a.distance) / softness, 0.0, 1.0);
+            let distance = b.distance * (1.0 - blend)
+                + a.distance * blend
+                - softness * blend * (1.0 - blend);
+            let material = if blend > 0.5 { a.material } else { b.material };
+            Surface { distance: distance, material: material }
+        },
+        Shape::Subtract { solid, cutter } => {
+            let body = sample(solid, point);
+            let void = sample(cutter, point);
+            Surface { distance: fmax(body.distance, -void.distance), material: body.material }
+        },
+        Shape::RotateY { child, angle } => {
+            let c = cos(angle);
+            let s = sin(angle);
+            let local = v3(
+                point.x * c - point.z * s,
+                point.y,
+                point.x * s + point.z * c,
+            );
+            sample(child, local)
+        },
+    }
+}
+
+fn mechanical_eclipse() -> Shape {
+    let halo = Shape::TorusZ {
+        center: v3(0.0, 0.35, 3.6),
+        major_radius: 1.32,
+        minor_radius: 0.16,
+        material: 2,
+    };
+
+    let dark_sun = Shape::Subtract {
+        solid: Shape::Sphere {
+            center: v3(0.0, 0.35, 3.70),
+            radius: 0.91,
+            material: 1,
+        },
+        cutter: Shape::Sphere {
+            center: v3(0.38, 0.53, 3.22),
+            radius: 0.82,
+            material: 0,
+        },
+    };
+
+    let left_pylon = Shape::RotateY {
+        angle: -0.18,
+        child: Shape::Box {
+            center: v3(-1.72, -0.18, 3.92),
+            half_size: v3(0.17, 1.42, 0.22),
+            material: 3,
+        },
+    };
+
+    let right_pylon = Shape::RotateY {
+        angle: 0.18,
+        child: Shape::Box {
+            center: v3(1.72, -0.18, 3.92),
+            half_size: v3(0.17, 1.42, 0.22),
+            material: 3,
+        },
+    };
+
+    let orbiting_moon = Shape::Sphere {
+        center: v3(1.18, 1.36, 3.20),
+        radius: 0.22,
+        material: 4,
+    };
+
+    let crown = Shape::Box {
+        center: v3(0.0, 1.82, 4.08),
+        half_size: v3(0.72, 0.10, 0.16),
+        material: 3,
+    };
+
+    let altar = Shape::Box {
+        center: v3(0.0, -1.05, 4.30),
+        half_size: v3(1.42, 0.18, 0.54),
+        material: 5,
+    };
+
+    let monument = Shape::Union {
+        left: Shape::Union {
+            left: Shape::Union {
+                left: Shape::SmoothUnion {
+                    left: halo,
+                    right: dark_sun,
+                    softness: 0.07,
+                },
+                right: orbiting_moon,
+            },
+            right: Shape::Union { left: left_pylon, right: right_pylon },
+        },
+        right: Shape::Union { left: crown, right: altar },
+    };
+
+    Shape::Union {
+        left: monument,
+        right: Shape::Plane { height: -1.27, material: 6 },
+    }
+}
+
+fn encode_v3(value: V3) -> string {
+    "(" + str(value.x) + "," + str(value.y) + "," + str(value.z) + ")"
+}
+
+fn encode_shape(shape: Shape) -> string {
+    match shape {
+        Shape::Sphere { center, radius, material } => {
+            "sphere{" + encode_v3(center) + ",r=" + str(radius) + ",m=" + str(material) + "}"
+        },
+        Shape::Box { center, half_size, material } => {
+            "box{" + encode_v3(center) + ",half=" + encode_v3(half_size) + ",m=" + str(material) + "}"
+        },
+        Shape::TorusZ { center, major_radius, minor_radius, material } => {
+            "torus-z{" + encode_v3(center)
+                + ",major=" + str(major_radius)
+                + ",minor=" + str(minor_radius)
+                + ",m=" + str(material) + "}"
+        },
+        Shape::Plane { height, material } => {
+            "plane{y=" + str(height) + ",m=" + str(material) + "}"
+        },
+        Shape::Union { left, right } => {
+            "union{" + encode_shape(left) + "," + encode_shape(right) + "}"
+        },
+        Shape::SmoothUnion { left, right, softness } => {
+            "smooth-union{k=" + str(softness) + ","
+                + encode_shape(left) + "," + encode_shape(right) + "}"
+        },
+        Shape::Subtract { solid, cutter } => {
+            "subtract{" + encode_shape(solid) + "," + encode_shape(cutter) + "}"
+        },
+        Shape::RotateY { child, angle } => {
+            "rotate-y{a=" + str(angle) + "," + encode_shape(child) + "}"
+        },
+    }
+}
+
+fn scene_normal(scene: Shape, point: V3) -> V3 {
+    let epsilon = 0.0025;
+    let dx = sample(scene, add(point, v3(epsilon, 0.0, 0.0))).distance
+        - sample(scene, add(point, v3(-epsilon, 0.0, 0.0))).distance;
+    let dy = sample(scene, add(point, v3(0.0, epsilon, 0.0))).distance
+        - sample(scene, add(point, v3(0.0, -epsilon, 0.0))).distance;
+    let dz = sample(scene, add(point, v3(0.0, 0.0, epsilon))).distance
+        - sample(scene, add(point, v3(0.0, 0.0, -epsilon))).distance;
+    normalize(v3(dx, dy, dz))
+}
+
+fn march(scene: Shape, origin: V3, direction: V3) -> MarchHit {
+    let mut travelled = 0.0;
+    let mut steps = 0;
+    let mut found = false;
+    let mut material = 0;
+    let mut point = origin;
+
+    while steps < 72 && travelled < 22.0 && !found {
+        point = add(origin, scale(direction, travelled));
+        let surface = sample(scene, point);
+        if surface.distance < 0.0022 {
+            found = true;
+            material = surface.material;
+        } else {
+            travelled = travelled + fmax(surface.distance, 0.001);
+        }
+        steps = steps + 1;
+    }
+
+    MarchHit {
+        hit: found,
+        point: point,
+        distance: travelled,
+        material: material,
+        steps: steps,
+    }
+}
+
+fn soft_shadow(scene: Shape, origin: V3, direction: V3) -> float {
+    let mut travelled = 0.025;
+    let mut shade = 1.0;
+    let mut step = 0;
+    while step < 18 && travelled < 8.0 && shade > 0.08 {
+        let point = add(origin, scale(direction, travelled));
+        let distance = sample(scene, point).distance;
+        if distance < 0.001 {
+            shade = 0.08;
+        } else {
+            shade = fmin(shade, 11.0 * distance / travelled);
+            travelled = travelled + clamp(distance, 0.015, 0.45);
+        }
+        step = step + 1;
+    }
+    clamp(shade, 0.08, 1.0)
+}
+
+fn material_gain(material: int) -> float {
+    if material == 1 {
+        0.72
+    } else if material == 2 {
+        1.16
+    } else if material == 3 {
+        0.90
+    } else if material == 4 {
+        1.34
+    } else if material == 5 {
+        0.78
+    } else {
+        0.67
+    }
+}
+
+fn surface_light(scene: Shape, hit: MarchHit, ray: V3) -> float {
+    let normal = scene_normal(scene, hit.point);
+    let light_direction = normalize(sub(v3(-3.2, 5.2, -3.8), hit.point));
+    let diffuse = fmax(dot(normal, light_direction), 0.0);
+    let rim = pow(1.0 - fmax(dot(normal, scale(ray, -1.0)), 0.0), 2.0);
+    let shadow = soft_shadow(scene, add(hit.point, scale(normal, 0.009)), light_direction);
+    let mut light = (0.13 + 0.79 * diffuse * shadow + 0.22 * rim)
+        * material_gain(hit.material);
+
+    if hit.material == 6 {
+        let checker = (int(floor(hit.point.x * 1.35)) + int(floor(hit.point.z * 1.35))) % 2;
+        if checker == 0 {
+            light = light * 0.58;
+        } else {
+            light = light * 0.82;
+        }
+    }
+
+    clamp(light, 0.0, 1.0)
+}
+
+fn background_pixel(x: int, y: int, width: int, height: int) -> string {
+    let star_code = (x * 37 + y * 101 + x * y * 3 + 19) % 173;
+    if star_code == 0 || star_code == 1 {
+        if y < height / 2 { "+" } else { "." }
+    } else if y > (height * 3) / 4 {
+        "."
+    } else {
+        " "
+    }
+}
+
+fn glyph(light: float) -> string {
+    let palette = " .,:;irsXA253hMHGS#9B&@";
+    let last = len(palette) - 1;
+    let index = int(clamp(light, 0.0, 1.0) * float(last));
+    char_at(palette, index)
+}
+
+fn render(scene: Shape, width: int, height: int) -> RenderResult {
+    let camera = v3(0.0, 0.10, -5.2);
+    let mut frame = "";
+    let mut hits = 0;
+    let mut total_steps = 0;
+    let mut peak_steps = 0;
+
+    for y in 0..height {
+        for x in 0..width {
+            let screen_x = (float(x) + 0.5) / float(width) * 2.0 - 1.0;
+            let screen_y = 1.0 - (float(y) + 0.5) / float(height) * 2.0;
+            let aspect = float(width) / float(height) * 0.50;
+            let direction = normalize(v3(screen_x * aspect, screen_y * 0.92, 1.65));
+            let hit = march(scene, camera, direction);
+            total_steps = total_steps + hit.steps;
+            peak_steps = imax(peak_steps, hit.steps);
+
+            if hit.hit {
+                hits = hits + 1;
+                frame = frame + glyph(surface_light(scene, hit, direction));
+            } else {
+                frame = frame + background_pixel(x, y, width, height);
+            }
+        }
+        frame = frame + "\n";
+    }
+
+    RenderResult {
+        frame: frame,
+        hits: hits,
+        rays: width * height,
+        total_steps: total_steps,
+        peak_steps: peak_steps,
+        digest: domain_hash("ANPU_FRAME_V1", frame),
+    }
+}
+
+// A proof-sized execution kernel over the real scene and real marcher. It avoids
+// constructing the large terminal frame and avoids the second full render, both
+// of which are intentionally native-only presentation work. The challenge shifts
+// the miniature camera and is mixed into every fingerprint step.
+fn certificate_probe(scene: Shape, challenge: int) -> ProofCertificate {
+    let width = 1;
+    let height = 1;
+    let camera_shift = float((challenge % 29) - 14) * 0.002;
+    let camera = v3(camera_shift, 0.10, -5.2);
+    let mut hits = 0;
+    let mut total_steps = 0;
+    let mut peak_steps = 0;
+    let mut fingerprint = (challenge % 2147483629) + 1;
+
+    for y in 0..height {
+        for x in 0..width {
+            let screen_x = (float(x) + 0.5) / float(width) * 2.0 - 1.0;
+            let screen_y = 1.0 - (float(y) + 0.5) / float(height) * 2.0;
+            let aspect = float(width) / float(height) * 0.50;
+            let direction = normalize(v3(screen_x * aspect, screen_y * 0.92, 1.65));
+            let hit = march(scene, camera, direction);
+            total_steps = total_steps + hit.steps;
+            peak_steps = imax(peak_steps, hit.steps);
+
+            let distance_code = int(clamp(hit.distance * 100.0, 0.0, 100000.0));
+            let hit_code = if hit.hit {
+                hits = hits + 1;
+                100000 + hit.material * 10000 + distance_code
+            } else {
+                hit.steps
+            };
+            let coordinate_code = x * 17 + y * 31 + challenge;
+            fingerprint = (fingerprint * 65599 + hit_code + coordinate_code) % 2147483629;
+        }
+    }
+
+    ProofCertificate {
+        rays: width * height,
+        hits: hits,
+        total_steps: total_steps,
+        peak_steps: peak_steps,
+        fingerprint: fingerprint,
+    }
+}
+
+fn require(condition: bool, message: string) {
+    if !condition {
+        panic("ANPU invariant failed: " + message);
+    }
+}
+
+fn approximately(actual: float, expected: float, tolerance: float) -> bool {
+    abs(actual - expected) <= tolerance
+}
+
+fn run_geometry_self_tests() -> int {
+    let sphere = Shape::Sphere { center: v3(0.0, 0.0, 0.0), radius: 1.0, material: 1 };
+    require(approximately(sample(sphere, v3(2.0, 0.0, 0.0)).distance, 1.0, 0.00001), "sphere distance");
+
+    let box_shape = Shape::Box {
+        center: v3(0.0, 0.0, 0.0),
+        half_size: v3(1.0, 1.0, 1.0),
+        material: 2,
+    };
+    require(approximately(sample(box_shape, v3(0.0, 0.0, 0.0)).distance, -1.0, 0.00001), "box interior");
+
+    let torus = Shape::TorusZ {
+        center: v3(0.0, 0.0, 0.0),
+        major_radius: 1.0,
+        minor_radius: 0.25,
+        material: 3,
+    };
+    require(approximately(sample(torus, v3(1.25, 0.0, 0.0)).distance, 0.0, 0.00001), "torus surface");
+
+    let normal = scene_normal(sphere, v3(1.0, 0.0, 0.0));
+    require(approximately(length(normal), 1.0, 0.001), "unit normal");
+    require(normal.x > 0.99, "normal orientation");
+    5
+}
+
+fn tamper_first_pixel(frame: string) -> string {
+    if len(frame) == 0 {
+        "X"
+    } else {
+        let replacement = if char_at(frame, 0) == "X" { "Y" } else { "X" };
+        replacement + substr(frame, 1, len(frame))
+    }
+}
+
+fn run_native(scene: Shape) {
+    let self_tests = run_geometry_self_tests();
+    let width = 76;
+    let height = 32;
+
+    let first = render(scene, width, height);
+    let replay = render(scene, width, height);
+
+    require(first.frame == replay.frame, "deterministic replay frame");
+    require(first.digest == replay.digest, "deterministic replay digest");
+    require(first.hits > 0, "scene produced visible geometry");
+    require(first.peak_steps <= 72, "march step ceiling");
+
+    let tampered = tamper_first_pixel(first.frame);
+    let tampered_digest = domain_hash("ANPU_FRAME_V1", tampered);
+    require(tampered_digest != first.digest, "tamper detection");
+
+    let scene_encoding = encode_shape(scene);
+    let scene_digest = domain_hash("ANPU_SCENE_V1", scene_encoding);
+    let receipt_payload = scene_digest
+        + "|" + first.digest
+        + "|" + str(width)
+        + "x" + str(height)
+        + "|hits=" + str(first.hits)
+        + "|steps=" + str(first.total_steps)
+        + "|peak=" + str(first.peak_steps)
+        + "|tests=" + str(self_tests)
+        + "|replay=pass|tamper=pass";
+    let receipt = domain_hash("ANPU_RECEIPT_V1", receipt_payload);
+
+    print("\nANPU // RECURSIVE IMPLICIT-WORLD RENDERER");
+    print("Scene: MECHANICAL ECLIPSE GATE");
+    print("The pixels below were sphere-marched from a recursive Shape AST.\n");
+    print(first.frame);
+    print("rays              : " + str(first.rays));
+    print("surface hits      : " + str(first.hits));
+    print("march steps       : " + str(first.total_steps));
+    print("peak steps / ray  : " + str(first.peak_steps));
+    print("geometry tests    : " + str(self_tests) + "/5 PASS");
+    print("deterministic run : PASS");
+    print("tamper challenge  : PASS");
+    print("scene digest      : " + scene_digest);
+    print("frame digest      : " + first.digest);
+    print("receipt seal      : " + receipt);
+    print("ANPU_RENDER_OK");
+}
+
+fn run_zk_certificate(scene: Shape, challenge: int) {
+    let self_tests = run_geometry_self_tests();
+    let certificate = certificate_probe(scene, challenge);
+
+    proof_assert(self_tests == 5);
+    proof_assert(certificate.rays == 1);
+    proof_assert(certificate.hits == 1);
+    proof_assert(certificate.total_steps > certificate.rays);
+    proof_assert(certificate.peak_steps <= 72);
+    proof_assert(certificate.fingerprint > 0);
+
+    proof_commit_u32("anpu_schema", 2);
+    proof_commit_u32("challenge", challenge);
+    proof_commit_u32("geometry_tests", self_tests);
+    proof_commit_u32("probe_rays", certificate.rays);
+    proof_commit_u32("probe_hits", certificate.hits);
+    proof_commit_u32("probe_steps", certificate.total_steps);
+    proof_commit_u32("peak_steps", certificate.peak_steps);
+    proof_commit_u32("scene_fingerprint", certificate.fingerprint);
+}
+
+fn main() {
+    let proof_mode = proof_input_u32("proof_mode");
+    let challenge = proof_input_u32("challenge");
+    let scene = mechanical_eclipse();
+
+    if proof_mode == 1 {
+        run_zk_certificate(scene, challenge);
+    } else {
+        require(proof_mode == 0, "proof_mode must be 0 (native) or 1 (RISC0 certificate)");
+        run_native(scene);
+    }
+}

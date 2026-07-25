@@ -1,0 +1,323 @@
+// =============================================================================
+//  HALL OF TWO TRUTHS  —  Ma'at's scale, written in Anubis
+// =============================================================================
+//
+//  A self-contained underworld ritual:
+//    1.  Seed a jackal PRNG (xorshift64*)
+//    2.  Forge a roster of souls, each with a deed ledger
+//    3.  Weigh every heart against the feather of Ma'at
+//    4.  Sort the justified from the devourable
+//    5.  Seal a hash-chained judgment journal
+//    6.  Render the Hall
+//
+//  Stresses: structs + methods, enums + match, maps, lists, recursion,
+//  string interpolation, mutation, sorting, and a fail-closed seal.
+//
+//  Run:  anubis run examples/hall_of_two_truths.anb
+// =============================================================================
+
+// ----- Ritual PRNG -----------------------------------------------------------
+// xorshift64*  (Marsaglia) — deterministic "jackal breath"
+struct Jackal {
+    state: int,
+}
+
+impl Jackal {
+    fn next(self) {
+        let mut x = self.state;
+        if x == 0 { x = 0xDEADBEEFCAFE; }
+        x = x ^ (x << 13);
+        x = x ^ (x >> 7);
+        x = x ^ (x << 17);
+        // keep positive i64-ish range without depending on unsigned wrap
+        if x < 0 { x = 0 - x; }
+        if x == 0 { x = 1; }
+        Jackal { state: x }
+    }
+
+    fn roll(self, lo, hi) {
+        // inclusive [lo, hi]
+        let j = self.next();
+        let span = hi - lo + 1;
+        if span <= 0 { return [j, lo]; }
+        let v = lo + (j.state % span);
+        [j, v]
+    }
+}
+
+// ----- Soul model ------------------------------------------------------------
+enum Fate {
+    Pending,
+    Justified { purity: int, seal: int },
+    Devoured  { impurity: int, seal: int },
+    Held      { balance: int, seal: int },
+}
+
+struct Soul {
+    name: string,
+    deeds: map,      // virtue/vice name → weight (pos = virtue, neg = vice)
+    heart: int,      // raw mass of the heart
+    fate: Fate,
+}
+
+impl Soul {
+    fn purity(self) {
+        let mut score = 0;
+        let keys = [];
+        // collect keys (maps iterate as keys in for-in)
+        for k in self.deeds {
+            push(keys, k);
+        }
+        for i in 0..len(keys) {
+            let k = keys[i];
+            score = score + self.deeds[k];
+        }
+        // heart mass pulls toward the devourer when heavy
+        score - (self.heart / 3)
+    }
+
+    fn judge(self, feather, seal_seed) {
+        let p = self.purity();
+        let delta = p - feather;
+        // seal binds name length + purity + seed (tiny commitment)
+        let seal = ((seal_seed * 131 + len(self.name) * 17 + p * 41) % 1000003);
+        if seal < 0 { seal = 0 - seal; }
+        let fate = if delta > 4 {
+            Fate::Justified { purity: p, seal: seal }
+        } else if delta < 0 - 4 {
+            Fate::Devoured { impurity: 0 - delta, seal: seal }
+        } else {
+            Fate::Held { balance: delta, seal: seal }
+        };
+        Soul {
+            name: self.name,
+            deeds: self.deeds,
+            heart: self.heart,
+            fate: fate,
+        }
+    }
+
+    fn line(self) {
+        match self.fate {
+            Fate::Pending => "  · ${self.name} still walks the Duat",
+            Fate::Justified { purity: p, seal: s } =>
+                "  ✓ ${self.name}  purity=${p}  seal=#${s}  →  Fields of Iaru",
+            Fate::Devoured { impurity: q, seal: s } =>
+                "  ✗ ${self.name}  impurity=${q}  seal=#${s}  →  Ammit feeds",
+            Fate::Held { balance: b, seal: s } =>
+                "  ◌ ${self.name}  balance=${b}  seal=#${s}  →  held for second weighing",
+            _ => "  ? ${self.name}",
+        }
+    }
+
+    fn rank_key(self) {
+        // higher = more just → sort descending by this
+        match self.fate {
+            Fate::Justified { purity: p, seal: _s } => 1000 + p,
+            Fate::Held { balance: b, seal: _s } => 500 + b,
+            Fate::Devoured { impurity: q, seal: _s } => 0 - q,
+            Fate::Pending => -9999,
+            _ => -9999,
+        }
+    }
+}
+
+// ----- Hash-chained judgment journal ----------------------------------------
+struct Journal {
+    chain: list,   // list of seal ints
+    lines: list,   // human-readable lines
+    root: int,     // rolling root
+}
+
+fn journal_empty() {
+    Journal { chain: [], lines: [], root: 1 }
+}
+
+impl Journal {
+    fn commit(self, text, seal) {
+        let mut ch = self.chain;
+        let mut ls = self.lines;
+        push(ch, seal);
+        push(ls, text);
+        // Merkle-ish fold: root' = (root * 33 + seal) % 1_000_003
+        let mut r = (self.root * 33 + seal) % 1000003;
+        if r < 0 { r = 0 - r; }
+        Journal { chain: ch, lines: ls, root: r }
+    }
+
+    fn seal_banner(self) {
+        "═══════════════════════════════════════════════════════════\n" +
+        "  JUDGMENT ROOT  #${self.root}   entries=${len(self.chain)}\n" +
+        "═══════════════════════════════════════════════════════════"
+    }
+}
+
+// ----- Sorting (insertion — pure, no stdlib sort needed) --------------------
+fn sort_souls(souls) {
+    let mut a = souls;
+    let n = len(a);
+    for i in 1..n {
+        let key = a[i];
+        let j = i - 1;
+        while j >= 0 && a[j].rank_key() < key.rank_key() {
+            a[j + 1] = a[j];
+            j = j - 1;
+        }
+        a[j + 1] = key;
+    }
+    a
+}
+
+// ----- Hall art -------------------------------------------------------------
+fn banner() {
+    print("");
+    print("          ╔══════════════════════════════════════╗");
+    print("          ║     H A L L   O F   T W O   T R U T H S     ║");
+    print("          ║          𓃩  Anubis · Ma'at  𓁢          ║");
+    print("          ╚══════════════════════════════════════╝");
+    print("");
+    print("                 /\\___/\\");
+    print("                (  o o  )     the jackal waits");
+    print("                /   Y   \\");
+    print("               (  =====  )    the scale is set");
+    print("                \\_______/");
+    print("                   |||");
+    print("            ═══════╪═══════");
+    print("           heart   │   feather");
+    print("                   │");
+    print("");
+}
+
+// ----- Ritual roster --------------------------------------------------------
+fn forge_soul(name, heart, deeds) {
+    Soul {
+        name: name,
+        deeds: deeds,
+        heart: heart,
+        fate: Fate::Pending,
+    }
+}
+
+fn main() {
+    banner();
+
+    // Feather of Ma'at — the purity threshold the heart must not outweigh.
+    // (Lower feather → easier to clear the scale; 8 yields a mixed docket.)
+    let feather = 8;
+
+    // Jackal PRNG seeds the ritual noise (heart micro-jitter, seal salt).
+    let mut rng = Jackal { state: 0xA711B15 };
+
+    // --- five souls cross the threshold ------------------------------------
+    let souls0 = [
+        forge_soul("Nefertari", 8, {
+            "truth": 9,
+            "mercy": 6,
+            "hubris": 0 - 2,
+            "offering": 4
+        }),
+        forge_soul("Khaemwaset", 18, {
+            "truth": 3,
+            "greed": 0 - 8,
+            "violence": 0 - 5,
+            "cunning": 2
+        }),
+        forge_soul("Hatshepsut", 10, {
+            "truth": 9,
+            "justice": 10,
+            "ambition": 0 - 1,
+            "stewardship": 6
+        }),
+        forge_soul("Setnakhte", 22, {
+            "wrath": 0 - 9,
+            "deceit": 0 - 6,
+            "oathbreak": 0 - 4,
+            "truth": 1
+        }),
+        forge_soul("Imhotep", 7, {
+            "wisdom": 12,
+            "healing": 9,
+            "humility": 4,
+            "pride": 0 - 1
+        }),
+    ];
+
+    // Ritual heart jitter: each soul's heart mass shifts by ±2 from the jackal.
+    let mut roster = [];
+    for i in 0..len(souls0) {
+        let s = souls0[i];
+        let rolled = rng.roll(0 - 2, 2);
+        rng = rolled[0];
+        let jitter = rolled[1];
+        let heart2 = s.heart + jitter;
+        if heart2 < 1 { heart2 = 1; }
+        push(roster, Soul {
+            name: s.name,
+            deeds: s.deeds,
+            heart: heart2,
+            fate: Fate::Pending,
+        });
+    }
+
+    print("  Feather of Ma'at mass ........ ${feather}");
+    print("  Souls at the threshold ...... ${len(roster)}");
+    print("  Jackal seed (post-jitter) ... ${rng.state}");
+    print("");
+    print("  ── Weighing ──────────────────────────────────────────");
+
+    // Weigh + seal each soul; salt seals with the jackal state.
+    let mut judged = [];
+    let mut journal = journal_empty();
+    for i in 0..len(roster) {
+        let s = roster[i];
+        let rolled = rng.roll(1, 99991);
+        rng = rolled[0];
+        let salt = rolled[1];
+        let j = s.judge(feather, salt);
+        push(judged, j);
+        print(j.line());
+        // extract seal for the chain
+        let seal = match j.fate {
+            Fate::Justified { purity: _p, seal: se } => se,
+            Fate::Devoured  { impurity: _q, seal: se } => se,
+            Fate::Held      { balance: _b, seal: se } => se,
+            Fate::Pending => 0,
+            _ => 0,
+        };
+        journal = journal.commit(j.line(), seal);
+    }
+
+    print("");
+    print("  ── Order of standing (most pure first) ───────────────");
+    let ordered = sort_souls(judged);
+    for i in 0..len(ordered) {
+        let s = ordered[i];
+        print("  ${i + 1}. ${s.name}   rank=${s.rank_key()}");
+    }
+
+    // Tally
+    let mut n_just = 0;
+    let mut n_dev  = 0;
+    let mut n_held = 0;
+    for i in 0..len(judged) {
+        match judged[i].fate {
+            Fate::Justified { purity: _p, seal: _s } => { n_just = n_just + 1; },
+            Fate::Devoured  { impurity: _q, seal: _s } => { n_dev = n_dev + 1; },
+            Fate::Held      { balance: _b, seal: _s } => { n_held = n_held + 1; },
+            Fate::Pending => {},
+            _ => {},
+        }
+    }
+
+    print("");
+    print("  ── Tally ─────────────────────────────────────────────");
+    print("  Justified .............. ${n_just}");
+    print("  Held for reweigh ....... ${n_held}");
+    print("  Devoured by Ammit ...... ${n_dev}");
+    print("");
+    print(journal.seal_banner());
+    print("");
+    print("  The scale is still. The jackal turns away.");
+    print("  Only the root remains.");
+    print("");
+}

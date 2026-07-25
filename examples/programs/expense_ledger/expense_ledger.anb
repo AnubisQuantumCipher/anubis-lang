@@ -1,0 +1,152 @@
+// EXPECT: PASS
+// FEATURE: general-purpose Anubis app — personal expense ledger
+//
+// Question this answers: "Can Anubis build ordinary software, not only PoCs?"
+//
+// Yes — with an honest split:
+//   (A) Pure helpers with requires/ensures that the SMT checker DISCHARGES
+//   (B) Ordinary application code (lists, structs, loops) that RUNS natively
+//
+// Run:
+//   ./target/release/anubis check examples/programs/expense_ledger/expense_ledger.anb
+//   ./target/release/anubis run   examples/programs/expense_ledger/expense_ledger.anb
+//
+// Expected stdout:
+//   6     txn count
+//   420   total spend
+//   300   food (120+80+100)
+//   120   transport+utilities (45+45+30)
+//   120   max txn
+//   1     balance_ok
+//   80    remaining
+//   expense_ledger: ok
+
+// ── (A) Verified pure core — straight-line integers the solver tracks ─────
+
+fn nonneg(x: i64) -> i64
+    ensures(result >= 0)
+{
+    if x < 0 { return 0; }
+    return x;
+}
+
+fn balance_ok(income: i64, spend: i64) -> i64
+    requires(income >= 0)
+    requires(spend >= 0)
+    ensures(result == 0 || result == 1)
+{
+    if income >= spend { return 1; }
+    return 0;
+}
+
+fn remaining(income: i64, spend: i64) -> i64
+    requires(income >= 0)
+    requires(spend >= 0)
+    ensures(result >= 0)
+{
+    if income >= spend { return income - spend; }
+    return 0;
+}
+
+// Count-down style verified loop (same pattern as showcase/verified_loop.anb)
+fn count_to_zero(n: i64) -> i64
+    requires(n >= 0)
+    ensures(result == 0)
+{
+    let mut x = n;
+    while x > 0 invariant(x >= 0) {
+        x = x - 1;
+    }
+    return x;
+}
+
+// ── (B) Application domain — runs; not every loop is SMT-modelable ────────
+
+struct Txn {
+    id: i64,
+    amount_cents: i64,
+    cat: i64,   // 0 food, 1 transport, 2 utilities, 3 other
+}
+
+fn cat_food() -> i64 { return 0; }
+fn cat_transport() -> i64 { return 1; }
+fn cat_utilities() -> i64 { return 2; }
+
+fn sample_txns() -> list<Txn> {
+    let mut xs = [];
+    push(xs, Txn { id: 1, amount_cents: 120, cat: cat_food() });
+    push(xs, Txn { id: 2, amount_cents: 45, cat: cat_transport() });
+    push(xs, Txn { id: 3, amount_cents: 80, cat: cat_food() });
+    push(xs, Txn { id: 4, amount_cents: 30, cat: cat_utilities() });
+    push(xs, Txn { id: 5, amount_cents: 100, cat: cat_food() });
+    push(xs, Txn { id: 6, amount_cents: 45, cat: cat_transport() });
+    return xs;
+}
+
+fn sum_cents(xs: list<i64>) -> i64 {
+    let mut total = 0;
+    for v in xs {
+        total = total + nonneg(v);
+    }
+    return total;
+}
+
+fn max_cents(xs: list<i64>) -> i64 {
+    let n = len(xs);
+    if n == 0 { return 0; }
+    let mut m = nonneg(xs[0]);
+    let mut i = 1;
+    while i < n {
+        let v = nonneg(xs[i]);
+        if v > m { m = v; }
+        i = i + 1;
+    }
+    return m;
+}
+
+fn sum_for_category(txns: list<Txn>, want_cat: i64) -> i64 {
+    let mut total = 0;
+    for t in txns {
+        if t.cat == want_cat {
+            total = total + nonneg(t.amount_cents);
+        }
+    }
+    return total;
+}
+
+fn amounts_of(txns: list<Txn>) -> list<i64> {
+    let mut out = [];
+    for t in txns {
+        push(out, nonneg(t.amount_cents));
+    }
+    return out;
+}
+
+fn main() {
+    // Prove the verified core is inhabited (and side-effect free).
+    let _z = count_to_zero(3);
+    assert(_z == 0);
+
+    let income = 500;
+    let txns = sample_txns();
+    let amounts = amounts_of(txns);
+
+    let n = len(txns);
+    let spend = sum_cents(amounts);
+    let food = sum_for_category(txns, cat_food());
+    let transport = sum_for_category(txns, cat_transport());
+    let utilities = sum_for_category(txns, cat_utilities());
+    let trans_util = transport + utilities;
+    let biggest = max_cents(amounts);
+    let ok = balance_ok(income, spend);
+    let left = remaining(income, spend);
+
+    print(n);
+    print(spend);
+    print(food);
+    print(trans_util);
+    print(biggest);
+    print(ok);
+    print(left);
+    println("expense_ledger: ok");
+}

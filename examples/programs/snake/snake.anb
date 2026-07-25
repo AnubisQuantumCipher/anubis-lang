@@ -1,0 +1,580 @@
+// EXPECT: PASS
+// FEATURE: pure Anubis Snake — interactive turn-based game
+//
+// Play:
+//   ./target/release/anubis run examples/programs/snake/snake.anb
+//
+// Controls (type a line, then Enter):
+//   w / W     up
+//   a / A     left
+//   s / S     down
+//   d / D     right
+//   (empty)   keep current direction, advance one step
+//   q / Q     quit
+//   you may batch:  dddssaa  advances several steps at once
+//
+// Demo (no keyboard; for tests / CI):
+//   ./target/release/anubis run examples/programs/snake/snake.anb -- demo
+//
+// Check contracts:
+//   ./target/release/anubis check examples/programs/snake/snake.anb
+//
+// Board: 16 wide x 10 tall. Head=H body=o food=* empty=. walls=#
+// Turn-based (line input) so it is fully pure Anubis — no curses/TUI deps.
+
+// ── (A) Verified pure core ────────────────────────────────────────────────
+
+fn clamp_dir(d: i64) -> i64
+    ensures(result >= 0)
+    ensures(result <= 3)
+{
+    if d < 0 { return 0; }
+    if d > 3 { return 3; }
+    return d;
+}
+
+fn in_bounds(x: i64, y: i64, w: i64, h: i64) -> i64
+    requires(w > 0)
+    requires(h > 0)
+    ensures(result == 0 || result == 1)
+{
+    if x < 0 { return 0; }
+    if y < 0 { return 0; }
+    if x >= w { return 0; }
+    if y >= h { return 0; }
+    return 1;
+}
+
+fn pack(x: i64, y: i64, w: i64) -> i64
+    requires(w > 0)
+    requires(x >= 0)
+    requires(y >= 0)
+{
+    return y * w + x;
+}
+
+fn cell_x(cell: i64, w: i64) -> i64
+    requires(w > 0)
+    requires(cell >= 0)
+{
+    return cell - (cell / w) * w;
+}
+
+fn cell_y(cell: i64, w: i64) -> i64
+    requires(w > 0)
+    requires(cell >= 0)
+{
+    return cell / w;
+}
+
+fn step_x(x: i64, dir: i64) -> i64 {
+    if dir == 1 { return x + 1; }
+    if dir == 3 { return x - 1; }
+    return x;
+}
+
+fn step_y(y: i64, dir: i64) -> i64 {
+    if dir == 0 { return y - 1; }
+    if dir == 2 { return y + 1; }
+    return y;
+}
+
+// Opposite dirs: 0↔2, 1↔3  (call only with dirs already in 0..3)
+fn is_reverse(cur: i64, nxt: i64) -> i64
+    requires(cur >= 0)
+    requires(cur <= 3)
+    requires(nxt >= 0)
+    requires(nxt <= 3)
+    ensures(result == 0 || result == 1)
+{
+    if cur == 0 {
+        if nxt == 2 { return 1; }
+        return 0;
+    }
+    if cur == 2 {
+        if nxt == 0 { return 1; }
+        return 0;
+    }
+    if cur == 1 {
+        if nxt == 3 { return 1; }
+        return 0;
+    }
+    if cur == 3 {
+        if nxt == 1 { return 1; }
+        return 0;
+    }
+    return 0;
+}
+
+// Both args must already be legal dirs (clamp at call site).
+fn apply_dir(cur: i64, cmd: i64) -> i64
+    requires(cur >= 0)
+    requires(cur <= 3)
+    requires(cmd >= 0)
+    requires(cmd <= 3)
+    ensures(result >= 0)
+    ensures(result <= 3)
+{
+    if is_reverse(cur, cmd) == 1 { return cur; }
+    return cmd;
+}
+
+fn nonneg(x: i64) -> i64
+    ensures(result >= 0)
+{
+    if x < 0 { return 0; }
+    return x;
+}
+
+// ── (B) Game structures ───────────────────────────────────────────────────
+
+struct Step {
+    body: list<i64>,
+    food: i64,
+    score: i64,
+    alive: i64,
+    dir: i64,
+    seed: i64,
+    quit: i64,
+}
+
+// ── Body helpers (lists are pass-by-value — always return copies) ──────────
+
+fn contains_cell(body: list<i64>, cell: i64) -> i64 {
+    for c in body {
+        if c == cell { return 1; }
+    }
+    return 0;
+}
+
+fn grow_head(body: list<i64>, head: i64) -> list<i64> {
+    let mut out = [];
+    push(out, head);
+    for c in body {
+        push(out, c);
+    }
+    return out;
+}
+
+fn move_head(body: list<i64>, head: i64) -> list<i64> {
+    let mut out = [];
+    push(out, head);
+    let n = len(body);
+    let mut i = 0;
+    while i < n - 1 {
+        push(out, body[i]);
+        i = i + 1;
+    }
+    return out;
+}
+
+fn initial_body(w: i64) -> list<i64> {
+    let mut body = [];
+    push(body, pack(4, 4, w));
+    push(body, pack(3, 4, w));
+    push(body, pack(2, 4, w));
+    return body;
+}
+
+// LCG food placement; skip occupied cells (bounded search)
+fn lcg(seed: i64) -> i64 {
+    let s = nonneg(seed);
+    return s * 1103515245 + 12345 - ((s * 1103515245 + 12345) / 2147483648) * 2147483648;
+}
+
+fn place_food(body: list<i64>, seed: i64, w: i64, h: i64) -> list<i64> {
+    // returns [food_cell, new_seed]
+    let cells = w * h;
+    let mut s = nonneg(seed);
+    let mut tries = 0;
+    let mut food = 0;
+    let mut found = 0;
+    while tries < cells {
+        s = lcg(s);
+        let cand = s - (s / cells) * cells;
+        if contains_cell(body, cand) == 0 {
+            food = cand;
+            found = 1;
+            tries = cells;
+        } else {
+            tries = tries + 1;
+        }
+    }
+    if found == 0 {
+        food = 0;
+        if contains_cell(body, 0) == 1 {
+            food = cells - 1;
+        }
+    }
+    let mut pair = [];
+    push(pair, food);
+    push(pair, s);
+    return pair;
+}
+
+// ── Step ──────────────────────────────────────────────────────────────────
+
+fn do_step(st: Step, w: i64, h: i64, dir_cmd: i64) -> Step {
+    if st.alive == 0 {
+        return st;
+    }
+    if st.quit == 1 {
+        return st;
+    }
+
+    let cur = clamp_dir(st.dir);
+    let cmd = clamp_dir(dir_cmd);
+    let dir = apply_dir(cur, cmd);
+    let head = st.body[0];
+    let hx = cell_x(head, w);
+    let hy = cell_y(head, w);
+    let nx = step_x(hx, dir);
+    let ny = step_y(hy, dir);
+
+    if in_bounds(nx, ny, w, h) == 0 {
+        return Step {
+            body: st.body,
+            food: st.food,
+            score: st.score,
+            alive: 0,
+            dir: dir,
+            seed: st.seed,
+            quit: 0
+        };
+    }
+
+    let nh = pack(nx, ny, w);
+
+    // Self-collision (tail will move away unless growing — classic: check full body;
+    // allow stepping into current tail cell because it vacates)
+    let nbody = len(st.body);
+    let tail = st.body[nbody - 1];
+    if contains_cell(st.body, nh) == 1 {
+        if nh == tail {
+            // ok — tail vacates this cell when not growing
+        } else {
+            return Step {
+                body: st.body,
+                food: st.food,
+                score: st.score,
+                alive: 0,
+                dir: dir,
+                seed: st.seed,
+                quit: 0
+            };
+        }
+    }
+
+    if nh == st.food {
+        let nb = grow_head(st.body, nh);
+        let placed = place_food(nb, st.seed, w, h);
+        return Step {
+            body: nb,
+            food: placed[0],
+            score: st.score + 1,
+            alive: 1,
+            dir: dir,
+            seed: placed[1],
+            quit: 0
+        };
+    }
+
+    let nb2 = move_head(st.body, nh);
+    return Step {
+        body: nb2,
+        food: st.food,
+        score: st.score,
+        alive: 1,
+        dir: dir,
+        seed: st.seed,
+        quit: 0
+    };
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+
+fn glyph(body: list<i64>, food: i64, cell: i64) -> string {
+    if len(body) > 0 {
+        if cell == body[0] { return "H"; }
+    }
+    if cell == food { return "*"; }
+    if contains_cell(body, cell) == 1 { return "o"; }
+    return ".";
+}
+
+fn border_line(w: i64) -> string {
+    let mut s = "+";
+    let mut i = 0;
+    while i < w {
+        s = s + "-";
+        i = i + 1;
+    }
+    s = s + "+";
+    return s;
+}
+
+fn print_board(w: i64, h: i64, st: Step) {
+    print("");
+    print("  SNAKE  score=${st.score}  len=${len(st.body)}  dir=${st.dir}");
+    print(border_line(w));
+    let mut y = 0;
+    while y < h {
+        let mut row = "|";
+        let mut x = 0;
+        while x < w {
+            let cell = pack(x, y, w);
+            row = row + glyph(st.body, st.food, cell);
+            x = x + 1;
+        }
+        row = row + "|";
+        print(row);
+        y = y + 1;
+    }
+    print(border_line(w));
+    if st.alive == 0 {
+        print("  *** GAME OVER ***  final score=${st.score}");
+    } else {
+        print("  keys: w/a/s/d  empty=hold  batch ok (e.g. ddd)  q=quit");
+    }
+}
+
+// ── Input: stdin is tainted — only produce pure i64 command codes ─────────
+// Codes: 0=up 1=right 2=down 3=left  -1=quit  99=hold/noop  100=end-of-batch marker
+
+fn dir_of_char(ch: string) -> i64 {
+    if ch == "w" { return 0; }
+    if ch == "W" { return 0; }
+    if ch == "d" { return 1; }
+    if ch == "D" { return 1; }
+    if ch == "s" { return 2; }
+    if ch == "S" { return 2; }
+    if ch == "a" { return 3; }
+    if ch == "A" { return 3; }
+    if ch == "q" { return -1; }
+    if ch == "Q" { return -1; }
+    return 99;
+}
+
+// Parse one stdin line into a list of pure dir commands (no tainted values escape)
+fn parse_line_cmds(raw: string) -> list<i64> {
+    let mut out = [];
+    let n = len(raw);
+    if n == 0 {
+        push(out, 99);
+        return out;
+    }
+    let mut i = 0;
+    let mut any = 0;
+    while i < n {
+        let ch = char_at(raw, i);
+        let d = dir_of_char(ch);
+        if d == -1 {
+            push(out, -1);
+            return out;
+        }
+        if d <= 3 {
+            if d >= 0 {
+                push(out, d);
+                any = 1;
+            }
+        }
+        i = i + 1;
+    }
+    if any == 0 {
+        push(out, 99);
+    }
+    return out;
+}
+
+fn has_demo_flag() -> i64 {
+    let a = args();
+    for x in a {
+        if x == "demo" { return 1; }
+        if x == "--demo" { return 1; }
+    }
+    return 0;
+}
+
+// Scripted playthrough for demo / EXPECT: PASS (no hang on stdin)
+fn demo_moves() -> list<i64> {
+    let mut m = [];
+    // start dir=right; snake at (4,4)(3,4)(2,4); food will be placed by LCG
+    // Drive a short path: right, right, down, down, left, left, up, right...
+    push(m, 1); push(m, 1); push(m, 1); push(m, 1);
+    push(m, 2); push(m, 2); push(m, 2);
+    push(m, 3); push(m, 3); push(m, 3);
+    push(m, 0); push(m, 0);
+    push(m, 1); push(m, 1); push(m, 1);
+    push(m, 2); push(m, 2);
+    push(m, 1); push(m, 1);
+    push(m, 0); push(m, 0); push(m, 0);
+    push(m, 3); push(m, 3);
+    push(m, 2); push(m, 2); push(m, 2);
+    push(m, 1); push(m, 1); push(m, 1); push(m, 1);
+    push(m, 0); push(m, 0);
+    push(m, 3); push(m, 3); push(m, 3);
+    push(m, 2); push(m, 1); push(m, 1); push(m, 0);
+    push(m, 1); push(m, 1); push(m, 2); push(m, 2);
+    push(m, 3); push(m, 3); push(m, 0); push(m, 0);
+    // pad holds
+    let mut k = 0;
+    while k < 20 {
+        push(m, 99);
+        k = k + 1;
+    }
+    return m;
+}
+
+fn new_game(w: i64, h: i64) -> Step {
+    let body = initial_body(w);
+    let placed = place_food(body, 42, w, h);
+    return Step {
+        body: body,
+        food: placed[0],
+        score: 0,
+        alive: 1,
+        dir: 1,
+        seed: placed[1],
+        quit: 0
+    };
+}
+
+fn run_demo(w: i64, h: i64) {
+    print("=== SNAKE (demo mode) ===");
+    let mut st = new_game(w, h);
+    print_board(w, h, st);
+    let moves = demo_moves();
+    let n = len(moves);
+    let mut i = 0;
+    while i < n {
+        if st.alive == 0 {
+            i = n;
+        } else {
+            let cmd = moves[i];
+            let dcmd = cmd;
+            if cmd == 99 {
+                dcmd = st.dir;
+            }
+            st = do_step(st, w, h, dcmd);
+            // print every few frames + always on death
+            if st.alive == 0 {
+                print_board(w, h, st);
+            } else {
+                if i - (i / 4) * 4 == 0 {
+                    print_board(w, h, st);
+                }
+            }
+            i = i + 1;
+        }
+    }
+    if st.alive == 1 {
+        print_board(w, h, st);
+        print("demo finished (still alive) score=${st.score}");
+    }
+    print("snake: demo ok");
+}
+
+fn run_interactive(w: i64, h: i64) {
+    print("=== SNAKE (pure Anubis) ===");
+    print("Turn-based: type a key (or batch like ddd), then press RETURN/ENTER.");
+    print("If the cursor sits after move> the game is WAITING for you — it is not frozen.");
+    let mut st = new_game(w, h);
+    print_board(w, h, st);
+
+    let mut turns = 0;
+    let max_turns = 10000;
+    while st.alive == 1 {
+        if st.quit == 1 {
+            st = Step {
+                body: st.body,
+                food: st.food,
+                score: st.score,
+                alive: 0,
+                dir: st.dir,
+                seed: st.seed,
+                quit: 1
+            };
+        } else {
+            if turns >= max_turns {
+                print("max turns reached");
+                st = Step {
+                    body: st.body,
+                    food: st.food,
+                    score: st.score,
+                    alive: 0,
+                    dir: st.dir,
+                    seed: st.seed,
+                    quit: 1
+                };
+            } else {
+                print("move> (w/a/s/d or q, then ENTER)");
+                let raw = read_line();
+                // EOF (piped empty end) → quit cleanly without printing tainted data
+                let cmds = parse_line_cmds(raw);
+                // Detect EOF: empty stream yields empty string → one hold; if repeated empty at start of
+                // non-tty we still advance. For true EOF after empty, len(raw)==0 and we treat as hold
+                // once; user can q to quit. If raw is empty AND we got EOF, read_line returns "".
+                // Special: if first cmd is -1 quit
+                let nc = len(cmds);
+                let mut j = 0;
+                while j < nc {
+                    if st.alive == 0 {
+                        j = nc;
+                    } else {
+                        let c = cmds[j];
+                        if c == -1 {
+                            print("quit.");
+                            st = Step {
+                                body: st.body,
+                                food: st.food,
+                                score: st.score,
+                                alive: 0,
+                                dir: st.dir,
+                                seed: st.seed,
+                                quit: 1
+                            };
+                            j = nc;
+                        } else {
+                            let dcmd = c;
+                            if c == 99 {
+                                dcmd = st.dir;
+                            }
+                            st = do_step(st, w, h, dcmd);
+                            turns = turns + 1;
+                            print_board(w, h, st);
+                            j = j + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    print("thanks for playing — score=${st.score}");
+    print("snake: ok");
+}
+
+fn main() {
+    let w = 16;
+    let h = 10;
+
+    // Self-check pure helpers (also keeps EXPECT: PASS meaningful)
+    assert(in_bounds(0, 0, w, h) == 1);
+    assert(in_bounds(-1, 0, w, h) == 0);
+    assert(in_bounds(15, 9, w, h) == 1);
+    assert(in_bounds(16, 0, w, h) == 0);
+    assert(clamp_dir(9) == 3);
+    assert(clamp_dir(-3) == 0);
+    assert(is_reverse(1, 3) == 1);
+    assert(is_reverse(1, 2) == 0);
+    assert(apply_dir(1, 3) == 1);
+    assert(apply_dir(1, 2) == 2);
+    assert(pack(3, 2, w) == 35);
+    assert(cell_x(35, w) == 3);
+    assert(cell_y(35, w) == 2);
+
+    if has_demo_flag() == 1 {
+        run_demo(w, h);
+    } else {
+        run_interactive(w, h);
+    }
+}

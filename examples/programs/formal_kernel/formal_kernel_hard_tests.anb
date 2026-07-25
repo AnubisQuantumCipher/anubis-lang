@@ -1,0 +1,440 @@
+// EXPECT: PASS
+// FEATURE: hard thorough test battery for formal_kernel algorithms
+// Extra SAT instances, lattice laws, AI programs, adversarial CNFs.
+// Shares the same algorithmic core patterns as formal_kernel.anb (inlined for isolation).
+
+// ── minimal copies of core ops used by tests ─────────────────────────────
+
+fn abs_i(x: i64) -> i64 {
+    if x == 0 - 9223372036854775807 - 1 { return 9223372036854775807; }
+    if x < 0 { return 0 - x; }
+    return x;
+}
+fn lit_var(l: i64) -> i64 { return abs_i(l); }
+fn sign_bot() -> i64 { return 0; }
+fn sign_neg() -> i64 { return 1; }
+fn sign_zero() -> i64 { return 2; }
+fn sign_pos() -> i64 { return 3; }
+fn sign_top() -> i64 { return 4; }
+
+fn sign_join(a: i64, b: i64) -> i64 {
+    if a == 0 { return b; }
+    if b == 0 { return a; }
+    if a == 4 { return 4; }
+    if b == 4 { return 4; }
+    if a == b { return a; }
+    return 4;
+}
+fn sign_meet(a: i64, b: i64) -> i64 {
+    if a == 0 { return 0; }
+    if b == 0 { return 0; }
+    if a == 4 { return b; }
+    if b == 4 { return a; }
+    if a == b { return a; }
+    return 0;
+}
+fn sign_add(a: i64, b: i64) -> i64 {
+    if a == 0 { return 0; }
+    if b == 0 { return 0; }
+    if a == 4 { return 4; }
+    if b == 4 { return 4; }
+    if a == 2 { return b; }
+    if b == 2 { return a; }
+    if a == 3 {
+        if b == 3 { return 3; }
+        return 4;
+    }
+    if a == 1 {
+        if b == 1 { return 1; }
+        return 4;
+    }
+    return 4;
+}
+fn concrete_sign(x: i64) -> i64 {
+    if x < 0 { return 1; }
+    if x == 0 { return 2; }
+    return 3;
+}
+fn sign_leq(c: i64, a: i64) -> i64 {
+    if a == 4 { return 1; }
+    if c == 0 { return 1; }
+    if a == 0 { return 0; }
+    if c == a { return 1; }
+    return 0;
+}
+
+struct Instr { op: i64, a: i64, b: i64, c: i64 }
+fn n_regs() -> i64 { return 8; }
+fn zero_regs() -> list<i64> {
+    let mut r = []; let mut i = 0;
+    while i < n_regs() { push(r, 0); i = i + 1; }
+    return r;
+}
+fn copy_i64_list(xs: list<i64>) -> list<i64> {
+    let mut out = [];
+    for v in xs { push(out, v); }
+    return out;
+}
+fn concrete_run(prog: list<Instr>, regs0: list<i64>) -> list<i64> {
+    let mut regs = copy_i64_list(regs0);
+    for ins in prog {
+        if ins.op == 0 { regs[ins.a] = ins.b; }
+        if ins.op == 1 { regs[ins.a] = regs[ins.b]; }
+        if ins.op == 2 { regs[ins.a] = regs[ins.b] + regs[ins.c]; }
+        if ins.op == 3 { regs[ins.a] = 0 - regs[ins.b]; }
+    }
+    return regs;
+}
+fn abs_init() -> list<i64> {
+    let mut r = []; let mut i = 0;
+    while i < n_regs() { push(r, sign_zero()); i = i + 1; }
+    return r;
+}
+fn abstract_run(prog: list<Instr>, st0: list<i64>) -> list<i64> {
+    let mut st = copy_i64_list(st0);
+    for ins in prog {
+        if ins.op == 0 { st[ins.a] = concrete_sign(ins.b); }
+        if ins.op == 1 { st[ins.a] = st[ins.b]; }
+        if ins.op == 2 { st[ins.a] = sign_add(st[ins.b], st[ins.c]); }
+        if ins.op == 3 {
+            let s = st[ins.b];
+            if s == sign_pos() { st[ins.a] = sign_neg(); }
+            else {
+                if s == sign_neg() { st[ins.a] = sign_pos(); }
+                else { st[ins.a] = s; }
+            }
+        }
+    }
+    return st;
+}
+fn abs_sound_on(regs: list<i64>, abs: list<i64>) -> i64 {
+    let mut i = 0;
+    while i < n_regs() {
+        if sign_leq(concrete_sign(regs[i]), abs[i]) == 0 { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn lit_is_true(assign: list<i64>, lit: i64) -> i64 {
+    let v = lit_var(lit); let val = assign[v];
+    if val == 0 { return 0; }
+    if lit > 0 { if val == 2 { return 1; } return 0; }
+    if val == 1 { return 1; }
+    return 0;
+}
+fn lit_is_false(assign: list<i64>, lit: i64) -> i64 {
+    let v = lit_var(lit); let val = assign[v];
+    if val == 0 { return 0; }
+    if lit > 0 { if val == 1 { return 1; } return 0; }
+    if val == 2 { return 1; }
+    return 0;
+}
+fn clause_satisfied(assign: list<i64>, clause: list<i64>) -> i64 {
+    for lit in clause { if lit_is_true(assign, lit) == 1 { return 1; } }
+    return 0;
+}
+fn clause_conflict(assign: list<i64>, clause: list<i64>) -> i64 {
+    for lit in clause {
+        if lit_is_true(assign, lit) == 1 { return 0; }
+        if assign[lit_var(lit)] == 0 { return 0; }
+    }
+    return 1;
+}
+fn formula_conflict(assign: list<i64>, cnf: list<list<i64>>) -> i64 {
+    for cl in cnf { if clause_conflict(assign, cl) == 1 { return 1; } }
+    return 0;
+}
+fn formula_satisfied(assign: list<i64>, cnf: list<list<i64>>) -> i64 {
+    for cl in cnf { if clause_satisfied(assign, cl) == 0 { return 0; } }
+    return 1;
+}
+fn find_unit_lit(assign: list<i64>, clause: list<i64>) -> i64 {
+    let mut open_lit = 0; let mut open_count = 0;
+    for lit in clause {
+        if lit_is_true(assign, lit) == 1 { return 0; }
+        if lit_is_false(assign, lit) == 0 { open_count = open_count + 1; open_lit = lit; }
+    }
+    if open_count == 1 { return open_lit; }
+    return 0;
+}
+fn assign_lit_core(assign: list<i64>, lit: i64) -> list<i64> {
+    let mut a = copy_i64_list(assign);
+    let v = lit_var(lit);
+    if lit > 0 { a[v] = 2; } else { a[v] = 1; }
+    return a;
+}
+fn unit_propagate(assign0: list<i64>, cnf: list<list<i64>>) -> list<i64> {
+    let mut assign = copy_i64_list(assign0);
+    let mut changed = 1; let mut guard = 0;
+    while changed == 1 {
+        if guard > 64 { changed = 0; }
+        else {
+            changed = 0; guard = guard + 1;
+            if formula_conflict(assign, cnf) == 1 { assign[0] = 9; changed = 0; }
+            else {
+                for cl in cnf {
+                    let u = find_unit_lit(assign, cl);
+                    if u != 0 {
+                        if assign[lit_var(u)] == 0 {
+                            assign = assign_lit_core(assign, u);
+                            changed = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return assign;
+}
+fn prop_conflict(assign: list<i64>) -> i64 { if assign[0] == 9 { return 1; } return 0; }
+fn find_pure_lit(assign: list<i64>, cnf: list<list<i64>>, max_var: i64) -> i64 {
+    let mut v = 1;
+    while v <= max_var {
+        if assign[v] == 0 {
+            let mut seen_pos = 0; let mut seen_neg = 0;
+            for cl in cnf {
+                if clause_satisfied(assign, cl) == 0 {
+                    for lit in cl {
+                        if lit_var(lit) == v {
+                            if lit > 0 { seen_pos = 1; }
+                            if lit < 0 { seen_neg = 1; }
+                        }
+                    }
+                }
+            }
+            if seen_pos == 1 { if seen_neg == 0 { return v; } }
+            if seen_neg == 1 { if seen_pos == 0 { return 0 - v; } }
+        }
+        v = v + 1;
+    }
+    return 0;
+}
+fn pick_branch_var(assign: list<i64>, max_var: i64) -> i64 {
+    let mut v = 1;
+    while v <= max_var { if assign[v] == 0 { return v; } v = v + 1; }
+    return 0;
+}
+fn dpll(assign0: list<i64>, cnf: list<list<i64>>, max_var: i64, depth: i64) -> list<i64> {
+    if depth > 40 {
+        let mut fail = copy_i64_list(assign0); fail[0] = 0; return fail;
+    }
+    let mut assign = unit_propagate(assign0, cnf);
+    if prop_conflict(assign) == 1 { assign[0] = 0; return assign; }
+    assign[0] = 0;
+    let mut pure = find_pure_lit(assign, cnf, max_var);
+    let mut pure_guard = 0;
+    while pure != 0 {
+        if pure_guard > max_var { pure = 0; }
+        else {
+            pure_guard = pure_guard + 1;
+            assign = assign_lit_core(assign, pure);
+            assign = unit_propagate(assign, cnf);
+            if prop_conflict(assign) == 1 { assign[0] = 0; return assign; }
+            assign[0] = 0;
+            pure = find_pure_lit(assign, cnf, max_var);
+        }
+    }
+    if formula_satisfied(assign, cnf) == 1 { assign[0] = 1; return assign; }
+    let br = pick_branch_var(assign, max_var);
+    if br == 0 { assign[0] = 0; return assign; }
+    let res_t = dpll(assign_lit_core(assign, br), cnf, max_var, depth + 1);
+    if res_t[0] == 1 { return res_t; }
+    return dpll(assign_lit_core(assign, 0 - br), cnf, max_var, depth + 1);
+}
+fn empty_assign(max_var: i64) -> list<i64> {
+    let mut a = []; push(a, 0);
+    let mut i = 1;
+    while i <= max_var { push(a, 0); i = i + 1; }
+    return a;
+}
+fn verify_model(assign: list<i64>, cnf: list<list<i64>>) -> i64 {
+    if assign[0] != 1 { return 0; }
+    return formula_satisfied(assign, cnf);
+}
+fn solve_sat(cnf: list<list<i64>>, max_var: i64) -> i64 {
+    let r = dpll(empty_assign(max_var), cnf, max_var, 0);
+    if r[0] != 1 { return 0; }
+    return verify_model(r, cnf);
+}
+fn solve_unsat(cnf: list<list<i64>>, max_var: i64) -> i64 {
+    let r = dpll(empty_assign(max_var), cnf, max_var, 0);
+    if r[0] == 0 { return 1; }
+    return 0;
+}
+
+// ── HARD TESTS ───────────────────────────────────────────────────────────
+
+fn test_lattice_laws() -> i64 {
+    // idempotent, absorb, bot/top
+    let a = sign_neg(); let b = sign_pos(); let z = sign_zero(); let t = sign_top();
+    if sign_join(a, a) != a { return 0; }
+    if sign_meet(b, b) != b { return 0; }
+    if sign_join(a, sign_bot()) != a { return 0; }
+    if sign_meet(a, sign_bot()) != sign_bot() { return 0; }
+    if sign_join(a, t) != t { return 0; }
+    if sign_meet(a, t) != a { return 0; }
+    // commutativity sample
+    if sign_join(a, b) != sign_join(b, a) { return 0; }
+    if sign_meet(z, b) != sign_meet(b, z) { return 0; }
+    // add table corners
+    if sign_add(z, a) != a { return 0; }
+    if sign_add(b, b) != b { return 0; }
+    if sign_add(a, a) != a { return 0; }
+    if sign_add(a, b) != t { return 0; }
+    return 1;
+}
+
+fn test_ai_neg_chain() -> i64 {
+    // r0=7; r1=-r0; r2=-r1; should get r2 concrete +7, abs pos
+    let mut p = [];
+    push(p, Instr { op: 0, a: 0, b: 7, c: 0 });
+    push(p, Instr { op: 3, a: 1, b: 0, c: 0 });
+    push(p, Instr { op: 3, a: 2, b: 1, c: 0 });
+    let regs = concrete_run(p, zero_regs());
+    let abs = abstract_run(p, abs_init());
+    if regs[2] != 7 { return 0; }
+    if abs[2] != sign_pos() { return 0; }
+    if abs_sound_on(regs, abs) == 0 { return 0; }
+    return 1;
+}
+
+fn test_ai_pos_pos() -> i64 {
+    let mut p = [];
+    push(p, Instr { op: 0, a: 0, b: 4, c: 0 });
+    push(p, Instr { op: 0, a: 1, b: 6, c: 0 });
+    push(p, Instr { op: 2, a: 2, b: 0, c: 1 });
+    let regs = concrete_run(p, zero_regs());
+    let abs = abstract_run(p, abs_init());
+    if regs[2] != 10 { return 0; }
+    if abs[2] != sign_pos() { return 0; }
+    return abs_sound_on(regs, abs);
+}
+
+fn test_ai_mixed_top() -> i64 {
+    let mut p = [];
+    push(p, Instr { op: 0, a: 0, b: 10, c: 0 });
+    push(p, Instr { op: 0, a: 1, b: 0 - 4, c: 0 });
+    push(p, Instr { op: 2, a: 2, b: 0, c: 1 });
+    let regs = concrete_run(p, zero_regs());
+    let abs = abstract_run(p, abs_init());
+    // 10 + -4 = 6 pos, abstract pos+neg = top
+    if regs[2] != 6 { return 0; }
+    if abs[2] != sign_top() { return 0; }
+    return abs_sound_on(regs, abs);
+}
+
+fn cnf_empty() -> list<list<i64>> {
+    let mut f = [];
+    return f; // empty CNF is sat (vacuously)
+}
+fn cnf_empty_clause() -> list<list<i64>> {
+    let mut f = [];
+    let mut c = []; // empty clause ⇒ unsat
+    push(f, c);
+    return f;
+}
+fn cnf_tautology_only() -> list<list<i64>> {
+    // (x ∨ ¬x) is always true — sat with no force
+    let mut f = [];
+    let mut c = []; push(c, 1); push(c, 0 - 1); push(f, c);
+    return f;
+}
+fn cnf_long_unit_chain() -> list<list<i64>> {
+    // x1 ⇒ x2 ⇒ x3 ⇒ x4 with x1:  (¬1∨2)(¬2∨3)(¬3∨4)(1)
+    let mut f = [];
+    let mut c1 = []; push(c1, 0 - 1); push(c1, 2); push(f, c1);
+    let mut c2 = []; push(c2, 0 - 2); push(c2, 3); push(f, c2);
+    let mut c3 = []; push(c3, 0 - 3); push(c3, 4); push(f, c3);
+    let mut c4 = []; push(c4, 1); push(f, c4);
+    return f;
+}
+fn cnf_unsat_three() -> list<list<i64>> {
+    // (x)(y)(¬x∨¬y)(¬x∨y)(x∨¬y) — actually force conflict
+    // Simpler: (x∨y)(¬x∨y)(x∨¬y)(¬x∨¬y) already in main; add (x∨y∨z)(¬x)(¬y)(¬z)
+    let mut f = [];
+    let mut c0 = []; push(c0, 1); push(c0, 2); push(c0, 3); push(f, c0);
+    let mut c1 = []; push(c1, 0 - 1); push(f, c1);
+    let mut c2 = []; push(c2, 0 - 2); push(f, c2);
+    let mut c3 = []; push(c3, 0 - 3); push(f, c3);
+    return f;
+}
+fn cnf_sat_4var() -> list<list<i64>> {
+    // (a∨b)(¬b∨c)(¬c∨d)(¬a∨¬d∨c) — sat
+    let mut f = [];
+    let mut c1 = []; push(c1, 1); push(c1, 2); push(f, c1);
+    let mut c2 = []; push(c2, 0 - 2); push(c2, 3); push(f, c2);
+    let mut c3 = []; push(c3, 0 - 3); push(c3, 4); push(f, c3);
+    let mut c4 = []; push(c4, 0 - 1); push(c4, 0 - 4); push(c4, 3); push(f, c4);
+    return f;
+}
+fn cnf_pure_forces() -> list<list<i64>> {
+    // only positive x appears ⇒ pure, sat
+    let mut f = [];
+    let mut c1 = []; push(c1, 1); push(c1, 2); push(f, c1);
+    let mut c2 = []; push(c2, 1); push(c2, 0 - 2); push(f, c2);
+    return f;
+}
+
+fn main() {
+    let t01 = test_lattice_laws();
+    let t02 = test_ai_neg_chain();
+    let t03 = test_ai_pos_pos();
+    let t04 = test_ai_mixed_top();
+
+    let t05 = solve_sat(cnf_empty(), 1);
+    let t06 = solve_unsat(cnf_empty_clause(), 1);
+    let t07 = solve_sat(cnf_tautology_only(), 1);
+    let t08 = solve_sat(cnf_long_unit_chain(), 4);
+    // long chain should force all true — re-solve for model
+    let rchain = dpll(empty_assign(4), cnf_long_unit_chain(), 4, 0);
+    let t09 = 0;
+    if rchain[0] == 1 {
+        if rchain[1] == 2 {
+            if rchain[2] == 2 {
+                if rchain[3] == 2 {
+                    if rchain[4] == 2 {
+                        t09 = 1;
+                    }
+                }
+            }
+        }
+    }
+    let t10 = solve_unsat(cnf_unsat_three(), 3);
+    let t11 = solve_sat(cnf_sat_4var(), 4);
+    let t12 = solve_sat(cnf_pure_forces(), 2);
+
+    // original suite regressions
+    let mut u1 = []; let mut a = []; push(a, 1); push(u1, a); let mut b = []; push(b, 0 - 1); push(u1, b);
+    let t13 = solve_unsat(u1, 1);
+
+    let mut square = [];
+    let mut s1 = []; push(s1, 1); push(s1, 2); push(square, s1);
+    let mut s2 = []; push(s2, 0 - 1); push(s2, 2); push(square, s2);
+    let mut s3 = []; push(s3, 1); push(s3, 0 - 2); push(square, s3);
+    let mut s4 = []; push(s4, 0 - 1); push(s4, 0 - 2); push(square, s4);
+    let t14 = solve_unsat(square, 2);
+
+    // all flags
+    let all = 1;
+    if t01 == 0 { all = 0; }
+    if t02 == 0 { all = 0; }
+    if t03 == 0 { all = 0; }
+    if t04 == 0 { all = 0; }
+    if t05 == 0 { all = 0; }
+    if t06 == 0 { all = 0; }
+    if t07 == 0 { all = 0; }
+    if t08 == 0 { all = 0; }
+    if t09 == 0 { all = 0; }
+    if t10 == 0 { all = 0; }
+    if t11 == 0 { all = 0; }
+    if t12 == 0 { all = 0; }
+    if t13 == 0 { all = 0; }
+    if t14 == 0 { all = 0; }
+
+    print(t01); print(t02); print(t03); print(t04);
+    print(t05); print(t06); print(t07); print(t08);
+    print(t09); print(t10); print(t11); print(t12);
+    print(t13); print(t14); print(all);
+    println("formal_kernel_hard_tests: ok");
+}

@@ -44,7 +44,7 @@ Recorded under `out/never_oversell_prove_20260724/`:
 
 ```text
 python3 tools/host_exec_guard.py   # allow exit 0; malware/destructive denylist exit 2
-cargo test -p anubis-solver lrat   # 9 passed; 0 failed
+cargo test -p anubis-solver lrat   # 16 passed; 0 failed (re-run 2026-07-25)
 bash scripts/run_native_authoritative_gate.sh
   # NATIVE_AUTHORITATIVE cert suite: PASS
   # equivalence 539 files mismatches=0 disagreements=0
