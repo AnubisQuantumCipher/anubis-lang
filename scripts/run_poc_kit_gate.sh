@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Bounty-grade PoC kit gate: packing + real local crash PoC + process fuzz.
-# Fail-closed: missing target / no crash / no unique fuzz crash => FAIL.
+# Host entry is an orchestrator only: the crash-capable battery runs inside a disposable Tart/VZ
+# clone of anubis-xcode. Missing VZ prerequisites fail closed; there is no host fallback.
+# Fail-closed: missing target / no crash / no unique fuzz crash / no VZ => FAIL.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,6 +12,125 @@ if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then
   OUT="$2"
 fi
 mkdir -p "$OUT"
+
+run_in_disposable_guest() {
+  local out="$1"
+  local base="${ANUBIS_VM_BASE:-anubis-xcode}"
+  local key="${ANUBIS_VM_KEY:-$HOME/.ssh/tart_anubis}"
+  local user_="${ANUBIS_VM_USER:-admin}"
+  local guest="anubis-poc-kit-gate-$$"
+  local guest_out="out/poc_kit_guest"
+  local ip=""
+  local rc=0
+  local pull_rc=0
+  local -a sshopts=(
+    -i "$key"
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o ConnectTimeout=15
+    -o LogLevel=ERROR
+  )
+
+  bash tools/grok-safety-check.sh "$out"
+  rm -rf "$out"
+  mkdir -p "$out"
+
+  command -v tart >/dev/null 2>&1 || {
+    echo "ANUBIS_POC_KIT_VZ_REQUIRED: tart is not installed" >&2
+    return 1
+  }
+  tart list 2>/dev/null | awk '{print $2}' | grep -qx "$base" || {
+    echo "ANUBIS_POC_KIT_VZ_REQUIRED: golden image '$base' is missing" >&2
+    return 1
+  }
+  [[ -f "$key" ]] || {
+    echo "ANUBIS_POC_KIT_VZ_REQUIRED: SSH key is missing at $key" >&2
+    return 1
+  }
+
+  # Guest name must be captured for EXIT trap: locals are out of scope when the
+  # trap fires after the function returns (set -u → "guest: unbound variable").
+  POC_KIT_GUEST="$guest"
+  cleanup_poc_guest() {
+    local g="${POC_KIT_GUEST:-}"
+    if [[ -n "$g" ]]; then
+      tart stop "$g" >/dev/null 2>&1 || true
+      tart delete "$g" >/dev/null 2>&1 || true
+    fi
+    POC_KIT_GUEST=""
+  }
+  trap cleanup_poc_guest EXIT
+
+  echo "[poc-kit] isolation=tart-disposable-guest base=$base guest=$guest"
+  tart clone "$base" "$guest" >/dev/null
+  tart set "$guest" --cpu 4 --memory 8192 >/dev/null
+  tart run "$guest" --no-graphics >/dev/null 2>&1 &
+
+  for _ in $(seq 1 75); do
+    ip="$(tart ip "$guest" 2>/dev/null || true)"
+    if [[ -n "$ip" ]] && nc -z -w 3 "$ip" 22 2>/dev/null; then
+      break
+    fi
+    sleep 4
+  done
+  [[ -n "$ip" ]] || {
+    echo "ANUBIS_POC_KIT_VZ_REQUIRED: guest never reached SSH" >&2
+    return 1
+  }
+
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH \
+    --exclude 'target/' --exclude 'out/' --exclude '.DS_Store' \
+    "$ROOT/" "${user_}@${ip}:anubis-lang/"
+
+  set +e
+  ssh "${sshopts[@]}" "${user_}@${ip}" 'bash -s' >"$out/guest_stdout.log" 2>&1 <<'REMOTE'
+set -euo pipefail
+. "$HOME/.cargo/env" 2>/dev/null || true
+export PATH=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:$PATH
+export CARGO_BUILD_JOBS="${ANUBIS_POC_KIT_BUILD_JOBS:-4}"
+export CARGO_INCREMENTAL=0
+export RUST_MIN_STACK=67108864
+cd "$HOME/anubis-lang"
+cargo build --release -p anubis
+export ANUBIS_VZ_GUEST=1
+export ANUBIS_OFFENSIVE_GATE_IN_GUEST=1
+export ANUBIS_POC_KIT_IN_GUEST=1
+export ANUBIS_ISOLATION=tart-disposable-guest
+touch "$HOME/.anubis-vz-guest" 2>/dev/null || true
+bash scripts/run_poc_kit_gate.sh --out out/poc_kit_guest
+REMOTE
+  rc=$?
+  set -e
+
+  cat "$out/guest_stdout.log"
+  set +e
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH \
+    "${user_}@${ip}:anubis-lang/${guest_out%/}/" "$out/"
+  pull_rc=$?
+  set -e
+
+  python3 - <<PY
+import json
+json.dump({
+    "isolation": "tart-disposable-guest",
+    "base": "$base",
+    "guest": "$guest",
+    "ip": "$ip",
+    "guest_out": "$guest_out",
+}, open("$out/isolation.json", "w"), indent=2)
+PY
+
+  if [[ $pull_rc -ne 0 ]]; then
+    echo "FAIL: could not collect PoC-kit evidence from disposable guest" >&2
+    return 1
+  fi
+  return "$rc"
+}
+
+if [[ "${ANUBIS_POC_KIT_IN_GUEST:-0}" != "1" ]]; then
+  run_in_disposable_guest "$OUT"
+  exit $?
+fi
 
 if [[ -x target/release/anubis ]]; then
   BIN=target/release/anubis
@@ -101,17 +222,13 @@ fi
 
 verdict="FAIL"
 [[ $fail -eq 0 && $pass -gt 0 ]] && verdict="PASS"
-# Isolation honesty: this gate exercises the in-repo gold lab on whatever machine
-# runs it. Prefer primary crash evidence from `anubis vz exploit|fuzz` (Apple VZ).
-iso_label="host-lab-gold-poc_kit"
-if [[ "${ANUBIS_VZ_GUEST:-0}" == "1" || "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" == "1" ]]; then
-  iso_label="tart-disposable-guest"
-fi
+# Isolation honesty: the crash-capable local branch is reachable only through the wrapper above.
+iso_label="tart-disposable-guest"
 echo "" >> "$report"
 echo "  ]," >> "$report"
 echo "  \"total\": $total, \"passed\": $pass, \"failed\": $fail," >> "$report"
 echo "  \"isolation\": \"$iso_label\"," >> "$report"
-echo "  \"prefer_primary_evidence\": \"anubis vz exploit|fuzz --base anubis-xcode\"," >> "$report"
+echo "  \"execution_boundary\": \"mandatory disposable anubis-xcode guest; no host fallback\"," >> "$report"
 echo "  \"overall_verdict\": \"$verdict\"" >> "$report"
 echo "}" >> "$report"
 

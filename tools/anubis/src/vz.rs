@@ -21,6 +21,9 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Subcommand;
+use std::ffi::OsString;
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 #[derive(Subcommand, Debug)]
@@ -459,15 +462,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             let target = format!("{user}@{ip}");
             eprintln!("[anubis vz] ssh {target} -- {}", command.join(" "));
             let status = Command::new("ssh")
-                .args([
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "UserKnownHostsFile=/dev/null",
-                    "-o",
-                    "LogLevel=ERROR",
-                    &target,
-                ])
+                .args(ssh_common_args()?)
+                .arg(&target)
                 .args(&command)
                 .status()
                 .with_context(|| "failed to spawn ssh")?;
@@ -521,17 +517,30 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             disposable(&base, keep, |name, ip| {
                 let dst = format!("{user}@{ip}:/tmp/anubis-poc.anb");
                 rsync_into(&poc, &dst)?;
+                // Gold PoC-kit oracle (path used by examples/security/poc_local_overflow.anb).
+                // Without this, disposable guests only receive the .anb + runner and spawn fails.
+                let gold = Path::new("poc_kit/bin/vuln_local");
+                if gold.is_file() {
+                    ssh_exec(
+                        user.clone(),
+                        ip.clone(),
+                        &["mkdir".into(), "-p".into(), "poc_kit/bin".into()],
+                    )?;
+                    rsync_into(
+                        gold.to_str().ok_or_else(|| {
+                            anyhow!("ANUBIS_VZ_SYNC_FAILED: gold vuln path is not UTF-8")
+                        })?,
+                        &format!("{user}@{ip}:poc_kit/bin/vuln_local"),
+                    )?;
+                }
+                let runner = sync_current_anubis(&user, &ip)?;
                 eprintln!("[anubis vz] running `anubis run /tmp/anubis-poc.anb --allow-research` in disposable `{name}`");
-                ssh_exec(
-                    user,
-                    ip,
-                    &[
-                        "anubis".into(),
-                        "run".into(),
-                        "/tmp/anubis-poc.anb".into(),
-                        "--allow-research".into(),
-                    ],
-                )
+                // `$HOME` so relative `poc_kit/bin/vuln_local` resolves after stage.
+                let remote = format!(
+                    "cd \"$HOME\" && env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
+                     ANUBIS_ISOLATION=tart-disposable-guest {runner} run /tmp/anubis-poc.anb --allow-research"
+                );
+                ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
             })
         }
         VzCmd::Confine { program, out } => run_confine(&program, out),
@@ -559,12 +568,17 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             disposable(&base, keep, |name, ip| {
                 let dst = format!("{user}@{ip}:/tmp/anubis-fuzz.anb");
                 rsync_into(&target, &dst)?;
+                let runner = sync_current_anubis(&user, &ip)?;
                 eprintln!("[anubis vz] fuzzing in disposable `{name}` ({iterations} iterations)");
                 ssh_exec(
                     user,
                     ip,
                     &[
-                        "anubis".into(),
+                        "env".into(),
+                        "ANUBIS_VZ_GUEST=1".into(),
+                        "ANUBIS_OFFENSIVE_GATE_IN_GUEST=1".into(),
+                        "ANUBIS_ISOLATION=tart-disposable-guest".into(),
+                        runner,
                         "fuzz".into(),
                         "/tmp/anubis-fuzz.anb".into(),
                         "--iterations".into(),
@@ -674,14 +688,14 @@ fn wait_for_ip(name: &str) -> Result<String> {
 
 /// rsync a host path into a `user@ip:/dest` target over SSH (host-key checks relaxed for ephemeral IPs).
 fn rsync_into(from: &str, dst: &str) -> Result<()> {
+    let key = vz_ssh_identity()?;
+    let quoted_key = shell_single_quote(&key.to_string_lossy());
+    let transport = format!(
+        "ssh -i {quoted_key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+         -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    );
     let status = Command::new("rsync")
-        .args([
-            "-az",
-            "-e",
-            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
-            from,
-            dst,
-        ])
+        .args(["-az", "-e", &transport, from, dst])
         .status()
         .with_context(|| "failed to spawn rsync (is it installed?)")?;
     if status.success() {
@@ -695,15 +709,8 @@ fn rsync_into(from: &str, dst: &str) -> Result<()> {
 fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
     let target = format!("{user}@{ip}");
     let status = Command::new("ssh")
-        .args([
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            &target,
-        ])
+        .args(ssh_common_args()?)
+        .arg(&target)
         .args(command)
         .status()
         .with_context(|| "failed to spawn ssh")?;
@@ -718,6 +725,69 @@ fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
                 .unwrap_or_else(|| "signal".into())
         )
     }
+}
+
+/// Copy the exact currently-running Anubis binary into the disposable guest. This avoids relying
+/// on a golden image's shell PATH or stale tool build, and makes the guest result bind to the host
+/// command the operator actually invoked.
+fn sync_current_anubis(user: &str, ip: &str) -> Result<String> {
+    let current = std::env::current_exe().context("resolve current anubis executable")?;
+    let current = current
+        .to_str()
+        .ok_or_else(|| anyhow!("ANUBIS_VZ_RUNNER_PATH: current executable path is not UTF-8"))?;
+    let remote = "/tmp/anubis-vz-runner";
+    rsync_into(current, &format!("{user}@{ip}:{remote}"))?;
+    ssh_exec(
+        user.to_string(),
+        ip.to_string(),
+        &["chmod".into(), "+x".into(), remote.into()],
+    )?;
+    Ok(remote.into())
+}
+
+/// Canonical Tart guest key. An explicit override supports hermetic CI tests and operators with a
+/// relocated key, but SSH-agent identities are never consulted (`IdentitiesOnly=yes`).
+fn vz_ssh_identity() -> Result<PathBuf> {
+    let path = if let Some(path) = std::env::var_os("ANUBIS_VZ_SSH_KEY") {
+        PathBuf::from(path)
+    } else {
+        let home = std::env::var_os("HOME").ok_or_else(|| {
+            anyhow!("ANUBIS_VZ_SSH_KEY_MISSING: HOME is unavailable; set ANUBIS_VZ_SSH_KEY")
+        })?;
+        PathBuf::from(home).join(".ssh/tart_anubis")
+    };
+    if !path.is_file() {
+        bail!(
+            "ANUBIS_VZ_SSH_KEY_MISSING: canonical Tart identity `{}` does not exist; create it or \
+             set ANUBIS_VZ_SSH_KEY",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+fn ssh_common_args() -> Result<Vec<OsString>> {
+    let key = vz_ssh_identity()?;
+    Ok(ssh_common_args_for_key(&key))
+}
+
+fn ssh_common_args_for_key(key: &Path) -> Vec<OsString> {
+    vec![
+        "-i".into(),
+        key.as_os_str().to_os_string(),
+        "-o".into(),
+        "IdentitiesOnly=yes".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=no".into(),
+        "-o".into(),
+        "UserKnownHostsFile=/dev/null".into(),
+        "-o".into(),
+        "LogLevel=ERROR".into(),
+    ]
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// The disposable-guest pattern: clone an ephemeral CoW guest from `base`, boot it, run `body(name,
@@ -749,4 +819,22 @@ fn indent(text: &str) -> String {
         .map(|l| format!("    {l}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod ssh_transport_tests {
+    use super::*;
+
+    #[test]
+    fn common_ssh_args_pin_identity_and_disable_agent_fanout() {
+        let key = Path::new("/tmp/key with space");
+        let args = ssh_common_args_for_key(key);
+        assert_eq!(args[0], "-i");
+        assert_eq!(args[1], key.as_os_str());
+        assert!(args.windows(2).any(|w| w == ["-o", "IdentitiesOnly=yes"]));
+        let quoted = shell_single_quote(&key.to_string_lossy());
+        assert_eq!(quoted, "'/tmp/key with space'");
+        let rendered = format!("ssh -i {quoted} -o IdentitiesOnly=yes");
+        assert!(rendered.contains("-o IdentitiesOnly=yes"));
+    }
 }
