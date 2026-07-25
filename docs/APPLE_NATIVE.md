@@ -37,6 +37,36 @@ any Apple artifact from Anubis source.
 - CoreML or Neural Engine model execution.
 - ZirOS verified Metal Lean/Verus proof artifacts carried into Anubis.
 - iCloud Drive artifact lifecycle or Keychain-backed key management.
+- Keychain / Secure Enclave–backed linear capability tokens (named residual after the
+  entitlement-profile spine).
+
+## Effect-derived entitlement profile
+
+Parallel to `anubis vz confine` (hypervisor grants from the proven effect set), the language
+also derives an **OS-facing** App Sandbox / entitlement profile:
+
+```bash
+anubis entitlements examples/hello.anb --out out/entitlement_profile.json \
+  --plist out/program.entitlements
+```
+
+What is claimed:
+
+- Pure function of source → deterministic `anubis.entitlements.v1` JSON.
+- Sealed into every `anubis build --evidence` bundle as `entitlement_profile.json` (+
+  `program.entitlements` plist).
+- Re-derived on `anubis verify`; forged permissive keys fail closed (`ANUBIS_ENTITLEMENT_DRIFT`).
+- Net-free programs do **not** enable `com.apple.security.network.client`; open effect sets
+  use restrictive defaults.
+
+What is **not** claimed (residual honesty):
+
+- **Derived profile, not enforced until signed.** Every key has
+  `apple_enforced_claim: false`. Host enforcement requires codesign with the generated
+  entitlements and App Sandbox enablement (`needs_human`).
+- Toolchain VZ entitlement (`com.apple.security.virtualization`) is intentionally **not**
+  mixed into the language-derived app profile.
+- Path-level sandbox allow-lists and Keychain/SE-backed linear caps are residuals.
 
 ## Capability Command
 

@@ -11,6 +11,7 @@ cargo run -- verify <bundle>            # (alias: validate) re-derive + tamper/s
 cargo run -- verify-receipt --receipt <path> --image-id <path>
 cargo run -- doctor
 cargo run -- capabilities --apple-native --json [--evidence --out DIR]
+cargo run -- entitlements <file.anb> [--out profile.json] [--plist program.entitlements]
 cargo run -- runtime-probe --json [--evidence --out DIR] \
   [--metal-reference /path/to/metal-hybrid-prover]
 cargo run -- runtime-plan <file.anb> --backend risc0 --lane cpu|metal-hybrid \
@@ -29,6 +30,7 @@ Behavior:
 - `prove --backend risc0`: RISC0 receipt path (fresh, journal via verify-receipt).
 - `doctor`: reports binary version, git, rustc, RISC0 versions, patched `risc0-circuit-rv32im` path + existence + Metal HAL, `R0_DISABLE_METAL` status, Apple Silicon, Tier-2, smoke checks, evidence scripts/schemas. Supports `--require-risc0`, `--require-metal`, `--metal-reference`, `--evidence`, `--json`.
 - `capabilities --apple-native`: emits the machine-readable Apple-native capability matrix. It separates ready RISC0/Metal proof lanes from the plan-emitter-ready UMPG surface and planned CoreML/Neural Engine control-plane lanes.
+- `entitlements <file.anb>`: derives a macOS App Sandbox / entitlement **profile** from the program's proven effect set (same spine as `vz confine`). Sealed into evidence as `entitlement_profile.json` + optional `program.entitlements` plist; re-derived on `verify` (forged permissive profiles fail closed). **Derived profile, not enforced until signed** — every key has `apple_enforced_claim: false`; codesign is `needs_human`.
 - `runtime-probe`: emits capability evidence for host/toolchain/RISC0/Metal readiness. It does not claim proof execution or receipt verification.
 - `runtime-plan`: parses and typechecks source, then emits a plan-only UMPG-style DAG with typed operations, dependencies, device placement, weakest-link trust policy, and the exact Metal reference path/config source. It is not receipt execution evidence.
 - All commands accept `--metal-reference` (or env `ANUBIS_RISC0_METAL_REFERENCE`) for the risc0 metal-hybrid reference tree. Evidence records the config source.
