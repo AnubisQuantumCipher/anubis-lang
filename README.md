@@ -66,14 +66,15 @@ fn ring_used(head: u32, tail: u32) -> u32
 }
 ```
 
-`anubis check` does not shrug and say "unproven." It **disproves** the claim with the wraparound state your tests never hit (the real SMT `sat` model, laid out for readability):
+`anubis check` does not shrug and say "unproven." It **disproves** the claim with the wraparound state your tests never hit — code `ANUBIS_ASSERTION_DISPROVED`, with a pretty-printed sat model (not the conflated "or undecided" path):
 
 ```
 $ anubis check examples/showcase/ring_buffer_underflow.anb
-ANUBIS_ASSERTION_UNPROVEN: ensures:(bvsge (bvsub anb_tail anb_head) (_ bv0 64))
-  counterexample:                        # sat model, from the define-fun lines:
-    anb_head = 0x00000000c0000000        # (_ BitVec 64)  = 3_221_225_472
-    anb_tail = 0x0000000000000000        # (_ BitVec 64)  = 0  →  tail - head is negative
+ANUBIS_ASSERTION_DISPROVED: 1 assertion(s) disproved by counterexample:
+  ensures:(bvsge (bvsub anb_tail anb_head) (_ bv0 64))
+  counterexample:
+    head = 0x00000000c0000000  (3221225472)
+    tail = 0x0000000000000000  (0)
 ```
 
 Fix it — subtract only where it can't underflow — and the **same solver proves the fix correct**. That counterexample is the evidence: [`examples/showcase/ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb).

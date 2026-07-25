@@ -231,7 +231,9 @@ fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) 
 ```
 
 `anubis check` proves each `ensures` from the body and the `requires` using the SMT solver, and rejects
-a function whose postcondition does not hold (`ANUBIS_ASSERTION_UNPROVEN`). Contracts **compose**: at a
+a function whose postcondition does not hold (`ANUBIS_ASSERTION_DISPROVED` with a pretty counterexample
+when the solver finds a model; `ANUBIS_ASSERTION_UNDECIDED` when the query times out — never conflated).
+Contracts **compose**: at a
 call site the caller must satisfy the callee's `requires` (`inc(0)` is rejected — `0 > 0` fails) and may
 rely on its `ensures` (after `let a = inc(5)`, `assert(a > 0)` is proved).
 
