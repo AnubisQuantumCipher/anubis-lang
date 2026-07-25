@@ -201,6 +201,7 @@ Status: ✅ **real** (implemented + gated) · 🟡 **partial** (real slices, hon
 |---|---|---|
 | **Effect-derived confinement** | ✅ | `anubis vz confine <program>` derives an Apple Virtualization isolation manifest **from the program's proven effect set** — a second boundary consistent-*by-construction* with `anubis check`, sealed into evidence bundles and **re-derived on verify** (a forged grant fails closed) |
 | **VZ apply mount posture** | ✅ | `anubis vz apply` filters engagement `--dir` mounts fail-closed against proven mount posture (`none` denies; `read-only` forces `:ro`) |
+| **VZ apply network posture** | ✅ | Network dual: no open NAT by default; `--allow-host` stages DNS-pinned policy; `--allow-open-nat` is explicit residual (tart host-only until Softnet/native) |
 | **Effect-derived entitlement profile** | ✅ | `anubis entitlements <program>` derives a macOS App Sandbox / entitlement profile from the **same** proven effect set; sealed + re-derived on verify. **Derived profile, not enforced until signed** (`apple_enforced_claim: false`) |
 | **Non-exportable linear caps (static)** | ✅ | `cap_acquire_nonexportable` + `cap_export`; token cannot flow as data to public sinks without release; causal spend still works. Keychain/SE hardware **not claimed** |
 | **VM lifecycle (tart lane)** | ✅ | `anubis vz` create / boot / exec / snapshot / stop / delete — the full Virtualization.framework lifecycle behind one CLI, on Apple Silicon |
