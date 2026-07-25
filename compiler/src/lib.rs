@@ -7302,6 +7302,44 @@ fn main() {
 }
 "#;
         typecheck(parse_source(infer).unwrap(), Mode::Safe).expect("inferred secret label ok");
+
+        // Place dual: secret into public-typed field/index root.
+        let field = r#"
+struct Box { n: i64 }
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut b: Box = Box { n: 0 };
+    b.n = bal;
+}
+"#;
+        let err = typecheck(parse_source(field).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret into public-typed field place must reject");
+        assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "field: {err}");
+
+        let index = r#"
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut a: list<i64> = [0, 0];
+    a[0] = bal;
+}
+"#;
+        let err = typecheck(parse_source(index).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret into public-typed index place must reject");
+        assert!(err.contains("ANUBIS_SECRET_TO_PUBLIC"), "index: {err}");
+
+        // Unannotated container: MAY-label root secret (egress still catches); no SECRET_TO_PUBLIC.
+        let unann = r#"
+struct Box { n: i64 }
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut b = Box { n: 0 };
+    b.n = bal;
+}
+"#;
+        typecheck(parse_source(unann).unwrap(), Mode::Safe)
+            .expect("unannotated place write tracks secret without public-type laundering");
     }
 
     /// Public return under secret PC is the return dual of public-local assign (binary extraction).

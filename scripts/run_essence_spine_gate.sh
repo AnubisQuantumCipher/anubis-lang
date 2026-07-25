@@ -51,7 +51,9 @@ done
 for st_rej in \
   examples/security/secret_to_public_assign_rejects.anb \
   examples/security/secret_to_public_let_rejects.anb \
-  examples/security/secret_to_public_return_rejects.anb
+  examples/security/secret_to_public_return_rejects.anb \
+  examples/security/secret_to_public_field_rejects.anb \
+  examples/security/secret_to_public_index_rejects.anb
 do
   base="$(basename "$st_rej" .anb)"
   if ! "$ANUBIS" check "$st_rej" >"$OUT/${base}.txt" 2>&1; then

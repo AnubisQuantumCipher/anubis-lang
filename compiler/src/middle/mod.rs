@@ -4783,6 +4783,24 @@ fn analyze_stmts(
                         &ctx.method_secret_fns,
                     )
                     .is_some();
+                    // Safe-mode: secret into a public-typed annotated root (`b.n = secret`, `a[0] = secret`
+                    // where `b: Box` / `a: list<i64>`) is the place dual of public-var assign.
+                    if mode == Mode::Safe
+                        && value_secret
+                        && ctx.annotated_vars.contains(root)
+                        && scope
+                            .get(root)
+                            .and_then(|b| b.info.ty.as_deref())
+                            .is_some_and(|t| !is_secret_type(Some(t)))
+                    {
+                        ctx.diagnostics.push(SemanticDiagnostic {
+                            code: Some("ANUBIS_SECRET_TO_PUBLIC".into()),
+                            message: format!(
+                                "`{root}` is a public-typed binding written with a secret value through a field/index place — confidentiality labels must not be dropped by place assignment. Declare `secret<T>`, or interpose declassify(value, policy, reason)."
+                            ),
+                            span: None,
+                        });
+                    }
                     if value_secret {
                         if let Some(b) = scope.get_mut(root) {
                             b.secret = true;
