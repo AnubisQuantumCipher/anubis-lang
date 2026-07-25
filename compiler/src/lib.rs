@@ -6953,6 +6953,33 @@ fn main() {
             err11.contains("ANUBIS_SECRET") || err11.contains("secret"),
             "let-inner: expected secret diagnostic, got: {err11}"
         );
+        let err12 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let outer = match 0 {
+                    0 => [[|x| send("h", 80, k)]],
+                    _ => [[|x| 0]],
+                };
+                outer[0][0](0);
+            }"#,
+        )
+        .expect_err("match-built nested container secret capture must reject");
+        assert!(
+            err12.contains("ANUBIS_SECRET") || err12.contains("secret"),
+            "match-nested: expected secret diagnostic, got: {err12}"
+        );
+        let err13 = tc_ok(
+            r#"fn main() {
+                let t = input();
+                let outer = if true { if true { [[|x| write_file("o", t)]] } else { [[|x| 0]] } } else { [[|x| 0]] };
+                outer[0][0](0);
+            }"#,
+        )
+        .expect_err("nested Stmt::If container taint capture must reject");
+        assert!(
+            err13.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "nested Stmt::If taint twin: expected taint diagnostic, got: {err13}"
+        );
         tc_ok(
             r#"fn main() uses(net.send) {
                 let outer = if true { if true { [[|x| send("h", 80, 1)]] } else { [[|x| 0]] } } else { [[|x| 0]] };
