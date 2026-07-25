@@ -7190,6 +7190,54 @@ fn main() {
         typecheck(parse_source(src).unwrap(), Mode::Safe).expect("secret local ok");
     }
 
+    /// P2a: while/match/if-let under secret PC had false-accepts (binary extraction via loop/match).
+    #[test]
+    fn implicit_secret_pc_while_match_iflet_assignment_rejected() {
+        let while_src = r#"
+fn main() {
+    let bal: secret<i64> = 250000;
+    let mut b0 = 0;
+    while bal > 200000 {
+        b0 = 1;
+        bal = 0;
+    }
+}
+"#;
+        let err = typecheck(parse_source(while_src).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret while must reject public assign");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "while: {err}");
+
+        let match_src = r#"
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut b0 = 0;
+    match bal {
+        1 => { b0 = 1; }
+        _ => { b0 = 0; }
+    }
+}
+"#;
+        let err = typecheck(parse_source(match_src).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret match must reject public assign");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "match: {err}");
+
+        let iflet_src = r#"
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut b0 = 0;
+    if let x = bal {
+        b0 = 1;
+    }
+}
+"#;
+        let err = typecheck(parse_source(iflet_src).unwrap(), Mode::Safe)
+            .err()
+            .expect("secret if-let must reject public assign");
+        assert!(err.contains("ANUBIS_IMPLICIT_FLOW"), "if-let: {err}");
+    }
+
     // ── Phase-2 leg-1 confidentiality FLOW: secret → egress = ANUBIS_SECRET_EXFILTRATION ──────────
     // The value-flow dual of the taint integrity flow. A value seeded by `secret_source(..)` that
     // actually REACHES a network/shell egress without a well-formed declassify() is exfiltration —

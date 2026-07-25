@@ -17,7 +17,7 @@ or (d) **not claimed**.
 | Safe taint enforcement | security fixtures + `cargo test -p anubis-compiler` taint suite; see matrix rows for interproc slices | Reassignment residual **closed** (UNSUPPORTED.md); remaining: field-granular taint + deep escaping-closure forms (fail-closed / documented) |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system |
 | Solver correctness (supported int fragment) | **re-run 2026-07-25:** `bash scripts/run_native_authoritative_gate.sh` → `NATIVE_AUTHORITATIVE_GATE: PASS` (cert + corpus ≡ + TCB-drop + opt-out control + fragment danger) | Division deferred; **var×var mul claimed** (see row below); opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
-| Implicit secret→public assignment (Safe) | **CLAIMED 2026-07-25** | `ANUBIS_IMPLICIT_FLOW` reject; fixtures `examples/security/implicit_flow_rejects.anb` + `implicit_flow_secret_local_accepts.anb` | Residual: full PC-label join propagation (not Jif-total) |
+| Implicit secret→public assignment (Safe) | **CLAIMED 2026-07-25** (extended while/match/if-let) | `ANUBIS_IMPLICIT_FLOW` reject on secret-PC assign under `if`/`while`/`while let`/`match`/`if let`; fixtures `implicit_flow_rejects.anb`, `implicit_flow_while_rejects.anb`, `implicit_flow_match_rejects.anb`, `implicit_flow_iflet_rejects.anb`, `implicit_flow_secret_local_accepts.anb`; security fixtures **127/127** | Residual: full PC-label join propagation at every join (not Jif-total) |
 | Native CDCL Unsat RUP certificate | **re-run 2026-07-25:** `cargo test -p anubis-solver lrat` → **16 passed**; `check_proof` required for every `NativeVerdict::Unsat` | Pure independent RUP; division deferred |
 | Native solver as compiler **default** (no env) | **CLAIMED 2026-07-25** | `native_authoritative()` default ON; soak `out/native_default_flip_soak_20260725/`; decision `out/native_default_flip_seal_20260725/DECISION.md`; gate PASS post-flip |
 | Native authoritative **var×var mul** | **CLAIMED 2026-07-25** | `mulVar_correct` in BitBlast.lean + schoolbook `blast.rs::var_mul` + fragment admits; `run_native_authoritative_gate.sh` PASS |
@@ -80,7 +80,7 @@ bash scripts/run_essence_spine_gate.sh          # full (incl. native + formal)
 ESSENCE_SPINE_FAST=1 bash scripts/run_essence_spine_gate.sh   # flagships + IFC only
 ```
 
-**2026-07-25:** implicit secret-PC assignment is **reject** (`ANUBIS_IMPLICIT_FLOW`); NEXUS/Vault/settlement check green; security fixtures **124/124**.
+**2026-07-25:** implicit secret-PC assignment is **reject** (`ANUBIS_IMPLICIT_FLOW`) on `if`/`while`/`while let`/`match`/`if let`; NEXUS/Vault/settlement check green; security fixtures **127/127**.
 
 ## Forbidden overclaims
 

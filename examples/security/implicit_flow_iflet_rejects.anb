@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Secret if-let scrutinee + public assign in then branch.
+fn main() {
+    let bal: secret<i64> = 1;
+    let mut b0 = 0;
+    if let x = bal {
+        b0 = 1;
+    }
+}

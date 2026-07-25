@@ -54,7 +54,13 @@ returned, or applied. A classical **implicit** channel is: branch on a secret, a
 (`if balance > 200000 { bit = 1 }`), then exfiltrate `bit`.
 
 As of **2026-07-25**, Safe mode **rejects** that pattern with **`ANUBIS_IMPLICIT_FLOW`** (compile error),
-not a soft warning. Escape hatches:
+not a soft warning. Covered control forms (same assignment pattern):
+
+- `if` / `else` on a secret condition
+- `while` / `while let` on a secret condition or scrutinee
+- statement-position `match` / `if let` on a secret scrutinee
+
+Escape hatches:
 
 1. `declassify(value, policy, reason)` **before** any conditional that branches on the secret, or
 2. declare the assigned variable `secret<T>` so the label is preserved.

@@ -4496,6 +4496,14 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                 )
                 .is_some();
+                // Implicit-flow: secret scrutinee + public assign in any arm body.
+                {
+                    let mut assigned = BTreeSet::new();
+                    for arm in arms {
+                        expr_assigned_roots(&arm.body, &mut assigned);
+                    }
+                    reject_implicit_flow_under_secret_pc(mode, ss, &assigned, scope, ctx);
+                }
                 let snap_asm = assumptions.clone();
                 // Arm bodies are analyzed for SECURITY value-flow only — a `match`/`if let` arm body is a
                 // deferred-to-runtime position for CONTRACTS (an arm-body `assert` is NOT solver-proved, so
@@ -4571,6 +4579,13 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                 )
                 .is_some();
+                // Implicit-flow: secret scrutinee + public assign in then/else.
+                {
+                    let mut assigned = BTreeSet::new();
+                    expr_assigned_roots(then, &mut assigned);
+                    expr_assigned_roots(else_, &mut assigned);
+                    reject_implicit_flow_under_secret_pc(mode, ss, &assigned, scope, ctx);
+                }
                 let snap_asm = assumptions.clone();
                 let obl_mark = ctx.solver_obligations.len();
                 let mut then_scope = scope.clone();
@@ -5036,38 +5051,21 @@ fn analyze_stmts(
                 }
             }
             Stmt::If { cond, then, else_ } => {
-                // Implicit-flow REJECT (Safe mode, 2026-07-25): a branch on a SECRET that assigns a
-                // NON-secret variable is the binary-extraction channel. Essence of Anubis is
-                // "secret leak = compile error" — warn-only left a classical hole. Fix: fail closed.
-                // Escape: declassify before the branch, or declare the assigned var secret<T>.
-                // Residual (honest): full PC-label propagation at joins is still the multi-week path;
-                // this closes the high-value assignment pattern without over-tainting every join.
-                if mode == Mode::Safe
-                    && expr_secret_source_m(
-                        cond,
-                        scope,
-                        &ctx.secret_fns,
-                        &ctx.param_return_taint,
-                        &ctx.method_secret_fns,
-                    )
-                    .is_some()
+                // Implicit-flow REJECT (Safe mode): secret-PC assignment to public local.
+                // Residual: full PC-label join propagation (not Jif-total).
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(then, &mut assigned);
                     if let Some(eb) = else_ {
                         collect_assigned_roots(eb, &mut assigned);
                     }
-                    for v in assigned {
-                        if !scope.get(&v).map(|b| b.secret).unwrap_or(false) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
-                                code: Some("ANUBIS_IMPLICIT_FLOW".into()),
-                                message: format!(
-                                    "`{v}` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
-                                ),
-                                span: None,
-                            });
-                        }
-                    }
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        expr_is_secret_pc(cond, scope, ctx),
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
                 }
                 // CRYPTO_MISUSE / effect analysis must see the condition (fail-open if skipped:
                 // `if hmac_sha256(k,m) == tag { ... }` would otherwise pass).
@@ -5148,6 +5146,18 @@ fn analyze_stmts(
                 body,
                 invariant,
             } => {
+                // Implicit-flow: secret while-condition + public assign = same binary-extraction as `if`.
+                {
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(body, &mut assigned);
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        expr_is_secret_pc(cond, scope, ctx),
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
+                }
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 if expr_taint_source(cond, scope, &ctx.tainting_fns, &ctx.param_return_taint)
                     .is_some()
@@ -5228,6 +5238,18 @@ fn analyze_stmts(
                 body,
                 ..
             } => {
+                // Implicit-flow: secret scrutinee + public assign in body (PC from secret match).
+                {
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(body, &mut assigned);
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        expr_is_secret_pc(expr, scope, ctx),
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
+                }
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 effects.push("loop".into());
                 // Invalidate any write embedded in the `while let` scrutinee (see the `if` handler).
@@ -6982,32 +7004,19 @@ fn walk_block_effects(
             Stmt::ExprStmt(e) => analyze_expr_effect(e, mode, scope, effects, ctx),
             Stmt::If { cond, then, else_ } => {
                 // Implicit-flow REJECT inside descended closure bodies (mirrors analyze_stmts).
-                if mode == Mode::Safe
-                    && expr_secret_source_m(
-                        cond,
-                        scope,
-                        &ctx.secret_fns,
-                        &ctx.param_return_taint,
-                        &ctx.method_secret_fns,
-                    )
-                    .is_some()
                 {
                     let mut assigned = BTreeSet::new();
                     collect_assigned_roots(then, &mut assigned);
                     if let Some(eb) = else_ {
                         collect_assigned_roots(eb, &mut assigned);
                     }
-                    for v in &assigned {
-                        if !scope.get(v.as_str()).map(|b| b.secret).unwrap_or(false) {
-                            ctx.diagnostics.push(SemanticDiagnostic {
-                                code: Some("ANUBIS_IMPLICIT_FLOW".into()),
-                                message: format!(
-                                    "`{v}` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
-                                ),
-                                span: None,
-                            });
-                        }
-                    }
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        expr_is_secret_pc(cond, scope, ctx),
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
                 }
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 let snap = scope.clone();
@@ -7019,12 +7028,34 @@ fn walk_block_effects(
                 *scope = snap;
             }
             Stmt::While { cond, body, .. } => {
+                {
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(body, &mut assigned);
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        expr_is_secret_pc(cond, scope, ctx),
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
+                }
                 analyze_expr_effect(cond, mode, scope, effects, ctx);
                 let snap = scope.clone();
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
             Stmt::WhileLet { expr, body, .. } => {
+                {
+                    let mut assigned = BTreeSet::new();
+                    collect_assigned_roots(body, &mut assigned);
+                    reject_implicit_flow_under_secret_pc(
+                        mode,
+                        expr_is_secret_pc(expr, scope, ctx),
+                        &assigned,
+                        scope,
+                        ctx,
+                    );
+                }
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 let snap = scope.clone();
                 walk_block_effects(body, None, mode, scope, effects, ctx);
@@ -10860,6 +10891,48 @@ fn expr_is_simple(e: &Expr) -> bool {
         // Leaves: Var / Literal / StrLiteral / Symbolic / TaintSource / UnifiedBuffer / RawPtr / Other.
         _ => true,
     }
+}
+
+/// Safe-mode: public-local assignment under a secret program counter is the binary-extraction channel.
+/// Emit `ANUBIS_IMPLICIT_FLOW` for each assigned root that is not itself `secret<T>`.
+/// Covers `if`/`while`/`while let`/`match`/`if let` secret PCs — not full Jif-style PC join (honest residual).
+fn reject_implicit_flow_under_secret_pc(
+    mode: Mode,
+    secret_pc: bool,
+    assigned: &BTreeSet<String>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    if mode != Mode::Safe || !secret_pc {
+        return;
+    }
+    for v in assigned {
+        if !scope.get(v.as_str()).map(|b| b.secret).unwrap_or(false) {
+            ctx.diagnostics.push(SemanticDiagnostic {
+                code: Some("ANUBIS_IMPLICIT_FLOW".into()),
+                message: format!(
+                    "`{v}` is assigned inside a branch guarded by a secret condition — secret bits can encode into a public local (binary-extraction). Interpose declassify(value, policy, reason) before the secret branch, or declare `{v}` as secret<T>."
+                ),
+                span: None,
+            });
+        }
+    }
+}
+
+/// True when `cond` (or a match/`if let` scrutinee used as PC) is secret-labelled.
+fn expr_is_secret_pc(
+    cond: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> bool {
+    expr_secret_source_m(
+        cond,
+        scope,
+        &ctx.secret_fns,
+        &ctx.param_return_taint,
+        &ctx.method_secret_fns,
+    )
+    .is_some()
 }
 
 /// Collect the ROOT of every place the loop body assigns, at ANY depth and in ANY form (a plain

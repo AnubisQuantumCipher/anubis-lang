@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IMPLICIT_FLOW
+// Secret while-condition + public assign is the same binary-extraction channel as `if`.
+fn main() {
+    let bal: secret<i64> = 250000;
+    let mut b0 = 0;
+    while bal > 200000 {
+        b0 = 1;
+        bal = 0;
+    }
+}
