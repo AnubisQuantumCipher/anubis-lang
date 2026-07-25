@@ -35,8 +35,12 @@
 //!     and a loop-carried consume are treated as consumed, so a genuine reuse is never hidden.
 //!
 //! Self-contained and pure, mirroring effects.rs — it is one of the pieces Phase 4 ports into
-//! Anubis itself. Linearity here is INTRAPROCEDURAL: a token returned, passed as a parameter, or
-//! captured by a closure crosses a function boundary and arrives with unknown provenance (accept).
+//! Anubis itself. Linearity / causal spend remain INTRAPROCEDURAL for unknown-provenance
+//! tokens (params still do not authorize effects). **Non-exportable sealedness** is closed
+//! interprocedurally for the two named shapes: (1) a callee that returns a non-exportable mint
+//! seeds the caller's binding as non-exportable; (2) a callee formal that reaches a public sink
+//! without `cap_export` causes the call site to treat the corresponding arg as an export check.
+//! Closure capture of caps and deep HO rebind remain residual.
 
 use crate::frontend::{Expr, ForSource, Stmt};
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,6 +93,8 @@ struct Lin<'a> {
     /// User-function names, so a direct builtin call can be distinguished from a user call (a user
     /// function shadowing a builtin name must not be misclassified as performing that effect).
     all_fns: &'a BTreeSet<String>,
+    /// Program-level non_exportable sealedness summaries (return + exporting formals).
+    summary: &'a CapProgramSummary,
 }
 
 impl Lin<'_> {
@@ -139,16 +145,63 @@ impl Lin<'_> {
     }
 }
 
+/// Whole-program summaries for non-exportable sealedness across call edges.
+#[derive(Default, Clone, Debug)]
+pub(crate) struct CapProgramSummary {
+    /// User functions whose return value is a non-exportable capability (mint or alias).
+    returns_nonexportable: BTreeSet<String>,
+    /// User function → formal indices that flow as data to an export sink without peel.
+    exports_formals: BTreeMap<String, BTreeSet<usize>>,
+}
+
+/// Check every function: linearity + verified causal spend + interproc non_exportable sealedness.
+pub(crate) fn check_program(
+    items: &[crate::frontend::Item],
+    verified: bool,
+) -> Vec<Finding> {
+    let mut all_fns = BTreeSet::new();
+    let mut fns: Vec<(&str, &[(String, String)], &[Stmt], (usize, usize))> = Vec::new();
+    for item in items {
+        if let crate::frontend::Item::Fn {
+            name,
+            params,
+            body,
+            span,
+            ..
+        } = item
+        {
+            all_fns.insert(name.clone());
+            fns.push((name.as_str(), params.as_slice(), body.as_slice(), (span.start, span.end)));
+        }
+    }
+    let summary = build_cap_program_summary_from_fns(&fns, &all_fns);
+    let mut out = Vec::new();
+    for (name, params, body, span) in fns {
+        out.extend(check_linearity(
+            params,
+            body,
+            verified,
+            span,
+            &all_fns,
+            &summary,
+            name,
+        ));
+    }
+    out
+}
+
 /// Check one function body for capability linearity AND effect authorization (verified mode).
-/// `params` seed the scope as unknown-provenance names (never tracked as capabilities — an incoming
-/// param arrives with unknown provenance, so `cap_use(param)` accepts, and a param never authorizes
-/// an effect). `all_fns` distinguishes direct builtin calls from user calls. Pure: returns findings.
+/// `params` seed the scope as unknown-provenance names for *authorization* (a param never
+/// authorizes an effect). Non-exportable sealedness uses [`CapProgramSummary`] for call/return
+/// edges. Pure: returns findings.
 pub(crate) fn check_linearity(
     _params: &[(String, String)],
     body: &[Stmt],
     verified: bool,
     span: (usize, usize),
     all_fns: &BTreeSet<String>,
+    summary: &CapProgramSummary,
+    _fn_name: &str,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut lin = Lin {
@@ -156,10 +209,348 @@ pub(crate) fn check_linearity(
         span,
         findings: &mut findings,
         all_fns,
+        summary,
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
     findings
+}
+
+pub(crate) fn program_summary(items: &[crate::frontend::Item]) -> CapProgramSummary {
+    let mut all_fns = BTreeSet::new();
+    let mut fns: Vec<(&str, &[(String, String)], &[Stmt], (usize, usize))> = Vec::new();
+    collect_fn_refs(items, &mut all_fns, &mut fns);
+    build_cap_program_summary_from_fns(&fns, &all_fns)
+}
+
+fn collect_fn_refs<'a>(
+    items: &'a [crate::frontend::Item],
+    all_fns: &mut BTreeSet<String>,
+    fns: &mut Vec<(&'a str, &'a [(String, String)], &'a [Stmt], (usize, usize))>,
+) {
+    for item in items {
+        match item {
+            crate::frontend::Item::Fn {
+                name,
+                params,
+                body,
+                span,
+                ..
+            } => {
+                all_fns.insert(name.clone());
+                fns.push((
+                    name.as_str(),
+                    params.as_slice(),
+                    body.as_slice(),
+                    (span.start, span.end),
+                ));
+            }
+            crate::frontend::Item::Module { items, .. } => collect_fn_refs(items, all_fns, fns),
+            crate::frontend::Item::Impl { methods, .. } => {
+                for m in methods {
+                    if let crate::frontend::Item::Fn {
+                        name,
+                        params,
+                        body,
+                        span,
+                        ..
+                    } = m
+                    {
+                        all_fns.insert(name.clone());
+                        fns.push((
+                            name.as_str(),
+                            params.as_slice(),
+                            body.as_slice(),
+                            (span.start, span.end),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn build_cap_program_summary_from_fns(
+    fns: &[(&str, &[(String, String)], &[Stmt], (usize, usize))],
+    all_fns: &BTreeSet<String>,
+) -> CapProgramSummary {
+    let mut summary = CapProgramSummary::default();
+    // Formals that reach export sinks are independent of the return-NE fixpoint.
+    for (name, params, body, _) in fns {
+        let exported = formals_reaching_export_sink(params, body);
+        if !exported.is_empty() {
+            summary.exports_formals.insert((*name).to_string(), exported);
+        }
+    }
+    // Fixpoint: returns_nonexportable may depend on callees.
+    loop {
+        let before = summary.returns_nonexportable.len();
+        for (name, _params, body, _) in fns {
+            if summary.returns_nonexportable.contains(*name) {
+                continue;
+            }
+            if body_returns_nonexportable(body, all_fns, &summary.returns_nonexportable) {
+                summary.returns_nonexportable.insert((*name).to_string());
+            }
+        }
+        if summary.returns_nonexportable.len() == before {
+            break;
+        }
+    }
+    summary
+}
+
+/// Whether this body can return a non-exportable token (mint, move alias, or call of NE-returning fn).
+fn body_returns_nonexportable(
+    body: &[Stmt],
+    all_fns: &BTreeSet<String>,
+    returns_ne: &BTreeSet<String>,
+) -> bool {
+    let mut ne: BTreeSet<String> = BTreeSet::new();
+    fn track_init(
+        name: &str,
+        init: &Expr,
+        ne: &mut BTreeSet<String>,
+        all_fns: &BTreeSet<String>,
+        returns_ne: &BTreeSet<String>,
+    ) {
+        if is_nonexportable_acquire(init) {
+            ne.insert(name.to_string());
+            return;
+        }
+        if let Expr::Var(src) = init {
+            if ne.contains(src) {
+                ne.remove(src);
+                ne.insert(name.to_string());
+            } else {
+                ne.remove(name);
+            }
+            return;
+        }
+        if let Expr::Call { callee, .. } = init {
+            if all_fns.contains(callee) && returns_ne.contains(callee) {
+                ne.insert(name.to_string());
+                return;
+            }
+        }
+        ne.remove(name);
+    }
+    fn expr_is_ne(
+        e: &Expr,
+        ne: &BTreeSet<String>,
+        all_fns: &BTreeSet<String>,
+        returns_ne: &BTreeSet<String>,
+    ) -> bool {
+        if is_nonexportable_acquire(e) {
+            return true;
+        }
+        match e {
+            Expr::Var(n) => ne.contains(n),
+            Expr::Call { callee, .. } => all_fns.contains(callee) && returns_ne.contains(callee),
+            _ => false,
+        }
+    }
+    fn walk(
+        stmts: &[Stmt],
+        ne: &mut BTreeSet<String>,
+        all_fns: &BTreeSet<String>,
+        returns_ne: &BTreeSet<String>,
+    ) -> bool {
+        for s in stmts {
+            match s {
+                Stmt::Let { name, init, .. } => {
+                    track_init(name, init, ne, all_fns, returns_ne);
+                }
+                Stmt::Assign {
+                    target: Expr::Var(name),
+                    value,
+                } => {
+                    track_init(name, value, ne, all_fns, returns_ne);
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
+                    if let Some(e) = args.first() {
+                        if expr_is_ne(e, ne, all_fns, returns_ne) {
+                            return true;
+                        }
+                    }
+                }
+                Stmt::If { then, else_, .. } => {
+                    let mut tne = ne.clone();
+                    if walk(then, &mut tne, all_fns, returns_ne) {
+                        return true;
+                    }
+                    if let Some(e) = else_ {
+                        let mut ene = ne.clone();
+                        if walk(e, &mut ene, all_fns, returns_ne) {
+                            return true;
+                        }
+                        // merge aliases conservatively (union of NE names)
+                        for n in tne.intersection(&ene).cloned().collect::<Vec<_>>() {
+                            ne.insert(n);
+                        }
+                    }
+                }
+                Stmt::ExprStmt(Expr::Block { stmts: bs, tail }) => {
+                    if walk(bs, ne, all_fns, returns_ne) {
+                        return true;
+                    }
+                    if let Some(t) = tail {
+                        if expr_is_ne(t, ne, all_fns, returns_ne) {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    walk(body, &mut ne, all_fns, returns_ne)
+}
+
+/// Formal indices that reach print/send/http_*/write_file as data without a prior cap_export peel.
+fn formals_reaching_export_sink(
+    params: &[(String, String)],
+    body: &[Stmt],
+) -> BTreeSet<usize> {
+    // name -> formal index still sealed (not peeled)
+    let mut sealed: BTreeMap<String, usize> = BTreeMap::new();
+    for (i, (n, _)) in params.iter().enumerate() {
+        sealed.insert(n.clone(), i);
+    }
+    let mut exported = BTreeSet::new();
+    fn peel_name(name: &str, sealed: &mut BTreeMap<String, usize>) {
+        sealed.remove(name);
+    }
+    fn on_export_arg(e: &Expr, sealed: &BTreeMap<String, usize>, exported: &mut BTreeSet<usize>) {
+        if let Expr::Var(n) = e {
+            if let Some(i) = sealed.get(n) {
+                exported.insert(*i);
+            }
+        }
+    }
+    fn walk(
+        stmts: &[Stmt],
+        sealed: &mut BTreeMap<String, usize>,
+        exported: &mut BTreeSet<usize>,
+    ) {
+        for s in stmts {
+            match s {
+                Stmt::Let { name, init, .. } => match init {
+                    Expr::Var(src) => {
+                        if let Some(i) = sealed.get(src).cloned() {
+                            sealed.remove(src);
+                            sealed.insert(name.clone(), i);
+                        } else {
+                            sealed.remove(name);
+                        }
+                    }
+                    Expr::Call { callee, args } if callee == CAP_EXPORT => {
+                        if let Some(Expr::Var(src)) = args.first() {
+                            peel_name(src, sealed);
+                        }
+                        sealed.remove(name);
+                    }
+                    _ => {
+                        sealed.remove(name);
+                    }
+                },
+                Stmt::Assign {
+                    target: Expr::Var(name),
+                    value,
+                } => match value {
+                    Expr::Var(src) => {
+                        if let Some(i) = sealed.get(src).cloned() {
+                            sealed.remove(src);
+                            sealed.insert(name.clone(), i);
+                        } else {
+                            sealed.remove(name);
+                        }
+                    }
+                    Expr::Call { callee, args } if callee == CAP_EXPORT => {
+                        if let Some(Expr::Var(src)) = args.first() {
+                            peel_name(src, sealed);
+                        }
+                        sealed.remove(name);
+                    }
+                    _ => {
+                        sealed.remove(name);
+                    }
+                },
+                Stmt::ExprStmt(e) => walk_expr_export(e, sealed, exported),
+                Stmt::If { then, else_, .. } => {
+                    let mut s1 = sealed.clone();
+                    walk(then, &mut s1, exported);
+                    if let Some(el) = else_ {
+                        let mut s2 = sealed.clone();
+                        walk(el, &mut s2, exported);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn walk_expr_export(
+        e: &Expr,
+        sealed: &mut BTreeMap<String, usize>,
+        exported: &mut BTreeSet<usize>,
+    ) {
+        match e {
+            Expr::Call { callee, args } => {
+                if callee == CAP_EXPORT {
+                    if let Some(Expr::Var(src)) = args.first() {
+                        peel_name(src, sealed);
+                    }
+                } else if is_export_sink(callee) {
+                    for a in args {
+                        on_export_arg(a, sealed, exported);
+                    }
+                }
+                for a in args {
+                    walk_expr_export(a, sealed, exported);
+                }
+            }
+            Expr::CallExpr { callee, args } => {
+                walk_expr_export(callee, sealed, exported);
+                for a in args {
+                    walk_expr_export(a, sealed, exported);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                walk_expr_export(lhs, sealed, exported);
+                walk_expr_export(rhs, sealed, exported);
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Cast { expr, .. }
+            | Expr::Tainted { inner: expr, .. }
+            | Expr::Declassify { inner: expr, .. }
+            | Expr::Assume(expr)
+            | Expr::Assert(expr)
+            | Expr::Try(expr) => walk_expr_export(expr, sealed, exported),
+            Expr::ArrayLiteral { elements } => {
+                for el in elements {
+                    walk_expr_export(el, sealed, exported);
+                }
+            }
+            Expr::Block { stmts, tail } => {
+                walk(stmts, sealed, exported);
+                if let Some(t) = tail {
+                    walk_expr_export(t, sealed, exported);
+                }
+            }
+            Expr::If {
+                cond, then, else_, ..
+            } => {
+                walk_expr_export(cond, sealed, exported);
+                walk_expr_export(then, sealed, exported);
+                walk_expr_export(else_, sealed, exported);
+            }
+            _ => {}
+        }
+    }
+    walk(body, &mut sealed, &mut exported);
+    exported
 }
 
 /// A capability read-occurrence: `Live` → `Consumed`; a second consume is a reuse.
@@ -201,14 +592,24 @@ fn is_export_sink(callee: &str) -> bool {
     EXPORT_SINKS.contains(&callee)
 }
 
-/// If `expr` is a bare var naming a Live non-exportable token, fire EXPORT (does not consume).
+/// If `expr` is a bare var naming a Live non-exportable token, or a call of a function that
+/// returns non-exportable, fire EXPORT (does not consume).
 fn check_export_arg(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
-    if let Expr::Var(name) = expr {
-        if let Some(t) = caps.get(name) {
-            if t.state == CapState::Live && t.non_exportable {
-                lin.export(name);
+    match expr {
+        Expr::Var(name) => {
+            if let Some(t) = caps.get(name) {
+                if t.state == CapState::Live && t.non_exportable {
+                    lin.export(name);
+                }
             }
         }
+        Expr::Call { callee, .. }
+            if lin.all_fns.contains(callee)
+                && lin.summary.returns_nonexportable.contains(callee) =>
+        {
+            lin.export(callee);
+        }
+        _ => {}
     }
 }
 
@@ -373,6 +774,23 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                 caps.remove(target);
                 return;
             }
+        }
+    }
+    // Interproc sealedness: `let s = mint()` where mint returns non_exportable.
+    if let Expr::Call { callee, args } = init {
+        if lin.all_fns.contains(callee) && lin.summary.returns_nonexportable.contains(callee) {
+            for a in args {
+                walk_expr(a, caps, lin);
+            }
+            caps.insert(
+                target.to_string(),
+                CapToken {
+                    state: CapState::Live,
+                    kind: None, // kind not needed for export check
+                    non_exportable: true,
+                },
+            );
+            return;
         }
     }
     walk_expr(init, caps, lin);
@@ -589,6 +1007,16 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                     check_export_arg(a, caps, lin);
                 }
             }
+            // Interproc: callee formals that reach export sinks → check corresponding args.
+            if lin.all_fns.contains(callee) {
+                if let Some(idxs) = lin.summary.exports_formals.get(callee) {
+                    for &i in idxs {
+                        if let Some(a) = args.get(i) {
+                            check_export_arg(a, caps, lin);
+                        }
+                    }
+                }
+            }
             for a in args {
                 walk_expr(a, caps, lin);
             }
@@ -697,28 +1125,7 @@ mod tests {
 
     fn findings_of(src: &str, verified: bool) -> Vec<Finding> {
         let ast = frontend::parse_source(src).expect("parse");
-        let mut all_fns = BTreeSet::new();
-        for item in &ast.items {
-            if let frontend::Item::Fn { name, .. } = item {
-                all_fns.insert(name.clone());
-            }
-        }
-        let mut out = Vec::new();
-        for item in &ast.items {
-            if let frontend::Item::Fn {
-                params, body, span, ..
-            } = item
-            {
-                out.extend(check_linearity(
-                    params,
-                    body,
-                    verified,
-                    (span.start, span.end),
-                    &all_fns,
-                ));
-            }
-        }
-        out
+        check_program(&ast.items, verified)
     }
 
     fn codes(src: &str, verified: bool) -> Vec<&'static str> {
@@ -982,5 +1389,90 @@ fn f() { let y = send(3); }"#;
             cap_use(n);
         }"#;
         assert_eq!(codes(src, true), ["ANUBIS_CAPABILITY_REUSE"]);
+    }
+
+    #[test]
+    fn nonexportable_return_mint_print_is_export() {
+        let src = r#"
+            fn mint() { return cap_acquire_nonexportable("fs.write"); }
+            fn f() { let s = mint(); print(s); }
+        "#;
+        for verified in [false, true] {
+            let c = codes(src, verified);
+            assert!(
+                c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+                "return-mint print must EXPORT, verified={verified}, got {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonexportable_return_mint_direct_print_is_export() {
+        let src = r#"
+            fn mint() { return cap_acquire_nonexportable("fs.write"); }
+            fn f() { print(mint()); }
+        "#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "print(mint()) must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_param_print_is_export() {
+        let src = r#"
+            fn leak(c) { print(c); }
+            fn f() {
+                let s = cap_acquire_nonexportable("fs.write");
+                leak(s);
+            }
+        "#;
+        for verified in [false, true] {
+            let c = codes(src, verified);
+            assert!(
+                c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+                "param leak must EXPORT, verified={verified}, got {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonexportable_peel_before_interproc_print_accepts() {
+        // Peel at caller (params are unknown-provenance for cap_export); callee prints exportable.
+        let src = r#"
+            fn leak(c) { print(c); }
+            fn f() {
+                let s = cap_acquire_nonexportable("fs.write");
+                let e = cap_export(s, "audit");
+                leak(e);
+            }
+        "#;
+        assert!(
+            codes(src, true).is_empty(),
+            "peel-before-call must accept, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    #[test]
+    fn ordinary_param_print_is_not_export() {
+        let src = r#"
+            fn leak(c) { print(c); }
+            fn f() {
+                let s = cap_acquire("fs.read");
+                leak(s);
+            }
+        "#;
+        assert!(codes(src, true).is_empty());
+    }
+
+    #[test]
+    fn ordinary_return_acquire_print_is_not_export() {
+        let src = r#"
+            fn mint() { return cap_acquire("fs.read"); }
+            fn f() { let s = mint(); print(s); }
+        "#;
+        assert!(codes(src, true).is_empty());
     }
 }

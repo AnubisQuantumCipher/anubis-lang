@@ -941,6 +941,8 @@ struct SemanticContext {
     /// Phase-3 C5: verification lane (`--verified` / `@verified` / `#[verified]`). When set,
     /// capability effects require an explicit `uses(...)` declaration (fail-closed).
     verified: bool,
+    /// Non-exportable sealedness summaries (return mint + exporting formals).
+    cap_summary: capability::CapProgramSummary,
     /// Declared capability set for the function currently under analysis (from `uses(...)`).
     /// Empty means the function has no `uses` clause. In Safe mode, write/network/shell are
     /// forbidden unless the matching cap is present here (declared I/O is authorized).
@@ -1073,6 +1075,8 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // nothing itself. Consumed by the transitive declared-vs-inferred effect check per function.
     ctx.fn_effect_rows =
         effects::compute_fn_effect_rows(&ast.items, &ctx.all_fns, &ctx.fn_declared_effects);
+    // Non-exportable sealedness: program summary before per-fn linearity.
+    ctx.cap_summary = capability::program_summary(&ast.items);
     collect_items(&ast.items, None, mode, &mut ctx);
 
     if ctx.constraints.is_empty() {
@@ -2195,6 +2199,8 @@ fn analyze_function(
         ctx.verified,
         (span.start, span.end),
         &ctx.all_fns,
+        &ctx.cap_summary,
+        name,
     ) {
         ctx.emit(
             SemanticDiagnostic {
