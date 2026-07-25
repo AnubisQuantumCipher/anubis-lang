@@ -10,9 +10,9 @@
 //! - **Network (Softnet/hostname dual):** engagement network flags filtered fail-closed
 //!   against proven network posture:
 //!   - host-only (no net.send / open): keep `--net-host`; refuse `--allow-host` / `--allow-open-nat`
-//!   - unrestricted-nat (net.send): default force host-only (not open NAT); `--allow-host` stages
-//!     DNS-pinned egress policy (tart does NOT enforce per-hostname — honesty); `--allow-open-nat`
-//!     is explicit residual opt-in to full NAT.
+//!   - unrestricted-nat (net.send): default force host-only (not open NAT); `--allow-host` DNS-pins
+//!     then Softnet default-deny + `/32` allows when `softnet` is on PATH (`hostname-softnet`);
+//!     without Softnet → staged host-only fallback; `--allow-open-nat` is explicit residual.
 //! Applied network may be more restrictive than the language proof, never more open without opt-in.
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -45,7 +45,7 @@ pub struct AppliedConfinement {
     pub allow_hosts: Vec<String>,
     /// DNS-pinned IPv4 strings from EgressPolicy (sorted); empty when no hostname policy.
     pub egress_pinned_ipv4: Vec<String>,
-    /// `host-only` | `hostname-policy-staged` | `open-nat-opt-in`
+    /// `host-only` | `hostname-softnet` | `hostname-policy-staged` | `open-nat-opt-in`
     pub network_apply_mode: String,
     /// True only when tart argv enforces the net posture (`--net-host`). Hostname policy is staged.
     pub network_tart_enforced: bool,
@@ -169,11 +169,49 @@ pub fn filter_mounts_for_posture(
 /// Fail-closed network dual of mount filtering.
 ///
 /// - host-only: keep `--net-host`; refuse allow-host / open-nat expansion.
-/// - unrestricted-nat: default force host-only; allow-host stages DNS policy; open-nat is opt-in.
+/// - unrestricted-nat: default force host-only; allow-host → Softnet CIDR enforce when softnet
+///   is on PATH (else host-only fallback); open-nat is opt-in residual.
 pub fn filter_network_for_posture(
     network_posture: &str,
     allow_hosts: &[String],
     allow_open_nat: bool,
+) -> Result<NetworkApply> {
+    filter_network_for_posture_with_softnet(
+        network_posture,
+        allow_hosts,
+        allow_open_nat,
+        softnet_on_path(),
+    )
+}
+
+/// Softnet binary present (tart invokes it for `--net-softnet*`).
+pub fn softnet_on_path() -> bool {
+    Command::new("which")
+        .arg("softnet")
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Build Softnet tart flags: default-deny + allow pinned /32s.
+/// Uses `--net-softnet-block=0.0.0.0/0` + `--net-softnet-allow=a/32,b/32` (implies softnet).
+pub fn softnet_flags_for_pinned_ipv4(ipv4: &[String]) -> Vec<String> {
+    let allows: Vec<String> = ipv4.iter().map(|ip| format!("{ip}/32")).collect();
+    // --net-softnet-allow implies Softnet; block establishes default-deny (longest-prefix wins).
+    vec![
+        "--net-softnet".into(),
+        "--net-softnet-block=0.0.0.0/0".into(),
+        format!("--net-softnet-allow={}", allows.join(",")),
+    ]
+}
+
+/// Testable core of network filter (inject softnet presence).
+pub fn filter_network_for_posture_with_softnet(
+    network_posture: &str,
+    allow_hosts: &[String],
+    allow_open_nat: bool,
+    softnet_available: bool,
 ) -> Result<NetworkApply> {
     let host_only = network_posture.contains("host-only");
     let unrestricted = network_posture.contains("unrestricted");
@@ -223,13 +261,13 @@ pub fn filter_network_for_posture(
                 network_tart_enforced: false,
                 notes: vec![
                     "network apply: open-nat-opt-in — full tart NAT, NOT a confinement. Explicit \
-                     residual; Softnet/hostname not used."
+                     residual; Softnet not used."
                         .into(),
                 ],
             });
         }
 
-        // Hostname policy staged (DNS pin for native/Softnet residual).
+        // Hostname allow-list: DNS-pin then Softnet CIDR default-deny + /32 allows when softnet present.
         if !allow_hosts.is_empty() {
             let policy = crate::vz_egress_gateway::EgressPolicy::from_allow_hosts(allow_hosts)
                 .map_err(|e| anyhow!("ANUBIS_APPLY_NET_DENIED: egress policy: {e}"))?;
@@ -239,17 +277,39 @@ pub fn filter_network_for_posture(
                 .map(|ip| ip.to_string())
                 .collect();
             ipv4.sort();
+            ipv4.dedup();
+
+            if softnet_available {
+                let flags = softnet_flags_for_pinned_ipv4(&ipv4);
+                return Ok(NetworkApply {
+                    net_tart_flags: flags,
+                    allow_hosts: allow_hosts.to_vec(),
+                    egress_pinned_ipv4: ipv4.clone(),
+                    network_apply_mode: "hostname-softnet".into(),
+                    network_tart_enforced: true,
+                    notes: vec![
+                        format!(
+                            "network apply: hostname-softnet — hosts DNS-pinned to {:?}; tart \
+                             --net-softnet-block=0.0.0.0/0 + --net-softnet-allow=<ip>/32 (Softnet \
+                             destination CIDR enforcement). Residual: DNS rebinding after pin; \
+                             not L7 hostname at packet time.",
+                            allow_hosts
+                        ),
+                    ],
+                });
+            }
+
+            // Softnet missing: fail closed to host-only + record staged policy (no open NAT).
             return Ok(NetworkApply {
-                // Tart cannot enforce per-hostname — stay host-only until Softnet residual.
                 net_tart_flags: vec!["--net-host".into()],
                 allow_hosts: allow_hosts.to_vec(),
                 egress_pinned_ipv4: ipv4,
                 network_apply_mode: "hostname-policy-staged".into(),
-                network_tart_enforced: true, // --net-host only; hostname is staged
+                network_tart_enforced: true,
                 notes: vec![
-                    "network apply: hostname-policy-staged — allow-list DNS-pinned and recorded; \
-                     tart enforces host-only only (NOT per-hostname). Per-hostname enforcement is \
-                     native VZ egress pump / Softnet residual."
+                    "network apply: hostname-policy-staged — softnet NOT on PATH; allow-list \
+                     DNS-pinned and recorded but tart only enforces --net-host. Install Softnet \
+                     (brew/cirruslabs) for CIDR-enforced allow-list on apply."
                         .into(),
                 ],
             });
@@ -265,7 +325,7 @@ pub fn filter_network_for_posture(
             notes: vec![
                 "network apply: net.send proved but no --allow-open-nat / --allow-host — default \
                  fail-closed to host-only (not unrestricted NAT). Opt in to open NAT with \
-                 --allow-open-nat, or stage a hostname policy with --allow-host."
+                 --allow-open-nat, or Softnet allow-list with --allow-host (requires softnet)."
                     .into(),
             ],
         });
@@ -280,7 +340,12 @@ pub fn filter_network_for_posture(
 fn merge_tart_args(grant_args: &[String], net: &NetworkApply) -> Vec<String> {
     let mut out: Vec<String> = grant_args
         .iter()
-        .filter(|a| *a != "--net-host" && !a.starts_with("--net"))
+        .filter(|a| {
+            *a != "--net-host"
+                && !a.starts_with("--net-softnet")
+                && !a.starts_with("--net-bridged")
+                && !a.starts_with("--net")
+        })
         .cloned()
         .collect();
     for a in &net.net_tart_flags {
@@ -597,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn net_send_allow_host_stages_hostname_policy() {
+    fn net_send_allow_host_softnet_when_present() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("net.anb");
         fs::write(
@@ -614,15 +679,71 @@ mod tests {
             },
         )
         .expect("apply");
-        assert_eq!(applied.network_apply_mode, "hostname-policy-staged");
         assert_eq!(applied.allow_hosts, vec!["127.0.0.1".to_string()]);
         assert!(
             applied.egress_pinned_ipv4.iter().any(|ip| ip == "127.0.0.1"),
             "pinned {:?}",
             applied.egress_pinned_ipv4
         );
-        // Tart still host-only (not per-hostname enforced).
-        assert!(applied.tart_args.iter().any(|a| a == "--net-host"));
+        if softnet_on_path() {
+            assert_eq!(applied.network_apply_mode, "hostname-softnet");
+            assert!(
+                applied
+                    .tart_args
+                    .iter()
+                    .any(|a| a.starts_with("--net-softnet-block=")),
+                "expected softnet block, got {:?}",
+                applied.tart_args
+            );
+            assert!(
+                applied
+                    .tart_args
+                    .iter()
+                    .any(|a| a.contains("--net-softnet-allow=") && a.contains("127.0.0.1/32")),
+                "expected softnet allow /32, got {:?}",
+                applied.tart_args
+            );
+            assert!(applied.network_tart_enforced);
+            assert!(!applied.tart_args.iter().any(|a| a == "--net-host"));
+        } else {
+            assert_eq!(applied.network_apply_mode, "hostname-policy-staged");
+            assert!(applied.tart_args.iter().any(|a| a == "--net-host"));
+        }
+    }
+
+    #[test]
+    fn softnet_flags_default_deny_plus_slash32() {
+        let f = softnet_flags_for_pinned_ipv4(&["1.2.3.4".into(), "5.6.7.8".into()]);
+        assert_eq!(f[0], "--net-softnet");
+        assert_eq!(f[1], "--net-softnet-block=0.0.0.0/0");
+        assert!(f[2].contains("1.2.3.4/32"));
+        assert!(f[2].contains("5.6.7.8/32"));
+    }
+
+    #[test]
+    fn hostname_policy_without_softnet_falls_back_host_only() {
+        let n = filter_network_for_posture_with_softnet(
+            "network:unrestricted-nat",
+            &["127.0.0.1".into()],
+            false,
+            false, // no softnet
+        )
+        .unwrap();
+        assert_eq!(n.network_apply_mode, "hostname-policy-staged");
+        assert!(n.net_tart_flags.contains(&"--net-host".into()));
+    }
+
+    #[test]
+    fn hostname_policy_with_softnet_emits_cidr_flags() {
+        let n = filter_network_for_posture_with_softnet(
+            "network:unrestricted-nat",
+            &["127.0.0.1".into()],
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(n.network_apply_mode, "hostname-softnet");
+        assert!(n.net_tart_flags.iter().any(|a| a.starts_with("--net-softnet")));
     }
 
     #[test]
