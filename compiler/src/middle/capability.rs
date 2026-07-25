@@ -487,6 +487,14 @@ fn formals_reaching_export_sink(
                         walk(el, &mut s2, exported);
                     }
                 }
+                Stmt::While { body, .. }
+                | Stmt::Loop { body, .. }
+                | Stmt::For { body, .. }
+                | Stmt::WhileLet { body, .. }
+                | Stmt::ResearchBlock { body, .. }
+                | Stmt::ExploitBlock { body, .. } => {
+                    walk(body, sealed, exported);
+                }
                 _ => {}
             }
         }
@@ -1197,21 +1205,8 @@ fn walk_export_seals(expr: &Expr, caps: &CapMap, lin: &mut Lin) {
             }
         }
         Expr::Block { stmts, tail } => {
-            for s in stmts {
-                match s {
-                    Stmt::Let { init, .. } | Stmt::Assign { value: init, .. } => {
-                        walk_export_seals(init, caps, lin);
-                    }
-                    Stmt::ExprStmt(e) => walk_export_seals(e, caps, lin),
-                    Stmt::If { then, else_, .. } => {
-                        walk_export_seals_stmts(then, caps, lin);
-                        if let Some(e) = else_ {
-                            walk_export_seals_stmts(e, caps, lin);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            // Full stmt walk (incl. while/for/loop/while-let) — do not re-match a subset here.
+            walk_export_seals_stmts(stmts, caps, lin);
             if let Some(t) = tail {
                 walk_export_seals(t, caps, lin);
             }
@@ -1232,6 +1227,27 @@ fn walk_export_seals_stmts(stmts: &[Stmt], caps: &CapMap, lin: &mut Lin) {
                 walk_export_seals_stmts(then, caps, lin);
                 if let Some(e) = else_ {
                     walk_export_seals_stmts(e, caps, lin);
+                }
+            }
+            // Loop bodies (skeptic-0): NE capture → print/send inside while/for/loop/while-let
+            // previously fell through `_` and fail-opened.
+            Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => {
+                walk_export_seals_stmts(body, caps, lin);
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                if let Some(b) = gpu {
+                    walk_export_seals_stmts(b, caps, lin);
+                }
+                if let Some(b) = cpu {
+                    walk_export_seals_stmts(b, caps, lin);
+                }
+                if let Some(b) = prove {
+                    walk_export_seals_stmts(b, caps, lin);
                 }
             }
             _ => {}
@@ -1606,6 +1622,91 @@ fn f() { let y = send(3); }"#;
         assert!(
             c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
             "returned closure capture must EXPORT at def, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_closure_capture_print_in_while_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { while true { print(s); break; } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "while-body capture print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_closure_capture_print_in_for_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { for i in 0..1 { print(s); } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "for-body capture print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_closure_capture_print_in_loop_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { loop { print(s); break; } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "loop-body capture print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_closure_capture_print_in_while_let_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("fs.write");
+            let g = |x| { while let Some(y) = Some(0) { print(s); break; } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "while-let-body capture print must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn nonexportable_closure_capture_send_in_while_is_export() {
+        let src = r#"fn f() {
+            let s = cap_acquire_nonexportable("net.send");
+            let g = |x| { while true { send("h", 80, s); break; } };
+            g(0);
+        }"#;
+        let c = codes(src, true);
+        assert!(
+            c.contains(&"ANUBIS_CAPABILITY_EXPORT"),
+            "while-body capture send must EXPORT, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_acquire_closure_print_in_while_is_not_export() {
+        // Clean dual: exportable mint may appear as print arg even inside loop bodies.
+        let src = r#"fn f() {
+            let c = cap_acquire("fs.read");
+            let g = |x| { while true { print(c); break; } };
+            g(0);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "exportable mint in while must not EXPORT, got {:?}",
+            codes(src, true)
         );
     }
 
