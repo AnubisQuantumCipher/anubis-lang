@@ -6879,7 +6879,89 @@ fn main() {
             }"#,
         )
         .expect("clean intermediate mid-bind application must accept");
+        // if-expr-built containers (residual close 2026-07-25): seed field_closures from both
+        // branches (fail-closed union) so nested/flat apply still sees secret-capturing lambdas.
+        let err7 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let outer = if true { [[|x| send("h", 80, k)]] } else { [[|x| send("h", 80, 0)]] };
+                outer[0][0](0);
+            }"#,
+        )
+        .expect_err("if-expr nested container secret capture must reject");
+        assert!(
+            err7.contains("ANUBIS_SECRET") || err7.contains("secret"),
+            "if-expr outer: expected secret diagnostic, got: {err7}"
+        );
+        let err8 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let arr = if true { [|x| send("h", 80, k)] } else { [|x| send("h", 80, 0)] };
+                arr[0](0);
+            }"#,
+        )
+        .expect_err("if-expr flat list secret capture must reject");
+        assert!(
+            err8.contains("ANUBIS_SECRET") || err8.contains("secret"),
+            "if-expr flat: expected secret diagnostic, got: {err8}"
+        );
+        let err9 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let outer = if true { [[|x| send("h", 80, k)]] } else { [[|x| 0]] };
+                let mid = outer[0];
+                mid[0](0);
+            }"#,
+        )
+        .expect_err("if-expr + intermediate mid-bind secret capture must reject");
+        assert!(
+            err9.contains("ANUBIS_SECRET") || err9.contains("secret"),
+            "if-expr mid: expected secret diagnostic, got: {err9}"
+        );
+        tc_ok(
+            r#"fn main() uses(net.send) {
+                let outer = if true { [[|x| send("h", 80, 1)]] } else { [[|x| send("h", 80, 0)]] };
+                outer[0][0](0);
+            }"#,
+        )
+        .expect("clean if-expr nested container application must accept");
+        // Nested bare `if` inside if-expr branch is Stmt::If (parse_expr_block), not Expr::If.
+        let err10 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let outer = if true { if true { [[|x| send("h", 80, k)]] } else { [[|x| 0]] } } else { [[|x| 0]] };
+                outer[0][0](0);
+            }"#,
+        )
+        .expect_err("nested Stmt::If container secret capture must reject");
+        assert!(
+            err10.contains("ANUBIS_SECRET") || err10.contains("secret"),
+            "nested Stmt::If: expected secret diagnostic, got: {err10}"
+        );
+        let err11 = tc_ok(
+            r#"fn main() uses(net.send) {
+                let k = secret_source("api");
+                let outer = if true {
+                    let inner = if true { [[|x| send("h", 80, k)]] } else { [[|x| 0]] };
+                    inner
+                } else { [[|x| 0]] };
+                outer[0][0](0);
+            }"#,
+        )
+        .expect_err("if-expr let-inner tail secret capture must reject");
+        assert!(
+            err11.contains("ANUBIS_SECRET") || err11.contains("secret"),
+            "let-inner: expected secret diagnostic, got: {err11}"
+        );
+        tc_ok(
+            r#"fn main() uses(net.send) {
+                let outer = if true { if true { [[|x| send("h", 80, 1)]] } else { [[|x| 0]] } } else { [[|x| 0]] };
+                outer[0][0](0);
+            }"#,
+        )
+        .expect("clean nested Stmt::If container application must accept");
     }
+
 
     #[test]
     fn map_entry_closure_application_is_enforced() {

@@ -208,8 +208,38 @@ fn collect_container_closures(
     init: &Expr,
     prefix: &str,
     scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
     out: &mut BTreeMap<String, Box<Expr>>,
 ) {
+    // if-expr / match / block residual close (2026-07-25): containers built as
+    // `if c { [[|x| send(k)]] } else { … }` previously skipped seeding `field_closures`
+    // (only Struct/Array/Map/Enum literals were walked) → nested apply under-reported secret.
+    // Fail-closed: union-project all branch tails; prefer secret/taint-capturing lambdas.
+    match init {
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            collect_container_closures(then, prefix, scope, ctx, out);
+            let mut other = BTreeMap::new();
+            collect_container_closures(else_, prefix, scope, ctx, &mut other);
+            merge_field_closures_prefer_capturing(out, other, scope, ctx);
+            return;
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                let mut arm_m = BTreeMap::new();
+                collect_container_closures(&arm.body, prefix, scope, ctx, &mut arm_m);
+                merge_field_closures_prefer_capturing(out, arm_m, scope, ctx);
+            }
+            return;
+        }
+        Expr::Block { stmts, tail } => {
+            // parse_expr_block treats bare `if` as a STATEMENT (`Stmt::If`), so
+            // `if c { if d { [[lam]] } else {..} }` is Block{stmts:[Stmt::If], tail:None}
+            // — not Expr::If. Walk stmts + resolve local lets used by the tail.
+            collect_block_container_closures(stmts, tail.as_deref(), prefix, scope, ctx, out);
+            return;
+        }
+        _ => {}
+    }
     let mk = |seg: &str| -> String {
         if prefix.is_empty() {
             seg.to_string()
@@ -263,12 +293,138 @@ fn collect_container_closures(
                     out.insert(segkey, Box::new(Expr::Var(v.clone())));
                 }
             }
-            Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
-                collect_container_closures(val, &segkey, scope, out)
+            Expr::StructLiteral { .. }
+            | Expr::ArrayLiteral { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::EnumConstruct { .. }
+            | Expr::If { .. }
+            | Expr::IfLet { .. }
+            | Expr::Match { .. }
+            | Expr::Block { .. } => {
+                collect_container_closures(val, &segkey, scope, ctx, out)
             }
             _ => {}
         }
     }
+}
+
+/// Union `src` into `dst`, keeping a secret/taint-capturing lambda when keys collide.
+fn merge_field_closures_prefer_capturing(
+    dst: &mut BTreeMap<String, Box<Expr>>,
+    src: BTreeMap<String, Box<Expr>>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    for (k, lam) in src {
+        let capt = lambda_expr_captures_secret_or_taint(&lam, scope, ctx);
+        match dst.get(&k) {
+            Some(_) if !capt => {}
+            Some(prev) if lambda_expr_captures_secret_or_taint(prev, scope, ctx) => {}
+            _ => {
+                dst.insert(k, lam);
+            }
+        }
+    }
+}
+
+
+/// Seed field_closures from statement lists that appear as if-expr branch bodies
+/// (`parse_expr_block` may place nested `if` as `Stmt::If` and container values as
+/// `Stmt::ExprStmt` / `let` + tail `Var`).
+fn collect_block_container_closures(
+    stmts: &[Stmt],
+    tail: Option<&Expr>,
+    prefix: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    out: &mut BTreeMap<String, Box<Expr>>,
+) {
+    let mut local_lets: BTreeMap<String, &Expr> = BTreeMap::new();
+    for s in stmts {
+        match s {
+            Stmt::Let { name, init, .. } => {
+                local_lets.insert(name.clone(), init);
+                // Still seed from the init in case the binding is the container itself
+                // and the tail is an index/field of that name (handled below).
+                collect_container_closures(init, prefix, scope, ctx, out);
+            }
+            Stmt::LetPattern { init, .. } => {
+                collect_container_closures(init, prefix, scope, ctx, out);
+            }
+            Stmt::If { then, else_, .. } => {
+                collect_stmt_list_container_closures(then, prefix, scope, ctx, out);
+                if let Some(e) = else_ {
+                    let mut other = BTreeMap::new();
+                    collect_stmt_list_container_closures(e, prefix, scope, ctx, &mut other);
+                    merge_field_closures_prefer_capturing(out, other, scope, ctx);
+                }
+            }
+            Stmt::ExprStmt(e) => {
+                collect_container_closures(e, prefix, scope, ctx, out);
+            }
+            Stmt::Assign { value, .. } => {
+                collect_container_closures(value, prefix, scope, ctx, out);
+            }
+            // Loops / research blocks: fail-closed under-approx — walk body stmts only.
+            Stmt::While { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => {
+                collect_stmt_list_container_closures(body, prefix, scope, ctx, out);
+            }
+            _ => {}
+        }
+    }
+    if let Some(t) = tail {
+        // Resolve `let inner = <container>; inner` / `inner[0]` tails through local lets.
+        if let Some(resolved) = resolve_local_let_expr(t, &local_lets) {
+            collect_container_closures(resolved, prefix, scope, ctx, out);
+        } else {
+            collect_container_closures(t, prefix, scope, ctx, out);
+        }
+    }
+}
+
+fn collect_stmt_list_container_closures(
+    stmts: &[Stmt],
+    prefix: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    out: &mut BTreeMap<String, Box<Expr>>,
+) {
+    collect_block_container_closures(stmts, None, prefix, scope, ctx, out);
+    // A statement-only branch with no expression tail still may end in ExprStmt(container)
+    // or Stmt::If — already handled. Also re-project last ExprStmt as implicit value:
+    if let Some(Stmt::ExprStmt(e)) = stmts.last() {
+        collect_container_closures(e, prefix, scope, ctx, out);
+    }
+}
+
+/// If `e` is a Var (or access chain rooted at a Var) bound by a block-local `let`,
+/// return that let's init so container seeds follow the dataflow.
+fn resolve_local_let_expr<'a>(
+    e: &'a Expr,
+    local_lets: &BTreeMap<String, &'a Expr>,
+) -> Option<&'a Expr> {
+    let root = match e {
+        Expr::Var(n) => n.as_str(),
+        Expr::Index { base, .. } | Expr::FieldAccess { base, .. } => {
+            return resolve_local_let_expr(base, local_lets).or_else(|| {
+                // If base is Var bound to container, still collect from that container
+                // under the access — collect_container_closures on Index alone is a no-op,
+                // so return the init (full container) for fail-closed seed of all elements.
+                if let Expr::Var(n) = base.as_ref() {
+                    local_lets.get(n).copied()
+                } else {
+                    None
+                }
+            });
+        }
+        _ => return None,
+    };
+    local_lets.get(root).copied()
 }
 
 /// Flatten a container-access chain used as a CALL TARGET into `(root binding name, dotted access
@@ -4628,7 +4784,7 @@ fn analyze_stmts(
                     }
                     _ => {
                         let mut m = BTreeMap::new();
-                        collect_container_closures(init, "", scope, &mut m);
+                        collect_container_closures(init, "", scope, ctx, &mut m);
                         m
                     }
                 };
@@ -5811,7 +5967,7 @@ fn analyze_stmts(
                                 .unwrap_or_default(),
                             _ => {
                                 let mut m = BTreeMap::new();
-                                collect_container_closures(value, "", scope, &mut m);
+                                collect_container_closures(value, "", scope, ctx, &mut m);
                                 m
                             }
                         };
