@@ -21,6 +21,9 @@ pub use backends::run::{compile_native_rust_to_exe, ANUBIS_RUN_CRYPTO_CACHE_TAG}
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
 pub use frontend::{lex, parse, parse_source, Mode, AST};
 pub use middle::research_profile;
+pub use middle::research_profile::{
+    proven_effects_from_source, proven_effects_via_typecheck, ProvenEffectSet,
+};
 pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
 pub use project::{AnubisManifest, ProjectLayout};
 

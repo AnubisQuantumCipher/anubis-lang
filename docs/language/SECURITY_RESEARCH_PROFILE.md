@@ -31,8 +31,8 @@ Typed in `compiler/src/middle/research_profile.rs` as `ResearchProfile`.
 | `Authorization` | same | LAB_REAL (digest bound to engagement) |
 | `Evidence<T>` / `TrustLabel` | same | LAB_REAL (LAB_REAL / PLAN_ONLY labels) |
 | `GuestRun` | same | LAB_REAL (plan for run-capability mint) |
-| Language syntax for above | parser | **NOT_IMPLEMENTED** |
-| Checker consume in `typecheck` | middle | **NOT_IMPLEMENTED** (types ready) |
+| Language syntax for above | parser | **NOT_IMPLEMENTED** (permanent residual) |
+| Checker exposes `TypedIR.proven_effects` | `typecheck` | LAB_REAL (effect IR; not full HIR syntax) |
 
 Raw strings/paths/URLs/PIDs must not silently become scoped targets — `ScopedPath::bind` / `ScopedHost::bind` fail closed on out-of-scope inputs (`ANUBIS_RESEARCH_SCOPE`).
 
@@ -68,9 +68,33 @@ source → AST → typed HIR → effect IR → contracts/SMT
 | Guest enforces cap when `ANUBIS_VZ_ENFORCE_RUN_CAP=1` | `isolation.rs` | LAB_REAL |
 | Phase 3 HIR types (profiles, scope, effects, GuestRun) | `research_profile.rs` | LAB_REAL (typed IR) |
 | **Shared `ProvenEffectSet` IR** (checker → confine + entitlements + VZ run cap) | `research_profile` + `confinement` + `vz.rs` | LAB_REAL |
-| Full Security Research syntax | language | NOT_IMPLEMENTED |
+| **`TypedIR.proven_effects` on typecheck path** | `middle::typecheck` | LAB_REAL (same fixpoint) |
+| Full Security Research **syntax** (parser surface for Engagement/Scope/…) | language | **NOT_IMPLEMENTED** (permanent residual) |
 | **Independent portable evidence verifier** | `anubis evidence-verify` | LAB_REAL (host offline; multi-artifact) |
 | **Domain packs** (PoC/fuzz/crypto/bounty/emulation) | `anubis research-pack` | LAB_REAL catalog + scaffold; per-cap honesty |
+| Receipt / run-cap authenticity | HMAC | **LAB_REAL_HMAC** — not Ed25519 PKI |
+| Coverage-guided / AFL fuzz | tools | **NOT_IMPLEMENTED** (permanent residual) |
+| NIST CAVP / FIPS | crypto pack | **NOT_IMPLEMENTED** (permanent residual) |
+| Caldera-scale emulation farm | emulation pack | **NOT_IMPLEMENTED** (permanent residual) |
+
+## Design slices 1–5
+
+**All done** (runtime spine + IR + packs + verify). Not a full research language surface.
+
+1. ~~Wire `run_capability` mint into `anubis vz exploit|fuzz` host orchestrator~~ **done** (also research-class `vz exec`).  
+2. ~~HIR types for Engagement/Scope + constructors that check engagement~~ **done** (typed stubs; no parser).  
+3. ~~Effect IR shared between checker and VZ confine~~ **done**: `ProvenEffectSet` from checker fixpoint; confinement emits `research_effects`; VZ mint from `.anb` uses same IR (`net.send`→`net.connect`, `shell`→`process.spawn`).  
+4. ~~Independent portable evidence verifier CLI~~ **done**: `anubis evidence-verify <path> [--json] [--pubkey] [--run-cap-key] [--strict]` — PCA, engagement hash, receipt HMAC, run-cap MAC, confinement re-derive; host-side, no VZ.  
+5. ~~Domain packs (PoC/fuzz/crypto/bounty/emulation)~~ **done**: `anubis research-pack list|show|scaffold|validate` — per-capability LAB_REAL / PLAN_ONLY / NOT_IMPLEMENTED; effect allow-list validate against `ProvenEffectSet`.
+
+## Permanent residuals (explicit non-claims)
+
+- Full Anubis **parser/syntax** for research HIR types  
+- NIST **CAVP** / FIPS certification  
+- Coverage-guided / **AFL-class** fuzz engine  
+- **Caldera-scale** adversary emulation farm  
+- Upgrading receipt/run-cap **HMAC → Ed25519 PKI** attestation  
+- Softnet DNS rebind HARD / Keychain-SE hardware bind (platform residuals)
 
 ## Non-goals
 
@@ -79,14 +103,6 @@ source → AST → typed HIR → effect IR → contracts/SMT
 - Host crash PoC as primary evidence  
 - Beating Caldera at scale  
 
-## Implementation slices
-
-1. ~~Wire `run_capability` mint into `anubis vz exploit|fuzz` host orchestrator~~ **done** (also research-class `vz exec`).  
-2. ~~HIR types for Engagement/Scope + constructors that check engagement~~ **done** (typed stubs; no parser).  
-3. ~~Effect IR shared between checker and VZ confine~~ **done**: `ProvenEffectSet` from checker fixpoint; confinement emits `research_effects`; VZ mint from `.anb` uses same IR (`net.send`→`net.connect`, `shell`→`process.spawn`).  
-4. ~~Independent portable evidence verifier CLI~~ **done**: `anubis evidence-verify <path> [--json] [--pubkey] [--run-cap-key] [--strict]` — PCA, engagement hash, receipt HMAC, run-cap MAC, confinement re-derive; host-side, no VZ.  
-5. ~~Domain packs (PoC/fuzz/crypto/bounty/emulation)~~ **done**: `anubis research-pack list|show|scaffold|validate` — per-capability LAB_REAL / PLAN_ONLY / NOT_IMPLEMENTED; effect allow-list validate against `ProvenEffectSet`.
-
 ## Honesty rule
 
-No documentation may call a PLAN_ONLY, lab MAC, or helper a production-REAL capability without a positive control, hostile negative control, and reproducible artifact.
+No documentation may call a PLAN_ONLY, lab MAC, or helper a production-REAL capability without a positive control, hostile negative control, and reproducible artifact. HMAC paths remain **LAB_REAL_HMAC**, never Ed25519 REAL without positive + hostile controls.

@@ -11,7 +11,7 @@
 //! **Not** a full language surface. **Not** CAVP / production PKI.
 
 use anubis_compiler::research_profile::{
-    proven_effects_from_source, ResearchProfile, SecurityEffect,
+    proven_effects_from_source, proven_effects_via_typecheck, ResearchProfile, SecurityEffect,
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -593,6 +593,16 @@ pub fn validate_source(id: &str, source_path: &Path) -> Result<serde_json::Value
         .map_err(|e| anyhow!("ANUBIS_RESEARCH_PACK_SOURCE: {}: {e}", source_path.display()))?;
     let proven = proven_effects_from_source(&src)
         .map_err(|e| anyhow!("ANUBIS_RESEARCH_PACK_EFFECTS: {e}"))?;
+    // Same IR as typecheck when check succeeds — fail closed on drift.
+    if let Ok(via_tc) = proven_effects_via_typecheck(&src) {
+        if via_tc.research_effect_names() != proven.research_effect_names()
+            || via_tc.effects_bounded != proven.effects_bounded
+        {
+            return Err(anyhow!(
+                "ANUBIS_RESEARCH_PACK_EFFECT_IR_DRIFT: typecheck ProvenEffectSet diverges from source fixpoint"
+            ));
+        }
+    }
 
     let allowed: BTreeSet<String> = pack.default_effects.iter().cloned().collect();
     let mut extra = Vec::new();

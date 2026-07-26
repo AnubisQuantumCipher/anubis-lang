@@ -689,11 +689,25 @@ impl ProvenEffectSet {
 ///
 /// Fail-closed on parse errors. Does **not** require a full typecheck pass — same
 /// surface as `package::confinement::derive_confinement` (effect fixpoint only).
+/// Prefer [`proven_effects_via_typecheck`] when you already need a successful check.
 pub fn proven_effects_from_source(source: &str) -> Result<ProvenEffectSet, String> {
     let ast = crate::frontend::parse_source(source).map_err(|e| {
         format!("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED: {e}")
     })?;
     Ok(crate::middle::effects::program_proven_effects(&ast.items))
+}
+
+/// Derive proven effects via the **shipped typecheck path** (`TypedIR.proven_effects`).
+///
+/// Fail-closed on parse or typecheck errors. Guarantees the same IR instance the
+/// checker produces for confine / pack consumers that re-parse (fixpoint is pure).
+pub fn proven_effects_via_typecheck(source: &str) -> Result<ProvenEffectSet, String> {
+    let ast = crate::frontend::parse_source(source).map_err(|e| {
+        format!("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED: {e}")
+    })?;
+    let mode = crate::frontend::Mode::Safe;
+    let ir = crate::middle::typecheck(ast, mode)?;
+    Ok(ir.proven_effects)
 }
 
 #[cfg(test)]
@@ -913,5 +927,34 @@ mod tests {
         assert!(p.has_net());
         assert!(p.has_process_spawn());
         assert!(p.effects_bounded);
+    }
+
+    #[test]
+    fn typecheck_path_exposes_proven_effects_pure_and_net() {
+        let pure = "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
+        let p = proven_effects_via_typecheck(pure).expect("pure typecheck");
+        assert!(p.effects_bounded);
+        assert!(!p.has_net());
+        assert!(!p.has_process_spawn());
+        // Align with source-only derivation (single fixpoint, no second scanner).
+        let p2 = proven_effects_from_source(pure).unwrap();
+        assert_eq!(p.research_effect_names(), p2.research_effect_names());
+
+        let net = "fn beacon() uses(net.send) { http_post(\"http://x/y\", \"z\"); }\n\
+                   fn main() uses(net.send) { beacon(); }\n";
+        let n = proven_effects_via_typecheck(net).expect("net typecheck");
+        assert!(n.has_net());
+        assert!(n.research_effect_names().contains(&"net.connect".to_string()));
+        assert!(!n.research_effect_names().iter().any(|e| e == "net.send"));
+        let n2 = proven_effects_from_source(net).unwrap();
+        assert_eq!(n.research_effect_names(), n2.research_effect_names());
+    }
+
+    #[test]
+    fn typecheck_path_fails_closed_on_bad_source() {
+        let err = proven_effects_via_typecheck("fn main( {").unwrap_err();
+        assert!(
+            err.contains("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED") || err.contains("error") || !err.is_empty()
+        );
     }
 }

@@ -955,7 +955,15 @@ fn resolve_run_cap_effects(source_path: Option<&Path>, fallback: &[&str]) -> Vec
             .unwrap_or(false);
         if is_anb {
             if let Ok(src) = std::fs::read_to_string(p) {
-                match anubis_compiler::research_profile::proven_effects_from_source(&src) {
+                // Prefer typecheck path (TypedIR.proven_effects); fall back to parse-only fixpoint.
+                let proven = anubis_compiler::research_profile::proven_effects_via_typecheck(&src)
+                    .or_else(|e| {
+                        eprintln!(
+                            "[anubis vz] typecheck proven-effects unavailable ({e}); using parse fixpoint"
+                        );
+                        anubis_compiler::research_profile::proven_effects_from_source(&src)
+                    });
+                match proven {
                     Ok(proven) => {
                         let mut names = proven.for_run_capability();
                         // Merge any explicit fallback extras (e.g. debug.attach) the caller passed.
@@ -966,6 +974,10 @@ fn resolve_run_cap_effects(source_path: Option<&Path>, fallback: &[&str]) -> Vec
                         }
                         if !names.iter().any(|n| n == "vm.execute") {
                             names.push("vm.execute".into());
+                        }
+                        // Never mint with an empty effect list (fail-open guard).
+                        if names.is_empty() {
+                            names = anubis_compiler::research_profile::ProvenEffectSet::default_research_run_effects();
                         }
                         return names;
                     }

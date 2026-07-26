@@ -105,6 +105,9 @@ pub struct TypedIR {
     pub taint_labels: Vec<String>,
     pub constraints: Vec<String>,
     pub has_research: bool,
+    /// Whole-program proven research effect set (shared IR with confine / VZ / packs).
+    /// Derived once from the same transitive fixpoint as capability checks — not a second scan.
+    pub proven_effects: research_profile::ProvenEffectSet,
     pub body: Vec<Stmt>,
     pub hir: Hir,
     pub mir: Vec<MirBlock>,
@@ -1116,11 +1119,14 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     }
 
     let captured_body = first_fn_body(&ast.items).unwrap_or_default();
+    // Shared research IR: same fixpoint as confinement / run-cap / pack validate.
+    let proven_effects = effects::program_proven_effects(&ast.items);
     Ok(TypedIR {
         mode: bmode,
         taint_labels: ctx.taint_labels,
         constraints: ctx.constraints,
         has_research: ctx.has_research,
+        proven_effects,
         body: captured_body,
         hir: ctx.hir,
         mir: ctx.mir,
@@ -20202,6 +20208,7 @@ fn empty_ir() -> TypedIR {
         taint_labels: vec![],
         constraints: vec!["(assert true)".into()],
         has_research: false,
+        proven_effects: research_profile::ProvenEffectSet::empty_bounded(),
         body: vec![],
         hir: Hir::default(),
         mir: vec![],
