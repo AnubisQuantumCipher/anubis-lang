@@ -69,7 +69,7 @@ This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **P
   still `AnubisValue`-erased (see `LANGUAGE_COMPLETENESS.md`)
 
 ## REAL (modules / stdlib / packages — do not claim “planned”)
-- Multi-file `import a.b;` resolve + `import std.*` content-locked stdlib (12 modules)
+- Multi-file `import a.b;` resolve + `import std.*` content-locked stdlib (13 modules)
 - Packages / lock / trust spine — `docs/language/PACKAGES.md`
 - Network / time builtins + `std.net` / `std.time` wrappers (effects: `net.send`, `time.now`)
 

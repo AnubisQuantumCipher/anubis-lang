@@ -11,13 +11,14 @@ expectations to **what is shipped** vs **what remains specialized residual**.
 | Bidirectional inference / structured `Ty` | **REAL** (enforcing assignability, generics conflict/arity, trait bounds) | `middle/ty.rs`, `middle/mod.rs` |
 | Generics + traits/impl | **REAL** (parse + check); codegen **value-erased** | SPEC freeze §2 |
 | **Static monomorphization inventory** | **REAL** (checker records concrete `T=…` at call sites on `TypedIR.mono_specializations`) | `typecheck` → `MonoSpecialization` |
+| Mono inventory in evidence / check dumps | **REAL** — `mono_specializations.json` in evidence bundles; `anubis check` writes `<stem>.mono.json` + prints count | `evidence/mod.rs`, `tools/anubis` |
 | Native codegen monomorphized to unboxed Rust types | **PARTIAL** — runtime is `AnubisValue`; specialization inventory is static analysis | `backends/run.rs` |
 | Effect system (transitive rows + linear caps) | **REAL** | `effects.rs`, `capability.rs`, `--verified` |
 | Float comparison / QF_FP lane | **REAL** | contract solver float path |
 | String equality / QF_S lane | **REAL** | contract solver string path |
 | Multi-file imports + `import std.*` | **REAL** | `resolve`, `stdlib/` |
 | Packages / lock / trust | **REAL** | `package/` |
-| Stdlib modules | **REAL** (12 modules): collections, iter, option, result, str, math, testing, io, pwn, crypto, **time**, **net** | `compiler/stdlib/std/` |
+| Stdlib modules | **REAL** (13 modules): collections, iter, option, result, str, math, testing, io, pwn, crypto, time, net, **rand** | `compiler/stdlib/std/` |
 | Crypto (RWC-aligned) | **REAL** host audited crates | `CRYPTO.md`, `RWC_LANGUAGE_MAP.md` |
 | Research / VZ / evidence | **REAL** ops + IR; full research **grammar** residual | `SECURITY_RESEARCH_PROFILE.md` |
 | Production 1.0 Safe surface | **FROZEN** | `SPEC_1_0_FREEZE.md` |
@@ -41,6 +42,17 @@ fn main() {
 
 After `typecheck`, `TypedIR.mono_specializations` contains two instances of `id`
 with concrete type arguments when the checker can pin them.
+
+```bash
+# Evidence path (sealed sidecar)
+anubis check examples/lang/mono_id_smoke.anb --evidence --out out/mono_ev
+# → out/mono_ev/evidence-*/mono_specializations.json
+# → checks include name=monomorphization status=PASS
+
+# Local dump next to other IR
+anubis check examples/lang/mono_id_smoke.anb --out out/mono_check
+# → out/mono_check/mono_id_smoke.mono.json + console: "static monomorphization: N …"
+```
 
 ## Production 1.0
 
