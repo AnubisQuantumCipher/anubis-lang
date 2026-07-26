@@ -1,0 +1,11 @@
+// std.rand — CSPRNG wrappers over host builtins (capability: rand.gen).
+// Non-deterministic: contracts must not assume fixed outputs.
+
+pub fn gen() uses(rand.gen) {
+    return rand_gen();
+}
+
+// n cryptographically random bytes as a list of integers 0..255.
+pub fn bytes(n) uses(rand.gen) {
+    return random_bytes(n);
+}

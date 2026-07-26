@@ -23,6 +23,7 @@ pub static MODULES: &[(&str, &str)] = &[
     ("std.crypto", include_str!("../../stdlib/std/crypto.anb")),
     ("std.time", include_str!("../../stdlib/std/time.anb")),
     ("std.net", include_str!("../../stdlib/std/net.anb")),
+    ("std.rand", include_str!("../../stdlib/std/rand.anb")),
 ];
 
 /// True when `dotted` is a registered stdlib module path.

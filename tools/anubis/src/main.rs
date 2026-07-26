@@ -2192,7 +2192,7 @@ fn main() -> Result<()> {
                     serde_json::to_string_pretty(&ast_rep).unwrap_or_default(),
                 );
             }
-            if let Ok(t) = &typed_res {
+            if let Some(t) = &typed {
                 if do_emit.contains("hir") || emit_all {
                     if let Ok(h) = serde_json::to_string_pretty(&t.hir) {
                         let _ = std::fs::write(out.join(format!("{}.hir.json", stem)), h);
@@ -2203,6 +2203,18 @@ fn main() -> Result<()> {
                     let _ = std::fs::write(
                         out.join(format!("{}.mir.json", stem)),
                         serde_json::to_string_pretty(&mir_rep).unwrap_or_default(),
+                    );
+                }
+                // Always dump static monomorphization inventory when typecheck succeeded
+                // (tiny file; tools can rely on the path next to other IR dumps).
+                if let Ok(m) = serde_json::to_string_pretty(&t.mono_specializations) {
+                    let _ = std::fs::write(out.join(format!("{}.mono.json", stem)), m);
+                }
+                if !t.mono_specializations.is_empty() {
+                    println!(
+                        "static monomorphization: {} specialization(s) (see {}.mono.json)",
+                        t.mono_specializations.len(),
+                        stem
                     );
                 }
             }

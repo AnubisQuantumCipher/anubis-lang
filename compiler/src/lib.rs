@@ -6131,6 +6131,62 @@ fn bad() {
     }
 
     #[test]
+    fn evidence_bundle_writes_mono_specializations_sidecar() {
+        let out_dir = unique_test_dir("mono-specializations-sidecar");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let a = id(1);
+    let b = id("hi");
+}
+"#;
+        let bundle = build_evidence_bundle(
+            src,
+            "safe",
+            None,
+            vec!["mono inventory evidence".into()],
+            &out_dir,
+            Some("safe-check"),
+            None,
+        )
+        .expect("bundle");
+
+        let mono_path = bundle.dir.join("mono_specializations.json");
+        assert!(
+            mono_path.exists(),
+            "mono_specializations.json must be written into evidence bundle"
+        );
+        let mono_text = std::fs::read_to_string(&mono_path).expect("read mono");
+        let mono_val: serde_json::Value =
+            serde_json::from_str(&mono_text).expect("parse mono json");
+        let arr = mono_val
+            .as_array()
+            .expect("mono_specializations.json must be a JSON array");
+        assert!(
+            !arr.is_empty(),
+            "expected at least one mono specialization for id, got {mono_text}"
+        );
+        assert!(
+            mono_text.contains("id"),
+            "mono inventory should name function id: {mono_text}"
+        );
+        let mono_check = bundle
+            .manifest
+            .checks
+            .iter()
+            .find(|c| c.name == "monomorphization");
+        assert!(
+            mono_check.is_some(),
+            "evidence checks must include monomorphization: {:?}",
+            bundle.manifest.checks
+        );
+        assert_eq!(mono_check.unwrap().status, "PASS");
+
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
     fn gate11_metal_parity_observed_lane_contract() {
         // Real contract test: use pure fn + real journal.bin from shipped pipeline (no fallback).
         let cpu_lane = "cpu";

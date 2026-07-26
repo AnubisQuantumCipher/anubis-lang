@@ -291,6 +291,9 @@ fn build_evidence_bundle_tree_inner(
     let mut mir_json = serde_json::json!([]);
     let mut taint_json = serde_json::json!([]);
     let mut solver_json = serde_json::json!([]);
+    // Static monomorphization inventory (generic call sites with concrete type args).
+    // Empty array when no generics specialize; always written so tools can rely on the path.
+    let mut mono_json = serde_json::json!([]);
 
     let parse_res = crate::frontend::parse_source(&source);
     checks.push(match &parse_res {
@@ -321,6 +324,8 @@ fn build_evidence_bundle_tree_inner(
                     serde_json::to_value(&tainted.taint_traces).map_err(|e| e.to_string())?;
                 let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
                 solver_json = serde_json::to_value(&solver_checks).map_err(|e| e.to_string())?;
+                mono_json =
+                    serde_json::to_value(&tainted.mono_specializations).map_err(|e| e.to_string())?;
                 // save smt and replay for gate7
                 if let Some(first) = solver_checks.first() {
                     let _ = std::fs::write(dir.join("analysis").join("solver.smt2"), &first.smt);
@@ -346,10 +351,21 @@ fn build_evidence_bundle_tree_inner(
                     name: "typecheck".into(),
                     status: "PASS".into(),
                     detail: format!(
-                        "mode={} symbols={} functions={}",
+                        "mode={} symbols={} functions={} mono={}",
                         mode,
                         tainted.symbols.len(),
-                        tainted.hir.functions.len()
+                        tainted.hir.functions.len(),
+                        tainted.mono_specializations.len()
+                    ),
+                });
+                // Monomorphization inventory check: always PASS when typecheck passed.
+                // Detail reports how many concrete specializations the checker proved.
+                checks.push(Check {
+                    name: "monomorphization".into(),
+                    status: "PASS".into(),
+                    detail: format!(
+                        "static_specializations={} (codegen remains AnubisValue-erased)",
+                        tainted.mono_specializations.len()
                     ),
                 });
                 if !tainted.taint_labels.is_empty() || !tainted.taint_traces.is_empty() {
@@ -452,6 +468,7 @@ fn build_evidence_bundle_tree_inner(
     write_json(&dir.join("mir.json"), &mir_json)?;
     write_json(&dir.join("taint-traces.json"), &taint_json)?;
     write_json(&dir.join("solver.json"), &solver_json)?;
+    write_json(&dir.join("mono_specializations.json"), &mono_json)?;
 
     let environment = capture_environment();
     write_json(&dir.join("environment.json"), &environment)?;
@@ -1314,6 +1331,7 @@ fn tracked_bundle_files(has_artifact: bool, hybrid_sidecars: &[(String, String)]
         "mir.json",
         "taint-traces.json",
         "solver.json",
+        "mono_specializations.json",
         "environment.json",
         "checks.sarif",
         "bounty-report.md",
