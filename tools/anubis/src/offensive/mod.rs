@@ -31,6 +31,7 @@ pub mod purple;
 pub mod receipts;
 pub mod recon;
 pub mod rop;
+pub mod run_capability;
 pub mod scope;
 pub mod vz;
 
