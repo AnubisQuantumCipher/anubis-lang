@@ -143,6 +143,51 @@ pub struct ValidateCtx<'a> {
     pub seen_nonces: &'a Mutex<HashSet<String>>,
 }
 
+/// Offline structural checks (no key, no guest context, no nonce consume).
+///
+/// Used by the portable `anubis evidence-verify` path. Fail-closed on empty
+/// critical fields or inverted lifetime.
+pub fn verify_offline_structural(cap: &RunCapability) -> Result<()> {
+    if cap.schema != CAP_SCHEMA {
+        return Err(anyhow!("ANUBIS_RUN_CAP_SCHEMA: {}", cap.schema));
+    }
+    if cap.guest_id.trim().is_empty() {
+        return Err(anyhow!("ANUBIS_RUN_CAP_EMPTY_GUEST"));
+    }
+    if cap.program_digest.trim().is_empty() {
+        return Err(anyhow!("ANUBIS_RUN_CAP_EMPTY_PROGRAM_DIGEST"));
+    }
+    if cap.engagement_id.trim().is_empty() {
+        return Err(anyhow!("ANUBIS_RUN_CAP_EMPTY_ENGAGEMENT"));
+    }
+    if cap.mac.trim().is_empty() {
+        return Err(anyhow!("ANUBIS_RUN_CAP_EMPTY_MAC"));
+    }
+    if cap.nonce.trim().is_empty() {
+        return Err(anyhow!("ANUBIS_RUN_CAP_EMPTY_NONCE"));
+    }
+    if cap.expires_unix < cap.issued_unix {
+        return Err(anyhow!("ANUBIS_RUN_CAP_LIFETIME_INVERTED"));
+    }
+    if cap.allowed_effects.is_empty() {
+        return Err(anyhow!("ANUBIS_RUN_CAP_EMPTY_EFFECTS"));
+    }
+    Ok(())
+}
+
+/// Offline MAC verification without consuming the nonce (portable auditor).
+///
+/// Does **not** check guest/program binding — those need a live ValidateCtx.
+/// Classification: LAB_REAL_HMAC (not Ed25519).
+pub fn verify_offline_mac(cap: &RunCapability, key: &str) -> Result<()> {
+    verify_offline_structural(cap)?;
+    let expect = mac_hex(key, &material(cap));
+    if expect != cap.mac {
+        return Err(anyhow!("ANUBIS_RUN_CAP_MAC_INVALID"));
+    }
+    Ok(())
+}
+
 /// Validate and **consume** nonce (single-use). Fail closed on any mismatch.
 pub fn validate_and_consume(cap: &RunCapability, ctx: &ValidateCtx<'_>) -> Result<()> {
     if cap.schema != CAP_SCHEMA {
@@ -248,6 +293,18 @@ mod tests {
             "operator",
             600,
         )
+    }
+
+    #[test]
+    fn offline_structural_and_mac() {
+        let key = "test-key-32-bytes-long-enough!!";
+        let cap = base_mint(key);
+        verify_offline_structural(&cap).unwrap();
+        verify_offline_mac(&cap, key).unwrap();
+        assert!(verify_offline_mac(&cap, "wrong").is_err());
+        let mut broken = cap.clone();
+        broken.guest_id.clear();
+        assert!(verify_offline_structural(&broken).is_err());
     }
 
     #[test]

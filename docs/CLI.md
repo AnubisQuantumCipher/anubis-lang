@@ -262,6 +262,14 @@ jq . out/gate11/parity_report.json
 cargo run --release -p anubis -- verify out/.../evidence-*   # (alias: validate)
 ```
 
+### Independent portable evidence verify (host-side, no VZ)
+```bash
+# PCA bundle, engagement content_hash, receipt HMAC chain, run-cap MAC, confinement re-derive
+anubis evidence-verify <path> [--json] [--pubkey HEX] [--run-cap-key KEY] [--strict]
+# path may be: evidence bundle dir | engagement dir | run_capability.json
+```
+Honest labels: PCA re-derive `LAB_REAL`; receipt/run-cap MAC `LAB_REAL_HMAC` (not Ed25519).
+
 ## Config (portable)
 - `--metal-reference PATH`
 - `ANUBIS_RISC0_METAL_REFERENCE=PATH`

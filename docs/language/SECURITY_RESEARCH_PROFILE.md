@@ -69,7 +69,7 @@ source → AST → typed HIR → effect IR → contracts/SMT
 | Phase 3 HIR types (profiles, scope, effects, GuestRun) | `research_profile.rs` | LAB_REAL (typed IR) |
 | **Shared `ProvenEffectSet` IR** (checker → confine + entitlements + VZ run cap) | `research_profile` + `confinement` + `vz.rs` | LAB_REAL |
 | Full Security Research syntax | language | NOT_IMPLEMENTED |
-| Independent portable evidence verifier CLI | tools | NOT_IMPLEMENTED |
+| **Independent portable evidence verifier** | `anubis evidence-verify` | LAB_REAL (host offline; multi-artifact) |
 
 ## Non-goals
 
@@ -83,7 +83,7 @@ source → AST → typed HIR → effect IR → contracts/SMT
 1. ~~Wire `run_capability` mint into `anubis vz exploit|fuzz` host orchestrator~~ **done** (also research-class `vz exec`).  
 2. ~~HIR types for Engagement/Scope + constructors that check engagement~~ **done** (typed stubs; no parser).  
 3. ~~Effect IR shared between checker and VZ confine~~ **done**: `ProvenEffectSet` from checker fixpoint; confinement emits `research_effects`; VZ mint from `.anb` uses same IR (`net.send`→`net.connect`, `shell`→`process.spawn`).  
-4. Independent portable evidence verifier CLI.  
+4. ~~Independent portable evidence verifier CLI~~ **done**: `anubis evidence-verify <path> [--json] [--pubkey] [--run-cap-key] [--strict]` — PCA, engagement hash, receipt HMAC, run-cap MAC, confinement re-derive; host-side, no VZ.  
 5. Domain packs (PoC/fuzz/crypto/bounty/emulation) with honest classifications.
 
 ## Honesty rule

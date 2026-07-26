@@ -3,6 +3,7 @@
 
 #![recursion_limit = "256"]
 
+mod evidence_verify;
 mod offensive;
 mod poc_kit;
 mod proof_input;
@@ -300,6 +301,28 @@ enum Commands {
         /// by a different key.
         #[arg(long)]
         pubkey: Option<String>,
+    },
+
+    /// Independent portable evidence verifier (host-side, no VZ).
+    ///
+    /// Walks a path and runs every applicable check: PCA bundle, engagement
+    /// content_hash, receipt chain (LAB_REAL_HMAC), run-capability MAC, confinement
+    /// re-derive. Honest classifications — never upgrades HMAC to Ed25519.
+    EvidenceVerify {
+        /// Evidence bundle dir, engagement dir, or `run_capability.json`.
+        path: PathBuf,
+        /// Machine-readable report.
+        #[arg(long)]
+        json: bool,
+        /// Require PCA Ed25519 signature by this public key (hex).
+        #[arg(long)]
+        pubkey: Option<String>,
+        /// Key for run-capability MAC (or set `ANUBIS_RUN_CAP_KEY`).
+        #[arg(long)]
+        run_cap_key: Option<String>,
+        /// Treat missing optional checks (unsigned PCA, unchecked run-cap MAC) as FAIL.
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Alias for verify; validates bundle hashes and PASS verdict.
@@ -4316,6 +4339,30 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             println!("bundle valid: {}", ok);
             if !ok {
                 std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::EvidenceVerify {
+            path,
+            json,
+            pubkey,
+            run_cap_key,
+            strict,
+        } => {
+            // Host control-plane: no VZ required (loot / seals are verified offline).
+            let opts = evidence_verify::EvidenceVerifyOpts {
+                pubkey,
+                run_cap_key,
+                strict,
+            };
+            let report = evidence_verify::verify_path(&path, &opts)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", evidence_verify::format_human(&report));
+            }
+            if !report.ok {
+                return Err(anyhow!("ANUBIS_EVIDENCE_VERIFY_FAILED"));
             }
             Ok(())
         }
