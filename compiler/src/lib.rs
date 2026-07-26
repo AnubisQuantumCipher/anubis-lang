@@ -5735,6 +5735,103 @@ fn main() {
     }
 
     #[test]
+    fn mono_codegen_full_native_let_chain() {
+        let src = r#"
+fn scale<T>(x: T) -> T {
+    let y = x + 1;
+    let z = y * 2;
+    return z;
+}
+fn main() {
+    print(scale(5));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        let mono_name = rust
+            .lines()
+            .find_map(|l| {
+                let t = l.trim();
+                if t.starts_with("fn anb_scale__mono__") {
+                    Some(t.split('(').next()?.strip_prefix("fn ")?.to_string())
+                } else {
+                    None
+                }
+            })
+            .expect("mono scale fn");
+        let body = extract_rust_fn(&rust, &mono_name);
+        assert!(
+            !body.contains("AnubisValue")
+                && !body.contains("__anb_body")
+                && body.contains("let y")
+                && body.contains("let z"),
+            "expected full native let-chain body:\n{body}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("12"), "unexpected stdout: {stdout}");
+    }
+
+    #[test]
+    fn mono_codegen_full_native_if_else() {
+        let src = r#"
+fn absv<T>(x: T) -> T {
+    if x < 0 {
+        return 0 - x;
+    } else {
+        return x;
+    }
+}
+fn main() {
+    print(absv(0 - 7));
+    print(absv(3));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        let mono_name = rust
+            .lines()
+            .find_map(|l| {
+                let t = l.trim();
+                if t.starts_with("fn anb_absv__mono__") {
+                    Some(t.split('(').next()?.strip_prefix("fn ")?.to_string())
+                } else {
+                    None
+                }
+            })
+            .expect("mono absv fn");
+        let body = extract_rust_fn(&rust, &mono_name);
+        assert!(
+            !body.contains("AnubisValue")
+                && !body.contains("__anb_body")
+                && body.contains("if "),
+            "expected full native if body:\n{body}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains('7') && stdout.contains('3'),
+            "unexpected stdout: {stdout}"
+        );
+    }
+
+    #[test]
     fn mono_codegen_full_native_body_for_simple_arith() {
         let src = r#"
 fn add1<T>(x: T) -> T { return x + 1; }

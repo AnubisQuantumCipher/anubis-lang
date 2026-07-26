@@ -526,21 +526,43 @@ fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<M
     None
 }
 
-/// Whether `expr` is a pure expression of params + literals only (no calls/IO/alloc side effects).
-fn mono_expr_is_full_native_eligible(expr: &Expr, params: &std::collections::BTreeSet<String>) -> bool {
+/// Whether `expr` is a pure expression of live names + literals only (no calls/IO).
+fn mono_expr_is_full_native_eligible(
+    expr: &Expr,
+    live: &std::collections::BTreeSet<String>,
+) -> bool {
     match expr {
-        Expr::Var(n) => params.contains(n),
+        Expr::Var(n) => live.contains(n),
         Expr::Literal(_) | Expr::StrLiteral(_) => true,
         Expr::Unary { op, expr, .. } if op == "-" || op == "!" || op == "~" => {
-            mono_expr_is_full_native_eligible(expr, params)
+            mono_expr_is_full_native_eligible(expr, live)
         }
         Expr::Binary { op, lhs, rhs, .. } => {
             matches!(
                 op.as_str(),
                 "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||" | "=="
                     | "!=" | "<" | "<=" | ">" | ">="
-            ) && mono_expr_is_full_native_eligible(lhs, params)
-                && mono_expr_is_full_native_eligible(rhs, params)
+            ) && mono_expr_is_full_native_eligible(lhs, live)
+                && mono_expr_is_full_native_eligible(rhs, live)
+        }
+        // Pure if-expression: cond and both arms must be pure.
+        Expr::If {
+            cond,
+            then,
+            else_,
+            ..
+        } => {
+            mono_expr_is_full_native_eligible(cond, live)
+                && mono_expr_is_full_native_eligible(then, live)
+                && mono_expr_is_full_native_eligible(else_, live)
+        }
+        // Block expression used as if-branch: only a pure tail (no side-effect stmts).
+        Expr::Block { stmts, tail } => {
+            stmts.is_empty()
+                && tail
+                    .as_ref()
+                    .map(|t| mono_expr_is_full_native_eligible(t, live))
+                    .unwrap_or(false)
         }
         _ => false,
     }
@@ -587,54 +609,50 @@ fn emit_mono_native_expr(expr: &Expr, ret: MonoPrim) -> Result<String> {
                 other => Err(anyhow!("mono native: unsupported binary `{other}`")),
             }
         }
+        Expr::If {
+            cond,
+            then,
+            else_,
+            ..
+        } => {
+            let c = emit_mono_native_expr(cond, MonoPrim::Bool)?;
+            let t = emit_mono_native_expr(then, ret)?;
+            let e = emit_mono_native_expr(else_, ret)?;
+            Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
+        }
+        Expr::Block { stmts, tail } if stmts.is_empty() => match tail {
+            Some(t) => emit_mono_native_expr(t, ret),
+            None => Err(anyhow!("mono native: empty block")),
+        },
         _ => Err(anyhow!("mono native: unsupported expression form")),
     }
 }
 
-/// Fully native mono body (no AnubisValue) when the specialization is a simple pure expression.
+/// Extract a pure return expression from a statement block (single return / bare expr only).
+fn mono_block_pure_expr(stmts: &[Stmt]) -> Option<&Expr> {
+    match stmts {
+        [Stmt::ExprStmt(Expr::Call { callee, args })] if callee == "return" => args.first(),
+        [Stmt::ExprStmt(e)] => Some(e),
+        _ => None,
+    }
+}
+
+/// Fully native mono body (no AnubisValue) for pure specializations:
+/// - single return/expr
+/// - `let` chains of pure inits + final return
+/// - trailing pure `if`/`else` (stmt or expr form)
 /// Returns `None` to fall back to the AnubisValue-inner unboxed wrapper.
 fn try_emit_mono_full_native_body(
     params: &[(String, String)],
     body: &[Stmt],
     abi: &MonoUnboxedAbi,
 ) -> Result<Option<String>> {
-    let param_names: std::collections::BTreeSet<String> =
-        params.iter().map(|(n, _)| n.clone()).collect();
-
-    // Only `return e` or a single expression statement.
-    let ret_expr: &Expr = match body {
-        [Stmt::ExprStmt(Expr::Call { callee, args })] if callee == "return" => {
-            match args.as_slice() {
-                [] => {
-                    // `return;` — only valid for non-string if we yield a default.
-                    if matches!(abi.ret, MonoPrim::Int) {
-                        let mut out = String::new();
-                        for ((p, ty), prim) in params.iter().zip(abi.params.iter()) {
-                            if *prim == MonoPrim::Int {
-                                if let Some(w) = crate::middle::ty::unsigned_mask_width(ty) {
-                                    let id = sanitize_ident(p)?;
-                                    out.push_str(&format!(
-                                        "    let {id} = {id} & ((1i64 << {w}) - 1);\n"
-                                    ));
-                                }
-                            }
-                        }
-                        out.push_str("    0\n");
-                        return Ok(Some(out));
-                    }
-                    return Ok(None);
-                }
-                [e] => e,
-                _ => return Ok(None),
-            }
-        }
-        [Stmt::ExprStmt(e)] => e,
-        _ => return Ok(None),
-    };
-
-    if !mono_expr_is_full_native_eligible(ret_expr, &param_names) {
+    if body.is_empty() {
         return Ok(None);
     }
+
+    let mut live: std::collections::BTreeSet<String> =
+        params.iter().map(|(n, _)| n.clone()).collect();
 
     let mut out = String::new();
     // Preserve u8/u16/u32 range honesty without AnubisValue.
@@ -646,11 +664,99 @@ fn try_emit_mono_full_native_body(
             }
         }
     }
-    let expr_src = match emit_mono_native_expr(ret_expr, abi.ret) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    out.push_str(&format!("    {expr_src}\n"));
+
+    let n = body.len();
+    for (i, stmt) in body.iter().enumerate() {
+        let is_last = i + 1 == n;
+        match stmt {
+            // Intermediate pure lets: `let y = x + 1;`
+            Stmt::Let { name, init, .. } if !is_last => {
+                if !mono_expr_is_full_native_eligible(init, &live) {
+                    return Ok(None);
+                }
+                let id = sanitize_ident(name)?;
+                let e = match emit_mono_native_expr(init, abi.ret) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                out.push_str(&format!("    let {id} = {e};\n"));
+                live.insert(name.clone());
+            }
+            // Final pure if-stmt with pure then/else arms.
+            Stmt::If {
+                cond,
+                then,
+                else_,
+                ..
+            } if is_last => {
+                let else_body = match else_ {
+                    Some(e) => e.as_slice(),
+                    None => return Ok(None),
+                };
+                let then_e = match mono_block_pure_expr(then) {
+                    Some(e) => e,
+                    None => return Ok(None),
+                };
+                let else_e = match mono_block_pure_expr(else_body) {
+                    Some(e) => e,
+                    None => return Ok(None),
+                };
+                if !mono_expr_is_full_native_eligible(cond, &live)
+                    || !mono_expr_is_full_native_eligible(then_e, &live)
+                    || !mono_expr_is_full_native_eligible(else_e, &live)
+                {
+                    return Ok(None);
+                }
+                let c = match emit_mono_native_expr(cond, MonoPrim::Bool) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                let t = match emit_mono_native_expr(then_e, abi.ret) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                let e = match emit_mono_native_expr(else_e, abi.ret) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                out.push_str(&format!("    if {c} {{ {t} }} else {{ {e} }}\n"));
+            }
+            // Final return / bare expression.
+            Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" && is_last => {
+                match args.as_slice() {
+                    [] => {
+                        if matches!(abi.ret, MonoPrim::Int) {
+                            out.push_str("    0\n");
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    [e] => {
+                        if !mono_expr_is_full_native_eligible(e, &live) {
+                            return Ok(None);
+                        }
+                        let expr_src = match emit_mono_native_expr(e, abi.ret) {
+                            Ok(s) => s,
+                            Err(_) => return Ok(None),
+                        };
+                        out.push_str(&format!("    {expr_src}\n"));
+                    }
+                    _ => return Ok(None),
+                }
+            }
+            Stmt::ExprStmt(e) if is_last => {
+                if !mono_expr_is_full_native_eligible(e, &live) {
+                    return Ok(None);
+                }
+                let expr_src = match emit_mono_native_expr(e, abi.ret) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(None),
+                };
+                out.push_str(&format!("    {expr_src}\n"));
+            }
+            _ => return Ok(None),
+        }
+    }
     Ok(Some(out))
 }
 
