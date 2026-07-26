@@ -475,6 +475,8 @@ pub fn engage_init(dir: &Path, name: &str, authorization: &str) -> Result<PathBu
     ] {
         fs::create_dir_all(dir.join(sub))?;
     }
+    // Receipt MAC key (LAB_REAL HMAC; mode 0600). Not printed in engage-status.
+    let _ = super::receipts::ensure_mac_key(dir);
     let readme = format!(
         "# Anubis Engagement: {}\n\nID: `{}`\nAuth: {}\nPSK: (see engagement.json psk_hex)\nC2: `{}`\nTransport: {}\nProtocol: aop-2 encrypted\nmTLS certs: {}\nKill: {}\n",
         eng.name,
