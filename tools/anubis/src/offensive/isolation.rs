@@ -147,16 +147,23 @@ pub fn require_vz_offensive(action: &str) -> Result<()> {
     Ok(())
 }
 
-/// Optional guest-bound capability gate (fail closed when path is set).
+/// Guest-bound capability gate.
+/// - When `ANUBIS_VZ_ENFORCE_RUN_CAP=1` (set by `anubis vz exploit|fuzz`), capability is **required**.
+/// - When only `ANUBIS_RUN_CAP_PATH` is set, still validate if present.
 fn require_run_capability_if_configured(action: &str) -> Result<()> {
-    let Ok(cap_path) = std::env::var("ANUBIS_RUN_CAP_PATH") else {
-        return Ok(());
+    let enforce = std::env::var("ANUBIS_VZ_ENFORCE_RUN_CAP").ok().as_deref() == Some("1");
+    let cap_path = match std::env::var("ANUBIS_RUN_CAP_PATH") {
+        Ok(p) if !p.trim().is_empty() => p,
+        _ if enforce => {
+            return Err(anyhow!(
+                "ANUBIS_RUN_CAP_REQUIRED: `{action}` requires a guest-bound run capability \
+                 (ANUBIS_RUN_CAP_PATH + ANUBIS_RUN_CAP_KEY); host orchestrator must mint one"
+            ));
+        }
+        _ => return Ok(()),
     };
-    if cap_path.trim().is_empty() {
-        return Ok(());
-    }
     let key = std::env::var("ANUBIS_RUN_CAP_KEY").map_err(|_| {
-        anyhow!("ANUBIS_RUN_CAP_KEY_MISSING: ANUBIS_RUN_CAP_PATH set but no ANUBIS_RUN_CAP_KEY")
+        anyhow!("ANUBIS_RUN_CAP_KEY_MISSING: capability path set but no ANUBIS_RUN_CAP_KEY")
     })?;
     let program_digest = std::env::var("ANUBIS_PROGRAM_DIGEST").unwrap_or_else(|_| "*".into());
     let engagement_id = std::env::var("ANUBIS_ENGAGEMENT_ID").unwrap_or_else(|_| "*".into());
@@ -213,33 +220,33 @@ mod once_cell_noop {
 ///
 /// Mandatory boundary: research execution is permitted only inside an Anubis VZ guest.
 pub fn require_research_run_allowed(action: &str) -> Result<()> {
-    if in_vz_guest() {
-        return Ok(());
+    if !in_vz_guest() {
+        return Err(anyhow!(
+            "ANUBIS_RESEARCH_HOST_FORBIDDEN: `{action}` must run inside a disposable Apple \
+             Virtualization.framework guest; use `anubis vz exploit --allow-research --base \
+             anubis-xcode <program>`"
+        ));
     }
-    Err(anyhow!(
-        "ANUBIS_RESEARCH_HOST_FORBIDDEN: `{action}` must run inside a disposable Apple \
-         Virtualization.framework guest; use `anubis vz exploit --allow-research --base \
-         anubis-xcode <program>`"
-    ))
+    require_run_capability_if_configured(action)
 }
 
 /// Policy for `anubis fuzz --target …`.
 ///
-/// - VZ guest: always OK  
+/// - VZ guest: OK only with guest-bound capability when ENFORCE is set
 /// - Host: forbidden, including gold fixtures and environment overrides
 pub fn require_fuzz_allowed(target: &Path) -> Result<()> {
-    if in_vz_guest() {
-        return Ok(());
+    if !in_vz_guest() {
+        return Err(anyhow!(
+            "ANUBIS_FUZZ_HOST_FORBIDDEN: fuzz target `{}` requires an Apple Virtualization guest.\n\
+             \n\
+             Options:\n\
+               anubis vz fuzz --allow-research --base anubis-xcode {}\n\
+               # or in guest: export ANUBIS_VZ_GUEST=1",
+            target.display(),
+            target.display()
+        ));
     }
-    Err(anyhow!(
-        "ANUBIS_FUZZ_HOST_FORBIDDEN: fuzz target `{}` requires an Apple Virtualization guest.\n\
-         \n\
-         Options:\n\
-           anubis vz fuzz --allow-research --base anubis-xcode {}\n\
-           # or in guest: export ANUBIS_VZ_GUEST=1",
-        target.display(),
-        target.display()
-    ))
+    require_run_capability_if_configured(&format!("fuzz:{}", target.display()))
 }
 
 /// JSON status for doctor / gates.

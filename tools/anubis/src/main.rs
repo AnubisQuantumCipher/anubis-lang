@@ -2524,51 +2524,53 @@ fn main() -> Result<()> {
                 "platform": "anubis-offensive",
                 "protocol": offensive::protocol::PROTOCOL_VERSION,
                 "surfaces": {
-                    "engagement_scope": "REAL",
-                    "http_c2_listener": "REAL",
-                    "encrypted_beacons_aop2": "REAL",
-                    "agent_keys_jitter": "REAL",
-                    "mtls_cert_material": "REAL",
-                    "mtls_rustls_handshake": "REAL",
-                    "operator_console": "REAL",
-                    "rbac_roles": "REAL",
-                    "multi_operator_token_auth": "REAL",
-                    "dns_transport_lab": "REAL",
-                    "dns_doh_c2_codec": "REAL",
-                    "uds_pipe_transport": "REAL",
-                    "agent_generate": "REAL",
-                    "task_queue": "REAL",
-                    "module_catalog": "REAL",
-                    "exploit_modules": "REAL",
-                    "persist_launchagent": "REAL",
-                    "inject_plan_only": "REAL",
-                    "inject_live_double_auth": "REAL",
-                    "lateral_ssh_scoped": "REAL",
-                    "lateral_smb_plan_only": "REAL",
-                    "rop_pattern_gadgets": "REAL",
-                    "browser_harness_lab": "REAL",
-                    "xor_packer": "REAL",
-                    "string_scramble": "REAL",
-                    "rbac_queue_and_admin": "REAL",
-                    "structured_allowed_targets": "REAL",
-                    "action_receipt_chain": "REAL",
-                    "poc_kit_packing": "REAL",
-                    "poc_kit_process_fuzz": "REAL",
-                    "vz_sandbox_exec": "REAL",
-                    "vz_exploit_sandbox": "REAL",
-                    "vz_fuzz_sandbox": "REAL",
-                    "vz_agent_test": "REAL",
-                    "vz_c2_cycle": "REAL",
-                    "vz_stress_battery": "REAL",
-                    "attck_kill_chain_catalog": "REAL",
-                    "opsec_score": "REAL",
-                    "recon_hostinfo": "REAL",
-                    "recon_scan_scoped": "REAL",
-                    "malleable_c2_profile": "REAL",
-                    "campaign_playbook": "REAL",
-                    "purple_team_report": "REAL",
-                    "phish_plan_only": "REAL",
-                    "lolbas_catalog_plan_only": "REAL",
+                    "engagement_scope": "LAB_REAL",
+                    "http_c2_listener": "LAB_REAL",
+                    "encrypted_beacons_aop2": "LAB_REAL",
+                    "agent_keys_jitter": "LAB_REAL",
+                    "mtls_cert_material": "LAB_REAL",
+                    "mtls_rustls_handshake": "LAB_REAL",
+                    "operator_console": "LAB_REAL",
+                    "rbac_roles": "LAB_REAL",
+                    "multi_operator_token_auth": "LAB_REAL",
+                    "dns_transport_lab": "LAB_REAL",
+                    "dns_doh_c2_codec": "LAB_REAL",
+                    "uds_pipe_transport": "LAB_REAL",
+                    "agent_generate": "LAB_REAL",
+                    "task_queue": "LAB_REAL",
+                    "module_catalog": "LAB_REAL",
+                    "exploit_modules": "LAB_REAL",
+                    "persist_launchagent": "LAB_REAL",
+                    "inject_plan_only": "PLAN_ONLY",
+                    "inject_live_double_auth": "LAB_REAL",
+                    "lateral_ssh_scoped": "LAB_REAL",
+                    "lateral_smb_plan_only": "PLAN_ONLY",
+                    "rop_pattern_gadgets": "LAB_REAL",
+                    "browser_harness_lab": "LAB_REAL",
+                    "xor_packer": "LAB_REAL",
+                    "string_scramble": "LAB_REAL",
+                    "rbac_queue_and_admin": "LAB_REAL",
+                    "structured_allowed_targets": "LAB_REAL",
+                    "action_receipt_chain": "LAB_REAL_HMAC",
+                    "guest_run_capability": "LAB_REAL",
+                    "poc_kit_packing": "LAB_REAL",
+                    "poc_kit_process_fuzz": "LAB_REAL",
+                    "vz_sandbox_exec": "LAB_REAL",
+                    "vz_exploit_sandbox": "LAB_REAL",
+                    "vz_fuzz_sandbox": "LAB_REAL",
+                    "vz_agent_test": "PARTIAL",
+                    "vz_c2_cycle": "PARTIAL",
+                    "vz_stress_battery": "PARTIAL",
+                    "attck_kill_chain_catalog": "LAB_REAL",
+                    "opsec_score": "LAB_REAL",
+                    "recon_hostinfo": "LAB_REAL",
+                    "recon_scan_scoped": "LAB_REAL",
+                    "malleable_c2_profile": "PARTIAL",
+                    "campaign_playbook": "LAB_REAL",
+                    "purple_team_report": "LAB_REAL",
+                    "phish_plan_only": "PLAN_ONLY",
+                    "lolbas_catalog_plan_only": "PLAN_ONLY",
+                    "legacy_vmctl_exec": "DISABLED",
                 },
                 "vz": offensive::vz::vz_doctor().unwrap_or_else(|_| serde_json::json!({"vz_available": false})),
                 "security_fixture_contract": {
@@ -3018,17 +3020,25 @@ fn main() -> Result<()> {
             } else {
                 println!("Anubis VZ Sandbox Doctor");
                 println!(
-                    "  vmctl:     {} ({})",
-                    report["vmctl_path"],
-                    if report["vz_available"].as_bool() == Some(true) {
-                        "ok"
+                    "  backend:   tart ({})",
+                    if report["tart_available"].as_bool() == Some(true)
+                        || report["vz_available"].as_bool() == Some(true)
+                    {
+                        "available"
+                    } else {
+                        "MISSING"
+                    }
+                );
+                println!(
+                    "  golden:    anubis-xcode ({})",
+                    if report["tart_golden_anubis_xcode"].as_bool() == Some(true) {
+                        "present"
                     } else {
                         "missing"
                     }
                 );
                 println!(
-                    "  guests:    {}/{} running",
-                    report["running_guests"], report["total_guests"]
+                    "  legacy_vmctl: disabled (non-authoritative; use anubis vz)"
                 );
                 println!(
                     "  offensive: {}",

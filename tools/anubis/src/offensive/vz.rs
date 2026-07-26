@@ -153,6 +153,17 @@ fn workspace_root() -> Option<String> {
 }
 
 fn run_vmctl(args: &[&str]) -> Result<std::process::Output> {
+    // Canonical isolation is Tart via `anubis vz` (tools/anubis/src/vz.rs).
+    // Legacy vmctl execution is fail-closed unless explicitly re-enabled for
+    // migration diagnostics only — never for isolation evidence.
+    if std::env::var("ANUBIS_ALLOW_LEGACY_VMCTL").ok().as_deref() != Some("1") {
+        return Err(anyhow!(
+            "ANUBIS_VZ_LEGACY_VMCTL_DISABLED: offensive vmctl path is non-authoritative and disabled. \
+             Use `anubis vz status|exploit|fuzz|exec|sync` (tart / Apple Virtualization.framework). \
+             Set ANUBIS_ALLOW_LEGACY_VMCTL=1 only for migration diagnostics (not isolation evidence). \
+             attempted args: {args:?}"
+        ));
+    }
     let bin = vmctl_bin();
     let mut cmd = Command::new(&bin);
     if let Some(root) = workspace_root() {
@@ -618,6 +629,22 @@ pub fn vz_snapshot(guest: &str, label: &str) -> Result<()> {
         return Err(anyhow!("ANUBIS_VZ_SNAPSHOT: {err}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod legacy_vmctl_tests {
+    use super::*;
+
+    #[test]
+    fn run_vmctl_fails_closed_without_allow_env() {
+        // Ensure flag is unset for this process.
+        std::env::remove_var("ANUBIS_ALLOW_LEGACY_VMCTL");
+        let err = run_vmctl(&["status", "--json"]).unwrap_err().to_string();
+        assert!(
+            err.contains("ANUBIS_VZ_LEGACY_VMCTL_DISABLED"),
+            "got {err}"
+        );
+    }
 }
 
 mod dirs {

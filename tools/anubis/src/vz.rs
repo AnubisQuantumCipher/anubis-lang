@@ -522,6 +522,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             }
             disposable(&base, keep, |name, ip| {
                 const REMOTE_POC: &str = "/tmp/anubis-poc.anb";
+                const REMOTE_CAP: &str = "/tmp/anubis-run-cap.json";
                 sync_path_verified(&user, &ip, &poc, REMOTE_POC)?;
                 // Gold PoC-kit oracle (path used by examples/security/poc_local_overflow.anb).
                 // Without this, disposable guests only receive the .anb + runner and spawn fails.
@@ -538,12 +539,33 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     )?;
                 }
                 let runner = sync_current_anubis(&user, &ip)?;
-                eprintln!("[anubis vz] running `anubis run /tmp/anubis-poc.anb --allow-research` in disposable `{name}`");
+                let (cap_path, cap_key, program_digest) =
+                    mint_and_write_guest_cap(name, &base, Path::new(&poc), "process.spawn")?;
+                let cap_host = cap_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("ANUBIS_RUN_CAP_PATH: non-UTF8"))?;
+                sync_path_verified(&user, &ip, cap_host, REMOTE_CAP)?;
+                eprintln!(
+                    "[anubis vz] running `anubis run /tmp/anubis-poc.anb --allow-research` in disposable `{name}` \
+                     with guest-bound run capability (single-use)"
+                );
                 // `$HOME` so relative `poc_kit/bin/vuln_local` resolves after stage.
                 let remote = format!(
                     "cd \"$HOME\" && env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
-                     ANUBIS_ISOLATION=tart-disposable-guest {runner} run /tmp/anubis-poc.anb --allow-research",
-                    runner = shell_single_quote(&runner)
+                     ANUBIS_ISOLATION=tart-disposable-guest \
+                     ANUBIS_VZ_ENFORCE_RUN_CAP=1 \
+                     ANUBIS_RUN_CAP_PATH={cap} \
+                     ANUBIS_RUN_CAP_KEY={key} \
+                     ANUBIS_VZ_GUEST_ID={gid} \
+                     ANUBIS_PROGRAM_DIGEST={pd} \
+                     ANUBIS_ENGAGEMENT_ID=vz-session \
+                     ANUBIS_ENGAGEMENT_HASH=vz-session-hash \
+                     {runner} run /tmp/anubis-poc.anb --allow-research",
+                    runner = shell_single_quote(&runner),
+                    cap = shell_single_quote(REMOTE_CAP),
+                    key = shell_single_quote(&cap_key),
+                    gid = shell_single_quote(name),
+                    pd = shell_single_quote(&program_digest),
                 );
                 ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
             })
@@ -587,10 +609,24 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     &["chmod".into(), "+x".into(), remote_target.clone()],
                 )?;
                 let runner = sync_current_anubis(&user, &ip)?;
+                let (cap_path, cap_key, program_digest) =
+                    mint_and_write_guest_cap(name, &base, host_target, "process.spawn")?;
+                let cap_host = cap_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("ANUBIS_RUN_CAP_PATH: non-UTF8"))?;
+                sync_path_verified(&user, &ip, cap_host, "/tmp/anubis-run-cap.json")?;
                 eprintln!(
-                    "[anubis vz] fuzzing in disposable `{name}` (`anubis fuzz --target {remote_target} --runs {iterations}`)"
+                    "[anubis vz] fuzzing in disposable `{name}` (`anubis fuzz --target {remote_target} --runs {iterations}`) \
+                     with guest-bound run capability"
                 );
-                let remote = fuzz_guest_shell_command(&runner, &remote_target, iterations);
+                let remote = fuzz_guest_shell_command(
+                    &runner,
+                    &remote_target,
+                    iterations,
+                    name,
+                    &program_digest,
+                    &cap_key,
+                );
                 ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
             })
         }
@@ -841,14 +877,70 @@ fn guest_fuzz_target_path(host_target: &str) -> Result<String> {
 
 /// Inner guest shell for process fuzz — must match host `anubis fuzz --target … --runs …`
 /// (not positional .anb, not `--iterations`, not `--allow-research` on the fuzz subcommand).
-fn fuzz_guest_shell_command(runner: &str, remote_target: &str, runs: u64) -> String {
+fn fuzz_guest_shell_command(
+    runner: &str,
+    remote_target: &str,
+    runs: u64,
+    guest_id: &str,
+    program_digest: &str,
+    cap_key: &str,
+) -> String {
     format!(
         "env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
-         ANUBIS_ISOLATION=tart-disposable-guest {runner} fuzz --target {target} --runs {runs}",
+         ANUBIS_ISOLATION=tart-disposable-guest \
+         ANUBIS_VZ_ENFORCE_RUN_CAP=1 \
+         ANUBIS_RUN_CAP_PATH=/tmp/anubis-run-cap.json \
+         ANUBIS_RUN_CAP_KEY={key} \
+         ANUBIS_VZ_GUEST_ID={gid} \
+         ANUBIS_PROGRAM_DIGEST={pd} \
+         ANUBIS_ENGAGEMENT_ID=vz-session \
+         ANUBIS_ENGAGEMENT_HASH=vz-session-hash \
+         {runner} fuzz --target {target} --runs {runs}",
         runner = shell_single_quote(runner),
         target = shell_single_quote(remote_target),
-        runs = runs
+        runs = runs,
+        key = shell_single_quote(cap_key),
+        gid = shell_single_quote(guest_id),
+        pd = shell_single_quote(program_digest),
     )
+}
+
+/// Mint a single-use guest-bound capability and stage path+JSON for the disposable guest.
+fn mint_and_write_guest_cap(
+    guest_id: &str,
+    base: &str,
+    source_path: &Path,
+    effect: &str,
+) -> Result<(PathBuf, String, String)> {
+    use rand::RngCore;
+    let mut key_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key_bytes);
+    let key = hex::encode(key_bytes);
+    let source_digest = file_sha256_hex(source_path)?;
+    let compiler = std::env::current_exe().context("resolve anubis for capability digests")?;
+    let compiler_digest = file_sha256_hex(&compiler)?;
+    let program_digest = source_digest.clone();
+    let cap = crate::offensive::run_capability::mint(
+        &key,
+        "vz-session",
+        "vz-session-hash",
+        "vz-orchestrator-auth",
+        &source_digest,
+        &compiler_digest,
+        &program_digest,
+        guest_id,
+        base,
+        "tart-disposable",
+        vec![effect.into(), "vm.execute".into()],
+        vec![],
+        "vz-operator",
+        3600,
+    );
+    let dir = std::env::temp_dir().join(format!("anubis-run-cap-{}", guest_id));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("run_capability.json");
+    crate::offensive::run_capability::write_cap(&path, &cap)?;
+    Ok((path, key, program_digest))
 }
 
 /// Copy the exact currently-running Anubis binary into the disposable guest. This avoids relying
@@ -999,7 +1091,14 @@ mod ssh_transport_tests {
     #[test]
     fn fuzz_guest_command_matches_host_fuzz_cli_shape() {
         // Host: `anubis fuzz --target <bin> --runs N` — NOT positional .anb / --iterations / --allow-research.
-        let cmd = fuzz_guest_shell_command("/tmp/anubis-vz-runner", "/tmp/anubis-fuzz/vuln_local", 42);
+        let cmd = fuzz_guest_shell_command(
+            "/tmp/anubis-vz-runner",
+            "/tmp/anubis-fuzz/vuln_local",
+            42,
+            "guest-test-1",
+            "deadbeef",
+            "cap-key-hex",
+        );
         assert!(
             cmd.contains("fuzz --target '/tmp/anubis-fuzz/vuln_local' --runs 42"),
             "unexpected fuzz guest cmd: {cmd}"
@@ -1014,6 +1113,8 @@ mod ssh_transport_tests {
         );
         assert!(cmd.contains("ANUBIS_VZ_GUEST=1"));
         assert!(cmd.contains("ANUBIS_ISOLATION=tart-disposable-guest"));
+        assert!(cmd.contains("ANUBIS_VZ_ENFORCE_RUN_CAP=1"));
+        assert!(cmd.contains("ANUBIS_RUN_CAP_PATH=/tmp/anubis-run-cap.json"));
         assert!(!cmd.contains(".anb"));
     }
 
