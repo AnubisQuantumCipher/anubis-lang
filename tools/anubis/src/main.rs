@@ -17,7 +17,8 @@ use anubis_compiler::{
     backends::native::lower_to_native,
     backends::run::{
         compile_native_rust_to_exe, compile_sign_and_run_source, lower_program_to_guest,
-        lower_program_to_rust, resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
+        lower_program_to_rust_with_mono, resolved_run_timeout, run_child_capped,
+        ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
         build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
@@ -1462,7 +1463,8 @@ fn wrap_repl_input(src: &str) -> String {
 /// Phase-7 REPL: always typecheck (+ obligations when present) before eval.
 fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Result<()> {
     use anubis_compiler::backends::run::{
-        compile_native_rust_to_exe, lower_program_to_rust, resolved_run_timeout, run_child_capped,
+        compile_native_rust_to_exe, lower_program_to_rust_with_mono, resolved_run_timeout,
+        run_child_capped,
     };
     use anubis_compiler::frontend::{parse_source, Mode, AST};
     use anubis_compiler::interp::Interp;
@@ -1492,8 +1494,14 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
     let run_snippet = |src: &str, session: &mut Interp| -> Result<()> {
         let ast = check_src(src)?;
         if exact {
-            let rust =
-                lower_program_to_rust(&ast.items, allow_research).map_err(|e| anyhow!("{e}"))?;
+            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{e}"))?;
+            let rust = lower_program_to_rust_with_mono(
+                &ast.items,
+                allow_research,
+                &typed.mono_specializations,
+            )
+            .map_err(|e| anyhow!("{e}"))?;
             let dir = tempfile::tempdir()?;
             let bin = dir.path().join("repl_bin");
             compile_native_rust_to_exe(&rust, &bin).map_err(|e| anyhow!("{e}"))?;
@@ -5629,7 +5637,7 @@ fn run_anubis_source_signed(
             "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
         ));
     }
-    let _typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+    let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
     std::fs::create_dir_all(out)?;
     let rs_path = out.join("anubis_run.rs");
     let exe_path = out.join("anubis_run");
@@ -5637,8 +5645,12 @@ fn run_anubis_source_signed(
     #[cfg(target_os = "macos")]
     {
         eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
-        let rust_source =
-            lower_program_to_rust(&ast.items, allow_research).map_err(|e| anyhow!("{e}"))?;
+        let rust_source = lower_program_to_rust_with_mono(
+            &ast.items,
+            allow_research,
+            &typed.mono_specializations,
+        )
+        .map_err(|e| anyhow!("{e}"))?;
         let _ = std::fs::write(&rs_path, &rust_source);
         if let Some(pin) = proof_inputs_env {
             // SAFETY: process-local env for child inherit of proof inputs.
@@ -5702,8 +5714,10 @@ fn run_anubis_source(
     // WHOLE program — every function, not just `main` — so user-defined calls and recursion
     // execute on the Rust call stack. This is what makes Anubis Turing-complete at runtime.
     // With --allow-research, PoC kit builtins (target_run, p64, cyclic, …) and research blocks execute.
-    let _typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-    let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
+    // Mono inventory from typecheck drives specialized clones for literal-pinned generic calls.
+    let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+    let rust_source =
+        lower_program_to_rust_with_mono(&ast.items, allow_research, &typed.mono_specializations)?;
 
     std::fs::create_dir_all(out)?;
     // Compile and run inside a unique temp directory so that concurrent `anubis run`

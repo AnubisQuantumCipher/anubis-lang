@@ -31,6 +31,14 @@ struct EmitCtx<'a> {
     /// (a `Call`/`FieldAccess`/`Index` the checker cannot type) that smuggles the wrong runtime kind.
     struct_field_types:
         &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    /// Static monomorphization dispatch table from the type checker:
+    /// `(function, type_args as sorted pairs, mangled rust name)`.
+    /// Call sites that pin args to a specialization invoke the mangled clone instead of the
+    /// generic `anb_*` body. Values remain `AnubisValue`; clones get concrete param/return
+    /// type guards from the specialization (first slice of monomorphized codegen).
+    mono: &'a [(String, Vec<(String, String)>, String)],
+    /// Free-function parameter type annotations (for mono call matching).
+    fn_param_types: &'a std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// Collect every name bound anywhere in a function (params + let/for/match/if-let/while-let/
@@ -215,6 +223,8 @@ struct FnDef<'a> {
     /// Declared return type (`-> T`), or `None`. When it is an integer type, the runtime enforces the
     /// value returned is actually an integer (see the entry guard's RC6/RC7 rationale).
     ret_type: Option<&'a str>,
+    /// Generic type parameters (`fn id<T>(…)` → `["T"]`). Empty for monomorphic functions.
+    generics: &'a [String],
 }
 
 /// The emitted Rust function name for an Anubis function or method.
@@ -238,6 +248,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                 params,
                 body,
                 ret,
+                generics,
                 ..
             } => out.push(FnDef {
                 name: name.as_str(),
@@ -245,6 +256,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                 body: body.as_slice(),
                 impl_type: None,
                 ret_type: ret.as_deref(),
+                generics: generics.as_slice(),
             }),
             Item::Impl {
                 type_name, methods, ..
@@ -255,6 +267,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                         params,
                         body,
                         ret,
+                        generics,
                         ..
                     } = m
                     {
@@ -264,6 +277,7 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
                             body: body.as_slice(),
                             impl_type: Some(type_name.as_str()),
                             ret_type: ret.as_deref(),
+                            generics: generics.as_slice(),
                         });
                     }
                 }
@@ -272,6 +286,101 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
             _ => {}
         }
     }
+}
+
+/// Substitute a free type parameter annotation using monomorphization bindings.
+/// Bare `T` becomes the concrete type; compound annotations are left unchanged (accept-biased).
+fn subst_type_param(annotation: &str, type_args: &std::collections::BTreeMap<String, String>) -> String {
+    let t = annotation.trim();
+    type_args
+        .get(t)
+        .cloned()
+        .unwrap_or_else(|| annotation.to_string())
+}
+
+/// Mangled Rust name for a monomorphized clone: `anb_id__mono__T_u32`.
+fn mono_rust_name(fn_name: &str, type_args: &std::collections::BTreeMap<String, String>) -> Result<String> {
+    let mut parts: Vec<String> = type_args
+        .iter()
+        .map(|(k, v)| format!("{k}_{v}"))
+        .collect();
+    parts.sort();
+    let tag = parts.join("__");
+    Ok(format!(
+        "anb_{}__mono__{}",
+        sanitize_ident(fn_name)?,
+        sanitize_ident(&tag)?
+    ))
+}
+
+/// Whether a source expression is a literal that pins to `expected` annotation at mono dispatch.
+fn mono_literal_matches(arg: &Expr, expected: &str) -> bool {
+    let t = expected.trim();
+    match arg {
+        Expr::Literal(s) => {
+            let s = s.trim();
+            if s == "true" || s == "false" {
+                return t == "bool";
+            }
+            if s.contains('.') {
+                return crate::middle::ty::is_float(t) || t == "float" || t == "f64";
+            }
+            // Decimal / hex integer literal
+            if s.parse::<i64>().is_ok()
+                || s.strip_prefix("0x")
+                    .or_else(|| s.strip_prefix("0X"))
+                    .map(|h| i64::from_str_radix(h, 16).is_ok())
+                    .unwrap_or(false)
+            {
+                return crate::middle::ty::is_integer(t) || t == "int" || t == "i64" || t == "i32";
+            }
+            false
+        }
+        Expr::Unary { op, expr, .. }
+            if op == "-" && matches!(expr.as_ref(), Expr::Literal(_)) =>
+        {
+            crate::middle::ty::is_integer(t) || t == "int" || t == "i64" || t == "i32"
+        }
+        Expr::StrLiteral(_) => t == "string" || t == "str",
+        _ => false,
+    }
+}
+
+/// Pick a monomorphized rust name when call args pin a known specialization (literal path).
+fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<String> {
+    let param_tys = ctx.fn_param_types.get(callee)?;
+    if param_tys.len() != args.len() {
+        return None;
+    }
+    let mut best: Option<String> = None;
+    for (fn_name, pairs, rust_name) in ctx.mono {
+        if fn_name != callee {
+            continue;
+        }
+        let map: std::collections::BTreeMap<String, String> = pairs.iter().cloned().collect();
+        if map.is_empty() {
+            continue;
+        }
+        let mut ok = true;
+        let mut pinned = 0usize;
+        for (pty, arg) in param_tys.iter().zip(args.iter()) {
+            let base = pty.trim();
+            if let Some(concrete) = map.get(base) {
+                if !mono_literal_matches(arg, concrete) {
+                    ok = false;
+                    break;
+                }
+                pinned += 1;
+            }
+        }
+        // Require at least one generic param to pin via a literal; otherwise fall back.
+        if ok && pinned > 0 {
+            // Deterministic: first in sorted mono table wins (table is pre-sorted).
+            best = Some(rust_name.clone());
+            break;
+        }
+    }
+    best
 }
 
 /// Build the method registry: method name -> `(type, param_count)` for each defining type.
@@ -303,9 +412,29 @@ fn collect_methods(
 /// The trailing `AnubisValue::Int(0)` is the implicit return for functions that
 /// fall off the end without an explicit `return`.
 fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
+    let rust_name = fn_rust_name(def.name, def.impl_type)?;
+    emit_fn_core(
+        def.name,
+        def.params,
+        def.body,
+        def.ret_type,
+        &rust_name,
+        base,
+    )
+}
+
+/// Core emitter shared by monomorphic functions and monomorphized clones.
+fn emit_fn_core(
+    name: &str,
+    params: &[(String, String)],
+    body: &[Stmt],
+    ret_type: Option<&str>,
+    rust_name: &str,
+    base: &EmitCtx,
+) -> Result<String> {
     // Per-function local scope: params + everything bound in the body. A call to one of these
     // names is a closure application, not a builtin.
-    let locals = collect_local_names(def.params, def.body);
+    let locals = collect_local_names(params, body);
     let ctx = &EmitCtx {
         allow_research: base.allow_research,
         fns: base.fns,
@@ -313,19 +442,21 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
         methods: base.methods,
         locals: &locals,
         struct_field_types: base.struct_field_types,
+        mono: base.mono,
+        fn_param_types: base.fn_param_types,
     };
     let mut sig = Vec::new();
-    for (p, _ty) in def.params {
+    for (p, _ty) in params {
         let id = sanitize_ident(p)?;
         sig.push(format!("{}{}: AnubisValue", mut_prefix(&id), id));
     }
-    let (head, tail) = split_tail_expr(def.body);
+    let (head, tail) = split_tail_expr(body);
     let mut body_src = String::new();
     // RC4 soundness: a parameter the checker models as an integer (u8/u16/u32/u64) is proved over a
     // pure i64. Guard at entry that it actually holds an integer, so a float/string/... argument fails
     // closed (ANUBIS_TYPE_VIOLATION) instead of taking a divergent runtime path that violates the
     // proven contract. Uses the SAME predicate the solver's param-modeling gate uses, so they align.
-    for (p, ty) in def.params {
+    for (p, ty) in params {
         if let Some(w) = crate::middle::ty::unsigned_mask_width(ty) {
             // A1 (task #50): an unsigned fixed-width param (u8/u16/u32) is masked to [0, 2^w) at
             // entry, so the checker's injected range (`0 <= x < 2^w`) is genuinely what the runtime
@@ -361,7 +492,6 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
         Some(expr) => safe_run_expr(expr, ctx)?,
         None => "AnubisValue::Int(0)".to_string(),
     };
-    let rust_name = fn_rust_name(def.name, def.impl_type)?;
     let inner_sig = sig.join(", ");
     // RC6/RC7 soundness: if the function DECLARES an integer return type, the solver may model its
     // result (and a call-site binding of it) as an i64 — but the return type is INERT at runtime, so a
@@ -378,7 +508,7 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     // integer spelling — `int`/`i64` normalize to it — so masking returns would silently change every
     // program that returns a negative/overflowing value from a `-> u32` function). So a u32 return uses
     // the plain integer guard `anubis_require_int_ret` (fail-closed on a non-integer, no mask).
-    let ret_guard = def.ret_type.and_then(|t| {
+    let ret_guard = ret_type.and_then(|t| {
         if crate::middle::ty::is_integer(t) {
             Some("anubis_require_int_ret")
         } else if crate::middle::ty::is_float(t) {
@@ -390,7 +520,7 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
     if let Some(guard_fn) = ret_guard {
         let mut outer_params = Vec::new();
         let mut fwd = Vec::new();
-        for (p, _ty) in def.params {
+        for (p, _ty) in params {
             let id = sanitize_ident(p)?;
             outer_params.push(format!("{id}: AnubisValue"));
             fwd.push(id);
@@ -399,7 +529,7 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
             "fn {rust_name}({outer}) -> AnubisValue {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    {guard_fn}(__anb_body({fwd}), {namelit})\n}}\n",
             outer = outer_params.join(", "),
             fwd = fwd.join(", "),
-            namelit = rust_string_lit(def.name)?,
+            namelit = rust_string_lit(name)?,
         ))
     } else {
         Ok(format!(
@@ -484,6 +614,18 @@ fn block_as_tail_expr(stmts: &[Stmt]) -> Expr {
 /// When `allow_research` is true, the PoC kit surface is enabled: `target_run`, packing
 /// (`p8`/`p16`/`p32`/`p64`), `cyclic`, research/exploit block bodies, and local-only process control.
 pub fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<String> {
+    lower_program_to_rust_with_mono(items, allow_research, &[])
+}
+
+/// Lower with a static monomorphization inventory from typecheck (`TypedIR.mono_specializations`).
+/// Emits specialized clones for each entry and rewrites literal-pinned call sites to those clones.
+/// Values remain `AnubisValue`; this is monomorphized **code** with concrete type guards, not
+/// unboxed native types.
+pub fn lower_program_to_rust_with_mono(
+    items: &[Item],
+    allow_research: bool,
+    mono: &[crate::middle::MonoSpecialization],
+) -> Result<String> {
     // Run the program on a worker thread with a large (1 GiB) stack instead of the OS main-thread
     // stack (8 MiB on macOS), so naturally-recursive Anubis code reaches ~1M frames before
     // overflowing (the native call stack IS the recursion, per the Turing-completeness claim). The
@@ -503,6 +645,7 @@ pub fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<Str
              if child.join().is_err() { std::process::exit(101); }\n}\n",
         allow_research,
         false,
+        mono,
     )
 }
 
@@ -530,6 +673,7 @@ pub fn lower_program_to_guest(items: &[Item]) -> Result<String> {
         ),
         false, // no process PoC kit inside zkVM guest
         true,  // inject proof-input runtime for guest
+        &[],   // guest path: no mono inventory yet (safe default)
     )
 }
 
@@ -541,6 +685,7 @@ fn lower_program_with_entry(
     entry: &str,
     allow_research: bool,
     guest_proof_inputs: bool,
+    mono: &[crate::middle::MonoSpecialization],
 ) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
@@ -563,6 +708,39 @@ fn lower_program_with_entry(
         .filter(|d| d.impl_type.is_none())
         .map(|d| (d.name.to_string(), d.params.len()))
         .collect();
+    let fn_param_types: std::collections::BTreeMap<String, Vec<String>> = fns
+        .iter()
+        .filter(|d| d.impl_type.is_none())
+        .map(|d| {
+            (
+                d.name.to_string(),
+                d.params.iter().map(|(_, t)| t.clone()).collect(),
+            )
+        })
+        .collect();
+    // Build mono dispatch table (sorted for deterministic emit/match).
+    let mut mono_table: Vec<(String, Vec<(String, String)>, String)> = Vec::new();
+    let mut mono_seen = std::collections::BTreeSet::new();
+    for m in mono {
+        if m.type_args.is_empty() {
+            continue;
+        }
+        // Only free functions that exist with generics.
+        let Some(def) = fns
+            .iter()
+            .find(|d| d.name == m.function && d.impl_type.is_none() && !d.generics.is_empty())
+        else {
+            continue;
+        };
+        let pairs: Vec<(String, String)> = m.type_args.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let key = (m.function.clone(), pairs.clone());
+        if !mono_seen.insert(key) {
+            continue;
+        }
+        let rust_name = mono_rust_name(def.name, &m.type_args)?;
+        mono_table.push((m.function.clone(), pairs, rust_name));
+    }
+    mono_table.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
     let mut methods = std::collections::BTreeMap::new();
     collect_methods(items, &mut methods);
     // struct name → (field → declared type), for the construction-boundary numeric-kind coercion.
@@ -586,10 +764,38 @@ fn lower_program_with_entry(
         methods: &methods,
         locals: &empty_locals,
         struct_field_types: &struct_field_types,
+        mono: &mono_table,
+        fn_param_types: &fn_param_types,
     };
     let mut functions_src = String::new();
     for def in &fns {
         functions_src.push_str(&emit_fn(def, &ctx)?);
+        functions_src.push('\n');
+    }
+    // Monomorphized clones: same body, params/return types specialized from inventory.
+    for (fn_name, pairs, rust_name) in &mono_table {
+        let Some(def) = fns
+            .iter()
+            .find(|d| d.name == fn_name && d.impl_type.is_none())
+        else {
+            continue;
+        };
+        let type_args: std::collections::BTreeMap<String, String> =
+            pairs.iter().cloned().collect();
+        let params_owned: Vec<(String, String)> = def
+            .params
+            .iter()
+            .map(|(n, t)| (n.clone(), subst_type_param(t, &type_args)))
+            .collect();
+        let ret_owned = def.ret_type.map(|t| subst_type_param(t, &type_args));
+        functions_src.push_str(&emit_fn_core(
+            def.name,
+            &params_owned,
+            def.body,
+            ret_owned.as_deref(),
+            rust_name,
+            &ctx,
+        )?);
         functions_src.push('\n');
     }
     // Packing/cyclic helpers are always available (local data transforms). Process spawn
@@ -3413,6 +3619,10 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     .iter()
                     .map(|a| safe_run_expr(a, ctx))
                     .collect::<Result<Vec<_>>>()?;
+                // Prefer a monomorphized clone when the checker inventory + literal args pin types.
+                if let Some(mono_name) = resolve_mono_call(callee, args, ctx) {
+                    return Ok(format!("{mono_name}({})", lowered.join(", ")));
+                }
                 return Ok(format!(
                     "anb_{}({})",
                     sanitize_ident(callee)?,
@@ -4478,7 +4688,12 @@ pub fn compile_and_run_source(
     args: &[String],
 ) -> Result<std::process::Output> {
     let ast = crate::frontend::parse_source(source).map_err(|e| anyhow!("parse: {}", e))?;
-    compile_and_run_items(&ast.items, allow_research, args)
+    // Prefer mono inventory when typecheck succeeds; fall back to empty mono on check errors
+    // so runtime tests can still exercise fail-closed paths that only lower.
+    let mono = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
+        .map(|ir| ir.mono_specializations)
+        .unwrap_or_default();
+    compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono)
 }
 
 /// Bump when crypto dependency set or audited runtime changes (invalidates run cache).
@@ -4630,7 +4845,10 @@ pub fn compile_sign_and_run_source(
     #[cfg(target_os = "macos")]
     {
         let ast = crate::frontend::parse_source(src).map_err(|e| anyhow!("parse failed: {e}"))?;
-        let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
+        let mono = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
+            .map(|ir| ir.mono_specializations)
+            .unwrap_or_default();
+        let rust_source = lower_program_to_rust_with_mono(&ast.items, allow_research, &mono)?;
         let dir =
             std::env::temp_dir().join(format!("anubis-signed-run-{}", anubis_unique_suffix()));
         std::fs::create_dir_all(&dir)?;
@@ -4769,7 +4987,16 @@ pub fn compile_and_run_items(
     allow_research: bool,
     args: &[String],
 ) -> Result<std::process::Output> {
-    let rust_source = lower_program_to_rust(items, allow_research)?;
+    compile_and_run_items_with_mono(items, allow_research, args, &[])
+}
+
+pub fn compile_and_run_items_with_mono(
+    items: &[Item],
+    allow_research: bool,
+    args: &[String],
+    mono: &[crate::middle::MonoSpecialization],
+) -> Result<std::process::Output> {
+    let rust_source = lower_program_to_rust_with_mono(items, allow_research, mono)?;
     let dir = std::env::temp_dir().join(format!("anubis-run-{}", anubis_unique_suffix()));
     std::fs::create_dir_all(&dir)?;
     let exe = dir.join("anubis_run");

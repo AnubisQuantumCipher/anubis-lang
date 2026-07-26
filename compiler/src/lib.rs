@@ -5640,6 +5640,57 @@ fn main() {
     }
 
     #[test]
+    fn mono_codegen_emits_specialized_clones_and_rewrites_literal_calls() {
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let a = id(1);
+    let b = id("hi");
+    print(a);
+    print(b);
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        assert!(
+            ir.mono_specializations.len() >= 2,
+            "need two mono instances: {:?}",
+            ir.mono_specializations
+        );
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+        )
+        .expect("lower with mono");
+        assert!(
+            rust.contains("anb_id__mono__"),
+            "expected monomorphized clone names in lowered Rust:\n{rust}"
+        );
+        // Call sites should prefer specialized clones over generic anb_id for literals.
+        assert!(
+            rust.contains("anb_id__mono__")
+                && (rust.contains("anb_id__mono__T_u32")
+                    || rust.contains("anb_id__mono__T_string")
+                    || rust.contains("__mono__")),
+            "expected mono mangled call/clone for id: find anb_id__mono in:\n{}",
+            rust.lines()
+                .filter(|l| l.contains("anb_id") || l.contains("mono"))
+                .take(40)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        // Runtime still works through mono path.
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains('1') && stdout.contains("hi"),
+            "unexpected stdout: {stdout}"
+        );
+    }
+
+    #[test]
     fn rwc_crypto_misuse_rejects_raw_ecdh_as_aead_key() {
         let err = tc_ok(
             r#"fn main() {
