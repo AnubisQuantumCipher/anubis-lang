@@ -5,10 +5,23 @@
 # disposable tart guest cloned from `anubis-xcode`; the host only orchestrates
 # clone/sync/collect/teardown. Set `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1` only for
 # the internal in-guest execution hop.
+#
+# Acceptance (fail-closed):
+#   - Full guest battery PASS requires isolation=tart-disposable-guest and 34/34.
+#   - Host isolation witness PASS requires isolation=host-isolation-witness and 5/5.
+#   - Missing tart/image/key/binary does NOT auto-promote to witness unless
+#     ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1 is set explicitly (hosted CI).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/gate_evidence.sh
+GATE_EVIDENCE_ROOT="$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/gate_evidence.sh"
+
+OFFENSIVE_EXPECTED_GUEST_TOTAL=34
+OFFENSIVE_EXPECTED_WITNESS_TOTAL=5
 
 parse_args() {
   local out="out/offensive_gate"
@@ -56,34 +69,62 @@ run_in_guest() {
   )
 
   mkdir -p "$out"
+  local teardown_file="$out/teardown_status.txt"
+  echo "not_started" >"$teardown_file"
+
   # Prerequisites for disposable-guest full battery. Missing tools/images are NOT
-  # a green full-suite claim — caller may fall back to host isolation witness.
+  # a green full-suite claim — caller must NOT fall back to the 5/5 witness unless
+  # ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1 (hosted CI only).
   if ! command -v tart >/dev/null 2>&1; then
     echo "PREREQ_MISSING: tart not installed" >&2
+    echo "prereq_missing" >"$teardown_file"
     return 2
   fi
   if ! tart list 2>/dev/null | awk '{print $2}' | grep -qx "$base"; then
     echo "PREREQ_MISSING: golden image '$base' not found (tart list)" >&2
+    echo "prereq_missing" >"$teardown_file"
     return 2
   fi
   if [[ ! -f "$key" ]]; then
     echo "PREREQ_MISSING: tart ssh key missing at $key" >&2
+    echo "prereq_missing" >"$teardown_file"
     return 2
   fi
   if [[ ! -x "$host_bin" ]]; then
     echo "PREREQ_MISSING: build target/release/anubis before the guest gate" >&2
+    echo "prereq_missing" >"$teardown_file"
     return 2
   fi
-  binary_sha="$(shasum -a 256 "$host_bin" | awk '{print $1}')"
+  binary_sha="$(gate_sha256_file "$host_bin")"
 
-  trap '
-    if [[ "'"$keep"'" == "1" ]]; then
-      echo "[offensive-gate] keeping guest '"$guest"' (ip '"${ip:-?}"')"
-    else
-      tart stop "'"$guest"'" >/dev/null 2>&1 || true
-      tart delete "'"$guest"'" >/dev/null 2>&1 || true
+  # Guest name + out dir captured for EXIT trap (locals out of scope after return).
+  OFFENSIVE_GATE_GUEST="$guest"
+  OFFENSIVE_GATE_KEEP="$keep"
+  OFFENSIVE_GATE_TEARDOWN_FILE="$teardown_file"
+  cleanup_offensive_guest() {
+    local g="${OFFENSIVE_GATE_GUEST:-}"
+    local k="${OFFENSIVE_GATE_KEEP:-0}"
+    local tf="${OFFENSIVE_GATE_TEARDOWN_FILE:-}"
+    if [[ -z "$g" ]]; then
+      [[ -n "$tf" ]] && echo "no_guest" >"$tf"
+      return 0
     fi
-  ' EXIT
+    if [[ "$k" == "1" ]]; then
+      echo "[offensive-gate] keeping guest $g"
+      [[ -n "$tf" ]] && echo "kept" >"$tf"
+    else
+      local stop_rc=0 del_rc=0
+      tart stop "$g" >/dev/null 2>&1 || stop_rc=$?
+      tart delete "$g" >/dev/null 2>&1 || del_rc=$?
+      if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]]; then
+        [[ -n "$tf" ]] && echo "torn_down" >"$tf"
+      else
+        [[ -n "$tf" ]] && echo "teardown_failed" >"$tf"
+      fi
+    fi
+    OFFENSIVE_GATE_GUEST=""
+  }
+  trap cleanup_offensive_guest EXIT
 
   echo "[offensive-gate] isolation=tart-disposable-guest base=$base guest=$guest"
   tart clone "$base" "$guest" >/dev/null
@@ -136,6 +177,8 @@ test -x target/release/anubis
 export ANUBIS_VZ_GUEST=1
 export ANUBIS_OFFENSIVE_GATE_IN_GUEST=1
 export ANUBIS_ISOLATION=tart-disposable-guest
+# Never inherit host force-witness into the guest battery.
+unset ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS || true
 touch "$HOME/.anubis-vz-guest" 2>/dev/null || true
 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 bash scripts/run_offensive_platform_gate.sh --out out/offensive_gate_guest
 REMOTE
@@ -150,24 +193,69 @@ REMOTE
   pull_rc=$?
   set -e
 
-  cat >"$iso_path" <<EOF
-{
-  "isolation": "tart-disposable-guest",
-  "base": "$base",
-  "guest": "$guest",
-  "ip": "$ip",
-  "cpu": $cpu,
-  "memory_mib": $mem,
-  "guest_log": "$(basename "$log_path")",
-  "guest_out": "$guest_out",
-  "binary_transport": "host-built-arm64-hash-verified",
-  "binary_sha256": "$binary_sha"
+  # isolation.json written now; teardown_status finalized after explicit cleanup below.
+  python3 - "$iso_path" "$base" "$guest" "$ip" "$cpu" "$mem" "$log_path" "$guest_out" "$binary_sha" "$ROOT" <<'PY'
+import json, sys, subprocess, os
+iso_path, base, guest, ip, cpu, mem, log_path, guest_out, binary_sha, root = sys.argv[1:11]
+
+def git(*args):
+    try:
+        return subprocess.check_output(["git", "-C", root, *args], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+data = {
+    "isolation": "tart-disposable-guest",
+    "mode": "tart-disposable-guest",
+    "base": base,
+    "guest": guest,
+    "ip": ip,
+    "cpu": int(cpu),
+    "memory_mib": int(mem),
+    "guest_log": os.path.basename(log_path),
+    "guest_out": guest_out,
+    "binary_transport": "host-built-arm64-hash-verified",
+    "binary_sha256": binary_sha,
+    "git_head": git("rev-parse", "HEAD"),
+    "git_tree": git("rev-parse", "HEAD^{tree}"),
+    "git_dirty": bool(git("status", "--porcelain")),
+    "teardown_status": "pending_exit_trap",
 }
-EOF
+with open(iso_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
 
   if [[ $pull_rc -ne 0 ]]; then
     echo "FAIL: could not collect guest output from ${user_}@${ip}:${guest_out}" >&2
+    cleanup_offensive_guest
+    trap - EXIT
     return 1
+  fi
+  # Tear down before return so report/isolation capture final teardown_status.
+  cleanup_offensive_guest
+  trap - EXIT
+  local teardown_final
+  teardown_final="$(cat "$teardown_file" 2>/dev/null || echo unknown)"
+  if [[ -f "$iso_path" ]]; then
+    python3 - "$iso_path" "$teardown_final" <<'PY'
+import json, sys
+iso_path, status = sys.argv[1:3]
+d = json.load(open(iso_path))
+d["teardown_status"] = status
+with open(iso_path, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+PY
+  fi
+  if [[ -f "$out/report.json" ]]; then
+    gate_augment_report_json "$out/report.json" "$host_bin" "$teardown_final" "tart-disposable-guest" >/dev/null
+  fi
+  # Guest battery must prove 34/34 tart-disposable-guest in pulled report.
+  if [[ $rc -eq 0 ]]; then
+    if ! gate_validate_offensive_report "$out/report.json" "tart-disposable-guest" "$OFFENSIVE_EXPECTED_GUEST_TOTAL"; then
+      return 1
+    fi
   fi
   return "$rc"
 }
@@ -630,22 +718,59 @@ PY
     record "t9_doctor_surfaces" "FAIL" "missing T9 surfaces"
   fi
 
+  local isolation="tart-disposable-guest"
+  if [[ "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" != "1" ]]; then
+    # run_local_gate is only for the in-guest hop; bare-host misuse must not claim 34/34.
+    isolation="host-misuse"
+  fi
   local verdict="FAIL"
-  [[ $fail -eq 0 && $pass -gt 0 ]] && verdict="PASS"
+  if [[ "$isolation" == "tart-disposable-guest" \
+    && $fail -eq 0 \
+    && $pass -eq $OFFENSIVE_EXPECTED_GUEST_TOTAL \
+    && $total -eq $OFFENSIVE_EXPECTED_GUEST_TOTAL ]]; then
+    verdict="PASS"
+  fi
   python3 - <<PY
-import json
+import json, subprocess, os, hashlib
+out = r"""$out"""
+bin_path = r"""$bin"""
+root = r"""$ROOT"""
+
+def git(*args):
+    try:
+        return subprocess.check_output(["git", "-C", root, *args], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+def sha256(path):
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
 report = {
   "total": $total,
   "passed": $pass,
   "failed": $fail,
   "overall_verdict": "$verdict",
-  "binary": "$bin",
-  "isolation": "tart-disposable-guest" if "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" == "1" else "host"
+  "binary": bin_path,
+  "binary_sha256": sha256(bin_path) if bin_path else "",
+  "isolation": "$isolation",
+  "mode": "$isolation",
+  "expected_total": $OFFENSIVE_EXPECTED_GUEST_TOTAL,
+  "git_head": git("rev-parse", "HEAD"),
+  "git_tree": git("rev-parse", "HEAD^{tree}"),
+  "git_dirty": bool(git("status", "--porcelain")),
+  "teardown_status": "in_guest_n_a",
 }
 print(json.dumps(report, indent=2))
-open("$out/report.json","w").write(json.dumps(report, indent=2))
+open(os.path.join(out, "report.json"), "w").write(json.dumps(report, indent=2) + "\n")
 PY
-  echo "Overall: $verdict ($pass/$total)"
+  echo "Overall: $verdict ($pass/$total) isolation=$isolation expected=$OFFENSIVE_EXPECTED_GUEST_TOTAL"
   [[ "$verdict" == PASS ]]
 }
 
@@ -732,24 +857,57 @@ run_host_isolation_witness() {
     rm -f "${HOME}/.anubis-vz-guest" || true
   fi
 
+  local isolation="host-isolation-witness"
   local verdict="FAIL"
-  [[ $fail -eq 0 && $pass -gt 0 ]] && verdict="PASS"
+  # Hosted CI requires exactly 5/5 witness — not "any pass>0".
+  if [[ $fail -eq 0 \
+    && $pass -eq $OFFENSIVE_EXPECTED_WITNESS_TOTAL \
+    && $total -eq $OFFENSIVE_EXPECTED_WITNESS_TOTAL ]]; then
+    verdict="PASS"
+  fi
   python3 - <<PY
-import json
+import json, subprocess, os, hashlib
+out = r"""$out"""
+bin_path = r"""$bin"""
+root = r"""$ROOT"""
+
+def git(*args):
+    try:
+        return subprocess.check_output(["git", "-C", root, *args], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+def sha256(path):
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
 report = {
   "total": $total,
   "passed": $pass,
   "failed": $fail,
   "overall_verdict": "$verdict",
-  "binary": "$bin",
-  "isolation": "host-isolation-witness",
-  "note": "Full tart disposable-guest battery requires tart+golden image; CI proves host fail-closed only."
+  "binary": bin_path,
+  "binary_sha256": sha256(bin_path) if bin_path else "",
+  "isolation": "$isolation",
+  "mode": "$isolation",
+  "expected_total": $OFFENSIVE_EXPECTED_WITNESS_TOTAL,
+  "git_head": git("rev-parse", "HEAD"),
+  "git_tree": git("rev-parse", "HEAD^{tree}"),
+  "git_dirty": bool(git("status", "--porcelain")),
+  "teardown_status": "host_witness_n_a",
+  "note": "Full tart disposable-guest battery requires tart+golden image; CI proves host fail-closed only (exactly 5/5)."
 }
 print(json.dumps(report, indent=2))
-open("$out/report.json", "w").write(json.dumps(report, indent=2))
+open(os.path.join(out, "report.json"), "w").write(json.dumps(report, indent=2) + "\n")
 PY
-  echo "Overall: $verdict ($pass/$total)"
-  echo "G14_MODE: host-isolation-witness (tart guest battery unavailable)"
+  echo "Overall: $verdict ($pass/$total) isolation=$isolation expected=$OFFENSIVE_EXPECTED_WITNESS_TOTAL"
+  echo "G14_MODE: host-isolation-witness (exactly ${OFFENSIVE_EXPECTED_WITNESS_TOTAL}/${OFFENSIVE_EXPECTED_WITNESS_TOTAL} required)"
   [[ "$verdict" == PASS ]]
 }
 
@@ -778,18 +936,44 @@ fi
 if [[ "${ANUBIS_OFFENSIVE_GATE_IN_GUEST:-0}" == "1" ]]; then
   run_local_gate "$OUT"
 elif [[ "${ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS:-0}" == "1" ]]; then
-  echo "[offensive-gate] ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1 — host isolation witness only"
+  echo "[offensive-gate] ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1 — host isolation witness only (exactly ${OFFENSIVE_EXPECTED_WITNESS_TOTAL}/${OFFENSIVE_EXPECTED_WITNESS_TOTAL})"
   run_host_isolation_witness "$OUT"
+  # Fail-closed re-check of report shape for hosted consumers.
+  gate_validate_offensive_report "$OUT/report.json" "host-isolation-witness" "$OFFENSIVE_EXPECTED_WITNESS_TOTAL"
 else
+  # Full / default path: guest battery only. Do NOT inherit ambient force-witness
+  # and do NOT soft-downgrade prereq miss to the 5/5 host witness.
+  unset ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS || true
   set +e
   run_in_guest "$OUT"
   guest_rc=$?
   set -e
+  # Finalize isolation.json teardown_status after EXIT trap would have run...
+  # Trap still fires on exit; refresh isolation.json from teardown file if present.
+  if [[ -f "$OUT/teardown_status.txt" && -f "$OUT/isolation.json" ]]; then
+    python3 - "$OUT/isolation.json" "$OUT/teardown_status.txt" <<'PY'
+import json, sys
+iso_path, tf = sys.argv[1:3]
+try:
+    d = json.load(open(iso_path))
+except Exception:
+    raise SystemExit(0)
+try:
+    d["teardown_status"] = open(tf).read().strip() or "unknown"
+except Exception:
+    d["teardown_status"] = "unknown"
+with open(iso_path, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+PY
+  fi
   if [[ $guest_rc -eq 0 ]]; then
+    # Double-check 34/34 tart-disposable-guest before claiming green.
+    gate_validate_offensive_report "$OUT/report.json" "tart-disposable-guest" "$OFFENSIVE_EXPECTED_GUEST_TOTAL"
     exit 0
   elif [[ $guest_rc -eq 2 ]]; then
-    echo "[offensive-gate] tart guest prereqs missing — running host isolation witness (not full 34-check battery)" >&2
-    run_host_isolation_witness "$OUT"
+    echo "FAIL: tart guest prereqs missing — full G14 requires disposable guest battery (${OFFENSIVE_EXPECTED_GUEST_TOTAL}/${OFFENSIVE_EXPECTED_GUEST_TOTAL}); host witness is hosted-only (set ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1)" >&2
+    exit 2
   else
     # Guest launched but battery failed — do not paper over with isolation witness.
     exit "$guest_rc"

@@ -1819,6 +1819,15 @@ fn free_live_caps_in_stmt(stmt: &Stmt, caps: &CapMap, out: &mut BTreeSet<String>
                 free_live_caps_in_stmt(s, caps, out);
             }
         }
+        // Hybrid sections can capture free Live caps into linear closures (same as Research/Exploit).
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for block in [gpu, cpu, prove].into_iter().flatten() {
+                for s in block {
+                    free_live_caps_in_stmt(s, caps, out);
+                }
+            }
+        }
+        // Break / Continue / SpecBlock: no free-cap expressions.
         _ => {}
     }
 }
@@ -4142,6 +4151,55 @@ fn f() { let y = send(3); }"#;
         assert!(
             codes(src, true).is_empty(),
             "exportable interproc stash must not EXPORT, got {:?}",
+            codes(src, true)
+        );
+    }
+
+    /// Compat F5: free Live caps captured only inside `hybrid { cpu/gpu/prove {…} }` still
+    /// seal the outer lambda as linear — double apply is REUSE (control for HybridBlock walk).
+    #[test]
+    fn linear_closure_hybrid_block_capture_double_apply_is_reuse() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let g = |x| {
+                hybrid {
+                    cpu {
+                        cap_use(s);
+                    }
+                }
+            };
+            g(0);
+            g(0);
+        }"#;
+        assert_eq!(
+            codes(src, false),
+            ["ANUBIS_CAPABILITY_REUSE"],
+            "hybrid-captured free cap must linearize the closure (default lane)"
+        );
+        assert_eq!(
+            codes(src, true),
+            ["ANUBIS_CAPABILITY_REUSE"],
+            "hybrid-captured free cap must linearize the closure (verified lane)"
+        );
+    }
+
+    /// Dual: single apply of hybrid-capturing linear closure accepts.
+    #[test]
+    fn linear_closure_hybrid_block_capture_single_apply_accepts() {
+        let src = r#"fn f() {
+            let s = cap_acquire("fs.write");
+            let g = |x| {
+                hybrid {
+                    cpu {
+                        cap_use(s);
+                    }
+                }
+            };
+            g(0);
+        }"#;
+        assert!(
+            codes(src, true).is_empty(),
+            "single hybrid-capturing apply must accept, got {:?}",
             codes(src, true)
         );
     }

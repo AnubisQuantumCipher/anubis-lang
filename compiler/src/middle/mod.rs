@@ -1588,6 +1588,37 @@ fn check_calls_expr(
     }
 }
 
+/// Gate 15: research/poc/fuzz/proof/defensive/audit attrs require non-empty `authorization=...`.
+/// Shared by free functions and impl methods so the policy cannot drift between surfaces.
+fn require_research_authorization_metadata(
+    effective_mode: Mode,
+    attributes: &[crate::frontend::Attribute],
+    span: Span,
+    ctx: &mut SemanticContext,
+) {
+    if !matches!(effective_mode, Mode::Research) || attributes.is_empty() {
+        return;
+    }
+    let has_auth = attributes.iter().any(|attr| {
+        matches!(
+            attr.name.as_str(),
+            "research" | "poc" | "fuzz" | "proof" | "defensive" | "audit"
+        ) && attr
+            .args
+            .iter()
+            .any(|a| a.key == "authorization" && !a.value.is_empty())
+    });
+    if !has_auth {
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_RESEARCH_MISSING_AUTHORIZATION".into()),
+            message:
+                "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
+                    .to_string(),
+            span: Some((span.start, span.end)),
+        });
+    }
+}
+
 fn collect_items(
     items: &[Item],
     module: Option<&str>,
@@ -1632,25 +1663,12 @@ fn collect_items(
                 ..
             } => {
                 let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
-                // Gate 15: enforce authorization for research/poc/fuzz etc.
-                if matches!(effective_mode, Mode::Research) {
-                    let has_auth = attributes.iter().any(|attr| {
-                        matches!(
-                            attr.name.as_str(),
-                            "research" | "poc" | "fuzz" | "proof" | "defensive" | "audit"
-                        ) && attr
-                            .args
-                            .iter()
-                            .any(|a| a.key == "authorization" && !a.value.is_empty())
-                    });
-                    if !has_auth && !attributes.is_empty() {
-                        ctx.diagnostics.push(SemanticDiagnostic {
-                            code: Some("ANUBIS_RESEARCH_MISSING_AUTHORIZATION".into()),
-                            message: "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata".to_string(),
-                            span: Some((span.start, span.end)),
-                        });
-                    }
-                }
+                require_research_authorization_metadata(
+                    effective_mode,
+                    attributes,
+                    *span,
+                    ctx,
+                );
                 // Per-item verification lane: `@verified` / `#[verified]` on this fn.
                 let item_verified = attributes.iter().any(|a| a.name == "verified");
                 let saved_verified = ctx.verified;
@@ -1701,6 +1719,13 @@ fn collect_items(
                     } = m
                     {
                         let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
+                        // Same Gate-15 policy as free functions (must not drift).
+                        require_research_authorization_metadata(
+                            effective_mode,
+                            attributes,
+                            *span,
+                            ctx,
+                        );
                         let item_verified = attributes.iter().any(|a| a.name == "verified");
                         let saved_verified = ctx.verified;
                         if item_verified {

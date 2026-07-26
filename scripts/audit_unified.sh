@@ -227,20 +227,38 @@ else
 fi
 
 # ── G14: Offensive platform gate (T1-T7) ──
+# Hosted: explicit 5/5 host-isolation-witness only.
+# Full: disposable guest battery only — never inherit/force the 5/5 witness.
+# shellcheck source=lib/gate_evidence.sh
+# shellcheck disable=SC1091
+GATE_EVIDENCE_ROOT="$(pwd)"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/gate_evidence.sh"
+G14_OUT="$OUT/g14_offensive"
+G14_LOG="$OUT/g14_offensive.log"
+G14_REPORT="$G14_OUT/report.json"
 if [[ "$PROFILE" == "hosted" ]]; then
-  OFFENSIVE_GATE_ENV=(env ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1)
-else
-  OFFENSIVE_GATE_ENV=(env)
-fi
-if "${OFFENSIVE_GATE_ENV[@]}" bash scripts/run_offensive_platform_gate.sh --out "$OUT/g14_offensive" >"$OUT/g14_offensive.log" 2>&1; then
-  OF_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$OUT/g14_offensive.log" || echo "")
-  if [[ "$PROFILE" == "hosted" ]]; then
-    gate "G14_offensive" "PASS" "$OF_PASS host-isolation-witness (full 34-check battery requires VZ)"
+  if (
+      export ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1
+      bash scripts/run_offensive_platform_gate.sh --out "$G14_OUT"
+    ) >"$G14_LOG" 2>&1 \
+    && gate_validate_offensive_report "$G14_REPORT" "host-isolation-witness" 5 >>"$G14_LOG" 2>&1; then
+    OF_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$G14_LOG" || echo "Overall: PASS (5/5)")
+    gate "G14_offensive" "PASS" "$OF_PASS host-isolation-witness exactly 5/5"
   else
-    gate "G14_offensive" "PASS" "$OF_PASS"
+    gate "G14_offensive" "FAIL" "hosted witness requires isolation=host-isolation-witness and exactly 5/5 (see g14_offensive.log)"
   fi
 else
-  gate "G14_offensive" "FAIL" "offensive gate failures (see g14_offensive.log)"
+  # Strip ambient force-witness so full seal cannot soft-downgrade to 5/5.
+  if (
+      unset ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS || true
+      bash scripts/run_offensive_platform_gate.sh --out "$G14_OUT"
+    ) >"$G14_LOG" 2>&1 \
+    && gate_validate_offensive_report "$G14_REPORT" "tart-disposable-guest" 34 >>"$G14_LOG" 2>&1; then
+    OF_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$G14_LOG" || echo "Overall: PASS (34/34)")
+    gate "G14_offensive" "PASS" "$OF_PASS tart-disposable-guest exactly 34/34"
+  else
+    gate "G14_offensive" "FAIL" "full G14 requires isolation=tart-disposable-guest and exactly 34/34 (see g14_offensive.log)"
+  fi
 fi
 
 # ── G15: Dogfood examples/feel/* ──

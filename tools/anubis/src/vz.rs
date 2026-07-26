@@ -21,9 +21,9 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Subcommand;
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Subcommand, Debug)]
@@ -193,15 +193,21 @@ pub enum VzCmd {
         #[arg(long = "allow-host")]
         allow_host: Vec<String>,
     },
-    /// Fuzz a target in a DISPOSABLE guest (clone → boot → sync → `anubis fuzz` inside → discard).
+    /// Fuzz a **local binary** in a DISPOSABLE guest (clone → boot → sync target binary →
+    /// `anubis fuzz --target … --runs …` inside → discard). Matches the host fuzz CLI shape
+    /// (`--target` + `--runs`); `iterations` is an alias for `--runs` on the outer command.
     Fuzz {
+        /// Host path to the binary under test (staged into the guest and passed as `--target`).
         target: String,
+        /// Maps to inner `anubis fuzz --runs` (process-mutation iterations).
         #[arg(long, default_value_t = 1000)]
         iterations: u64,
         #[arg(long, default_value = "anubis-xcode")]
         base: String,
         #[arg(long)]
         keep: bool,
+        /// Required acknowledgment (offensive surface); guest isolation uses VZ markers, not this flag
+        /// on the inner `fuzz` CLI (host `anubis fuzz` has no `--allow-research`).
         #[arg(long)]
         allow_research: bool,
         #[arg(long, default_value = "admin")]
@@ -515,22 +521,20 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 );
             }
             disposable(&base, keep, |name, ip| {
-                let dst = format!("{user}@{ip}:/tmp/anubis-poc.anb");
-                rsync_into(&poc, &dst)?;
+                const REMOTE_POC: &str = "/tmp/anubis-poc.anb";
+                sync_path_verified(&user, &ip, &poc, REMOTE_POC)?;
                 // Gold PoC-kit oracle (path used by examples/security/poc_local_overflow.anb).
                 // Without this, disposable guests only receive the .anb + runner and spawn fails.
                 let gold = Path::new("poc_kit/bin/vuln_local");
                 if gold.is_file() {
+                    let gold_s = gold.to_str().ok_or_else(|| {
+                        anyhow!("ANUBIS_VZ_SYNC_FAILED: gold vuln path is not UTF-8")
+                    })?;
+                    sync_path_verified(&user, &ip, gold_s, "poc_kit/bin/vuln_local")?;
                     ssh_exec(
                         user.clone(),
                         ip.clone(),
-                        &["mkdir".into(), "-p".into(), "poc_kit/bin".into()],
-                    )?;
-                    rsync_into(
-                        gold.to_str().ok_or_else(|| {
-                            anyhow!("ANUBIS_VZ_SYNC_FAILED: gold vuln path is not UTF-8")
-                        })?,
-                        &format!("{user}@{ip}:poc_kit/bin/vuln_local"),
+                        &["chmod".into(), "+x".into(), "poc_kit/bin/vuln_local".into()],
                     )?;
                 }
                 let runner = sync_current_anubis(&user, &ip)?;
@@ -538,7 +542,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 // `$HOME` so relative `poc_kit/bin/vuln_local` resolves after stage.
                 let remote = format!(
                     "cd \"$HOME\" && env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
-                     ANUBIS_ISOLATION=tart-disposable-guest {runner} run /tmp/anubis-poc.anb --allow-research"
+                     ANUBIS_ISOLATION=tart-disposable-guest {runner} run /tmp/anubis-poc.anb --allow-research",
+                    runner = shell_single_quote(&runner)
                 );
                 ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
             })
@@ -565,27 +570,28 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             if !allow_research {
                 bail!("ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz fuzz` runs offensive code — pass --allow-research.");
             }
+            let host_target = Path::new(&target);
+            if !host_target.is_file() {
+                bail!(
+                    "ANUBIS_VZ_FUZZ_TARGET_MISSING: host target `{}` is not a file (expected a local binary for `anubis fuzz --target`)",
+                    host_target.display()
+                );
+            }
+            let remote_target = guest_fuzz_target_path(&target)?;
             disposable(&base, keep, |name, ip| {
-                let dst = format!("{user}@{ip}:/tmp/anubis-fuzz.anb");
-                rsync_into(&target, &dst)?;
-                let runner = sync_current_anubis(&user, &ip)?;
-                eprintln!("[anubis vz] fuzzing in disposable `{name}` ({iterations} iterations)");
+                // Stage as a binary path (not a fake .anb): host CLI is `fuzz --target <binary> --runs N`.
+                sync_path_verified(&user, &ip, &target, &remote_target)?;
                 ssh_exec(
-                    user,
-                    ip,
-                    &[
-                        "env".into(),
-                        "ANUBIS_VZ_GUEST=1".into(),
-                        "ANUBIS_OFFENSIVE_GATE_IN_GUEST=1".into(),
-                        "ANUBIS_ISOLATION=tart-disposable-guest".into(),
-                        runner,
-                        "fuzz".into(),
-                        "/tmp/anubis-fuzz.anb".into(),
-                        "--iterations".into(),
-                        iterations.to_string(),
-                        "--allow-research".into(),
-                    ],
-                )
+                    user.clone(),
+                    ip.clone(),
+                    &["chmod".into(), "+x".into(), remote_target.clone()],
+                )?;
+                let runner = sync_current_anubis(&user, &ip)?;
+                eprintln!(
+                    "[anubis vz] fuzzing in disposable `{name}` (`anubis fuzz --target {remote_target} --runs {iterations}`)"
+                );
+                let remote = fuzz_guest_shell_command(&runner, &remote_target, iterations);
+                ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
             })
         }
     }
@@ -727,16 +733,134 @@ fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
     }
 }
 
+/// Capture stdout of a remote command (trimmed); non-zero exit is an error.
+fn ssh_capture(user: &str, ip: &str, command: &[String]) -> Result<String> {
+    let target = format!("{user}@{ip}");
+    let out = Command::new("ssh")
+        .args(ssh_common_args()?)
+        .arg(&target)
+        .args(command)
+        .output()
+        .with_context(|| "failed to spawn ssh (capture)")?;
+    if !out.status.success() {
+        bail!(
+            "ANUBIS_VZ_EXEC_FAILED: remote capture exited with {}: {}",
+            out.status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into()),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// SHA-256 hex of a local file (host).
+fn file_sha256_hex(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("read `{}` for SHA-256", path.display()))?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+/// Parse `shasum -a 256` / `sha256sum` first-field hex (64 lowercase hex chars).
+fn parse_shasum_line(line: &str) -> Result<String> {
+    let hex = line
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("ANUBIS_VZ_SHA256_PARSE: empty shasum output"))?;
+    let hex = hex.to_ascii_lowercase();
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("ANUBIS_VZ_SHA256_PARSE: not a 64-char hex digest: {hex:?}");
+    }
+    Ok(hex)
+}
+
+/// Guest-side SHA-256 via `shasum -a 256` (macOS goldens) with `sha256sum` fallback.
+fn remote_sha256_hex(user: &str, ip: &str, remote_path: &str) -> Result<String> {
+    let quoted = shell_single_quote(remote_path);
+    let script = format!(
+        "if command -v shasum >/dev/null 2>&1; then shasum -a 256 {quoted}; \
+         elif command -v sha256sum >/dev/null 2>&1; then sha256sum {quoted}; \
+         else echo 'ANUBIS_VZ_SHA256_TOOL_MISSING' >&2; exit 2; fi"
+    );
+    let out = ssh_capture(
+        user,
+        ip,
+        &["bash".into(), "-lc".into(), script],
+    )?;
+    parse_shasum_line(&out)
+}
+
+/// Rsync host path → guest path, then fail-closed if guest digest ≠ host digest.
+fn sync_path_verified(user: &str, ip: &str, host_path: &str, remote_path: &str) -> Result<()> {
+    let host = Path::new(host_path);
+    if !host.is_file() {
+        bail!(
+            "ANUBIS_VZ_SYNC_FAILED: host path `{}` is not a file",
+            host.display()
+        );
+    }
+    let expect = file_sha256_hex(host)?;
+    // Ensure remote parent exists for nested stage paths.
+    if let Some(parent) = Path::new(remote_path).parent() {
+        let p = parent.to_string_lossy();
+        if p != "/" && !p.is_empty() {
+            ssh_exec(
+                user.to_string(),
+                ip.to_string(),
+                &["mkdir".into(), "-p".into(), p.into_owned()],
+            )?;
+        }
+    }
+    rsync_into(host_path, &format!("{user}@{ip}:{remote_path}"))?;
+    let got = remote_sha256_hex(user, ip, remote_path)?;
+    if got != expect {
+        bail!(
+            "ANUBIS_VZ_SHA256_MISMATCH: host `{}` sha256={expect} guest `{remote_path}` sha256={got} \
+             — refusing to execute (tamper or incomplete sync)",
+            host.display()
+        );
+    }
+    Ok(())
+}
+
+/// Guest path for a staged fuzz **binary** (basename under `/tmp/anubis-fuzz/`).
+fn guest_fuzz_target_path(host_target: &str) -> Result<String> {
+    let name = Path::new(host_target)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            anyhow!("ANUBIS_VZ_FUZZ_TARGET: cannot derive basename from `{host_target}`")
+        })?;
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')
+    {
+        bail!("ANUBIS_VZ_FUZZ_TARGET: unsafe basename `{name}`");
+    }
+    Ok(format!("/tmp/anubis-fuzz/{name}"))
+}
+
+/// Inner guest shell for process fuzz — must match host `anubis fuzz --target … --runs …`
+/// (not positional .anb, not `--iterations`, not `--allow-research` on the fuzz subcommand).
+fn fuzz_guest_shell_command(runner: &str, remote_target: &str, runs: u64) -> String {
+    format!(
+        "env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
+         ANUBIS_ISOLATION=tart-disposable-guest {runner} fuzz --target {target} --runs {runs}",
+        runner = shell_single_quote(runner),
+        target = shell_single_quote(remote_target),
+        runs = runs
+    )
+}
+
 /// Copy the exact currently-running Anubis binary into the disposable guest. This avoids relying
 /// on a golden image's shell PATH or stale tool build, and makes the guest result bind to the host
-/// command the operator actually invoked.
+/// command the operator actually invoked. Digest is verified host→guest before return.
 fn sync_current_anubis(user: &str, ip: &str) -> Result<String> {
     let current = std::env::current_exe().context("resolve current anubis executable")?;
     let current = current
         .to_str()
         .ok_or_else(|| anyhow!("ANUBIS_VZ_RUNNER_PATH: current executable path is not UTF-8"))?;
     let remote = "/tmp/anubis-vz-runner";
-    rsync_into(current, &format!("{user}@{ip}:{remote}"))?;
+    sync_path_verified(user, ip, current, remote)?;
     ssh_exec(
         user.to_string(),
         ip.to_string(),
@@ -790,10 +914,46 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Combine body + stop/delete outcomes. Teardown failure is never silently labeled "discarded".
+fn finalize_disposable_teardown(
+    name: &str,
+    body: Result<()>,
+    stop: Result<()>,
+    delete: Result<()>,
+) -> Result<()> {
+    match (&stop, &delete) {
+        (Ok(()), Ok(())) => {
+            eprintln!("[anubis vz] discarded disposable guest `{name}`");
+            body
+        }
+        _ => {
+            let msg = format_teardown_failure(name, &stop, &delete);
+            match body {
+                Ok(()) => bail!("{msg}"),
+                Err(e) => bail!("{msg}; body also failed: {e:#}"),
+            }
+        }
+    }
+}
+
+fn format_teardown_failure(name: &str, stop: &Result<()>, delete: &Result<()>) -> String {
+    let mut msg = format!("ANUBIS_VZ_TEARDOWN_FAILED: guest `{name}` was not fully discarded");
+    if let Err(e) = stop {
+        msg.push_str(&format!("; stop: {e:#}"));
+    }
+    if let Err(e) = delete {
+        msg.push_str(&format!("; delete: {e:#}"));
+    }
+    msg
+}
+
 /// The disposable-guest pattern: clone an ephemeral CoW guest from `base`, boot it, run `body(name,
 /// ip)`, then DELETE the guest (unless `keep`) — even if the body errors. The blast radius of whatever
 /// ran inside is the throwaway VM, never the host. The clone name is derived from the base + pid so a
 /// caller need not manage names.
+///
+/// Teardown is **fail-closed**: if `tart stop` or `tart delete` fails, this returns
+/// `ANUBIS_VZ_TEARDOWN_FAILED` and does **not** print a false "discarded" success line.
 fn disposable<F: FnOnce(&str, String) -> Result<()>>(
     base: &str,
     keep: bool,
@@ -803,15 +963,13 @@ fn disposable<F: FnOnce(&str, String) -> Result<()>>(
     eprintln!("[anubis vz] cloning disposable guest `{name}` from `{base}` (APFS CoW)");
     tart_run(&[s("clone"), base.into(), name.clone()])?;
     let result = wait_for_ip(&name).and_then(|ip| body(&name, ip));
-    // Always tear down (best-effort) unless the operator asked to keep it.
     if keep {
         eprintln!("[anubis vz] keeping `{name}` (pass no --keep to auto-discard). Delete: anubis vz delete {name} --force");
-    } else {
-        let _ = tart_run(&[s("stop"), name.clone()]);
-        let _ = tart_run(&[s("delete"), name.clone()]);
-        eprintln!("[anubis vz] discarded disposable guest `{name}`");
+        return result;
     }
-    result
+    let stop = tart_run(&[s("stop"), name.clone()]);
+    let delete = tart_run(&[s("delete"), name.clone()]);
+    finalize_disposable_teardown(&name, result, stop, delete)
 }
 
 fn indent(text: &str) -> String {
@@ -836,5 +994,122 @@ mod ssh_transport_tests {
         assert_eq!(quoted, "'/tmp/key with space'");
         let rendered = format!("ssh -i {quoted} -o IdentitiesOnly=yes");
         assert!(rendered.contains("-o IdentitiesOnly=yes"));
+    }
+
+    #[test]
+    fn fuzz_guest_command_matches_host_fuzz_cli_shape() {
+        // Host: `anubis fuzz --target <bin> --runs N` — NOT positional .anb / --iterations / --allow-research.
+        let cmd = fuzz_guest_shell_command("/tmp/anubis-vz-runner", "/tmp/anubis-fuzz/vuln_local", 42);
+        assert!(
+            cmd.contains("fuzz --target '/tmp/anubis-fuzz/vuln_local' --runs 42"),
+            "unexpected fuzz guest cmd: {cmd}"
+        );
+        assert!(
+            !cmd.contains("--iterations"),
+            "must not pass --iterations to inner fuzz: {cmd}"
+        );
+        assert!(
+            !cmd.contains("fuzz --allow-research") && !cmd.contains("fuzz '/tmp"),
+            "must not use --allow-research or positional path on fuzz: {cmd}"
+        );
+        assert!(cmd.contains("ANUBIS_VZ_GUEST=1"));
+        assert!(cmd.contains("ANUBIS_ISOLATION=tart-disposable-guest"));
+        assert!(!cmd.contains(".anb"));
+    }
+
+    #[test]
+    fn guest_fuzz_target_path_uses_basename_under_stage_dir() {
+        assert_eq!(
+            guest_fuzz_target_path("poc_kit/bin/vuln_local").unwrap(),
+            "/tmp/anubis-fuzz/vuln_local"
+        );
+        assert_eq!(
+            guest_fuzz_target_path("/abs/path/mybin").unwrap(),
+            "/tmp/anubis-fuzz/mybin"
+        );
+        assert!(guest_fuzz_target_path("").is_err());
+    }
+
+    #[test]
+    fn parse_shasum_line_accepts_mac_and_gnu_shapes() {
+        assert_eq!(
+            parse_shasum_line(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -"
+            )
+            .unwrap(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            parse_shasum_line(
+                "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  /tmp/x"
+            )
+            .unwrap(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert!(parse_shasum_line("not-a-hash").is_err());
+        assert!(parse_shasum_line("").is_err());
+    }
+
+    #[test]
+    fn file_sha256_hex_empty_file_is_known_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("empty.bin");
+        std::fs::write(&p, b"").unwrap();
+        assert_eq!(
+            file_sha256_hex(&p).unwrap(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn teardown_success_preserves_body_error_and_does_not_claim_discard_on_failure() {
+        let body_err = Err(anyhow!("body boom"));
+        let out = finalize_disposable_teardown(
+            "anubis-vz-ephemeral-1",
+            body_err,
+            Ok(()),
+            Ok(()),
+        );
+        assert!(out.is_err());
+        let s = format!("{:#}", out.unwrap_err());
+        assert!(s.contains("body boom"), "{s}");
+
+        let fail_stop = finalize_disposable_teardown(
+            "g1",
+            Ok(()),
+            Err(anyhow!("stop failed")),
+            Ok(()),
+        );
+        let s = format!("{:#}", fail_stop.unwrap_err());
+        assert!(s.contains("ANUBIS_VZ_TEARDOWN_FAILED"), "{s}");
+        assert!(s.contains("stop failed"), "{s}");
+        // Success line is "discarded disposable guest" — must not appear on teardown failure.
+        assert!(
+            !s.contains("discarded disposable guest"),
+            "must not claim discard success: {s}"
+        );
+
+        let both = finalize_disposable_teardown(
+            "g2",
+            Err(anyhow!("payload")),
+            Err(anyhow!("stop x")),
+            Err(anyhow!("delete y")),
+        );
+        let s = format!("{:#}", both.unwrap_err());
+        assert!(s.contains("ANUBIS_VZ_TEARDOWN_FAILED"), "{s}");
+        assert!(s.contains("body also failed"), "{s}");
+        assert!(s.contains("payload"), "{s}");
+    }
+
+    #[test]
+    fn format_teardown_failure_names_guest_and_ops() {
+        let msg = format_teardown_failure(
+            "ephem-9",
+            &Err(anyhow!("stop no")),
+            &Err(anyhow!("delete no")),
+        );
+        assert!(msg.contains("ephem-9"));
+        assert!(msg.contains("ANUBIS_VZ_TEARDOWN_FAILED"));
+        assert!(msg.contains("stop no") && msg.contains("delete no"));
     }
 }

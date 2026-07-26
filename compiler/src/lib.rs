@@ -6426,6 +6426,64 @@ fn main() {
         );
     }
 
+    /// Compat F2: impl methods share Gate-15 research authorization policy with free functions.
+    #[test]
+    fn research_method_missing_authorization_is_rejected() {
+        let src = r#"
+struct S {}
+impl S {
+    @research
+    fn probe(self) {}
+}
+fn main() {}
+"#;
+        let ast = parse_source(src).expect("research method source must parse");
+        let err = typecheck(ast, frontend::Mode::Safe)
+            .expect_err("research method without authorization metadata must fail closed");
+        assert!(
+            err.contains("ANUBIS_RESEARCH_MISSING_AUTHORIZATION"),
+            "unexpected research-method error: {err}"
+        );
+    }
+
+    /// Dual: free-fn policy still applies after factoring the shared helper.
+    #[test]
+    fn research_free_fn_missing_authorization_is_rejected() {
+        let src = r#"
+@research
+fn probe() {}
+fn main() {}
+"#;
+        let ast = parse_source(src).expect("research free fn must parse");
+        let err = typecheck(ast, frontend::Mode::Safe)
+            .expect_err("research free fn without authorization must fail closed");
+        assert!(
+            err.contains("ANUBIS_RESEARCH_MISSING_AUTHORIZATION"),
+            "unexpected free-fn research error: {err}"
+        );
+    }
+
+    /// Dual: authorized research method is not rejected for missing metadata alone.
+    #[test]
+    fn research_method_with_authorization_is_not_rejected_for_missing_auth() {
+        let src = r#"
+struct S {}
+impl S {
+    @research(authorization: "authorized-static-regression")
+    fn probe(self) {}
+}
+fn main() {}
+"#;
+        let ast = parse_source(src).expect("authorized research method must parse");
+        let res = typecheck(ast, frontend::Mode::Safe);
+        if let Err(err) = res {
+            assert!(
+                !err.contains("ANUBIS_RESEARCH_MISSING_AUTHORIZATION"),
+                "authorized research method must not fail Gate 15: {err}"
+            );
+        }
+    }
+
     #[test]
     fn unannotated_function_can_inherit_requested_research_mode() {
         let src = r#"

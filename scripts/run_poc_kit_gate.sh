@@ -3,10 +3,15 @@
 # Host entry is an orchestrator only: the crash-capable battery runs inside a disposable Tart/VZ
 # clone of anubis-xcode. Missing VZ prerequisites fail closed; there is no host fallback.
 # Fail-closed: missing target / no crash / no unique fuzz crash / no VZ => FAIL.
+# Network negative requires ANUBIS_POC_NETWORK_FORBIDDEN (not any nonzero exit).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=lib/gate_evidence.sh
+GATE_EVIDENCE_ROOT="$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/gate_evidence.sh"
 OUT="${1:-out/poc_kit}"
 if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then
   OUT="$2"
@@ -55,16 +60,28 @@ run_in_disposable_guest() {
     echo "ANUBIS_POC_KIT_HOST_BINARY_REQUIRED: build target/release/anubis first" >&2
     return 1
   }
-  binary_sha="$(shasum -a 256 "$host_bin" | awk '{print $1}')"
+  binary_sha="$(gate_sha256_file "$host_bin")"
+  local teardown_file="$out/teardown_status.txt"
+  echo "not_started" >"$teardown_file"
 
   # Guest name must be captured for EXIT trap: locals are out of scope when the
   # trap fires after the function returns (set -u → "guest: unbound variable").
   POC_KIT_GUEST="$guest"
+  POC_KIT_TEARDOWN_FILE="$teardown_file"
   cleanup_poc_guest() {
     local g="${POC_KIT_GUEST:-}"
-    if [[ -n "$g" ]]; then
-      tart stop "$g" >/dev/null 2>&1 || true
-      tart delete "$g" >/dev/null 2>&1 || true
+    local tf="${POC_KIT_TEARDOWN_FILE:-}"
+    if [[ -z "$g" ]]; then
+      [[ -n "$tf" ]] && echo "no_guest" >"$tf"
+      return 0
+    fi
+    local stop_rc=0 del_rc=0
+    tart stop "$g" >/dev/null 2>&1 || stop_rc=$?
+    tart delete "$g" >/dev/null 2>&1 || del_rc=$?
+    if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]]; then
+      [[ -n "$tf" ]] && echo "torn_down" >"$tf"
+    else
+      [[ -n "$tf" ]] && echo "teardown_failed" >"$tf"
     fi
     POC_KIT_GUEST=""
   }
@@ -87,7 +104,8 @@ run_in_disposable_guest() {
     return 1
   }
 
-  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --no-devices --no-specials \
+  # --delete: guest tree matches host working tree (safe: disposable clone, unique name).
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --delete --no-devices --no-specials \
     --exclude 'target/' --exclude 'out/' --exclude 'implementer/a_plus_audit_run/' \
     --exclude '.DS_Store' \
     "$ROOT/" "${user_}@${ip}:anubis-lang/"
@@ -133,18 +151,44 @@ REMOTE
   pull_rc=$?
   set -e
 
-  python3 - <<PY
-import json
-json.dump({
+  cleanup_poc_guest
+  trap - EXIT
+  local teardown_final
+  teardown_final="$(cat "$teardown_file" 2>/dev/null || echo unknown)"
+
+  python3 - "$out/isolation.json" "$base" "$guest" "$ip" "$guest_out" "$binary_sha" "$ROOT" "$teardown_final" <<'PY'
+import json, sys, subprocess, os
+iso_path, base, guest, ip, guest_out, binary_sha, root, teardown = sys.argv[1:9]
+
+def git(*args):
+    try:
+        return subprocess.check_output(["git", "-C", root, *args], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+data = {
     "isolation": "tart-disposable-guest",
-    "base": "$base",
-    "guest": "$guest",
-    "ip": "$ip",
-    "guest_out": "$guest_out",
+    "mode": "tart-disposable-guest",
+    "base": base,
+    "guest": guest,
+    "ip": ip,
+    "guest_out": guest_out,
     "binary_transport": "host-built-arm64-hash-verified",
-    "binary_sha256": "$binary_sha",
-}, open("$out/isolation.json", "w"), indent=2)
+    "binary_sha256": binary_sha,
+    "git_head": git("rev-parse", "HEAD"),
+    "git_tree": git("rev-parse", "HEAD^{tree}"),
+    "git_dirty": bool(git("status", "--porcelain")),
+    "teardown_status": teardown,
+    "rsync_delete": True,
+}
+with open(iso_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
 PY
+
+  if [[ -f "$out/report.json" ]]; then
+    gate_augment_report_json "$out/report.json" "$host_bin" "$teardown_final" "tart-disposable-guest" >/dev/null
+  fi
 
   if [[ $pull_rc -ne 0 ]]; then
     echo "FAIL: could not collect PoC-kit evidence from disposable guest" >&2
@@ -176,19 +220,16 @@ pass=0
 fail=0
 total=0
 report="$OUT/report.json"
-echo "{" > "$report"
-echo "  \"binary\": \"$BIN\"," >> "$report"
-echo "  \"fixtures\": [" >> "$report"
-first=1
+fixtures_jsonl="$OUT/fixtures.jsonl"
+: >"$fixtures_jsonl"
 
 record() {
   local name="$1" status="$2" detail="$3"
   total=$((total+1))
   if [[ "$status" == "PASS" ]]; then pass=$((pass+1)); else fail=$((fail+1)); fi
   printf '%-28s %s  (%s)\n' "$name" "$status" "$detail"
-  [[ $first -eq 1 ]] && first=0 || echo "," >> "$report"
-  printf '    {"name":"%s","status":"%s","detail":%s}' \
-    "$name" "$status" "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$detail")" >> "$report"
+  python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"status":sys.argv[2],"detail":sys.argv[3]}))' \
+    "$name" "$status" "$detail" >>"$fixtures_jsonl"
 }
 
 # 1) packing smoke
@@ -230,33 +271,70 @@ else
   record "process_fuzz" "FAIL" "exit=$frc unique=$uniq crashes=$crashes"
 fi
 
-# 4) network target rejected
+# 4) network target rejected — must emit ANUBIS_POC_NETWORK_FORBIDDEN (not any nonzero).
 set +e
 "$BIN" fuzz --target "https://evil.example/bin" --runs 1 --out "$OUT/fuzz_net" >"$OUT/fuzz_net.log" 2>&1
 nrc=$?
 set -e
-if [[ $nrc -ne 0 ]] && grep -q 'NETWORK_FORBIDDEN\|TARGET_MISSING\|POC_NETWORK' "$OUT/fuzz_net.log" 2>/dev/null; then
-  record "network_forbidden" "PASS" "network target rejected"
+if [[ $nrc -ne 0 ]] && grep -q 'ANUBIS_POC_NETWORK_FORBIDDEN' "$OUT/fuzz_net.log" 2>/dev/null; then
+  record "network_forbidden" "PASS" "ANUBIS_POC_NETWORK_FORBIDDEN"
 else
-  # missing path also fails closed — accept TARGET_MISSING for https path that doesn't exist as file
-  if [[ $nrc -ne 0 ]]; then
-    record "network_forbidden" "PASS" "non-local target failed closed (rc=$nrc)"
-  else
-    record "network_forbidden" "FAIL" "network target was accepted"
-  fi
+  record "network_forbidden" "FAIL" "exit=$nrc missing ANUBIS_POC_NETWORK_FORBIDDEN"
 fi
 
 verdict="FAIL"
 [[ $fail -eq 0 && $pass -gt 0 ]] && verdict="PASS"
 # Isolation honesty: the crash-capable local branch is reachable only through the wrapper above.
 iso_label="tart-disposable-guest"
-echo "" >> "$report"
-echo "  ]," >> "$report"
-echo "  \"total\": $total, \"passed\": $pass, \"failed\": $fail," >> "$report"
-echo "  \"isolation\": \"$iso_label\"," >> "$report"
-echo "  \"execution_boundary\": \"mandatory disposable anubis-xcode guest; no host fallback\"," >> "$report"
-echo "  \"overall_verdict\": \"$verdict\"" >> "$report"
-echo "}" >> "$report"
+python3 - "$report" "$fixtures_jsonl" "$BIN" "$ROOT" "$total" "$pass" "$fail" "$verdict" "$iso_label" <<'PY'
+import json, sys, subprocess, os, hashlib
+report_path, fixtures_path, bin_path, root, total, passed, failed, verdict, iso = sys.argv[1:10]
+
+def git(*args):
+    try:
+        return subprocess.check_output(["git", "-C", root, *args], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+def sha256(path):
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+fixtures = []
+if os.path.isfile(fixtures_path):
+    with open(fixtures_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                fixtures.append(json.loads(line))
+
+data = {
+    "binary": bin_path,
+    "binary_sha256": sha256(bin_path),
+    "fixtures": fixtures,
+    "total": int(total),
+    "passed": int(passed),
+    "failed": int(failed),
+    "isolation": iso,
+    "mode": iso,
+    "execution_boundary": "mandatory disposable anubis-xcode guest; no host fallback",
+    "overall_verdict": verdict,
+    "git_head": git("rev-parse", "HEAD"),
+    "git_tree": git("rev-parse", "HEAD^{tree}"),
+    "git_dirty": bool(git("status", "--porcelain")),
+    "teardown_status": "in_guest_n_a",
+}
+with open(report_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+print(json.dumps(data, indent=2))
+PY
 
 echo "Report: $report"
 echo "Overall: $verdict ($pass/$total)"
