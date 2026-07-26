@@ -65,9 +65,8 @@ This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **P
 - **Return-type checking** — a *literal* return of an unambiguously wrong type is now rejected
   (`fn f() -> u32 { "s" }` → `ANUBIS_RETURN_TYPE_MISMATCH`). Dynamic returns (variables, calls,
   if/match) are still unchecked at full flow depth — residual of the structured-type arc
-- **Monomorphized + unboxed primitive ABI + variable-pinned sites + simple full-native bodies** —
-  `anb_*__mono__*` with native outer ABI; pure identity/arith clones have no AnubisValue inner;
-  residual: complex multi-stmt mono bodies
+- **Monomorphized + unboxed + variable-pinned + full-native pure bodies** — `anb_*__mono__*` with
+  native ABI; identity/arith/let-chains/if-else clones have no AnubisValue inner; residual: loops/calls/match
 
 ## REAL (modules / stdlib / packages — do not claim “planned”)
 - Multi-file `import a.b;` resolve + `import std.*` content-locked stdlib (13 modules)

@@ -15,8 +15,8 @@ expectations to **what is shipped** vs **what remains specialized residual**.
 | Monomorphized **code** clones (literal-pinned calls) | **REAL** — `lower_program_to_rust_with_mono` emits `anb_*__mono__*` clones; rewrites literal call sites | `backends/run.rs`, `anubis run` |
 | Unboxed mono ABI for primitives | **REAL** for int/float/bool/string specializations — outer `fn …(x: i64) -> i64` (etc.); body still AnubisValue via inner fn | `backends/run.rs` |
 | Variable-pinned mono call sites | **REAL** — ordered `TypedIR.mono_call_sites` (per caller) drives clone selection for `id(x)` when the checker pins `x` | `middle/mod.rs`, `backends/run.rs` |
-| Fully unboxed mono **bodies** (simple pure) | **REAL** for identity / pure param+literal exprs — no AnubisValue / `__anb_body` in the clone | `backends/run.rs` `try_emit_mono_full_native_body` |
-| Complex mono bodies / non-primitive types | **PARTIAL** — multi-stmt / calls / structs fall back to AnubisValue-inner unboxed ABI | residual |
+| Fully unboxed mono **bodies** (simple pure) | **REAL** for identity, pure arith, **let-chains**, pure **if/else** (stmt or expr) — no AnubisValue / `__anb_body` | `backends/run.rs` `try_emit_mono_full_native_body` |
+| Complex mono bodies / non-primitive types | **PARTIAL** — loops, calls, match, structs fall back to AnubisValue-inner unboxed ABI | residual |
 | Effect system (transitive rows + linear caps) | **REAL** | `effects.rs`, `capability.rs`, `--verified` |
 | Float comparison / QF_FP lane | **REAL** | contract solver float path |
 | String equality / QF_S lane | **REAL** | contract solver string path |
