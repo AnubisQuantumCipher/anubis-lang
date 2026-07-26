@@ -5669,16 +5669,24 @@ fn main() {
         );
         // Call sites should prefer specialized clones over generic anb_id for literals.
         assert!(
-            rust.contains("anb_id__mono__")
-                && (rust.contains("anb_id__mono__T_u32")
-                    || rust.contains("anb_id__mono__T_string")
-                    || rust.contains("__mono__")),
-            "expected mono mangled call/clone for id: find anb_id__mono in:\n{}",
+            rust.contains("anb_id__mono__T_u32") && rust.contains("anb_id__mono__T_string"),
+            "expected mono mangled clones for id: find anb_id__mono in:\n{}",
             rust.lines()
                 .filter(|l| l.contains("anb_id") || l.contains("mono"))
                 .take(40)
                 .collect::<Vec<_>>()
                 .join("\n")
+        );
+        // Unboxed primitive ABI: native i64 / String at the clone boundary.
+        assert!(
+            rust.contains("fn anb_id__mono__T_u32(x: i64) -> i64")
+                || rust.contains("fn anb_id__mono__T_u32(mut x: i64) -> i64"),
+            "expected unboxed i64 ABI for T=u32 clone"
+        );
+        assert!(
+            rust.contains("fn anb_id__mono__T_string(x: String) -> String")
+                || rust.contains("fn anb_id__mono__T_string(mut x: String) -> String"),
+            "expected unboxed String ABI for T=string clone"
         );
         // Runtime still works through mono path.
         let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");

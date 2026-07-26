@@ -31,14 +31,102 @@ struct EmitCtx<'a> {
     /// (a `Call`/`FieldAccess`/`Index` the checker cannot type) that smuggles the wrong runtime kind.
     struct_field_types:
         &'a std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
-    /// Static monomorphization dispatch table from the type checker:
-    /// `(function, type_args as sorted pairs, mangled rust name)`.
+    /// Static monomorphization dispatch table from the type checker.
     /// Call sites that pin args to a specialization invoke the mangled clone instead of the
-    /// generic `anb_*` body. Values remain `AnubisValue`; clones get concrete param/return
-    /// type guards from the specialization (first slice of monomorphized codegen).
-    mono: &'a [(String, Vec<(String, String)>, String)],
+    /// generic `anb_*` body. Primitive specializations may use an unboxed native ABI.
+    mono: &'a [MonoEmitSpec],
     /// Free-function parameter type annotations (for mono call matching).
     fn_param_types: &'a std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// One monomorphized specialization ready for emit + call-site rewrite.
+#[derive(Clone, Debug)]
+struct MonoEmitSpec {
+    function: String,
+    type_args: Vec<(String, String)>,
+    rust_name: String,
+    /// Native ABI when every specialized param + return is a primitive.
+    unboxed: Option<MonoUnboxedAbi>,
+}
+
+/// Unboxed monomorphization ABI: native Rust types at the function boundary.
+#[derive(Clone, Debug)]
+struct MonoUnboxedAbi {
+    params: Vec<MonoPrim>,
+    ret: MonoPrim,
+}
+
+/// Primitive kinds eligible for unboxed monomorphized ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MonoPrim {
+    Int,
+    Float,
+    Bool,
+    String,
+}
+
+impl MonoPrim {
+    fn rust_ty(self) -> &'static str {
+        match self {
+            MonoPrim::Int => "i64",
+            MonoPrim::Float => "f64",
+            MonoPrim::Bool => "bool",
+            MonoPrim::String => "String",
+        }
+    }
+
+    /// Wrap an AnubisValue expression into this native type.
+    fn from_anubis(self, expr: &str) -> String {
+        match self {
+            MonoPrim::Int => format!("({expr}).as_i64()"),
+            MonoPrim::Float => format!("({expr}).as_f64()"),
+            MonoPrim::Bool => format!("({expr}).as_bool()"),
+            MonoPrim::String => format!("({expr}).display_string()"),
+        }
+    }
+
+    /// Wrap a native expression into AnubisValue.
+    fn to_anubis(self, expr: &str) -> String {
+        match self {
+            MonoPrim::Int => format!("AnubisValue::Int({expr})"),
+            MonoPrim::Float => format!("AnubisValue::Float({expr})"),
+            MonoPrim::Bool => format!("AnubisValue::Bool({expr})"),
+            MonoPrim::String => format!("anubis_mk_str({expr})"),
+        }
+    }
+
+}
+
+/// Classify a specialized type annotation for unboxed ABI eligibility.
+fn mono_prim_of(annotation: &str) -> Option<MonoPrim> {
+    let t = annotation.trim();
+    if t == "bool" {
+        return Some(MonoPrim::Bool);
+    }
+    if t == "string" || t == "str" {
+        return Some(MonoPrim::String);
+    }
+    if crate::middle::ty::is_float(t) || t == "float" || t == "f64" {
+        return Some(MonoPrim::Float);
+    }
+    if crate::middle::ty::is_integer(t) || t == "int" || t == "i64" || t == "i32" {
+        return Some(MonoPrim::Int);
+    }
+    None
+}
+
+/// Build unboxed ABI when every specialized param and the return type are primitives.
+fn mono_unboxed_abi(params: &[(String, String)], ret: Option<&str>) -> Option<MonoUnboxedAbi> {
+    let ret_ann = ret?;
+    let ret = mono_prim_of(ret_ann)?;
+    let mut param_prims = Vec::with_capacity(params.len());
+    for (_, ty) in params {
+        param_prims.push(mono_prim_of(ty)?);
+    }
+    Some(MonoUnboxedAbi {
+        params: param_prims,
+        ret,
+    })
 }
 
 /// Collect every name bound anywhere in a function (params + let/for/match/if-let/while-let/
@@ -346,18 +434,24 @@ fn mono_literal_matches(arg: &Expr, expected: &str) -> bool {
     }
 }
 
-/// Pick a monomorphized rust name when call args pin a known specialization (literal path).
-fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<String> {
+/// Resolved monomorphized call: rust name + optional unboxed ABI for wrap/unwrap.
+struct MonoCallResolved {
+    rust_name: String,
+    unboxed: Option<MonoUnboxedAbi>,
+}
+
+/// Pick a monomorphized specialization when call args pin types (literal path).
+fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<MonoCallResolved> {
     let param_tys = ctx.fn_param_types.get(callee)?;
     if param_tys.len() != args.len() {
         return None;
     }
-    let mut best: Option<String> = None;
-    for (fn_name, pairs, rust_name) in ctx.mono {
-        if fn_name != callee {
+    for spec in ctx.mono {
+        if spec.function != callee {
             continue;
         }
-        let map: std::collections::BTreeMap<String, String> = pairs.iter().cloned().collect();
+        let map: std::collections::BTreeMap<String, String> =
+            spec.type_args.iter().cloned().collect();
         if map.is_empty() {
             continue;
         }
@@ -376,11 +470,49 @@ fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<S
         // Require at least one generic param to pin via a literal; otherwise fall back.
         if ok && pinned > 0 {
             // Deterministic: first in sorted mono table wins (table is pre-sorted).
-            best = Some(rust_name.clone());
-            break;
+            return Some(MonoCallResolved {
+                rust_name: spec.rust_name.clone(),
+                unboxed: spec.unboxed.clone(),
+            });
         }
     }
-    best
+    None
+}
+
+/// Emit one argument for an unboxed mono call (prefer bare literals; else unwrap AnubisValue).
+fn emit_mono_arg_unboxed(arg: &Expr, prim: MonoPrim, ctx: &EmitCtx<'_>) -> Result<String> {
+    match (arg, prim) {
+        (Expr::Literal(s), MonoPrim::Int) => {
+            let s = s.trim();
+            if s.parse::<i64>().is_ok()
+                || s.strip_prefix("0x")
+                    .or_else(|| s.strip_prefix("0X"))
+                    .map(|h| i64::from_str_radix(h, 16).is_ok())
+                    .unwrap_or(false)
+            {
+                return Ok(s.to_string());
+            }
+        }
+        (Expr::Unary { op, expr, .. }, MonoPrim::Int)
+            if op == "-" && matches!(expr.as_ref(), Expr::Literal(_)) =>
+        {
+            if let Expr::Literal(s) = expr.as_ref() {
+                return Ok(format!("-{}", s.trim()));
+            }
+        }
+        (Expr::Literal(s), MonoPrim::Float) if s.contains('.') || s.parse::<f64>().is_ok() => {
+            return Ok(s.trim().to_string());
+        }
+        (Expr::Literal(s), MonoPrim::Bool) if s == "true" || s == "false" => {
+            return Ok(s.trim().to_string());
+        }
+        (Expr::StrLiteral(s), MonoPrim::String) => {
+            return Ok(format!("{}.to_string()", rust_string_lit(s)?));
+        }
+        _ => {}
+    }
+    let v = safe_run_expr(arg, ctx)?;
+    Ok(prim.from_anubis(&v))
 }
 
 /// Build the method registry: method name -> `(type, param_count)` for each defining type.
@@ -420,10 +552,13 @@ fn emit_fn(def: &FnDef, base: &EmitCtx) -> Result<String> {
         def.ret_type,
         &rust_name,
         base,
+        None,
     )
 }
 
 /// Core emitter shared by monomorphic functions and monomorphized clones.
+/// When `unboxed` is set, the function ABI uses native Rust types at the boundary; the body still
+/// runs on `AnubisValue` locals (converted at entry / unwrapped at return).
 fn emit_fn_core(
     name: &str,
     params: &[(String, String)],
@@ -431,6 +566,7 @@ fn emit_fn_core(
     ret_type: Option<&str>,
     rust_name: &str,
     base: &EmitCtx,
+    unboxed: Option<&MonoUnboxedAbi>,
 ) -> Result<String> {
     // Per-function local scope: params + everything bound in the body. A call to one of these
     // names is a closure application, not a builtin.
@@ -445,6 +581,8 @@ fn emit_fn_core(
         mono: base.mono,
         fn_param_types: base.fn_param_types,
     };
+    // Inner body always uses AnubisValue (returns / guards stay valid). Unboxed ABI is an outer
+    // wrapper that converts native params → AnubisValue and unwraps the AnubisValue result.
     let mut sig = Vec::new();
     for (p, _ty) in params {
         let id = sanitize_ident(p)?;
@@ -493,6 +631,31 @@ fn emit_fn_core(
         None => "AnubisValue::Int(0)".to_string(),
     };
     let inner_sig = sig.join(", ");
+
+    // Unboxed monomorphized ABI: native outer, AnubisValue inner (handles `return` of AnubisValue).
+    if let Some(abi) = unboxed {
+        let mut outer_params = Vec::new();
+        let mut fwd = Vec::new();
+        for ((p, _), prim) in params.iter().zip(abi.params.iter()) {
+            let id = sanitize_ident(p)?;
+            outer_params.push(format!("{id}: {}", prim.rust_ty()));
+            // Convert native arg → AnubisValue for the shared body.
+            fwd.push(match prim {
+                MonoPrim::Int => format!("AnubisValue::Int({id})"),
+                MonoPrim::Float => format!("AnubisValue::Float({id})"),
+                MonoPrim::Bool => format!("AnubisValue::Bool({id})"),
+                MonoPrim::String => format!("anubis_mk_str({id})"),
+            });
+        }
+        let ret_ty = abi.ret.rust_ty();
+        let unwrap = abi.ret.from_anubis("__anb_ret");
+        return Ok(format!(
+            "fn {rust_name}({outer}) -> {ret_ty} {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    let __anb_ret = __anb_body({fwd});\n    {unwrap}\n}}\n",
+            outer = outer_params.join(", "),
+            fwd = fwd.join(", "),
+        ));
+    }
+
     // RC6/RC7 soundness: if the function DECLARES an integer return type, the solver may model its
     // result (and a call-site binding of it) as an i64 — but the return type is INERT at runtime, so a
     // body could return a float (`return 2.5` from a `-> u32` fn) or Bool(true) (`return assume(x)`),
@@ -719,7 +882,7 @@ fn lower_program_with_entry(
         })
         .collect();
     // Build mono dispatch table (sorted for deterministic emit/match).
-    let mut mono_table: Vec<(String, Vec<(String, String)>, String)> = Vec::new();
+    let mut mono_table: Vec<MonoEmitSpec> = Vec::new();
     let mut mono_seen = std::collections::BTreeSet::new();
     for m in mono {
         if m.type_args.is_empty() {
@@ -732,15 +895,35 @@ fn lower_program_with_entry(
         else {
             continue;
         };
-        let pairs: Vec<(String, String)> = m.type_args.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let pairs: Vec<(String, String)> = m
+            .type_args
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let key = (m.function.clone(), pairs.clone());
         if !mono_seen.insert(key) {
             continue;
         }
         let rust_name = mono_rust_name(def.name, &m.type_args)?;
-        mono_table.push((m.function.clone(), pairs, rust_name));
+        let params_owned: Vec<(String, String)> = def
+            .params
+            .iter()
+            .map(|(n, t)| (n.clone(), subst_type_param(t, &m.type_args)))
+            .collect();
+        let ret_owned = def.ret_type.map(|t| subst_type_param(t, &m.type_args));
+        let unboxed = mono_unboxed_abi(&params_owned, ret_owned.as_deref());
+        mono_table.push(MonoEmitSpec {
+            function: m.function.clone(),
+            type_args: pairs,
+            rust_name,
+            unboxed,
+        });
     }
-    mono_table.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
+    mono_table.sort_by(|a, b| {
+        a.function
+            .cmp(&b.function)
+            .then(a.rust_name.cmp(&b.rust_name))
+    });
     let mut methods = std::collections::BTreeMap::new();
     collect_methods(items, &mut methods);
     // struct name → (field → declared type), for the construction-boundary numeric-kind coercion.
@@ -772,16 +955,16 @@ fn lower_program_with_entry(
         functions_src.push_str(&emit_fn(def, &ctx)?);
         functions_src.push('\n');
     }
-    // Monomorphized clones: same body, params/return types specialized from inventory.
-    for (fn_name, pairs, rust_name) in &mono_table {
+    // Monomorphized clones: specialized params/return; primitive sets use unboxed native ABI.
+    for spec in &mono_table {
         let Some(def) = fns
             .iter()
-            .find(|d| d.name == fn_name && d.impl_type.is_none())
+            .find(|d| d.name == spec.function && d.impl_type.is_none())
         else {
             continue;
         };
         let type_args: std::collections::BTreeMap<String, String> =
-            pairs.iter().cloned().collect();
+            spec.type_args.iter().cloned().collect();
         let params_owned: Vec<(String, String)> = def
             .params
             .iter()
@@ -793,8 +976,9 @@ fn lower_program_with_entry(
             &params_owned,
             def.body,
             ret_owned.as_deref(),
-            rust_name,
+            &spec.rust_name,
             &ctx,
+            spec.unboxed.as_ref(),
         )?);
         functions_src.push('\n');
     }
@@ -3615,14 +3799,28 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
         Expr::Call { callee, args } => {
             // User-defined functions take precedence over every builtin name.
             if ctx.fns.contains(callee.as_str()) {
+                // Prefer a monomorphized clone when the checker inventory + literal args pin types.
+                if let Some(mono) = resolve_mono_call(callee, args, ctx) {
+                    if let Some(abi) = &mono.unboxed {
+                        // Unboxed ABI: pass native args, wrap result back to AnubisValue.
+                        let native_args = args
+                            .iter()
+                            .zip(abi.params.iter())
+                            .map(|(a, p)| emit_mono_arg_unboxed(a, *p, ctx))
+                            .collect::<Result<Vec<_>>>()?;
+                        let call = format!("{}({})", mono.rust_name, native_args.join(", "));
+                        return Ok(abi.ret.to_anubis(&call));
+                    }
+                    let lowered = args
+                        .iter()
+                        .map(|a| safe_run_expr(a, ctx))
+                        .collect::<Result<Vec<_>>>()?;
+                    return Ok(format!("{}({})", mono.rust_name, lowered.join(", ")));
+                }
                 let lowered = args
                     .iter()
                     .map(|a| safe_run_expr(a, ctx))
                     .collect::<Result<Vec<_>>>()?;
-                // Prefer a monomorphized clone when the checker inventory + literal args pin types.
-                if let Some(mono_name) = resolve_mono_call(callee, args, ctx) {
-                    return Ok(format!("{mono_name}({})", lowered.join(", ")));
-                }
                 return Ok(format!(
                     "anb_{}({})",
                     sanitize_ident(callee)?,
