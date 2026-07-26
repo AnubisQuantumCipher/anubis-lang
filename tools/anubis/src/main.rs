@@ -1138,11 +1138,7 @@ fn run_research_pack_cmd(action: ResearchPackCmd) -> Result<()> {
             out,
             engagement_id,
         } => {
-            let path = offensive::domain_packs::scaffold(
-                &id,
-                &out,
-                engagement_id.as_deref(),
-            )?;
+            let path = offensive::domain_packs::scaffold(&id, &out, engagement_id.as_deref())?;
             println!("scaffolded pack `{}` → {}", id, out.display());
             println!("manifest: {}", path.display());
             Ok(())
@@ -3236,9 +3232,7 @@ fn main() -> Result<()> {
                         "missing"
                     }
                 );
-                println!(
-                    "  legacy_vmctl: disabled (non-authoritative; use anubis vz)"
-                );
+                println!("  legacy_vmctl: disabled (non-authoritative; use anubis vz)");
                 println!(
                     "  offensive: {}",
                     if report["offensive_guest_ready"].as_bool() == Some(true) {

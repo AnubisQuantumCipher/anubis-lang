@@ -136,7 +136,10 @@ pub fn catalog() -> Vec<CryptoCap> {
 pub fn report_json() -> serde_json::Value {
     let caps = catalog();
     let lab = caps.iter().filter(|c| c.status == "LAB_REAL").count();
-    let not_impl = caps.iter().filter(|c| c.status == "NOT_IMPLEMENTED").count();
+    let not_impl = caps
+        .iter()
+        .filter(|c| c.status == "NOT_IMPLEMENTED")
+        .count();
     json!({
         "schema": "anubis-crypto-doctor-v1",
         "identity": "proof-carrying systems language with RWC-aligned crypto surface",
@@ -174,10 +177,7 @@ pub fn print_human() {
         r["counts"]["lab_real"], r["counts"]["not_implemented"], r["counts"]["total"]
     );
     println!();
-    println!(
-        "{:<28} {:<6} {:<16} {}",
-        "ID", "RWC", "STATUS", "NOTES"
-    );
+    println!("{:<28} {:<6} {:<16} NOTES", "ID", "RWC", "STATUS");
     for c in catalog() {
         println!(
             "{:<28} {:<6} {:<16} {}",
@@ -207,10 +207,8 @@ mod tests {
         assert!(lab >= 8, "expected substantial LAB_REAL surface, got {lab}");
         assert!(ni >= 3, "expected permanent non-claims, got {ni}");
         let caps = r["capabilities"].as_array().unwrap();
-        let statuses: std::collections::BTreeSet<&str> = caps
-            .iter()
-            .filter_map(|c| c["status"].as_str())
-            .collect();
+        let statuses: std::collections::BTreeSet<&str> =
+            caps.iter().filter_map(|c| c["status"].as_str()).collect();
         assert!(statuses.contains("LAB_REAL"));
         assert!(statuses.contains("NOT_IMPLEMENTED"));
         // Permanent non-claims from RWC / identity plan

@@ -362,9 +362,11 @@ mod tests {
     #[test]
     fn isolation_status_json_has_required_policy_fields() {
         let status = isolation_status_json();
-        assert!(status["policy"]["aop_platform_requires_apple_virtualization"]
-            .as_bool()
-            .unwrap());
+        assert!(
+            status["policy"]["aop_platform_requires_apple_virtualization"]
+                .as_bool()
+                .unwrap()
+        );
         assert!(status["policy"]["all_research_and_fuzz_require_vz"]
             .as_bool()
             .unwrap());
@@ -378,11 +380,13 @@ mod tests {
             .unwrap()
             .iter()
             .any(|v| v == "bounty-report"));
-        assert!(!status["host_allowed_poc_kit"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "fuzz"),
-            "fuzz must NOT appear in host_allowed — it requires VZ");
+        assert!(
+            !status["host_allowed_poc_kit"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "fuzz"),
+            "fuzz must NOT appear in host_allowed — it requires VZ"
+        );
     }
 }

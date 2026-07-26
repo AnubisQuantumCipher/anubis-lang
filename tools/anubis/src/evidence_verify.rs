@@ -14,11 +14,9 @@
 //! Does **not** claim Ed25519 for HMAC receipts/caps, and does not claim
 //! production-PKI attestation. Fail-closed: any FAIL makes overall `ok=false`.
 
-use anyhow::{anyhow, Result};
 use anubis_compiler::evidence::{pca_signature_status, verify_pca};
-use anubis_compiler::package::confinement::{
-    self, ConfinementManifest, CONFINEMENT_FILENAME,
-};
+use anubis_compiler::package::confinement::{self, ConfinementManifest, CONFINEMENT_FILENAME};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -63,11 +61,21 @@ pub struct EvidenceVerifyOpts {
 }
 
 impl EvidenceVerifyReport {
-    fn push(&mut self, id: &str, status: CheckStatus, classification: &str, detail: impl Into<String>) {
+    fn push(
+        &mut self,
+        id: &str,
+        status: CheckStatus,
+        classification: &str,
+        detail: impl Into<String>,
+    ) {
         if status == CheckStatus::Fail {
             self.ok = false;
         }
-        if !self.classifications_seen.iter().any(|c| c == classification) {
+        if !self
+            .classifications_seen
+            .iter()
+            .any(|c| c == classification)
+        {
             self.classifications_seen.push(classification.to_string());
         }
         self.checks.push(CheckResult {
@@ -81,9 +89,7 @@ impl EvidenceVerifyReport {
 
 /// Verify all recognizable evidence artifacts under `path` (file or directory).
 pub fn verify_path(path: &Path, opts: &EvidenceVerifyOpts) -> Result<EvidenceVerifyReport> {
-    let path = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut report = EvidenceVerifyReport {
         schema: EVIDENCE_VERIFY_SCHEMA.into(),
         path: path.display().to_string(),
@@ -219,7 +225,11 @@ fn looks_like_run_cap(path: &Path) -> bool {
     false
 }
 
-fn verify_evidence_bundle(dir: &Path, opts: &EvidenceVerifyOpts, report: &mut EvidenceVerifyReport) {
+fn verify_evidence_bundle(
+    dir: &Path,
+    opts: &EvidenceVerifyOpts,
+    report: &mut EvidenceVerifyReport,
+) {
     let id_prefix = format!("bundle:{}", short_path(dir));
 
     if dir.join("unverified.json").is_file() {
@@ -332,23 +342,27 @@ fn verify_evidence_bundle(dir: &Path, opts: &EvidenceVerifyOpts, report: &mut Ev
     };
     if conf_path.is_file() {
         if let Some(src_path) = source {
-            match (std::fs::read_to_string(&src_path), std::fs::read_to_string(&conf_path)) {
+            match (
+                std::fs::read_to_string(&src_path),
+                std::fs::read_to_string(&conf_path),
+            ) {
                 (Ok(src), Ok(raw)) => match serde_json::from_str::<ConfinementManifest>(&raw) {
-                    Ok(sealed) => match confinement::verify_confinement_matches_source(&src, &sealed)
-                    {
-                        Ok(()) => report.push(
-                            &format!("{id_prefix}.confinement"),
-                            CheckStatus::Pass,
-                            "LAB_REAL",
-                            "confinement_manifest re-derives from source (no grant drift)",
-                        ),
-                        Err(e) => report.push(
-                            &format!("{id_prefix}.confinement"),
-                            CheckStatus::Fail,
-                            "LAB_REAL",
-                            e,
-                        ),
-                    },
+                    Ok(sealed) => {
+                        match confinement::verify_confinement_matches_source(&src, &sealed) {
+                            Ok(()) => report.push(
+                                &format!("{id_prefix}.confinement"),
+                                CheckStatus::Pass,
+                                "LAB_REAL",
+                                "confinement_manifest re-derives from source (no grant drift)",
+                            ),
+                            Err(e) => report.push(
+                                &format!("{id_prefix}.confinement"),
+                                CheckStatus::Fail,
+                                "LAB_REAL",
+                                e,
+                            ),
+                        }
+                    }
                     Err(e) => report.push(
                         &format!("{id_prefix}.confinement"),
                         CheckStatus::Fail,
@@ -508,7 +522,10 @@ fn verify_confinement_pair(dir: &Path, report: &mut EvidenceVerifyReport) {
         dir.join("source.anb")
     };
     let id = format!("confinement:{}", short_path(dir));
-    match (std::fs::read_to_string(&src_path), std::fs::read_to_string(&conf_path)) {
+    match (
+        std::fs::read_to_string(&src_path),
+        std::fs::read_to_string(&conf_path),
+    ) {
         (Ok(src), Ok(raw)) => match serde_json::from_str::<ConfinementManifest>(&raw) {
             Ok(sealed) => match confinement::verify_confinement_matches_source(&src, &sealed) {
                 Ok(()) => report.push(
@@ -519,19 +536,11 @@ fn verify_confinement_pair(dir: &Path, report: &mut EvidenceVerifyReport) {
                 ),
                 Err(e) => report.push(&id, CheckStatus::Fail, "LAB_REAL", e),
             },
-            Err(e) => report.push(
-                &id,
-                CheckStatus::Fail,
-                "LAB_REAL",
-                format!("parse: {e}"),
-            ),
+            Err(e) => report.push(&id, CheckStatus::Fail, "LAB_REAL", format!("parse: {e}")),
         },
-        (Err(e), _) | (_, Err(e)) => report.push(
-            &id,
-            CheckStatus::Fail,
-            "LAB_REAL",
-            format!("read: {e}"),
-        ),
+        (Err(e), _) | (_, Err(e)) => {
+            report.push(&id, CheckStatus::Fail, "LAB_REAL", format!("read: {e}"))
+        }
     }
 }
 
@@ -559,20 +568,22 @@ fn verify_run_cap_file(path: &Path, opts: &EvidenceVerifyOpts, report: &mut Evid
                 ),
             }
             match &opts.run_cap_key {
-                Some(key) => match crate::offensive::run_capability::verify_offline_mac(&cap, key) {
-                    Ok(()) => report.push(
-                        &format!("{id}.mac"),
-                        CheckStatus::Pass,
-                        "LAB_REAL_HMAC",
-                        "run-capability MAC valid (HMAC over sealed fields; not Ed25519)",
-                    ),
-                    Err(e) => report.push(
-                        &format!("{id}.mac"),
-                        CheckStatus::Fail,
-                        "LAB_REAL_HMAC",
-                        e.to_string(),
-                    ),
-                },
+                Some(key) => {
+                    match crate::offensive::run_capability::verify_offline_mac(&cap, key) {
+                        Ok(()) => report.push(
+                            &format!("{id}.mac"),
+                            CheckStatus::Pass,
+                            "LAB_REAL_HMAC",
+                            "run-capability MAC valid (HMAC over sealed fields; not Ed25519)",
+                        ),
+                        Err(e) => report.push(
+                            &format!("{id}.mac"),
+                            CheckStatus::Fail,
+                            "LAB_REAL_HMAC",
+                            e.to_string(),
+                        ),
+                    }
+                }
                 None => {
                     let env_key = std::env::var("ANUBIS_RUN_CAP_KEY").ok();
                     if let Some(key) = env_key {
@@ -660,13 +671,16 @@ pub fn format_human(report: &EvidenceVerifyReport) -> String {
 mod tests {
     use super::*;
     use crate::offensive::run_capability;
-    use std::sync::Mutex;
     use std::collections::HashSet;
+    use std::sync::Mutex;
 
     #[test]
     fn missing_path_fails_closed() {
-        let r = verify_path(Path::new("/tmp/anubis-no-such-evidence-xyz"), &EvidenceVerifyOpts::default())
-            .unwrap();
+        let r = verify_path(
+            Path::new("/tmp/anubis-no-such-evidence-xyz"),
+            &EvidenceVerifyOpts::default(),
+        )
+        .unwrap();
         assert!(!r.ok);
         assert!(r.checks.iter().any(|c| c.status == CheckStatus::Fail));
     }
@@ -675,22 +689,22 @@ mod tests {
     fn run_cap_structure_and_mac() {
         let dir = tempfile::tempdir().unwrap();
         let key = "unit-test-run-cap-key-32b!!!!!";
-        let cap = run_capability::mint(
+        let cap = run_capability::mint(run_capability::MintParams {
             key,
-            "eng-1",
-            "eh-1",
-            "auth-1",
-            "src-1",
-            "comp-1",
-            "prog-1",
-            "guest-1",
-            "base-1",
-            "conf-1",
-            vec!["process.spawn".into(), "vm.execute".into()],
-            vec![],
-            "op",
-            600,
-        );
+            engagement_id: "eng-1",
+            engagement_hash: "eh-1",
+            authorization_digest: "auth-1",
+            source_digest: "src-1",
+            compiler_digest: "comp-1",
+            program_digest: "prog-1",
+            guest_id: "guest-1",
+            base_digest: "base-1",
+            confinement_digest: "conf-1",
+            allowed_effects: vec!["process.spawn".into(), "vm.execute".into()],
+            allowed_targets: vec![],
+            operator: "op",
+            ttl_secs: 600,
+        });
         let p = dir.path().join("run_capability.json");
         run_capability::write_cap(&p, &cap).unwrap();
 
@@ -700,7 +714,10 @@ mod tests {
         };
         let r = verify_path(&p, &opts).unwrap();
         assert!(r.ok, "{:?}", r.checks);
-        assert!(r.checks.iter().any(|c| c.id.contains("mac") && c.status == CheckStatus::Pass));
+        assert!(r
+            .checks
+            .iter()
+            .any(|c| c.id.contains("mac") && c.status == CheckStatus::Pass));
 
         let bad = EvidenceVerifyOpts {
             run_cap_key: Some("wrong-key".into()),
