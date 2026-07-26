@@ -1,0 +1,18 @@
+// std.net — effect-tracked network helpers (capability: net.send).
+// HTTPS/TLS is host TCB (curl) where used by builtins — not a DIY TLS stack.
+
+pub fn http_get_text(url) uses(net.send) {
+    return http_get(url);
+}
+
+pub fn http_post_text(url, body) uses(net.send) {
+    return http_post(url, body);
+}
+
+pub fn connect_host(host, port) uses(net.send) {
+    return connect(host, port);
+}
+
+pub fn send_host(host, port, payload) uses(net.send) {
+    return send(host, port, payload);
+}

@@ -5,8 +5,9 @@ declassify, proof-surface, PoC-kit). The **general-purpose** builtin surface is 
 ~116 builtins (conversions, ~24 math, ~19 string, ~30 list, map, and higher-order functions) all
 REAL in `anubis run` — and is documented authoritatively in `LANGUAGE.md` ("Standard library"),
 which matches the codegen in `backends/run.rs` (`emit_builtin_call`) 1:1. An Anubis-source standard
-library now ALSO exists over these primitives: 10 content-locked modules under `compiler/stdlib/std/`
-(`math`, `collections`, `iter`, `result`, `option`, `io`, `str`, `crypto`, `testing`, and `pwn`),
+library now ALSO exists over these primitives: **12** content-locked modules under `compiler/stdlib/std/`
+(`math`, `collections`, `iter`, `result`, `option`, `io`, `str`, `crypto`, `testing`, `pwn`,
+**`time`**, **`net`**),
 imported via `import std.<module>` and exercised by `scripts/run_stdlib_gate.sh`.
 
 - print / println / eprint / eprintln : REAL (general-purpose I/O in `anubis run`)

@@ -21,6 +21,8 @@ pub static MODULES: &[(&str, &str)] = &[
     ("std.io", include_str!("../../stdlib/std/io.anb")),
     ("std.pwn", include_str!("../../stdlib/std/pwn.anb")),
     ("std.crypto", include_str!("../../stdlib/std/crypto.anb")),
+    ("std.time", include_str!("../../stdlib/std/time.anb")),
+    ("std.net", include_str!("../../stdlib/std/net.anb")),
 ];
 
 /// True when `dotted` is a registered stdlib module path.
@@ -93,7 +95,8 @@ mod tests {
     #[test]
     fn digests_are_stable_length() {
         let d = content_digests();
-        assert_eq!(d.len(), 10);
+        // Keep in lockstep with MODULES (collections…net) + checked-in MANIFEST.sha256.
+        assert_eq!(d.len(), MODULES.len());
         for (p, h) in &d {
             assert!(p.starts_with("std."), "{p}");
             assert_eq!(h.len(), 64, "{p}");

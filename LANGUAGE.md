@@ -218,9 +218,11 @@ normally; only the function-call boundary copies. This is the same by-value mode
 
 **Generics.** Functions, structs, enums, traits, and `impl` blocks may carry generic parameters
 (`fn max_of<T>(a: T, b: T) -> T`, `struct Box<T> { value: T }`, `impl<T> Box<T> { … }`), with
-optional bounds and `where` clauses. Because values are dynamically typed, generics are purely
-syntactic — the type parameters are erased — but they let you write familiar, self-documenting
-parametric code that runs on any type.
+optional bounds and `where` clauses. The **type checker monomorphizes** at call sites: it unifies
+type parameters across arguments (`ANUBIS_GENERIC_CONFLICT` on clash), checks trait bounds, and
+records a **static specialization inventory** on `TypedIR.mono_specializations` (concrete `T=…`
+bindings). Runtime values remain dynamically typed (`AnubisValue`) — codegen erases types for
+execution, while analysis keeps monomorphic truth. See `docs/language/LANGUAGE_COMPLETENESS.md`.
 
 **Contracts (`requires` / `ensures`).** A function may declare preconditions and postconditions
 between its signature and body. `requires(P)` is a precondition; `ensures(Q)` is a postcondition where

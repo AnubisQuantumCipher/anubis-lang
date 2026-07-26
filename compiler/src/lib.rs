@@ -5608,6 +5608,38 @@ fn main() {
     }
 
     #[test]
+    fn typecheck_records_static_monomorphization_inventory() {
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let a = id(1);
+    let b = id("hi");
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, Mode::Safe).expect("typecheck");
+        assert!(
+            !ir.mono_specializations.is_empty(),
+            "expected monomorphization instances for id, got {:?}",
+            ir.mono_specializations
+        );
+        assert!(
+            ir.mono_specializations.iter().any(|m| m.function == "id"),
+            "missing id specialization: {:?}",
+            ir.mono_specializations
+        );
+        // At least one concrete binding should be present for pinned args.
+        let has_concrete = ir.mono_specializations.iter().any(|m| {
+            m.function == "id" && m.type_args.values().any(|v| !v.is_empty())
+        });
+        assert!(
+            has_concrete,
+            "expected concrete type_args on id mono instances: {:?}",
+            ir.mono_specializations
+        );
+    }
+
+    #[test]
     fn rwc_crypto_misuse_rejects_raw_ecdh_as_aead_key() {
         let err = tc_ok(
             r#"fn main() {

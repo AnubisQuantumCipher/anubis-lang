@@ -1,0 +1,12 @@
+// Static monomorphization inventory smoke: generic id specialized at call sites.
+// After typecheck, TypedIR.mono_specializations records concrete T bindings.
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn main() {
+    let a = id(42);
+    let b = id("anubis");
+    print(a);
+    print(b);
+}

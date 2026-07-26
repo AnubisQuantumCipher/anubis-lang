@@ -99,6 +99,16 @@ pub struct SemanticDiagnostic {
     pub span: Option<(usize, usize)>,
 }
 
+/// One static monomorphization of a generic function at a call site (checker phase).
+/// Codegen remains value-erased (`AnubisValue`); this table is the **static specialization
+/// inventory** — every concrete `T=…` binding the type system proved at a call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonoSpecialization {
+    pub function: String,
+    /// Sorted generic name → concrete annotation (e.g. `"T" → "i64"`).
+    pub type_args: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TypedIR {
     pub mode: BuildMode,
@@ -108,6 +118,8 @@ pub struct TypedIR {
     /// Whole-program proven research effect set (shared IR with confine / VZ / packs).
     /// Derived once from the same transitive fixpoint as capability checks — not a second scan.
     pub proven_effects: research_profile::ProvenEffectSet,
+    /// Static monomorphization inventory (generic call sites with concrete type args).
+    pub mono_specializations: Vec<MonoSpecialization>,
     pub body: Vec<Stmt>,
     pub hir: Hir,
     pub mir: Vec<MirBlock>,
@@ -993,6 +1005,8 @@ struct SemanticContext {
     /// declared-vs-inferred check. Sidecar analysis state only — never serialized, never fed to
     /// codegen, absent from the `selfhost_schema` projection by construction.
     fn_effect_rows: BTreeMap<String, effects::EffectRow>,
+    /// Static monomorphization instances discovered at generic call sites (deduped).
+    mono_specializations: BTreeSet<(String, Vec<(String, String)>)>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -1121,12 +1135,21 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     let captured_body = first_fn_body(&ast.items).unwrap_or_default();
     // Shared research IR: same fixpoint as confinement / run-cap / pack validate.
     let proven_effects = effects::program_proven_effects(&ast.items);
+    let mono_specializations: Vec<MonoSpecialization> = ctx
+        .mono_specializations
+        .into_iter()
+        .map(|(function, pairs)| MonoSpecialization {
+            function,
+            type_args: pairs.into_iter().collect(),
+        })
+        .collect();
     Ok(TypedIR {
         mode: bmode,
         taint_labels: ctx.taint_labels,
         constraints: ctx.constraints,
         has_research: ctx.has_research,
         proven_effects,
+        mono_specializations,
         body: captured_body,
         hir: ctx.hir,
         mir: ctx.mir,
@@ -15171,6 +15194,38 @@ fn generic_conflict_scoped(
     ty::generic_call_conflict(&env, generics, params, args)
 }
 
+/// Record a static monomorphization instance when a generic call pins type parameters to concrete types.
+fn record_mono_specialization(
+    callee: &str,
+    args: &[Expr],
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &mut SemanticContext,
+) {
+    let Some(generics) = ctx.fn_generics.get(callee) else {
+        return;
+    };
+    if generics.is_empty() {
+        return;
+    }
+    let Some(params) = ctx.fn_params.get(callee) else {
+        return;
+    };
+    let vars = scope_vars(scope);
+    let env = ty::InferEnv {
+        vars: &vars,
+        fns: &ctx.fn_ret_types,
+        structs: &ctx.struct_fields,
+    };
+    let bindings = ty::generic_call_bindings(&env, generics, params, args);
+    if bindings.is_empty() {
+        return;
+    }
+    let mut pairs: Vec<(String, String)> = bindings.into_iter().collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    ctx.mono_specializations
+        .insert((callee.to_string(), pairs));
+}
+
 /// Phase-1 trait-bound check at a call site: for each generic of `callee` that declares a bound, if the
 /// argument pins it to a KNOWN concrete type that is a USER nominal type (struct/enum) whose required
 /// trait is DECLARED in this program and has NO matching `impl`, return `(generic, concrete, trait)` for
@@ -15397,6 +15452,9 @@ fn check_expr_semantics(
                     },
                     false,
                 );
+            } else {
+                // Static monomorphization inventory: record concrete type-arg bindings at this call.
+                record_mono_specialization(callee, args, scope, ctx);
             }
             // Phase-1 trait bound (ENFORCING): a generic bound to a KNOWN user type (struct/enum) whose
             // required trait is declared in-program and has no `impl` is rejected. Accept-biased on all
@@ -20255,6 +20313,7 @@ fn empty_ir() -> TypedIR {
         constraints: vec!["(assert true)".into()],
         has_research: false,
         proven_effects: research_profile::ProvenEffectSet::empty_bounded(),
+        mono_specializations: vec![],
         body: vec![],
         hir: Hir::default(),
         mir: vec![],
