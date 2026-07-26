@@ -23,7 +23,10 @@ note() { echo "  $1" | tee -a "$OUT/summary.txt"; }
 # Build a fast BOOT compiler once (host emits stage1, rustc compiles it). BOOT compiles
 # the (possibly ablated) source in ~1s each thereafter.
 echo "== building BOOT compiler =="
-"$BIN" run "$SELF" --allow-research -- compile "$SELF" -o "$OUT/boot.rs" >"$OUT/boot_emit.log" 2>&1
+# anubis_sh.anb has no research{}/exploit{} blocks or @research/@exploit attrs
+# -> program_mode = Mode::Safe -> --allow-research is not needed (confirmed
+# empirically; see scripts/run_selfhost_gate.sh for the full mechanism note).
+"$BIN" run "$SELF" -- compile "$SELF" -o "$OUT/boot.rs" >"$OUT/boot_emit.log" 2>&1
 if ! rustc -O "$OUT/boot.rs" -o "$OUT/boot" 2>"$OUT/boot_rustc.err"; then
   echo "SELFHOST_DOGFOOD_GATE: FAIL (could not build BOOT)"; exit 1
 fi

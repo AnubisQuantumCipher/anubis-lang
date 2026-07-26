@@ -245,7 +245,7 @@ if [[ "$PROFILE" == "hosted" ]]; then
     OF_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$G14_LOG" || echo "Overall: PASS (5/5)")
     gate "G14_offensive" "PASS" "$OF_PASS host-isolation-witness exactly 5/5"
   else
-    gate "G14_offensive" "FAIL" "hosted witness requires isolation=host-isolation-witness and exactly 5/5 (see g14_offensive.log)"
+    gate "G14_offensive" "FAIL" "hosted witness requires isolation=host-isolation-witness and exactly 5/5; full 34-check battery requires VZ (see g14_offensive.log)"
   fi
 else
   # Strip ambient force-witness so full seal cannot soft-downgrade to 5/5.

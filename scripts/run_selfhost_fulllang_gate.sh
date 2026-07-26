@@ -32,7 +32,10 @@ note() { echo "  $1" | tee -a "$OUT/summary.txt"; }
 # Build the self-hosted compiler binary ONCE (host emits stage1, rustc compiles it),
 # then use that native binary to compile each example. This is both faster and a more
 # faithful test: the actual self-hosted compiler compiling the full-language corpus.
-timeout 3600 "$BIN" run "$SELF" --allow-research -- compile "$SELF" -o "$OUT/shc.rs" >"$OUT/shc_emit.log" 2>&1
+# anubis_sh.anb has no research{}/exploit{} blocks or @research/@exploit attrs ->
+# program_mode = Mode::Safe -> no --allow-research needed (confirmed empirically;
+# see scripts/run_selfhost_gate.sh for the full mechanism note).
+timeout 3600 "$BIN" run "$SELF" -- compile "$SELF" -o "$OUT/shc.rs" >"$OUT/shc_emit.log" 2>&1
 if ! rustc -O "$OUT/shc.rs" -o "$OUT/shc" 2>"$OUT/shc_rustc.err"; then
   echo "SELFHOST_FULLLANG_GATE: FAIL (could not build self-host compiler binary)"; exit 1
 fi

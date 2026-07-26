@@ -57,6 +57,10 @@ note() { echo "  $1" | tee -a "$OUT/summary.txt"; }
 pass_one() { pass=$((pass+1)); note "$1: PASS"; }
 fail_one() { fail=$((fail+1)); note "$1: FAIL"; }
 
+# anubis_sh.anb has no research{}/exploit{} blocks or @research/@exploit attrs
+# -> program_mode = Mode::Safe -> the `anubis run "$SELF"` calls below need no
+# --allow-research (confirmed empirically; see scripts/run_selfhost_gate.sh
+# for the full mechanism note).
 SELF="selfhost/src/anubis_sh.anb"
 RT_RS="selfhost/runtime/anubis_sh_interp_rt.rs"
 RT_C="selfhost/backend_c/anubis_sh_interp_rt.c"
@@ -93,7 +97,7 @@ cargo build -q --release -p anubis
 # Derived via the Rust host. BOTH engines run this identical program; the gate
 # diversifies its EXECUTION, not its derivation (see HONEST SCOPE above).
 echo "== derive anubis_sh AST payload =="
-if "$BIN" run "$SELF" --allow-research --out "$OUT/host_parse" -- parse "$SELF" >"$OUT/payload.json" 2>"$OUT/payload.err" \
+if "$BIN" run "$SELF" --out "$OUT/host_parse" -- parse "$SELF" >"$OUT/payload.json" 2>"$OUT/payload.err" \
    && grep -q '"kind":"Program"' "$OUT/payload.json"; then
   PAYLOAD_SHA="$(shasum -a 256 "$OUT/payload.json" | awk '{print $1}')"
   note "payload sha256: $PAYLOAD_SHA"
@@ -107,7 +111,7 @@ fi
 # --- Build cA: rustc-compiled reference interpreter + baked payload ------------
 echo "== build cA (rustc/LLVM lane) =="
 cA_ok=1
-if ! "$BIN" run "$SELF" --allow-research --out "$OUT/host_emit" -- compile "$SELF" -o "$OUT/cA_src.rs" >"$OUT/cA_emit.log" 2>&1; then
+if ! "$BIN" run "$SELF" --out "$OUT/host_emit" -- compile "$SELF" -o "$OUT/cA_src.rs" >"$OUT/cA_emit.log" 2>&1; then
   cA_ok=0
 fi
 # Sanity: emitted stage must be the interpreter package, not a payload-viewer.
@@ -270,7 +274,7 @@ if [[ $parser_ok -eq 1 ]]; then
     for cmd in lex parse; do
       set +e
       "$OUT/ashparse" "$cmd" "$f" >"$OUT/CP_${cmd}_${b}.out" 2>&1
-      "$BIN" run "$SELF" --allow-research -- "$cmd" "$f" >"$OUT/HP_${cmd}_${b}.out" 2>/dev/null
+      "$BIN" run "$SELF" -- "$cmd" "$f" >"$OUT/HP_${cmd}_${b}.out" 2>/dev/null
       set -e
       if cmp -s "$OUT/CP_${cmd}_${b}.out" "$OUT/HP_${cmd}_${b}.out"; then
         pass_one "ddc_parser_${cmd}_${b}"

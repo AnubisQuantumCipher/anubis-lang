@@ -6,7 +6,7 @@
 #   (A) Rust  : `anubis check <f>`  — compiler/src/middle/mod.rs sink-gate ANUBIS_TAINTED_SINK_WITHOUT_
 #               DECLASSIFY (:5493) + the INTERPROC param→sink consult ANUBIS_INTERPROC_SINK (:5746/:5770),
 #               default Safe lane.
-#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- taint <f>` — the self-hosted
+#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb -- taint <f>` — the self-hosted
 #               taint_check port: intraprocedural source→sink (tnt_source + sh_is_sink, slice 1) PLUS the
 #               interprocedural param→sink + return-taint summary fixpoint + call-site consult (slice 2).
 #
@@ -54,7 +54,11 @@ for f in "$CORPUS"/*.anb; do
   rust_ty=$( { "$BIN" check "$f" 2>&1 || true; } | extract_taint | tr '\n' ',')
 
   set +e
-  anb_out=$("$BIN" run "$SH" --allow-research -- taint "$f" 2>&1)
+  # `anubis_sh.anb` has no research{}/exploit{} blocks or @research/@exploit attrs
+  # -> program_mode = Mode::Safe -> this `run` needs no --allow-research. Passing it
+  # would now FAIL on host with ANUBIS_RESEARCH_HOST_FORBIDDEN (commit 5fb7b67 made
+  # `run --allow-research` VZ-guest-only). See scripts/run_selfhost_gate.sh.
+  anb_out=$("$BIN" run "$SH" -- taint "$f" 2>&1)
   anb_rc=$?
   set -e
   anb_ty=$(printf '%s\n' "$anb_out" | extract_taint | tr '\n' ',')

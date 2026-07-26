@@ -8,7 +8,7 @@
 #               OR of open). It REFUSES (ANUBIS_CONFINE_UNVERIFIED) for a program that does not pass
 #               `anubis check` — confinement is only meaningful as a consequence of a passing check —
 #               so those files are correctly SKIPPED (no ground truth to compare).
-#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- capset <f>` — the
+#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb -- capset <f>` — the
 #               self-hosted eff_program_capset (same union, over the SH AST).
 #
 # ORACLE: the sorted capability SET and the `effects_bounded` (= !open) bit must be IDENTICAL. The
@@ -70,7 +70,11 @@ for f in "$CORPUS"/*.anb; do
   rust_caps=$(printf '%s\n' "$rust_out" | grep -m1 -E "capabilities +:" | sed 's/.*: *//' | norm_caps)
   rust_bnd=$(printf '%s\n' "$rust_out" | grep -m1 -E "effects_bounded +:" | sed 's/.*: *//' | tr -d '[:space:]')
 
-  anb_out=$( { "$BIN" run "$SH" --allow-research -- capset "$f" 2>&1 || true; } )
+  # `anubis_sh.anb` has no research{}/exploit{} blocks or @research/@exploit attrs
+  # -> program_mode = Mode::Safe -> this `run` needs no --allow-research. Passing it
+  # would now FAIL on host with ANUBIS_RESEARCH_HOST_FORBIDDEN (commit 5fb7b67 made
+  # `run --allow-research` VZ-guest-only). See scripts/run_selfhost_gate.sh.
+  anb_out=$( { "$BIN" run "$SH" -- capset "$f" 2>&1 || true; } )
   anb_caps=$(printf '%s\n' "$anb_out" | grep -m1 "CAPSET" | sed 's/.*caps=//; s/ *bounded=.*//' | norm_caps)
   anb_bnd=$(printf '%s\n' "$anb_out" | grep -m1 "CAPSET" | sed 's/.*bounded=//' | tr -d '[:space:]')
 

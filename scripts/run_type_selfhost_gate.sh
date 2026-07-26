@@ -6,7 +6,7 @@
 # Two engines, one program each:
 #   (A) Rust  : `anubis check <f>`  — compiler/src/middle/mod.rs let-binding ANUBIS_TYPE_MISMATCH
 #               (infer_expr_type_scoped + ty::assignable, default lane).
-#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- types <f>` — the
+#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb -- types <f>` — the
 #               self-hosted sh_check port (ty_assignable + sh_infer_type over the let-annotation site).
 #
 # PRIMARY ORACLE (0-disagreement invariant): the two independently-derived type-mismatch message sets
@@ -60,7 +60,11 @@ for f in "$CORPUS"/*.anb; do
   rust_ty=$( { "$BIN" check "$f" 2>&1 || true; } | extract_types | tr '\n' ',')
 
   set +e
-  anb_out=$("$BIN" run "$SH" --allow-research -- types "$f" 2>&1)
+  # `anubis_sh.anb` has no research{}/exploit{} blocks or @research/@exploit attrs
+  # -> program_mode = Mode::Safe -> this `run` needs no --allow-research. Passing it
+  # would now FAIL on host with ANUBIS_RESEARCH_HOST_FORBIDDEN (commit 5fb7b67 made
+  # `run --allow-research` VZ-guest-only). See scripts/run_selfhost_gate.sh.
+  anb_out=$("$BIN" run "$SH" -- types "$f" 2>&1)
   anb_rc=$?
   set -e
   anb_ty=$(printf '%s\n' "$anb_out" | extract_types | tr '\n' ',')

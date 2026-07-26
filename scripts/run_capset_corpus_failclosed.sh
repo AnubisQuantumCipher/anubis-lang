@@ -24,7 +24,11 @@ if [ "${1:-}" = "--one" ]; then
   f="$2"
   rust_out=$( { "$BIN" vz confine "$f" 2>&1 || true; } )
   if printf '%s' "$rust_out" | grep -q "CONFINE_UNVERIFIED\|CONFINE_PARSE_FAILED"; then echo "SKIP $f"; exit 0; fi
-  anb_out=$( { "$BIN" run "$SH" --allow-research -- capset "$f" 2>&1 || true; } )
+  # `anubis_sh.anb` has no research{}/exploit{} blocks or @research/@exploit attrs
+  # -> program_mode = Mode::Safe -> this `run` needs no --allow-research. Passing it
+  # would now FAIL on host with ANUBIS_RESEARCH_HOST_FORBIDDEN (commit 5fb7b67 made
+  # `run --allow-research` VZ-guest-only). See scripts/run_selfhost_gate.sh.
+  anb_out=$( { "$BIN" run "$SH" -- capset "$f" 2>&1 || true; } )
   if printf '%s' "$anb_out" | grep -q "PARSE_ERROR"; then echo "SKIP $f"; exit 0; fi
   rc=$(printf '%s\n' "$rust_out" | grep -m1 -E "capabilities +:" | sed 's/.*: *//' | norm)
   rb=$(printf '%s\n' "$rust_out" | grep -m1 -E "effects_bounded +:" | sed 's/.*: *//' | tr -d '[:space:]')

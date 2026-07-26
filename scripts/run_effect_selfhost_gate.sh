@@ -7,7 +7,7 @@
 # Two engines, one program each:
 #   (A) Rust  : `anubis check <f>`  — compiler/src/middle/effects.rs compute_fn_effect_rows fixpoint
 #               + the mod.rs ANUBIS_UNDECLARED_EFFECT enforcing check (default lane).
-#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb --allow-research -- effects <f>` — the
+#   (B) Anubis: `anubis run selfhost/src/anubis_sh.anb -- effects <f>` — the
 #               self-hosted eff_check port (eff_compute_rows + row ⊆ declared).
 #
 # PRIMARY ORACLE (0-disagreement invariant): the two independently-derived undeclared-effect
@@ -55,7 +55,11 @@ for f in "$CORPUS"/*.anb; do
   rust_caps=$( { "$BIN" check "$f" 2>&1 || true; } | extract_caps | tr '\n' ',')
 
   set +e
-  anb_out=$("$BIN" run "$SH" --allow-research -- effects "$f" 2>&1)
+  # `anubis_sh.anb` has no research{}/exploit{} blocks or @research/@exploit attrs
+  # -> program_mode = Mode::Safe -> this `run` needs no --allow-research. Passing it
+  # would now FAIL on host with ANUBIS_RESEARCH_HOST_FORBIDDEN (commit 5fb7b67 made
+  # `run --allow-research` VZ-guest-only). See scripts/run_selfhost_gate.sh.
+  anb_out=$("$BIN" run "$SH" -- effects "$f" 2>&1)
   anb_rc=$?
   set -e
   anb_caps=$(printf '%s\n' "$anb_out" | extract_caps | tr '\n' ',')
