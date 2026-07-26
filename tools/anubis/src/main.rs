@@ -539,6 +539,14 @@ enum Commands {
         json: bool,
     },
 
+    /// Recompute and persist engagement content_hash after intentional edits.
+    EngageRehash {
+        #[arg(short, long, default_value = "out/engagements/lab")]
+        dir: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Start engagement-scoped C2 listener (HTTP/JSON aop-2; optional rustls mTLS).
     Listen {
         #[arg(short, long, default_value = "out/engagements/lab")]
@@ -2329,6 +2337,26 @@ fn main() -> Result<()> {
             }
             println!("engagement initialized: {}", path.display());
             println!("  workspace: {}", dir.display());
+            Ok(())
+        }
+        Commands::EngageRehash { dir, json } => {
+            let eng = offensive::rehash_engagement_file(&dir)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
+                        "engagement_id": eng.engagement_id,
+                        "content_hash": eng.content_hash,
+                        "path": dir.display().to_string(),
+                    }))?
+                );
+            } else {
+                println!(
+                    "engagement rehashed: id={} content_hash={}",
+                    eng.engagement_id, eng.content_hash
+                );
+            }
             Ok(())
         }
         Commands::EngageStatus { dir, json } => {

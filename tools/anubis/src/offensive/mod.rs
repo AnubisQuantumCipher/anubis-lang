@@ -37,6 +37,7 @@ pub mod vz;
 
 pub use engagement::{
     engage_init, engage_status, load_engagement, operator_token_issue, operator_token_revoke,
+    rehash_engagement_file,
 };
 pub use isolation::{in_vz_guest, require_vz_offensive};
 pub use receipts::{seal_action, verify_chain};

@@ -388,6 +388,28 @@ mod tests {
         eng.verify_content_hash().unwrap();
         eng.validate_live().unwrap();
     }
+
+    #[test]
+    fn rehash_file_after_edit_restores_verify() {
+        let dir = std::env::temp_dir().join(format!(
+            "anubis-rehash-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut eng = Engagement::default_lab("rehash", "auth-ok");
+        eng.rehash();
+        let path = dir.join("engagement.json");
+        fs::write(&path, serde_json::to_string_pretty(&eng).unwrap()).unwrap();
+        // Mutate without rehash (simulates gate script edits).
+        let mut d: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        d["dns_bind"] = serde_json::json!("127.0.0.1:55353");
+        fs::write(&path, serde_json::to_string_pretty(&d).unwrap()).unwrap();
+        assert!(load_engagement(&dir).is_err());
+        rehash_engagement_file(&dir).unwrap();
+        load_engagement(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 /// Issue (or rotate) an API token for an operator. Returns cleartext once; only the hash is stored.
@@ -509,6 +531,27 @@ pub fn load_engagement(path: &Path) -> Result<Engagement> {
     }
     eng.verify_content_hash()?;
     eng.validate_live()?;
+    Ok(eng)
+}
+
+/// Recompute and persist `content_hash` after intentional engagement edits
+/// (e.g. gate scripts adjusting dns_bind). Does not validate live kill-date
+/// first so operators can rehash before fixing other fields.
+pub fn rehash_engagement_file(path: &Path) -> Result<Engagement> {
+    let p = if path.is_dir() {
+        path.join("engagement.json")
+    } else {
+        path.to_path_buf()
+    };
+    let raw = fs::read_to_string(&p)
+        .map_err(|e| anyhow!("ANUBIS_ENGAGE_LOAD: {}: {}", p.display(), e))?;
+    let mut eng: Engagement =
+        serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_ENGAGE_PARSE: {}", e))?;
+    eng.rehash();
+    fs::write(&p, serde_json::to_string_pretty(&eng)?)
+        .map_err(|e| anyhow!("ANUBIS_ENGAGE_WRITE: {}: {e}", p.display()))?;
+    // Confirm the sealed hash verifies.
+    eng.verify_content_hash()?;
     Ok(eng)
 }
 

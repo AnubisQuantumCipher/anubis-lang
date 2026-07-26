@@ -322,6 +322,8 @@ d["dns_bind"]="127.0.0.1:55353"
 d["uds_path"]="$eng/aop.sock"
 open(p,"w").write(json.dumps(d,indent=2))
 PY
+  # Intentional field edits require content_hash re-seal (fail-closed integrity).
+  "$bin" engage-rehash --dir "$eng" >/dev/null
 
   set +e
   "$bin" agent-generate --engage "$eng" --name gate_agent --sleep-ms 3000 >"$out/agent.log" 2>&1
@@ -398,6 +400,7 @@ d=json.load(open(p))
 d["allow_live_inject"]=True
 open(p,"w").write(json.dumps(d,indent=2))
 PY
+  "$bin" engage-rehash --dir "$eng" >/dev/null
   set +e
   "$bin" inject-plan --engage "$eng" --pid 0 --shellcode "$out/sc.bin" --allow-research-inject >"$out/inject_live.json" 2>&1
   local ilrc=$?
@@ -415,6 +418,7 @@ d=json.load(open(p))
 d["allow_live_inject"]=False
 open(p,"w").write(json.dumps(d,indent=2))
 PY
+  "$bin" engage-rehash --dir "$eng" >/dev/null
 
   if [[ -S "$eng/aop.sock" ]] || grep -q 'uds listener' "$out/listen.log"; then
     record "t3_uds" "PASS" "uds transport"
@@ -441,6 +445,7 @@ d["dns_bind"]="127.0.0.1:55354"
 d["uds_path"]="$out/eng_doh/aop.sock"
 open(p,"w").write(json.dumps(d,indent=2))
 PY
+  "$bin" engage-rehash --dir "$out/eng_doh" >/dev/null
   pkill -f 'anubis listen' 2>/dev/null || true
   sleep 0.3
   "$bin" listen --engage "$out/eng_doh" >"$out/doh_listen.log" 2>&1 &
@@ -491,6 +496,7 @@ d=json.load(open(p))
 d["c2_bind"]="127.0.0.1:14447"
 open(p,"w").write(json.dumps(d,indent=2))
 PY
+  "$bin" engage-rehash --dir "$out/eng_doh" >/dev/null
   pkill -f 'anubis listen' 2>/dev/null || true
   sleep 0.3
   "$bin" listen --engage "$out/eng_doh" --mtls >"$out/mtls_listen.log" 2>&1 &
@@ -713,7 +719,7 @@ PY
   if grep -q attck_kill_chain_catalog "$out/doctor_t9.json" \
     && grep -q purple_team_report "$out/doctor_t9.json" \
     && grep -q malleable_c2_profile "$out/doctor_t9.json"; then
-    record "t9_doctor_surfaces" "PASS" "T9 surfaces REAL"
+    record "t9_doctor_surfaces" "PASS" "T9 surfaces present (LAB_REAL/PLAN_ONLY)"
   else
     record "t9_doctor_surfaces" "FAIL" "missing T9 surfaces"
   fi

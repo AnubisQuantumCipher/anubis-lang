@@ -221,6 +221,7 @@ pub fn read_cap(path: &Path) -> Result<RunCapability> {
 }
 
 /// Default path under engagement for the active capability.
+#[allow(dead_code)] // public API for orchestrators / future CLI
 pub fn default_cap_path(engage_dir: &Path) -> PathBuf {
     engage_dir.join("evidence/run_capability.json")
 }
