@@ -225,11 +225,19 @@ fn handle_http(
             }),
         )?,
         ("GET", "/agents") => {
+            if let Err(e) = eng.assert_auth(&operator, Role::ReadOnly, token.as_deref()) {
+                write_json(stream, 403, &json!({"error": e.to_string()}))?;
+                return Ok(());
+            }
             let st = state.lock().unwrap();
             let agents: Vec<_> = st.agents.values().cloned().collect();
             write_json(stream, 200, &json!({ "agents": agents }))?;
         }
         ("GET", "/results") => {
+            if let Err(e) = eng.assert_auth(&operator, Role::ReadOnly, token.as_deref()) {
+                write_json(stream, 403, &json!({"error": e.to_string()}))?;
+                return Ok(());
+            }
             let st = state.lock().unwrap();
             write_json(stream, 200, &json!({ "results": st.results }))?;
         }
@@ -676,15 +684,13 @@ fn decode_beacon(eng: &Engagement, body: &str) -> Result<Beacon> {
     decode_beacon_bytes(eng, body.trim().as_bytes())
 }
 
+/// Decode a beacon. When `encrypt_beacons` is true, accept only a valid encrypted
+/// envelope with authenticated AEAD open — never fall back to plaintext.
 fn decode_beacon_bytes(eng: &Engagement, raw: &[u8]) -> Result<Beacon> {
-    let body = std::str::from_utf8(raw).unwrap_or("");
-    if body.contains("\"blob\"") || eng.encrypt_beacons {
-        if let Ok(env) = serde_json::from_slice::<EncryptedEnvelope>(raw)
-            .or_else(|_| serde_json::from_str::<EncryptedEnvelope>(body))
-        {
-            return crypto::open_json(&eng.psk_hex, &env.blob);
-        }
+    if eng.encrypt_beacons {
+        return open_encrypted_json(eng, raw);
     }
+    let body = std::str::from_utf8(raw).unwrap_or("");
     Ok(serde_json::from_slice(raw).or_else(|_| serde_json::from_str(body))?)
 }
 
@@ -692,16 +698,37 @@ fn decode_result(eng: &Engagement, body: &str) -> Result<TaskResult> {
     decode_result_bytes(eng, body.trim().as_bytes())
 }
 
+/// Decode a task result. Encryption-required mode is fail-closed (no plaintext fallback).
 fn decode_result_bytes(eng: &Engagement, raw: &[u8]) -> Result<TaskResult> {
-    let body = std::str::from_utf8(raw).unwrap_or("");
-    if body.contains("\"blob\"") || eng.encrypt_beacons {
-        if let Ok(env) = serde_json::from_slice::<EncryptedEnvelope>(raw)
-            .or_else(|_| serde_json::from_str::<EncryptedEnvelope>(body))
-        {
-            return crypto::open_json(&eng.psk_hex, &env.blob);
-        }
+    if eng.encrypt_beacons {
+        return open_encrypted_json(eng, raw);
     }
+    let body = std::str::from_utf8(raw).unwrap_or("");
     Ok(serde_json::from_slice(raw).or_else(|_| serde_json::from_str(body))?)
+}
+
+fn open_encrypted_json<T: serde::de::DeserializeOwned>(
+    eng: &Engagement,
+    raw: &[u8],
+) -> Result<T> {
+    let body = std::str::from_utf8(raw).map_err(|_| {
+        anyhow::anyhow!("ANUBIS_CRYPTO_ENVELOPE_REQUIRED: body is not valid UTF-8")
+    })?;
+    let env: EncryptedEnvelope = serde_json::from_slice(raw)
+        .or_else(|_| serde_json::from_str(body))
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "ANUBIS_CRYPTO_ENVELOPE_REQUIRED: encrypt_beacons=true rejects plaintext/malformed envelopes ({e})"
+            )
+        })?;
+    if env.blob.trim().is_empty() {
+        return Err(anyhow::anyhow!(
+            "ANUBIS_CRYPTO_ENVELOPE_REQUIRED: empty blob"
+        ));
+    }
+    crypto::open_json(&eng.psk_hex, &env.blob).map_err(|e| {
+        anyhow::anyhow!("ANUBIS_CRYPTO_AUTH_FAILED: AEAD open rejected envelope ({e})")
+    })
 }
 
 fn encode_response(eng: &Engagement, agent_id: &str, resp: &BeaconResponse) -> Result<String> {
@@ -898,4 +925,96 @@ pub fn queue_task_file(
         .open(&inbox)?;
     writeln!(f, "{}", serde_json::to_string(&line)?)?;
     Ok(inbox)
+}
+
+#[cfg(test)]
+mod encrypt_decode_tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+    use crate::offensive::protocol::Beacon;
+
+    fn eng_encrypt(on: bool) -> Engagement {
+        let mut e = Engagement::default_lab("decode-test", "auth-ok");
+        e.encrypt_beacons = on;
+        e.rehash();
+        e
+    }
+
+    #[test]
+    fn encrypt_required_rejects_plaintext_beacon() {
+        let eng = eng_encrypt(true);
+        let plain = br#"{"protocol":"aop-2","agent_id":"a","engagement_id":"e","hostname":"h","os":"mac","arch":"arm64","pid":1,"sleep_ms":1,"jitter_pct":0,"key_id":"k"}"#;
+        let err = decode_beacon_bytes(&eng, plain).unwrap_err().to_string();
+        assert!(
+            err.contains("ANUBIS_CRYPTO_ENVELOPE_REQUIRED") || err.contains("ANUBIS_CRYPTO"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_required_rejects_empty_blob() {
+        let eng = eng_encrypt(true);
+        let bad = format!(
+            r#"{{"protocol":"aop-2","engagement_id":"{}","agent_id":"a","blob":""}}"#,
+            eng.engagement_id
+        );
+        let err = decode_beacon_bytes(&eng, bad.as_bytes()).unwrap_err().to_string();
+        assert!(
+            err.contains("ENVELOPE") || err.contains("empty"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_required_rejects_bad_tag() {
+        let eng = eng_encrypt(true);
+        let bad = format!(
+            r#"{{"protocol":"aop-2","engagement_id":"{}","agent_id":"a","blob":"AAAAAAAAAAAAAAAAAAAAAA=="}}"#,
+            eng.engagement_id
+        );
+        let err = decode_beacon_bytes(&eng, bad.as_bytes()).unwrap_err().to_string();
+        assert!(
+            err.contains("ANUBIS_CRYPTO_AUTH_FAILED") || err.contains("CRYPTO"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_required_accepts_valid_envelope() {
+        let eng = eng_encrypt(true);
+        let beacon = Beacon {
+            protocol: "aop-2".into(),
+            agent_id: "agt-1".into(),
+            engagement_id: eng.engagement_id.clone(),
+            hostname: "lab".into(),
+            os: "macos".into(),
+            arch: "aarch64".into(),
+            pid: 42,
+            sleep_ms: 1000,
+            jitter_pct: 10,
+            key_id: "kid".into(),
+        };
+        let blob = crypto::seal_json(&eng.psk_hex, &beacon).unwrap();
+        let env = EncryptedEnvelope {
+            protocol: PROTOCOL_V2.into(),
+            engagement_id: eng.engagement_id.clone(),
+            agent_id: "agt-1".into(),
+            blob,
+        };
+        let raw = serde_json::to_vec(&env).unwrap();
+        let got: Beacon = decode_beacon_bytes(&eng, &raw).unwrap();
+        assert_eq!(got.agent_id, "agt-1");
+        assert_eq!(got.pid, 42);
+    }
+
+    #[test]
+    fn encrypt_off_accepts_plaintext() {
+        let eng = eng_encrypt(false);
+        let plain = format!(
+            r#"{{"protocol":"aop-1","agent_id":"a","engagement_id":"{}","hostname":"h","os":"mac","arch":"arm64","pid":1,"sleep_ms":1,"jitter_pct":0,"key_id":"k"}}"#,
+            eng.engagement_id
+        );
+        let got: Beacon = decode_beacon_bytes(&eng, plain.as_bytes()).unwrap();
+        assert_eq!(got.agent_id, "a");
+    }
 }

@@ -31,8 +31,11 @@ AOP host attempts → **`ANUBIS_OFFENSIVE_HOST_FORBIDDEN`**.
 Host research execution → **`ANUBIS_RESEARCH_HOST_FORBIDDEN`**.
 Any host fuzz → **`ANUBIS_FUZZ_HOST_FORBIDDEN`**.
 
-Guest markers: `ANUBIS_VZ_GUEST=1`, `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`,
-`ANUBIS_ISOLATION=*tart*`, `$HOME/.anubis-vz-guest`, `kern.hv_vmm_present=1`.
+Guest markers (authorization uses the combination — **not** any single host-forgeable
+signal alone): `ANUBIS_VZ_GUEST=1`, `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`,
+`ANUBIS_ISOLATION=*tart*`, `$HOME/.anubis-vz-guest`.  
+**Not sufficient alone:** `kern.hv_vmm_present=1` (GitHub-hosted macOS runners also
+report this; isolation code treats it as diagnostic only).
 
 Protocol default: **`aop-2`** (AES-256-GCM encrypted beacons).
 

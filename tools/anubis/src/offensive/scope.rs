@@ -123,32 +123,147 @@ pub fn host_in_scope(
     ))
 }
 
+/// Returns Ok if `path` is equal to or a descendant of an allowed root.
+///
+/// Uses **component-aware** prefix matching only — never substring `contains`.
+/// `/allowed-evil` does **not** match root `/allowed`. Relative `..` escapes and
+/// unresolved paths default-deny when no safe containment can be established.
 pub fn path_in_scope(path: &Path, allowed_paths: &[String]) -> Result<(), ScopeError> {
-    let rel = path.to_string_lossy();
-    for ap in allowed_paths {
-        let trimmed = ap.trim_end_matches('*').trim_end_matches('/');
-        if rel.starts_with(trimmed) || rel.contains(trimmed) {
-            return Ok(());
-        }
-        let ap_path = PathBuf::from(ap.trim_end_matches("/*").trim_end_matches('*'));
-        if path.starts_with(&ap_path) {
-            return Ok(());
-        }
+    if allowed_paths.is_empty() {
+        return Err(anyhow!(
+            "ANUBIS_SCOPE_DENIED: path `{}` not in engagement allowed_paths (empty allow-list)",
+            path.display()
+        ));
     }
-    // canonicalize when possible
-    if let Ok(canon) = path.canonicalize() {
-        let s = canon.to_string_lossy();
-        for ap in allowed_paths {
-            let trimmed = ap.trim_end_matches('*').trim_end_matches('/');
-            if s.contains(trimmed) {
-                return Ok(());
+    if path_has_parent_escape(path) {
+        return Err(anyhow!(
+            "ANUBIS_SCOPE_DENIED: path `{}` contains `..` escape",
+            path.display()
+        ));
+    }
+
+    // Prefer the real path when resolvable so a symlink under an allowed root
+    // cannot escape to an out-of-scope target (canonical path is authoritative).
+    let candidates: Vec<PathBuf> = if let Ok(canon) = path.canonicalize() {
+        vec![canon]
+    } else {
+        path_scope_candidates(path)
+    };
+    if candidates.is_empty() {
+        return Err(anyhow!(
+            "ANUBIS_SCOPE_DENIED: path `{}` could not be resolved for scope check",
+            path.display()
+        ));
+    }
+
+    for ap in allowed_paths {
+        let roots = allowed_root_candidates(ap);
+        for root in &roots {
+            if path_has_parent_escape(root) {
+                continue;
+            }
+            // Prefer canonical root when it exists.
+            let root_forms: Vec<PathBuf> = if let Ok(rc) = root.canonicalize() {
+                vec![rc]
+            } else {
+                roots.clone()
+            };
+            for r in &root_forms {
+                for cand in &candidates {
+                    if is_component_descendant(cand, r) {
+                        return Ok(());
+                    }
+                }
             }
         }
     }
+
     Err(anyhow!(
         "ANUBIS_SCOPE_DENIED: path `{}` not in engagement allowed_paths",
         path.display()
     ))
+}
+
+fn path_has_parent_escape(path: &Path) -> bool {
+    path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// Candidate forms of a path for scope checks (lexically cleaned + optional canonicalize).
+fn path_scope_candidates(path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let cleaned = clean_path_components(path);
+    out.push(cleaned.clone());
+    if let Ok(canon) = path.canonicalize() {
+        if !out.iter().any(|p| p == &canon) {
+            out.push(canon);
+        }
+    } else if let Ok(cwd) = std::env::current_dir() {
+        let joined = clean_path_components(&cwd.join(path));
+        if !out.iter().any(|p| p == &joined) {
+            out.push(joined);
+        }
+        if let Ok(canon) = cwd.join(path).canonicalize() {
+            if !out.iter().any(|p| p == &canon) {
+                out.push(canon);
+            }
+        }
+    }
+    out
+}
+
+fn allowed_root_candidates(allowed: &str) -> Vec<PathBuf> {
+    let trimmed = allowed
+        .trim()
+        .trim_end_matches("/*")
+        .trim_end_matches('*')
+        .trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let root = PathBuf::from(trimmed);
+    let mut out = path_scope_candidates(&root);
+    // Keep the lexical form even if canonicalize fails (lab roots may not exist yet).
+    let cleaned = clean_path_components(&root);
+    if !out.iter().any(|p| p == &cleaned) {
+        out.push(cleaned);
+    }
+    out
+}
+
+fn clean_path_components(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                let _ = out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() && path.is_absolute() {
+        PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+    } else {
+        out
+    }
+}
+
+/// True if `path` equals `root` or is a proper descendant via path **components**
+/// (not string prefix). `/allowed-evil` is not under `/allowed`.
+fn is_component_descendant(path: &Path, root: &Path) -> bool {
+    let path_c: Vec<_> = path.components().collect();
+    let root_c: Vec<_> = root.components().collect();
+    if root_c.is_empty() {
+        return false;
+    }
+    if path_c.len() < root_c.len() {
+        return false;
+    }
+    path_c
+        .iter()
+        .zip(root_c.iter())
+        .all(|(a, b)| a.as_os_str() == b.as_os_str())
 }
 
 pub fn bind_addr_in_scope(
@@ -197,6 +312,7 @@ fn ip_in_cidr(ip: IpAddr, cidr: &str) -> Result<bool, ScopeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn loopback_host_allowed() {
@@ -226,5 +342,62 @@ mod tests {
             notes: String::new(),
         };
         target_in_scope(&host, &["127.0.0.1".into()], &[], &[]).unwrap();
+    }
+
+    #[test]
+    fn path_descendant_allowed_not_substring_sibling() {
+        // `/allowed-evil` must NOT match root `/allowed` (substring / string-prefix trap).
+        let roots = vec!["/allowed".into()];
+        assert!(path_in_scope(Path::new("/allowed"), &roots).is_ok());
+        assert!(path_in_scope(Path::new("/allowed/child"), &roots).is_ok());
+        assert!(path_in_scope(Path::new("/allowed-evil"), &roots).is_err());
+        assert!(path_in_scope(Path::new("/allowed-evil/x"), &roots).is_err());
+    }
+
+    #[test]
+    fn path_parent_escape_denied() {
+        let roots = vec!["/tmp/lab".into()];
+        assert!(path_in_scope(Path::new("/tmp/lab/../etc/passwd"), &roots).is_err());
+        assert!(path_in_scope(Path::new("/tmp/lab/../../etc"), &roots).is_err());
+    }
+
+    #[test]
+    fn path_empty_allowlist_denied() {
+        assert!(path_in_scope(Path::new("/tmp/lab"), &[]).is_err());
+    }
+
+    #[test]
+    fn component_descendant_unit() {
+        assert!(is_component_descendant(
+            Path::new("/tmp/lab/a"),
+            Path::new("/tmp/lab")
+        ));
+        assert!(!is_component_descendant(
+            Path::new("/tmp/lab2"),
+            Path::new("/tmp/lab")
+        ));
+        assert!(!is_component_descendant(
+            Path::new("/allowed-evil"),
+            Path::new("/allowed")
+        ));
+    }
+
+    #[test]
+    fn path_symlink_escape_denied_when_resolvable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("allowed");
+        let outside = dir.path().join("secret.txt");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&outside, b"secret").unwrap();
+        let link = root.join("escape");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+            // Canonicalized link points outside root → must deny.
+            assert!(
+                path_in_scope(&link, &[root.to_string_lossy().into()]).is_err(),
+                "symlink escape should be denied"
+            );
+        }
     }
 }

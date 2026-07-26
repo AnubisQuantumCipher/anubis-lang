@@ -2589,13 +2589,15 @@ fn main() -> Result<()> {
                     "inject_live_requires_double_authorization": true,
                     "http_default_mtls_opt_in": true,
                     "aop_platform_requires_apple_virtualization": true,
-                    "poc_kit_host_lab_gold_allowed": true,
+                    // Host PoC gold is NOT allowed as primary evidence — isolation.rs is source of truth.
+                    "poc_kit_host_lab_gold_allowed": false,
                     "fuzz_non_poc_kit_requires_vz": true,
                     "host_never_executes_aop_c2": true,
                     "phish_never_auto_sends": true,
                     "lolbas_never_auto_executes": true,
+                    "crash_poc_fuzz_exploit_require_tart_vz": true,
                 },
-                "note": "AOP T1–T9: C2/inject/lateral VZ-only; PoC kit host gold preserved; ATT&CK/OPSEC/campaign/purple/malleable/phish/lolbas REAL.",
+                "note": "AOP T1–T9: C2/inject/lateral/PoC-crash/fuzz/exploit VZ-only (tart/anubis-xcode). Host is non-crash control plane only. PLAN_ONLY stays PLAN_ONLY.",
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -2603,7 +2605,7 @@ fn main() -> Result<()> {
                 println!("Anubis Offensive Platform doctor");
                 println!("  protocol: {}", offensive::protocol::PROTOCOL_VERSION);
                 println!(
-                    "  isolation: in_vz_guest={} aop_c2=VZ-only poc_kit_host_lab=allowed",
+                    "  isolation: in_vz_guest={} aop_c2=VZ-only poc_kit_host_lab=forbidden",
                     offensive::in_vz_guest()
                 );
                 if let Some(obj) = report["surfaces"].as_object() {
