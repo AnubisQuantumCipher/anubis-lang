@@ -74,6 +74,17 @@ pub fn kdf_hkdf_sha256(ikm, salt, info, length) {
     return hkdf_sha256(ikm, salt, info, length);
 }
 
+// Session key material (RWC Ch8): one IKM → AEAD key (32) + optional extra.
+// Prefer distinct `info` labels per derived key (domain separation).
+pub fn derive_aead_key(ikm, salt, info) {
+    return hkdf_sha256(ikm, salt, info, 32);
+}
+
+// After ECDH: never use raw shared as AEAD key — always HKDF (RWC Ch5).
+pub fn derive_from_ecdh_shared(shared, salt, info) {
+    return hkdf_sha256(shared, salt, info, 32);
+}
+
 // ---- Password hashing (RWC Ch8 / Ch16 — low-entropy secrets) ----
 // Prefer Argon2id (memory-hard). PBKDF2-HMAC-SHA256 is available with high iteration
 // counts for vectors / constrained targets. Always unique per-user salt.

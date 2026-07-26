@@ -5608,6 +5608,23 @@ fn main() {
     }
 
     #[test]
+    fn rwc_crypto_misuse_rejects_raw_ecdh_as_aead_key() {
+        let err = tc_ok(
+            r#"fn main() {
+                let k = x25519_keygen();
+                // Intentionally wrong: raw shared as AEAD key (RWC Ch5 forbids).
+                let _ = aead_seal(x25519_shared(k[0], k[1]), aead_nonce(), "aad", "pt");
+            }"#,
+        )
+        .expect_err("raw ecdh as aead key must be CRYPTO_MISUSE");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
+        assert!(
+            err.contains("x25519_shared") || err.contains("HKDF") || err.contains("hybrid"),
+            "message should cite ECDH/HKDF path: {err}"
+        );
+    }
+
+    #[test]
     fn phase5_crypto_misuse_rejects_hmac_eq_compare() {
         let err = tc_ok(
             r#"fn main() {

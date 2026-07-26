@@ -6826,6 +6826,28 @@ fn expr_is_hmac_tag_call(e: &Expr) -> bool {
     )
 }
 
+/// RWC Ch5: raw ECDH shared secrets must never be used as AEAD keys without a KDF.
+fn expr_is_raw_ecdh_shared(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Call { callee, .. }
+            if callee == "x25519_shared"
+                || callee.ends_with("__ecdh_shared")
+                || callee.ends_with("__x25519_shared")
+    )
+}
+
+fn is_aead_key_consumer(callee: &str) -> bool {
+    matches!(
+        callee,
+        "aead_seal"
+            | "aead_open"
+            | "chacha20_poly1305_seal"
+            | "chacha20_poly1305_open"
+    ) || callee.ends_with("__aead_encrypt")
+        || callee.ends_with("__aead_decrypt")
+}
+
 /// RWC Ch8 / Ch7: password encodings, KDF outputs, and signatures must not use early-exit `==`.
 fn expr_is_password_secret_call(e: &Expr) -> bool {
     matches!(
@@ -6964,6 +6986,22 @@ fn analyze_expr_effect(
             analyze_expr_effect(rhs, mode, scope, effects, ctx);
         }
         Expr::Call { callee, args } => {
+            // RWC Ch5: raw X25519 shared secret must not feed AEAD key slot (use hybrid_* or HKDF).
+            if is_aead_key_consumer(callee)
+                && args
+                    .first()
+                    .map(expr_is_raw_ecdh_shared)
+                    .unwrap_or(false)
+            {
+                ctx.diagnostics.push(SemanticDiagnostic {
+                    code: Some("ANUBIS_CRYPTO_MISUSE".into()),
+                    message: "using raw `x25519_shared` / `ecdh_shared` as an AEAD key is forbidden \
+                         (RWC Ch5). Derive with `hkdf_sha256` / `crypto::kdf_hkdf_sha256`, or use \
+                         `hybrid_seal` / `crypto::hybrid_encrypt` which HKDF-binds the shared secret"
+                        .into(),
+                    span: None,
+                });
+            }
             // A+ call-site type checks for user functions (not builtins).
             if let Some(param_tys) = ctx.fn_params.get(callee).cloned() {
                 if args.len() != param_tys.len() {

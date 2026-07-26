@@ -1,0 +1,21 @@
+// The language Anubis wants to be: claims become checkable.
+// RWC Ch5–8: ECDH → HKDF → AEAD (never raw shared as key).
+// Run: anubis run examples/crypto/rwc_session_keys.anb
+// Check: anubis check examples/crypto/rwc_session_keys.anb
+import std.crypto;
+
+fn main() {
+    let alice = crypto::ecdh_keygen();
+    let bob = crypto::ecdh_keygen();
+    // Each side computes the same shared secret (DH).
+    let shared_a = crypto::ecdh_shared(alice[0], bob[1]);
+    let shared_b = crypto::ecdh_shared(bob[0], alice[1]);
+    // Domain-separated session AEAD keys (RWC: always KDF after ECDH).
+    let key_a = crypto::derive_from_ecdh_shared(shared_a, "salt", "anubis-session-v1|aead");
+    let key_b = crypto::derive_from_ecdh_shared(shared_b, "salt", "anubis-session-v1|aead");
+    let n = crypto::aead_nonce_counter(1);
+    let aad = crypto::commit_parts("session", ["alice", "bob", "v1"]);
+    let ct = crypto::aead_encrypt(key_a, n, aad, "session-payload");
+    let pt = crypto::aead_decrypt(key_b, n, aad, ct);
+    print(crypto::bytes_hex(pt));
+}

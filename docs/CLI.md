@@ -280,6 +280,12 @@ anubis research-pack validate <id> --source program.anb [--json]
 Per-capability honesty: `LAB_REAL` / `LAB_REAL_HMAC` / `PLAN_ONLY` / `PARTIAL` / `NOT_IMPLEMENTED`.  
 Validate fails closed if proven effects are outside the pack allow-list.
 
+### Crypto doctor (RWC surface inventory)
+```bash
+anubis crypto-doctor [--json]
+```
+Honest host-vs-guest backend table + non-claims (CAVP, PQ DIY, TLS/Noise). See `docs/language/RWC_LANGUAGE_MAP.md`.
+
 ## Config (portable)
 - `--metal-reference PATH`
 - `ANUBIS_RISC0_METAL_REFERENCE=PATH`

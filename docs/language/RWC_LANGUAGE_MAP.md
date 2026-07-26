@@ -59,3 +59,14 @@ let pt = crypto::hybrid_decrypt(keys[0], env[0], "v1|to=bob", env[1], env[2]);
 4. Nonce uniqueness is caller-owned (or hybrid’s random nonce).  
 5. Raw X25519 shared secret → always HKDF before use (`hybrid_*` does this).  
 6. External review for any multi-party protocol built on these APIs.
+
+## Operator inventory
+
+```bash
+anubis crypto-doctor           # human table
+anubis crypto-doctor --json    # machine inventory
+anubis check examples/crypto/rwc_session_keys.anb
+anubis run examples/crypto/rwc_session_keys.anb
+```
+
+The checker **rejects** `aead_seal(x25519_shared(...), …)` with `ANUBIS_CRYPTO_MISUSE` (RWC Ch5).

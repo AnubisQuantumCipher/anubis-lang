@@ -3,6 +3,7 @@
 
 #![recursion_limit = "256"]
 
+mod crypto_doctor;
 mod evidence_verify;
 mod offensive;
 mod poc_kit;
@@ -335,6 +336,12 @@ enum Commands {
     ResearchPack {
         #[command(subcommand)]
         action: ResearchPackCmd,
+    },
+
+    /// Honest inventory of RWC-aligned crypto capabilities (host vs guest, non-claims).
+    CryptoDoctor {
+        #[arg(long)]
+        json: bool,
     },
 
     /// Generate an Ed25519 keypair for signing Proof-Carrying Artifacts.
@@ -1742,6 +1749,17 @@ fn main() -> Result<()> {
         Commands::Package { action } => run_package_cmd(action),
         Commands::Trust { action } => run_trust_cmd(action),
         Commands::ResearchPack { action } => run_research_pack_cmd(action),
+        Commands::CryptoDoctor { json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&crypto_doctor::report_json())?
+                );
+            } else {
+                crypto_doctor::print_human();
+            }
+            Ok(())
+        }
         Commands::Vz { action } => vz::run_vz_cmd(action),
         Commands::Doc {
             path,
