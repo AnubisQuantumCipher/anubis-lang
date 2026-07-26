@@ -1,0 +1,8 @@
+// Library module for multifile smoke (resolved via `import math`).
+pub fn add(a, b) {
+    return a + b;
+}
+
+pub fn square(x) {
+    return x * x;
+}

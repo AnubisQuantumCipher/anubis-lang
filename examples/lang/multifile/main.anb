@@ -1,0 +1,7 @@
+// Multi-file imports are REAL: sibling modules resolve from the entry directory.
+import math;
+
+fn main() {
+    print(math::add(2, 3));
+    print(math::square(5));
+}
