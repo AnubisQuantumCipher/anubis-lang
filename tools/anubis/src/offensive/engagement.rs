@@ -173,12 +173,13 @@ impl Engagement {
             ));
         }
         // Malformed kill dates hard-fail (no silent ignore).
-        let kill = chrono::NaiveDate::parse_from_str(&self.kill_date, "%Y-%m-%d").map_err(|_| {
-            anyhow!(
-                "ANUBIS_ENGAGE_KILL_DATE_INVALID: expected YYYY-MM-DD, got `{}`",
-                self.kill_date
-            )
-        })?;
+        let kill =
+            chrono::NaiveDate::parse_from_str(&self.kill_date, "%Y-%m-%d").map_err(|_| {
+                anyhow!(
+                    "ANUBIS_ENGAGE_KILL_DATE_INVALID: expected YYYY-MM-DD, got `{}`",
+                    self.kill_date
+                )
+            })?;
         let today = Utc::now().date_naive();
         if today > kill {
             return Err(anyhow!(
@@ -336,79 +337,6 @@ impl Engagement {
         self.content_hash.clear();
         let body = serde_json::to_vec(self).unwrap_or_default();
         self.content_hash = hex::encode(Sha256::digest(&body));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn kill_date_malformed_fails() {
-        let mut eng = Engagement::default_lab("t", "auth-ok");
-        eng.kill_date = "not-a-date".into();
-        eng.rehash();
-        let err = eng.validate_live().unwrap_err().to_string();
-        assert!(
-            err.contains("ANUBIS_ENGAGE_KILL_DATE_INVALID"),
-            "got {err}"
-        );
-    }
-
-    #[test]
-    fn kill_date_expired_fails() {
-        let mut eng = Engagement::default_lab("t", "auth-ok");
-        eng.kill_date = "2000-01-01".into();
-        eng.rehash();
-        let err = eng.validate_live().unwrap_err().to_string();
-        assert!(err.contains("ANUBIS_ENGAGE_KILL_DATE"), "got {err}");
-    }
-
-    #[test]
-    fn content_hash_mismatch_detected() {
-        let mut eng = Engagement::default_lab("t", "auth-ok");
-        eng.rehash();
-        eng.name = "tampered".into(); // body changed without rehash
-        let err = eng.verify_content_hash().unwrap_err().to_string();
-        assert!(err.contains("ANUBIS_ENGAGE_HASH_MISMATCH"), "got {err}");
-    }
-
-    #[test]
-    fn content_hash_empty_fails() {
-        let eng = Engagement::default_lab("t", "auth-ok");
-        // default_lab leaves content_hash empty until rehash
-        let err = eng.verify_content_hash().unwrap_err().to_string();
-        assert!(err.contains("ANUBIS_ENGAGE_HASH_MISSING"), "got {err}");
-    }
-
-    #[test]
-    fn content_hash_ok_after_rehash() {
-        let mut eng = Engagement::default_lab("t", "auth-ok");
-        eng.rehash();
-        eng.verify_content_hash().unwrap();
-        eng.validate_live().unwrap();
-    }
-
-    #[test]
-    fn rehash_file_after_edit_restores_verify() {
-        let dir = std::env::temp_dir().join(format!(
-            "anubis-rehash-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let mut eng = Engagement::default_lab("rehash", "auth-ok");
-        eng.rehash();
-        let path = dir.join("engagement.json");
-        fs::write(&path, serde_json::to_string_pretty(&eng).unwrap()).unwrap();
-        // Mutate without rehash (simulates gate script edits).
-        let mut d: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        d["dns_bind"] = serde_json::json!("127.0.0.1:55353");
-        fs::write(&path, serde_json::to_string_pretty(&d).unwrap()).unwrap();
-        assert!(load_engagement(&dir).is_err());
-        rehash_engagement_file(&dir).unwrap();
-        load_engagement(&dir).unwrap();
-        let _ = fs::remove_dir_all(&dir);
     }
 }
 
@@ -601,4 +529,72 @@ pub fn engage_status(path: &Path) -> Result<serde_json::Value> {
             "error": e.to_string(),
         })),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kill_date_malformed_fails() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.kill_date = "not-a-date".into();
+        eng.rehash();
+        let err = eng.validate_live().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_KILL_DATE_INVALID"), "got {err}");
+    }
+
+    #[test]
+    fn kill_date_expired_fails() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.kill_date = "2000-01-01".into();
+        eng.rehash();
+        let err = eng.validate_live().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_KILL_DATE"), "got {err}");
+    }
+
+    #[test]
+    fn content_hash_mismatch_detected() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.rehash();
+        eng.name = "tampered".into(); // body changed without rehash
+        let err = eng.verify_content_hash().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_HASH_MISMATCH"), "got {err}");
+    }
+
+    #[test]
+    fn content_hash_empty_fails() {
+        let eng = Engagement::default_lab("t", "auth-ok");
+        // default_lab leaves content_hash empty until rehash
+        let err = eng.verify_content_hash().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_ENGAGE_HASH_MISSING"), "got {err}");
+    }
+
+    #[test]
+    fn content_hash_ok_after_rehash() {
+        let mut eng = Engagement::default_lab("t", "auth-ok");
+        eng.rehash();
+        eng.verify_content_hash().unwrap();
+        eng.validate_live().unwrap();
+    }
+
+    #[test]
+    fn rehash_file_after_edit_restores_verify() {
+        let dir = std::env::temp_dir().join(format!("anubis-rehash-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut eng = Engagement::default_lab("rehash", "auth-ok");
+        eng.rehash();
+        let path = dir.join("engagement.json");
+        fs::write(&path, serde_json::to_string_pretty(&eng).unwrap()).unwrap();
+        // Mutate without rehash (simulates gate script edits).
+        let mut d: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        d["dns_bind"] = serde_json::json!("127.0.0.1:55353");
+        fs::write(&path, serde_json::to_string_pretty(&d).unwrap()).unwrap();
+        assert!(load_engagement(&dir).is_err());
+        rehash_engagement_file(&dir).unwrap();
+        load_engagement(&dir).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

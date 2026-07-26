@@ -88,44 +88,46 @@ fn random_nonce() -> String {
     hex::encode(buf)
 }
 
+pub struct MintParams<'a> {
+    pub key: &'a str,
+    pub engagement_id: &'a str,
+    pub engagement_hash: &'a str,
+    pub authorization_digest: &'a str,
+    pub source_digest: &'a str,
+    pub compiler_digest: &'a str,
+    pub program_digest: &'a str,
+    pub guest_id: &'a str,
+    pub base_digest: &'a str,
+    pub confinement_digest: &'a str,
+    pub allowed_effects: Vec<String>,
+    pub allowed_targets: Vec<String>,
+    pub operator: &'a str,
+    pub ttl_secs: u64,
+}
+
 /// Mint a capability (host side). `ttl_secs` bounds lifetime.
-pub fn mint(
-    key: &str,
-    engagement_id: &str,
-    engagement_hash: &str,
-    authorization_digest: &str,
-    source_digest: &str,
-    compiler_digest: &str,
-    program_digest: &str,
-    guest_id: &str,
-    base_digest: &str,
-    confinement_digest: &str,
-    allowed_effects: Vec<String>,
-    allowed_targets: Vec<String>,
-    operator: &str,
-    ttl_secs: u64,
-) -> RunCapability {
+pub fn mint(params: MintParams<'_>) -> RunCapability {
     let issued = now_unix();
     let mut cap = RunCapability {
         schema: CAP_SCHEMA.into(),
-        engagement_id: engagement_id.into(),
-        engagement_hash: engagement_hash.into(),
-        authorization_digest: authorization_digest.into(),
-        source_digest: source_digest.into(),
-        compiler_digest: compiler_digest.into(),
-        program_digest: program_digest.into(),
-        guest_id: guest_id.into(),
-        base_digest: base_digest.into(),
-        confinement_digest: confinement_digest.into(),
-        allowed_effects,
-        allowed_targets,
+        engagement_id: params.engagement_id.into(),
+        engagement_hash: params.engagement_hash.into(),
+        authorization_digest: params.authorization_digest.into(),
+        source_digest: params.source_digest.into(),
+        compiler_digest: params.compiler_digest.into(),
+        program_digest: params.program_digest.into(),
+        guest_id: params.guest_id.into(),
+        base_digest: params.base_digest.into(),
+        confinement_digest: params.confinement_digest.into(),
+        allowed_effects: params.allowed_effects,
+        allowed_targets: params.allowed_targets,
         issued_unix: issued,
-        expires_unix: issued.saturating_add(ttl_secs.max(1)),
+        expires_unix: issued.saturating_add(params.ttl_secs.max(1)),
         nonce: random_nonce(),
-        operator: operator.into(),
+        operator: params.operator.into(),
         mac: String::new(),
     };
-    cap.mac = mac_hex(key, &material(&cap));
+    cap.mac = mac_hex(params.key, &material(&cap));
     cap
 }
 
@@ -233,9 +235,7 @@ pub fn validate_and_consume(cap: &RunCapability, ctx: &ValidateCtx<'_>) -> Resul
         }
     }
     if let Some(target) = ctx.target {
-        if !cap.allowed_targets.is_empty()
-            && !cap.allowed_targets.iter().any(|t| t == target)
-        {
+        if !cap.allowed_targets.is_empty() && !cap.allowed_targets.iter().any(|t| t == target) {
             return Err(anyhow!(
                 "ANUBIS_RUN_CAP_TARGET_DENIED: `{target}` not in capability"
             ));
@@ -277,22 +277,22 @@ mod tests {
     use std::sync::Mutex;
 
     fn base_mint(key: &str) -> RunCapability {
-        mint(
+        mint(MintParams {
             key,
-            "eng-1",
-            "eh-aaa",
-            "auth-bbb",
-            "src-ccc",
-            "comp-ddd",
-            "prog-eee",
-            "guest-tart-1",
-            "base-fff",
-            "conf-ggg",
-            vec!["process.spawn".into(), "vm.execute".into()],
-            vec!["/tmp/lab/target".into()],
-            "operator",
-            600,
-        )
+            engagement_id: "eng-1",
+            engagement_hash: "eh-aaa",
+            authorization_digest: "auth-bbb",
+            source_digest: "src-ccc",
+            compiler_digest: "comp-ddd",
+            program_digest: "prog-eee",
+            guest_id: "guest-tart-1",
+            base_digest: "base-fff",
+            confinement_digest: "conf-ggg",
+            allowed_effects: vec!["process.spawn".into(), "vm.execute".into()],
+            allowed_targets: vec!["/tmp/lab/target".into()],
+            operator: "operator",
+            ttl_secs: 600,
+        })
     }
 
     #[test]

@@ -530,7 +530,10 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.lines().any(|l| l.split_whitespace().any(|t| t == "anubis-xcode")))
+            .map(|s| {
+                s.lines()
+                    .any(|l| l.split_whitespace().any(|t| t == "anubis-xcode"))
+            })
             .unwrap_or(false)
     } else {
         false
@@ -640,10 +643,7 @@ mod legacy_vmctl_tests {
         // Ensure flag is unset for this process.
         std::env::remove_var("ANUBIS_ALLOW_LEGACY_VMCTL");
         let err = run_vmctl(&["status", "--json"]).unwrap_err().to_string();
-        assert!(
-            err.contains("ANUBIS_VZ_LEGACY_VMCTL_DISABLED"),
-            "got {err}"
-        );
+        assert!(err.contains("ANUBIS_VZ_LEGACY_VMCTL_DISABLED"), "got {err}");
     }
 }
 

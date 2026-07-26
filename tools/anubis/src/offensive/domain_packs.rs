@@ -133,8 +133,7 @@ fn pack_poc() -> DomainPack {
         id: "poc".into(),
         title: "Proof-of-Concept / crash research".into(),
         profile: ResearchProfile::Research.as_str().into(),
-        summary: "Authorized local PoC and crash reproduction inside disposable VZ guests."
-            .into(),
+        summary: "Authorized local PoC and crash reproduction inside disposable VZ guests.".into(),
         requires_vz: true,
         allows_host_pure: false,
         default_effects: effect_names(&[
@@ -148,9 +147,7 @@ fn pack_poc() -> DomainPack {
                 id: "vz_exploit".into(),
                 summary: "Disposable guest PoC run with guest-bound run capability".into(),
                 classification: CapClass::LabReal,
-                cli: vec![
-                    "anubis vz exploit <poc.anb> --allow-research".into(),
-                ],
+                cli: vec!["anubis vz exploit <poc.anb> --allow-research".into()],
                 notes: "Host stages cap; guest enforces ANUBIS_VZ_ENFORCE_RUN_CAP=1".into(),
             },
             PackCapability {
@@ -167,7 +164,10 @@ fn pack_poc() -> DomainPack {
                 id: "poc_kit_gold".into(),
                 summary: "Gold vuln_local harness + cyclic pattern helpers".into(),
                 classification: CapClass::LabReal,
-                cli: vec!["anubis pattern-create".into(), "anubis pattern-offset".into()],
+                cli: vec![
+                    "anubis pattern-create".into(),
+                    "anubis pattern-offset".into(),
+                ],
                 notes: "Crash target execution is VZ-bound".into(),
             },
             PackCapability {
@@ -208,9 +208,7 @@ fn pack_fuzz() -> DomainPack {
                 id: "vz_fuzz".into(),
                 summary: "Guest fuzz with staged run capability".into(),
                 classification: CapClass::LabReal,
-                cli: vec![
-                    "anubis vz fuzz --target <bin> --iterations N --allow-research".into(),
-                ],
+                cli: vec!["anubis vz fuzz --target <bin> --iterations N --allow-research".into()],
                 notes: "Host fuzz forbidden (ANUBIS_FUZZ_HOST_FORBIDDEN)".into(),
             },
             PackCapability {
@@ -241,8 +239,7 @@ fn pack_crypto() -> DomainPack {
         id: "crypto_research".into(),
         title: "Cryptography research".into(),
         profile: ResearchProfile::CryptoResearch.as_str().into(),
-        summary: "Pure math / contracts on host; leakage and adversarial fuzz under VZ."
-            .into(),
+        summary: "Pure math / contracts on host; leakage and adversarial fuzz under VZ.".into(),
         requires_vz: true, // profile requires_vz true for leakage paths
         allows_host_pure: true,
         default_effects: effect_names(&[
@@ -277,9 +274,7 @@ fn pack_crypto() -> DomainPack {
                 id: "x25519_hybrid".into(),
                 summary: "X25519 ECDH + hybrid AEAD envelope (RWC Ch5–6)".into(),
                 classification: CapClass::LabReal,
-                cli: vec![
-                    "anubis run examples/crypto/rwc_hybrid_envelope.anb".into(),
-                ],
+                cli: vec!["anubis run examples/crypto/rwc_hybrid_envelope.anb".into()],
                 notes: "Host audited crates only; raw shared must not be used as AEAD key".into(),
             },
             PackCapability {
@@ -315,8 +310,7 @@ fn pack_bounty() -> DomainPack {
         id: "bounty".into(),
         title: "Bug bounty / scope-bound research".into(),
         profile: ResearchProfile::Bounty.as_str().into(),
-        summary: "Scope-bound PoC packing, evidence bundles, bounty report helpers."
-            .into(),
+        summary: "Scope-bound PoC packing, evidence bundles, bounty report helpers.".into(),
         requires_vz: true,
         allows_host_pure: false,
         default_effects: effect_names(&[
@@ -350,7 +344,10 @@ fn pack_bounty() -> DomainPack {
                 id: "scope_gate".into(),
                 summary: "Engagement host/path/cidr allow-lists fail closed".into(),
                 classification: CapClass::LabReal,
-                cli: vec!["anubis engage-status".into(), "anubis evidence-verify".into()],
+                cli: vec![
+                    "anubis engage-status".into(),
+                    "anubis evidence-verify".into(),
+                ],
                 notes: "content_hash + scope asserts".into(),
             },
             PackCapability {
@@ -377,8 +374,9 @@ fn pack_emulation() -> DomainPack {
         id: "emulation".into(),
         title: "ATT&CK-aligned defense validation".into(),
         profile: ResearchProfile::Emulation.as_str().into(),
-        summary: "Purple-team / ATT&CK catalog, OPSEC score, campaign playbook — VZ for live paths."
-            .into(),
+        summary:
+            "Purple-team / ATT&CK catalog, OPSEC score, campaign playbook — VZ for live paths."
+                .into(),
         requires_vz: true,
         allows_host_pure: false,
         default_effects: effect_names(&[
@@ -408,7 +406,10 @@ fn pack_emulation() -> DomainPack {
                 id: "campaign_playbook".into(),
                 summary: "Campaign playbook JSON/MD".into(),
                 classification: CapClass::LabReal,
-                cli: vec!["anubis campaign-init".into(), "anubis campaign-status".into()],
+                cli: vec![
+                    "anubis campaign-init".into(),
+                    "anubis campaign-status".into(),
+                ],
                 notes: "Planning surface".into(),
             },
             PackCapability {
@@ -446,10 +447,7 @@ pub fn list_json() -> serde_json::Value {
 
 pub fn print_catalog() -> Result<()> {
     println!("Anubis security research domain packs ({PACK_SCHEMA})");
-    println!(
-        "{:<16} {:<16} {:<6} {}",
-        "ID", "PROFILE", "VZ?", "TITLE"
-    );
+    println!("{:<16} {:<16} {:<6} TITLE", "ID", "PROFILE", "VZ?");
     for p in catalog() {
         println!(
             "{:<16} {:<16} {:<6} {}",
@@ -473,7 +471,10 @@ pub fn show_json(id: &str) -> Result<serde_json::Value> {
 pub fn print_show(id: &str) -> Result<()> {
     let p = get(id).ok_or_else(|| anyhow!("ANUBIS_RESEARCH_PACK_UNKNOWN: `{id}`"))?;
     println!("{} — {}", p.id, p.title);
-    println!("profile: {}  requires_vz: {}  host_pure: {}", p.profile, p.requires_vz, p.allows_host_pure);
+    println!(
+        "profile: {}  requires_vz: {}  host_pure: {}",
+        p.profile, p.requires_vz, p.allows_host_pure
+    );
     println!("{}", p.summary);
     println!("default_effects: {}", p.default_effects.join(", "));
     println!("\ncapabilities:");
@@ -509,11 +510,7 @@ pub fn print_show(id: &str) -> Result<()> {
 }
 
 /// Scaffold a pack directory with sealed manifest + honesty README.
-pub fn scaffold(
-    id: &str,
-    out: &Path,
-    engagement_id: Option<&str>,
-) -> Result<PathBuf> {
+pub fn scaffold(id: &str, out: &Path, engagement_id: Option<&str>) -> Result<PathBuf> {
     let pack = get(id).ok_or_else(|| anyhow!("ANUBIS_RESEARCH_PACK_UNKNOWN: `{id}`"))?;
     fs::create_dir_all(out)?;
     let manifest = PackManifest {
@@ -561,9 +558,7 @@ pub fn scaffold(
     for h in &pack.honesty {
         readme.push_str(&format!("- {h}\n"));
     }
-    readme.push_str(
-        "\n## Verify\n\n```bash\nanubis research-pack validate ",
-    );
+    readme.push_str("\n## Verify\n\n```bash\nanubis research-pack validate ");
     readme.push_str(&pack.id);
     readme.push_str(" --source <program.anb>\nanubis evidence-verify .\n```\n");
     fs::write(out.join("README.md"), readme)?;
@@ -607,8 +602,12 @@ fn main() {
 /// `requires_vz` packs would otherwise under-specify.
 pub fn validate_source(id: &str, source_path: &Path) -> Result<serde_json::Value> {
     let pack = get(id).ok_or_else(|| anyhow!("ANUBIS_RESEARCH_PACK_UNKNOWN: `{id}`"))?;
-    let src = fs::read_to_string(source_path)
-        .map_err(|e| anyhow!("ANUBIS_RESEARCH_PACK_SOURCE: {}: {e}", source_path.display()))?;
+    let src = fs::read_to_string(source_path).map_err(|e| {
+        anyhow!(
+            "ANUBIS_RESEARCH_PACK_SOURCE: {}: {e}",
+            source_path.display()
+        )
+    })?;
     let proven = proven_effects_from_source(&src)
         .map_err(|e| anyhow!("ANUBIS_RESEARCH_PACK_EFFECTS: {e}"))?;
     // Same IR as typecheck when check succeeds — fail closed on drift.
@@ -694,11 +693,14 @@ mod tests {
             assert!(!p.honesty.is_empty(), "{} missing honesty", p.id);
             assert!(!p.capabilities.is_empty(), "{} empty caps", p.id);
             // At least one LAB_REAL and no silent "REAL" without enum
-            assert!(
-                p.capabilities
-                    .iter()
-                    .any(|c| matches!(c.classification, CapClass::LabReal | CapClass::LabRealHmac | CapClass::PlanOnly | CapClass::Partial | CapClass::NotImplemented))
-            );
+            assert!(p.capabilities.iter().any(|c| matches!(
+                c.classification,
+                CapClass::LabReal
+                    | CapClass::LabRealHmac
+                    | CapClass::PlanOnly
+                    | CapClass::Partial
+                    | CapClass::NotImplemented
+            )));
             // Emulation must keep phish as PLAN_ONLY
             if p.id == "emulation" {
                 let phish = p

@@ -480,10 +480,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     &["process.spawn", "vm.execute"],
                 )?;
                 let env = run_cap_env_fragment(&name, &program_digest, &cap_key);
-                let quoted: Vec<String> = command
-                    .iter()
-                    .map(|c| shell_single_quote(c))
-                    .collect();
+                let quoted: Vec<String> = command.iter().map(|c| shell_single_quote(c)).collect();
                 let shell = format!("env {env} {}", quoted.join(" "));
                 eprintln!(
                     "[anubis vz] ssh {target} -- (research-gated; guest-bound run capability) {}",
@@ -770,10 +767,11 @@ fn rsync_into(from: &str, dst: &str) -> Result<()> {
 /// Run a command in a guest over SSH, streaming output; map non-zero to an error.
 fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
     let target = format!("{user}@{ip}");
+    let remote = remote_command_line(command);
     let status = Command::new("ssh")
         .args(ssh_common_args()?)
         .arg(&target)
-        .args(command)
+        .arg(remote)
         .status()
         .with_context(|| "failed to spawn ssh")?;
     if status.success() {
@@ -792,10 +790,11 @@ fn ssh_exec(user: String, ip: String, command: &[String]) -> Result<()> {
 /// Capture stdout of a remote command (trimmed); non-zero exit is an error.
 fn ssh_capture(user: &str, ip: &str, command: &[String]) -> Result<String> {
     let target = format!("{user}@{ip}");
+    let remote = remote_command_line(command);
     let out = Command::new("ssh")
         .args(ssh_common_args()?)
         .arg(&target)
-        .args(command)
+        .arg(remote)
         .output()
         .with_context(|| "failed to spawn ssh (capture)")?;
     if !out.status.success() {
@@ -813,8 +812,8 @@ fn ssh_capture(user: &str, ip: &str, command: &[String]) -> Result<String> {
 
 /// SHA-256 hex of a local file (host).
 fn file_sha256_hex(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("read `{}` for SHA-256", path.display()))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read `{}` for SHA-256", path.display()))?;
     Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
@@ -839,11 +838,7 @@ fn remote_sha256_hex(user: &str, ip: &str, remote_path: &str) -> Result<String> 
          elif command -v sha256sum >/dev/null 2>&1; then sha256sum {quoted}; \
          else echo 'ANUBIS_VZ_SHA256_TOOL_MISSING' >&2; exit 2; fi"
     );
-    let out = ssh_capture(
-        user,
-        ip,
-        &["bash".into(), "-lc".into(), script],
-    )?;
+    let out = ssh_capture(user, ip, &["bash".into(), "-lc".into(), script])?;
     parse_shasum_line(&out)
 }
 
@@ -888,8 +883,7 @@ fn guest_fuzz_target_path(host_target: &str) -> Result<String> {
         .ok_or_else(|| {
             anyhow!("ANUBIS_VZ_FUZZ_TARGET: cannot derive basename from `{host_target}`")
         })?;
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')
-    {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
         bail!("ANUBIS_VZ_FUZZ_TARGET: unsafe basename `{name}`");
     }
     Ok(format!("/tmp/anubis-fuzz/{name}"))
@@ -1021,9 +1015,7 @@ fn mint_and_write_guest_cap(
     let source_digest = if let Some(p) = source_path {
         file_sha256_hex(p)?
     } else {
-        program_digest
-            .unwrap_or("vz-no-source")
-            .to_string()
+        program_digest.unwrap_or("vz-no-source").to_string()
     };
     let program_digest = program_digest
         .map(|s| s.to_string())
@@ -1031,22 +1023,23 @@ fn mint_and_write_guest_cap(
     let compiler = std::env::current_exe().context("resolve anubis for capability digests")?;
     let compiler_digest = file_sha256_hex(&compiler)?;
     let allowed = resolve_run_cap_effects(source_path, effects);
-    let cap = crate::offensive::run_capability::mint(
-        &key,
-        "vz-session",
-        "vz-session-hash",
-        "vz-orchestrator-auth",
-        &source_digest,
-        &compiler_digest,
-        &program_digest,
-        guest_id,
-        base,
-        "tart-disposable",
-        allowed,
-        vec![],
-        "vz-operator",
-        3600,
-    );
+    let cap =
+        crate::offensive::run_capability::mint(crate::offensive::run_capability::MintParams {
+            key: &key,
+            engagement_id: "vz-session",
+            engagement_hash: "vz-session-hash",
+            authorization_digest: "vz-orchestrator-auth",
+            source_digest: &source_digest,
+            compiler_digest: &compiler_digest,
+            program_digest: &program_digest,
+            guest_id,
+            base_digest: base,
+            confinement_digest: "tart-disposable",
+            allowed_effects: allowed,
+            allowed_targets: vec![],
+            operator: "vz-operator",
+            ttl_secs: 3600,
+        });
     let dir = std::env::temp_dir().join(format!("anubis-run-cap-{}", guest_id));
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("run_capability.json");
@@ -1153,6 +1146,14 @@ fn ssh_common_args_for_key(key: &Path) -> Vec<OsString> {
 
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn remote_command_line(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|part| shell_single_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Combine body + stop/delete outcomes. Teardown failure is never silently labeled "discarded".
@@ -1364,7 +1365,9 @@ mod ssh_transport_tests {
         assert!(cap.allowed_effects.iter().any(|e| e == "vm.execute"));
         // Must not only list legacy net.send without research IR
         assert!(
-            !cap.allowed_effects.iter().all(|e| e == "process.spawn" || e == "vm.execute"),
+            !cap.allowed_effects
+                .iter()
+                .all(|e| e == "process.spawn" || e == "vm.execute"),
             "must include proven net effect, not only fallback: {:?}",
             cap.allowed_effects
         );
@@ -1413,6 +1416,19 @@ mod ssh_transport_tests {
     }
 
     #[test]
+    fn remote_command_line_preserves_bash_lc_payload_as_one_arg() {
+        let line = remote_command_line(&[
+            "bash".into(),
+            "-lc".into(),
+            "if command -v shasum >/dev/null 2>&1; then shasum -a 256 '/tmp/x'; fi".into(),
+        ]);
+        assert_eq!(
+            line,
+            "'bash' '-lc' 'if command -v shasum >/dev/null 2>&1; then shasum -a 256 '\\''/tmp/x'\\''; fi'"
+        );
+    }
+
+    #[test]
     fn file_sha256_hex_empty_file_is_known_digest() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("empty.bin");
@@ -1426,22 +1442,13 @@ mod ssh_transport_tests {
     #[test]
     fn teardown_success_preserves_body_error_and_does_not_claim_discard_on_failure() {
         let body_err = Err(anyhow!("body boom"));
-        let out = finalize_disposable_teardown(
-            "anubis-vz-ephemeral-1",
-            body_err,
-            Ok(()),
-            Ok(()),
-        );
+        let out = finalize_disposable_teardown("anubis-vz-ephemeral-1", body_err, Ok(()), Ok(()));
         assert!(out.is_err());
         let s = format!("{:#}", out.unwrap_err());
         assert!(s.contains("body boom"), "{s}");
 
-        let fail_stop = finalize_disposable_teardown(
-            "g1",
-            Ok(()),
-            Err(anyhow!("stop failed")),
-            Ok(()),
-        );
+        let fail_stop =
+            finalize_disposable_teardown("g1", Ok(()), Err(anyhow!("stop failed")), Ok(()));
         let s = format!("{:#}", fail_stop.unwrap_err());
         assert!(s.contains("ANUBIS_VZ_TEARDOWN_FAILED"), "{s}");
         assert!(s.contains("stop failed"), "{s}");

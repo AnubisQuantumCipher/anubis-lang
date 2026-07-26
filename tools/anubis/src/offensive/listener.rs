@@ -707,13 +707,9 @@ fn decode_result_bytes(eng: &Engagement, raw: &[u8]) -> Result<TaskResult> {
     Ok(serde_json::from_slice(raw).or_else(|_| serde_json::from_str(body))?)
 }
 
-fn open_encrypted_json<T: serde::de::DeserializeOwned>(
-    eng: &Engagement,
-    raw: &[u8],
-) -> Result<T> {
-    let body = std::str::from_utf8(raw).map_err(|_| {
-        anyhow::anyhow!("ANUBIS_CRYPTO_ENVELOPE_REQUIRED: body is not valid UTF-8")
-    })?;
+fn open_encrypted_json<T: serde::de::DeserializeOwned>(eng: &Engagement, raw: &[u8]) -> Result<T> {
+    let body = std::str::from_utf8(raw)
+        .map_err(|_| anyhow::anyhow!("ANUBIS_CRYPTO_ENVELOPE_REQUIRED: body is not valid UTF-8"))?;
     let env: EncryptedEnvelope = serde_json::from_slice(raw)
         .or_else(|_| serde_json::from_str(body))
         .map_err(|e| {
@@ -958,7 +954,9 @@ mod encrypt_decode_tests {
             r#"{{"protocol":"aop-2","engagement_id":"{}","agent_id":"a","blob":""}}"#,
             eng.engagement_id
         );
-        let err = decode_beacon_bytes(&eng, bad.as_bytes()).unwrap_err().to_string();
+        let err = decode_beacon_bytes(&eng, bad.as_bytes())
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("ENVELOPE") || err.contains("empty"),
             "got {err}"
@@ -972,7 +970,9 @@ mod encrypt_decode_tests {
             r#"{{"protocol":"aop-2","engagement_id":"{}","agent_id":"a","blob":"AAAAAAAAAAAAAAAAAAAAAA=="}}"#,
             eng.engagement_id
         );
-        let err = decode_beacon_bytes(&eng, bad.as_bytes()).unwrap_err().to_string();
+        let err = decode_beacon_bytes(&eng, bad.as_bytes())
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("ANUBIS_CRYPTO_AUTH_FAILED") || err.contains("CRYPTO"),
             "got {err}"

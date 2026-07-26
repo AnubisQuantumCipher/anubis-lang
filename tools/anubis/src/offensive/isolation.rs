@@ -168,7 +168,8 @@ fn require_run_capability_if_configured(action: &str) -> Result<()> {
     let program_digest = std::env::var("ANUBIS_PROGRAM_DIGEST").unwrap_or_else(|_| "*".into());
     let engagement_id = std::env::var("ANUBIS_ENGAGEMENT_ID").unwrap_or_else(|_| "*".into());
     let engagement_hash = std::env::var("ANUBIS_ENGAGEMENT_HASH").unwrap_or_else(|_| "*".into());
-    let guest_id = std::env::var("ANUBIS_VZ_GUEST_ID").unwrap_or_else(|_| "anubis-xcode-guest".into());
+    let guest_id =
+        std::env::var("ANUBIS_VZ_GUEST_ID").unwrap_or_else(|_| "anubis-xcode-guest".into());
 
     let cap = super::run_capability::read_cap(Path::new(&cap_path))?;
     // Persist seen nonces under /tmp for single-guest process; multi-process needs shared store.
@@ -198,9 +199,8 @@ fn require_run_capability_if_configured(action: &str) -> Result<()> {
         target: None,
         seen_nonces: seen,
     };
-    super::run_capability::validate_and_consume(&cap, &ctx).map_err(|e| {
-        anyhow!("ANUBIS_RUN_CAP_REJECTED for `{action}`: {e}")
-    })
+    super::run_capability::validate_and_consume(&cap, &ctx)
+        .map_err(|e| anyhow!("ANUBIS_RUN_CAP_REJECTED for `{action}`: {e}"))
 }
 
 /// Tiny once-mutex without new deps (std only).
@@ -268,10 +268,17 @@ pub fn isolation_status_json() -> serde_json::Value {
         ],
         "host_allowed_poc_kit": [],
         "host_allowed_control_plane": [
-            "engage-init", "engage-status", "offensive-doctor",
-            "attck-catalog", "opsec-score", "campaign-init",
-            "phish-plan", "lolbas-catalog", "malleable-init",
-            "purple-report", "receipt-verify", "pattern-*", "gadget-*",
+            "engage-init", "engage-status", "engage-rehash",
+            "operator-token-issue", "operator-token-revoke",
+            "offensive-doctor",
+            "attck-catalog", "attck-map", "opsec-score",
+            "campaign-init", "campaign-status",
+            "phish-plan", "lolbas-catalog",
+            "malleable-init", "malleable-validate",
+            "purple-report", "receipt-verify",
+            "recon-hostinfo",
+            "bounty-report", "research-pack-*",
+            "pattern-*", "gadget-*",
             "browser-harness", "exploit-new", "module-list",
             "vz-status", "vz-doctor", "vz-*"
         ],
@@ -317,5 +324,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn host_forbidden_aop_list_is_pinned_and_exhaustive() {
+        let status = isolation_status_json();
+        let forbidden: Vec<&str> = status["host_forbidden_aop"]
+            .as_array()
+            .expect("host_forbidden_aop must be an array")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let expected = [
+            "listen",
+            "agent-generate",
+            "task-queue",
+            "inject-plan",
+            "lateral-ssh",
+            "lateral-smb",
+            "exploit-run",
+            "persist-launchagent",
+            "pack-xor",
+            "recon-scan",
+            "string-scramble",
+        ];
+        let mut sorted_forbidden = forbidden.clone();
+        sorted_forbidden.sort();
+        let mut sorted_expected = expected.to_vec();
+        sorted_expected.sort();
+        assert_eq!(
+            sorted_forbidden, sorted_expected,
+            "host_forbidden_aop drifted from pinned set — update BOTH the gate call \
+             in main.rs AND this test when adding/removing an offensive command"
+        );
+    }
+
+    #[test]
+    fn isolation_status_json_has_required_policy_fields() {
+        let status = isolation_status_json();
+        assert!(status["policy"]["aop_platform_requires_apple_virtualization"]
+            .as_bool()
+            .unwrap());
+        assert!(status["policy"]["all_research_and_fuzz_require_vz"]
+            .as_bool()
+            .unwrap());
+        assert!(status["host_allowed_control_plane"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "recon-hostinfo"));
+        assert!(status["host_allowed_control_plane"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "bounty-report"));
+        assert!(!status["host_allowed_poc_kit"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "fuzz"),
+            "fuzz must NOT appear in host_allowed — it requires VZ");
     }
 }

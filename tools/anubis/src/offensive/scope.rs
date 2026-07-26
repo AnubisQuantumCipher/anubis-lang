@@ -185,7 +185,8 @@ pub fn path_in_scope(path: &Path, allowed_paths: &[String]) -> Result<(), ScopeE
 }
 
 fn path_has_parent_escape(path: &Path) -> bool {
-    path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+    path.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// Candidate forms of a path for scope checks (lexically cleaned + optional canonicalize).

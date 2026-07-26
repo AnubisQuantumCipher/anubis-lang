@@ -380,10 +380,7 @@ mod tests {
         // fails because we delete mac_key.
         let _ = fs::remove_file(receipts_dir(&eng).join("mac_key.hex"));
         let err = verify_chain(&eng).unwrap_err().to_string();
-        assert!(
-            err.contains("MAC") || err.contains("KEY"),
-            "got {err}"
-        );
+        assert!(err.contains("MAC") || err.contains("KEY"), "got {err}");
         let _ = fs::remove_dir_all(&eng);
     }
 }
