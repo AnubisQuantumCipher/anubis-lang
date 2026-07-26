@@ -123,23 +123,90 @@ pub fn is_poc_kit_target(path: &Path) -> bool {
 
 /// Fail closed unless running inside Apple Virtualization guest.
 /// Used for AOP red-team platform execution (C2, inject, lateral, …).
+///
+/// When `ANUBIS_RUN_CAP_PATH` is set (host-minted guest-bound capability), also
+/// validates and consumes that capability (single-use nonce). Guest identity is
+/// taken from `ANUBIS_VZ_GUEST_ID` or defaults to `anubis-xcode-guest`.
 pub fn require_vz_offensive(action: &str) -> Result<()> {
-    if in_vz_guest() {
+    if !in_vz_guest() {
+        return Err(anyhow!(
+            "ANUBIS_OFFENSIVE_HOST_FORBIDDEN: `{action}` is red-team/offensive platform execution and must run inside an Apple Virtualization guest (tart / Virtualization.framework), never on the host.\n\
+             \n\
+             Isolation (AOP platform):\n\
+               1) ./target/release/anubis vz status   # golden: anubis-xcode\n\
+               2) anubis vz exploit|fuzz|exec|c2-cycle|stress --base anubis-xcode …\n\
+               3) Or guest env: export ANUBIS_VZ_GUEST=1 ; touch \"$HOME/.anubis-vz-guest\"\n\
+             \n\
+             PoC kit and research execution use the same mandatory boundary:\n\
+               anubis vz exploit --allow-research --base anubis-xcode <program>\n\
+               anubis vz fuzz --allow-research --base anubis-xcode <target>\n\
+             The host remains an orchestration and evidence-collection surface only."
+        ));
+    }
+    require_run_capability_if_configured(action)?;
+    Ok(())
+}
+
+/// Optional guest-bound capability gate (fail closed when path is set).
+fn require_run_capability_if_configured(action: &str) -> Result<()> {
+    let Ok(cap_path) = std::env::var("ANUBIS_RUN_CAP_PATH") else {
+        return Ok(());
+    };
+    if cap_path.trim().is_empty() {
         return Ok(());
     }
-    Err(anyhow!(
-        "ANUBIS_OFFENSIVE_HOST_FORBIDDEN: `{action}` is red-team/offensive platform execution and must run inside an Apple Virtualization guest (tart / Virtualization.framework), never on the host.\n\
-         \n\
-         Isolation (AOP platform):\n\
-           1) ./target/release/anubis vz status   # golden: anubis-xcode\n\
-           2) anubis vz exploit|fuzz|exec|c2-cycle|stress --base anubis-xcode …\n\
-           3) Or guest env: export ANUBIS_VZ_GUEST=1 ; touch \"$HOME/.anubis-vz-guest\"\n\
-         \n\
-         PoC kit and research execution use the same mandatory boundary:\n\
-           anubis vz exploit --allow-research --base anubis-xcode <program>\n\
-           anubis vz fuzz --allow-research --base anubis-xcode <target>\n\
-         The host remains an orchestration and evidence-collection surface only."
-    ))
+    let key = std::env::var("ANUBIS_RUN_CAP_KEY").map_err(|_| {
+        anyhow!("ANUBIS_RUN_CAP_KEY_MISSING: ANUBIS_RUN_CAP_PATH set but no ANUBIS_RUN_CAP_KEY")
+    })?;
+    let program_digest = std::env::var("ANUBIS_PROGRAM_DIGEST").unwrap_or_else(|_| "*".into());
+    let engagement_id = std::env::var("ANUBIS_ENGAGEMENT_ID").unwrap_or_else(|_| "*".into());
+    let engagement_hash = std::env::var("ANUBIS_ENGAGEMENT_HASH").unwrap_or_else(|_| "*".into());
+    let guest_id = std::env::var("ANUBIS_VZ_GUEST_ID").unwrap_or_else(|_| "anubis-xcode-guest".into());
+
+    let cap = super::run_capability::read_cap(Path::new(&cap_path))?;
+    // Persist seen nonces under /tmp for single-guest process; multi-process needs shared store.
+    static SEEN: once_cell_noop::OnceLockMutex = once_cell_noop::OnceLockMutex;
+    let seen = SEEN.get();
+    let ctx = super::run_capability::ValidateCtx {
+        key: &key,
+        guest_id: &guest_id,
+        program_digest: if program_digest == "*" {
+            &cap.program_digest
+        } else {
+            &program_digest
+        },
+        engagement_id: if engagement_id == "*" {
+            &cap.engagement_id
+        } else {
+            &engagement_id
+        },
+        engagement_hash: if engagement_hash == "*" {
+            &cap.engagement_hash
+        } else {
+            &engagement_hash
+        },
+        // Isolation gate checks guest/program/engagement/nonce/expiry; typed
+        // effect enforcement is done by call sites that know the effect IR name.
+        effect: None,
+        target: None,
+        seen_nonces: seen,
+    };
+    super::run_capability::validate_and_consume(&cap, &ctx).map_err(|e| {
+        anyhow!("ANUBIS_RUN_CAP_REJECTED for `{action}`: {e}")
+    })
+}
+
+/// Tiny once-mutex without new deps (std only).
+mod once_cell_noop {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    pub struct OnceLockMutex;
+    impl OnceLockMutex {
+        pub fn get(&'static self) -> &'static Mutex<HashSet<String>> {
+            static CELL: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+            CELL.get_or_init(|| Mutex::new(HashSet::new()))
+        }
+    }
 }
 
 /// Policy for `anubis run --allow-research` (PoC kit + research programs).
