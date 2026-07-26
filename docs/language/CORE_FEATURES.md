@@ -65,8 +65,8 @@ This document lists what is **REAL** (implemented + tested), **PARTIAL**, or **P
 - **Return-type checking** — a *literal* return of an unambiguously wrong type is now rejected
   (`fn f() -> u32 { "s" }` → `ANUBIS_RETURN_TYPE_MISMATCH`). Dynamic returns (variables, calls,
   if/match) are still unchecked at full flow depth — residual of the structured-type arc
-- **Native monomorphized codegen** — checker records `TypedIR.mono_specializations`; runtime is
-  still `AnubisValue`-erased (see `LANGUAGE_COMPLETENESS.md`)
+- **Monomorphized code clones** — checker inventory + `anb_*__mono__*` specialized clones for
+  literal-pinned generic calls; values still `AnubisValue` (unboxed monomorphs residual)
 
 ## REAL (modules / stdlib / packages — do not claim “planned”)
 - Multi-file `import a.b;` resolve + `import std.*` content-locked stdlib (13 modules)
