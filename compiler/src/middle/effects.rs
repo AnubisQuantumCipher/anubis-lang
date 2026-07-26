@@ -510,6 +510,16 @@ pub(crate) fn program_capability_set(items: &[Item]) -> (BTreeSet<String>, bool)
     (caps, open)
 }
 
+/// Whole-program proven effects as the **shared research IR** (`ProvenEffectSet`).
+///
+/// Same fixpoint as [`program_capability_set`], mapped through
+/// `research_profile::ProvenEffectSet::from_checker_caps` so confinement, entitlements,
+/// and VZ run-capability minting consume one normalized representation.
+pub(crate) fn program_proven_effects(items: &[Item]) -> super::research_profile::ProvenEffectSet {
+    let (caps, open) = program_capability_set(items);
+    super::research_profile::ProvenEffectSet::from_checker_caps(&caps, open)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,19 +1,19 @@
-//! Phase 3: Security Research HIR types (compiler-side stubs).
+//! Phase 3–4: Security Research HIR types + shared effect IR.
 //!
 //! Design doc: `docs/language/SECURITY_RESEARCH_PROFILE.md`.
 //!
 //! This module defines the **typed intermediate objects** that the research pipeline
-//! will eventually require at the language surface. It is intentionally pure and
-//! self-contained (no filesystem, no network, no Tart): constructors fail closed
-//! when engagement/scope inputs are missing or inconsistent.
+//! will eventually require at the language surface, plus the **normalized effect set**
+//! consumed by both the checker/confinement path and VZ run-capability minting.
 //!
 //! ## Classification (honest)
 //!
 //! | Piece | Status |
 //! |-------|--------|
 //! | Profile / effect / scope types | LAB_REAL (typed IR + unit tests) |
+//! | `ProvenEffectSet` shared IR | LAB_REAL (confinement + VZ mint consume) |
 //! | Language syntax / parser surface | NOT_IMPLEMENTED |
-//! | Checker wiring into `typecheck` | NOT_IMPLEMENTED (types ready for consume) |
+//! | Full checker rewrite onto SecurityEffect | PARTIAL (mapping from 6 caps) |
 //! | Runtime mint of GuestRun | runtime spine in `tools/anubis` (LAB_REAL) |
 //!
 //! Raw strings/paths/hosts must not silently become scoped targets — all scoped
@@ -536,6 +536,166 @@ pub fn normalize_effect_set(raw: &[&str]) -> Result<BTreeSet<SecurityEffect>, Re
     Ok(out)
 }
 
+// ── Shared proven-effect IR (checker ↔ confinement ↔ VZ run capability) ─────
+
+/// The six Safe-mode / checker capability ids (order matches confinement CAPS).
+pub const CHECKER_CAPABILITY_IDS: [&str; 6] = [
+    "net.send", "fs.read", "fs.write", "shell", "time.now", "rand.gen",
+];
+
+/// Whole-program proven effect set — single IR for confinement, entitlements, and
+/// guest run-capability minting.
+///
+/// Built from the checker's transitive effect fixpoint (`program_capability_set`).
+/// Research-normalized names (`net.connect`, `process.spawn`) are the **canonical**
+/// form for run-capability tokens; legacy checker names remain available for the
+/// existing confinement grant table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProvenEffectSet {
+    /// Normalized research effects (no legacy aliases).
+    pub effects: BTreeSet<SecurityEffect>,
+    /// Legacy checker caps that are not SecurityEffect members (`time.now`, `rand.gen`).
+    #[serde(default)]
+    pub informational_caps: BTreeSet<String>,
+    /// False when the effect fixpoint's `open` bit was set.
+    pub effects_bounded: bool,
+}
+
+impl ProvenEffectSet {
+    /// Build from checker capability id strings + open bit.
+    ///
+    /// Unknown ids that are not informational are **ignored** (not fail-closed): the
+    /// checker only emits the six known caps; confinement already filters by CAPS.
+    pub fn from_checker_caps(caps: &BTreeSet<String>, open: bool) -> Self {
+        let mut effects = BTreeSet::new();
+        let mut informational_caps = BTreeSet::new();
+        for c in caps {
+            match c.as_str() {
+                "net.send" | "net.connect" => {
+                    effects.insert(SecurityEffect::NetConnect);
+                }
+                "fs.read" => {
+                    effects.insert(SecurityEffect::FsRead);
+                }
+                "fs.write" => {
+                    effects.insert(SecurityEffect::FsWrite);
+                }
+                "shell" | "process.spawn" => {
+                    effects.insert(SecurityEffect::ProcessSpawn);
+                }
+                "time.now" | "rand.gen" => {
+                    informational_caps.insert(c.clone());
+                }
+                other => {
+                    if let Some(e) = SecurityEffect::parse(other) {
+                        effects.insert(e.normalize());
+                    }
+                }
+            }
+        }
+        Self {
+            effects,
+            informational_caps,
+            effects_bounded: !open,
+        }
+    }
+
+    pub fn empty_bounded() -> Self {
+        Self {
+            effects: BTreeSet::new(),
+            informational_caps: BTreeSet::new(),
+            effects_bounded: true,
+        }
+    }
+
+    pub fn has(&self, e: SecurityEffect) -> bool {
+        self.effects.contains(&e.normalize())
+    }
+
+    pub fn has_net(&self) -> bool {
+        self.has(SecurityEffect::NetConnect) || self.has(SecurityEffect::NetListen)
+    }
+
+    pub fn has_fs_read(&self) -> bool {
+        self.has(SecurityEffect::FsRead) || self.has(SecurityEffect::FsWrite)
+    }
+
+    pub fn has_fs_write(&self) -> bool {
+        self.has(SecurityEffect::FsWrite)
+    }
+
+    pub fn has_process_spawn(&self) -> bool {
+        self.has(SecurityEffect::ProcessSpawn)
+    }
+
+    /// Legacy checker capability names present (for confinement CAPS table).
+    ///
+    /// `fs.write` implies `fs.read` in the grant table (read-write posture needs both
+    /// grant rows present for honest re-derive of older tests that list both).
+    pub fn legacy_capabilities_present(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for c in CHECKER_CAPABILITY_IDS {
+            let present = match c {
+                "net.send" => self.has_net(),
+                "fs.read" => self.has(SecurityEffect::FsRead) || self.has_fs_write(),
+                "fs.write" => self.has_fs_write(),
+                "shell" => self.has_process_spawn(),
+                "time.now" | "rand.gen" => self.informational_caps.iter().any(|x| x == c),
+                _ => false,
+            };
+            if present {
+                out.push(c.to_string());
+            }
+        }
+        out
+    }
+
+    /// Sorted research-normalized effect name strings.
+    pub fn research_effect_names(&self) -> Vec<String> {
+        self.effects.iter().map(|e| e.as_str().to_string()).collect()
+    }
+
+    /// Effect names for a guest-bound run capability: proven research effects
+    /// plus `vm.execute` (guest always needs it for VZ research runs).
+    pub fn for_run_capability(&self) -> Vec<String> {
+        let mut names: BTreeSet<String> = self.research_effect_names().into_iter().collect();
+        names.insert(SecurityEffect::VmExecute.as_str().into());
+        // Crash/research runs that only had informational caps still need spawn to run.
+        if names.len() == 1 {
+            // only vm.execute
+            names.insert(SecurityEffect::ProcessSpawn.as_str().into());
+        }
+        names.into_iter().collect()
+    }
+
+    /// Default effect list when no Anubis source is available (binary fuzz target, etc.).
+    pub fn default_research_run_effects() -> Vec<String> {
+        vec![
+            SecurityEffect::ProcessSpawn.as_str().into(),
+            SecurityEffect::VmExecute.as_str().into(),
+        ]
+    }
+
+    /// Reconstruct research effects from a legacy capabilities_present list (migration).
+    pub fn from_legacy_capabilities_present(caps: &[String], effects_bounded: bool) -> Self {
+        let set: BTreeSet<String> = caps.iter().cloned().collect();
+        let mut p = Self::from_checker_caps(&set, !effects_bounded);
+        p.effects_bounded = effects_bounded;
+        p
+    }
+}
+
+/// Derive a proven effect set from Anubis source text (parse + checker fixpoint).
+///
+/// Fail-closed on parse errors. Does **not** require a full typecheck pass — same
+/// surface as `package::confinement::derive_confinement` (effect fixpoint only).
+pub fn proven_effects_from_source(source: &str) -> Result<ProvenEffectSet, String> {
+    let ast = crate::frontend::parse_source(source).map_err(|e| {
+        format!("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED: {e}")
+    })?;
+    Ok(crate::middle::effects::program_proven_effects(&ast.items))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,5 +855,63 @@ mod tests {
         let a = Authorization::from_engagement(&eng);
         assert_eq!(a.digest(), "auth-digest-xyz");
         assert_eq!(a.engagement_id(), "eng-lab-1");
+    }
+
+    #[test]
+    fn proven_effect_set_maps_checker_caps_to_research_ir() {
+        let mut caps = BTreeSet::new();
+        caps.insert("net.send".into());
+        caps.insert("shell".into());
+        caps.insert("fs.read".into());
+        caps.insert("time.now".into());
+        let p = ProvenEffectSet::from_checker_caps(&caps, false);
+        assert!(p.effects_bounded);
+        assert!(p.has_net());
+        assert!(p.has_process_spawn());
+        assert!(p.has(SecurityEffect::FsRead));
+        assert!(p.informational_caps.contains("time.now"));
+        let names = p.research_effect_names();
+        assert!(names.contains(&"net.connect".to_string()));
+        assert!(names.contains(&"process.spawn".to_string()));
+        assert!(!names.iter().any(|n| n == "net.send"));
+        assert!(!names.iter().any(|n| n == "shell"));
+        let legacy = p.legacy_capabilities_present();
+        assert!(legacy.contains(&"net.send".to_string()));
+        assert!(legacy.contains(&"shell".to_string()));
+    }
+
+    #[test]
+    fn proven_effects_from_source_matches_net_program() {
+        let src = "fn beacon() uses(net.send) { http_post(\"http://x/y\", \"z\"); }\n\
+                   fn main() uses(net.send) { beacon(); }\n";
+        let p = proven_effects_from_source(src).expect("derive");
+        assert!(p.has_net());
+        assert!(p.effects_bounded);
+        let run = p.for_run_capability();
+        assert!(run.iter().any(|e| e == "net.connect"));
+        assert!(run.iter().any(|e| e == "vm.execute"));
+    }
+
+    #[test]
+    fn proven_effects_from_source_parse_fail_closed() {
+        let err = proven_effects_from_source("fn main( {").unwrap_err();
+        assert!(err.contains("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED"));
+    }
+
+    #[test]
+    fn for_run_capability_defaults_include_spawn_when_empty() {
+        let p = ProvenEffectSet::empty_bounded();
+        let run = p.for_run_capability();
+        assert!(run.iter().any(|e| e == "vm.execute"));
+        assert!(run.iter().any(|e| e == "process.spawn"));
+    }
+
+    #[test]
+    fn legacy_migration_roundtrip() {
+        let caps = vec!["net.send".into(), "shell".into()];
+        let p = ProvenEffectSet::from_legacy_capabilities_present(&caps, true);
+        assert!(p.has_net());
+        assert!(p.has_process_spawn());
+        assert!(p.effects_bounded);
     }
 }

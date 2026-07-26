@@ -67,6 +67,7 @@ source → AST → typed HIR → effect IR → contracts/SMT
 | **VZ host always mints + stages cap** on `vz exploit` / `vz fuzz` / research-class `vz exec` | `vz.rs` | LAB_REAL |
 | Guest enforces cap when `ANUBIS_VZ_ENFORCE_RUN_CAP=1` | `isolation.rs` | LAB_REAL |
 | Phase 3 HIR types (profiles, scope, effects, GuestRun) | `research_profile.rs` | LAB_REAL (typed IR) |
+| **Shared `ProvenEffectSet` IR** (checker → confine + entitlements + VZ run cap) | `research_profile` + `confinement` + `vz.rs` | LAB_REAL |
 | Full Security Research syntax | language | NOT_IMPLEMENTED |
 | Independent portable evidence verifier CLI | tools | NOT_IMPLEMENTED |
 
@@ -81,7 +82,7 @@ source → AST → typed HIR → effect IR → contracts/SMT
 
 1. ~~Wire `run_capability` mint into `anubis vz exploit|fuzz` host orchestrator~~ **done** (also research-class `vz exec`).  
 2. ~~HIR types for Engagement/Scope + constructors that check engagement~~ **done** (typed stubs; no parser).  
-3. Effect IR shared between checker and VZ confine (consume `SecurityEffect` in confine/checker).  
+3. ~~Effect IR shared between checker and VZ confine~~ **done**: `ProvenEffectSet` from checker fixpoint; confinement emits `research_effects`; VZ mint from `.anb` uses same IR (`net.send`→`net.connect`, `shell`→`process.spawn`).  
 4. Independent portable evidence verifier CLI.  
 5. Domain packs (PoC/fuzz/crypto/bounty/emulation) with honest classifications.
 

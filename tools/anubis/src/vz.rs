@@ -942,10 +942,59 @@ fn command_requires_run_capability(command: &[String]) -> bool {
         || joined.contains("task-queue")
 }
 
+/// Resolve allowed effects for a guest run capability from Anubis source when available.
+///
+/// Uses the shared `ProvenEffectSet` IR (same fixpoint as `anubis vz confine`). Falls back to
+/// the caller-supplied defaults (or research defaults) when source is missing / not Anubis.
+fn resolve_run_cap_effects(source_path: Option<&Path>, fallback: &[&str]) -> Vec<String> {
+    if let Some(p) = source_path {
+        let is_anb = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("anb"))
+            .unwrap_or(false);
+        if is_anb {
+            if let Ok(src) = std::fs::read_to_string(p) {
+                match anubis_compiler::research_profile::proven_effects_from_source(&src) {
+                    Ok(proven) => {
+                        let mut names = proven.for_run_capability();
+                        // Merge any explicit fallback extras (e.g. debug.attach) the caller passed.
+                        for e in fallback {
+                            if !names.iter().any(|n| n == *e) {
+                                names.push((*e).to_string());
+                            }
+                        }
+                        if !names.iter().any(|n| n == "vm.execute") {
+                            names.push("vm.execute".into());
+                        }
+                        return names;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[anubis vz] WARN: proven-effects from source failed ({e}); using fallback effect list"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    if fallback.is_empty() {
+        anubis_compiler::research_profile::ProvenEffectSet::default_research_run_effects()
+    } else {
+        let mut allowed: Vec<String> = fallback.iter().map(|e| (*e).to_string()).collect();
+        if !allowed.iter().any(|e| e == "vm.execute") {
+            allowed.push("vm.execute".into());
+        }
+        allowed
+    }
+}
+
 /// Mint a single-use guest-bound capability JSON on the host.
 ///
 /// `source_path` when set is hashed as both source and program digest; otherwise
 /// `program_digest` must be supplied (e.g. sha of remote command string).
+/// When `source_path` is an `.anb` file, allowed effects are derived from the shared
+/// proven-effect IR (aligned with `vz confine`); otherwise `effects` is used as fallback.
 fn mint_and_write_guest_cap(
     guest_id: &str,
     base: &str,
@@ -969,10 +1018,7 @@ fn mint_and_write_guest_cap(
         .unwrap_or_else(|| source_digest.clone());
     let compiler = std::env::current_exe().context("resolve anubis for capability digests")?;
     let compiler_digest = file_sha256_hex(&compiler)?;
-    let mut allowed: Vec<String> = effects.iter().map(|e| (*e).to_string()).collect();
-    if !allowed.iter().any(|e| e == "vm.execute") {
-        allowed.push("vm.execute".into());
-    }
+    let allowed = resolve_run_cap_effects(source_path, effects);
     let cap = crate::offensive::run_capability::mint(
         &key,
         "vz-session",
@@ -1277,6 +1323,48 @@ mod ssh_transport_tests {
         assert!(cap.allowed_effects.iter().any(|e| e == "vm.execute"));
         assert!(cap.allowed_effects.iter().any(|e| e == "process.spawn"));
         assert_eq!(cap.program_digest, pd);
+    }
+
+    #[test]
+    fn mint_from_anb_source_uses_proven_effect_ir() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("beacon.anb");
+        std::fs::write(
+            &src,
+            "fn beacon() uses(net.send) { http_post(\"http://x/y\", \"z\"); }\n\
+             fn main() uses(net.send) { beacon(); }\n",
+        )
+        .unwrap();
+        let (path, _key, _pd) = mint_and_write_guest_cap(
+            "unit-guest-net",
+            "anubis-xcode",
+            Some(&src),
+            None,
+            &["process.spawn"], // fallback ignored when .anb proves effects
+        )
+        .expect("mint");
+        let cap = crate::offensive::run_capability::read_cap(&path).expect("read cap");
+        assert!(
+            cap.allowed_effects.iter().any(|e| e == "net.connect"),
+            "proven net.send must become net.connect in run cap: {:?}",
+            cap.allowed_effects
+        );
+        assert!(cap.allowed_effects.iter().any(|e| e == "vm.execute"));
+        // Must not only list legacy net.send without research IR
+        assert!(
+            !cap.allowed_effects.iter().all(|e| e == "process.spawn" || e == "vm.execute"),
+            "must include proven net effect, not only fallback: {:?}",
+            cap.allowed_effects
+        );
+    }
+
+    #[test]
+    fn resolve_run_cap_effects_binary_fallback() {
+        let bin = Path::new("/tmp/vuln_local");
+        let effects = resolve_run_cap_effects(Some(bin), &["process.spawn"]);
+        assert!(effects.iter().any(|e| e == "vm.execute"));
+        assert!(effects.iter().any(|e| e == "process.spawn"));
+        assert!(!effects.iter().any(|e| e == "net.connect"));
     }
 
     #[test]
