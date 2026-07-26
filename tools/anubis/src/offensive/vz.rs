@@ -503,8 +503,32 @@ pub fn vz_stress_battery(
     vz_exec(guest, &cmd, None, DEFAULT_TIMEOUT_SECS)
 }
 
-/// Comprehensive VZ doctor — check readiness for offensive sandboxing.
+/// Comprehensive VZ doctor — readiness for offensive sandboxing.
+///
+/// **Canonical backend is Tart** (`anubis vz *` → `tools/anubis/src/vz.rs`).
+/// The vmctl path below is **LEGACY / non-authoritative** for isolation evidence.
 pub fn vz_doctor() -> Result<serde_json::Value> {
+    let tart_available = Command::new("tart")
+        .arg("list")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let tart_has_golden = if tart_available {
+        Command::new("tart")
+            .arg("list")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.lines().any(|l| l.split_whitespace().any(|t| t == "anubis-xcode")))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let ssh_key = dirs::home_dir()
+        .map(|h| h.join(".ssh/tart_anubis"))
+        .filter(|p| p.is_file());
+
+    // Legacy vmctl probe — never used alone as vz_available for AOP isolation claims.
     let vmctl_path = vmctl_bin();
     let vmctl_exists = vmctl_path.exists()
         || Command::new("which")
@@ -518,9 +542,6 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         Vec::new()
     };
     let running: Vec<_> = guests.iter().filter(|g| g.running).collect();
-    let offensive_ready = running
-        .iter()
-        .any(|g| g.name == "anubis-xcode" || g.name.starts_with("anubis-offensive-gate-"));
     let mut guest_list = Vec::new();
     for g in &guests {
         guest_list.push(serde_json::json!({
@@ -531,6 +552,7 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
             "disk_gib": g.disk_gib,
             "distribution": g.distribution,
             "network": g.network,
+            "backend": "legacy_vmctl",
         }));
     }
     let exports_path =
@@ -544,31 +566,46 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         .as_ref()
         .map(|p| p.join("src/Cargo.toml").exists())
         .unwrap_or(false);
+
+    // Authoritative readiness = tart + golden + SSH key (not vmctl).
+    let offensive_ready = tart_available && tart_has_golden && ssh_key.is_some();
     Ok(serde_json::json!({
-        "vz_available": vmctl_exists,
-        "vmctl_path": vmctl_path.display().to_string(),
+        "canonical_backend": "tart",
+        "vz_available": tart_available,
+        "tart_available": tart_available,
+        "tart_golden_anubis_xcode": tart_has_golden,
+        "tart_ssh_key": ssh_key.as_ref().map(|p| p.display().to_string()),
+        "tart_ssh_key_present": ssh_key.is_some(),
+        "legacy_vmctl": {
+            "present": vmctl_exists,
+            "path": vmctl_path.display().to_string(),
+            "classification": "LEGACY_NON_AUTHORITATIVE",
+            "note": "Do not use vmctl alone for isolation evidence; use anubis vz (tart).",
+        },
         "offensive_guest_ready": offensive_ready,
-        "running_guests": running.len(),
-        "total_guests": guests.len(),
-        "guests": guest_list,
+        "running_guests_legacy_vmctl": running.len(),
+        "total_guests_legacy_vmctl": guests.len(),
+        "guests_legacy_vmctl": guest_list,
         "exports_path": exports_path.map(|p| p.display().to_string()),
         "exports_exist": exports_exist,
         "toolchain_staged": toolchain_staged,
         "binary_staged": binary_staged,
         "default_network": "off",
         "capabilities": {
-            "exploit_sandbox": offensive_ready && binary_staged,
-            "fuzz_sandbox": offensive_ready && binary_staged,
-            "agent_test": offensive_ready && binary_staged,
-            "c2_cycle": offensive_ready && binary_staged,
-            "stress_battery": offensive_ready && binary_staged,
-            "unit_tests": offensive_ready && binary_staged,
+            "exploit_sandbox": offensive_ready,
+            "fuzz_sandbox": offensive_ready,
+            "agent_test": offensive_ready,
+            "c2_cycle": offensive_ready,
+            "stress_battery": offensive_ready,
+            "unit_tests": offensive_ready,
+            "requires": "tart + anubis-xcode + ~/.ssh/tart_anubis",
         },
         "policy": {
             "network_default": "off",
             "crash_isolated": true,
             "evidence_collected": true,
             "host_never_executes_payloads": true,
+            "canonical_cli": "anubis vz status|exploit|fuzz|exec|sync",
         },
     }))
 }
