@@ -526,6 +526,134 @@ fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<M
     None
 }
 
+/// Whether `expr` is a pure expression of params + literals only (no calls/IO/alloc side effects).
+fn mono_expr_is_full_native_eligible(expr: &Expr, params: &std::collections::BTreeSet<String>) -> bool {
+    match expr {
+        Expr::Var(n) => params.contains(n),
+        Expr::Literal(_) | Expr::StrLiteral(_) => true,
+        Expr::Unary { op, expr, .. } if op == "-" || op == "!" || op == "~" => {
+            mono_expr_is_full_native_eligible(expr, params)
+        }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            matches!(
+                op.as_str(),
+                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||" | "=="
+                    | "!=" | "<" | "<=" | ">" | ">="
+            ) && mono_expr_is_full_native_eligible(lhs, params)
+                && mono_expr_is_full_native_eligible(rhs, params)
+        }
+        _ => false,
+    }
+}
+
+/// Emit a native Rust expression for a full-unbox mono body (params already native-typed).
+fn emit_mono_native_expr(expr: &Expr, ret: MonoPrim) -> Result<String> {
+    match expr {
+        Expr::Var(n) => sanitize_ident(n),
+        Expr::Literal(s) => {
+            let s = s.trim();
+            if s == "true" || s == "false" {
+                return Ok(s.to_string());
+            }
+            if s.parse::<i64>().is_ok()
+                || s.strip_prefix("0x")
+                    .or_else(|| s.strip_prefix("0X"))
+                    .map(|h| i64::from_str_radix(h, 16).is_ok())
+                    .unwrap_or(false)
+            {
+                return Ok(s.to_string());
+            }
+            if s.parse::<f64>().is_ok() {
+                return Ok(s.to_string());
+            }
+            Err(anyhow!("mono native: unsupported literal `{s}`"))
+        }
+        Expr::StrLiteral(s) => Ok(format!("{}.to_string()", rust_string_lit(s)?)),
+        Expr::Unary { op, expr, .. } => {
+            let inner = emit_mono_native_expr(expr, ret)?;
+            match op.as_str() {
+                "-" => Ok(format!("-({inner})")),
+                "!" => Ok(format!("!({inner})")),
+                "~" => Ok(format!("!({inner})")),
+                other => Err(anyhow!("mono native: unsupported unary `{other}`")),
+            }
+        }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let l = emit_mono_native_expr(lhs, ret)?;
+            let r = emit_mono_native_expr(rhs, ret)?;
+            match op.as_str() {
+                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||" | "=="
+                | "!=" | "<" | "<=" | ">" | ">=" => Ok(format!("({l} {op} {r})")),
+                other => Err(anyhow!("mono native: unsupported binary `{other}`")),
+            }
+        }
+        _ => Err(anyhow!("mono native: unsupported expression form")),
+    }
+}
+
+/// Fully native mono body (no AnubisValue) when the specialization is a simple pure expression.
+/// Returns `None` to fall back to the AnubisValue-inner unboxed wrapper.
+fn try_emit_mono_full_native_body(
+    params: &[(String, String)],
+    body: &[Stmt],
+    abi: &MonoUnboxedAbi,
+) -> Result<Option<String>> {
+    let param_names: std::collections::BTreeSet<String> =
+        params.iter().map(|(n, _)| n.clone()).collect();
+
+    // Only `return e` or a single expression statement.
+    let ret_expr: &Expr = match body {
+        [Stmt::ExprStmt(Expr::Call { callee, args })] if callee == "return" => {
+            match args.as_slice() {
+                [] => {
+                    // `return;` — only valid for non-string if we yield a default.
+                    if matches!(abi.ret, MonoPrim::Int) {
+                        let mut out = String::new();
+                        for ((p, ty), prim) in params.iter().zip(abi.params.iter()) {
+                            if *prim == MonoPrim::Int {
+                                if let Some(w) = crate::middle::ty::unsigned_mask_width(ty) {
+                                    let id = sanitize_ident(p)?;
+                                    out.push_str(&format!(
+                                        "    let {id} = {id} & ((1i64 << {w}) - 1);\n"
+                                    ));
+                                }
+                            }
+                        }
+                        out.push_str("    0\n");
+                        return Ok(Some(out));
+                    }
+                    return Ok(None);
+                }
+                [e] => e,
+                _ => return Ok(None),
+            }
+        }
+        [Stmt::ExprStmt(e)] => e,
+        _ => return Ok(None),
+    };
+
+    if !mono_expr_is_full_native_eligible(ret_expr, &param_names) {
+        return Ok(None);
+    }
+
+    let mut out = String::new();
+    // Preserve u8/u16/u32 range honesty without AnubisValue.
+    for ((p, ty), prim) in params.iter().zip(abi.params.iter()) {
+        if *prim == MonoPrim::Int {
+            if let Some(w) = crate::middle::ty::unsigned_mask_width(ty) {
+                let id = sanitize_ident(p)?;
+                out.push_str(&format!("    let {id} = {id} & ((1i64 << {w}) - 1);\n"));
+            }
+        }
+    }
+    let expr_src = match emit_mono_native_expr(ret_expr, abi.ret) {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+    out.push_str(&format!("    {expr_src}\n"));
+    Ok(Some(out))
+}
+
 /// Emit one argument for an unboxed mono call (prefer bare literals; else unwrap AnubisValue).
 fn emit_mono_arg_unboxed(arg: &Expr, prim: MonoPrim, ctx: &EmitCtx<'_>) -> Result<String> {
     match (arg, prim) {
@@ -682,13 +810,27 @@ fn emit_fn_core(
     };
     let inner_sig = sig.join(", ");
 
-    // Unboxed monomorphized ABI: native outer, AnubisValue inner (handles `return` of AnubisValue).
+    // Unboxed monomorphized ABI.
     if let Some(abi) = unboxed {
         let mut outer_params = Vec::new();
-        let mut fwd = Vec::new();
         for ((p, _), prim) in params.iter().zip(abi.params.iter()) {
             let id = sanitize_ident(p)?;
             outer_params.push(format!("{id}: {}", prim.rust_ty()));
+        }
+        let ret_ty = abi.ret.rust_ty();
+        let outer = outer_params.join(", ");
+
+        // Full native body when the function is a simple pure expression of params/literals
+        // (no AnubisValue inner). Falls back to native outer + AnubisValue inner otherwise.
+        if let Some(native_body) = try_emit_mono_full_native_body(params, body, abi)? {
+            return Ok(format!(
+                "fn {rust_name}({outer}) -> {ret_ty} {{\n{native_body}}}\n"
+            ));
+        }
+
+        let mut fwd = Vec::new();
+        for ((p, _), prim) in params.iter().zip(abi.params.iter()) {
+            let id = sanitize_ident(p)?;
             // Convert native arg → AnubisValue for the shared body.
             fwd.push(match prim {
                 MonoPrim::Int => format!("AnubisValue::Int({id})"),
@@ -697,11 +839,9 @@ fn emit_fn_core(
                 MonoPrim::String => format!("anubis_mk_str({id})"),
             });
         }
-        let ret_ty = abi.ret.rust_ty();
         let unwrap = abi.ret.from_anubis("__anb_ret");
         return Ok(format!(
             "fn {rust_name}({outer}) -> {ret_ty} {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    let __anb_ret = __anb_body({fwd});\n    {unwrap}\n}}\n",
-            outer = outer_params.join(", "),
             fwd = fwd.join(", "),
         ));
     }

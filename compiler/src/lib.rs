@@ -5607,6 +5607,30 @@ fn main() {
         assert!(err.contains("ANUBIS_CRYPTO_BYTE_RANGE"), "got: {err}");
     }
 
+    /// Extract one `fn name(...) { ... }` block from lowered Rust (brace-balanced).
+    fn extract_rust_fn(src: &str, name: &str) -> String {
+        let needle = format!("fn {name}");
+        let start = src.find(&needle).expect("fn not found");
+        let after = &src[start..];
+        let brace = after.find('{').expect("opening brace");
+        let mut depth = 0i32;
+        let mut end = brace;
+        for (i, ch) in after[brace..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = brace + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        after[..end].to_string()
+    }
+
     #[test]
     fn typecheck_records_static_monomorphization_inventory() {
         let src = r#"
@@ -5689,6 +5713,17 @@ fn main() {
                 || rust.contains("fn anb_id__mono__T_string(mut x: String) -> String"),
             "expected unboxed String ABI for T=string clone"
         );
+        // Full native body for identity: no AnubisValue / __anb_body in the mono clones.
+        let u32_fn = extract_rust_fn(&rust, "anb_id__mono__T_u32");
+        let str_fn = extract_rust_fn(&rust, "anb_id__mono__T_string");
+        assert!(
+            !u32_fn.contains("AnubisValue") && !u32_fn.contains("__anb_body"),
+            "expected fully native u32 mono body, got:\n{u32_fn}"
+        );
+        assert!(
+            !str_fn.contains("AnubisValue") && !str_fn.contains("__anb_body"),
+            "expected fully native string mono body, got:\n{str_fn}"
+        );
         // Runtime still works through mono path.
         let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
         assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
@@ -5697,6 +5732,50 @@ fn main() {
             stdout.contains('1') && stdout.contains("hi"),
             "unexpected stdout: {stdout}"
         );
+    }
+
+    #[test]
+    fn mono_codegen_full_native_body_for_simple_arith() {
+        let src = r#"
+fn add1<T>(x: T) -> T { return x + 1; }
+fn main() {
+    print(add1(10));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        assert!(
+            rust.contains("anb_add1__mono__"),
+            "expected mono clone for add1"
+        );
+        // Find any mono add1 and ensure full native (x + 1) without AnubisValue body.
+        let mono_name = rust
+            .lines()
+            .find_map(|l| {
+                let t = l.trim();
+                if t.starts_with("fn anb_add1__mono__") {
+                    Some(t.split('(').next()?.strip_prefix("fn ")?.to_string())
+                } else {
+                    None
+                }
+            })
+            .expect("mono add1 fn line");
+        let body = extract_rust_fn(&rust, &mono_name);
+        assert!(
+            !body.contains("AnubisValue") && !body.contains("__anb_body") && body.contains('+'),
+            "expected full native arith body:\n{body}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("11"), "unexpected stdout: {stdout}");
     }
 
     #[test]
