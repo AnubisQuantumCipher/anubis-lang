@@ -100,12 +100,24 @@ pub struct SemanticDiagnostic {
 }
 
 /// One static monomorphization of a generic function at a call site (checker phase).
-/// Codegen remains value-erased (`AnubisValue`); this table is the **static specialization
-/// inventory** — every concrete `T=…` binding the type system proved at a call.
+/// Unique specializations drive clone emission; see also [`MonoCallSite`] for ordered
+/// per-call dispatch (variable-pinned mono).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonoSpecialization {
     pub function: String,
     /// Sorted generic name → concrete annotation (e.g. `"T" → "i64"`).
+    pub type_args: BTreeMap<String, String>,
+}
+
+/// One ordered generic call within a caller function (typecheck walk order).
+/// Codegen consumes these queues so non-literal args (`id(x)`) still select a clone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonoCallSite {
+    /// Enclosing function being typechecked when the call was seen.
+    pub caller: String,
+    /// Callee generic function name.
+    pub function: String,
+    /// Concrete bindings at this call (empty when the checker could not pin).
     pub type_args: BTreeMap<String, String>,
 }
 
@@ -118,8 +130,10 @@ pub struct TypedIR {
     /// Whole-program proven research effect set (shared IR with confine / VZ / packs).
     /// Derived once from the same transitive fixpoint as capability checks — not a second scan.
     pub proven_effects: research_profile::ProvenEffectSet,
-    /// Static monomorphization inventory (generic call sites with concrete type args).
+    /// Static monomorphization inventory (deduped concrete `T=…` specializations).
     pub mono_specializations: Vec<MonoSpecialization>,
+    /// Ordered generic call sites (per-caller) for monomorphized call-site dispatch.
+    pub mono_call_sites: Vec<MonoCallSite>,
     pub body: Vec<Stmt>,
     pub hir: Hir,
     pub mir: Vec<MirBlock>,
@@ -978,6 +992,8 @@ struct SemanticContext {
     /// closure, not the enclosing function). Read by the typed-`?` check in `check_expr_semantics` to
     /// compare each `?` operand's container kind against the enclosing `Result`/`Option` return.
     current_fn_return: Option<String>,
+    /// Name of the function whose body is currently being walked (for mono call-site ordering).
+    current_fn: Option<String>,
     /// Function name → its captured generic type-parameter names (`fn same<T>(a: T, b: T)` → `["T"]`).
     /// Registered in pass 1. Drives `ANUBIS_GENERIC_CONFLICT`: at a call, a type parameter used in two
     /// argument positions is unified across them, and two incompatible concrete arguments clash.
@@ -1007,6 +1023,8 @@ struct SemanticContext {
     fn_effect_rows: BTreeMap<String, effects::EffectRow>,
     /// Static monomorphization instances discovered at generic call sites (deduped).
     mono_specializations: BTreeSet<(String, Vec<(String, String)>)>,
+    /// Ordered generic call sites: (caller, callee, sorted type_args pairs).
+    mono_call_sites: Vec<(String, String, Vec<(String, String)>)>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -1143,6 +1161,15 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
             type_args: pairs.into_iter().collect(),
         })
         .collect();
+    let mono_call_sites: Vec<MonoCallSite> = ctx
+        .mono_call_sites
+        .into_iter()
+        .map(|(caller, function, pairs)| MonoCallSite {
+            caller,
+            function,
+            type_args: pairs.into_iter().collect(),
+        })
+        .collect();
     Ok(TypedIR {
         mode: bmode,
         taint_labels: ctx.taint_labels,
@@ -1150,6 +1177,7 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         has_research: ctx.has_research,
         proven_effects,
         mono_specializations,
+        mono_call_sites,
         body: captured_body,
         hir: ctx.hir,
         mir: ctx.mir,
@@ -1809,6 +1837,7 @@ fn analyze_function(
     // `check_expr_semantics`). Functions do not nest, so a plain assignment per function is correct;
     // the lambda arm of `check_expr_semantics` clears it around a closure body. `None` for no `-> T`.
     ctx.current_fn_return = ret.map(|r| r.to_string());
+    ctx.current_fn = Some(name.to_string());
 
     // Generic-instantiation arity over this function's signature annotations (`fn f(p: Pair<u32>)` or
     // `-> Pair<u32>` when `Pair` declares two parameters). Shadow-gated inside the helper.
@@ -15195,6 +15224,8 @@ fn generic_conflict_scoped(
 }
 
 /// Record a static monomorphization instance when a generic call pins type parameters to concrete types.
+/// Always appends an ordered call-site row (possibly empty bindings) so codegen can walk the same
+/// sequence for variable-pinned mono dispatch.
 fn record_mono_specialization(
     callee: &str,
     args: &[Expr],
@@ -15217,13 +15248,17 @@ fn record_mono_specialization(
         structs: &ctx.struct_fields,
     };
     let bindings = ty::generic_call_bindings(&env, generics, params, args);
-    if bindings.is_empty() {
-        return;
-    }
     let mut pairs: Vec<(String, String)> = bindings.into_iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    ctx.mono_specializations
-        .insert((callee.to_string(), pairs));
+    if !pairs.is_empty() {
+        ctx.mono_specializations
+            .insert((callee.to_string(), pairs.clone()));
+    }
+    // Ordered per-caller site for emit (even when unpinned — keeps queue alignment).
+    if let Some(caller) = ctx.current_fn.clone() {
+        ctx.mono_call_sites
+            .push((caller, callee.to_string(), pairs));
+    }
 }
 
 /// Phase-1 trait-bound check at a call site: for each generic of `callee` that declares a bound, if the
@@ -20314,6 +20349,7 @@ fn empty_ir() -> TypedIR {
         has_research: false,
         proven_effects: research_profile::ProvenEffectSet::empty_bounded(),
         mono_specializations: vec![],
+        mono_call_sites: vec![],
         body: vec![],
         hir: Hir::default(),
         mir: vec![],

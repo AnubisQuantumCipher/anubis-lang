@@ -1500,6 +1500,7 @@ fn run_repl(exact: bool, allow_research: bool, eval_once: Option<&str>) -> Resul
                 &ast.items,
                 allow_research,
                 &typed.mono_specializations,
+                &typed.mono_call_sites,
             )
             .map_err(|e| anyhow!("{e}"))?;
             let dir = tempfile::tempdir()?;
@@ -5649,6 +5650,7 @@ fn run_anubis_source_signed(
             &ast.items,
             allow_research,
             &typed.mono_specializations,
+            &typed.mono_call_sites,
         )
         .map_err(|e| anyhow!("{e}"))?;
         let _ = std::fs::write(&rs_path, &rust_source);
@@ -5714,10 +5716,14 @@ fn run_anubis_source(
     // WHOLE program — every function, not just `main` — so user-defined calls and recursion
     // execute on the Rust call stack. This is what makes Anubis Turing-complete at runtime.
     // With --allow-research, PoC kit builtins (target_run, p64, cyclic, …) and research blocks execute.
-    // Mono inventory from typecheck drives specialized clones for literal-pinned generic calls.
+    // Mono inventory + ordered call sites drive specialized clones (literal and variable-pinned).
     let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-    let rust_source =
-        lower_program_to_rust_with_mono(&ast.items, allow_research, &typed.mono_specializations)?;
+    let rust_source = lower_program_to_rust_with_mono(
+        &ast.items,
+        allow_research,
+        &typed.mono_specializations,
+        &typed.mono_call_sites,
+    )?;
 
     std::fs::create_dir_all(out)?;
     // Compile and run inside a unique temp directory so that concurrent `anubis run`

@@ -1,0 +1,11 @@
+// Variable-pinned monomorphization: checker types `x`/`s`, ordered call sites drive clones.
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn main() {
+    let x = 99;
+    let s = "mono-var";
+    print(id(x));
+    print(id(s));
+}

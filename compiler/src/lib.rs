@@ -5661,6 +5661,7 @@ fn main() {
             &ast.items,
             false,
             &ir.mono_specializations,
+            &ir.mono_call_sites,
         )
         .expect("lower with mono");
         assert!(
@@ -5694,6 +5695,63 @@ fn main() {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains('1') && stdout.contains("hi"),
+            "unexpected stdout: {stdout}"
+        );
+    }
+
+    #[test]
+    fn mono_codegen_variable_pinned_call_sites() {
+        // Checker pins T from the typed binding of `x` / `s`; emit consumes ordered mono_call_sites.
+        let src = r#"
+fn id<T>(x: T) -> T { return x; }
+fn main() {
+    let x = 7;
+    let s = "var";
+    print(id(x));
+    print(id(s));
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast.clone(), Mode::Safe).expect("typecheck");
+        assert!(
+            ir.mono_call_sites.len() >= 2,
+            "expected ordered mono call sites, got {:?}",
+            ir.mono_call_sites
+        );
+        assert!(
+            ir.mono_call_sites.iter().any(|s| {
+                s.caller == "main" && s.function == "id" && !s.type_args.is_empty()
+            }),
+            "expected pinned id call sites under main: {:?}",
+            ir.mono_call_sites
+        );
+        let rust = backends::run::lower_program_to_rust_with_mono(
+            &ast.items,
+            false,
+            &ir.mono_specializations,
+            &ir.mono_call_sites,
+        )
+        .expect("lower");
+        assert!(
+            rust.contains("anb_id__mono__"),
+            "variable-pinned mono should still emit clones: {}",
+            rust.lines()
+                .filter(|l| l.contains("anb_id") || l.contains("mono"))
+                .take(30)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        // Calls should use mono clones, not only generic anb_id(...) for id(x)/id(s).
+        let mono_calls = rust.matches("anb_id__mono__").count();
+        assert!(
+            mono_calls >= 2,
+            "expected mono clone references for both variable-pinned calls, got {mono_calls}"
+        );
+        let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
+        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains('7') && stdout.contains("var"),
             "unexpected stdout: {stdout}"
         );
     }

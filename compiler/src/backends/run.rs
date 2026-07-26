@@ -37,6 +37,13 @@ struct EmitCtx<'a> {
     mono: &'a [MonoEmitSpec],
     /// Free-function parameter type annotations (for mono call matching).
     fn_param_types: &'a std::collections::BTreeMap<String, Vec<String>>,
+    /// Function currently being emitted (for ordered mono call-site queues).
+    current_fn: Option<&'a str>,
+    /// Per-caller ordered generic call sites: callee name + type_args pairs.
+    mono_sites_by_caller:
+        &'a std::collections::BTreeMap<String, Vec<(String, Vec<(String, String)>)>>,
+    /// Per-caller consumption cursor into `mono_sites_by_caller`.
+    mono_cursors: &'a std::collections::BTreeMap<String, std::cell::Cell<usize>>,
 }
 
 /// One monomorphized specialization ready for emit + call-site rewrite.
@@ -440,8 +447,50 @@ struct MonoCallResolved {
     unboxed: Option<MonoUnboxedAbi>,
 }
 
-/// Pick a monomorphized specialization when call args pin types (literal path).
+/// Look up a mono table entry by callee + type_args pairs.
+fn mono_spec_for(
+    callee: &str,
+    pairs: &[(String, String)],
+    ctx: &EmitCtx<'_>,
+) -> Option<MonoCallResolved> {
+    for spec in ctx.mono {
+        if spec.function == callee && spec.type_args.as_slice() == pairs {
+            return Some(MonoCallResolved {
+                rust_name: spec.rust_name.clone(),
+                unboxed: spec.unboxed.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// Pick a monomorphized specialization: prefer ordered checker call-site queue (variable-pinned),
+/// then literal-arg matching as a fallback.
 fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<MonoCallResolved> {
+    // 1) Ordered queue from typecheck (handles `id(x)` when the checker pinned `x`).
+    if let Some(caller) = ctx.current_fn {
+        if let (Some(sites), Some(cursor)) = (
+            ctx.mono_sites_by_caller.get(caller),
+            ctx.mono_cursors.get(caller),
+        ) {
+            let ix = cursor.get();
+            if ix < sites.len() {
+                let (site_callee, pairs) = &sites[ix];
+                if site_callee == callee {
+                    cursor.set(ix + 1);
+                    if !pairs.is_empty() {
+                        if let Some(resolved) = mono_spec_for(callee, pairs, ctx) {
+                            return Some(resolved);
+                        }
+                    }
+                    // Consumed unpinned site — fall through to generic (or literal fallback).
+                    return None;
+                }
+            }
+        }
+    }
+
+    // 2) Literal-arg fallback when queue is absent/mismatched.
     let param_tys = ctx.fn_param_types.get(callee)?;
     if param_tys.len() != args.len() {
         return None;
@@ -467,9 +516,7 @@ fn resolve_mono_call(callee: &str, args: &[Expr], ctx: &EmitCtx<'_>) -> Option<M
                 pinned += 1;
             }
         }
-        // Require at least one generic param to pin via a literal; otherwise fall back.
         if ok && pinned > 0 {
-            // Deterministic: first in sorted mono table wins (table is pre-sorted).
             return Some(MonoCallResolved {
                 rust_name: spec.rust_name.clone(),
                 unboxed: spec.unboxed.clone(),
@@ -580,6 +627,9 @@ fn emit_fn_core(
         struct_field_types: base.struct_field_types,
         mono: base.mono,
         fn_param_types: base.fn_param_types,
+        current_fn: base.current_fn,
+        mono_sites_by_caller: base.mono_sites_by_caller,
+        mono_cursors: base.mono_cursors,
     };
     // Inner body always uses AnubisValue (returns / guards stay valid). Unboxed ABI is an outer
     // wrapper that converts native params → AnubisValue and unwraps the AnubisValue result.
@@ -777,17 +827,17 @@ fn block_as_tail_expr(stmts: &[Stmt]) -> Expr {
 /// When `allow_research` is true, the PoC kit surface is enabled: `target_run`, packing
 /// (`p8`/`p16`/`p32`/`p64`), `cyclic`, research/exploit block bodies, and local-only process control.
 pub fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<String> {
-    lower_program_to_rust_with_mono(items, allow_research, &[])
+    lower_program_to_rust_with_mono(items, allow_research, &[], &[])
 }
 
-/// Lower with a static monomorphization inventory from typecheck (`TypedIR.mono_specializations`).
-/// Emits specialized clones for each entry and rewrites literal-pinned call sites to those clones.
-/// Values remain `AnubisValue`; this is monomorphized **code** with concrete type guards, not
-/// unboxed native types.
+/// Lower with a static monomorphization inventory from typecheck (`TypedIR.mono_specializations`
+/// + ordered `mono_call_sites` for variable-pinned dispatch).
+/// Emits specialized clones and rewrites call sites (literal and variable-pinned) to those clones.
 pub fn lower_program_to_rust_with_mono(
     items: &[Item],
     allow_research: bool,
     mono: &[crate::middle::MonoSpecialization],
+    mono_call_sites: &[crate::middle::MonoCallSite],
 ) -> Result<String> {
     // Run the program on a worker thread with a large (1 GiB) stack instead of the OS main-thread
     // stack (8 MiB on macOS), so naturally-recursive Anubis code reaches ~1M frames before
@@ -809,6 +859,7 @@ pub fn lower_program_to_rust_with_mono(
         allow_research,
         false,
         mono,
+        mono_call_sites,
     )
 }
 
@@ -837,6 +888,7 @@ pub fn lower_program_to_guest(items: &[Item]) -> Result<String> {
         false, // no process PoC kit inside zkVM guest
         true,  // inject proof-input runtime for guest
         &[],   // guest path: no mono inventory yet (safe default)
+        &[],
     )
 }
 
@@ -849,6 +901,7 @@ fn lower_program_with_entry(
     allow_research: bool,
     guest_proof_inputs: bool,
     mono: &[crate::middle::MonoSpecialization],
+    mono_call_sites: &[crate::middle::MonoCallSite],
 ) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
@@ -924,6 +977,27 @@ fn lower_program_with_entry(
             .cmp(&b.function)
             .then(a.rust_name.cmp(&b.rust_name))
     });
+    // Ordered mono call sites by enclosing caller (typecheck walk order).
+    let mut mono_sites_by_caller: std::collections::BTreeMap<
+        String,
+        Vec<(String, Vec<(String, String)>)>,
+    > = std::collections::BTreeMap::new();
+    for site in mono_call_sites {
+        let pairs: Vec<(String, String)> = site
+            .type_args
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        mono_sites_by_caller
+            .entry(site.caller.clone())
+            .or_default()
+            .push((site.function.clone(), pairs));
+    }
+    let mono_cursors: std::collections::BTreeMap<String, std::cell::Cell<usize>> =
+        mono_sites_by_caller
+            .keys()
+            .map(|k| (k.clone(), std::cell::Cell::new(0)))
+            .collect();
     let mut methods = std::collections::BTreeMap::new();
     collect_methods(items, &mut methods);
     // struct name → (field → declared type), for the construction-boundary numeric-kind coercion.
@@ -940,7 +1014,7 @@ fn lower_program_with_entry(
         }
     }
     let empty_locals = std::collections::BTreeSet::new();
-    let ctx = EmitCtx {
+    let base_ctx = EmitCtx {
         allow_research,
         fns: &fn_names,
         fn_arities: &fn_arities,
@@ -949,13 +1023,22 @@ fn lower_program_with_entry(
         struct_field_types: &struct_field_types,
         mono: &mono_table,
         fn_param_types: &fn_param_types,
+        current_fn: None,
+        mono_sites_by_caller: &mono_sites_by_caller,
+        mono_cursors: &mono_cursors,
     };
     let mut functions_src = String::new();
     for def in &fns {
+        let ctx = EmitCtx {
+            current_fn: Some(def.name),
+            ..base_ctx
+        };
         functions_src.push_str(&emit_fn(def, &ctx)?);
         functions_src.push('\n');
     }
     // Monomorphized clones: specialized params/return; primitive sets use unboxed native ABI.
+    // Fresh mono cursors per clone so nested generic calls rewrite the same way as in the
+    // original body (shared cursors would already be exhausted by the generic emit).
     for spec in &mono_table {
         let Some(def) = fns
             .iter()
@@ -971,6 +1054,16 @@ fn lower_program_with_entry(
             .map(|(n, t)| (n.clone(), subst_type_param(t, &type_args)))
             .collect();
         let ret_owned = def.ret_type.map(|t| subst_type_param(t, &type_args));
+        let clone_cursors: std::collections::BTreeMap<String, std::cell::Cell<usize>> =
+            mono_sites_by_caller
+                .keys()
+                .map(|k| (k.clone(), std::cell::Cell::new(0)))
+                .collect();
+        let ctx = EmitCtx {
+            current_fn: Some(def.name),
+            mono_cursors: &clone_cursors,
+            ..base_ctx
+        };
         functions_src.push_str(&emit_fn_core(
             def.name,
             &params_owned,
@@ -4888,10 +4981,10 @@ pub fn compile_and_run_source(
     let ast = crate::frontend::parse_source(source).map_err(|e| anyhow!("parse: {}", e))?;
     // Prefer mono inventory when typecheck succeeds; fall back to empty mono on check errors
     // so runtime tests can still exercise fail-closed paths that only lower.
-    let mono = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
-        .map(|ir| ir.mono_specializations)
+    let (mono, sites) = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
+        .map(|ir| (ir.mono_specializations, ir.mono_call_sites))
         .unwrap_or_default();
-    compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono)
+    compile_and_run_items_with_mono(&ast.items, allow_research, args, &mono, &sites)
 }
 
 /// Bump when crypto dependency set or audited runtime changes (invalidates run cache).
@@ -5043,10 +5136,11 @@ pub fn compile_sign_and_run_source(
     #[cfg(target_os = "macos")]
     {
         let ast = crate::frontend::parse_source(src).map_err(|e| anyhow!("parse failed: {e}"))?;
-        let mono = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
-            .map(|ir| ir.mono_specializations)
+        let (mono, sites) = crate::middle::typecheck(ast.clone(), crate::frontend::Mode::Safe)
+            .map(|ir| (ir.mono_specializations, ir.mono_call_sites))
             .unwrap_or_default();
-        let rust_source = lower_program_to_rust_with_mono(&ast.items, allow_research, &mono)?;
+        let rust_source =
+            lower_program_to_rust_with_mono(&ast.items, allow_research, &mono, &sites)?;
         let dir =
             std::env::temp_dir().join(format!("anubis-signed-run-{}", anubis_unique_suffix()));
         std::fs::create_dir_all(&dir)?;
@@ -5185,7 +5279,7 @@ pub fn compile_and_run_items(
     allow_research: bool,
     args: &[String],
 ) -> Result<std::process::Output> {
-    compile_and_run_items_with_mono(items, allow_research, args, &[])
+    compile_and_run_items_with_mono(items, allow_research, args, &[], &[])
 }
 
 pub fn compile_and_run_items_with_mono(
@@ -5193,8 +5287,10 @@ pub fn compile_and_run_items_with_mono(
     allow_research: bool,
     args: &[String],
     mono: &[crate::middle::MonoSpecialization],
+    mono_call_sites: &[crate::middle::MonoCallSite],
 ) -> Result<std::process::Output> {
-    let rust_source = lower_program_to_rust_with_mono(items, allow_research, mono)?;
+    let rust_source =
+        lower_program_to_rust_with_mono(items, allow_research, mono, mono_call_sites)?;
     let dir = std::env::temp_dir().join(format!("anubis-run-{}", anubis_unique_suffix()));
     std::fs::create_dir_all(&dir)?;
     let exe = dir.join("anubis_run");

@@ -188,6 +188,7 @@ pub fn lower_to_native(
         items,
         allow_research,
         &ir.mono_specializations,
+        &ir.mono_call_sites,
     ) {
         Ok(src) => compile_rust_to_exe(&src, out_dir, name),
         Err(reason) => {
