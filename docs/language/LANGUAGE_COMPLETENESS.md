@@ -12,8 +12,9 @@ expectations to **what is shipped** vs **what remains specialized residual**.
 | Generics + traits/impl | **REAL** (parse + check); codegen **value-erased** | SPEC freeze §2 |
 | **Static monomorphization inventory** | **REAL** (checker records concrete `T=…` at call sites on `TypedIR.mono_specializations`) | `typecheck` → `MonoSpecialization` |
 | Mono inventory in evidence / check dumps | **REAL** — `mono_specializations.json` in evidence bundles; `anubis check` writes `<stem>.mono.json` + prints count | `evidence/mod.rs`, `tools/anubis` |
-| Monomorphized **code** clones (literal-pinned calls) | **REAL** — `lower_program_to_rust_with_mono` emits `anb_*__mono__*` clones with concrete type guards; rewrites literal call sites | `backends/run.rs`, `anubis run` |
-| Native codegen monomorphized to **unboxed** Rust types | **PARTIAL** — values still `AnubisValue`; clones are specialized but not unboxed `i64`/`String` params | `backends/run.rs` |
+| Monomorphized **code** clones (literal-pinned calls) | **REAL** — `lower_program_to_rust_with_mono` emits `anb_*__mono__*` clones; rewrites literal call sites | `backends/run.rs`, `anubis run` |
+| Unboxed mono ABI for primitives | **REAL** for int/float/bool/string specializations — outer `fn …(x: i64) -> i64` (etc.); body still AnubisValue via inner fn | `backends/run.rs` |
+| Fully unboxed bodies / variable-pinned mono | **PARTIAL** — non-literal `id(x)` falls back to generic; complex types stay AnubisValue | residual |
 | Effect system (transitive rows + linear caps) | **REAL** | `effects.rs`, `capability.rs`, `--verified` |
 | Float comparison / QF_FP lane | **REAL** | contract solver float path |
 | String equality / QF_S lane | **REAL** | contract solver string path |
