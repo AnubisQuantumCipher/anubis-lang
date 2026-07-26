@@ -18,8 +18,9 @@ use anubis_compiler::{
         lower_program_to_rust, resolved_run_timeout, run_child_capped, ANUBIS_RUN_CRYPTO_CACHE_TAG,
     },
     evidence::{
-        build_evidence_bundle, build_evidence_bundle_tree, generate_keypair, pca_signature_status,
-        sign_pca, verify_pca, EvidenceManifest,
+        build_evidence_bundle, build_evidence_bundle_tree, build_rejected_evidence_bundle,
+        build_rejected_evidence_bundle_tree, generate_keypair, pca_signature_status, sign_pca,
+        verify_pca, EvidenceManifest,
     },
     frontend::{Item, Mode},
     gate11_fixture_verdict,
@@ -156,6 +157,11 @@ enum Commands {
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
+
+        /// Explicitly bypass contract verification before executing test programs. Every executed
+        /// artifact is marked UNVERIFIED; intended only for compiler/runtime development.
+        #[arg(long)]
+        no_verify: bool,
     },
 
     /// Format Anubis source (canonical, self-verifying). By default prints the formatted source;
@@ -260,6 +266,11 @@ enum Commands {
         /// Verification lane (Phase-3 C5): require `uses(...)` for capability I/O before run.
         #[arg(long)]
         verified: bool,
+
+        /// Explicitly bypass requires/ensures/assert/invariant and taint-flow verification before
+        /// native execution. Evidence is marked UNVERIFIED and carries no proof claim.
+        #[arg(long)]
+        no_verify: bool,
 
         /// macOS: codesign the lowered binary (Apple Development when available) and prefer
         /// Keychain bind for `cap_acquire_nonexportable` (`kc:` tokens). Uses safe CLI
@@ -1623,8 +1634,18 @@ fn main() -> Result<()> {
         } => run_repl(exact, allow_research, eval.as_deref()),
         Commands::Lsp { stdio: _ } => run_lsp(),
         Commands::Selfhost { action } => run_selfhost_cmd(action),
-        Commands::Test { path, json } => {
-            let report = run_anubis_test_suite(&path)?;
+        Commands::Test {
+            path,
+            json,
+            no_verify,
+        } => {
+            if no_verify {
+                eprintln!(
+                    "warning[ANUBIS_UNVERIFIED_EXECUTION]: test contract verification explicitly \
+                     bypassed; executed programs are UNVERIFIED"
+                );
+            }
+            let report = run_anubis_test_suite(&path, no_verify)?;
             if json {
                 let failed: Vec<_> = report
                     .failed
@@ -1663,12 +1684,41 @@ fn main() -> Result<()> {
             );
 
             let src = std::fs::read_to_string(&input)?;
-            let (ast, ws) = load_program_items(&input, &src)?;
+            std::fs::create_dir_all(&out)?;
+            let (ast, ws) = match load_program_items(&input, &src) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    if do_evidence {
+                        let mode = parse_source(&src)
+                            .ok()
+                            .and_then(|ast| program_mode(&ast.items))
+                            .unwrap_or(Mode::Safe);
+                        emit_rejected_command_evidence(
+                            "build",
+                            &input,
+                            &src,
+                            mode,
+                            &out,
+                            &error.to_string(),
+                        )?;
+                    }
+                    return Err(error);
+                }
+            };
 
-            // Use parsed AST for mode (from first Fn item if present)
-            let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+            // Classify the complete program. A later/nested Research or Exploit function must not
+            // hide behind an earlier Safe function at the build/evidence boundary.
+            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
 
-            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+            let typed = match typecheck(ast.clone(), mode) {
+                Ok(typed) => typed,
+                Err(error) => {
+                    if do_evidence {
+                        emit_rejected_command_evidence("build", &input, &src, mode, &out, &error)?;
+                    }
+                    return Err(anyhow!("{}", error));
+                }
+            };
             let tainted = TaintPass::apply(typed.clone());
             let _constraints = SymbolicEngine::generate_constraints(&src);
 
@@ -1683,28 +1733,44 @@ fn main() -> Result<()> {
                     .filter(|c| c.status == "FAIL")
                     .collect();
                 if !fails.is_empty() {
-                    return Err(anyhow!(
-                        "{}",
-                        anubis_compiler::middle::format_build_check_failures(&fails)
-                    ));
+                    let error = anubis_compiler::middle::format_build_check_failures(&fails);
+                    if do_evidence {
+                        emit_rejected_command_evidence("build", &input, &src, mode, &out, &error)?;
+                    }
+                    return Err(anyhow!("{}", error));
                 }
                 println!("✓ contract obligations verified (fail-closed; pass --no-verify to skip)");
             }
 
-            std::fs::create_dir_all(&out)?;
-
             let artifact = if do_evidence || true {
                 // Emit the native artifact via the faithful whole-program lowering (same path as
                 // `anubis run`); full_hybrid enables the in-lower cargo build for hybrid programs.
-                let art = lower_to_native(tainted, &ast.items, &out, "anubis_out", full_hybrid)
-                    .map_err(|e| anyhow!("{}", e))?;
+                let art =
+                    match lower_to_native(tainted, &ast.items, &out, "anubis_out", full_hybrid) {
+                        Ok(artifact) => artifact,
+                        Err(error) => {
+                            if do_evidence {
+                                emit_rejected_command_evidence(
+                                    "build", &input, &src, mode, &out, &error,
+                                )?;
+                            }
+                            return Err(anyhow!("{}", error));
+                        }
+                    };
                 println!("native artifact: {}", art);
                 Some(art)
             } else {
                 None
             };
 
-            if do_evidence {
+            if do_evidence && no_verify {
+                let bundle =
+                    write_unverified_build_evidence(&out, &input, &src, artifact.as_deref())?;
+                println!("evidence bundle: {}", bundle.display());
+                println!("verdict: UNVERIFIED");
+            }
+
+            if do_evidence && !no_verify {
                 let mut logs = vec![
                     format!("build input: {}", input.display()),
                     format!("mode: {:?}", mode),
@@ -1721,11 +1787,7 @@ fn main() -> Result<()> {
                 } else {
                     Some("research")
                 };
-                let mode_s = if matches!(mode, Mode::Safe) {
-                    "safe"
-                } else {
-                    "research"
-                };
+                let mode_s = mode_name(mode);
                 let closure = ws.as_ref().map(dep_closure_json);
                 // Multi-file merkle when project has more than the entry body.
                 let bundle = if let Ok(layout) = ProjectLayout::discover(&input) {
@@ -1804,9 +1866,20 @@ fn main() -> Result<()> {
                     out.join("bounty-summary.json"),
                     serde_json::to_string_pretty(&summary)?,
                 )?;
+                if bundle.manifest.verdict != "PASS" {
+                    return Err(anyhow!(
+                        "ANUBIS_EVIDENCE_VERDICT_FAILED: build produced verdict={} and therefore \
+                         cannot exit successfully",
+                        bundle.manifest.verdict
+                    ));
+                }
             }
 
-            println!("build complete");
+            if no_verify {
+                println!("build complete (UNVERIFIED; no proof claim)");
+            } else {
+                println!("build complete");
+            }
             Ok(())
         }
         Commands::Check {
@@ -1834,6 +1907,7 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+            let mut resolved_program = false;
             // Multi-file modules + Phase-6 package deps: same combine path as `run`.
             if parse_err.is_none() && input.is_file() {
                 let needs_combine = ast
@@ -1847,6 +1921,7 @@ fn main() -> Result<()> {
                         Ok(items) => {
                             if let Some(a) = ast.as_mut() {
                                 a.items = items;
+                                resolved_program = true;
                             }
                         }
                         Err(e) => {
@@ -1858,7 +1933,7 @@ fn main() -> Result<()> {
             }
 
             let mode = if let Some(ref a) = ast {
-                first_mode(&a.items).unwrap_or(Mode::Safe)
+                program_mode(&a.items).unwrap_or(Mode::Safe)
             } else {
                 Mode::Safe
             };
@@ -1939,8 +2014,9 @@ fn main() -> Result<()> {
                 .to_string_lossy()
                 .to_string();
             let do_emit = emit.as_deref().unwrap_or("");
-            let emit_all = do_emit == "all" || do_emit.contains("ast") || evidence;
-            if emit_all || evidence {
+            let emit_evidence = evidence || check_error.is_some();
+            let emit_all = do_emit == "all" || do_emit.contains("ast") || emit_evidence;
+            if emit_all {
                 let ast_rep = serde_json::json!({
                     "num_items": ast_for_json.items.len(),
                     "first_item_kind": match ast_for_json.items.first() {
@@ -1959,12 +2035,12 @@ fn main() -> Result<()> {
                 );
             }
             if let Ok(t) = &typed_res {
-                if do_emit.contains("hir") || emit_all || evidence {
+                if do_emit.contains("hir") || emit_all {
                     if let Ok(h) = serde_json::to_string_pretty(&t.hir) {
                         let _ = std::fs::write(out.join(format!("{}.hir.json", stem)), h);
                     }
                 }
-                if do_emit.contains("mir") || emit_all || evidence {
+                if do_emit.contains("mir") || emit_all {
                     let mir_rep = serde_json::json!({ "blocks": t.mir.len(), "constraints": t.constraints.len() });
                     let _ = std::fs::write(
                         out.join(format!("{}.mir.json", stem)),
@@ -1979,52 +2055,95 @@ fn main() -> Result<()> {
                 "taint pass: applied (if typecheck succeeded)".into(),
             ];
 
-            if evidence {
-                // For check, we produce bundle even on failure, no artifact
-                let bundle_mode = if matches!(mode, Mode::Safe) {
-                    "safe"
-                } else {
-                    "research"
+            if emit_evidence {
+                // Every rejected check produces evidence automatically. It is an explicit FAIL
+                // bundle with no artifact/proof claim; successful checks emit only when requested.
+                let bundle_mode = mode_name(mode);
+                let lane = match mode {
+                    Mode::Safe => "safe-check",
+                    Mode::Research => "research-check",
+                    Mode::Exploit => "exploit-check",
                 };
-                let bundle = build_evidence_bundle(
-                    &src,
-                    bundle_mode,
-                    None, // no artifact for pure check
-                    logs,
-                    &out,
-                    Some(if matches!(mode, Mode::Safe) {
-                        "safe-check"
-                    } else {
-                        "research-check"
-                    }),
-                    None, // security block injected from attr analysis in check
-                )
+                // Imported programs are checked after resolution. Seal both the original entry and
+                // a deterministic source rendering of that resolved AST; evidence must analyze the
+                // same whole program as the command instead of re-checking an unresolved `import`
+                // line and contradicting a successful command verdict.
+                let resolved_files = if resolved_program {
+                    ast.as_ref().map(|resolved| {
+                        vec![
+                            (
+                                "source.anubis".to_string(),
+                                anubis_compiler::fmt::format_ast(&resolved.items).into_bytes(),
+                            ),
+                            (
+                                format!(
+                                    "entry/{}",
+                                    input.file_name().unwrap_or_default().to_string_lossy()
+                                ),
+                                src.as_bytes().to_vec(),
+                            ),
+                        ]
+                    })
+                } else {
+                    None
+                };
+                let bundle = match (resolved_files.as_deref(), check_error.as_deref()) {
+                    (Some(files), Some(error)) => build_rejected_evidence_bundle_tree(
+                        files,
+                        bundle_mode,
+                        logs,
+                        &out,
+                        Some(lane),
+                        error,
+                        None,
+                    ),
+                    (Some(files), None) => build_evidence_bundle_tree(
+                        files,
+                        bundle_mode,
+                        None,
+                        logs,
+                        &out,
+                        Some(lane),
+                        None,
+                        None,
+                    ),
+                    (None, Some(error)) => build_rejected_evidence_bundle(
+                        &src,
+                        bundle_mode,
+                        logs,
+                        &out,
+                        Some(lane),
+                        error,
+                    ),
+                    (None, None) => build_evidence_bundle(
+                        &src,
+                        bundle_mode,
+                        None, // no artifact for pure check
+                        logs,
+                        &out,
+                        Some(lane),
+                        None, // security block injected from attr analysis in check
+                    ),
+                }
                 .map_err(|e| anyhow!("{}", e))?;
 
-                // If there was a check error (policy violation etc), the bundle may have FAIL from diagnostics in build
-                // but to ensure, we can note it
+                if !evidence {
+                    println!("automatic rejection evidence: enabled");
+                }
                 println!("evidence bundle: {}", bundle.dir.display());
-                let effective_verdict = if check_error.is_some() {
-                    "FAIL".to_string()
-                } else {
-                    bundle.manifest.verdict.clone()
-                };
-                println!("verdict: {}", effective_verdict);
+                println!("verdict: {}", bundle.manifest.verdict);
 
                 if let Some(err) = &check_error {
                     println!("check failed: {}", err);
-                    // Write additional diagnostics for the bundle dir
-                    let diag_path = bundle.dir.join("check_diagnostics.txt");
-                    std::fs::write(&diag_path, err)?;
                 } else {
                     println!("check passed (no policy violations)");
                 }
 
                 let summary = serde_json::json!({
-                    "bounty_ready": effective_verdict == "PASS" && check_error.is_none(),
+                    "bounty_ready": bundle.manifest.verdict == "PASS" && check_error.is_none(),
                     "bundle": bundle.dir.to_string_lossy(),
                     "source_hash": bundle.manifest.source_hash,
-                    "verdict": effective_verdict,
+                    "verdict": bundle.manifest.verdict,
                     "check_error": check_error,
                 });
                 std::fs::write(
@@ -2033,6 +2152,13 @@ fn main() -> Result<()> {
                 )?;
                 if let Some(err) = &check_error {
                     return Err(anyhow!("check failed: {}", err));
+                }
+                if bundle.manifest.verdict != "PASS" {
+                    return Err(anyhow!(
+                        "ANUBIS_EVIDENCE_VERDICT_FAILED: check produced verdict={} and therefore \
+                         cannot exit successfully",
+                        bundle.manifest.verdict
+                    ));
                 }
             } else if let Some(err) = &check_error {
                 return Err(anyhow!("check failed: {}", err));
@@ -2081,7 +2207,7 @@ fn main() -> Result<()> {
                     || harness_src.contains("@poc")
                 {
                     let ast = parse_source(&harness_src).map_err(|e| anyhow!("parse: {}", e))?;
-                    let mode = first_mode(&ast.items).unwrap_or(Mode::Research);
+                    let mode = program_mode(&ast.items).unwrap_or(Mode::Research);
                     typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
                     let _ = harness_path;
                 }
@@ -3155,7 +3281,7 @@ fn main() -> Result<()> {
             // before. NOTE: for a multi-module program, `src` (the entry file) is used below for the
             // optional evidence bundle's claim re-derivation, so that bundle remains entry-scoped.
             let (ast, _ws) = load_program_items(&input, &src)?;
-            let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
             let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
             let tainted = TaintPass::apply(typed.clone());
             std::fs::create_dir_all(&out)?;
@@ -3576,11 +3702,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 )];
                 let bundle = build_evidence_bundle(
                     &src,
-                    if matches!(mode, Mode::Safe) {
-                        "safe"
-                    } else {
-                        "research"
-                    },
+                    mode_name(mode),
                     Some(&artifact),
                     logs,
                     &out,
@@ -4032,6 +4154,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             json,
             allow_research,
             verified,
+            no_verify,
             sign,
             input_json,
             input_file,
@@ -4039,16 +4162,19 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
         } => {
             if allow_research {
                 // PoC kit path: packing + gold target_run (docs/language/POC_KIT.md).
-                // AOP C2 stays VZ-only; research run is host-lab-allowed with VZ preferred.
+                // Full capability is preserved, but execution is mandatory VZ-only.
                 offensive::isolation::require_research_run_allowed("run --allow-research")?;
             }
             let src = std::fs::read_to_string(&input)?;
-            // Verification lane: fail closed on undeclared capability I/O before emitting/running.
-            if verified {
-                let ast = parse_source(&src).map_err(|e| anyhow!("parse: {}", e))?;
-                let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
-                typecheck_ex(ast, mode, true)
-                    .map_err(|e| anyhow!("verified check failed: {}", e))?;
+            // Contract verification is the default execution boundary. `--verified` additionally
+            // enforces capability `uses(...)`; it no longer controls whether contracts run.
+            if no_verify {
+                eprintln!(
+                    "warning[ANUBIS_UNVERIFIED_EXECUTION]: contract verification explicitly \
+                     bypassed; this run is UNVERIFIED and makes no proof claim"
+                );
+            } else {
+                verify_before_native_execution(&input, &src, verified)?;
             }
             // Auto-sign on macOS when program uses non-exportable caps (Keychain bind path).
             let want_sign = sign
@@ -4066,7 +4192,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 )?;
                 proof_inputs_env_string(&pin.values)?
             };
-            let outcome = if want_sign {
+            let mut outcome = if want_sign {
                 run_anubis_source_signed(
                     &input,
                     &src,
@@ -4085,6 +4211,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                     proof_env.as_deref(),
                 )?
             };
+            outcome.contracts_verified = !no_verify;
             if evidence {
                 write_run_evidence(&out, &outcome)?;
             }
@@ -4101,6 +4228,20 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             Ok(())
         }
         Commands::Verify { bundle, pubkey } => {
+            if bundle.join("unverified.json").exists() {
+                let mut ok = verify_unverified_build_evidence(&bundle)?;
+                if pubkey.is_some() {
+                    eprintln!("--pubkey cannot be satisfied by an unsigned UNVERIFIED envelope");
+                    ok = false;
+                }
+                println!("signed: false (UNVERIFIED integrity envelope)");
+                println!("assurance: UNVERIFIED (no contract, proof, or receipt claim)");
+                println!("bundle valid: {}", ok);
+                if !ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             // PCA verification: hash/tamper validation PLUS re-deriving the claim block from the
             // bundle's own source and confirming it matches the recorded pca.json (fail-closed).
             let mut ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
@@ -4139,6 +4280,15 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             Ok(())
         }
         Commands::Validate { bundle } => {
+            if bundle.join("unverified.json").exists() {
+                let ok = verify_unverified_build_evidence(&bundle)?;
+                println!("assurance: UNVERIFIED (integrity only; no proof claim)");
+                println!("bundle valid: {}", ok);
+                if !ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             let ok = verify_pca(&bundle).map_err(|e| anyhow!("{}", e))?;
             println!("bundle valid: {}", ok);
             if !ok {
@@ -4335,7 +4485,7 @@ fn run_entitlements_cmd(program: &Path, out: Option<&Path>, plist: Option<&Path>
     let src = std::fs::read_to_string(program)
         .map_err(|e| anyhow!("read program `{}`: {e}", program.display()))?;
     let ast = parse_source(&src).map_err(|e| anyhow!("ANUBIS_ENTITLEMENT_PARSE_FAILED: {e}"))?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     typecheck(ast, mode).map_err(|e| {
         anyhow!(
             "ANUBIS_ENTITLEMENT_UNVERIFIED: refusing to derive an entitlement profile from a \
@@ -4621,7 +4771,7 @@ fn build_runtime_plan_report(
     metal_reference: Option<&Path>,
 ) -> Result<serde_json::Value> {
     let ast = parse_or_diag(source, input)?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     let typed = typecheck(ast, mode).map_err(|e| anyhow!("{}", e))?;
     let _tainted = TaintPass::apply(typed);
     let _constraints = SymbolicEngine::generate_constraints(source);
@@ -4944,6 +5094,34 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+fn emit_rejected_command_evidence(
+    command: &str,
+    input: &Path,
+    source: &str,
+    mode: Mode,
+    out: &Path,
+    rejection: &str,
+) -> Result<()> {
+    let lane = format!("{}-{}-rejected", mode_name(mode), command);
+    let bundle = build_rejected_evidence_bundle(
+        source,
+        mode_name(mode),
+        vec![
+            format!("{command} input: {}", input.display()),
+            format!("mode: {:?}", mode),
+            format!("{command} rejected before artifact production: {rejection}"),
+        ],
+        out,
+        Some(&lane),
+        rejection,
+    )
+    .map_err(|error| anyhow!("rejection evidence failed: {error}"))?;
+    println!("evidence bundle: {}", bundle.dir.display());
+    println!("verdict: {}", bundle.manifest.verdict);
+    println!("artifact: NONE (command rejected)");
+    Ok(())
+}
+
 /// Parse a program, rendering a rustc-grade diagnostic (`path:line:col` + the source line + a caret)
 /// on failure instead of a bare `; `-joined message.
 fn parse_or_diag(source: &str, path: &Path) -> Result<anubis_compiler::frontend::AST> {
@@ -4968,6 +5146,45 @@ struct RunOutcome {
     stderr: String,
     exit_code: Option<i32>,
     status_success: bool,
+    /// Set only by the CLI front door after the shared contract/taint gate succeeds. Low-level
+    /// lowering helpers deliberately default this to false so they cannot manufacture a claim.
+    contracts_verified: bool,
+}
+
+/// The single execution gate used by `run` and `test`. It mirrors default `build`: parse and
+/// resolve the complete program, typecheck, apply taint analysis, then require every solver
+/// obligation to PASS before any native artifact is emitted or executed.
+fn verify_before_native_execution(input: &Path, source: &str, verified_caps: bool) -> Result<()> {
+    let (ast, _) = load_program_items(input, source)?;
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+    let typed = typecheck_ex(ast, mode, verified_caps)
+        .map_err(|e| anyhow!("ANUBIS_EXECUTION_CHECK_FAILED: {e}"))?;
+    let tainted = TaintPass::apply(typed);
+
+    if let Some(trace) = tainted
+        .taint_traces
+        .iter()
+        .find(|trace| trace.sink.is_some() && !trace.declassified)
+    {
+        return Err(anyhow!(
+            "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: refusing native execution; tainted flow \
+             from `{}` to sink `{}` requires declassify()",
+            trace.source,
+            trace.sink.as_deref().unwrap_or("unknown")
+        ));
+    }
+
+    let failures: Vec<_> = SymbolicEngine::check_obligations(&tainted)
+        .into_iter()
+        .filter(|check| check.status != "PASS")
+        .collect();
+    if !failures.is_empty() {
+        return Err(anyhow!(
+            "ANUBIS_EXECUTION_UNVERIFIED: refusing native execution — {}",
+            anubis_compiler::middle::format_build_check_failures(&failures)
+        ));
+    }
+    Ok(())
 }
 
 /// Every `.anb`/`.anub`/`.anubis` source file under `path` (or `path` itself if it is a file).
@@ -5084,7 +5301,7 @@ fn parse_test_directives(src: &str) -> (bool, Option<String>) {
 }
 
 /// Run every discovered `.anb` test through the run path and check it against its directives.
-fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
+fn run_anubis_test_suite(path: &Path, no_verify: bool) -> Result<TestReport> {
     let files = discover_test_files(path);
     let out_dir = std::env::temp_dir().join("anubis-test-run");
     let mut passed = 0;
@@ -5092,7 +5309,15 @@ fn run_anubis_test_suite(path: &Path) -> Result<TestReport> {
     for f in &files {
         let src = std::fs::read_to_string(f)?;
         let (expect_pass, error_contains) = parse_test_directives(&src);
-        let result = run_anubis_source(f, &src, &out_dir, true, &[], None);
+        let verification = if no_verify {
+            Ok(())
+        } else {
+            verify_before_native_execution(f, &src, false)
+        };
+        let result = match verification {
+            Ok(()) => run_anubis_source(f, &src, &out_dir, false, &[], None),
+            Err(e) => Err(e),
+        };
         let (actual_pass, err_text) = match &result {
             Ok(o) if o.status_success => (true, String::new()),
             Ok(o) => (false, o.stderr.clone()),
@@ -5172,7 +5397,7 @@ fn run_anubis_source_signed(
     proof_inputs_env: Option<&str>,
 ) -> Result<RunOutcome> {
     let (ast, _ws) = load_program_items(input, source)?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
             "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
@@ -5186,8 +5411,8 @@ fn run_anubis_source_signed(
     #[cfg(target_os = "macos")]
     {
         eprintln!("anubis run: signed Keychain path (codesign + NE bind)...");
-        let rust_source = lower_program_to_rust(&ast.items, allow_research)
-            .map_err(|e| anyhow!("{e}"))?;
+        let rust_source =
+            lower_program_to_rust(&ast.items, allow_research).map_err(|e| anyhow!("{e}"))?;
         let _ = std::fs::write(&rs_path, &rust_source);
         if let Some(pin) = proof_inputs_env {
             // SAFETY: process-local env for child inherit of proof inputs.
@@ -5211,7 +5436,7 @@ fn run_anubis_source_signed(
             })
             .to_string(),
         );
-        return Ok(RunOutcome {
+        Ok(RunOutcome {
             input: input.to_path_buf(),
             mode: mode_name(mode).to_string(),
             source_hash: sha256_bytes(source.as_bytes()),
@@ -5221,7 +5446,8 @@ fn run_anubis_source_signed(
             stderr,
             exit_code: output.status.code(),
             status_success: output.status.success(),
-        });
+            contracts_verified: false,
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -5240,7 +5466,7 @@ fn run_anubis_source(
 ) -> Result<RunOutcome> {
     // Multi-file + Phase-6 deps: resolve/lock/proof-check then combine into one program.
     let (ast, _ws) = load_program_items(input, source)?;
-    let mode = first_mode(&ast.items).unwrap_or(Mode::Safe);
+    let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
     if !matches!(mode, Mode::Safe) && !allow_research {
         return Err(anyhow!(
             "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW: run defaults to safe-mode programs; pass --allow-research for authorized research/exploit sources"
@@ -5428,6 +5654,7 @@ fn run_anubis_source(
         stderr,
         exit_code,
         status_success,
+        contracts_verified: false,
     })
 }
 
@@ -5460,7 +5687,7 @@ fn run_summary_json(outcome: &RunOutcome) -> serde_json::Value {
         "schema_version": "1.0",
         "tool": "anubis",
         "report": "run",
-        "status": if outcome.status_success { "PASS" } else { "FAIL" },
+        "status": if !outcome.contracts_verified { "UNVERIFIED" } else if outcome.status_success { "PASS" } else { "FAIL" },
         "input": outcome.input.to_string_lossy(),
         "mode": outcome.mode,
         "source_hash": outcome.source_hash,
@@ -5473,6 +5700,8 @@ fn run_summary_json(outcome: &RunOutcome) -> serde_json::Value {
         "exit_code": outcome.exit_code,
         "truth": {
             "ordinary_execution": true,
+            "contracts_verified": outcome.contracts_verified,
+            "unverified_bypass": !outcome.contracts_verified,
             "proof_execution_claimed": false,
             "receipt_verified": false,
         }
@@ -5481,8 +5710,9 @@ fn run_summary_json(outcome: &RunOutcome) -> serde_json::Value {
 
 fn render_run_markdown(outcome: &RunOutcome) -> String {
     format!(
-        "# Anubis Run\n\nstatus: {}\ninput: {}\nmode: {}\nexit_code: {:?}\nartifact: {}\n\n## Truth Rules\n\n- `anubis run` is ordinary native execution for the supported safe subset.\n- It does not claim RISC0 receipt generation or proof verification.\n- Unsupported safe constructs fail closed with ANUBIS_UNSUPPORTED_NATIVE_LOWERING.\n",
-        if outcome.status_success { "PASS" } else { "FAIL" },
+        "# Anubis Run\n\nstatus: {}\ncontracts: {}\ninput: {}\nmode: {}\nexit_code: {:?}\nartifact: {}\n\n## Truth Rules\n\n- `anubis run` verifies contracts before ordinary native execution by default.\n- `--no-verify` is an explicit unsafe bypass and is always marked UNVERIFIED.\n- It does not claim RISC0 receipt generation or proof verification.\n- Unsupported runtime constructs fail closed with ANUBIS_UNSUPPORTED_NATIVE_LOWERING.\n",
+        if !outcome.contracts_verified { "UNVERIFIED" } else if outcome.status_success { "PASS" } else { "FAIL" },
+        if outcome.contracts_verified { "VERIFIED" } else { "UNVERIFIED" },
         outcome.input.display(),
         outcome.mode,
         outcome.exit_code,
@@ -5493,6 +5723,73 @@ fn render_run_markdown(outcome: &RunOutcome) -> String {
 fn sha256_json(value: &serde_json::Value) -> Result<String> {
     let bytes = serde_json::to_vec(value)?;
     Ok(sha256_bytes(&bytes))
+}
+
+/// Emit a portable integrity envelope for an explicit `--no-verify` build. This is deliberately
+/// not a PCA: it records artifact/source identity and the absence of verification without a PASS
+/// claim. `anubis verify` can validate the envelope's integrity while still reporting UNVERIFIED.
+fn write_unverified_build_evidence(
+    out: &Path,
+    input: &Path,
+    source: &str,
+    artifact: Option<&str>,
+) -> Result<PathBuf> {
+    let dir = out.join("unverified-evidence");
+    std::fs::create_dir_all(&dir)?;
+    let source_path = dir.join("source.anubis");
+    std::fs::write(&source_path, source)?;
+    let artifact_src = artifact.ok_or_else(|| anyhow!("UNVERIFIED artifact was not emitted"))?;
+    let artifact_path = dir.join("artifact");
+    std::fs::copy(artifact_src, &artifact_path)?;
+    let record = serde_json::json!({
+        "schema_version": "1.0",
+        "tool": "anubis",
+        "record": "unverified-build",
+        "status": "UNVERIFIED",
+        "input": input.to_string_lossy(),
+        "source_sha256": sha256_of_file_or("MISSING", &source_path),
+        "artifact_sha256": sha256_of_file_or("MISSING", &artifact_path),
+        "truth": {
+            "contracts_verified": false,
+            "solver_obligations_discharged": false,
+            "proof_execution_claimed": false,
+            "receipt_verified": false,
+            "unsafe_bypass_explicit": true
+        }
+    });
+    let record_path = dir.join("unverified.json");
+    std::fs::write(&record_path, serde_json::to_string_pretty(&record)?)?;
+    let manifest = format!(
+        "{}  source.anubis\n{}  artifact\n{}  unverified.json\n",
+        sha256_of_file_or("MISSING", &source_path),
+        sha256_of_file_or("MISSING", &artifact_path),
+        sha256_of_file_or("MISSING", &record_path),
+    );
+    std::fs::write(dir.join("MANIFEST.sha256"), manifest)?;
+    Ok(dir)
+}
+
+fn verify_unverified_build_evidence(bundle: &Path) -> Result<bool> {
+    let record_path = bundle.join("unverified.json");
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record_path)?)?;
+    let source = bundle.join("source.anubis");
+    let artifact = bundle.join("artifact");
+    let manifest = std::fs::read_to_string(bundle.join("MANIFEST.sha256"))?;
+    let expected_manifest = format!(
+        "{}  source.anubis\n{}  artifact\n{}  unverified.json\n",
+        sha256_of_file_or("MISSING", &source),
+        sha256_of_file_or("MISSING", &artifact),
+        sha256_of_file_or("MISSING", &record_path),
+    );
+    Ok(record["status"] == "UNVERIFIED"
+        && record["truth"]["contracts_verified"] == false
+        && record["truth"]["solver_obligations_discharged"] == false
+        && record["truth"]["proof_execution_claimed"] == false
+        && record["truth"]["receipt_verified"] == false
+        && record["truth"]["unsafe_bypass_explicit"] == true
+        && record["source_sha256"] == sha256_of_file_or("MISSING", &source)
+        && record["artifact_sha256"] == sha256_of_file_or("MISSING", &artifact)
+        && manifest == expected_manifest)
 }
 
 fn command_succeeds(program: &str, args: &[&str]) -> bool {
@@ -6138,32 +6435,113 @@ fn run_risc0_prove_child(
     Ok(())
 }
 
-pub(crate) fn first_mode(items: &[Item]) -> Option<Mode> {
-    for item in items {
-        match item {
-            Item::Fn { mode, .. } => return Some(*mode),
-            Item::Module { items, .. } => {
-                if let Some(mode) = first_mode(items) {
-                    return Some(mode);
-                }
-            }
-            Item::Import { .. } => {}
-            Item::Struct { .. } => {}
-            Item::Enum { .. } => {}
-            Item::Impl { methods, .. } => {
-                if let Some(mode) = first_mode(methods) {
-                    return Some(mode);
-                }
-            }
-            Item::Trait { .. } => {}
+/// Return the highest-privilege mode present anywhere in a program.
+///
+/// Source order cannot weaken this classification: Exploit dominates Research, which dominates
+/// Safe. Recursing through modules and impls closes the old first-function gap where a leading Safe
+/// helper could make command gates and evidence label a later Research function as Safe.
+pub(crate) fn program_mode(items: &[Item]) -> Option<Mode> {
+    fn rank(mode: Mode) -> u8 {
+        match mode {
+            Mode::Safe => 0,
+            Mode::Research => 1,
+            Mode::Exploit => 2,
         }
     }
-    None
+
+    let mut aggregate = None;
+    for item in items {
+        let candidate = match item {
+            Item::Fn { mode, .. } => Some(*mode),
+            Item::Module { items, .. } => program_mode(items),
+            Item::Impl { methods, .. } | Item::Trait { methods, .. } => program_mode(methods),
+            Item::Import { .. } | Item::Struct { .. } | Item::Enum { .. } => None,
+        };
+        if let Some(candidate) = candidate {
+            if aggregate.is_none_or(|current| rank(candidate) > rank(current)) {
+                aggregate = Some(candidate);
+            }
+            if matches!(aggregate, Some(Mode::Exploit)) {
+                break;
+            }
+        }
+    }
+    aggregate
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn program_mode_aggregates_all_functions_independent_of_source_order() {
+        let safe_then_research = parse_source(
+            r#"
+@safe
+fn first() {}
+
+@research(authorization: "authorized-lab")
+fn later() {}
+"#,
+        )
+        .expect("mixed-mode source must parse");
+        assert_eq!(
+            program_mode(&safe_then_research.items),
+            Some(Mode::Research),
+            "a leading Safe function must not hide a later Research function"
+        );
+
+        let research_then_safe = parse_source(
+            r#"
+@research(authorization: "authorized-lab")
+fn first() {}
+
+@safe
+fn later() {}
+"#,
+        )
+        .expect("reverse mixed-mode source must parse");
+        assert_eq!(
+            program_mode(&research_then_safe.items),
+            Some(Mode::Research),
+            "aggregate mode must be source-order independent"
+        );
+    }
+
+    #[test]
+    fn program_mode_recurses_and_exploit_dominates_research() {
+        let ast = parse_source(
+            r#"
+@safe
+fn first() {}
+
+module nested {
+    fn research_helper() {
+        research {}
+    }
+
+    fn exploit_helper() {
+        exploit {}
+    }
+}
+"#,
+        )
+        .expect("nested mixed-mode source must parse");
+        assert_eq!(
+            program_mode(&ast.items),
+            Some(Mode::Exploit),
+            "nested Exploit must dominate Research and Safe"
+        );
+    }
+
+    #[test]
+    fn program_mode_safe_only_and_itemless_programs_are_precise() {
+        let safe = parse_source("@safe fn main() {}").expect("Safe source must parse");
+        assert_eq!(program_mode(&safe.items), Some(Mode::Safe));
+
+        let itemless = parse_source("struct Empty {}").expect("item-only source must parse");
+        assert_eq!(program_mode(&itemless.items), None);
+    }
 
     // A2/A3: the ZK receipt binding is cryptographically re-verified. These exercise the crypto
     // layer directly (past the structural hash layer) against the committed real-receipt fixture.
@@ -6468,6 +6846,7 @@ mod tests {
                 json,
                 allow_research,
                 verified,
+                no_verify,
                 sign,
                 input_json,
                 input_file,
@@ -6479,6 +6858,7 @@ mod tests {
                 assert_eq!(out, PathBuf::from("out/run-test"));
                 assert!(evidence);
                 assert!(!verified);
+                assert!(!no_verify);
                 assert!(!sign);
                 assert!(json);
                 assert!(!allow_research);
@@ -6666,7 +7046,7 @@ fn main() {
         // directives: mathlib/enum_vs_mod PASS (default), private_reject/cycle FAIL with a matching
         // ERROR_CONTAINS. All expectations must be met.
         let dir = modules_fixture("");
-        let report = run_anubis_test_suite(&dir).expect("suite runs");
+        let report = run_anubis_test_suite(&dir, false).expect("suite runs");
         assert!(report.total >= 4, "found {} test files", report.total);
         assert!(
             report.failed.is_empty(),
@@ -6762,12 +7142,12 @@ research fn main() {
 
     #[test]
     fn run_unsupported_safe_construct_fails_closed() {
-        // `taint_source` is itself the unsupported-in-`run` (research/symbolic) construct; consume it
-        // WITHOUT sinking (print is now an egress sink, so `print(data)` would fail at CHECK, not run).
+        // `symbolic` has no concrete runtime value and remains verification-only. Taint labels and
+        // declassification are executable after the shared flow checker approves them.
         let source = r#"
 fn main() {
-    let data = taint_source("user");
-    let _ = data;
+    let data: u32 = symbolic("user");
+    assume(data > 0);
 }
 "#;
         let temp = tempfile::tempdir().expect("tempdir");

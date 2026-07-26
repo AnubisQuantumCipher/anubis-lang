@@ -72,7 +72,7 @@ pub fn derive_native_posture(program: &str, allow_hosts: &[String]) -> Result<Na
         std::fs::read_to_string(program).map_err(|e| anyhow!("read program `{program}`: {e}"))?;
     let ast = anubis_compiler::parse_source(&src)
         .map_err(|e| anyhow!("ANUBIS_VZNATIVE_PARSE_FAILED: {e}"))?;
-    let mode = crate::first_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
+    let mode = crate::program_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
     anubis_compiler::typecheck(ast, mode).map_err(|e| {
         anyhow!(
             "ANUBIS_VZNATIVE_UNVERIFIED: refusing to derive a native confinement from a program that \

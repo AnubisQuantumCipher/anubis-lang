@@ -3593,10 +3593,9 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 };
             }
             if is_non_run_builtin(callee) {
-                if ctx.allow_research
-                    && matches!(callee.as_str(), "taint_source" | "declassify" | "sink")
-                {
-                    // Modeling no-ops in research execution path.
+                if matches!(callee.as_str(), "taint_source" | "declassify" | "sink") {
+                    // Analysis labels have no privileged runtime effect. The shared verifier has
+                    // already approved the flow, so preserve/evaluate the carried value faithfully.
                     if callee == "taint_source" {
                         let a = args.first().map(|e| safe_run_expr(e, ctx)).transpose()?;
                         return Ok(
@@ -3960,24 +3959,24 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                 fname
             ))
         }
-        Expr::TaintSource { label } if ctx.allow_research => Ok(format!(
+        // Taint and declassification are analysis labels, not privileged effects. Once the shared
+        // execution checker validates the flow, lowering preserves the runtime value faithfully.
+        Expr::TaintSource { label } => Ok(format!(
             "anubis_mk_str({}.to_string())",
             rust_string_lit(label)?
         )),
-        Expr::Declassify { inner, .. } if ctx.allow_research => safe_run_expr(inner, ctx),
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => safe_run_expr(inner, ctx),
         // Runtime assertion: `assert(cond)` panics (fail-closed) when the condition is false.
         Expr::Assert(inner) => Ok(format!("anubis_assert({})", safe_run_expr(inner, ctx)?)),
         // `assume(cond)` is trusted by the solver, so the runtime enforces it (fail-closed) — an
         // assumption that is false at runtime would otherwise silently certify a violated contract.
         Expr::Assume(inner) => Ok(format!("anubis_assume({})", safe_run_expr(inner, ctx)?)),
-        Expr::Tainted { .. }
-        | Expr::Symbolic { .. }
-        | Expr::Declassify { .. }
-        | Expr::TaintSource { .. }
+        Expr::Symbolic { .. }
         | Expr::UnifiedBuffer { .. }
         | Expr::RawPtr { .. } => Err(unsupported_run(
-            "research-only construct (tainted / symbolic / declassify / unified-buffer / raw \
-             pointer) is not available in `anubis run`; use the check or prove path"
+            "verification-only or privileged construct (symbolic / unified-buffer / raw pointer) \
+             has no faithful ordinary native value; use proof inputs, check/prove, or the explicit \
+             research isolation lane as appropriate"
                 .to_string(),
         )),
         // A placeholder the parser emits when it could not build a real expression — surface the
@@ -4520,12 +4519,7 @@ pub fn codesign_macos_binary(
     identity: &str,
 ) -> Result<()> {
     let out = std::process::Command::new("codesign")
-        .args([
-            "--force",
-            "--sign",
-            identity,
-            "--entitlements",
-        ])
+        .args(["--force", "--sign", identity, "--entitlements"])
         .arg(entitlements_plist)
         .arg(exe)
         .output()
@@ -4627,10 +4621,10 @@ pub fn compile_sign_and_run_source(
     }
     #[cfg(target_os = "macos")]
     {
-        let ast = crate::frontend::parse_source(src)
-            .map_err(|e| anyhow!("parse failed: {e}"))?;
+        let ast = crate::frontend::parse_source(src).map_err(|e| anyhow!("parse failed: {e}"))?;
         let rust_source = lower_program_to_rust(&ast.items, allow_research)?;
-        let dir = std::env::temp_dir().join(format!("anubis-signed-run-{}", anubis_unique_suffix()));
+        let dir =
+            std::env::temp_dir().join(format!("anubis-signed-run-{}", anubis_unique_suffix()));
         std::fs::create_dir_all(&dir)?;
         let exe = dir.join("anubis_run");
         compile_native_rust_to_exe(&rust_source, &exe)?;
@@ -4664,7 +4658,9 @@ pub fn compile_sign_and_run_source(
             let _ = std::fs::remove_dir_all(&dir);
         }
         if capped.timed_out {
-            return Err(anyhow!("ANUBIS_RUN_TIMEOUT: signed program exceeded wall-clock budget"));
+            return Err(anyhow!(
+                "ANUBIS_RUN_TIMEOUT: signed program exceeded wall-clock budget"
+            ));
         }
         Ok(capped.output)
     }
@@ -4888,6 +4884,18 @@ mod run_tests {
         assert_eq!(
             run("fn parity(x: u32) -> u32 ensures(result == 0 || result == 1) { return x % 2; } fn main() { print(parity(7)); print(parity(8)); }"),
             "1\n0"
+        );
+    }
+
+    #[test]
+    fn unsigned_and_signed_integer_boundaries_match_solver_contract() {
+        let src = "fn u(x:u32)->u32 { return x; } fn s(x:i64)->i64 { return x; } \
+                   fn main(){ print(u(-1)); print(u(2147483648)); print(u(4294967296)); \
+                   print(u(5000000000)); print(s(9223372036854775807)); \
+                   print(s(-9223372036854775807-1)); }";
+        assert_eq!(
+            run(src),
+            "4294967295\n2147483648\n0\n705032704\n9223372036854775807\n-9223372036854775808"
         );
     }
 

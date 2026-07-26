@@ -1,0 +1,6 @@
+// CHECK_EXPECT: FAIL (safe-mode taint boundary)
+// CHECK_ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+fn main() {
+    let raw_request = taint_source("operator_recovery_request");
+    sink(raw_request);
+}

@@ -8,6 +8,8 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 |-------|--------|----------|---------|-------|
 | Real compiler stages (parse/HIR/MIR/taint/symbolic) | under Command | compiler/src/{frontend,middle}/ + lib.rs tests | cargo test | Spans, recovery, research blocks, taint traces present |
 | Raw pointer hard reject in safe | under Command | lib.rs: safe_mode_rejects_raw_pointer... + typecheck | cargo test safe_mode_rejects... | Exact error |
+| Program-wide Safe/Research/Exploit aggregation | under Command (2026-07-25) | `program_mode` recursive join; explicit-Safe effective-mode rule; `safe_mode_program_gate.rs`; `formal/Anubis/ModeAggregation.lean` | `cargo test -p anubis --test safe_mode_program_gate`; `cargo test -p anubis --bin anubis program_mode_`; `bash scripts/run_formal_gate.sh` | Highest privilege wins independent of source order and nesting; ordinary run rejects before lowering. Lean proves the abstract lattice only; Rust tests cover the implementation traversal |
+| Rejection evidence has one honest verdict | under Command (2026-07-25) | `build_rejected_evidence_bundle`; rejection integration tests | `cargo test -p anubis --test safe_mode_program_gate` | Failed check auto-emits; requested failed build emits `FAIL`, PCA tier `rejected`, no artifact or proof claim |
 | Evidence bundles + tamper | under Command | compiler/src/evidence + out/audit/evidence-tampered + tests | cargo test evidence... ; anubis verify | MANIFEST.sha256, validate fails on tamper |
 | Z3 FAIL + model with var | under Command | lib.rs z3_solver... + middle SymbolicEngine | cargo test z3_solver... | Model mentions x |
 | Metal hybrid dispatch + fallback | under Command (observable) | hybrid templates + lib.rs hybrid_host... + out/audit/hybrid | cargo test hybrid... ; R0_DISABLE_METAL=1 run | lane=metal / cpu |
@@ -87,10 +89,10 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|
-| Packing builtins (`p8`/`p16`/`p32`/`p64`, `cyclic`, list concat) | under Command | `examples/security/poc_packing_smoke.anb` → `16/65/65` | `./target/release/anubis run examples/security/poc_packing_smoke.anb --allow-research` | Requires `--allow-research` |
-| Local process harness (`target_run`) | under Command | `examples/security/poc_local_overflow.anb` crashed=1 against `poc_kit/bin/vuln_local` | `bash poc_kit/build_vuln.sh` then `anubis run …/poc_local_overflow.anb --allow-research` | Local FS only; network URLs rejected |
-| Gold local crash PoC | under Command | `poc_kit/vuln_local.c` + PoC fixture | `bash scripts/run_poc_kit_gate.sh` | Intentional lab oracle (abort if len>64) |
-| Mutation process fuzz (real crashes) | under Command | `fuzz_report.json` engine=`mutation-process-v1`, unique_crashes≥1, distinct crash bins | `anubis fuzz --target poc_kit/bin/vuln_local --runs 50` | Mutator unit tests: multi-payload + len>64; not parse/typecheck |
+| Packing builtins (`p8`/`p16`/`p32`/`p64`, `cyclic`, list concat) | under Command | `examples/security/poc_packing_smoke.anb` → `16/65/65` | `bash scripts/run_poc_kit_gate.sh` | Runs inside disposable Tart/VZ guest; requires `--allow-research` there |
+| Local process harness (`target_run`) | under Command | `examples/security/poc_local_overflow.anb` crashed=1 against guest-local `poc_kit/bin/vuln_local` | `anubis vz exploit --base anubis-xcode … --allow-research` | Same harness power, VZ-only; network URLs rejected |
+| Gold local crash PoC | under Command | `poc_kit/vuln_local.c` + PoC fixture | `bash scripts/run_poc_kit_gate.sh` | Host orchestrates disposable guest; intentional lab oracle (abort if len>64) |
+| Mutation process fuzz (real crashes) | under Command | guest `fuzz_report.json` engine=`mutation-process-v1`, unique crash bins | `anubis vz fuzz --base anubis-xcode poc_kit/bin/vuln_local --iterations 50 --allow-research` | Mutator unchanged; crash-capable execution VZ-only |
 | Security fixture runner needle honesty | under Command | EXPECT FAIL + ERROR_CONTAINS requires needle in log; wrong failure ≠ green | `bash scripts/run_security_fixtures.sh` + `security_fixture_matches` unit tests | Fixed inverted-needle false-green |
 | Network targets forbidden | under Command | fuzz/target_run reject `://` | gate fixture `network_forbidden` | Fail-closed dual-use boundary |
 | PoC kit gate | under Command | `out/poc_kit/report.json` / gate script | `bash scripts/run_poc_kit_gate.sh --out out/poc_kit` | 4/4 packing + crash PoC + fuzz + network deny |
@@ -118,8 +120,8 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Exploit modules + PoC kit | under Command | exploit success | exploit-run | crash oracle |
 | Offensive gate | under Command | gate report + isolation | `bash scripts/run_offensive_platform_gate.sh` | VZ-isolated host entrypoint; deeper surfaces gated |
 | Host forbids AOP red-team execution | under Command | `ANUBIS_OFFENSIVE_HOST_FORBIDDEN` | listen/inject/lateral without VZ | Apple Virtualization guest required |
-| PoC kit host gold lab | under Command | packing + target_run + fuzz poc_kit | `run_poc_kit_gate` 4/4 | Prefer `vz exploit\|fuzz` for primary evidence |
-| Fuzz non-poc_kit requires VZ | under Command | `ANUBIS_FUZZ_HOST_FORBIDDEN` | fuzz `/tmp/not_poc` on host | Advance isolation |
+| PoC kit host entry is orchestration-only | under Command | packing + target_run + fuzz run in disposable guest | `run_poc_kit_gate` 4/4 + isolation.json | No host crash execution or override; power remains in guest |
+| All fuzz requires VZ | under Command | `ANUBIS_FUZZ_HOST_FORBIDDEN` | any direct host fuzz | No gold-fixture exception |
 | ATT&CK kill-chain catalog (T9) | under Command | `aop-attck-v1` | `anubis attck-catalog --json` | Mapped to AOP surfaces |
 | OPSEC score (T9) | under Command | `aop-opsec-v1` | `anubis opsec-score --engage …` | Elite checklist |
 | Malleable C2 profile (T9) | under Command | profiles/*.json | `malleable-init` / `malleable-validate` | Lab traffic shaping |

@@ -37,6 +37,8 @@ or (d) **not claimed**.
 | Language core (fixtures + repro) | language fixture runner history; Turing-core fixtures | General-purpose “all features forever” **partial** (SPEC §5) |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures | Research/exploit needs `--allow-research` + VZ where required |
+| Program-wide mode aggregation + explicit Safe enclaves | **under Command 2026-07-25:** `cargo test -p anubis --test safe_mode_program_gate` plus CLI `program_mode_` units; Lean lattice in `formal/Anubis/ModeAggregation.lean` | Highest privilege wins across source order/modules/impls; explicit `@safe` stays Safe. Lean proves the abstract lattice, while Rust tests cover traversal correspondence |
+| Honest automatic rejection evidence | **under Command 2026-07-25:** `cargo test -p anubis --test safe_mode_program_gate` | Failed `check` auto-emits and `build --evidence` emits artifact-free `FAIL` bundles; PCA tier is `rejected`, not a proof claim |
 | Runtime planning (probe) | plan surfaces exist (`runtime-plan`); **plan-only** | Plan-observed exec enforcement **deferred** |
 | In-repo package / PCA ecosystem | package gate history; `import` + evidence deps | Public package registry **not claimed** |
 | Third-party / multi-party reproduction | Phase 9 witness docs: [`phase9_independent_witness/`](language/phase9_independent_witness/) | Two recorded strangers + hashes; not infinite multi-party |

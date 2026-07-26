@@ -1677,7 +1677,10 @@ fn free_live_caps_in_expr(expr: &Expr, caps: &CapMap, out: &mut BTreeSet<String>
         | Expr::Assume(expr)
         | Expr::Assert(expr)
         | Expr::Try(expr) => free_live_caps_in_expr(expr, caps, out),
-        Expr::ArrayLiteral { elements } | Expr::EnumConstruct { fields: elements, .. } => {
+        Expr::ArrayLiteral { elements }
+        | Expr::EnumConstruct {
+            fields: elements, ..
+        } => {
             for e in elements {
                 free_live_caps_in_expr(e, caps, out);
             }
@@ -1714,7 +1717,9 @@ fn free_live_caps_in_expr(expr: &Expr, caps: &CapMap, out: &mut BTreeSet<String>
             free_live_caps_in_expr(then, caps, out);
             free_live_caps_in_expr(else_, caps, out);
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             free_live_caps_in_expr(scrutinee, caps, out);
             for arm in arms {
                 if let Some(g) = &arm.guard {
@@ -1773,7 +1778,9 @@ fn free_live_caps_in_stmt(stmt: &Stmt, caps: &CapMap, out: &mut BTreeSet<String>
                 free_live_caps_in_stmt(s, caps, out);
             }
         }
-        Stmt::Loop { body, invariant, .. } => {
+        Stmt::Loop {
+            body, invariant, ..
+        } => {
             for inv in invariant {
                 free_live_caps_in_expr(inv, caps, out);
             }
@@ -1908,8 +1915,7 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
         if let Some(st) = lin.linear_closures.get(src).copied() {
             match st {
                 CapState::Live => {
-                    lin.linear_closures
-                        .insert(src.clone(), CapState::Consumed);
+                    lin.linear_closures.insert(src.clone(), CapState::Consumed);
                     lin.linear_closures
                         .insert(target.to_string(), CapState::Live);
                 }
@@ -1989,8 +1995,7 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
                 walk_expr(index, caps, lin);
                 match st {
                     CapState::Live => {
-                        lin.linear_closures
-                            .insert(src.clone(), CapState::Consumed);
+                        lin.linear_closures.insert(src.clone(), CapState::Consumed);
                         lin.linear_closures
                             .insert(target.to_string(), CapState::Live);
                     }

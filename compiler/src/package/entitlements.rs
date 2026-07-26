@@ -185,9 +185,10 @@ pub fn derive_entitlement_profile(
         entitlements.push(EntitlementKey {
             key: "keychain-access-groups".into(),
             enabled: true,
-            reason: "cap_acquire_nonexportable present — runtime may bind NE tokens to Keychain/SE; \
+            reason:
+                "cap_acquire_nonexportable present — runtime may bind NE tokens to Keychain/SE; \
                      access-group must match codesign identity (needs_human)"
-                .into(),
+                    .into(),
             apple_enforced_claim: false,
         });
         entitlements.push(EntitlementKey {

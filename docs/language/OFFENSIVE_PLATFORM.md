@@ -3,26 +3,28 @@
 **Goal:** engagement-scoped, evidence-native red-team / exploit platform.  
 **Not:** unscoped malware.
 
-## Isolation (permanent for AOP; PoC kit preserved)
+## Isolation (permanent; offensive power preserved inside VZ)
 
 **AOP red-team platform execution** (C2, inject, lateral, engagement packer, …)
 runs **only** inside Apple Virtualization (tart + Virtualization.framework,
 golden base `anubis-xcode`, SSH `admin` + `~/.ssh/tart_anubis`).
 
-**Bounty PoC kit** (packing + gold `poc_kit/bin/vuln_local` + fuzz of `poc_kit/…`)
-keeps the documented host lab path from `docs/language/POC_KIT.md` — **not
-regressed**. Prefer `anubis vz exploit|fuzz` for primary crash evidence.
+**Bounty PoC kit** (packing + gold `poc_kit/bin/vuln_local` + fuzz) keeps the same
+packing, crash, and mutation capabilities, but crash-capable execution is now mandatory inside the
+same disposable VZ/tart boundary. The host orchestrates and collects evidence; it is not a fallback
+runner.
 
 | Host allowed | VZ guest required |
 |---|---|
 | engage-init / status, doctor, catalogs, plans | **listen**, agent-generate, task-queue |
-| **PoC kit:** `run --allow-research`, `fuzz --target poc_kit/…` | inject-plan, lateral-*, exploit-run |
+| PoC source editing, static `check`, reports, receipt verification | `run --allow-research`, all fuzz, inject-plan, lateral-*, exploit-run |
 | purple-report on guest loot, receipt-verify | pack-xor, persist-launchagent, recon-scan |
-| pattern/gadget math, vz status/doctor/* | fuzz of **non–poc_kit** targets |
+| pattern/gadget math, vz status/doctor/* | PoC kit crash target and mutation fuzz |
 | | string-scramble (AOP packer helper) |
 
-AOP host attempts → **`ANUBIS_OFFENSIVE_HOST_FORBIDDEN`**.  
-Non–poc_kit host fuzz → **`ANUBIS_FUZZ_HOST_FORBIDDEN`**.
+AOP host attempts → **`ANUBIS_OFFENSIVE_HOST_FORBIDDEN`**.
+Host research execution → **`ANUBIS_RESEARCH_HOST_FORBIDDEN`**.
+Any host fuzz → **`ANUBIS_FUZZ_HOST_FORBIDDEN`**.
 
 Guest markers: `ANUBIS_VZ_GUEST=1`, `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`,
 `ANUBIS_ISOLATION=*tart*`, `$HOME/.anubis-vz-guest`, `kern.hv_vmm_present=1`.
@@ -69,6 +71,10 @@ skipped by a stale guest binary.
 | Agent build | Nested agent `Cargo.toml` has empty `[workspace]` (no parent workspace collision) |
 
 ## Quick start
+
+The operational commands below run inside an Anubis-managed guest. Use `anubis vz exec` for an
+interactive guest shell or the sealed `run_offensive_platform_gate.sh` lifecycle; do not execute
+them directly on the host.
 
 ```bash
 cargo build --release -p anubis

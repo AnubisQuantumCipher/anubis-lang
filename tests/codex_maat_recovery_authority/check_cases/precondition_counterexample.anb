@@ -1,0 +1,17 @@
+// CHECK_EXPECT: FAIL
+// CHECK_ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Hostile check mutant: a call site violates required >= 1.
+fn quorum_flag(eligible: i64, required: i64) -> i64
+    requires(eligible >= 0)
+    requires(required >= 1)
+    ensures(result == 0 || result == 1)
+{
+    if eligible >= required {
+        return 1;
+    }
+    return 0;
+}
+
+fn main() {
+    print(quorum_flag(3, 0));
+}

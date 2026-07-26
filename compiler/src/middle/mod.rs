@@ -300,9 +300,7 @@ fn collect_container_closures(
             | Expr::If { .. }
             | Expr::IfLet { .. }
             | Expr::Match { .. }
-            | Expr::Block { .. } => {
-                collect_container_closures(val, &segkey, scope, ctx, out)
-            }
+            | Expr::Block { .. } => collect_container_closures(val, &segkey, scope, ctx, out),
             _ => {}
         }
     }
@@ -326,7 +324,6 @@ fn merge_field_closures_prefer_capturing(
         }
     }
 }
-
 
 /// Seed field_closures from statement lists that appear as if-expr branch bodies
 /// (`parse_expr_block` may place nested `if` as `Stmt::If` and container values as
@@ -1597,6 +1594,23 @@ fn collect_items(
     requested_mode: Mode,
     ctx: &mut SemanticContext,
 ) {
+    fn effective_item_mode(
+        declared_mode: Mode,
+        attributes: &[crate::frontend::Attribute],
+        requested_mode: Mode,
+    ) -> Mode {
+        // A program-level Research/Exploit request is the compatibility default for unannotated
+        // functions, but an explicit `@safe` is a security boundary, not decoration. Preserve that
+        // enclave so mixed-mode programs cannot silently weaken a function the author marked Safe.
+        if attributes.iter().any(|attribute| attribute.name == "safe") {
+            Mode::Safe
+        } else if declared_mode == Mode::Safe {
+            requested_mode
+        } else {
+            declared_mode
+        }
+    }
+
     for item in items {
         match item {
             Item::Import { path, .. } => ctx.hir.imports.push(path.clone()),
@@ -1617,11 +1631,7 @@ fn collect_items(
                 effects: declared_effects,
                 ..
             } => {
-                let effective_mode = if *mode == Mode::Safe {
-                    requested_mode
-                } else {
-                    *mode
-                };
+                let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
                 // Gate 15: enforce authorization for research/poc/fuzz etc.
                 if matches!(effective_mode, Mode::Research) {
                     let has_auth = attributes.iter().any(|attr| {
@@ -1690,11 +1700,7 @@ fn collect_items(
                         ..
                     } = m
                     {
-                        let effective_mode = if *mode == Mode::Safe {
-                            requested_mode
-                        } else {
-                            *mode
-                        };
+                        let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
                         let item_verified = attributes.iter().any(|a| a.name == "verified");
                         let saved_verified = ctx.verified;
                         if item_verified {
@@ -2727,14 +2733,37 @@ enum FreeMulOffline {
     Risk,
 }
 
-/// Parse a simple closed interval for `var_smt` from assumption facts
-/// (`bvsge`/`bvsle`/`bvsgt`/`bvslt` against `(_ bvN 64)`). Defaults to full i64.
+/// Parse a simple closed interval for `var_smt` from assumption facts.
+///
+/// Alongside ordered bounds, exact equalities matter here: ordinary `let a = 65536` lowering
+/// contributes `(= anb_a (_ bv65536 64))`. Ignoring that fact makes a concretely safe `a * b`
+/// look like unbounded free×free multiplication and produces a false `ANUBIS_WRAP_RISK`.
+/// Defaults to the full i64 interval when no usable fact exists.
 fn smt_var_i64_interval(assumptions: &[String], var_smt: &str) -> (i64, i64) {
     let mut lo = i64::MIN;
     let mut hi = i64::MAX;
     let v = var_smt.trim();
     for a in assumptions {
         let a = a.trim();
+        // (= VAR CONST) or (= CONST VAR) pins the interval exactly. This is the canonical shape
+        // for modeled let bindings, so it must participate in the same offline proof as requires.
+        let eq_prefix = format!("(= {v} ");
+        if let Some(rest) = a.strip_prefix(&eq_prefix).and_then(|r| r.strip_suffix(')')) {
+            if let Some(n) = parse_wrap_smt_const(rest.trim()) {
+                lo = lo.max(n);
+                hi = hi.min(n);
+            }
+        }
+        let eq_suffix = format!(" {v})");
+        if let Some(middle) = a
+            .strip_prefix("(= ")
+            .and_then(|r| r.strip_suffix(&eq_suffix))
+        {
+            if let Some(n) = parse_wrap_smt_const(middle.trim()) {
+                lo = lo.max(n);
+                hi = hi.min(n);
+            }
+        }
         // (bvsge VAR (_ bvN 64))  or  (bvsle VAR (_ bvN 64))
         // (bvsgt VAR (_ bvN 64))  or  (bvslt VAR (_ bvN 64))
         for (op, is_lower, strict) in [
@@ -4431,8 +4460,13 @@ fn apply_container_mutation_taint(
     // Free-call form: `push(xs, v)` / `insert(xs, k, v)` — container is args[0], values in args[1..].
     // Method form: `xs.push(v)` / `xs.insert(k, v)` — container is receiver, values in all args.
     let (root, value_args): (Option<String>, &[Expr]) = match expr {
-        Expr::Call { callee, args } if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 => {
-            (assign_target_root(&args[0]).map(|s| s.to_string()), &args[1..])
+        Expr::Call { callee, args }
+            if matches!(callee.as_str(), "push" | "insert") && args.len() >= 2 =>
+        {
+            (
+                assign_target_root(&args[0]).map(|s| s.to_string()),
+                &args[1..],
+            )
         }
         Expr::CallExpr { callee, args }
             if matches!(
@@ -4441,9 +4475,7 @@ fn apply_container_mutation_taint(
             ) && !args.is_empty() =>
         {
             let root = match callee.as_ref() {
-                Expr::FieldAccess { base, .. } => {
-                    assign_target_root(base).map(|s| s.to_string())
-                }
+                Expr::FieldAccess { base, .. } => assign_target_root(base).map(|s| s.to_string()),
                 _ => None,
             };
             (root, args.as_slice())

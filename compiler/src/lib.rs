@@ -1246,12 +1246,10 @@ fn main() {
             proved("fn main(){ let a=3000000000; let b=2000000000; assert(a + b > a); }"),
             "3e9+2e9 must not wrap"
         );
-        // A `u32` annotation is INERT at runtime (a value holds any i64; no width clamp), so the
-        // solver must NOT fabricate a `[0, 2^32-1]` range for it. A symbolic u32 whose only claimed
-        // bound comes from the (nonexistent) range is therefore left unmodeled, never proved from a
-        // range that does not exist at runtime — see the contract-level guard in
-        // `b2_contracts_verify_postconditions` (unbounded `x + 1 > x` must be DISPROVED, not proved).
-        // Soundness preserved: a genuinely-false assertion is still disproved.
+        // Parameter annotations are handled separately: u8/u16/u32 parameters are masked at native
+        // entry and receive the matching solver range, while i64 stays signed and unmasked. This
+        // straight-line control has no typed parameter; a genuinely-false i64 assertion must still
+        // be disproved.
         let ast = parse_source("fn main(){ let x=3; assert(x > 20); }").expect("parse");
         let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
         assert!(
@@ -1275,9 +1273,9 @@ fn main() {
                     .all(|c| c.status != "FAIL"),
                 Err(_) => false,
             };
-        // Provable postconditions. NOTE the upper `requires` bound: a `u32` annotation is inert at
-        // runtime (values are i64), so a contract that needs no-overflow must STATE the bound. With
-        // `x < 1_000_000`, `x + 1` and `x + x` cannot wrap, so the postcondition is discharged.
+        // Provable postconditions. These explicit upper bounds keep the arithmetic far below i64
+        // wrap. The following unbounded controls separately prove that u32 parameter masking alone
+        // is sufficient for simple +1/doubling.
         assert!(discharged("fn inc(x: u32) -> u32 requires(x > 0) requires(x < 1000000) ensures(result > x) { return x + 1; }"), "bounded x => x+1>x");
         assert!(discharged("fn dbl(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result >= x) { return x + x; }"), "bounded x => x+x >= x");
         assert!(discharged("fn f(x: u32) -> u32 requires(x >= 0) requires(x < 1000000) ensures(result > 0) { return x + 1; }"), "bounded x => x+1>0");
@@ -2845,6 +2843,17 @@ fn main() {
             discharged("fn a(x: u16) -> u16 ensures(result >= 0) ensures(result < 65536) { return x; } fn main() { let r = a(5); }"),
             "u16 proves [0,65536)"
         );
+        // Exact boundary agreement: composed contracts must apply the same low-32-bit mask as the
+        // native parameter entry for negative, sign-bit, 2^32, and above-u32::MAX arguments.
+        assert!(
+            discharged("fn b(x:u32)->u32 ensures(result==x) { return x; } fn main(){ let a=b(-1); let c=b(2147483648); let d=b(4294967296); let e=b(5000000000); assert(a==4294967295); assert(c==2147483648); assert(d==0); assert(e==705032704); }"),
+            "checker must match native u32 masking at -1, 2^31, 2^32, and above u32::MAX"
+        );
+        // Signed i64 is never masked; both extrema remain exact 64-bit values.
+        assert!(
+            discharged("fn b(x:i64)->i64 ensures(result==x) { return x; } fn main(){ let hi=b(9223372036854775807); let lo=b(-9223372036854775807-1); assert(hi==9223372036854775807); assert(lo==-9223372036854775807-1); }"),
+            "checker must preserve i64::MIN and i64::MAX exactly"
+        );
         // Straight-line unsigned arithmetic proves without the manual `>= 0` bound (bounded so no wrap).
         assert!(
             discharged("fn s(x: u32) -> u32 requires(x < 1000) ensures(result == 3*x) { return 3*x; } fn main() { let r = s(5); }"),
@@ -3389,6 +3398,35 @@ fn mul(x: i64, y: i64) -> i64
         assert!(
             checks.iter().all(|c| c.status != "FAIL"),
             "bounded free×free must not fail checks: {checks:?}"
+        );
+    }
+
+    /// Exact modeled let bindings are bounds too. The offline free×free path must use their
+    /// equality assumptions instead of treating the names as unconstrained and inventing a risk.
+    #[test]
+    fn wrap_safety_free_mul_proves_from_exact_let_bindings() {
+        let src = r#"
+fn main() {
+    let a = 65536;
+    let b = 65536;
+    assert(a * b != 0);
+}
+"#;
+        let ast = parse_source(src).expect("parse");
+        let ir = typecheck(ast, frontend::Mode::Safe).expect("typecheck");
+        let wrap: Vec<_> = ir
+            .solver_obligations
+            .iter()
+            .filter(|o| o.name.starts_with("wrap-safety:") && o.name.contains("*"))
+            .collect();
+        assert!(
+            wrap.is_empty(),
+            "exact let-bound factors must offline-prove safe: {wrap:?}"
+        );
+        let checks = SymbolicEngine::check_obligations(&ir);
+        assert!(
+            checks.iter().all(|c| c.status != "FAIL"),
+            "safe exact product must prove without WRAP_RISK: {checks:?}"
         );
     }
 
@@ -6053,6 +6091,38 @@ fn bad() {
     }
 
     #[test]
+    fn poc_kit_gate_requires_disposable_vz_without_host_fallback() {
+        // The PoC gate launches a crashing target and a mutation fuzzer. Its host entrypoint must
+        // therefore be orchestration-only: a missing Tart/golden-image prerequisite is a hard
+        // failure, never permission to execute the same battery on bare metal.
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/run_poc_kit_gate.sh"),
+        )
+        .expect("scripts/run_poc_kit_gate.sh must exist");
+        for marker in [
+            "ANUBIS_POC_KIT_IN_GUEST",
+            "tart-disposable-guest",
+            "anubis-xcode",
+            "ANUBIS_POC_KIT_VZ_REQUIRED",
+            "tart delete",
+        ] {
+            assert!(
+                script.contains(marker),
+                "PoC gate must preserve mandatory disposable-VZ marker {marker:?}"
+            );
+        }
+        assert!(
+            script.contains("if [[ \"${ANUBIS_POC_KIT_IN_GUEST:-0}\" != \"1\" ]]")
+                && script.contains("run_in_disposable_guest \"$OUT\""),
+            "host PoC entry must delegate to the disposable guest before any crash-capable step"
+        );
+        assert!(
+            !script.contains("host-lab-gold-poc_kit"),
+            "PoC evidence must never be labeled as an accepted host crash lane"
+        );
+    }
+
+    #[test]
     fn ci_workflow_enforces_the_real_gate_suite_not_a_weak_subset() {
         // Regression guard for the "CI green over a red gate" seam: CI must enforce the
         // SAME front door a stranger runs on a fresh clone (audit_a_plus.sh -> the 15-gate
@@ -6270,6 +6340,44 @@ fn main() {
             "unexpected safe taint error: {}",
             err
         );
+    }
+
+    #[test]
+    fn explicit_safe_function_remains_safe_inside_research_program() {
+        let src = r#"
+@research(authorization: "authorized-lab")
+fn research_helper() {}
+
+@safe
+fn main() {
+    let secret: tainted<u32> = symbolic();
+    sink(secret);
+}
+"#;
+        let ast = parse_source(src).expect("mixed-mode source must parse");
+        let err = typecheck(ast, frontend::Mode::Research)
+            .expect_err("explicit @safe enclave must retain Safe taint enforcement");
+        assert!(
+            err.contains("ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY"),
+            "unexpected explicit Safe enclave error: {err}"
+        );
+    }
+
+    #[test]
+    fn unannotated_function_can_inherit_requested_research_mode() {
+        let src = r#"
+fn helper() {
+    let value: tainted<u32> = symbolic();
+    sink(value);
+}
+
+fn main() {
+    helper();
+}
+"#;
+        let ast = parse_source(src).expect("unannotated source must parse");
+        typecheck(ast, frontend::Mode::Research)
+            .expect("unannotated functions retain program-level Research compatibility");
     }
 
     #[test]
@@ -7023,7 +7131,6 @@ fn main() {
         )
         .expect("clean push method must accept");
     }
-
 
     #[test]
     fn map_entry_closure_application_is_enforced() {

@@ -1,0 +1,38 @@
+// EXPECT: PASS
+// Solver/runtime agreement witness for signed i64 arithmetic and u32 parameter masking.
+fn u32_boundary(value: u32) -> u32
+    ensures(result >= 0)
+    ensures(result <= 4294967295)
+    ensures(result == value)
+{
+    return value;
+}
+
+fn i64_boundary(value: i64) -> i64
+    ensures(result == value)
+{
+    return value;
+}
+
+fn main() {
+    let neg_one = u32_boundary(-1);
+    let signed_mid = u32_boundary(2147483648);
+    let two_32 = u32_boundary(4294967296);
+    let above_max = u32_boundary(5000000000);
+    let signed_max = i64_boundary(9223372036854775807);
+    let signed_min = i64_boundary(-9223372036854775807 - 1);
+
+    assert(neg_one == 4294967295);
+    assert(signed_mid == 2147483648);
+    assert(two_32 == 0);
+    assert(above_max == 705032704);
+    assert(signed_max == 9223372036854775807);
+    assert(signed_min == -9223372036854775807 - 1);
+
+    print(neg_one);
+    print(signed_mid);
+    print(two_32);
+    print(above_max);
+    print(signed_max);
+    print(signed_min);
+}

@@ -1,0 +1,14 @@
+// CHECK_EXPECT: FAIL
+// CHECK_ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Hostile check mutant: the postcondition is false at integrity == 100.
+fn impossible_score(integrity: i64) -> i64
+    requires(integrity >= 0)
+    requires(integrity <= 100)
+    ensures(result <= 100)
+{
+    return integrity + 1;
+}
+
+fn main() {
+    print(impossible_score(100));
+}

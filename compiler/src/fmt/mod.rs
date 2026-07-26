@@ -6,13 +6,16 @@
 //! `anubis fmt` can never silently mangle a program — on any construct the printer gets wrong it
 //! declines the file (`ANUBIS_FMT_ROUNDTRIP`) rather than corrupting it.
 //!
-//! Two known, explicit limitations, both surfaced honestly rather than mishandled:
+//! Three known, explicit limitations, all surfaced honestly rather than mishandled:
 //! - Files that declare a `trait` are skipped (`ANUBIS_FMT_TRAIT_UNSUPPORTED`): the parser desugars
 //!   traits into their implementing `impl`s before the formatter can see them, so re-emitting would
 //!   drop the `trait` declaration.
 //! - String interpolation (`"a${x}"`) is parsed into a `+`-concatenation, so the formatter prints
 //!   the concatenation form. The result is behavior-identical (and round-trip-verified), just not
 //!   the original `${...}` surface.
+//! - Comments are not represented in the AST. Until the parser carries comment trivia, a file that
+//!   contains comments is returned byte-for-byte unchanged. This preserves policy explanations,
+//!   test expectations, and verification annotations instead of silently deleting them.
 
 use crate::frontend::{parse_source, Expr, ForSource, Item, MatchArm, Pattern, Stmt, AST};
 
@@ -28,6 +31,13 @@ pub fn format_source(src: &str) -> Result<String, String> {
              reformatting would drop it) — skipped"
                 .to_string(),
         );
+    }
+    // The lexer currently discards comment trivia. Formatting such a file from the AST would erase
+    // security policy, EXPECT directives, and documentation. Identity formatting is the only
+    // semantics-preserving action until trivia is first-class; it is deterministic and idempotent.
+    if src.contains("//") || src.contains("/*") {
+        parse_source(src).map_err(|e| format!("ANUBIS_FMT_PARSE: {e}"))?;
+        return Ok(src.to_string());
     }
     let ast = parse_source(src).map_err(|e| format!("ANUBIS_FMT_PARSE: {e}"))?;
     let output = format_ast(&ast.items);
@@ -111,19 +121,49 @@ fn fmt_item(item: &Item, indent: usize) -> String {
             params,
             body,
             ret,
+            generics,
+            generic_bounds,
             requires,
             ensures,
+            effects,
             attributes,
             ..
         } => {
             let mut s = String::new();
             for attr in attributes {
-                s.push_str(&format!("{p}@{}\n", attr.name));
+                if attr.args.is_empty() {
+                    s.push_str(&format!("{p}@{}\n", attr.name));
+                } else {
+                    let args = attr
+                        .args
+                        .iter()
+                        .map(|arg| format!("{}: \"{}\"", arg.key, escape_str(&arg.value)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    s.push_str(&format!("{p}@{}({args})\n", attr.name));
+                }
             }
             let vis = if matches!(visibility, crate::frontend::Visibility::Public) {
                 "pub "
             } else {
                 ""
+            };
+            let generics_s = if generics.is_empty() {
+                String::new()
+            } else {
+                let rendered = generics
+                    .iter()
+                    .map(|generic| {
+                        generic_bounds
+                            .iter()
+                            .find(|(name, _)| name == generic)
+                            .filter(|(_, bounds)| !bounds.is_empty())
+                            .map(|(_, bounds)| format!("{generic}: {}", bounds.join(" + ")))
+                            .unwrap_or_else(|| generic.clone())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("<{rendered}>")
             };
             let params_s = params
                 .iter()
@@ -136,7 +176,7 @@ fn fmt_item(item: &Item, indent: usize) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            s.push_str(&format!("{p}{vis}fn {name}({params_s})"));
+            s.push_str(&format!("{p}{vis}fn {name}{generics_s}({params_s})"));
             if let Some(rty) = ret {
                 s.push_str(&format!(" -> {rty}"));
             }
@@ -146,21 +186,44 @@ fn fmt_item(item: &Item, indent: usize) -> String {
             for e in ensures {
                 s.push_str(&format!(" ensures({})", fmt_expr(e)));
             }
+            if !effects.is_empty() {
+                s.push_str(&format!(" uses({})", effects.join(", ")));
+            }
             s.push_str(" {\n");
             s.push_str(&fmt_block(body, indent + 1));
             s.push_str(&format!("{p}}}"));
             s
         }
-        Item::Struct { name, fields, .. } => {
-            let mut s = format!("{p}struct {name} {{\n");
+        Item::Struct {
+            name,
+            fields,
+            generics,
+            ..
+        } => {
+            let generics = if generics.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", generics.join(", "))
+            };
+            let mut s = format!("{p}struct {name}{generics} {{\n");
             for (fname, fty) in fields {
                 s.push_str(&format!("{}{fname}: {fty},\n", pad(indent + 1)));
             }
             s.push_str(&format!("{p}}}"));
             s
         }
-        Item::Enum { name, variants, .. } => {
-            let mut s = format!("{p}enum {name} {{\n");
+        Item::Enum {
+            name,
+            variants,
+            generics,
+            ..
+        } => {
+            let generics = if generics.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", generics.join(", "))
+            };
+            let mut s = format!("{p}enum {name}{generics} {{\n");
             for v in variants {
                 s.push_str(&format!("{}{},\n", pad(indent + 1), fmt_variant(v)));
             }
@@ -721,6 +784,7 @@ pub fn calc(a, b) -> int requires(b != 0) {
         E::A => 0,
         E::B(n) => n + p.x,
     }
+
 }
 fn main() {
     let s = "line\n\tand \"quote\" ${calc(30, 5)}";
@@ -737,5 +801,34 @@ fn main() {
             "else-if chain preserved:\n{out}"
         );
         assert!(out.contains("|z| z * z + 1"), "closure preserved:\n{out}");
+    }
+
+    #[test]
+    fn fmt_preserves_comments_and_verification_directives_byte_for_byte() {
+        let src = "// EXPECT: FAIL\n// policy: never release operator input\nfn main() {\n    /* invariant rationale */\n    print(1); // observable boundary\n}\n";
+        let out = format_source(src).expect("comment-bearing source must be accepted safely");
+        assert_eq!(
+            out, src,
+            "formatter must never erase or relocate comment meaning"
+        );
+        assert!(is_formatted(src).expect("identity format is canonical for comment-bearing files"));
+    }
+
+    #[test]
+    fn format_ast_preserves_research_authorization_metadata() {
+        let src = r#"@research(authorization: "authorized-lab", non_destructive: true)
+fn main() {
+    research {}
+}
+"#;
+        let ast = parse_source(src).expect("authorized Research source must parse");
+        let formatted = format_ast(&ast.items);
+        let reparsed = parse_source(&formatted).expect("formatted Research source must reparse");
+        assert_eq!(
+            strip_span_debug(&ast),
+            strip_span_debug(&reparsed),
+            "authorization metadata must survive AST rendering"
+        );
+        assert!(formatted.contains("authorization: \"authorized-lab\""));
     }
 }

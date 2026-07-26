@@ -6,14 +6,10 @@
 //! listen, agent, inject, lateral, exploit-run, engagement packer, etc.
 //! Host → `ANUBIS_OFFENSIVE_HOST_FORBIDDEN`.
 //!
-//! ## B — Bounty PoC kit (existing Anubis surface, not regressed)
-//! `anubis run --allow-research` and `anubis fuzz --target poc_kit/...` remain
-//! the documented lab path from `docs/language/POC_KIT.md` and
-//! `scripts/run_poc_kit_gate.sh`. Prefer `anubis vz exploit|fuzz` for primary
-//! crash evidence; host gold-fixture runs are still valid lab smoke.
-//!
-//! Advance: fuzz against a **non–poc_kit** local target requires VZ (or
-//! explicit `ANUBIS_POC_LAB_HOST=1`).
+//! ## B — Bounty PoC kit and research execution
+//! `anubis run --allow-research` and `anubis fuzz` retain their full capability inside an
+//! Anubis-managed disposable VZ/tart guest. The host is an orchestrator only; there is no crash-
+//! capable host fallback.
 //!
 //! Guest markers (any one — **explicit Anubis markers only**):
 //! - `ANUBIS_VZ_GUEST=1`
@@ -29,7 +25,9 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 /// True when this process is inside an Anubis-managed VZ/tart guest.
 pub fn in_vz_guest() -> bool {
@@ -53,11 +51,6 @@ pub fn in_vz_guest() -> bool {
     // Do NOT treat kern.hv_vmm_present alone as guest membership — CI runners
     // and many developer VMs set it without being Anubis tart disposable guests.
     false
-}
-
-/// Explicit operator override for host-side PoC lab (not for AOP C2).
-pub fn poc_lab_host_override() -> bool {
-    env_truthy("ANUBIS_POC_LAB_HOST")
 }
 
 fn env_truthy(key: &str) -> bool {
@@ -91,6 +84,7 @@ fn hv_vmm_present() -> bool {
 }
 
 /// Path is the in-repo gold lab fixture tree (`poc_kit/…`).
+#[cfg(test)]
 pub fn is_poc_kit_target(path: &Path) -> bool {
     let s = path.to_string_lossy();
     if s.contains("poc_kit/") || s.contains("poc_kit\\") {
@@ -141,57 +135,41 @@ pub fn require_vz_offensive(action: &str) -> Result<()> {
            2) anubis vz exploit|fuzz|exec|c2-cycle|stress --base anubis-xcode …\n\
            3) Or guest env: export ANUBIS_VZ_GUEST=1 ; touch \"$HOME/.anubis-vz-guest\"\n\
          \n\
-         PoC kit (packing / gold fixture) stays on the documented lab path:\n\
-           anubis run examples/security/poc_*.anb --allow-research\n\
-           anubis fuzz --target poc_kit/bin/vuln_local …\n\
-           bash scripts/run_poc_kit_gate.sh\n\
-         Prefer `anubis vz exploit|fuzz` for primary crash evidence."
+         PoC kit and research execution use the same mandatory boundary:\n\
+           anubis vz exploit --allow-research --base anubis-xcode <program>\n\
+           anubis vz fuzz --allow-research --base anubis-xcode <target>\n\
+         The host remains an orchestration and evidence-collection surface only."
     ))
 }
 
 /// Policy for `anubis run --allow-research` (PoC kit + research programs).
 ///
-/// Never regressed: host continues to run packing smokes and gold crash PoCs.
-/// Advance: prefer VZ for primary evidence (documented; not a hard block on host lab).
+/// Mandatory boundary: research execution is permitted only inside an Anubis VZ guest.
 pub fn require_research_run_allowed(action: &str) -> Result<()> {
-    if in_vz_guest() || poc_lab_host_override() {
+    if in_vz_guest() {
         return Ok(());
     }
-    // Host lab: allowed (existing Anubis PoC kit contract). Soft note on stderr.
-    eprintln!(
-        "[anubis isolation] `{action}` on host (lab PoC kit path). \
-Primary crash evidence: prefer `anubis vz exploit --allow-research --base anubis-xcode …`. \
-AOP C2/inject/lateral remain VZ-only."
-    );
-    Ok(())
+    Err(anyhow!(
+        "ANUBIS_RESEARCH_HOST_FORBIDDEN: `{action}` must run inside a disposable Apple \
+         Virtualization.framework guest; use `anubis vz exploit --allow-research --base \
+         anubis-xcode <program>`"
+    ))
 }
 
 /// Policy for `anubis fuzz --target …`.
 ///
 /// - VZ guest: always OK  
-/// - Host + `poc_kit/…` gold target: OK (run_poc_kit_gate)  
-/// - Host + `ANUBIS_POC_LAB_HOST=1`: OK  
-/// - Host + arbitrary path: require VZ (advance)
+/// - Host: forbidden, including gold fixtures and environment overrides
 pub fn require_fuzz_allowed(target: &Path) -> Result<()> {
-    if in_vz_guest() || poc_lab_host_override() {
-        return Ok(());
-    }
-    if is_poc_kit_target(target) {
-        eprintln!(
-            "[anubis isolation] fuzz host lab gold fixture `{}`. \
-Primary evidence: prefer `anubis vz fuzz --allow-research --base anubis-xcode …`.",
-            target.display()
-        );
+    if in_vz_guest() {
         return Ok(());
     }
     Err(anyhow!(
-        "ANUBIS_FUZZ_HOST_FORBIDDEN: fuzz of non–poc_kit target `{}` requires an Apple Virtualization guest.\n\
+        "ANUBIS_FUZZ_HOST_FORBIDDEN: fuzz target `{}` requires an Apple Virtualization guest.\n\
          \n\
          Options:\n\
            anubis vz fuzz --allow-research --base anubis-xcode {}\n\
-           # or in guest: export ANUBIS_VZ_GUEST=1\n\
-           # or gold lab only: anubis fuzz --target poc_kit/bin/vuln_local …\n\
-           # emergency host lab: ANUBIS_POC_LAB_HOST=1 anubis fuzz --target …",
+           # or in guest: export ANUBIS_VZ_GUEST=1",
         target.display(),
         target.display()
     ))
@@ -201,12 +179,12 @@ Primary evidence: prefer `anubis vz fuzz --allow-research --base anubis-xcode �
 pub fn isolation_status_json() -> serde_json::Value {
     json!({
         "in_vz_guest": in_vz_guest(),
-        "poc_lab_host_override": poc_lab_host_override(),
+        "poc_lab_host_override": false,
+        "host_override_supported": false,
         "policy": {
             "aop_platform_requires_apple_virtualization": true,
-            "poc_kit_host_lab_gold_allowed": true,
-            "poc_kit_prefer_vz_for_primary_evidence": true,
-            "fuzz_non_poc_kit_requires_vz": true,
+            "poc_kit_host_lab_gold_allowed": false,
+            "all_research_and_fuzz_require_vz": true,
         },
         "host_forbidden_aop": [
             "listen", "agent-generate", "task-queue",
@@ -214,12 +192,7 @@ pub fn isolation_status_json() -> serde_json::Value {
             "exploit-run", "persist-launchagent", "pack-xor",
             "recon-scan", "string-scramble"
         ],
-        "host_allowed_poc_kit": [
-            "run --allow-research (packing + gold local harness)",
-            "fuzz --target poc_kit/…",
-            "bash scripts/run_poc_kit_gate.sh",
-            "bash poc_kit/build_vuln.sh"
-        ],
+        "host_allowed_poc_kit": [],
         "host_allowed_control_plane": [
             "engage-init", "engage-status", "offensive-doctor",
             "attck-catalog", "opsec-score", "campaign-init",

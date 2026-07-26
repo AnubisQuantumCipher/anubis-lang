@@ -24,9 +24,16 @@ anubis prove ... --backend risc0
 anubis doctor
 
 Behavior:
-- `check`: type/taint/policy/solver only; does not emit native by default. With --evidence emits full bundle + *.ast.json etc.
-- `build`: emits artifact (native) + optional evidence.
-- `run`: executes ordinary safe Anubis programs through the native safe subset. Current subset: `let`, literals, variables, numeric `+ - *`, comparisons, string literals, string concatenation with `+`, `print(expr)`, `if/else`, and `return(expr)`. Unsupported constructs fail with `ANUBIS_UNSUPPORTED_NATIVE_LOWERING`.
+- `check`: type/taint/policy/solver only; never emits a native artifact. A rejected check emits a
+  timestamped `FAIL` evidence bundle automatically, even without `--evidence`; `--evidence` also
+  requests a bundle for successful checks. Rejection PCAs use tier `rejected`, verdict `FAIL`, and
+  carry the diagnostic—never a proof claim.
+- `build`: verifies contracts by default, then emits a native artifact and optional evidence.
+  `build --evidence` failures emit an artifact-free `FAIL` rejection bundle. `--no-verify` is an
+  explicit escape hatch and emits only clearly marked `UNVERIFIED` evidence.
+- `run`: verifies the same contracts as `check`/default `build` before native lowering, then executes
+  ordinary Safe Anubis programs. Unsupported constructs fail with
+  `ANUBIS_UNSUPPORTED_NATIVE_LOWERING`.
 - `prove --backend risc0`: RISC0 receipt path (fresh, journal via verify-receipt).
 - `doctor`: reports binary version, git, rustc, RISC0 versions, patched `risc0-circuit-rv32im` path + existence + Metal HAL, `R0_DISABLE_METAL` status, Apple Silicon, Tier-2, smoke checks, evidence scripts/schemas. Supports `--require-risc0`, `--require-metal`, `--metal-reference`, `--evidence`, `--json`.
 - `capabilities --apple-native`: emits the machine-readable Apple-native capability matrix. It separates ready RISC0/Metal proof lanes from the plan-emitter-ready UMPG surface and planned CoreML/Neural Engine control-plane lanes.
@@ -108,8 +115,11 @@ anubis vz fuzz target.anb --iterations 100000 --allow-research
 
 ## Gate 15 + Bounty-Grade PoC Kit
 
-- `anubis run <poc.anb> --allow-research` : Execute packing + `target_run` local harness (see `docs/language/POC_KIT.md`).
-- `anubis fuzz --target <local-binary> --runs N [--max-len L] [--seed S] --out DIR` : **Real** mutation process fuzz; writes `fuzz_report.json` + `crashes/*.bin`. Network targets forbidden. Optional harness `.anb` for auth metadata only.
+- `anubis vz exploit <poc.anb> --allow-research` executes packing + `target_run` in a disposable
+  guest (see `docs/language/POC_KIT.md`); host `anubis run --allow-research` is refused.
+- `anubis vz fuzz <local-binary> --iterations N --allow-research` runs the mutation process in a
+  disposable guest; host `anubis fuzz` is refused. Guest evidence includes `fuzz_report.json` and
+  `crashes/*.bin`; network targets remain forbidden.
 - `anubis bounty-report <bundle> --out DIR` or `anubis report <bundle>` : Bounty evidence report from a bundle.
 - PoC kit gate: `bash scripts/run_poc_kit_gate.sh --out out/poc_kit`
 - Gold lab target: `bash poc_kit/build_vuln.sh` → `poc_kit/bin/vuln_local`
@@ -132,6 +142,12 @@ anubis vz fuzz target.anb --iterations 100000 --allow-research
 See `docs/language/OFFENSIVE_PLATFORM.md`.
 
 All require proper `@` attributes with authorization for non-safe modes. Dangerous effects forbidden in `@safe`.
+
+Mode classification is program-wide and source-order independent:
+`Safe < Research < Exploit`. Any Research/Exploit function—including one nested in a module or
+impl—elevates the command/evidence mode and makes ordinary `run` refuse before lowering.
+An explicit `@safe` function inside that mixed program remains Safe and keeps all Safe-mode checks;
+only unannotated functions inherit the aggregate program mode.
 
 Run security fixtures:
 bash scripts/run_security_fixtures.sh --out out/gate15_security_fixtures

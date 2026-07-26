@@ -1,0 +1,17 @@
+// CHECK_EXPECT: FAIL
+// CHECK_ERROR_CONTAINS: ANUBIS_ASSERTION_UNPROVEN
+// Hostile check mutant: remaining >= 5 is false on entry for steps == 3.
+fn count_down(steps: i64) -> i64
+    requires(steps >= 0)
+    ensures(result == 0)
+{
+    let remaining = steps;
+    while remaining > 0 invariant(remaining >= 5) {
+        remaining = remaining - 1;
+    }
+    return remaining;
+}
+
+fn main() {
+    print(count_down(3));
+}

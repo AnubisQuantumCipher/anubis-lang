@@ -1,0 +1,7 @@
+{
+  "isolation": "tart-disposable-guest",
+  "base": "anubis-xcode",
+  "guest": "anubis-poc-kit-gate-54712",
+  "ip": "192.168.64.2",
+  "guest_out": "out/poc_kit_guest"
+}

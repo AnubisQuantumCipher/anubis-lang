@@ -1,0 +1,11 @@
+// CHECK_EXPECT: PASS (explicit policy and reason)
+fn main() {
+    let raw_request = taint_source("operator_recovery_request");
+    let approved = declassify(
+        raw_request,
+        "recovery.command.fixed-workflow.v1",
+        "request is reduced to a fixed local recovery election",
+    );
+    sink(approved);
+    print("declassification accepted");
+}

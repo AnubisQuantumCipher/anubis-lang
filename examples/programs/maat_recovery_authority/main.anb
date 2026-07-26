@@ -1,0 +1,190 @@
+// EXPECT: PASS
+// MA'AT Recovery Authority
+//
+// A deterministic recovery-election program with a solver-checked arithmetic
+// core, a proved loop invariant, and secret data that never reaches public
+// output. Companion fixtures adversarially test rejected taint/secret flows and
+// accepted declassification; approved labels also lower faithfully in Safe run.
+//
+// Expected stdout:
+// MAAT_RECOVERY_AUTHORITY
+// replicas=5
+// eligible=3
+// score_sum=374
+// best=Osiris score=126
+// verdict=PROMOTE margin=0
+// contracts=CHECKED loop_witness=0
+// taint_boundary=CHECKED_IN_COMPANION
+
+struct Replica {
+    name: string,
+    score: i64,
+}
+
+enum RecoveryVerdict {
+    Promote { node: string, score: i64, eligible: i64, margin: i64 },
+    Hold { eligible: i64, required: i64 },
+}
+
+// The security label is checked independently of this arithmetic identity.
+// The value is never printed, returned publicly, or sent to a sink.
+fn retain_seal(value: secret<i64>) -> secret<i64>
+    ensures(result == value)
+{
+    return value;
+}
+
+// Each candidate score is bounded entirely by declared input contracts.
+fn candidate_score(integrity: i64, lag: i64, healthy: i64, signer: i64) -> i64
+    requires(integrity >= 0)
+    requires(integrity <= 100)
+    requires(lag >= 0)
+    requires(lag <= 10)
+    requires(healthy == 0 || healthy == 1)
+    requires(signer == 0 || signer == 1)
+    ensures(result >= 0)
+    ensures(result <= 140)
+{
+    if healthy == 0 {
+        return 0;
+    }
+    if signer == 0 {
+        return 0;
+    }
+    return integrity + (10 - lag) * 4;
+}
+
+fn positive_flag(score: i64) -> i64
+    ensures(result == 0 || result == 1)
+{
+    if score > 0 {
+        return 1;
+    }
+    return 0;
+}
+
+// Contract composition carries the five positive_flag postconditions into
+// this proof, so the result is bounded without trusting runtime tests.
+fn eligible_count5(a: i64, b: i64, c: i64, d: i64, e: i64) -> i64
+    ensures(result >= 0)
+    ensures(result <= 5)
+{
+    let fa = positive_flag(a);
+    let fb = positive_flag(b);
+    let fc = positive_flag(c);
+    let fd = positive_flag(d);
+    let fe = positive_flag(e);
+    return fa + fb + fc + fd + fe;
+}
+
+fn quorum_flag(eligible: i64, required: i64) -> i64
+    requires(eligible >= 0)
+    requires(required >= 1)
+    ensures(result == 0 || result == 1)
+{
+    if eligible >= required {
+        return 1;
+    }
+    return 0;
+}
+
+fn safe_margin(eligible: i64, required: i64) -> i64
+    requires(eligible >= required)
+    requires(required >= 0)
+    ensures(result >= 0)
+    ensures(result == eligible - required)
+{
+    return eligible - required;
+}
+
+// This is a real inductive proof obligation: entry, one-step preservation,
+// and exit must jointly establish result == 0.
+fn count_down(steps: i64) -> i64
+    requires(steps >= 0)
+    ensures(result == 0)
+{
+    let remaining = steps;
+    while remaining > 0 invariant(remaining >= 0) {
+        remaining = remaining - 1;
+    }
+    return remaining;
+}
+
+fn choose_verdict(best: Replica, eligible: i64, required: i64)
+    requires(eligible >= 0)
+    requires(required >= 1)
+{
+    if quorum_flag(eligible, required) == 0 {
+        return RecoveryVerdict::Hold { eligible: eligible, required: required };
+    }
+
+    // This call is deliberately inside the guard that proves its precondition.
+    if eligible >= required {
+        let margin = safe_margin(eligible, required);
+        return RecoveryVerdict::Promote {
+            node: best.name,
+            score: best.score,
+            eligible: eligible,
+            margin: margin,
+        };
+    }
+
+    return RecoveryVerdict::Hold { eligible: eligible, required: required };
+}
+
+fn main() {
+    // All candidate_score preconditions are discharged at these call sites.
+    let osiris_score = candidate_score(94, 2, 1, 1);
+    let isis_score = candidate_score(90, 1, 1, 1);
+    let horus_score = candidate_score(99, 0, 0, 1);
+    let bastet_score = candidate_score(99, 6, 1, 0);
+    let maat_score = candidate_score(82, 0, 1, 1);
+
+    let replicas = [
+        Replica { name: "Osiris", score: osiris_score },
+        Replica { name: "Isis", score: isis_score },
+        Replica { name: "Horus", score: horus_score },
+        Replica { name: "Bastet", score: bastet_score },
+        Replica { name: "Ma'at", score: maat_score },
+    ];
+
+    let eligible = eligible_count5(
+        osiris_score,
+        isis_score,
+        horus_score,
+        bastet_score,
+        maat_score,
+    );
+    let required = 3;
+    let score_sum = osiris_score + isis_score + horus_score + bastet_score + maat_score;
+
+    let best = replicas[0];
+    for replica in replicas {
+        if replica.score > best.score {
+            best = replica;
+        }
+    }
+
+    // Confidentiality boundary: this remains secret and has no public egress.
+    let seal_key: secret<i64> = 730031;
+    let retained: secret<i64> = retain_seal(seal_key);
+
+    let loop_witness = count_down(required);
+    let verdict = choose_verdict(best, eligible, required);
+
+    println("MAAT_RECOVERY_AUTHORITY");
+    println("replicas=${len(replicas)}");
+    println("eligible=${eligible}");
+    println("score_sum=${score_sum}");
+    println("best=${best.name} score=${best.score}");
+    match verdict {
+        RecoveryVerdict::Promote { node, score, eligible, margin } => {
+            println("verdict=PROMOTE margin=${margin}");
+        },
+        RecoveryVerdict::Hold { eligible, required } => {
+            println("verdict=HOLD required=${required} eligible=${eligible}");
+        },
+    }
+    println("contracts=CHECKED loop_witness=${loop_witness}");
+    println("taint_boundary=CHECKED_IN_COMPANION");
+}

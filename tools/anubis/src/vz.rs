@@ -599,7 +599,7 @@ fn run_confine(program: &str, out: Option<String>) -> Result<()> {
         std::fs::read_to_string(program).with_context(|| format!("read program `{program}`"))?;
     let ast = anubis_compiler::parse_source(&src)
         .map_err(|e| anyhow!("ANUBIS_CONFINE_PARSE_FAILED: {e}"))?;
-    let mode = crate::first_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
+    let mode = crate::program_mode(&ast.items).unwrap_or(anubis_compiler::frontend::Mode::Safe);
     // Fail closed: a program that does not typecheck has no PROVEN effect set to derive from.
     anubis_compiler::typecheck(ast, mode).map_err(|e| {
         anyhow!(

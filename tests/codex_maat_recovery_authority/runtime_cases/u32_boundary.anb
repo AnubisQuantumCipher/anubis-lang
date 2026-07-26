@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Runtime-case witness: u32 parameters are masked, while returns are not masked.
+fn boundary(value: u32) -> u32
+    ensures(result >= 0)
+    ensures(result < 4294967296)
+{
+    return value;
+}
+
+fn main() {
+    print(boundary(-1));
+    print(boundary(5000000000));
+}

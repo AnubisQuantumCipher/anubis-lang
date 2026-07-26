@@ -1,6 +1,6 @@
 # Anubis Bounty-Grade PoC Kit
 
-**Status: REAL (local lab process harness + packing + mutation fuzz).**  
+**Status: under command (local lab process harness + packing + mutation fuzz in disposable VZ).**
 Authorized dual-use only. Not a remote exploit framework, C2, or implant kit.
 
 ## What this is
@@ -25,17 +25,15 @@ cargo build --release -p anubis
 # 1) Build the intentionally vulnerable local gold target
 bash poc_kit/build_vuln.sh
 
-# 2) Run the gold crash PoC (must print crashed=1 first)
-./target/release/anubis run examples/security/poc_local_overflow.anb \
-  --allow-research --out out/poc_local
+# 2) Run the gold crash PoC in a disposable guest (must print crashed=1 first)
+./target/release/anubis vz exploit --base anubis-xcode \
+  examples/security/poc_local_overflow.anb --allow-research
 
-# 3) Mutation-fuzz the same local target
-./target/release/anubis fuzz \
-  --target poc_kit/bin/vuln_local \
-  --runs 500 --max-len 128 --seed 42 \
-  --out out/fuzz_vuln
+# 3) Mutation-fuzz the same target in a disposable guest
+./target/release/anubis vz fuzz --base anubis-xcode \
+  poc_kit/bin/vuln_local --iterations 500 --allow-research
 
-# 4) Full gate
+# 4) Full gate (the host entrypoint clones/runs/collects/deletes the guest)
 bash scripts/run_poc_kit_gate.sh --out out/poc_kit
 jq -e '.overall_verdict=="PASS"' out/poc_kit/report.json
 ```
@@ -99,17 +97,19 @@ anubis fuzz --target ./my_local_parser --runs 1000 --max-len 256 --seed 1 --out 
 2. `@research` / `@poc` / `@fuzz` still require authorization metadata (typecheck).
 3. Targets must be local filesystem paths. No `http://`, no raw network sinks in this kit.
 4. Gold fixtures use an intentionally vulnerable binary under `poc_kit/` — not third-party production hosts.
-5. **Isolation (advance, no regression):**
-   - **Host lab (documented):** packing smoke + gold `poc_kit/bin/vuln_local` crash PoC + fuzz against `poc_kit/…` — still works (`run_poc_kit_gate.sh`).
-   - **Preferred primary crash evidence:** disposable Apple VZ guest  
+5. **Isolation (mandatory, capability-preserving):**
+   - Packing, the gold crash PoC, and mutation fuzz retain their implementation and evidence, but
+     crash-capable execution runs only inside a disposable Apple VZ guest.
+   - Official direct lanes:
      `anubis vz exploit --allow-research --base anubis-xcode examples/security/poc_local_overflow.anb`  
      `anubis vz fuzz --allow-research --base anubis-xcode poc_kit/bin/vuln_local`
-   - **Fuzz of non–`poc_kit` targets** requires VZ (or `ANUBIS_POC_LAB_HOST=1` emergency override).
-   - **AOP C2 / inject / lateral** are separate and **always VZ-only** (`ANUBIS_OFFENSIVE_HOST_FORBIDDEN` on host).
+   - `ANUBIS_POC_LAB_HOST` is not an override. Host research execution and fuzz fail closed.
+   - **AOP C2 / inject / lateral** are separate and also VZ-only
+     (`ANUBIS_OFFENSIVE_HOST_FORBIDDEN` on host).
 
 ## Honest boundary
 
 This kit proves **impact in a lab** (reliable crash + packing + fuzz + evidence).  
 It does **not** claim automatic exploitation of arbitrary remote software, gadget farming, or post-exploitation.
 
-Gate: `bash scripts/run_poc_kit_gate.sh`
+Gate: `bash scripts/run_poc_kit_gate.sh` (host orchestrator; disposable guest evidence)

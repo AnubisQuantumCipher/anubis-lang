@@ -11,10 +11,10 @@ Anything not listed here is experimental / research unless later promoted by MIN
 
 | Command | 1.0 guarantee |
 |---------|----------------|
-| `anubis check` | Safe mode types, taint, secrets, effects, contracts (SMT) |
+| `anubis check` | Safe mode types, taint, secrets, effects, contracts (SMT); rejected checks emit `FAIL` evidence automatically |
 | `anubis check --verified` | Linear capability authorization for privileged effects |
 | `anubis run` | Native execution of the Safe run subset + crypto builtins |
-| `anubis build` / `build --evidence` | Fail-closed on unproven contracts; PCA bundle |
+| `anubis build` / `build --evidence` | Fail-closed on unproven contracts; requested rejection evidence is `FAIL`/artifact-free |
 | `anubis verify` / `report` | Re-derive claims; tamper detection |
 | `anubis package` / lock / verify | Dependency trust surface (see package gate) |
 | `anubis vz confine` | Confinement manifest from proven effects |
@@ -32,6 +32,14 @@ Anything not listed here is experimental / research unless later promoted by MIN
 - I/O builtins: `read_file`/`write_file`/`append_file`/`delete_file`/`open`/`args`/`env`/print family
 - Crypto builtins: as in [`CRYPTO.md`](CRYPTO.md) (Argon2id, AEAD, HMAC, HKDF, Ed25519, …)
 - Modules: multi-file `import` + embedded `import std.*`
+- Program mode is the highest privilege found anywhere in the resolved program:
+  `Safe < Research < Exploit`. Source order, nested modules, and impls cannot hide a later
+  Research/Exploit function behind an earlier Safe function.
+- In a mixed-mode program, an explicit `@safe` function remains a Safe enclave: program-level
+  Research/Exploit selection does not weaken its taint, secret, or effect rules. Unannotated
+  functions retain the program-level mode for compatibility.
+- `run` refuses a program containing any Research/Exploit function unless the authorized research
+  lane is explicitly selected; crash-capable research execution remains subject to the VZ boundary.
 
 ## 3. Trust spine (stable gates)
 

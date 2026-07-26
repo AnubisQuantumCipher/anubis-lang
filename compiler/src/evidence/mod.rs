@@ -119,6 +119,81 @@ pub fn build_evidence_bundle_tree(
     security: Option<serde_json::Value>,
     dep_closure: Option<&serde_json::Value>,
 ) -> Result<EvidenceBundle, String> {
+    build_evidence_bundle_tree_inner(
+        files,
+        mode,
+        artifact,
+        logs,
+        out_base,
+        lane,
+        security,
+        dep_closure,
+        None,
+    )
+}
+
+/// Emit an honest, tamper-evident rejection bundle for a command that failed before artifact
+/// production. The rejection is a first-class failing check and the PCA is explicitly marked
+/// `rejected`/`FAIL`; it can never be mistaken for a successful proof claim.
+pub fn build_rejected_evidence_bundle(
+    source: &str,
+    mode: &str,
+    logs: Vec<String>,
+    out_base: &Path,
+    lane: Option<&str>,
+    rejection: &str,
+) -> Result<EvidenceBundle, String> {
+    build_evidence_bundle_tree_inner(
+        &[("source.anubis".to_string(), source.as_bytes().to_vec())],
+        mode,
+        None,
+        logs,
+        out_base,
+        lane,
+        None,
+        None,
+        Some(rejection),
+    )
+}
+
+/// Tree-aware form of [`build_rejected_evidence_bundle`]. This is used when the command checked a
+/// resolved multi-file/import program: `source.anubis` is the deterministic resolved snapshot and
+/// the other leaves preserve the original entry/dependency material under the same Merkle root.
+#[allow(clippy::too_many_arguments)]
+pub fn build_rejected_evidence_bundle_tree(
+    files: &[(String, Vec<u8>)],
+    mode: &str,
+    logs: Vec<String>,
+    out_base: &Path,
+    lane: Option<&str>,
+    rejection: &str,
+    dep_closure: Option<&serde_json::Value>,
+) -> Result<EvidenceBundle, String> {
+    build_evidence_bundle_tree_inner(
+        files,
+        mode,
+        None,
+        logs,
+        out_base,
+        lane,
+        None,
+        dep_closure,
+        Some(rejection),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_evidence_bundle_tree_inner(
+    files: &[(String, Vec<u8>)],
+    mode: &str,
+    artifact: Option<&str>,
+    logs: Vec<String>,
+    out_base: &Path,
+    lane: Option<&str>,
+    security: Option<serde_json::Value>,
+    dep_closure: Option<&serde_json::Value>,
+    rejection: Option<&str>,
+) -> Result<EvidenceBundle, String> {
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let dir = out_base.join(format!("evidence-{}-{}", ts, mode));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -232,10 +307,10 @@ pub fn build_evidence_bundle_tree(
     });
 
     if let Ok(ast) = parse_res {
-        let tc_mode = if mode == "research" {
-            crate::frontend::Mode::Research
-        } else {
-            crate::frontend::Mode::Safe
+        let tc_mode = match mode {
+            "research" => crate::frontend::Mode::Research,
+            "exploit" => crate::frontend::Mode::Exploit,
+            _ => crate::frontend::Mode::Safe,
         };
         match crate::middle::typecheck(ast, tc_mode) {
             Ok(ir) => {
@@ -319,6 +394,14 @@ pub fn build_evidence_bundle_tree(
                 detail: err,
             }),
         }
+    }
+
+    if let Some(rejection) = rejection {
+        checks.push(Check {
+            name: "command_rejection".into(),
+            status: "FAIL".into(),
+            detail: rejection.to_string(),
+        });
     }
 
     checks.push(Check {
@@ -448,10 +531,13 @@ pub fn build_evidence_bundle_tree(
     // Proof-Carrying Artifact claim block — a deterministic verdict `verify` re-derives from the
     // source (plus a ZK receipt binding when the bundle carries a genuine receipt). Written before
     // the manifest hashing so it is covered by MANIFEST.sha256.
-    write_json(
-        &dir.join("pca.json"),
-        &derive_claim_block_bound(&dir, &source, mode),
-    )?;
+    let mut claim = derive_claim_block_bound(&dir, &source, mode);
+    if let Some(rejection) = rejection {
+        claim.tier = "rejected".into();
+        claim.rejection = Some(rejection.to_string());
+        claim.verdict = "FAIL".into();
+    }
+    write_json(&dir.join("pca.json"), &claim)?;
     write_manifest_hashes(&dir)?;
 
     Ok(EvidenceBundle { dir, manifest })
@@ -523,6 +609,10 @@ pub struct ClaimBlock {
     pub mode: String,
     /// Assurance tier actually reached. v0: `"checked"` — parse + typecheck + taint + solver ran.
     pub tier: String,
+    /// Present only for a fail-closed command rejection. A rejected PCA is evidence of refusal,
+    /// never a proof claim, and therefore carries an explicit reason alongside verdict `FAIL`.
+    #[serde(default)]
+    pub rejection: Option<String>,
     pub parse_ok: bool,
     pub typecheck_ok: bool,
     /// No tainted value reaches a sink without declassification.
@@ -567,10 +657,10 @@ fn default_solver_backend() -> String {
 /// truth used both when emitting a PCA and when verifying one, so the two agree exactly.
 pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
     let source_sha256 = sha256_bytes(source.as_bytes());
-    let tc_mode = if mode == "research" {
-        crate::frontend::Mode::Research
-    } else {
-        crate::frontend::Mode::Safe
+    let tc_mode = match mode {
+        "research" => crate::frontend::Mode::Research,
+        "exploit" => crate::frontend::Mode::Exploit,
+        _ => crate::frontend::Mode::Safe,
     };
     let parse_res = crate::frontend::parse_source(source);
     let parse_ok = parse_res.is_ok();
@@ -602,6 +692,7 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         source_sha256,
         mode: mode.to_string(),
         tier: "checked".into(),
+        rejection: None,
         parse_ok,
         typecheck_ok,
         taint_clean,
