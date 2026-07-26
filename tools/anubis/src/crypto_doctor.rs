@@ -193,3 +193,55 @@ pub fn print_human() {
     }
     println!("map: docs/language/RWC_LANGUAGE_MAP.md");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inventory_distinguishes_lab_real_from_permanent_non_claims() {
+        let r = report_json();
+        assert_eq!(r["schema"], "anubis-crypto-doctor-v1");
+        let lab = r["counts"]["lab_real"].as_u64().unwrap();
+        let ni = r["counts"]["not_implemented"].as_u64().unwrap();
+        assert!(lab >= 8, "expected substantial LAB_REAL surface, got {lab}");
+        assert!(ni >= 3, "expected permanent non-claims, got {ni}");
+        let caps = r["capabilities"].as_array().unwrap();
+        let statuses: std::collections::BTreeSet<&str> = caps
+            .iter()
+            .filter_map(|c| c["status"].as_str())
+            .collect();
+        assert!(statuses.contains("LAB_REAL"));
+        assert!(statuses.contains("NOT_IMPLEMENTED"));
+        // Permanent non-claims from RWC / identity plan
+        assert!(
+            caps.iter().any(|c| {
+                c["id"].as_str().unwrap_or("").starts_with("tls")
+                    && c["status"] == "NOT_IMPLEMENTED"
+            }),
+            "TLS/Noise must stay NOT_IMPLEMENTED"
+        );
+        assert!(
+            caps.iter().any(|c| {
+                c["id"].as_str().unwrap_or("").contains("post-quantum")
+                    && c["status"] == "NOT_IMPLEMENTED"
+            }),
+            "PQ DIY must stay NOT_IMPLEMENTED"
+        );
+        assert!(
+            caps.iter().any(|c| {
+                let id = c["id"].as_str().unwrap_or("");
+                (id.contains("CAVP") || id.to_ascii_lowercase().contains("cavp"))
+                    && c["status"] == "NOT_IMPLEMENTED"
+            }),
+            "CAVP must stay NOT_IMPLEMENTED"
+        );
+        // Host crypto must claim hybrid / x25519 as LAB_REAL (shipped)
+        assert!(
+            caps.iter().any(|c| {
+                c["id"].as_str().unwrap_or("").contains("hybrid") && c["status"] == "LAB_REAL"
+            }),
+            "hybrid envelope should be LAB_REAL on host"
+        );
+    }
+}

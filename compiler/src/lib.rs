@@ -5625,6 +5625,34 @@ fn main() {
     }
 
     #[test]
+    fn rwc_crypto_misuse_rejects_std_crypto_ecdh_as_aead_key() {
+        let dir = unique_test_dir("rwc-std-ecdh-aead");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("m.anb");
+        std::fs::write(
+            &f,
+            r#"
+import std.crypto;
+fn main() {
+    let k = crypto::ecdh_keygen();
+    let _ = crypto::aead_encrypt(crypto::ecdh_shared(k[0], k[1]), crypto::aead_nonce(), "aad", "pt");
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&f).expect("combine");
+        let err = typecheck(
+            frontend::AST {
+                items,
+                ..Default::default()
+            },
+            Mode::Safe,
+        )
+        .expect_err("std.crypto ecdh→aead must be CRYPTO_MISUSE");
+        assert!(err.contains("ANUBIS_CRYPTO_MISUSE"), "got: {err}");
+    }
+
+    #[test]
     fn phase5_crypto_misuse_rejects_hmac_eq_compare() {
         let err = tc_ok(
             r#"fn main() {
