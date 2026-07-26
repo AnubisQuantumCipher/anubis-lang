@@ -50,7 +50,7 @@ Protocol default: **`aop-2`** (AES-256-GCM encrypted beacons).
 | **T5** | pattern-create/offset, gadget-search, browser harness | **REAL** |
 | **T6** | XOR packer + C unpack stub + string-scramble | **REAL** |
 | **T7** | Operator web console + RBAC + **multi-operator token auth** | **REAL** |
-| **T8** | Apple VZ sandbox (`vz exploit|fuzz|c2-cycle|…`) | **REAL** |
+| **T8** | Apple VZ sandbox (`vz exploit|fuzz|c2-cycle|…`) + **guest-bound run capability** (host always mints; guest enforces on research/crash paths) | **REAL** (LAB_REAL HMAC cap; not Ed25519 PKI) |
 | **T9** | ATT&CK kill-chain, OPSEC score, recon, malleable C2, campaign playbook, purple-team report, phish PLAN_ONLY, LOLBAS catalog | **REAL** |
 
 Gate: `bash scripts/run_offensive_platform_gate.sh` (host entrypoint is VZ-isolated by default).

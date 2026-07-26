@@ -1,6 +1,6 @@
-# Security Research Profile (design)
+# Security Research Profile (design + Phase 3 HIR)
 
-**Status:** design + partial runtime spine (not full language surface)  
+**Status:** design + runtime spine + **Phase 3 typed HIR stubs** (not full language surface)  
 **Date:** 2026-07-26  
 **Identity:** proof-carrying security research language — not a generic C2 framework.
 
@@ -18,17 +18,33 @@ A researcher writes an authorized PoC / fuzz / emulation / crypto / bounty progr
 | `crypto_research` | opt-in | VZ for leakage/fuzz; host for pure math | never overclaim CAVP |
 | `bounty` | opt-in | scope-bound only | no arbitrary RCE |
 
-## Typed objects (target HIR)
+Typed in `compiler/src/middle/research_profile.rs` as `ResearchProfile`.
 
-`Authorization`, `Engagement`, `Scope<T>` / `Scoped<T>`, `Technique`, `DetectionExpectation`, `Secret<T>`, `Declassified<T,R>`, `Finding`, `Evidence<T>`, `Verified<T>`, `Unverified<T>`, `GuestRun<T>`.
+## Typed objects (HIR)
 
-Raw strings/paths/URLs/PIDs must not silently become scoped targets.
+| Type | Module | Status |
+|------|--------|--------|
+| `ResearchProfile` | `middle/research_profile` | LAB_REAL (typed + unit tests) |
+| `SecurityEffect` | same | LAB_REAL (normalized effect IR) |
+| `EngagementRef` | same | LAB_REAL (identity + allow-lists) |
+| `ScopedPath` / `ScopedHost` | same | LAB_REAL (constructor-gated scope) |
+| `Authorization` | same | LAB_REAL (digest bound to engagement) |
+| `Evidence<T>` / `TrustLabel` | same | LAB_REAL (LAB_REAL / PLAN_ONLY labels) |
+| `GuestRun` | same | LAB_REAL (plan for run-capability mint) |
+| Language syntax for above | parser | **NOT_IMPLEMENTED** |
+| Checker consume in `typecheck` | middle | **NOT_IMPLEMENTED** (types ready) |
+
+Raw strings/paths/URLs/PIDs must not silently become scoped targets — `ScopedPath::bind` / `ScopedHost::bind` fail closed on out-of-scope inputs (`ANUBIS_RESEARCH_SCOPE`).
 
 ## Effects (shared IR)
 
+Canonical research effects (`SecurityEffect`):
+
 `net.connect`, `net.listen`, `fs.read`, `fs.write`, `process.spawn`, `process.inspect`, `debug.attach`, `vm.execute`, `secret.use`, `evidence.emit`, `human.approve`.
 
-Checker, runtime, and VZ confinement must consume the **same** normalized effect representation.
+Legacy Safe-mode tags fold in: `shell` → `process.spawn`, `net.send` → `net.connect`.
+
+Crash/research-class effects (`process.spawn|inspect`, `debug.attach`, `vm.execute`, `net.listen`) set `requires_run_capability` on `GuestRun`.
 
 ## Execution pipeline (target)
 
@@ -39,17 +55,20 @@ source → AST → typed HIR → effect IR → contracts/SMT
   → signed/MAC evidence bundle
 ```
 
-## What exists now (LAB_REAL / PARTIAL)
+## What exists now (honest)
 
 | Piece | Location | Classification |
 |-------|----------|----------------|
-| Fail-closed contracts on check/build/run | compiler + CLI | PARTIAL→REAL (trust spine commit) |
+| Fail-closed contracts on check/build/run | compiler + CLI | PARTIAL→REAL (trust spine) |
 | Research mode aggregation | middle | LAB_REAL |
 | Engagement + scope + encrypt listener | AOP | LAB_REAL (P0 closed) |
 | Receipt HMAC chain | `receipts.rs` | LAB_REAL_HMAC |
-| Run capability mint/validate | `run_capability.rs` | LAB_REAL (optional via env) |
-| Tart isolation | `vz.rs` + isolation | LAB_REAL |
+| Run capability mint/validate | `run_capability.rs` | LAB_REAL |
+| **VZ host always mints + stages cap** on `vz exploit` / `vz fuzz` / research-class `vz exec` | `vz.rs` | LAB_REAL |
+| Guest enforces cap when `ANUBIS_VZ_ENFORCE_RUN_CAP=1` | `isolation.rs` | LAB_REAL |
+| Phase 3 HIR types (profiles, scope, effects, GuestRun) | `research_profile.rs` | LAB_REAL (typed IR) |
 | Full Security Research syntax | language | NOT_IMPLEMENTED |
+| Independent portable evidence verifier CLI | tools | NOT_IMPLEMENTED |
 
 ## Non-goals
 
@@ -58,11 +77,11 @@ source → AST → typed HIR → effect IR → contracts/SMT
 - Host crash PoC as primary evidence  
 - Beating Caldera at scale  
 
-## Next implementation slices
+## Implementation slices
 
-1. Wire `run_capability` mint into `anubis vz exploit|fuzz` host orchestrator (always mint; guest always validates).  
-2. HIR types for Engagement/Scope + constructors that check engagement.  
-3. Effect IR shared between checker and VZ confine.  
+1. ~~Wire `run_capability` mint into `anubis vz exploit|fuzz` host orchestrator~~ **done** (also research-class `vz exec`).  
+2. ~~HIR types for Engagement/Scope + constructors that check engagement~~ **done** (typed stubs; no parser).  
+3. Effect IR shared between checker and VZ confine (consume `SecurityEffect` in confine/checker).  
 4. Independent portable evidence verifier CLI.  
 5. Domain packs (PoC/fuzz/crypto/bounty/emulation) with honest classifications.
 

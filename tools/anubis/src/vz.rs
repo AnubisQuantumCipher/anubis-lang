@@ -466,11 +466,38 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 format!("VM `{name}` has no IP — is it running? (`anubis vz run {name} --detach`)")
             })?;
             let target = format!("{user}@{ip}");
-            eprintln!("[anubis vz] ssh {target} -- {}", command.join(" "));
+            // Research/crash-class remote commands must carry a guest-bound single-use capability.
+            let remote_command = if command_requires_run_capability(&command) {
+                let cmd_material = command.join("\0");
+                let cmd_digest = hex::encode(Sha256::digest(cmd_material.as_bytes()));
+                let (cap_key, program_digest) = stage_run_capability_to_guest(
+                    &user,
+                    &ip,
+                    &name,
+                    "anubis-xcode",
+                    None,
+                    Some(&cmd_digest),
+                    &["process.spawn", "vm.execute"],
+                )?;
+                let env = run_cap_env_fragment(&name, &program_digest, &cap_key);
+                let quoted: Vec<String> = command
+                    .iter()
+                    .map(|c| shell_single_quote(c))
+                    .collect();
+                let shell = format!("env {env} {}", quoted.join(" "));
+                eprintln!(
+                    "[anubis vz] ssh {target} -- (research-gated; guest-bound run capability) {}",
+                    command.join(" ")
+                );
+                vec!["bash".into(), "-lc".into(), shell]
+            } else {
+                eprintln!("[anubis vz] ssh {target} -- {}", command.join(" "));
+                command
+            };
             let status = Command::new("ssh")
                 .args(ssh_common_args()?)
                 .arg(&target)
-                .args(&command)
+                .args(&remote_command)
                 .status()
                 .with_context(|| "failed to spawn ssh")?;
             if status.success() {
@@ -522,7 +549,6 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             }
             disposable(&base, keep, |name, ip| {
                 const REMOTE_POC: &str = "/tmp/anubis-poc.anb";
-                const REMOTE_CAP: &str = "/tmp/anubis-run-cap.json";
                 sync_path_verified(&user, &ip, &poc, REMOTE_POC)?;
                 // Gold PoC-kit oracle (path used by examples/security/poc_local_overflow.anb).
                 // Without this, disposable guests only receive the .anb + runner and spawn fails.
@@ -539,33 +565,24 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     )?;
                 }
                 let runner = sync_current_anubis(&user, &ip)?;
-                let (cap_path, cap_key, program_digest) =
-                    mint_and_write_guest_cap(name, &base, Path::new(&poc), "process.spawn")?;
-                let cap_host = cap_path
-                    .to_str()
-                    .ok_or_else(|| anyhow!("ANUBIS_RUN_CAP_PATH: non-UTF8"))?;
-                sync_path_verified(&user, &ip, cap_host, REMOTE_CAP)?;
+                let (cap_key, program_digest) = stage_run_capability_to_guest(
+                    &user,
+                    &ip,
+                    name,
+                    &base,
+                    Some(Path::new(&poc)),
+                    None,
+                    &["process.spawn", "vm.execute"],
+                )?;
                 eprintln!(
                     "[anubis vz] running `anubis run /tmp/anubis-poc.anb --allow-research` in disposable `{name}` \
                      with guest-bound run capability (single-use)"
                 );
                 // `$HOME` so relative `poc_kit/bin/vuln_local` resolves after stage.
+                let env = run_cap_env_fragment(name, &program_digest, &cap_key);
                 let remote = format!(
-                    "cd \"$HOME\" && env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
-                     ANUBIS_ISOLATION=tart-disposable-guest \
-                     ANUBIS_VZ_ENFORCE_RUN_CAP=1 \
-                     ANUBIS_RUN_CAP_PATH={cap} \
-                     ANUBIS_RUN_CAP_KEY={key} \
-                     ANUBIS_VZ_GUEST_ID={gid} \
-                     ANUBIS_PROGRAM_DIGEST={pd} \
-                     ANUBIS_ENGAGEMENT_ID=vz-session \
-                     ANUBIS_ENGAGEMENT_HASH=vz-session-hash \
-                     {runner} run /tmp/anubis-poc.anb --allow-research",
+                    "cd \"$HOME\" && env {env} {runner} run /tmp/anubis-poc.anb --allow-research",
                     runner = shell_single_quote(&runner),
-                    cap = shell_single_quote(REMOTE_CAP),
-                    key = shell_single_quote(&cap_key),
-                    gid = shell_single_quote(name),
-                    pd = shell_single_quote(&program_digest),
                 );
                 ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
             })
@@ -609,12 +626,15 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     &["chmod".into(), "+x".into(), remote_target.clone()],
                 )?;
                 let runner = sync_current_anubis(&user, &ip)?;
-                let (cap_path, cap_key, program_digest) =
-                    mint_and_write_guest_cap(name, &base, host_target, "process.spawn")?;
-                let cap_host = cap_path
-                    .to_str()
-                    .ok_or_else(|| anyhow!("ANUBIS_RUN_CAP_PATH: non-UTF8"))?;
-                sync_path_verified(&user, &ip, cap_host, "/tmp/anubis-run-cap.json")?;
+                let (cap_key, program_digest) = stage_run_capability_to_guest(
+                    &user,
+                    &ip,
+                    name,
+                    &base,
+                    Some(host_target),
+                    None,
+                    &["process.spawn", "vm.execute"],
+                )?;
                 eprintln!(
                     "[anubis vz] fuzzing in disposable `{name}` (`anubis fuzz --target {remote_target} --runs {iterations}`) \
                      with guest-bound run capability"
@@ -905,21 +925,54 @@ fn fuzz_guest_shell_command(
     )
 }
 
-/// Mint a single-use guest-bound capability and stage path+JSON for the disposable guest.
+const REMOTE_RUN_CAP: &str = "/tmp/anubis-run-cap.json";
+
+/// True when a remote command is crash/research/offensive-class and must carry a guest-bound cap.
+fn command_requires_run_capability(command: &[String]) -> bool {
+    let joined = command.join(" ").to_ascii_lowercase();
+    joined.contains("--allow-research")
+        || joined.contains(" allow-research")
+        || joined.contains("anubis fuzz")
+        || joined.contains(" fuzz ")
+        || joined.contains("exploit")
+        || joined.contains("target_run")
+        || joined.contains("agent-generate")
+        || joined.contains(" listen")
+        || joined.ends_with("listen")
+        || joined.contains("task-queue")
+}
+
+/// Mint a single-use guest-bound capability JSON on the host.
+///
+/// `source_path` when set is hashed as both source and program digest; otherwise
+/// `program_digest` must be supplied (e.g. sha of remote command string).
 fn mint_and_write_guest_cap(
     guest_id: &str,
     base: &str,
-    source_path: &Path,
-    effect: &str,
+    source_path: Option<&Path>,
+    program_digest: Option<&str>,
+    effects: &[&str],
 ) -> Result<(PathBuf, String, String)> {
     use rand::RngCore;
     let mut key_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut key_bytes);
     let key = hex::encode(key_bytes);
-    let source_digest = file_sha256_hex(source_path)?;
+    let source_digest = if let Some(p) = source_path {
+        file_sha256_hex(p)?
+    } else {
+        program_digest
+            .unwrap_or("vz-no-source")
+            .to_string()
+    };
+    let program_digest = program_digest
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| source_digest.clone());
     let compiler = std::env::current_exe().context("resolve anubis for capability digests")?;
     let compiler_digest = file_sha256_hex(&compiler)?;
-    let program_digest = source_digest.clone();
+    let mut allowed: Vec<String> = effects.iter().map(|e| (*e).to_string()).collect();
+    if !allowed.iter().any(|e| e == "vm.execute") {
+        allowed.push("vm.execute".into());
+    }
     let cap = crate::offensive::run_capability::mint(
         &key,
         "vz-session",
@@ -931,7 +984,7 @@ fn mint_and_write_guest_cap(
         guest_id,
         base,
         "tart-disposable",
-        vec![effect.into(), "vm.execute".into()],
+        allowed,
         vec![],
         "vz-operator",
         3600,
@@ -941,6 +994,44 @@ fn mint_and_write_guest_cap(
     let path = dir.join("run_capability.json");
     crate::offensive::run_capability::write_cap(&path, &cap)?;
     Ok((path, key, program_digest))
+}
+
+/// Mint + rsync capability into guest; returns (cap_key, program_digest) for env injection.
+fn stage_run_capability_to_guest(
+    user: &str,
+    ip: &str,
+    guest_id: &str,
+    base: &str,
+    source_path: Option<&Path>,
+    program_digest: Option<&str>,
+    effects: &[&str],
+) -> Result<(String, String)> {
+    let (cap_path, cap_key, program_digest) =
+        mint_and_write_guest_cap(guest_id, base, source_path, program_digest, effects)?;
+    let cap_host = cap_path
+        .to_str()
+        .ok_or_else(|| anyhow!("ANUBIS_RUN_CAP_PATH: non-UTF8"))?;
+    sync_path_verified(user, ip, cap_host, REMOTE_RUN_CAP)?;
+    Ok((cap_key, program_digest))
+}
+
+/// Shell env fragment that enforces guest-bound run capability validation.
+fn run_cap_env_fragment(guest_id: &str, program_digest: &str, cap_key: &str) -> String {
+    format!(
+        "ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
+         ANUBIS_ISOLATION=tart-disposable-guest \
+         ANUBIS_VZ_ENFORCE_RUN_CAP=1 \
+         ANUBIS_RUN_CAP_PATH={cap} \
+         ANUBIS_RUN_CAP_KEY={key} \
+         ANUBIS_VZ_GUEST_ID={gid} \
+         ANUBIS_PROGRAM_DIGEST={pd} \
+         ANUBIS_ENGAGEMENT_ID=vz-session \
+         ANUBIS_ENGAGEMENT_HASH=vz-session-hash",
+        cap = shell_single_quote(REMOTE_RUN_CAP),
+        key = shell_single_quote(cap_key),
+        gid = shell_single_quote(guest_id),
+        pd = shell_single_quote(program_digest),
+    )
 }
 
 /// Copy the exact currently-running Anubis binary into the disposable guest. This avoids relying
@@ -1116,6 +1207,76 @@ mod ssh_transport_tests {
         assert!(cmd.contains("ANUBIS_VZ_ENFORCE_RUN_CAP=1"));
         assert!(cmd.contains("ANUBIS_RUN_CAP_PATH=/tmp/anubis-run-cap.json"));
         assert!(!cmd.contains(".anb"));
+    }
+
+    #[test]
+    fn command_requires_run_capability_classifies_research_paths() {
+        assert!(command_requires_run_capability(&[
+            "anubis".into(),
+            "run".into(),
+            "poc.anb".into(),
+            "--allow-research".into(),
+        ]));
+        assert!(command_requires_run_capability(&[
+            "anubis".into(),
+            "fuzz".into(),
+            "--target".into(),
+            "bin".into(),
+        ]));
+        assert!(command_requires_run_capability(&[
+            "anubis".into(),
+            "agent-generate".into(),
+        ]));
+        assert!(command_requires_run_capability(&[
+            "anubis".into(),
+            "listen".into(),
+            "--bind".into(),
+            "127.0.0.1:0".into(),
+        ]));
+        assert!(!command_requires_run_capability(&[
+            "echo".into(),
+            "hello".into(),
+        ]));
+        assert!(!command_requires_run_capability(&[
+            "anubis".into(),
+            "check".into(),
+            "safe.anb".into(),
+        ]));
+    }
+
+    #[test]
+    fn run_cap_env_fragment_enforces_guest_bound_fields() {
+        let env = run_cap_env_fragment("guest-1", "digest-aa", "key-bb");
+        assert!(env.contains("ANUBIS_VZ_ENFORCE_RUN_CAP=1"));
+        assert!(env.contains("ANUBIS_RUN_CAP_PATH='/tmp/anubis-run-cap.json'"));
+        assert!(env.contains("ANUBIS_RUN_CAP_KEY='key-bb'"));
+        assert!(env.contains("ANUBIS_VZ_GUEST_ID='guest-1'"));
+        assert!(env.contains("ANUBIS_PROGRAM_DIGEST='digest-aa'"));
+        assert!(env.contains("ANUBIS_ENGAGEMENT_ID=vz-session"));
+        assert!(env.contains("ANUBIS_VZ_GUEST=1"));
+    }
+
+    #[test]
+    fn mint_and_write_guest_cap_produces_readable_json() {
+        let dir = tempfile::tempdir().unwrap();
+        // Use a real empty file as source so digest is stable.
+        let src = dir.path().join("poc.anb");
+        std::fs::write(&src, b"// lab").unwrap();
+        let (path, key, pd) = mint_and_write_guest_cap(
+            "unit-guest",
+            "anubis-xcode",
+            Some(&src),
+            None,
+            &["process.spawn", "vm.execute"],
+        )
+        .expect("mint");
+        assert!(!key.is_empty());
+        assert_eq!(pd.len(), 64); // sha256 hex
+        let cap = crate::offensive::run_capability::read_cap(&path).expect("read cap");
+        assert_eq!(cap.guest_id, "unit-guest");
+        assert!(cap.allowed_effects.iter().any(|e| e == "vm.execute"));
+        assert!(cap.allowed_effects.iter().any(|e| e == "process.spawn"));
+        assert_eq!(cap.program_digest, pd);
     }
 
     #[test]

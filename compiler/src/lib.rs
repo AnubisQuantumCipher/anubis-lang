@@ -20,6 +20,7 @@ pub use backends::native::lower_to_native;
 pub use backends::run::{compile_native_rust_to_exe, ANUBIS_RUN_CRYPTO_CACHE_TAG};
 pub use evidence::{build_evidence_bundle, EvidenceBundle};
 pub use frontend::{lex, parse, parse_source, Mode, AST};
+pub use middle::research_profile;
 pub use middle::{typecheck, typecheck_ex, SymbolicEngine, TaintPass};
 pub use project::{AnubisManifest, ProjectLayout};
 
