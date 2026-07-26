@@ -104,7 +104,7 @@ CoW, booted, fed the code, and discarded (unless `--keep`):
 
 ```bash
 anubis vz exploit poc.anb --allow-research           # clone → boot → sync → `anubis run --allow-research` → discard
-anubis vz fuzz target.anb --iterations 100000 --allow-research
+anubis vz fuzz poc_kit/bin/vuln_local --iterations 100000 --allow-research   # TARGET is a BINARY, not a .anb
 ```
 
 - Backend: **tart** (Cirrus Labs' Virtualization.framework wrapper) — the same VZ layer the repo's
@@ -169,14 +169,14 @@ This writes `run-summary.json`, `stdout.txt`, `stderr.txt`, `RUN.md`, and
 
 ### Safe check + taint rejection
 ```bash
-cargo run --release -p anubis -- check examples/safe_hello.anb
+cargo run --release -p anubis -- check examples/safe_hello.anubis
 cargo run --release -p anubis -- check examples/taint_reject.anb --evidence --out out/taint_reject
 # expect ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY in diagnostics / bundle
 ```
 
 ### Declassify with policy
 ```bash
-cargo run --release -p anubis -- check examples/declassify_policy_pass.anb --evidence
+cargo run --release -p anubis -- check examples/policy_declassify_report.anb --evidence
 ```
 
 ### Symbolic
