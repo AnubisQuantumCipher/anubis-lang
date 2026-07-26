@@ -14,6 +14,7 @@ pub mod campaign;
 pub mod console;
 pub mod crypto;
 pub mod dns_codec;
+pub mod domain_packs;
 pub mod engagement;
 pub mod exploit;
 pub mod isolation;

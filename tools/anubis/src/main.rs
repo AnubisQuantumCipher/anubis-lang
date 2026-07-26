@@ -328,6 +328,15 @@ enum Commands {
     /// Alias for verify; validates bundle hashes and PASS verdict.
     Validate { bundle: PathBuf },
 
+    /// Security research domain packs (PoC / fuzz / crypto / bounty / emulation).
+    ///
+    /// Host-side catalog, scaffold, and effect allow-list validate — honest
+    /// LAB_REAL / PLAN_ONLY / NOT_IMPLEMENTED labels; no VZ required for list/show.
+    ResearchPack {
+        #[command(subcommand)]
+        action: ResearchPackCmd,
+    },
+
     /// Generate an Ed25519 keypair for signing Proof-Carrying Artifacts.
     Keygen {
         /// Directory to write `signing.key` (private) and `verifying.key` (public).
@@ -1000,6 +1009,40 @@ enum Commands {
     },
 }
 
+/// Security research domain pack actions (host control plane).
+#[derive(Subcommand, Debug)]
+enum ResearchPackCmd {
+    /// List packs with profile + VZ obligation.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one pack (capabilities + honest classifications).
+    Show {
+        /// Pack id: poc | fuzz | crypto_research | bounty | emulation
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write pack_manifest.json + README + checklist under --out.
+    Scaffold {
+        id: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional engagement id stamped into the manifest.
+        #[arg(long)]
+        engagement_id: Option<String>,
+    },
+    /// Fail-closed: proven effects from --source must ⊆ pack default_effects.
+    Validate {
+        id: String,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 enum PackageCmd {
     /// Resolve dependencies and write `Anubis.lock` (pins version + content hash).
@@ -1055,6 +1098,71 @@ enum SelfhostCmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+}
+
+fn run_research_pack_cmd(action: ResearchPackCmd) -> Result<()> {
+    // Host control plane — catalog/scaffold/validate do not execute offensive payloads.
+    match action {
+        ResearchPackCmd::List { json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&offensive::domain_packs::list_json())?
+                );
+            } else {
+                offensive::domain_packs::print_catalog()?;
+            }
+            Ok(())
+        }
+        ResearchPackCmd::Show { id, json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&offensive::domain_packs::show_json(&id)?)?
+                );
+            } else {
+                offensive::domain_packs::print_show(&id)?;
+            }
+            Ok(())
+        }
+        ResearchPackCmd::Scaffold {
+            id,
+            out,
+            engagement_id,
+        } => {
+            let path = offensive::domain_packs::scaffold(
+                &id,
+                &out,
+                engagement_id.as_deref(),
+            )?;
+            println!("scaffolded pack `{}` → {}", id, out.display());
+            println!("manifest: {}", path.display());
+            Ok(())
+        }
+        ResearchPackCmd::Validate { id, source, json } => {
+            let report = offensive::domain_packs::validate_source(&id, &source)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "research-pack validate: pack={} ok={} effects_bounded={}",
+                    report["pack_id"], report["ok"], report["effects_bounded"]
+                );
+                if let Some(arr) = report["proven_effects"].as_array() {
+                    let effects: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                    println!("proven: {}", effects.join(", "));
+                }
+                if let Some(arr) = report["warnings"].as_array() {
+                    for w in arr {
+                        if let Some(s) = w.as_str() {
+                            println!("warning: {s}");
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_selfhost_cmd(action: SelfhostCmd) -> Result<()> {
@@ -1633,6 +1741,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Package { action } => run_package_cmd(action),
         Commands::Trust { action } => run_trust_cmd(action),
+        Commands::ResearchPack { action } => run_research_pack_cmd(action),
         Commands::Vz { action } => vz::run_vz_cmd(action),
         Commands::Doc {
             path,

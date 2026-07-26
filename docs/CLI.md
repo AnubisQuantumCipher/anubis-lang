@@ -270,6 +270,16 @@ anubis evidence-verify <path> [--json] [--pubkey HEX] [--run-cap-key KEY] [--str
 ```
 Honest labels: PCA re-derive `LAB_REAL`; receipt/run-cap MAC `LAB_REAL_HMAC` (not Ed25519).
 
+### Security research domain packs
+```bash
+anubis research-pack list [--json]
+anubis research-pack show poc|fuzz|crypto_research|bounty|emulation [--json]
+anubis research-pack scaffold <id> --out DIR [--engagement-id ID]
+anubis research-pack validate <id> --source program.anb [--json]
+```
+Per-capability honesty: `LAB_REAL` / `LAB_REAL_HMAC` / `PLAN_ONLY` / `PARTIAL` / `NOT_IMPLEMENTED`.  
+Validate fails closed if proven effects are outside the pack allow-list.
+
 ## Config (portable)
 - `--metal-reference PATH`
 - `ANUBIS_RISC0_METAL_REFERENCE=PATH`

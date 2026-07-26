@@ -70,6 +70,7 @@ source → AST → typed HIR → effect IR → contracts/SMT
 | **Shared `ProvenEffectSet` IR** (checker → confine + entitlements + VZ run cap) | `research_profile` + `confinement` + `vz.rs` | LAB_REAL |
 | Full Security Research syntax | language | NOT_IMPLEMENTED |
 | **Independent portable evidence verifier** | `anubis evidence-verify` | LAB_REAL (host offline; multi-artifact) |
+| **Domain packs** (PoC/fuzz/crypto/bounty/emulation) | `anubis research-pack` | LAB_REAL catalog + scaffold; per-cap honesty |
 
 ## Non-goals
 
@@ -84,7 +85,7 @@ source → AST → typed HIR → effect IR → contracts/SMT
 2. ~~HIR types for Engagement/Scope + constructors that check engagement~~ **done** (typed stubs; no parser).  
 3. ~~Effect IR shared between checker and VZ confine~~ **done**: `ProvenEffectSet` from checker fixpoint; confinement emits `research_effects`; VZ mint from `.anb` uses same IR (`net.send`→`net.connect`, `shell`→`process.spawn`).  
 4. ~~Independent portable evidence verifier CLI~~ **done**: `anubis evidence-verify <path> [--json] [--pubkey] [--run-cap-key] [--strict]` — PCA, engagement hash, receipt HMAC, run-cap MAC, confinement re-derive; host-side, no VZ.  
-5. Domain packs (PoC/fuzz/crypto/bounty/emulation) with honest classifications.
+5. ~~Domain packs (PoC/fuzz/crypto/bounty/emulation)~~ **done**: `anubis research-pack list|show|scaffold|validate` — per-capability LAB_REAL / PLAN_ONLY / NOT_IMPLEMENTED; effect allow-list validate against `ProvenEffectSet`.
 
 ## Honesty rule
 
