@@ -1,19 +1,23 @@
 name: anubis-ci
 
-# The single source of truth for "is this green?" is the SAME front door a
-# stranger runs on a fresh clone: scripts/audit_a_plus.sh -> scripts/audit_unified.sh
-# (15 fail-closed gates G1-G15, non-zero exit on any FAIL). CI runs THAT real
-# suite, not a hand-picked subset of cargo commands, so "green in CI" ==
-# "green on a fresh clone" rather than "green on a weaker check".
+# The default full seal remains `scripts/audit_a_plus.sh`: 15/15, no failures,
+# skips, or external gates. A stock GitHub macOS runner cannot provide nested
+# Apple virtualization, the canonical anubis-xcode Tart image, or the operator
+# SSH key, so it must not pretend to certify G9.
 #
-# The prove gate (G10) cold-VERIFIES the committed ZK receipt fixture using only
-# the built binary — it never runs the risc0 prover or Metal — so it executes on
-# a stock GitHub runner. That makes CI a public, off-the-author's-desk witness
-# that the crown-jewel cold-verify reproduces.
-on: [push, pull_request]
+# Push/PR CI runs the explicit `hosted` profile: 14 host-verifiable gates plus
+# G9=EXTERNAL, with G14 limited to its non-executing host isolation witness,
+# verdict HOSTED_PASS. A manually dispatched job on a dedicated Tart/VZ runner
+# executes the unchanged full front door and is the only job in this workflow
+# allowed to claim the full G9/G14 execution seal.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
-  sealed-gate-suite:
+  hosted-gate-witness:
+    name: hosted-gate-witness
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -45,13 +49,36 @@ jobs:
           Z3DIR="$(find . -maxdepth 1 -type d -name 'z3-4.15.4*' | head -1)"
           echo "$PWD/$Z3DIR/bin" >> "$GITHUB_PATH"
           "$PWD/$Z3DIR/bin/z3" --version
-      - name: Run the full sealed gate suite (the advertised front door)
-        run: bash scripts/audit_a_plus.sh --out out/ci_gate
-      - name: Upload gate report
+      - name: Run host-verifiable gates with an explicit external VZ boundary
+        run: bash scripts/audit_unified.sh --profile hosted --out out/ci_gate
+      - name: Upload hosted gate report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gate-report
-          # Upload the whole gate dir — including the per-gate gN.log detail — so a
-          # red gate is diagnosable from the artifact without re-running locally.
+          name: hosted-gate-report
           path: out/ci_gate/
+
+  sealed-vz-gate-suite:
+    name: sealed-vz-gate-suite
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, macOS, ARM64, tart-vz]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-10
+          components: rustfmt, clippy
+      - name: Require the canonical Tart/VZ environment
+        run: |
+          command -v tart
+          test -f "$HOME/.ssh/tart_anubis"
+          tart list
+      - name: Run the full 15-gate sealed front door
+        run: bash scripts/audit_a_plus.sh --out out/ci_sealed_vz
+      - name: Upload full sealed gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sealed-vz-gate-report
+          path: out/ci_sealed_vz/

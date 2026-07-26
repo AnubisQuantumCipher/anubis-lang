@@ -38,6 +38,10 @@ run_in_guest() {
   local keep="${ANUBIS_OFFENSIVE_GATE_KEEP_GUEST:-0}"
   local guest="anubis-offensive-gate-$$"
   local guest_out="out/offensive_gate_guest"
+  local host_bin="$ROOT/target/release/anubis"
+  local binary_sha=""
+  local guest_sha_line=""
+  local guest_sha=""
   local ip=""
   local rc=0
   local pull_rc=0
@@ -66,6 +70,11 @@ run_in_guest() {
     echo "PREREQ_MISSING: tart ssh key missing at $key" >&2
     return 2
   fi
+  if [[ ! -x "$host_bin" ]]; then
+    echo "PREREQ_MISSING: build target/release/anubis before the guest gate" >&2
+    return 2
+  fi
+  binary_sha="$(shasum -a 256 "$host_bin" | awk '{print $1}')"
 
   trap '
     if [[ "'"$keep"'" == "1" ]]; then
@@ -93,9 +102,22 @@ run_in_guest() {
     return 1
   }
 
-  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --delete \
-    --exclude 'target/' --exclude 'out/' --exclude '.DS_Store' \
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --delete --no-devices --no-specials \
+    --exclude 'target/' --exclude 'out/' --exclude 'implementer/a_plus_audit_run/' \
+    --exclude '.DS_Store' \
     "$ROOT/" "${user_}@${ip}:anubis-lang/"
+  ssh "${sshopts[@]}" "${user_}@${ip}" 'mkdir -p "$HOME/anubis-lang/target/release"'
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -a \
+    "$host_bin" "${user_}@${ip}:anubis-lang/target/release/anubis"
+  guest_sha_line="$(
+    ssh "${sshopts[@]}" "${user_}@${ip}" \
+      'shasum -a 256 "$HOME/anubis-lang/target/release/anubis"'
+  )"
+  guest_sha="${guest_sha_line%% *}"
+  if [[ "$guest_sha" != "$binary_sha" ]]; then
+    echo "FAIL: synced binary hash mismatch host=$binary_sha guest=$guest_sha" >&2
+    return 1
+  fi
 
   set +e
   ssh "${sshopts[@]}" "${user_}@${ip}" 'bash -s' >"$log_path" 2>&1 <<'REMOTE'
@@ -108,9 +130,9 @@ export CARGO_INCREMENTAL=0
 export RUST_MIN_STACK=67108864
 ulimit -n 65536 2>/dev/null || true
 cd "$HOME/anubis-lang"
-# Always rebuild: a leftover target/release/anubis from a prior guest hop can
-# pre-date T9 CLI surfaces and false-fail the 34-check gate (unrecognized subcommands).
-cargo build --release -p anubis
+# The fresh host G4 binary is synced into this disposable guest and hash-checked before this hop.
+# Compilation is host-safe; all offensive execution below remains guest-only.
+test -x target/release/anubis
 export ANUBIS_VZ_GUEST=1
 export ANUBIS_OFFENSIVE_GATE_IN_GUEST=1
 export ANUBIS_ISOLATION=tart-disposable-guest
@@ -123,7 +145,7 @@ REMOTE
   cat "$log_path"
 
   set +e
-  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH \
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --no-devices --no-specials \
     "${user_}@${ip}:anubis-lang/${guest_out%/}/" "$out/"
   pull_rc=$?
   set -e
@@ -137,7 +159,9 @@ REMOTE
   "cpu": $cpu,
   "memory_mib": $mem,
   "guest_log": "$(basename "$log_path")",
-  "guest_out": "$guest_out"
+  "guest_out": "$guest_out",
+  "binary_transport": "host-built-arm64-hash-verified",
+  "binary_sha256": "$binary_sha"
 }
 EOF
 

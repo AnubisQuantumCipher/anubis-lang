@@ -1,0 +1,7 @@
+step	status	evidence
+Phase 0 diagnostics	PASS	initial session diagnostics and scoped branch checks
+Safe Mode trust-spine implementation	PASS	commit 5fb7b67f2391ef6d86640e38575aaa4368868fb7
+Hosted runner boundary repair	PASS	CI_RUNNER_BOUNDARY_REPAIR.md
+Exact-tree hosted witness	PASS	../../20260726T043000Z/hosted_ci_profile/gate_report.json
+Exact-tree full VZ seal	PASS	gate_report.json
+Independent A15 reproduction	PENDING	PR remains draft

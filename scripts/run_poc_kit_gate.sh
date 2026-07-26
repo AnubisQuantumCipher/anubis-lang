@@ -20,6 +20,10 @@ run_in_disposable_guest() {
   local user_="${ANUBIS_VM_USER:-admin}"
   local guest="anubis-poc-kit-gate-$$"
   local guest_out="out/poc_kit_guest"
+  local host_bin="$ROOT/target/release/anubis"
+  local binary_sha=""
+  local guest_sha_line=""
+  local guest_sha=""
   local ip=""
   local rc=0
   local pull_rc=0
@@ -47,6 +51,11 @@ run_in_disposable_guest() {
     echo "ANUBIS_POC_KIT_VZ_REQUIRED: SSH key is missing at $key" >&2
     return 1
   }
+  [[ -x "$host_bin" ]] || {
+    echo "ANUBIS_POC_KIT_HOST_BINARY_REQUIRED: build target/release/anubis first" >&2
+    return 1
+  }
+  binary_sha="$(shasum -a 256 "$host_bin" | awk '{print $1}')"
 
   # Guest name must be captured for EXIT trap: locals are out of scope when the
   # trap fires after the function returns (set -u → "guest: unbound variable").
@@ -78,9 +87,22 @@ run_in_disposable_guest() {
     return 1
   }
 
-  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH \
-    --exclude 'target/' --exclude 'out/' --exclude '.DS_Store' \
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --no-devices --no-specials \
+    --exclude 'target/' --exclude 'out/' --exclude 'implementer/a_plus_audit_run/' \
+    --exclude '.DS_Store' \
     "$ROOT/" "${user_}@${ip}:anubis-lang/"
+  ssh "${sshopts[@]}" "${user_}@${ip}" 'mkdir -p "$HOME/anubis-lang/target/release"'
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -a \
+    "$host_bin" "${user_}@${ip}:anubis-lang/target/release/anubis"
+  guest_sha_line="$(
+    ssh "${sshopts[@]}" "${user_}@${ip}" \
+      'shasum -a 256 "$HOME/anubis-lang/target/release/anubis"'
+  )"
+  guest_sha="${guest_sha_line%% *}"
+  [[ "$guest_sha" == "$binary_sha" ]] || {
+    echo "ANUBIS_POC_KIT_BINARY_MISMATCH: host=$binary_sha guest=$guest_sha" >&2
+    return 1
+  }
 
   set +e
   ssh "${sshopts[@]}" "${user_}@${ip}" 'bash -s' >"$out/guest_stdout.log" 2>&1 <<'REMOTE'
@@ -91,7 +113,9 @@ export CARGO_BUILD_JOBS="${ANUBIS_POC_KIT_BUILD_JOBS:-4}"
 export CARGO_INCREMENTAL=0
 export RUST_MIN_STACK=67108864
 cd "$HOME/anubis-lang"
-cargo build --release -p anubis
+# The host G4 binary is synced into this disposable guest and hash-checked before this hop.
+# Compilation is host-safe; all research/crash-capable execution below remains guest-only.
+test -x target/release/anubis
 export ANUBIS_VZ_GUEST=1
 export ANUBIS_OFFENSIVE_GATE_IN_GUEST=1
 export ANUBIS_POC_KIT_IN_GUEST=1
@@ -104,7 +128,7 @@ REMOTE
 
   cat "$out/guest_stdout.log"
   set +e
-  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH \
+  RSYNC_RSH="ssh ${sshopts[*]}" rsync -aH --no-devices --no-specials \
     "${user_}@${ip}:anubis-lang/${guest_out%/}/" "$out/"
   pull_rc=$?
   set -e
@@ -117,6 +141,8 @@ json.dump({
     "guest": "$guest",
     "ip": "$ip",
     "guest_out": "$guest_out",
+    "binary_transport": "host-built-arm64-hash-verified",
+    "binary_sha256": "$binary_sha",
 }, open("$out/isolation.json", "w"), indent=2)
 PY
 

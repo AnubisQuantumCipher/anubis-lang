@@ -66,8 +66,9 @@ done
 echo "      guest ip=$IP"
 
 echo "[3/6] rsync host working tree -> guest (delta; excl target/ out/)"
-RSYNC_RSH="ssh ${SSHOPTS[*]}" rsync -aH --delete \
-  --exclude 'target/' --exclude 'out/' --exclude '.DS_Store' \
+RSYNC_RSH="ssh ${SSHOPTS[*]}" rsync -aH --delete --no-devices --no-specials \
+  --exclude 'target/' --exclude 'out/' --exclude 'implementer/a_plus_audit_run/' \
+  --exclude '.DS_Store' \
   "$REPO/" "${USER_}@${IP}:anubis-lang/"
 
 echo "[4/6] run full gate battery in guest (this is the heavy part — in the capped VM)"

@@ -100,6 +100,9 @@ anubis fuzz --target ./my_local_parser --runs 1000 --max-len 256 --seed 1 --out 
 5. **Isolation (mandatory, capability-preserving):**
    - Packing, the gold crash PoC, and mutation fuzz retain their implementation and evidence, but
      crash-capable execution runs only inside a disposable Apple VZ guest.
+   - The fresh host-safe release binary is synced to the same-architecture guest and its SHA-256 is
+     recomputed there. A mismatch fails before any research execution; the digest is recorded in
+     `isolation.json`.
    - Official direct lanes:
      `anubis vz exploit --allow-research --base anubis-xcode examples/security/poc_local_overflow.anb`  
      `anubis vz fuzz --allow-research --base anubis-xcode poc_kit/bin/vuln_local`

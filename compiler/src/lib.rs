@@ -6069,17 +6069,39 @@ fn bad() {
     }
 
     #[test]
-    fn unified_gate_suite_is_fail_closed() {
-        // The one command a stranger runs must exit non-zero on any gate FAIL — a green
-        // exit over a red gate is the category error the whole project exists to prevent.
+    fn unified_gate_profiles_have_honest_exit_semantics() {
+        // The full profile may say PASS only at an exact 15/15 seal. The hosted profile has a
+        // different, explicit verdict because it cannot execute G9 without Tart/VZ. Neither may
+        // turn a red gate into a green claim.
         let script = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/audit_unified.sh"),
         )
         .expect("scripts/audit_unified.sh must exist");
-        assert!(
-            script.contains("fail -gt 0"),
-            "unified suite verdict must key off the failing-gate count"
-        );
+        for exact_full_marker in [
+            "pass -eq 15",
+            "fail -eq 0",
+            "skip -eq 0",
+            "external -eq 0",
+            "total -eq 15",
+        ] {
+            assert!(
+                script.contains(exact_full_marker),
+                "full seal lost exact-count guard: {exact_full_marker}"
+            );
+        }
+        for hosted_marker in [
+            r#"VERDICT="HOSTED_PASS""#,
+            "pass -eq 14",
+            "external -eq 1",
+            r#"gate "G9_poc_kit" "EXTERNAL""#,
+            "ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1",
+            "full 34-check battery requires VZ",
+        ] {
+            assert!(
+                script.contains(hosted_marker),
+                "hosted witness lost its explicit boundary: {hosted_marker}"
+            );
+        }
         assert!(
             script.contains(r#"VERDICT="FAIL""#),
             "unified suite must be able to reach a FAIL verdict"
@@ -6104,6 +6126,8 @@ fn bad() {
             "tart-disposable-guest",
             "anubis-xcode",
             "ANUBIS_POC_KIT_VZ_REQUIRED",
+            "--no-specials",
+            "implementer/a_plus_audit_run/",
             "tart delete",
         ] {
             assert!(
@@ -6123,23 +6147,62 @@ fn bad() {
     }
 
     #[test]
-    fn ci_workflow_enforces_the_real_gate_suite_not_a_weak_subset() {
-        // Regression guard for the "CI green over a red gate" seam: CI must enforce the
-        // SAME front door a stranger runs on a fresh clone (audit_a_plus.sh -> the 15-gate
-        // audit_unified.sh), not a hand-picked handful of cargo commands. Before this was
-        // fixed, CI ran `cargo test` (missing --all, so the tools crate's tests never ran)
-        // and never invoked gates G5-G15 at all — a push could be green in CI while the
-        // language/PCA/prove/offensive gates were red.
+    fn guest_gates_sync_hash_verified_binary_without_network_rebuild() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for relative in [
+            "scripts/run_poc_kit_gate.sh",
+            "scripts/run_offensive_platform_gate.sh",
+        ] {
+            let script = std::fs::read_to_string(root.join(relative))
+                .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+            for marker in [
+                "binary_sha256",
+                "host-built-arm64-hash-verified",
+                "shasum -a 256",
+            ] {
+                assert!(
+                    script.contains(marker),
+                    "{relative} lost hash-verified binary transport marker {marker:?}"
+                );
+            }
+            assert!(
+                !script
+                    .lines()
+                    .any(|line| line.trim() == "cargo build --release -p anubis"),
+                "{relative} must not make guest execution depend on crates.io"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_workflow_separates_hosted_witness_from_full_vz_seal() {
+        // A stock GitHub runner cannot execute the Tart/VZ gate. Push/PR CI must say
+        // HOSTED_PASS with G9 external, while the separately dispatched self-hosted job owns
+        // the unchanged full 15-gate front door.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let ci = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))
             .expect(".github/workflows/ci.yml must exist");
-        // (1) CI must invoke the real front door.
-        assert!(
-            ci.contains("scripts/audit_a_plus.sh") || ci.contains("scripts/audit_unified.sh"),
-            "CI must run the real sealed gate suite (audit_a_plus.sh / audit_unified.sh), not a weak subset"
-        );
-        // (2) The suite CI points at must actually be the full 15-gate runner — guard against
-        // CI running a runner that has been hollowed out to fewer gates.
+        for hosted_marker in [
+            "hosted-gate-witness",
+            "scripts/audit_unified.sh --profile hosted",
+            "hosted-gate-report",
+        ] {
+            assert!(
+                ci.contains(hosted_marker),
+                "CI lost explicit hosted-witness marker {hosted_marker:?}"
+            );
+        }
+        for full_marker in [
+            "sealed-vz-gate-suite",
+            "self-hosted, macOS, ARM64, tart-vz",
+            "scripts/audit_a_plus.sh",
+            "sealed-vz-gate-report",
+        ] {
+            assert!(
+                ci.contains(full_marker),
+                "CI lost dedicated full-seal marker {full_marker:?}"
+            );
+        }
         let runner = std::fs::read_to_string(root.join("scripts/audit_unified.sh"))
             .expect("scripts/audit_unified.sh must exist");
         for g in 1..=15 {

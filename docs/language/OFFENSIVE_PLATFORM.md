@@ -14,6 +14,11 @@ packing, crash, and mutation capabilities, but crash-capable execution is now ma
 same disposable VZ/tart boundary. The host orchestrates and collects evidence; it is not a fallback
 runner.
 
+The host-safe release build is copied into each disposable Apple-silicon guest and SHA-256 checked
+before execution. The recorded host/guest digest must match. This removes guest crates.io
+availability from the trust path without moving any research, crash, or offensive execution onto
+the host.
+
 | Host allowed | VZ guest required |
 |---|---|
 | engage-init / status, doctor, catalogs, plans | **listen**, agent-generate, task-queue |

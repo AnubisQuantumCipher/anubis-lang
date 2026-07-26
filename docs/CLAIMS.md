@@ -43,7 +43,7 @@ or (d) **not claimed**.
 | In-repo package / PCA ecosystem | package gate history; `import` + evidence deps | Public package registry **not claimed** |
 | Third-party / multi-party reproduction | Phase 9 witness docs: [`phase9_independent_witness/`](language/phase9_independent_witness/) | Two recorded strangers + hashes; not infinite multi-party |
 | DDC toolchain diversity | DDC gate history 34/34 + Phase 9 hashes | Residual: same-author C sources (not TT-total) |
-| Hosted CI front door (15-gate, no Metal prove) | `.github/workflows/ci.yml` on `macos-latest` | Metal prove not in hosted CI |
+| GitHub hosted witness | `scripts/audit_unified.sh --profile hosted` → 14 host-verifiable gates plus `G9=EXTERNAL`, G14 non-executing host isolation witness, verdict `HOSTED_PASS` | Not a full seal. Only default `audit_a_plus.sh` on the dedicated Tart/VZ runner may claim G9 PoC execution and the full G14 34-check battery |
 | A+ front door (2026-07-24 A15 re-seal) | **sealed:** `out/a_plus_a15_frontdoor_20260724-154145/gate_report.json` → pass=15 fail=0 skip=0; G14 VZ **34/34** tart guest | Re-run `bash scripts/audit_a_plus.sh` for a new seal date |
 | A+ hostile audit package | **sealed:** `implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md` + STEP_STATUS | Independent of freestanding maturity adjectives |
 | Lean formal core | **re-run 2026-07-24:** `bash scripts/run_formal_gate.sh` → `FORMAL_GATE: PASS` | Lean 4.32.0; no Mathlib |

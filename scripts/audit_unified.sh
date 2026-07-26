@@ -5,7 +5,16 @@
 # A single command that runs EVERY gate. A stranger on a fresh clone can run
 # this and receive a clean pass (or a precise, honest failure) on ALL gates.
 #
-# Usage: bash scripts/audit_unified.sh [--out DIR]
+# Usage:
+#   bash scripts/audit_unified.sh [--out DIR]
+#   bash scripts/audit_unified.sh --profile hosted [--out DIR]
+#
+# The default `full` profile executes all 15 gates and passes only at 15/15 with
+# zero failures, skips, or external gates. The `hosted` profile exists for
+# stock GitHub macOS runners, which cannot provide nested Apple virtualization
+# or a Tart golden image. It runs every host-verifiable gate, marks G9
+# `EXTERNAL`, pins G14 to its non-executing host isolation witness, and emits
+# `HOSTED_PASS` rather than pretending to be a full seal.
 #
 # Gates:
 #   G1  cargo fmt --check
@@ -31,10 +40,38 @@ set -uo pipefail
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="out/unified_gate/${STAMP}"
-if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then OUT="$2"; fi
+PROFILE="full"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out)
+      if [[ -z "${2:-}" ]]; then
+        echo "ANUBIS_AUDIT_ARGUMENT: --out requires a directory" >&2
+        exit 2
+      fi
+      OUT="$2"
+      shift 2
+      ;;
+    --profile)
+      if [[ -z "${2:-}" ]]; then
+        echo "ANUBIS_AUDIT_ARGUMENT: --profile requires full or hosted" >&2
+        exit 2
+      fi
+      PROFILE="$2"
+      shift 2
+      ;;
+    *)
+      echo "ANUBIS_AUDIT_ARGUMENT: unknown argument '$1'" >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ "$PROFILE" != "full" && "$PROFILE" != "hosted" ]]; then
+  echo "ANUBIS_AUDIT_ARGUMENT: unsupported profile '$PROFILE' (expected full or hosted)" >&2
+  exit 2
+fi
 mkdir -p "$OUT"
 
-pass=0; fail=0; skip=0; total=0
+pass=0; fail=0; skip=0; external=0; total=0
 REPORT="$OUT/gate_report.json"
 LOG="$OUT/gate_log.txt"
 GATE_RESULTS=()
@@ -46,6 +83,8 @@ gate() {
     pass=$((pass+1))
   elif [[ "$status" == "SKIP" ]]; then
     skip=$((skip+1))
+  elif [[ "$status" == "EXTERNAL" ]]; then
+    external=$((external+1))
   else
     fail=$((fail+1))
   fi
@@ -55,6 +94,7 @@ gate() {
 
 echo "=== ANUBIS UNIFIED GATE SUITE ===" | tee "$LOG"
 echo "Timestamp: $STAMP" | tee -a "$LOG"
+echo "Profile: $PROFILE" | tee -a "$LOG"
 echo "Working directory: $(pwd)" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
@@ -96,10 +136,10 @@ if [[ ! -x "$BIN" ]]; then
   # Write partial report and exit
   JOINED=$(IFS=,; echo "${GATE_RESULTS[*]}")
   cat > "$REPORT" <<ENDJSON
-{"timestamp":"$STAMP","pass":$pass,"fail":$fail,"skip":$skip,"total":$total,"verdict":"FAIL","gates":[$JOINED]}
+{"timestamp":"$STAMP","profile":"$PROFILE","pass":$pass,"fail":$fail,"skip":$skip,"external":$external,"total":$total,"verdict":"FAIL","gates":[$JOINED]}
 ENDJSON
   echo ""
-  echo "Overall: FAIL ($pass/$total passed, $fail failed, $skip skipped)"
+  echo "Overall: FAIL ($pass/$total passed, $fail failed, $skip skipped, $external external)"
   exit 1
 fi
 
@@ -136,11 +176,21 @@ else
 fi
 
 # ── G9: PoC kit gate ──
-if bash scripts/run_poc_kit_gate.sh --out "$OUT/g9_poc_kit" >"$OUT/g9_poc_kit.log" 2>&1; then
-  PK_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$OUT/g9_poc_kit.log" || echo "")
-  gate "G9_poc_kit" "PASS" "$PK_PASS"
+if [[ "$PROFILE" == "hosted" ]]; then
+  {
+    echo "ANUBIS_POC_KIT_EXTERNAL_VZ_REQUIRED"
+    echo "Stock hosted macOS runners cannot supply nested Apple virtualization,"
+    echo "the canonical anubis-xcode Tart image, or the operator SSH key."
+    echo "Run the default full profile on the dedicated Tart/VZ runner."
+  } >"$OUT/g9_poc_kit.log"
+  gate "G9_poc_kit" "EXTERNAL" "requires dedicated Tart/VZ runner; not executed by hosted profile"
 else
-  gate "G9_poc_kit" "FAIL" "PoC kit failures (see g9_poc_kit.log)"
+  if bash scripts/run_poc_kit_gate.sh --out "$OUT/g9_poc_kit" >"$OUT/g9_poc_kit.log" 2>&1; then
+    PK_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$OUT/g9_poc_kit.log" || echo "")
+    gate "G9_poc_kit" "PASS" "$PK_PASS"
+  else
+    gate "G9_poc_kit" "FAIL" "PoC kit failures (see g9_poc_kit.log)"
+  fi
 fi
 
 # ── G10: Prove gate (ZK receipt binding + cold verify) ──
@@ -177,9 +227,18 @@ else
 fi
 
 # ── G14: Offensive platform gate (T1-T7) ──
-if bash scripts/run_offensive_platform_gate.sh --out "$OUT/g14_offensive" >"$OUT/g14_offensive.log" 2>&1; then
+if [[ "$PROFILE" == "hosted" ]]; then
+  OFFENSIVE_GATE_ENV=(env ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1)
+else
+  OFFENSIVE_GATE_ENV=(env)
+fi
+if "${OFFENSIVE_GATE_ENV[@]}" bash scripts/run_offensive_platform_gate.sh --out "$OUT/g14_offensive" >"$OUT/g14_offensive.log" 2>&1; then
   OF_PASS=$(grep -oE 'Overall: PASS \([0-9]+/[0-9]+\)' "$OUT/g14_offensive.log" || echo "")
-  gate "G14_offensive" "PASS" "$OF_PASS"
+  if [[ "$PROFILE" == "hosted" ]]; then
+    gate "G14_offensive" "PASS" "$OF_PASS host-isolation-witness (full 34-check battery requires VZ)"
+  else
+    gate "G14_offensive" "PASS" "$OF_PASS"
+  fi
 else
   gate "G14_offensive" "FAIL" "offensive gate failures (see g14_offensive.log)"
 fi
@@ -213,15 +272,21 @@ fi
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
 
-VERDICT="PASS"
-if [[ $fail -gt 0 ]]; then VERDICT="FAIL"; fi
+VERDICT="FAIL"
+if [[ "$PROFILE" == "full" ]]; then
+  if [[ $pass -eq 15 && $fail -eq 0 && $skip -eq 0 && $external -eq 0 && $total -eq 15 ]]; then
+    VERDICT="PASS"
+  fi
+elif [[ $pass -eq 14 && $fail -eq 0 && $skip -eq 0 && $external -eq 1 && $total -eq 15 ]]; then
+  VERDICT="HOSTED_PASS"
+fi
 
 JOINED=$(IFS=,; echo "${GATE_RESULTS[*]}")
 cat > "$REPORT" <<ENDJSON
-{"timestamp":"$STAMP","pass":$pass,"fail":$fail,"skip":$skip,"total":$total,"verdict":"$VERDICT","gates":[$JOINED]}
+{"timestamp":"$STAMP","profile":"$PROFILE","pass":$pass,"fail":$fail,"skip":$skip,"external":$external,"total":$total,"verdict":"$VERDICT","gates":[$JOINED]}
 ENDJSON
 
-echo "Overall: $VERDICT ($pass/$total passed, $fail failed, $skip skipped)" | tee -a "$LOG"
+echo "Overall: $VERDICT ($pass/$total passed, $fail failed, $skip skipped, $external external)" | tee -a "$LOG"
 echo "Report: $REPORT" | tee -a "$LOG"
 echo "Log: $LOG" | tee -a "$LOG"
 

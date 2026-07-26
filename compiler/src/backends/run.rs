@@ -4677,12 +4677,46 @@ pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) 
     std::fs::write(dir.join("src/main.rs"), rust_source)?;
 
     let target_dir = anubis_run_shared_target_dir();
-    let build = std::process::Command::new("cargo")
-        .args(["build", "--release", "--quiet"])
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()
-        .map_err(|e| anyhow!("cargo spawn failed: {}", e))?;
+    let cargo_build = |offline: bool| -> Result<std::process::Output> {
+        let mut command = std::process::Command::new("cargo");
+        command.args(["build", "--release", "--quiet"]);
+        if offline {
+            command.arg("--offline");
+        }
+        command
+            .current_dir(&dir)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .output()
+            .map_err(|e| anyhow!("cargo spawn failed: {}", e))
+    };
+
+    // Generated native projects use the audited dependency set already populated by the Anubis
+    // build and the shared run cache. Prefer that cache so a transient registry/DNS outage cannot
+    // break an otherwise reproducible Safe run. A fresh machine may have an incomplete cache, so
+    // retry online unless the operator explicitly required Cargo offline mode.
+    let operator_forced_offline = std::env::var("CARGO_NET_OFFLINE")
+        .ok()
+        .is_some_and(|value| !matches!(value.as_str(), "" | "0" | "false" | "FALSE"));
+    let offline_build = cargo_build(true)?;
+    let build = if offline_build.status.success() || operator_forced_offline {
+        offline_build
+    } else {
+        let online_build = cargo_build(false)?;
+        if online_build.status.success() {
+            online_build
+        } else {
+            let offline_stderr = String::from_utf8_lossy(&offline_build.stderr);
+            let online_stderr = String::from_utf8_lossy(&online_build.stderr);
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(anyhow!(
+                "ANUBIS_UNSUPPORTED_NATIVE_LOWERING: cargo build failed (audited crypto deps):\n\
+                 offline cache attempt:\n{}\n\
+                 online fallback attempt:\n{}",
+                offline_stderr,
+                online_stderr
+            ));
+        }
+    };
     if !build.status.success() {
         let stderr = String::from_utf8_lossy(&build.stderr).to_string();
         let _ = std::fs::remove_dir_all(&dir);
