@@ -3140,9 +3140,16 @@ fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
         "ct_eq" | "constant_time_eq" => fixed("anubis_ct_eq", callee, args, 2),
         "hkdf_sha256" => fixed("anubis_hkdf_sha256", callee, args, 4),
         "domain_hash" => fixed("anubis_domain_hash", callee, args, 2),
+        "tuple_hash" => fixed("anubis_tuple_hash", callee, args, 2),
         "random_bytes" => fixed("anubis_random_bytes", callee, args, 1),
+        "aead_nonce_from_counter" => fixed("anubis_aead_nonce_from_counter", callee, args, 1),
         "aead_seal" | "chacha20_poly1305_seal" => fixed("anubis_aead_seal", callee, args, 4),
         "aead_open" | "chacha20_poly1305_open" => fixed("anubis_aead_open", callee, args, 4),
+        "x25519_keygen" => fixed("anubis_x25519_keygen", callee, args, 0),
+        "x25519_public_key" => fixed("anubis_x25519_public_key", callee, args, 1),
+        "x25519_shared" => fixed("anubis_x25519_shared", callee, args, 2),
+        "hybrid_seal" => fixed("anubis_hybrid_seal", callee, args, 3),
+        "hybrid_open" => fixed("anubis_hybrid_open", callee, args, 5),
         // Password hashing (RWC: Argon2id preferred; PBKDF2-HMAC-SHA256 acceptable with high iters)
         "pbkdf2_hmac_sha256" => fixed("anubis_pbkdf2_hmac_sha256", callee, args, 4),
         "argon2id_hash" => fixed("anubis_argon2id_hash", callee, args, 6),
@@ -4502,6 +4509,7 @@ pbkdf2 = {{ version = "0.12", default-features = false, features = ["hmac"] }}
 getrandom = "0.2"
 subtle = "2"
 ed25519-dalek = {{ version = "2", features = ["std", "rand_core"] }}
+x25519-dalek = {{ version = "2", features = ["static_secrets"] }}
 
 [profile.release]
 opt-level = 2

@@ -1,0 +1,17 @@
+// Real-World Cryptography (Wong) Ch5–6: hybrid envelope on Anubis.
+// Host-only: x25519-dalek + ChaCha20-Poly1305 + HKDF (audited crates).
+// Run: anubis run examples/crypto/rwc_hybrid_envelope.anb
+import std.crypto;
+
+fn main() {
+    let pair = crypto::ecdh_keygen();
+    let sk = pair[0];
+    let pk = pair[1];
+    let aad = "rwc-demo|v1|to=self";
+    let env = crypto::hybrid_encrypt(pk, aad, "classified payload");
+    // env: [ephemeral_public, nonce, ciphertext||tag]
+    let pt = crypto::hybrid_decrypt(sk, env[0], aad, env[1], env[2]);
+    // Wrong AAD must fail closed (panic) if uncommented:
+    // let _ = crypto::hybrid_decrypt(sk, env[0], "tampered-aad", env[1], env[2]);
+    print(crypto::bytes_hex(pt));
+}

@@ -1,5 +1,7 @@
 # Anubis Cryptography Surface (RWC / Shannon / PQ-aware)
 
+**Full chapter map:** [`RWC_LANGUAGE_MAP.md`](RWC_LANGUAGE_MAP.md) (David Wong, *Real-World Cryptography*).
+
 **Humility first (RWC Ch1.8 / Ch16):** this document and the Anubis crypto APIs teach
 *correct use of boring primitives*. They do not make you a protocol designer. Do not invent
 AEADs, ratchets, or “simpler Noise.” Prefer standards + review.
@@ -154,9 +156,14 @@ Symmetric surface (ChaCha20-Poly1305, HMAC-SHA-256, Argon2id) remains relevant u
 | password_hash / verify | LOCKED | Argon2id default encoding, CT verify |
 | password_hash_phc | LOCKED | standard PHC via argon2 PasswordHasher |
 | Ed25519 sign/verify | LOCKED | crate `ed25519-dalek` (host only) |
+| X25519 ECDH | LOCKED | crate `x25519-dalek` (host only) |
+| Hybrid envelope (ECIES spirit) | LOCKED | ephemeral X25519 + HKDF + ChaCha20-Poly1305 |
+| Tuple-style multi-part hash | LOCKED | `tuple_hash` / `crypto::commit_parts` |
+| Counter AEAD nonce | LOCKED | `aead_nonce_from_counter` (caller uniqueness) |
 | Fail-closed byte lists | LOCKED | `ANUBIS_CRYPTO_BYTE_RANGE` |
 | Native emit path | LOCKED | cargo project (`compile_native_rust_to_exe`) |
 | PQ public-key | DOCUMENTED | not DIY; future audited path |
+| Full chapter map | DOC | `docs/language/RWC_LANGUAGE_MAP.md` |
 
 **Practitioner note:** native crypto is “use the boring audited library.” Guest still carries a
 pure fallback only because the zkVM dependency surface is constrained — not as the preferred

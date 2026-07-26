@@ -5341,6 +5341,47 @@ fn main() {
         );
     }
 
+    /// RWC Ch2 TupleHash spirit + Ch5–6 hybrid envelope (shipped path, not reimplemented in-test).
+    #[test]
+    fn rwc_tuple_hash_and_hybrid_envelope_roundtrip() {
+        use backends::run::compile_and_run_items;
+        let dir = unique_test_dir("rwc-hybrid-tuple");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("main.anb");
+        std::fs::write(
+            &entry,
+            r#"
+import std.crypto;
+fn main() {
+    let a = crypto::commit_parts("lab", ["ab", "c"]);
+    let b = crypto::commit_parts("lab", ["a", "bc"]);
+    if a == b { print("TUPLE_BAD"); } else { print("TUPLE_OK"); }
+    let pair = crypto::ecdh_keygen();
+    let env = crypto::hybrid_encrypt(pair[1], "aad", "hello-rwc");
+    let pt = crypto::hybrid_decrypt(pair[0], env[0], "aad", env[1], env[2]);
+    print(len(pt));
+    print(crypto::bytes_hex(crypto::aead_nonce_counter(1)));
+}
+"#,
+        )
+        .unwrap();
+        let items = resolve::combine_from_entry(&entry).expect("combine");
+        let out = compile_and_run_items(&items, false, &[]).expect("run");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<_> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(lines[0], "TUPLE_OK");
+        assert_eq!(lines[1], "9"); // hello-rwc
+        assert_eq!(lines[2], "000000000000000000000001");
+    }
+
     #[test]
     fn phase5_crypto_aead_wrong_aad_fail_closed() {
         use backends::run::compile_and_run_items;

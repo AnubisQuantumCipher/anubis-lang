@@ -274,6 +274,22 @@ fn pack_crypto() -> DomainPack {
                 notes: "No CAVP, no hardware lab claim; VZ if executing adversarial harness".into(),
             },
             PackCapability {
+                id: "x25519_hybrid".into(),
+                summary: "X25519 ECDH + hybrid AEAD envelope (RWC Ch5–6)".into(),
+                classification: CapClass::LabReal,
+                cli: vec![
+                    "anubis run examples/crypto/rwc_hybrid_envelope.anb".into(),
+                ],
+                notes: "Host audited crates only; raw shared must not be used as AEAD key".into(),
+            },
+            PackCapability {
+                id: "rwc_chapter_map".into(),
+                summary: "Wong RWC chapters mapped into std.crypto + checker".into(),
+                classification: CapClass::LabReal,
+                cli: vec![],
+                notes: "See docs/language/RWC_LANGUAGE_MAP.md".into(),
+            },
+            PackCapability {
                 id: "cavp_cert".into(),
                 summary: "NIST CAVP / FIPS certificate".into(),
                 classification: CapClass::NotImplemented,
@@ -284,10 +300,12 @@ fn pack_crypto() -> DomainPack {
         non_goals: vec![
             "CAVP / FIPS certification".into(),
             "Rolling own production primitives".into(),
+            "DIY Noise/Signal/Double-Ratchet without review".into(),
         ],
         honesty: vec![
             "Host pure math is LAB_REAL for check/contracts only".into(),
             "Never upgrade PARTIAL leakage harness to REAL without sealed evidence".into(),
+            "Hybrid/X25519 are LAB_REAL host APIs — not guest zkVM crypto".into(),
         ],
     }
 }

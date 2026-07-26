@@ -6826,7 +6826,7 @@ fn expr_is_hmac_tag_call(e: &Expr) -> bool {
     )
 }
 
-/// RWC Ch8: password encodings / KDF outputs must not be compared with early-exit `==`.
+/// RWC Ch8 / Ch7: password encodings, KDF outputs, and signatures must not use early-exit `==`.
 fn expr_is_password_secret_call(e: &Expr) -> bool {
     matches!(
         e,
@@ -6840,12 +6840,20 @@ fn expr_is_password_secret_call(e: &Expr) -> bool {
                 || callee == "argon2id_hash"
                 || callee == "pbkdf2_hmac_sha256"
                 || callee == "ed25519_sign"
+                || callee == "ed25519_verify"
+                || callee == "x25519_shared"
+                || callee == "hybrid_seal"
+                || callee == "hybrid_open"
                 || callee.ends_with("__password_hash")
                 || callee.ends_with("__password_hash_pbkdf2")
                 || callee.ends_with("__password_hash_phc")
                 || callee.ends_with("__kdf_argon2id")
                 || callee.ends_with("__kdf_pbkdf2_hmac_sha256")
                 || callee.ends_with("__sign")
+                || callee.ends_with("__sign_verify")
+                || callee.ends_with("__ecdh_shared")
+                || callee.ends_with("__hybrid_encrypt")
+                || callee.ends_with("__hybrid_decrypt")
     )
 }
 
