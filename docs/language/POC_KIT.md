@@ -106,7 +106,11 @@ anubis fuzz --target ./my_local_parser --runs 1000 --max-len 256 --seed 1 --out 
    - Official direct lanes:
      `anubis vz exploit --allow-research --base anubis-xcode examples/security/poc_local_overflow.anb`  
      `anubis vz fuzz --allow-research --base anubis-xcode poc_kit/bin/vuln_local`
-   - `ANUBIS_POC_LAB_HOST` is not an override. Host research execution and fuzz fail closed.
+   - `ANUBIS_POC_LAB_HOST` was removed — it is not a valid override.
+     Host research execution and fuzz fail closed via `in_vz_guest()`, which checks explicit
+     Anubis env/file markers. These markers are user-settable (`export ANUBIS_VZ_GUEST=1`) —
+     the gate is operational safety, not an adversarial barrier. The canonical `vz exploit`/`fuzz`
+     path layers a guest-bound HMAC run capability on top.
    - **AOP C2 / inject / lateral** are separate and also VZ-only
      (`ANUBIS_OFFENSIVE_HOST_FORBIDDEN` on host).
 

@@ -6,7 +6,7 @@
 
 ## Goal
 
-A researcher writes an authorized PoC / fuzz / emulation / crypto / bounty program in Anubis. The compiler proves authorization, scope, effects, isolation, and evidence obligations. Execution is only allowed inside a disposable Tart/Apple Virtualization guest with a guest-bound run capability. Results are hash- and MAC-bound evidence.
+A researcher writes an authorized PoC / fuzz / emulation / crypto / bounty program in Anubis. The compiler proves authorization, scope, effects, isolation, and evidence obligations. The CLI gate refuses crash-capable execution on the host (operational safety — env markers are user-settable, so this is accident prevention, not an adversarial barrier). The canonical `anubis vz exploit`/`fuzz` path adds a genuinely stronger layer: a guest-bound HMAC run capability minted by the host and consumed inside a disposable Tart/Apple Virtualization guest. Results are hash- and MAC-bound evidence.
 
 ## Profiles
 

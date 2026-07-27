@@ -18,9 +18,15 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-BIN=./target/release/anubis
-
-CARGO_BUILD_JOBS=6 cargo build -q --release -p anubis
+# Seshat: honor seal pin. Never rebuild under ANUBIS_BIN (stale/wrong binary must stay wrong).
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "NATIVE_AUTHORITATIVE_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  CARGO_BUILD_JOBS=6 cargo build -q --release -p anubis
+  [[ -x "$BIN" ]] || { echo "NATIVE_AUTHORITATIVE_GATE: FAIL (no binary at $BIN)"; exit 127; }
+fi
 
 # ---- Certificate path (RUP/LRAT emit + independent checker) ----
 cert_fail=0

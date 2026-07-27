@@ -9,7 +9,9 @@ cargo build --release -p anubis
 ./target/release/anubis doctor --metal-reference /Users/sicarii/Desktop/metal-hybrid-prover
 ```
 
-The binary is at `./target/release/anubis`.
+The binary is at `./target/release/anubis`. **Prefer that path** (or a symlink you control). On some
+machines bare `anubis` is a shell alias for a different CLI — do not treat `anubis --version`
+alone as proof you are running this language.
 
 ## Optional local install (symlink)
 
@@ -70,4 +72,10 @@ See the generated `RELEASE_CANDIDATE_REPORT.md` + `release_candidate.json` + `MA
 anubis doctor --metal-reference /path --require-risc0 --require-metal --json
 ```
 
-All sealed gates + language fixtures (25/25) must still pass.
+Re-check with the repo's current gates (counts move; do not trust stale "N/N" paste):
+
+```bash
+./target/release/anubis check examples/hello.anb
+./target/release/anubis run   examples/hello.anb
+# language / security fixture scripts when you need a full battery — pass a private --out dir
+```

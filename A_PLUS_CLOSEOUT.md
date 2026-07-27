@@ -5,6 +5,12 @@
 **Tree base HEAD:** `39a07ec827a6893e48d671f974adf9040896a368`  
 **Working tree note:** T9 offensive surfaces + isolation/stack fixes present at seal time
 
+**⚠️ Snapshot of the 2026-07-24 seal only.** It is **not** a current completion claim. Live
+inventory (2026-07-27 round 6): security **216/219** with **3 known-red** (multi-candidate +
+factory summary; not rot), language **244/244**, stdlib **32/32**. Living status:
+[`docs/CLAIMS.md` § Known open issues (2026-07-27)](docs/CLAIMS.md#known-open-issues-2026-07-27).
+Every "DONE" / "CLAIMED" line below is accurate *as of the seal date*, not as present tense.
+
 ## Status
 
 - **Phase 9 — DONE:** historical seal `out/a_plus_phase9_final_rerun_20260723` (15/15; G14 was 20/20).

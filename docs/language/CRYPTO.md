@@ -33,11 +33,16 @@ AEADs, ratchets, or “simpler Noise.” Prefer standards + review.
      | ChaCha20-Poly1305 AEAD | `chacha20poly1305` |
      | Argon2id / password_hash | `argon2` |
      | PBKDF2-HMAC-SHA256 | `pbkdf2` |
-   - Surface: `sha256`, `hmac_sha256_verify`, `ct_eq`, `hkdf_sha256`, `domain_hash`,
-     `random_bytes`, `aead_seal`/`aead_open`, `pbkdf2_hmac_sha256`, `argon2id_hash`,
-     `password_hash` / `password_verify`, **`password_hash_phc`** (standard `$argon2id$…`),
-     **`ed25519_keygen` / `ed25519_sign` / `ed25519_verify`** (`ed25519-dalek`),
-     `crypto_backend()` → `"audited-crates"`
+   - Surface (core): `sha256`, `hmac_sha256_verify`, `ct_eq` / `constant_time_eq`, `hkdf_sha256`,
+     `domain_hash`, `random_bytes`, `aead_seal`/`aead_open`, `chacha20_poly1305_seal`/`_open`,
+     `pbkdf2_hmac_sha256`, `argon2id_hash`, `password_hash` / `password_verify`,
+     **`password_hash_phc`** (standard `$argon2id$…`), password encode helpers
+     (`password_hash_encode`, `password_hash_pbkdf2_encode`, `password_hash_phc_raw`,
+     `password_verify_encoding`), **`ed25519_keygen` / `ed25519_sign` / `ed25519_verify` /
+     `ed25519_public_key`**, **`x25519_keygen` / `x25519_public_key` / `x25519_shared`**,
+     byte helpers (`sha256_bytes`, `hmac_sha256_bytes` / `_hex`, `bytes_hex`, `to_hex`),
+     hybrid seal/open (`hybrid_seal`, `hybrid_open`), `crypto_backend()` → `"audited-crates"`
+   - **Full callable list:** [`BUILTINS.md`](BUILTINS.md) (213-name inventory; crypto section)
    - Byte lists: elements **must** be in `0..=255` (fail closed — no silent truncation)
 
 2. **RISC0 guest microarchitecture** (prove path only): pure-Rust crypto still embedded

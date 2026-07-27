@@ -1,4 +1,7 @@
+// Day-one hello. Always check, then run:
+//   ./target/release/anubis check examples/hello.anb
+//   ./target/release/anubis run   examples/hello.anb
+// Prefer ./target/release/anubis over bare `anubis` — a shell alias may hijack the name.
 fn main() {
-    // Safe hello
-    let msg = "hello from anubis";
+    print("hello from anubis");
 }

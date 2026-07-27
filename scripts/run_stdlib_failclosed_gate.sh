@@ -12,9 +12,8 @@
 #                                        Exit nonzero for a different reason without the
 #                                        needle is a MISMATCH (fixture FAIL), never green.
 #
-# Pending state (pre-patch): EXPECT FAIL fixtures currently return silent wrong values with
-# exit 0. The gate correctly scores them as MISMATCH and overall FAIL. That is intentional —
-# the gate stays RED until OPUS5 lands the fail-closed patch. Do not weaken fixtures to PASS.
+# Sealed state (2026-07-27): EXPECT FAIL fixtures panic with ANUBIS_* codes under `anubis run`.
+# Gate is GREEN when 32/32 match ERROR_CONTAINS. Do not weaken fixtures to PASS.
 #
 # Usage:
 #   bash scripts/run_stdlib_failclosed_gate.sh

@@ -30,11 +30,17 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-BIN=./target/release/anubis
 SH=selfhost/src/anubis_sh.anb
 CORPUS=tests/fixtures/effects_selfhost
 
-cargo build -q --release -p anubis
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "EFFECT_SELFHOST_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  cargo build -q --release -p anubis
+  [[ -x "$BIN" ]] || { echo "EFFECT_SELFHOST_GATE: FAIL (no binary at $BIN)"; exit 127; }
+fi
 
 # Extract the undeclared-effect (function, cap) PAIR set from a diagnostic stream — anchored to the
 # unique "function `F` uses effect `X`" phrasing (isolates from the Safe-mode + taint lanes), emitted
@@ -83,6 +89,10 @@ done
 echo ""
 echo "EFFECT_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree | EXPECT ok=$expect_ok mismatch=$expect_bad"
 
+if [ "$n" -eq 0 ]; then
+  echo "EFFECT_SELFHOST_GATE: FAIL (empty/missing corpus — hollow PASS forbidden)"
+  exit 1
+fi
 if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ]; then
   echo "EFFECT_SELFHOST_GATE: FAIL"
   exit 1

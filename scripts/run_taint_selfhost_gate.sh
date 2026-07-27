@@ -27,11 +27,17 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-BIN=./target/release/anubis
 SH=selfhost/src/anubis_sh.anb
 CORPUS=tests/fixtures/taint_selfhost
 
-cargo build -q --release -p anubis
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "TAINT_SELFHOST_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  cargo build -q --release -p anubis
+  [[ -x "$BIN" ]] || { echo "TAINT_SELFHOST_GATE: FAIL (no binary at $BIN)"; exit 127; }
+fi
 
 # Extract the let-mismatch (expected, got) PAIR set — anchored to the unique
 # "type mismatch: expected `E`, got `G`" phrasing — as sorted-unique `E:G` lines so a per-file union
@@ -82,6 +88,10 @@ done
 echo ""
 echo "TAINT_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree | EXPECT ok=$expect_ok mismatch=$expect_bad"
 
+if [ "$n" -eq 0 ]; then
+  echo "TAINT_SELFHOST_GATE: FAIL (empty/missing corpus — hollow PASS forbidden)"
+  exit 1
+fi
 if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ]; then
   echo "TAINT_SELFHOST_GATE: FAIL"
   exit 1

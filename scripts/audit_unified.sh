@@ -206,21 +206,22 @@ else
 fi
 
 # ── G11: Enum/match gate ──
-if bash scripts/run_enum_match_gate.sh >"$OUT/g11_enum.log" 2>&1; then
+# Always pass a private --out so concurrent audit runs do not race fixed out/enum_match.
+if bash scripts/run_enum_match_gate.sh "$OUT/g11_enum" >"$OUT/g11_enum.log" 2>&1; then
   gate "G11_enum_match" "PASS" "enum/match gate clean"
 else
   gate "G11_enum_match" "FAIL" "enum/match failures (see g11_enum.log)"
 fi
 
 # ── G12: For-in gate ──
-if bash scripts/run_for_in_gate.sh >"$OUT/g12_for_in.log" 2>&1; then
+if bash scripts/run_for_in_gate.sh "$OUT/g12_for_in" >"$OUT/g12_for_in.log" 2>&1; then
   gate "G12_for_in" "PASS" "for-in gate clean"
 else
   gate "G12_for_in" "FAIL" "for-in failures (see g12_for_in.log)"
 fi
 
 # ── G13: Lang power trio gate ──
-if bash scripts/run_lang_trio_gate.sh >"$OUT/g13_lang_trio.log" 2>&1; then
+if bash scripts/run_lang_trio_gate.sh "$OUT/g13_lang_trio" >"$OUT/g13_lang_trio.log" 2>&1; then
   gate "G13_lang_trio" "PASS" "lang trio gate clean"
 else
   gate "G13_lang_trio" "FAIL" "lang trio failures (see g13_lang_trio.log)"

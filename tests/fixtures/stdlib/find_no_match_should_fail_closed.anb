@@ -1,8 +1,8 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_NO_MATCH
 // RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
-// `anubis check` on this file passes clean today, verified 2026-07-26).
-// PENDING (fails today): find(xs, pred) returns Int(0) when no element matches instead
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
 // of failing closed (compiler/src/backends/run.rs anubis_find, ~line 2644). Contrast
 // with `position(xs, pred)`, which correctly returns the -1 sentinel on no match
 // (a sentinel that works there because -1 is never a valid index; there is no

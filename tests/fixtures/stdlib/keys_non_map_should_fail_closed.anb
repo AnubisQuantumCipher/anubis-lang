@@ -1,9 +1,8 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_TYPE_ERROR
 // RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
-// `anubis check` on this file passes clean today, verified 2026-07-26).
-// PENDING (fails today): keys([1, 2]) returns [] instead of failing closed
-// (compiler/src/backends/run.rs AnubisValue::map_keys, ~line 1709, whose fallback arm
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
 // for a non-Map is `_ => anubis_mk_list(vec![])`). `keys` is documented under "Maps"
 // (LANGUAGE.md) as a map-only accessor, unlike the generic list/string/map
 // polymorphism documented for iteration functions like `map`/`filter`/`find` — an

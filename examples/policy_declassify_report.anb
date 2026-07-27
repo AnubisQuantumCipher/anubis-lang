@@ -1,7 +1,9 @@
 // EXPECT: PASS
 // FEATURE: declassify with full policy for report
+// Prints one proof-of-life line so `anubis run` is not a silent success.
 fn main() {
     let secret = taint_source("user-data");
     let safe = declassify(secret, "audit-redact-v1", "redact PII for public report");
     sink(safe);
+    print("declassify policy ok");
 }

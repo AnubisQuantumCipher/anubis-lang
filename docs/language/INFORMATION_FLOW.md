@@ -10,11 +10,35 @@ shared.
 | Kind | Question it answers | Sources | Violation |
 |---|---|---|---|
 | **Integrity** (taint) | did *untrusted input* reach somewhere dangerous? | `input()`, `read_file`, `open`, `read_line`, `recv`, `net_recv`, `env`, `getenv`; a `tainted<T>` parameter | `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` / `ANUBIS_INTERPROC_SINK` |
-| **Confidentiality** (secret) | did a *private value* leave the program? | `secret_source(...)`; a `secret<T>` parameter or return | `ANUBIS_SECRET_EXFILTRATION` / `ANUBIS_INTERPROC_EXFILTRATION` |
+| **Confidentiality** (secret) | did a *private value* leave the program? | `secret_source(...)`; a `secret<T>`-annotated let/param/return; values derived from those | `ANUBIS_SECRET_EXFILTRATION` / `ANUBIS_INTERPROC_EXFILTRATION` |
 
 These are genuinely different properties — "attacker data must not reach a command shell" is not the
 same as "my key must not leave the box" — so they have different *sources*. That difference is the
 point, not a gap.
+
+## How to construct a secret (stranger FAQ)
+
+There is **no** callable named `secret`. `secret(42)` is a day-one footgun and fails with
+`ANUBIS_UNKNOWN_FUNCTION`. Confidentiality is the type qualifier **`secret<T>`**.
+
+```anubis
+// Form A — annotate a value you own (literals, arithmetic, pure computation)
+let balance: secret<i64> = 5000;
+
+// Form B — explicit confidentiality source (same label machinery)
+let key_material = secret_source(0xdead);
+
+// Form C — parameter / return types carry the label across functions
+fn fuse(a: secret<i64>, b: secret<i64>) -> secret<i64> {
+    return a + b;
+}
+```
+
+Release only through `declassify(value, policy, reason)` with **both** `policy` and `reason`
+non-empty after trim. Empty strings do **not** release the label (see below).
+
+Day-one runnable sample: [`examples/secret_declassify_hello.anb`](../../examples/secret_declassify_hello.anb).
+Tutorial pointer: [`TUTORIAL.md`](TUTORIAL.md) §2.
 
 ## Sinks are unified (integrity ⊇ confidentiality)
 

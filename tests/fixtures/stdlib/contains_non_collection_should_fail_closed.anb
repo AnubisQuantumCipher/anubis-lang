@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// NON_COLLECTION surface: contains(non-list/str/map) returned false, conflating wrong-type with absence (SEKHMET)
+// See tests/fixtures/stdlib/NON_COLLECTION_SURFACE.md for the full matrix.
+fn main() {
+    print(contains(42, 1));
+}

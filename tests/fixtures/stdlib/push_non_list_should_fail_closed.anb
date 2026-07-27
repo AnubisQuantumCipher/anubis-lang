@@ -1,8 +1,8 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_TYPE_ERROR
 // RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
-// `anubis check` on this file passes clean today, verified 2026-07-26).
-// PENDING (fails today): push(s, "x") on a string variable `s` is a silent no-op — `s`
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
 // is printed unchanged (compiler/src/backends/run.rs AnubisValue::push_val, ~line 1691:
 // `if let AnubisValue::List(v) = self { ... }` has no else branch, so a non-list target
 // is dropped on the floor with no signal). `push`/`pop`/`insert`/`remove` are

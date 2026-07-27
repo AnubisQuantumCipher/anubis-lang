@@ -234,7 +234,7 @@ Anubis carries a full, **engagement-scoped** offensive platform for authorized s
 
 | | Status | |
 |---|---|---|
-| **Executable core** | ✅ | Turing-complete: loops, recursion, mutation, enums + `match`, `for x in xs` / `for i in a..b`, structs, maps, closures, `Option`/`Result`/`?`, ~150 builtins — native Apple-Silicon executables |
+| **Executable core** | ✅ | Turing-complete: loops, recursion, mutation, enums + `match`, `for x in xs` / `for i in a..b`, structs, maps, closures, `Option`/`Result`/`?`, **213 builtins** (inventory: [`docs/language/BUILTINS.md`](docs/language/BUILTINS.md)) — native Apple-Silicon executables |
 | **Type system** | ✅ / 🟡 | bidirectional inference, traits + coherence; generics are runtime-erased + dynamically checked (not yet statically monomorphized); multi-file `import` resolution is 🟡 in progress |
 | **Developer experience** | ✅ | `fmt` (self-verifying), `test` (`// EXPECT: PASS\|FAIL`), `doc` (Contracts section), `repl`, `lsp` (contract hovers), tree-sitter grammar + VS Code extension — `run_dx_gate.sh` (15/15) |
 | **Self-hosting spine** | ✅ | `selfhost/` compiles itself: a real stage0→stage3 bootstrap sealed to a **byte-identical fixpoint**; and the **effect, type, and taint checker engines are now Anubis-authored too**, each differential-gated 0-disagreement vs the Rust checker (`run_{effect,capset,type,taint}_selfhost_gate.sh`) and VM-sealed; reproducibility + diverse-double-compile gates landed |
@@ -297,11 +297,18 @@ An 11-phase maturity arc; the living source of truth is [`docs/language/ROADMAP.
 git clone https://github.com/AnubisQuantumCipher/anubis-lang.git && cd anubis-lang
 cargo build --release -p anubis        # binary at ./target/release/anubis; the pinned
                                        # toolchain (rust-toolchain.toml) is selected for you
+# Prefer ./target/release/anubis over bare `anubis` — a shell alias may hijack the name.
+
+# ── Hello (must print) ────────────────────────────────────────────────
+./target/release/anubis check examples/hello.anb
+./target/release/anubis run   examples/hello.anb           # → hello from anubis
 
 # ── Verify ────────────────────────────────────────────────────────────
-anubis check examples/showcase/ring_buffer_underflow.anb   # prints a real counterexample
-anubis check <yours>.anb --suggest-contracts               # infer requires/ensures
-anubis run   examples/hello_normal.anb                     # execute the safe core
+./target/release/anubis check examples/showcase/ring_buffer_underflow.anb   # real counterexample
+./target/release/anubis check examples/secret_declassify_hello.anb           # secret construction
+./target/release/anubis run   examples/secret_declassify_hello.anb           # → 49
+./target/release/anubis check <yours>.anb --suggest-contracts               # infer requires/ensures
+./target/release/anubis run   examples/hello_normal.anb                     # another safe hello
 
 # ── The gates (the discipline, runnable) ──────────────────────────────
 bash scripts/run_formal_gate.sh                            # Lean: 162 theorems / 15 modules, no sorry/axiom
@@ -310,13 +317,13 @@ bash scripts/run_selfhost_gate.sh out/selfhost             # stage0→3 bootstra
 bash scripts/run_dx_gate.sh out/dx                         # LSP / fmt / repl / tree-sitter (15/15)
 
 # ── Evidence, packages, proving ───────────────────────────────────────
-anubis build examples/research_poc.anubis --evidence --out out/poc
-anubis verify out/poc && anubis report out/poc             # re-derive + read the bundle
-anubis prove examples/proof/proof_factorial_input.anb \
+./target/release/anubis build examples/research_poc.anubis --evidence --out out/poc
+./target/release/anubis verify out/poc && ./target/release/anubis report out/poc
+./target/release/anubis prove examples/proof/proof_factorial_input.anb \
       --backend risc0 --input-json '{"n":5}' --evidence     # zk receipt (journal = 120)
 
 # ── Confine (Apple Silicon) ───────────────────────────────────────────
-anubis vz confine examples/showcase/vz_confine_demo.anb    # isolation manifest from the proof
+./target/release/anubis vz confine examples/showcase/vz_confine_demo.anb
 ```
 
 ---
@@ -325,10 +332,11 @@ anubis vz confine examples/showcase/vz_confine_demo.anb    # isolation manifest 
 
 | | |
 |---|---|
-| **Tutorial** | [`docs/language/TUTORIAL.md`](docs/language/TUTORIAL.md) |
+| **Tutorial** | [`docs/language/TUTORIAL.md`](docs/language/TUTORIAL.md) — hello, secrets, contracts |
 | **Language reference** | [`LANGUAGE.md`](LANGUAGE.md) · [`docs/language/SPEC.md`](docs/language/SPEC.md) |
+| **Builtin inventory (213)** | [`docs/language/BUILTINS.md`](docs/language/BUILTINS.md) — complete names incl. crypto/caps |
 | **Roadmap (living status)** | [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md) |
-| **Information-flow model** | [`docs/language/INFORMATION_FLOW.md`](docs/language/INFORMATION_FLOW.md) |
+| **Information-flow model** | [`docs/language/INFORMATION_FLOW.md`](docs/language/INFORMATION_FLOW.md) — how to *construct* a `secret<T>` |
 | **Solver pipeline** | [`docs/SOLVER_PIPELINE_MAP.md`](docs/SOLVER_PIPELINE_MAP.md) · [`solver/README.md`](solver/README.md) |
 | **Crypto / stdlib** | [`docs/language/CRYPTO.md`](docs/language/CRYPTO.md) · [`docs/language/STDLIB_CORE.md`](docs/language/STDLIB_CORE.md) |
 | **Architecture map** | [`ARCHITECTURE_MAP.md`](ARCHITECTURE_MAP.md) |

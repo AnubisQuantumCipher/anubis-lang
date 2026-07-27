@@ -1,4 +1,4 @@
+// Safe-mode hello (`.anubis` extension). Prefer ./target/release/anubis over bare `anubis`.
 fn main() {
-    // Safe mode hello world
-    let msg = "hello from anubis safe";
+    print("hello from anubis safe");
 }

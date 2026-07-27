@@ -1,10 +1,8 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_EMPTY_COLLECTION
 // RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
-// `anubis check` on this file passes clean today, verified 2026-07-26).
-// PENDING (fails today): min_by([], f) returns Int(0) instead of failing closed
-// (compiler/src/backends/run.rs anubis_min_by, ~line 2869).
-// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
 fn key(x) { return x; }
 fn main() {
     let xs = [];

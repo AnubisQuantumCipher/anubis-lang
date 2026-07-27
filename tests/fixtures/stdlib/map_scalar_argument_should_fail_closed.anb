@@ -1,9 +1,8 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_TYPE_ERROR
 // RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
-// `anubis check` on this file passes clean today, verified 2026-07-26).
-// PENDING (fails today): map(42, f) silently wraps the scalar 42 into a 1-element list
-// and returns [f(42)] instead of failing closed (compiler/src/backends/run.rs
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
 // anubis_iter, ~line 2696-2710, fallback arm `other => vec![other]`). LANGUAGE.md
 // documents that "most list functions also accept a string (over its characters) or a
 // map (over its keys)" — List | String | Map is the full documented input contract for

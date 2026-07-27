@@ -21,9 +21,12 @@ Every runtime value is one of nine kinds: **int** (`i64`), **float** (`f64`), **
 
 ```
 fn main() {
-    print("hello, anubis");
+    print("hello from anubis");
 }
 ```
+
+Use `./target/release/anubis check|run <file>` (prefer the path over bare `anubis` — a shell
+alias may point elsewhere). Repo hello: `examples/hello.anb`.
 
 Statements are newline-terminated; a trailing `;` is **optional** on every statement kind
 (`let`, assignment, `return`, and expression statements alike). The examples in this document use
@@ -514,33 +517,54 @@ Pair these with `if let` / `while let` (see Control flow) for ergonomic optional
 
 ## Standard library
 
+**Complete inventory (213 builtins):** [`docs/language/BUILTINS.md`](docs/language/BUILTINS.md) —
+generated from the five name sets in `compiler/src/backends/run.rs`. The sections below are the
+general-purpose core tour. Crypto, capability, proof, and PoC names that used to be undocumented
+live in that inventory (do not trust older "~150" / "~116" counts).
+
+**Secrets (confidentiality):** there is no `secret(...)` function. Use `let x: secret<T> = …` or
+`secret_source(...)`, then `declassify(value, policy, reason)` before egress. See
+[`docs/language/INFORMATION_FLOW.md`](docs/language/INFORMATION_FLOW.md) and
+`examples/secret_declassify_hello.anb`.
+
 **Conversions / reflection:** `str`, `int`, `float`, `bool`, `type`, `parse_int`, `parse_float`,
-`parse_int_opt`, `parse_float_opt`, `len`. `int`/`float`/`parse_int`/`parse_float` are **lenient**:
-malformed input yields `0`/`0.0` (convenient for `int(read_line())`, but it cannot distinguish the
-number `0` from "not a number"). For fail-closed parsing use `parse_int_opt(s)` / `parse_float_opt(s)`,
-which return `Some(n)` on success and `None` on malformed input.
+`parse_int_opt`, `parse_float_opt`, `len`. `int`/`float`/`parse_int`/`parse_float` remain
+**lenient on malformed text** (yield `0`/`0.0`) — that is distinct from the fail-closed collection
+and domain panics below. Prefer `parse_int_opt` / `parse_float_opt` when you must distinguish
+"zero" from "not a number".
 
 **Math:** `abs`, `min`, `max` (variadic or over a list), `pow`, `sqrt`, `cbrt`, `floor`, `ceil`,
 `round`, `trunc`, `gcd`, `sign`, `clamp(x, lo, hi)`, `factorial`, `hypot`, `exp`, `ln`, `log10`,
 `log2`, `log(x, base)`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pi()`, `e()`.
+**Fail-closed domain (runtime panics with `ANUBIS_*` codes, not silent `0`):** wrong-type `abs`,
+empty `min`/`max`/`min_by`/`max_by`, inverted `clamp` bounds, negative/`overflow` `factorial`,
+etc. Gate: `bash scripts/run_stdlib_failclosed_gate.sh` (**32/32** as of 2026-07-27).
 
 **Strings:** `upper`, `lower`, `trim`, `capitalize`, `split`, `join`, `chars`, `words`, `lines`,
 `contains`, `starts_with`, `ends_with`, `replace`, `index_of`, `substr`, `char_at`, `ord`, `chr`,
-`repeat`, `reverse`, `pad_start(s, w[, fill])`, `pad_end(s, w[, fill])`.
+`repeat`, `reverse`, `pad_start(s, w[, fill])`, `pad_end(s, w[, fill])`. Fail-closed:
+`ord("")`, out-of-range/`negative` `chr`, negative `repeat` count → `ANUBIS_*` panics.
 
 **Lists:** `push`, `pop`, `insert`, `remove`, `slice`, `reverse`, `sort`, `sort_by`, `sum`,
 `product`, `range` (2- or 3-arg), `contains`, `index_of`, `position`, `first`, `last`, `is_empty`, `take`,
 `drop`, `take_while`, `drop_while`, `concat`, `zip`, `enumerate`, `flatten`, `flat_map`, `unique`,
 `chunk`, `window`, `partition`, `min_by`, `max_by`, `map`, `filter`, `reduce`, `each`, `find`,
-`any`, `all`, `count`. Indexing accepts negatives (`xs[-1]` is the last element) and is
-**fail-closed**: `xs[i]` out of bounds panics rather than returning `0` — use `get(xs, i, default)`
-for optional access. Most list functions also accept a string (over its characters) or a map (over
-its keys).
+`any`, `all`, `count`. Indexing accepts negatives (`xs[-1]` is the last element).
+
+**Runtime fail-closed (do not assume silent `0` / silent no-op):** empty `first`/`last`/`pop`,
+`find` with no match, OOB `remove`, zero-size `chunk`/`window`, wrong-type `push`/`pop`/`insert`/
+`remove`/`sort`/`sum`/`map` (scalar where a collection is required), seedless `reduce` on empty,
+etc. These **panic** with codes such as `ANUBIS_EMPTY_COLLECTION`, `ANUBIS_NO_MATCH`,
+`ANUBIS_TYPE_ERROR`, `ANUBIS_INDEX_OUT_OF_BOUNDS` — they do **not** return a fake zero.
+Index OOB and missing map keys were already fail-closed (`ANUBIS_INDEX_OUT_OF_BOUNDS` /
+`ANUBIS_MISSING_KEY`). Use `get(xs, i, default)` / `get(m, k, default)` for optional access.
+Most list HOFs still accept a string (characters) or map (keys) when the operation is defined
+on those views; a bare scalar is **not** auto-wrapped.
 
 **Maps:** `keys`, `values`, `entries`, `has_key`, `get(m, k, default)`, `merge(a, b)`,
 `map_values(m, f)`, `remove`, `len`. `for k in m` iterates keys. Reading an absent key with `m[k]`
 is **fail-closed** (panics `ANUBIS_MISSING_KEY`); use `get(m, k, default)` or guard with
-`has_key(m, k)` for optional access.
+`has_key(m, k)`. Calling `keys`/`values`/`has_key` on a non-map is fail-closed (`ANUBIS_TYPE_ERROR`).
 
 **Map keys are strings.** A map's keys are always strings; a non-string index is coerced to its
 display form for lookup and storage. So `m[5]` and `m["5"]` address the **same** entry (both key

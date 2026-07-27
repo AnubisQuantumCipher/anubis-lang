@@ -4,6 +4,11 @@
 **Branch:** `a-plus-maturity/20260705-1649`  
 **Tree base HEAD:** `39a07ec827a6893e48d671f974adf9040896a368`
 
+**⚠️ Snapshot of the 2026-07-24 seal, now 2 days old** — including the `649` test count below,
+which is the count at that seal (current count, 2026-07-26: 707 compiler + 142 CLI tests, ~910
+workspace total). See [`docs/CLAIMS.md` § Known open issues (2026-07-26)](docs/CLAIMS.md#known-open-issues-2026-07-26)
+for what this seal's gates did not cover.
+
 ## Phase 9 Verdict (historical)
 
 Command:
@@ -79,3 +84,9 @@ T9 surfaces (ATT&CK, OPSEC, recon, malleable, campaign, purple, phish PLAN_ONLY,
 **CLAIMED** for this seal: front door 15/15 + current A15 clean after remediation.
 
 Not claimed: freeze §5 residuals, hosted Metal proving, absolute trusting-trust closure.
+
+Also **not claimed as of 2026-07-27 round 6** (living list: `docs/CLAIMS.md`): total Safe-mode
+soundness; multi-candidate If/Match apply closed; factory field-callable summary closed; sealed
+post-registry fixpoint; capset selfhost green. Live: language **244/244**, security **216/219**
+(**3 known-red**, not rot), stdlib **32/32**, formal PASS, native **681/0**. Arc disease:
+declaration/label ignored or recomputed at consumer.

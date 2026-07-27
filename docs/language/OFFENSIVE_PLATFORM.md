@@ -31,11 +31,19 @@ AOP host attempts → **`ANUBIS_OFFENSIVE_HOST_FORBIDDEN`**.
 Host research execution → **`ANUBIS_RESEARCH_HOST_FORBIDDEN`**.
 Any host fuzz → **`ANUBIS_FUZZ_HOST_FORBIDDEN`**.
 
-Guest markers (authorization uses the combination — **not** any single host-forgeable
-signal alone): `ANUBIS_VZ_GUEST=1`, `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`,
-`ANUBIS_ISOLATION=*tart*`, `$HOME/.anubis-vz-guest`.  
-**Not sufficient alone:** `kern.hv_vmm_present=1` (GitHub-hosted macOS runners also
+Guest markers (**any one** is sufficient — the gate is OR-logic, not AND):
+`ANUBIS_VZ_GUEST=1`, `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`,
+`ANUBIS_ISOLATION=*tart*`, `/etc/anubis-vz-guest`, `$HOME/.anubis-vz-guest`.  
+**Not a guest marker:** `kern.hv_vmm_present=1` (GitHub-hosted macOS runners also
 report this; isolation code treats it as diagnostic only).
+
+**Honest boundary:** the env markers are trivially settable by any process running as the
+user (`export ANUBIS_VZ_GUEST=1`). The gate is a **safety mechanism** — it prevents the
+operator from accidentally running crash-capable code on the host — not a security barrier
+against deliberate circumvention. The genuinely stronger path is the **guest-bound run
+capability** (`ANUBIS_VZ_ENFORCE_RUN_CAP=1`), which pairs the marker with an HMAC-validated
+single-use token minted by the host orchestrator and consumed inside the guest. The
+canonical `anubis vz exploit`/`fuzz` paths set both.
 
 Protocol default: **`aop-2`** (AES-256-GCM encrypted beacons).
 

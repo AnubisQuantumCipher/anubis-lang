@@ -22,7 +22,33 @@ fi
 mkdir -p "$OUT_DIR"
 SECURITY_DIR="examples/security"
 
+# Pin the instrument ONCE for the whole run (not per-fixture). A mid-run rebuild must not
+# silently change which binary the remaining fixtures grade.
+# An externally-provided ANUBIS_BIN wins over auto-detection.
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  executed_via="preset"
+elif [[ -x "./target/release/anubis" ]]; then
+  ANUBIS_BIN="./target/release/anubis"
+  executed_via="release"
+elif [[ -x "./target/debug/anubis" ]]; then
+  ANUBIS_BIN="./target/debug/anubis"
+  executed_via="debug"
+else
+  ANUBIS_BIN="cargo run -p anubis --"
+  executed_via="cargo"
+fi
+bin_mtime="n/a"; bin_size="n/a"
+if [[ -x "$ANUBIS_BIN" ]]; then
+  bin_mtime="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' "$ANUBIS_BIN" 2>/dev/null || echo unknown)"
+  bin_size="$(stat -f '%z' "$ANUBIS_BIN" 2>/dev/null || echo 0)"
+fi
+echo "instrument: $ANUBIS_BIN via=$executed_via mtime=$bin_mtime size=$bin_size out=$OUT_DIR" \
+  | tee "$OUT_DIR/instrument.txt"
+
 report="$OUT_DIR/security_fixture_report.json"
+# Per-process report temp so concurrent agents sharing a (misconfigured) OUT do not race on
+# the same report.tmp path.
+REPORT_TMP="$report.tmp.$$"
 echo '{"fixtures": [], "overall_verdict": "PENDING"}' > "$report"
 
 total=0
@@ -38,16 +64,6 @@ for f in "$SECURITY_DIR"/*.anb; do
   outd="$OUT_DIR/$base"
   mkdir -p "$outd"
   set +e
-  if [[ -x "./target/release/anubis" ]]; then
-    ANUBIS_BIN="./target/release/anubis"
-    executed_via="release"
-  elif [[ -x "./target/debug/anubis" ]]; then
-    ANUBIS_BIN="./target/debug/anubis"
-    executed_via="debug"
-  else
-    ANUBIS_BIN="cargo run -p anubis --"
-    executed_via="cargo"
-  fi
   cmd="$ANUBIS_BIN check $f --evidence --out $outd"
   echo "$cmd" > "$outd/command.txt"
   $ANUBIS_BIN check "$f" --evidence --out "$outd" > "$outd/run.log" 2>&1
@@ -129,7 +145,7 @@ for f in "$SECURITY_DIR"/*.anb; do
      --arg cmd "$cmd" --argjson rc "$rc" --arg executed_via "$executed_via" --arg evidence_path "$evidence_path" \
      --arg needle "$err_needle" --argjson needle_present "$needle_present" \
     '.fixtures += [{"name": $name, "status": $status, "expected": $expect, "actual": $actual, "command": $cmd, "exit_code": $rc, "executed_via": $executed_via, "evidence_path": $evidence_path, "error_contains": $needle, "needle_present": $needle_present}]' \
-    "$report" > "$report.tmp" && mv "$report.tmp" "$report"
+    "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
 done
 
 overall="PASS"
@@ -142,7 +158,7 @@ fi
 
 jq --arg overall "$overall" --argjson total "$total" --argjson passed "$passed" --argjson failed "$failed" \
   '. + {total: $total, passed: $passed, failed: $failed, overall_verdict: $overall}' \
-  "$report" > "$report.tmp" && mv "$report.tmp" "$report"
+  "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
 
 echo "Report: $report"
 echo "Overall: $overall ($passed/$total)"

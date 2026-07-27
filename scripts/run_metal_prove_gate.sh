@@ -43,22 +43,29 @@ if [[ "${ANUBIS_REQUIRE_METAL:-}" == "1" ]] || [[ "${ANUBIS_METAL_GATE_REQUIRE:-
   bash scripts/check_metal_parity.sh --require-metal --out "$OUT/parity" 2>&1 | tee "$OUT/parity.log"
   pc=${PIPESTATUS[0]}
   set -e
-  # Prefer overall_verdict=PASS; also accept a witness that at least one fixture observed metal-hybrid
-  # with verifying receipts (hello-class) when full suite is PARTIAL due to unrelated fixture misses.
-  if [[ "$pc" -eq 0 ]] && grep -q '"overall_verdict": "PASS"' "$OUT/parity/parity_report.json" 2>/dev/null; then
+  # Prefer overall_verdict=PASS. A "witness" of metal-hybrid in residual JSON is only
+  # accepted when the child gate itself exited 0 — otherwise a failing/crashing
+  # check_metal_parity.sh plus a stale or partial report could print PASS while
+  # the evidence is hollow (Seshat T2, 2026-07-26).
+  if [[ "$pc" -ne 0 ]]; then
+    echo "METAL_PROVE_GATE: FAIL (check_metal_parity.sh exited $pc — witness path forbidden on nonzero child)"
+    echo "fail_child_$pc" >"$OUT/status.txt"
+    exit 1
+  fi
+  if grep -q '"overall_verdict": "PASS"' "$OUT/parity/parity_report.json" 2>/dev/null; then
     echo "METAL_PROVE_GATE: PASS"
     echo pass >"$OUT/status.txt"
     exit 0
   fi
   if grep -q 'lane_observed.: .metal-hybrid' "$OUT/parity/parity_report.json" 2>/dev/null \
     && grep -q '"receipt_verify": "passed"' "$OUT/parity/parity_report.json" 2>/dev/null; then
-    echo "METAL_PROVE_GATE: PASS (metal-hybrid witnessed with verified receipt; overall may be PARTIAL)"
-    echo "pass_witness" >"$OUT/status.txt"
-    # Still fail closed under STRICT unless overall PASS.
+    # Child exited 0 but overall may be PARTIAL; accept witness only when not STRICT.
     if [[ "${ANUBIS_METAL_GATE_STRICT:-0}" == "1" ]]; then
       echo "METAL_PROVE_GATE: FAIL (STRICT requires overall_verdict=PASS)"
       exit 1
     fi
+    echo "METAL_PROVE_GATE: PASS (metal-hybrid witnessed with verified receipt; child rc=0; overall may be PARTIAL)"
+    echo "pass_witness" >"$OUT/status.txt"
     exit 0
   fi
   echo "METAL_PROVE_GATE: FAIL (require-metal did not observe verifying metal-hybrid)"

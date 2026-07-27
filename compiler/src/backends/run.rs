@@ -2038,7 +2038,10 @@ fn anubis_join(list: AnubisValue, sep: AnubisValue) -> AnubisValue {
         AnubisValue::List(items) => anubis_mk_str(
             items.iter().map(|x| x.display_string()).collect::<Vec<_>>().join(sp.as_str())
         ),
-        other => anubis_mk_str(other.display_string()),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: join expects a list as its first argument, got {}",
+            other.type_name()
+        ),
     }
 }
 fn anubis_contains(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
@@ -2050,7 +2053,10 @@ fn anubis_contains(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
             let n = needle.display_string();
             m.iter().any(|(k, _)| k == &n)
         }
-        _ => false,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: contains expects a list, string, or map, got {}",
+            other.type_name()
+        ),
     };
     AnubisValue::Bool(result)
 }
@@ -2078,7 +2084,10 @@ fn anubis_index_of(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
                 None => AnubisValue::Int(-1),
             }
         }
-        _ => AnubisValue::Int(-1),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: index_of expects a list or string, got {} (do not confuse with not-found which is -1)",
+            other.type_name()
+        ),
     }
 }
 fn anubis_ord(v: AnubisValue) -> AnubisValue {
@@ -2130,7 +2139,10 @@ fn anubis_slice(x: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
             let (lo, hi) = (bound(ai, n), bound(bi, n));
             anubis_mk_str(if lo <= hi { chars[lo..hi].iter().collect() } else { String::new() })
         }
-        other => other,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: slice expects a list or string, got {}",
+            other.type_name()
+        ),
     }
 }
 fn anubis_parse_int(v: AnubisValue) -> AnubisValue {
@@ -2208,7 +2220,10 @@ fn anubis_reverse(x: AnubisValue) -> AnubisValue {
     match x {
         AnubisValue::List(items) => { let mut items = anubis_rc_take(items); items.reverse(); anubis_mk_list(items) }
         AnubisValue::Str(s) => anubis_mk_str(s.chars().rev().collect()),
-        other => other,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: reverse expects a list or string, got {}",
+            other.type_name()
+        ),
     }
 }
 fn anubis_sort(x: AnubisValue) -> AnubisValue {
@@ -2282,7 +2297,13 @@ fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
         }
         AnubisValue::Map(m) => {
             let k = key.display_string();
-            match m.iter().position(|(kk, _)| kk == &k) { Some(pos) => std::rc::Rc::make_mut(m).remove(pos).1, None => AnubisValue::Int(0) }
+            match m.iter().position(|(kk, _)| kk == &k) {
+                Some(pos) => std::rc::Rc::make_mut(m).remove(pos).1,
+                None => panic!(
+                    "ANUBIS_MISSING_KEY: key `{}` is not present in the map (use get(m, k, default) for optional access)",
+                    k
+                ),
+            }
         }
         other => panic!("ANUBIS_TYPE_ERROR: remove expects a list or map, got {}", other.type_name()),
     }
@@ -2968,7 +2989,10 @@ fn anubis_partition(a: AnubisValue, f: AnubisValue) -> AnubisValue {
 fn anubis_entries(m: AnubisValue) -> AnubisValue {
     match m {
         AnubisValue::Map(m) => anubis_mk_list(anubis_rc_take(m).into_iter().map(|(k, v)| anubis_mk_list(vec![anubis_mk_str(k), v])).collect()),
-        _ => anubis_mk_list(vec![]),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: entries expects a map, got {}",
+            other.type_name()
+        ),
     }
 }
 // The fail-SOFT counterpart to fail-closed `coll[key]`: returns the element if the key is present
@@ -2994,11 +3018,23 @@ fn anubis_get(m: AnubisValue, k: AnubisValue, default: AnubisValue) -> AnubisVal
     }
 }
 fn anubis_merge(a: AnubisValue, b: AnubisValue) -> AnubisValue {
-    let mut out = match a { AnubisValue::Map(m) => anubis_rc_take(m), _ => vec![] };
-    if let AnubisValue::Map(bm) = b {
-        for (k, v) in anubis_rc_take(bm) {
-            if let Some(slot) = out.iter_mut().find(|(kk, _)| kk == &k) { slot.1 = v; } else { out.push((k, v)); }
+    let mut out = match a {
+        AnubisValue::Map(m) => anubis_rc_take(m),
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: merge expects a map as its first argument, got {}",
+            other.type_name()
+        ),
+    };
+    match b {
+        AnubisValue::Map(bm) => {
+            for (k, v) in anubis_rc_take(bm) {
+                if let Some(slot) = out.iter_mut().find(|(kk, _)| kk == &k) { slot.1 = v; } else { out.push((k, v)); }
+            }
         }
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: merge expects a map as its second argument, got {}",
+            other.type_name()
+        ),
     }
     anubis_mk_map(out)
 }

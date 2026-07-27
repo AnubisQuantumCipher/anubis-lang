@@ -1,7 +1,6 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_TYPE_ERROR
 // RUNTIME: exercise via `anubis run` (not `anubis check`).
-// PENDING (fails today): pop("hi") returns Int(0) and leaves the value unchanged
 // (run.rs:anubis_pop else-arm). Twin of pop_empty (wrong-type case).
 fn main() {
     let mut s = "hi";

@@ -1,14 +1,23 @@
 # Stdlib Core — analysis, proof & PoC builtins
 
 This document covers only the **analysis / proof / PoC** builtin subset (taint, symbolic,
-declassify, proof-surface, PoC-kit). The **general-purpose** builtin surface is much larger —
-~116 builtins (conversions, ~24 math, ~19 string, ~30 list, map, and higher-order functions) all
-REAL in `anubis run` — and is documented authoritatively in `LANGUAGE.md` ("Standard library"),
-which matches the codegen in `backends/run.rs` (`emit_builtin_call`) 1:1. An Anubis-source standard
-library now ALSO exists over these primitives: **13** content-locked modules under `compiler/stdlib/std/`
-(`math`, `collections`, `iter`, `result`, `option`, `io`, `str`, `crypto`, `testing`, `pwn`,
-**`time`**, **`net`**, **`rand`**),
-imported via `import std.<module>` and exercised by `scripts/run_stdlib_gate.sh`.
+declassify, proof-surface, PoC-kit).
+
+**Complete name count is 213** (union of five sets in `compiler/src/backends/run.rs`). The full
+table — including crypto, capability, and previously undocumented callables — is
+[`BUILTINS.md`](BUILTINS.md). Do not use the older "~150" (README) or "~116 general-purpose"
+figures; they understated the surface a stranger cannot invent by guesswork.
+
+The general-purpose core is still narrated in `LANGUAGE.md` ("Standard library"). An Anubis-source
+standard library ALSO exists over these primitives: **13** content-locked modules under
+`compiler/stdlib/std/` (`math`, `collections`, `iter`, `result`, `option`, `io`, `str`, `crypto`,
+`testing`, `pwn`, **`time`**, **`net`**, **`rand`**), imported via `import std.<module>` and
+exercised by `scripts/run_stdlib_gate.sh`.
+
+**Runtime fail-closed (stdlib edge cases):** as of 2026-07-27 the embedded runtime fails closed
+with explicit `ANUBIS_*` panics on empty-collection/domain/type misuse for the 32-fixture gate
+(`bash scripts/run_stdlib_failclosed_gate.sh` → **32/32**). Do not document silent `0` returns for
+`first`/`pop`/`min`/`find`/wrong-type `map`/etc. — that was the pre-patch defect class.
 
 - print / println / eprint / eprintln : REAL (general-purpose I/O in `anubis run`)
 - sink : REAL (recognized in taint/safe enforcement)

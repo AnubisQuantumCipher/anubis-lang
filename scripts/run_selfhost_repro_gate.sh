@@ -18,10 +18,15 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# $1 = seal dir (stage2/stage3 source); $2 = private repro OUT (optional).
+# Previously OUT was hardcoded to $ROOT/out/selfhost_repro_gate with no override, so concurrent
+# agents raced and SEAL_OUT alone could not isolate the gate (Seshat T2).
 SEAL_OUT="${1:-out/selfhost_gate}"
+OUT="${2:-${ANUBIS_REPRO_OUT:-out/selfhost_repro_gate}}"
 if [[ "$SEAL_OUT" != /* ]]; then SEAL_OUT="$ROOT/$SEAL_OUT"; fi
-OUT="$ROOT/out/selfhost_repro_gate"
+if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
+echo "repro_out=$OUT seal_out=$SEAL_OUT" | tee "$OUT/instrument.txt"
 
 pass=0; fail=0
 note() { echo "  $1" | tee -a "$OUT/summary.txt"; }

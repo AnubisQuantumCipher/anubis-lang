@@ -52,10 +52,25 @@ mkdir -p "$OUT"
 
 pass=0
 fail=0
+# Load-bearing checks that MUST pass for overall PASS (cannot skip-and-green).
+REQUIRED_CHECKS=(
+  ddc_payload_derived
+  ddc_build_cA_rustc
+  ddc_capstone_self_compile
+  ddc_negative_control
+)
+declare -a PASSED_CHECKS=()
 : >"$OUT/summary.txt"
 note() { echo "  $1" | tee -a "$OUT/summary.txt"; }
-pass_one() { pass=$((pass+1)); note "$1: PASS"; }
+pass_one() { pass=$((pass+1)); PASSED_CHECKS+=("$1"); note "$1: PASS"; }
 fail_one() { fail=$((fail+1)); note "$1: FAIL"; }
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "SELFHOST_DDC_GATE: FAIL (python3 required for negative-control + manifest)"; exit 127
+fi
+if ! command -v rustc >/dev/null 2>&1; then
+  echo "SELFHOST_DDC_GATE: FAIL (rustc required for cA lane)"; exit 127
+fi
 
 # anubis_sh.anb has no research{}/exploit{} blocks or @research/@exploit attrs
 # -> program_mode = Mode::Safe -> the `anubis run "$SELF"` calls below need no
@@ -64,7 +79,27 @@ fail_one() { fail=$((fail+1)); note "$1: FAIL"; }
 SELF="selfhost/src/anubis_sh.anb"
 RT_RS="selfhost/runtime/anubis_sh_interp_rt.rs"
 RT_C="selfhost/backend_c/anubis_sh_interp_rt.c"
-BIN=./target/release/anubis
+
+# Instrument pin (Seshat T2): ANUBIS_BIN exclusive — never rebuild under a pin.
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  if [[ ! -x "$BIN" ]]; then
+    echo "SELFHOST_DDC_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127
+  fi
+else
+  BIN=./target/release/anubis
+  if [[ ! -x "$BIN" ]]; then
+    cargo build -q --release -p anubis
+  fi
+  if [[ ! -x "$BIN" ]]; then
+    echo "SELFHOST_DDC_GATE: FAIL (no anubis binary after build)"; exit 127
+  fi
+fi
+{
+  echo "instrument: $BIN"
+  stat -f 'mtime=%Sm size=%z' -t '%Y-%m-%dT%H:%M:%S' "$BIN" 2>/dev/null \
+    || stat -c 'mtime=%y size=%s' "$BIN" 2>/dev/null || true
+} | tee "$OUT/instrument.txt"
 
 # --- Toolchain selection (fail-closed on clang) --------------------------------
 # The second toolchain must be genuinely independent of rustc's LLVM backend.
@@ -90,8 +125,7 @@ RUSTC_VERSION_LINE="$(rustc --version 2>/dev/null)"
 echo "== DDC toolchains =="
 note "reference (cA): rustc  -> $RUSTC_VERSION_LINE"
 note "diverse   (cB): $CC     -> $CC_VERSION_LINE"
-
-cargo build -q --release -p anubis
+note "instrument: $BIN"
 
 # --- Payload: the anubis_sh compiler program (AST JSON) ------------------------
 # Derived via the Rust host. BOTH engines run this identical program; the gate
@@ -269,14 +303,25 @@ if [[ $parser_ok -eq 1 ]]; then
     fail_one "ddc_parser_faithful_self"
   fi
   # Breadth: agree with the host on lex + parse across the corpus (incl. the error path).
+  # Hollow-PASS guard: both sides empty/failed must NOT score PASS (exit codes were
+  # previously discarded and empty-equal outputs counted as agreement).
   for f in selfhost/corpus/ok_*.anb selfhost/corpus/bad_parse.anb; do
+    [[ -f "$f" ]] || continue
     b=$(basename "$f" .anb)
     for cmd in lex parse; do
       set +e
       "$OUT/ashparse" "$cmd" "$f" >"$OUT/CP_${cmd}_${b}.out" 2>&1
+      cp_rc=$?
       "$BIN" run "$SELF" -- "$cmd" "$f" >"$OUT/HP_${cmd}_${b}.out" 2>/dev/null
+      hp_rc=$?
       set -e
-      if cmp -s "$OUT/CP_${cmd}_${b}.out" "$OUT/HP_${cmd}_${b}.out"; then
+      if [[ $cp_rc -ne "$hp_rc" ]]; then
+        echo "C-parser ${cmd} ${b}: exit mismatch cp=$cp_rc hp=$hp_rc" >>"$OUT/ddc_fail.log"
+        fail_one "ddc_parser_${cmd}_${b}"
+      elif [[ ! -s "$OUT/CP_${cmd}_${b}.out" && ! -s "$OUT/HP_${cmd}_${b}.out" && $cp_rc -ne 0 ]]; then
+        echo "C-parser ${cmd} ${b}: both sides empty+failed — not agreement" >>"$OUT/ddc_fail.log"
+        fail_one "ddc_parser_${cmd}_${b}"
+      elif cmp -s "$OUT/CP_${cmd}_${b}.out" "$OUT/HP_${cmd}_${b}.out"; then
         pass_one "ddc_parser_${cmd}_${b}"
       else
         echo "C-parser ${cmd} ${b} != host" >>"$OUT/ddc_fail.log"
@@ -285,10 +330,11 @@ if [[ $parser_ok -eq 1 ]]; then
     done
   done
 
-  # Full-pipeline capstone: cB running the C-DERIVED payload must emit the same stage
-  # as the rustc lane. This is the actual residual closure: source -> AST -> exec, all
-  # non-rustc, still byte-identical to the reference.
-  if [[ -f "$OUT/payload_C.json" && -x "$OUT/cB" && -f "$OUT/stageA.rs" ]]; then
+  # Full-pipeline capstone: required when parser_ok — cannot silently skip.
+  if [[ ! -f "$OUT/payload_C.json" || ! -x "$OUT/cB" || ! -f "$OUT/stageA.rs" ]]; then
+    echo "full-pipeline preconditions missing (payload_C/cB/stageA)" >>"$OUT/ddc_fail.log"
+    fail_one "ddc_fullpipeline_self_compile"
+  else
     set +e
     "$OUT/cB" "$OUT/payload_C.json" compile "$SELF" -o "$OUT/stageBC.rs" >/dev/null 2>&1; ebc=$?
     set -e
@@ -357,9 +403,40 @@ note "manifest: $OUT/ddc_manifest.json"
   echo "cA=rustc/LLVM  cB=$CC/non-LLVM  input=$SELF  agreed_output_sha256=$OUTPUT_SHA"
 } | tee -a "$OUT/summary.txt"
 
+# Required-check floor: cannot PASS without the load-bearing steps actually scoring PASS
+# (Seshat T2 — hollow green when core checks never ran).
+missing_required=0
+for req in "${REQUIRED_CHECKS[@]}"; do
+  found=0
+  for p in "${PASSED_CHECKS[@]+"${PASSED_CHECKS[@]}"}"; do
+    if [[ "$p" == "$req" ]]; then found=1; break; fi
+  done
+  if [[ $found -eq 0 ]]; then
+    note "REQUIRED check missing from PASS set: $req"
+    missing_required=$((missing_required + 1))
+  fi
+done
+
 if [[ "$fail" -gt 0 ]]; then
   echo "SELFHOST_DDC_GATE: FAIL ($pass pass / $fail fail)"
   [[ -f "$OUT/ddc_fail.log" ]] && tail -20 "$OUT/ddc_fail.log"
+  exit 1
+fi
+if [[ "$pass" -eq 0 ]]; then
+  echo "SELFHOST_DDC_GATE: FAIL (zero PASS checks — hollow PASS forbidden)"
+  exit 1
+fi
+if [[ "$missing_required" -gt 0 ]]; then
+  echo "SELFHOST_DDC_GATE: FAIL ($missing_required required check(s) never PASSed — hollow PASS forbidden)"
+  exit 1
+fi
+# cB build is required (name includes CC) — ensure at least one ddc_build_cB_* passed
+cB_ok=0
+for p in "${PASSED_CHECKS[@]+"${PASSED_CHECKS[@]}"}"; do
+  case "$p" in ddc_build_cB_*) cB_ok=1; break ;; esac
+done
+if [[ $cB_ok -eq 0 ]]; then
+  echo "SELFHOST_DDC_GATE: FAIL (no ddc_build_cB_* PASS — diverse lane never built)"
   exit 1
 fi
 echo "SELFHOST_DDC_GATE: PASS ($pass/$pass)"

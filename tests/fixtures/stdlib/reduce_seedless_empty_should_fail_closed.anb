@@ -1,9 +1,8 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_EMPTY_COLLECTION
 // RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
-// `anubis check` on this file passes clean today, verified 2026-07-26).
-// PENDING (fails today): the 2-arg seedless reduce(list, closure) returns Int(0) on an
-// empty list instead of failing closed (compiler/src/backends/run.rs anubis_reduce2,
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
 // ~line 2631). Note: the 3-arg reduce(list, closure, seed) is UNAFFECTED — it always
 // has an explicit seed and is correct on empty input.
 // See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.

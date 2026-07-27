@@ -1,9 +1,8 @@
 // EXPECT: FAIL
 // ERROR_CONTAINS: ANUBIS_TYPE_ERROR
 // RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
-// `anubis check` on this file passes clean today, verified 2026-07-26).
-// PENDING (fails today): has_key([1, 2, 3], 1) returns `false` instead of failing closed
-// (compiler/src/backends/run.rs::anubis_has_key, ~line 2221, whose fallback arm for a
+// `anubis check` on this file still passes — this is a *runtime* fail-closed gate).
+// SEALED 2026-07-27: runtime fails closed (stdlib fail-closed gate 32/32).
 // non-Map is `_ => AnubisValue::Bool(false)`). This is the highest-severity item in the
 // same-class-as-keys group: `has_key` is routinely used as a CAPABILITY / AUTHORIZATION
 // presence check (`if has_key(token_map, k) { ... }`); on a non-map argument the caller

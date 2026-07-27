@@ -12,7 +12,20 @@ mkdir -p "$OUT_DIR"
 FIXTURE_DIR="tests/fixtures/language_core"
 
 report="$OUT_DIR/fixture_report.json"
+REPORT_TMP="$report.tmp.$$"
 echo '{"fixtures": [], "overall_verdict": "PENDING"}' > "$report"
+
+# Pin instrument once for the whole run. Default remains `cargo run --` (DEBUG) so historical
+# numbers do not shift; seal runs must set ANUBIS_BIN to the same release snapshot as security.
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  LANG_CMD=("$ANUBIS_BIN")
+  executed_via="preset:$ANUBIS_BIN"
+else
+  LANG_CMD=(cargo run --)
+  executed_via="cargo-run-debug-default"
+fi
+echo "instrument: via=$executed_via out=$OUT_DIR (security grades release by default; this gate defaults DEBUG)" \
+  | tee "$OUT_DIR/instrument.txt"
 
 total=0
 passed=0
@@ -31,7 +44,12 @@ for f in "$FIXTURE_DIR"/*.anb; do
   rm -rf "$outd"
   mkdir -p "$outd"
   set +e
-  cargo run -- check "$f" --evidence --out "$outd" > "$outd/run.log" 2>&1
+  # NOTE: the default is `cargo run --`, i.e. the DEBUG binary — while `run_security_fixtures.sh`
+  # grades `./target/release/anubis`. The two headline gates therefore measure DIFFERENT builds of
+  # the compiler (debug additionally panics on integer overflow), and this one takes the cargo build
+  # lock once per fixture, so it cannot run alongside a build. The default is left unchanged here so
+  # no historical number shifts silently; set ANUBIS_BIN to pin a specific binary instead.
+  "${LANG_CMD[@]}" check "$f" --evidence --out "$outd" > "$outd/run.log" 2>&1
   rc=$?
   set -e
 
@@ -105,7 +123,7 @@ for f in "$FIXTURE_DIR"/*.anb; do
 
   # append to report (simple)
   jq --arg b "$base" --arg s "$status" --arg e "$expect" --arg v "$verdict" \
-     '.fixtures += [{"name":$b, "expected":$e, "actual":$v, "status":$s}]' "$report" > "$report.tmp" && mv "$report.tmp" "$report"
+     '.fixtures += [{"name":$b, "expected":$e, "actual":$v, "status":$s}]' "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
 done
 
 if [[ $failed -eq 0 ]]; then
@@ -115,7 +133,7 @@ else
 fi
 
 jq --arg o "$overall" --argjson t $total --argjson p $passed --argjson f $failed \
-   '.overall_verdict = $o | .total = $t | .passed = $p | .failed = $f' "$report" > "$report.tmp" && mv "$report.tmp" "$report"
+   '.overall_verdict = $o | .total = $t | .passed = $p | .failed = $f' "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
 
 echo "Report: $report"
 echo "Overall: $overall ($passed/$total)"

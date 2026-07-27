@@ -26,8 +26,18 @@ pass_one() { pass=$((pass+1)); note "$1: PASS"; }
 fail_one() { fail=$((fail+1)); note "$1: FAIL"; }
 
 : >"$OUT/summary.txt"
-BIN=./target/release/anubis
-cargo build -q --release -p anubis
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "SELFHOST_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  cargo build -q --release -p anubis
+  [[ -x "$BIN" ]] || { echo "SELFHOST_GATE: FAIL (no binary at $BIN)"; exit 127; }
+fi
+{
+  echo "instrument: $BIN"
+  stat -f 'mtime=%Sm size=%z' -t '%Y-%m-%dT%H:%M:%S' "$BIN" 2>/dev/null || true
+} | tee "$OUT/instrument.txt"
 # `anubis_sh.anb` (the self-hosted compiler's own source) contains zero
 # `research{}`/`exploit{}` blocks and zero `@research`/`@exploit`/etc
 # attributes (grep confirms this — the `target_run`/`p64`/`cyclic`/`shell`
