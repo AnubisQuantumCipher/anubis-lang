@@ -2,9 +2,10 @@
 
 > **Living status is not this file.** Dated rows below are accurate for their own date only.
 > **Single source of truth:** `docs/CLAIMS.md` § Known open issues (2026-07-27). Snapshot
-> (GROK-MAAT round 6): security **216/219** (**3 reds** = multi-candidate + factory summary);
-> language **244/244**; stdlib **32/32**; formal PASS; native **681/0**; selfhost engines 0
-> disagreements; capset selfhost known-fail `c05_open_param_call`. Test-count rows stale.
+> (GROK-MAAT round 8): security **228/228**; language **244/244**; stdlib **45/45**; capset
+> **5/5**; formal PASS; native **681/0**. Disease across **eight+** classes. Green = **no KNOWN
+> defects**, not no defects. D1–D4 + research auth bypass + unknown-attr fail-closed. Test-count
+> rows stale.
 
 > **Status vocabulary (2026-07-24):** freestanding `REAL` is banned. `under Command` means the claim is only as strong as re-running the **Command** column (and checking **Evidence**). Prefer sealed artifact paths for historical gates. See `docs/CLAIMS.md` session proof log for re-runs on this date.
 

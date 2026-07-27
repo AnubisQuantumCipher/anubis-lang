@@ -8,16 +8,15 @@
 open soundness class. **Living status only:**
 [`docs/CLAIMS.md` § Known open issues (2026-07-26)](docs/CLAIMS.md#known-open-issues-2026-07-26).
 
-Honest snapshot (GROK-MAAT round 6 — details only in CLAIMS):
+Honest snapshot (GROK-MAAT round 8 — details only in CLAIMS):
 
-- **Headline:** reds **11 → 3** at security **216/219**. Remaining = **one multi-candidate
-  mechanism** (If/Match bind→apply) **+ one interproc factory summary** — not three unknowns.
-- **Numbers:** language **244/244**; security **216/219**; stdlib **32/32**; formal PASS;
-  native **681/0**; taint/type/effect selfhost **0 disagreements**.
-- **Disease (arc):** every closed class = declaration/label written or computed, then ignored
-  or recomputed independently at a consumer.
-- **Known-failing gate (honest):** `run_capset_selfhost_gate` fails `c05_open_param_call`
-  (pre-existing; GROK-HORUS root-cause in flight).
+- **Numbers:** security **228/228**, language **244/244**, stdlib **45/45**, capset **5/5**,
+  formal PASS, native **681/0**. Published red list **empty**.
+- **Theme (8+ classes):** user writes something down / producer computes a label → consumer
+  ignores or recomputes independently. Proven across returns, fields, (R)/PCA, M1–M3, D1–D4,
+  research auth, unknown attrs.
+- **Green = no KNOWN defects, not no defects.** D1–D4 closed this stamp; composition residuals
+  may remain.
 
 Read every "A+ is CLAIMED" / Phase 9–10 DONE line in this file as **as of the 2026-07-24 seal**,
 not current. Whether the original 15 gates still pass on a fresh re-run has **not** been

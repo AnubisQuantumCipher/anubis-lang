@@ -538,7 +538,7 @@ and domain panics below. Prefer `parse_int_opt` / `parse_float_opt` when you mus
 `log2`, `log(x, base)`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pi()`, `e()`.
 **Fail-closed domain (runtime panics with `ANUBIS_*` codes, not silent `0`):** wrong-type `abs`,
 empty `min`/`max`/`min_by`/`max_by`, inverted `clamp` bounds, negative/`overflow` `factorial`,
-etc. Gate: `bash scripts/run_stdlib_failclosed_gate.sh` (**32/32** as of 2026-07-27).
+etc. Gate: `bash scripts/run_stdlib_failclosed_gate.sh` (**45/45** as of 2026-07-27).
 
 **Strings:** `upper`, `lower`, `trim`, `capitalize`, `split`, `join`, `chars`, `words`, `lines`,
 `contains`, `starts_with`, `ends_with`, `replace`, `index_of`, `substr`, `char_at`, `ord`, `chr`,

@@ -85,8 +85,8 @@ T9 surfaces (ATT&CK, OPSEC, recon, malleable, campaign, purple, phish PLAN_ONLY,
 
 Not claimed: freeze §5 residuals, hosted Metal proving, absolute trusting-trust closure.
 
-Also **not claimed as of 2026-07-27 round 6** (living list: `docs/CLAIMS.md`): total Safe-mode
-soundness; multi-candidate If/Match apply closed; factory field-callable summary closed; sealed
-post-registry fixpoint; capset selfhost green. Live: language **244/244**, security **216/219**
-(**3 known-red**, not rot), stdlib **32/32**, formal PASS, native **681/0**. Arc disease:
-declaration/label ignored or recomputed at consumer.
+Also **not claimed as of 2026-07-27 round 8** (living list: `docs/CLAIMS.md`): total Safe-mode
+soundness; freestanding "no defects" / "false-accept class closed forever"; sealed post-registry
+fixpoint. Live green: language **244/244**, security **228/228** (**no KNOWN defects, not no
+defects**), stdlib **45/45**, formal PASS, native **681/0**. Disease proven across **eight+**
+classes; D1–D4 + research auth bypass closed this stamp.

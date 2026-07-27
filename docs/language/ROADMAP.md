@@ -28,14 +28,14 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > python3 -c "import re,pathlib; t='\n'.join(re.sub(r'/-.*?-/','',p.read_text(),flags=re.S) for p in pathlib.Path('formal/Anubis').rglob('*.lean')); print(len(re.findall(r'^\\s*theorem\\s+',t,re.M)))"
 > # → 162 across 15 modules (re-measured 2026-07-26)
 > find examples/security -name '*.anb' | wc -l   # disk inventory; not a pass count
-> # Live: language 244/244; security 219 → 216 PASS + 3 known-red
-> # (multi-candidate If/Match apply + factory field-callable summary — not three unknowns)
-> # Stdlib 32/32; formal PASS; native 681/0; taint/type/effect selfhost 0 disagreements
-> # Capset selfhost: known FAIL c05_open_param_call (pre-existing; HORUS in flight)
-> ./target/release/anubis check examples/security/push_write_closure_index_apply_rejects.anb
-> # EXIT=1 ⇒ M1 push closed
-> ./target/release/anubis check examples/security/if_expr_write_closure_apply_rejects.anb
-> # EXIT=0 ⇒ multi-candidate residual (one of 3 known-red)
+> # Live: language 244/244; security 228/228 (lead) / disk ~230; published red list EMPTY
+> # Stdlib 45/45; capset 5/5; formal PASS; native 681/0
+> # Green = no KNOWN defects, not no defects. Disease across 8+ classes (D1–D4 + research auth closed)
+> for f in examples/security/*_rejects.anb; do
+>   ./target/release/anubis check "$f" >/dev/null 2>&1 && echo RED $f
+> done   # expect zero lines
+> ./target/release/anubis check examples/security/research_block_without_authorization_rejects.anb
+> # EXIT=1 ⇒ bare @research no longer elevates Safe
 > ```
 >
 > **Phases 0–10 freestanding "DONE / At DoD / ROADMAP COMPLETE" are FALSE as a current
@@ -48,8 +48,8 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 
 > **⚠️ NOT CURRENT STATUS (GROK-MAAT 2026-07-26).** This block is edited in place rather than
 > append-only. **Phases 0–10 "DONE / At DoD" and "ROADMAP COMPLETE" are FALSE as living soundness
-> claims** while three known-red remain (live security **216/219** =
-> multi-candidate + factory summary — honest residual inventory, not rot). Fixture green is not completion. **Living
+> claims** while green means no KNOWN defects, not no defects (live security **228/228** —
+> D1–D4 closed; composition residuals may remain; disease theme holds). Fixture green is not completion. **Living
 > list only:** `docs/CLAIMS.md` § Known open issues (2026-07-26). Historical sentences below
 > remain for the date each was written — not as present-tense truth.
 >
@@ -179,9 +179,9 @@ only division/remainder remains deferred); second independently-authored fronten
 
 ### ➡ NEXT ACTION
 
-> **2026-07-27 GROK-MAAT round 6:** Reds **11→3** at **216/219**. Remaining = multi-candidate
-> denotation + factory interproc summary. Disease: declaration/label ignored or recomputed at
-> consumer. Capset selfhost known-fail `c05_open_param_call`. Living: `docs/CLAIMS.md`.
+> **2026-07-27 GROK-MAAT round 8:** Security **228/228**. D1–D4 + research auth bypass +
+> unknown-attr fail-closed. Theme proven across eight+ classes. Green = no KNOWN defects.
+> Living: `docs/CLAIMS.md`.
 
 
 The lethal trifecta is now a **Safe-mode compile error** (`ec69ab6` shadow-first → `ad86af2` enforcing)

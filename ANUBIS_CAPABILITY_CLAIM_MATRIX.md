@@ -3,9 +3,9 @@
 > **Historical baseline, not current state.** This matrix records one audit run from 2026-07-05 —
 > the project's starting point (see `ROADMAP_A_PLUS.md`'s framing of the same-dated
 > `ANUBIS_REALITY_AUDIT.md` C-grade baseline). Every table row below is accurate for that date only.
-> **Do not read any row as 2026-07-27 status.** Living open FA: **3 reds** at security
-> **216/219** (multi-candidate + factory summary — `docs/CLAIMS.md`). Capset selfhost known-fail
-> `c05_open_param_call`. Dated history: `MATURITY_CLAIM_MATRIX.md`.
+> **Do not read any row as 2026-07-27 status.** Security **228/228** (green = no KNOWN defects,
+> not no defects). Disease across eight+ classes; D1–D4 + research auth closed
+> (`docs/CLAIMS.md`). Dated history: `MATURITY_CLAIM_MATRIX.md`.
 
 > **Status vocabulary (2026-07-24):** freestanding `REAL` is banned. `under Command` means the claim is only as strong as re-running the **Command** column (and checking **Evidence**). Prefer sealed artifact paths for historical gates. See `docs/CLAIMS.md` session proof log for re-runs on this date.
 

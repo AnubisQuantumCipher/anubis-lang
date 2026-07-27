@@ -12,144 +12,122 @@ read those files' "CLAIMED"/"DONE"/"PASS"/"COMPLETE" language as *what was true 
 date*, not as current. **This section is the single source of truth for current status.** Other
 owned docs link here; they must not restate the list.
 
-**The roadmap claim that phases 0–10 are DONE / At DoD is FALSE as a current soundness claim.**
-The language's promise — *`anubis check` passing means the program cannot violate its stated
-contracts, effects, capabilities, or information-flow policy at runtime* — is still violated by
-the **three known-red witnesses** below (one multi-candidate mechanism + one interproc factory
-summary). Fixture green elsewhere does **not** empty that residual.
+**A green board is when a claim surface is most dangerous.** Read the disease theme, the green
+table, and "green = no KNOWN defects" with equal weight.
 
-### The disease (read this first) — most honest thing we can say about this project
+### The disease — proven across eight separate classes
 
-> **Every class closed in this arc was the same disease: a user writes something down, or a
-> producer computes a label, and a consumer ignores it or recomputes it independently.**
+> **A user writes something down, or a producer computes a label, and a consumer ignores it or
+> recomputes it independently.**
 
-Declared returns, R1 field types, (R)/PCA re-derivation, M1 stored-callables, M2 multi-candidate
-denotation, M3 nested discharge — all instances of that sentence. Prefer making the correct
-binding reachable over adding a parallel consumer.
+That sentence is now **proven** across **at least eight** closed classes this arc (not eight
+unrelated bugs — one disease, eight surfaces):
 
-It is **not** an open-ended unknown. Live security reds are a **bounded, named residual**
-(live-enumerated 2026-07-27 round 6): **one mechanism** (multi-candidate closure denotation)
-**plus one interprocedural factory summary** — **not three unknown bugs**.
+| # | Class | Consumer failure | Closed |
+|---|---|---|---|
+| 1 | Declared `-> secret/tainted` returns | Summary body-derived only | `6fb055f` |
+| 2 | Declared struct **field** qualifier (R1) | Field type ignored at project | `f4d2f37` |
+| 3 | (R) runtime + PCA twin | Policy re-derived from assignment provenance | PTAH / `6fb055f` |
+| 4 | Stored-callable pipeline (M1) | Apply lost stored/returned callable identity | `47ab408`…`eb5be1f` |
+| 5 | Multi-candidate denotation (M2) | Expression not a single Var/Lambda | `ae1fa17`…`c491237` |
+| 6 | Value-block nested discharge (M3) | Stmt-`if` in value block not walked | `2168bf1` |
+| 7 | **D1/D2/D3** field qualifier **through CALL result** | Place type ignored return type of free-fn/method | `f9fc7a7` |
+| 8 | **D4** enum-payload qualifier at match binder | Payload declaration ignored at bind | `c9415b7` |
 
-| Class | Disease form | Status |
+**Same disease, additional closed surfaces this stamp:**
+
+| Class | Failure | Closed |
 |---|---|---|
-| Declared `-> secret/tainted` returns (named/aliased) | Consumer ignored declaration | **CLOSED** `6fb055f` |
-| Declared struct field secret/tainted (R1) | Consumer ignored field type | **CLOSED** `f4d2f37` |
-| (R) preflight + PCA twin | Consumer re-derived taint policy | **CLOSED** PTAH `6fb055f` |
-| M3 value-block stmt `if` contract discharge | Consumer never walked nested stmt | **CLOSED** `2168bf1` |
-| M2-A branch-expression forwarder registration | Consumer only saw statement `return` | **CLOSED** `ae1fa17` |
-| M2 alias normalize (`let a = f; return a`) | Identity-let alias ignored at registration | **CLOSED** `fb45278` |
-| M1 push / for / named-fn-in-container | Apply site lost stored callable identity | **CLOSED** `47ab408` / `ed24cba` / `07eb1db` |
-| Stdlib silent wrong values | Producer returned wrong value | **CLOSED** `bdfd21f` — **32/32** |
-| **Multi-candidate closure denotation** (If/Match bind → apply) | Expression denotes more than one lambda | **OPEN** — 2 witnesses |
-| **Interprocedural factory field-callable summary** | Factory return does not seed field-callable denotation | **OPEN** — 1 witness |
+| **Research authorization bypass** | Bare `@research { … }` elevated out of Safe with **no** authorization — any Safe program could obtain research capabilities by wrapping code | `e6ebfd2` |
+| **Unknown attributes** | Silently ignored (fail-open on the declaration surface) | `ec65724` fail-closed |
 
-**Headline:** reds went **11 → 3**. The project knows the shape of what remains.
+Prefer making the correct binding reachable over a parallel consumer.
 
-### Currently green (re-stamped 2026-07-27 GROK-MAAT round 6 — not a soundness completion claim)
+The original **eleven** published red witnesses closed via **four mechanisms** (M1, M2-reg,
+M2-B, M3) — not eleven fixes. D1–D4 and research/attr closes extend the same disease map.
 
-**Commit tip of this stamp:** `07eb1db` (M1 push) atop M1 for/named-fn, M2 alias, M2-A, M3, R1,
-stdlib, declared-return/PTAH. Live instrument: `./target/release/anubis` (mtime 2026-07-27 00:58).
+### Green means no KNOWN defects — not no defects
+
+**Green corpus = no defects in the published residual inventory. It does not mean no defects.**
+
+Do not stamp "false-accept class closed forever," "roadmap soundness complete," or "Safe is
+total." Residual composition shapes may still exist (e.g. D5 generic field instantiation, D6
+struct-lit IF-at-construction from earlier HORUS census) without a current published red row.
+Absence of a red row is **not** evidence of absence.
+
+### Currently green (re-stamped 2026-07-27 GROK-MAAT round 8 — not a total-soundness claim)
+
+**Tip commits:** `ec65724` (unknown attr fail-closed) · `e6ebfd2` (research auth bypass) ·
+`c9415b7` (D4) · `f9fc7a7` (D1/D2/D3). Live instrument: `./target/release/anubis` (mtime
+2026-07-27 02:14 this pass).
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
+| **Security fixtures** | Lead gate **228/228 PASS**. Live disk inventory **230** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
-| **Security fixtures** | Disk **219** `.anb`. **216 PASS / 3 FAIL** | Honest residual inventory — **not rot** |
-| **Stdlib fail-closed** | **32/32 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
-| **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh` → `FORMAL_GATE: PASS`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 681 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` (lead-verified) |
-| **Taint / type / effect selfhost** | **All PASS, 0 disagreements** | lead-verified differentials |
-| Capset selfhost | **Known FAIL** on `c05_open_param_call` | See §3 — pre-existing; root-cause in flight (GROK-HORUS). **Do not hide.** |
+| **Stdlib fail-closed** | **45/45 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
+| **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
+| **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
+| **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
+| **Native authoritative** | **PASS over 681 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
+| Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
 | VM seal of post-registry fixpoint | **Pending** | Do not publish host fixpoint as sealed |
 
-#### Honest-number methodology (read before quoting 216/219)
+#### Honest-number methodology
 
-**`216/219` is an honest published defect inventory, not a failing product grade.**
+**A full green gate is an empty published residual inventory, not a proof of total Safe soundness.**
 
-The corpus **deliberately contains red witness fixtures**. The **3** failures are a **published
-residual list** for **one multi-candidate mechanism + one factory interproc summary** (§1), not
-mystery rot and not three unknown bugs. A reader who sees 216/219 without this frame assumes
-decay; with it, they see a nearly-empty bounded map.
-
-- **Do not** rewrite as "≈99% secure" or claim Safe soundness total.
-- **Do not** quote older stamps (207/215, 203/214, 199/210, …) as current.
+- **Do not** rewrite as "100% secure."
+- **Do not** quote older stamps (219/219, 216/219, …) as current without re-run.
 - **Do** re-enumerate after any checker change.
 - **Do** seal with one pinned `ANUBIS_BIN` (§6).
 
+```bash
+# expect ZERO lines if published red inventory still empty
+for f in examples/security/*_rejects.anb; do
+  ./target/release/anubis check "$f" >/dev/null 2>&1 && echo "RED $f"
+done
+find examples/security -name '*.anb' | wc -l
+```
+
 Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 
-### Open — load-bearing (blocks honest completion)
+### Open — load-bearing (blocks honest "complete")
 
-1. **Three known-red security witnesses = one mechanism + one interproc summary (completion residual).**  
-
-   Not three independent mysteries. Live on release binary (this pass):
-
-   #### Mechanism A — multi-candidate closure denotation (**2 witnesses**)
-
-   **Product question:** when `let f = if … { λ₁ } else { λ₂ }` (or `match`), what does `f`
-   denote at apply? (Set/union denotation at bind; charge all candidates at apply, with
-   documented over-reject if needed.)
-
-   | Witness | Sub-hole |
-   |---|---|
-   | `if_expr_write_closure_apply_rejects.anb` | If-expr multi-lambda bind then apply (H18) |
-   | `match_expr_write_closure_apply_rejects.anb` | Match-expr multi-lambda bind then apply (H18) |
-
-   #### Mechanism B — interprocedural factory field-callable summary (**1 witness**)
-
-   **Product question:** when a factory free-fn returns a struct whose field is a write/secret
-   closure, does the **caller** still know what that field denotes?
-
-   | Witness | Sub-hole |
-   |---|---|
-   | `factory_struct_field_write_closure_rejects.anb` | Return/param summary empties field-callable denotation |
-
-   **Corpus: 216/219.** Re-enumerate:
-   ```bash
-   for f in examples/security/*_rejects.anb; do
-     ./target/release/anubis check "$f" >/dev/null 2>&1 && echo "RED $f"
-   done
-   # expect 3 lines; green = total − 3 → 216 when total is 219
-   find examples/security -name '*.anb' | wc -l   # 219
-   ```
+1. **Composition residuals may remain (no freestanding "all declaration seams closed").**  
+   D1–D4 **closed** this stamp. Earlier HORUS residual shapes (e.g. **D5** generic field
+   instantiation, **D6** IF-at-construction) are **not** claimed closed unless fixtures +
+   mechanism land. Green board does not invent completeness.
 
 2. **check/run divergence — (R) CLOSED; (B) residual named.**  
-   **(A)=0, (B)=7, (R)=3**; (R)+PCA **CLOSED** (PTAH). **(B)** non-run by design.
+   **(A)=0, (B)=7, (R)=3**; (R)+PCA **CLOSED**. **(B)** non-run by design — do not equate
+   `check` PASS with ordinary `run` for shell/symbolic.
 
-3. **Capset selfhost gate — known FAIL (document, do not hide).**  
-   `scripts/run_capset_selfhost_gate.sh` fails on
-   `tests/fixtures/capset_selfhost/c05_open_param_call.anb`. **Verified pre-existing** relative
-   to this arc's security closes; **not** introduced by M1/M2/R1. Root-cause analysis **in
-   flight with GROK-HORUS**. Do not grade the language "capset selfhost green" until this row
-   is closed or explicitly scoped. Self-host **taint / type / effect** engines remain
-   **0 disagreements**.
-
-4. **Self-host registry — HOST-FIXED; VM seal pending.**  
+3. **Self-host registry — HOST-FIXED; VM seal pending.**  
    Do not publish post-drift host fixpoint as sealed.
 
 ### Open — boundary honesty / process (not silent overclaims)
 
-5. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
-6. **Research / Safe seam** — dual-use by design, not Safe escape.  
-7. **Harness integrity + instrument fact:** language fixtures defaulted **DEBUG** while security
-   graded **RELEASE**. Both accept **`ANUBIS_BIN`**. Seals must pin one binary. Quoting
-   244/244 and 216/219 from mixed instruments is fabrication.
+4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
+5. **Research elevation requires authorization** — bypass **CLOSED** (`e6ebfd2`); dual-use
+   research remains intentional with explicit authorization, not a Safe free ride.  
+6. **Harness integrity + instrument fact:** language fixtures defaulted **DEBUG** while security
+   graded **RELEASE**. Both accept **`ANUBIS_BIN`**. Seals must pin one binary.
 
 ### Resolved this arc (do not re-open without new evidence)
 
-8. ~~Self-host harness / research host ban~~ **RESOLVED** (`14f5e14`).  
-9. ~~P0 `var×var` solver hang~~ **RESOLVED**.  
-10. ~~Tier 1 H2–H5-unanimity + W8 total~~ **RESOLVED**.  
-11. ~~Declared returns named/aliased~~ **RESOLVED** `6fb055f`.  
-12. ~~(R) + PCA twin~~ **RESOLVED** PTAH.  
-13. ~~R1 declared field secret/tainted~~ **RESOLVED** `f4d2f37`.  
-14. ~~Stdlib 27-builtin silent wrong~~ **RESOLVED** `bdfd21f` — **32/32**.  
-15. ~~M3 value-block nested stmt discharge~~ **RESOLVED** `2168bf1`.  
-16. ~~M2-A branch-expression forwarder~~ **RESOLVED** `ae1fa17`.  
-17. ~~M2 identity-let alias forwarder registration~~ **RESOLVED** `fb45278`.  
-18. ~~M1 named-fn-in-container / for-loop seed / push seed~~ **RESOLVED**
-    `47ab408` / `ed24cba` / `07eb1db`.
+7. ~~Published security red inventory (the eleven + D/research witnesses in corpus)~~ **EMPTY**
+   this pass — live zero known-red.  
+8. ~~D1/D2/D3 field qualifier through CALL result~~ **RESOLVED** `f9fc7a7`.  
+9. ~~D4 enum-payload qualifier at match binder~~ **RESOLVED** `c9415b7`.  
+10. ~~Research-block authorization bypass~~ **RESOLVED** `e6ebfd2` — bare `@research` no longer
+    elevates Safe.  
+11. ~~Unknown attributes silently ignored~~ **RESOLVED** `ec65724` fail-closed.  
+12. ~~Four mechanisms for the original eleven~~ **RESOLVED** (M1, M2-reg, M2-B, M3).  
+13. ~~Declared returns / R1 fields / (R)+PCA / stdlib 45/45 / capset 5/5~~ **RESOLVED**.  
+14. ~~P0 mul hang / Tier 1 / self-host harness~~ **RESOLVED**.
 
 **Status vocabulary:** freestanding **REAL** / production-grade / fully proven / "roadmap
 complete" stamps are banned unless the same line cites a re-runnable command + observation (or a
@@ -168,11 +146,11 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security + taint/type/effect selfhost **0 disagreements**; R1 + declared returns + M1 bulk | **PARTIAL** — remaining FA = **multi-candidate + factory summary** only (**3 reds / 216/219**). Stdlib 32/32 |
+| Safe taint enforcement | security **228/228** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **45/45** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 681 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
-| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + M1 bulk; **live security 216/219** / **3 known-red** | Residual: full PC-join; **multi-candidate If/Match apply + factory field-callable summary** only |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 228/228** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
 | Symbolic-index secret-capturing closure application | **CLAIMED 2026-07-25** | `arr[idx](…)` with non-literal `idx` fail-closed when container holds secret/taint-capturing element (j1 twin of `let g = arr[i]`); unit `symbolic_index_secret_capturing_list_application_fails_closed`; clean symbolic still accepts | Residual: full PC-join; untyped formals still interproc |
 | Nested container closure application (`outer[0][0]`, `b.fs[i]`, bind + mid-bind) | **CLAIMED 2026-07-25** | Nested Index/FieldAccess CallExpr + **bind** (`let g = outer[i][0]; g(0)`) + **intermediate mid-bind** (`let mid = outer[0]; mid[0](0)` re-keys `field_closures`; symbolic mid union-projects first segments fail-closed); unit `nested_container_closure_application_fails_closed` (apply + bind + mid lit/sym/clean); clean nested still accepts | Residual: full PC-join not claimed |
 | if-expr-built containers seed `field_closures` (incl. nested `Stmt::If` + let-inner) | **CLAIMED 2026-07-25** | `collect_container_closures` walks `Expr::If`/`Match`/`Block`; nested bare `if` as `Stmt::If`; unit `nested_container_closure_application_fails_closed` | Residual: full PC-join not claimed |
@@ -191,8 +169,8 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Language core (fixtures + repro) | **244/244** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures; vault contacts `run` EXIT=0 post-PTAH | Research/exploit needs `--allow-research` + VZ where required; **proof/shell constructs are non-run by design** (CLAIMS open §2 (B)); (R) preflight false-rejects **closed**; *check ≠ run for proof/shell* is a named product residual, not a checker gap |
-| Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical phase narrative in `docs/language/ROADMAP.md`; living STATUS banner + phase table State column rewritten 2026-07-26 pass 3 to refuse present-tense COMPLETE | **Named residual:** open false-accept class + walker parity (CLAIMS open §1) contradict any freestanding COMPLETE stamp |
-| Program-wide mode aggregation + explicit Safe enclaves | **under Command 2026-07-25:** `cargo test -p anubis --test safe_mode_program_gate` plus CLI `program_mode_` units; Lean lattice in `formal/Anubis/ModeAggregation.lean` | Highest privilege wins across source order/modules/impls; explicit `@safe` stays Safe. Lean proves the abstract lattice, while Rust tests cover traversal correspondence |
+| Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical narrative in `docs/language/ROADMAP.md` | **Named residual:** published reds empty ≠ Class D / D1–D6 closed; green board is not COMPLETE |
+| Program-wide mode aggregation + explicit Safe enclaves | **under Command 2026-07-25** + research auth bypass closed 2026-07-27 | Highest privilege wins; bare `@research` **without authorization REJECTS** (`e6ebfd2`). Lean lattice + Rust tests |
 | Honest automatic rejection evidence | **under Command 2026-07-25:** `cargo test -p anubis --test safe_mode_program_gate` | Failed `check` auto-emits and `build --evidence` emits artifact-free `FAIL` bundles; PCA tier is `rejected`, not a proof claim |
 | Runtime planning (probe) | plan surfaces exist (`runtime-plan`); **plan-only** | Plan-observed exec enforcement **deferred** |
 | In-repo package / PCA ecosystem | package gate history; `import` + evidence deps | Public package registry **not claimed** |

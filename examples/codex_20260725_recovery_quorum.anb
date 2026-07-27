@@ -1,0 +1,71 @@
+struct Replica {
+    name: string,
+    healthy: bool,
+    lag_blocks: i64,
+    integrity: i64,
+}
+
+enum RecoveryPlan {
+    Promote { node: string, score: i64, eligible: i64 },
+    Hold { eligible: i64, required: i64 },
+}
+
+fn nonnegative(value: i64) -> i64 ensures(result >= 0) {
+    if value < 0 {
+        return 0;
+    }
+    return value;
+}
+
+fn quorum_flag(eligible: i64, required: i64) -> i64 ensures(result == 0 || result == 1) {
+    if eligible >= required {
+        return 1;
+    }
+    return 0;
+}
+
+impl Replica {
+    fn eligible(self) {
+        self.healthy && self.lag_blocks <= 5 && self.integrity >= 75;
+    }
+
+    fn recovery_score(self) {
+        if !self.eligible() {
+            return 0;
+        }
+        let freshness = nonnegative(40 - self.lag_blocks * 5);
+        self.integrity + freshness;
+    }
+}
+
+fn choose_plan(replicas: list<Replica>, required: i64) {
+    let eligible = filter(replicas, |replica| replica.eligible());
+    let count = len(eligible);
+    if quorum_flag(count, required) == 0 {
+        return RecoveryPlan::Hold { eligible: count, required: required };
+    }
+    let best = eligible[0];
+    let best_score = best.recovery_score();
+    for replica in eligible {
+        let score = replica.recovery_score();
+        if score > best_score {
+            best = replica;
+            best_score = score;
+        }
+    }
+    RecoveryPlan::Promote { node: best.name, score: best_score, eligible: count };
+}
+
+fn main() {
+    let replicas = [Replica { name: "Osiris", healthy: true, lag_blocks: 2, integrity: 94 }, Replica { name: "Isis", healthy: true, lag_blocks: 1, integrity: 90 }, Replica { name: "Horus", healthy: false, lag_blocks: 0, integrity: 99 }, Replica { name: "Bastet", healthy: true, lag_blocks: 6, integrity: 99 }, Replica { name: "Ma'at", healthy: true, lag_blocks: 0, integrity: 82 }];
+    let required = 3;
+    let eligible = filter(replicas, |replica| replica.eligible());
+    let scores = map(eligible, |replica| replica.recovery_score());
+    let score_sum = reduce(scores, |total, score| total + score, 0);
+    let audit = { "replicas": len(replicas), "eligible": len(eligible), "required": required, "score_sum": score_sum };
+    println("" + "replicas=" + audit["replicas"]);
+    println("" + "eligible=" + audit["eligible"]);
+    println("" + "score_sum=" + audit["score_sum"]);
+    let plan = choose_plan(replicas, required);
+    match plan { RecoveryPlan::Promote { node: node, score: score, eligible: eligible } => { println("" + "PROMOTE " + node + " score=" + score + " quorum=" + eligible + "/" + required); }, RecoveryPlan::Hold { eligible: eligible, required: required } => { println("" + "HOLD quorum=" + eligible + "/" + required); } }
+}
