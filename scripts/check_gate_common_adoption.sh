@@ -28,6 +28,7 @@ exception_reason() {
     scripts/run_proof_binding_gate.sh) echo "fixed proof-binding scenarios" ;;
     scripts/run_prove_gate.sh) echo "fixed prove scenarios" ;;
     scripts/run_seal_checklist.sh) echo "independent root-of-trust accounting avoids common-mode failure" ;;
+    scripts/run_docs_drift_gate.sh) echo "scores DOCUMENTATION stamps against re-derived inventory, not .anb fixtures — gate_common's parse_expectation/score_fixture model does not apply" ;;
     scripts/run_selfhost_ddc_gate.sh) echo "compiler-stage DDC protocol, not fixture expectations" ;;
     scripts/run_selfhost_dogfood_gate.sh) echo "compiler-stage dogfood protocol" ;;
     scripts/run_selfhost_gate.sh) echo "compiler bootstrap stage protocol" ;;
