@@ -734,6 +734,16 @@ run_gate gate_common_adoption \
   '^GATE_COMMON_ADOPTION_GATE: FAIL\b' \
   --no-pin-use -- bash scripts/check_gate_common_adoption.sh
 
+# Docs drift: re-derive live inventory numbers; fail undated stamps that disagree.
+# Self-test proves every guard fires (FAIL on drift, PASS on truth/dated).
+# --no-pin-use: inventory-only; does not execute anubis.
+run_gate docs_drift \
+  '^DOCS_DRIFT_GATE: PASS\b' \
+  '^DOCS_DRIFT_GATE: FAIL\b' \
+  --no-pin-use -- bash scripts/run_docs_drift_gate.sh \
+    --out "$SEAL_OUT/gates/docs_drift" \
+    --self-test
+
 if command -v lake >/dev/null 2>&1 || [[ -x "$HOME/.elan/bin/lake" ]]; then
   if ! command -v lake >/dev/null 2>&1 && [[ -x "$HOME/.elan/bin/lake" ]]; then
     export PATH="$HOME/.elan/bin:$PATH"

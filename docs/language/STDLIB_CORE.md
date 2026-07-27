@@ -16,7 +16,7 @@ exercised by `scripts/run_stdlib_gate.sh`.
 
 **Runtime fail-closed (stdlib edge cases):** the embedded runtime fails closed with explicit
 `ANUBIS_*` panics on empty-collection/domain/type misuse. Gate:
-`bash scripts/run_stdlib_failclosed_gate.sh` → **45/45 PASS** (2026-07-27). Do not document silent
+`bash scripts/run_stdlib_failclosed_gate.sh` → **86/86 PASS** (2026-07-27). Do not document silent
 `0` returns for `first`/`pop`/`min`/`find`/wrong-type `map`/etc. — that was the pre-patch defect class.
 
 - print / println / eprint / eprintln : REAL (general-purpose I/O in `anubis run`)
