@@ -175,13 +175,28 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
    Binaries are now published as content-addressed read-only pins (`scripts/publish_pin.sh`) so a
    rebuild cannot mutate the instrument an agent is mid-measurement on.
 
-7. **Function-identity carrier — one open form.** A function reference reaching an application site
-   through a container built by `push`/`insert` rather than a literal
-   (`let fs = []; push(fs, key); app(fs)`) still accepts, while the eta twin
-   `push(fs, || key())` correctly rejects. Every other carrier in the family is closed with
-   fixtures. A candidate fix was written, measured INERT (the push resolver consults
-   capturing/effectful closures, and a synthesized `|| key()` is neither), and reverted rather than
-   shipped — dead code that looks like a fix is worse than a stated gap.
+7. **Function-identity carrier — CLOSED 2026-07-27 (`0eb5977`).** A function reference reaching an
+   application site through a container built by `push`/`insert` rather than a literal
+   (`let fs = []; push(fs, key); app(fs)`) accepted and printed the secret at runtime.
+
+   Cause: the push seeder computed labels with `expr_secret_source_m` / `expr_taint_source_m`, which
+   recognise a `Var` only when the LOCAL BINDING carries the label — sound for VALUES, but a bare
+   reference to a top-level `secret<T>`-returning function has no local binding, so the pushed
+   element read clean. It now uses `container_element_secret` / `container_element_taint`, the same
+   helpers the literal twin (`[key]`) and eta twin (`push(fs, || key())`) already routed through.
+
+   An earlier candidate fix was measured INERT and REVERTED rather than shipped: a synthesized
+   `|| key()` captures nothing and has no effect, so the push resolver's capturing/effectful
+   fallbacks both missed it. Dead code that looks like a fix is worse than a stated gap.
+
+   `let fs = push(e, key); app(fs)` still accepts and is NOT a false accept: `push` returns `0`
+   rather than the container, so the program panics before reaching any sink. That is a deferral on
+   an unrunnable program — and separately a footgun, tracked as item 8.
+
+8. **`push` returns `0`, and `check` does not catch its misuse.**
+   `let ys = push(xs, 3); len(ys)` — `check` rc=0, `run` rc=1 (panic). Functional-style use silently
+   yields a non-container. A check/run divergence of the item-2 class, found 2026-07-27 while
+   probing container mutation builtins.
 
 ### Resolved this arc (do not re-open without new evidence)
 

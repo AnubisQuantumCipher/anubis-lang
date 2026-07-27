@@ -32,7 +32,7 @@ It is deliberately **dual-use**, because the two people who most need un-fakeabl
 
 Both trade in the same currency — **truth that survives adversarial scrutiny** — and Anubis is the machine that mints it. Defense and offense are two faces of one idea: establish, and sign, exactly what is true about a program.
 
-And Anubis earns the right to make those proofs by **trusting nothing it cannot check itself** — down to its own SMT solver (a native, Lean-verified core that decides the integer lane by default with Z3 as fail-closed cross-check; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`), its own soundness (machine-checked in Lean 4), and its own compiler (self-hosted to a byte-identical fixpoint). It fails closed, everywhere, on purpose.
+And Anubis earns the right to make those proofs by **trusting nothing it cannot check itself** — down to its own SMT solver (a native, Lean-verified core that decides the integer lane by default with Z3 as fail-closed cross-check; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`), its own soundness (machine-checked in Lean 4), and its own compiler (self-hosted to a byte-identical fixpoint). It fails closed by design and by default — and where it does not yet, the gap is published rather than papered over: `docs/CLAIMS.md` carries the bounded residual for `anubis run` (76 sealed cells; the crypto slice unmeasured) alongside the named open items.
 
 > **Where it is:** a real, gated, pre-1.0 language with a working safe execution core, a fail-closed contract verifier, an offensive/evidence toolchain, and Apple-Silicon proving lanes. Every capability below is marked with an honest status and is traceable to a command, a gate, or a file. Nothing is marked done that isn't sealed.
 
@@ -217,7 +217,7 @@ Anubis carries a full, **engagement-scoped** offensive platform for authorized s
 |---|---|---|
 | **Bounty-grade PoC kit** | ✅ | cyclic patterns (`pattern-create`/`pattern-offset`), `p64` packing, `gadget-search`, a `target_run` harness, and **mutation fuzzing of local binaries** (`anubis fuzz`, real process crashes → crash evidence) |
 | **Engagement platform (AOP)** | ✅ | scoped workspaces (`engage-init`, authorization charter), an HTTP/JSON C2 listener, beacon `agent-generate`, task queue, and a **fail-closed action-receipt hash chain** (`receipt-verify`) — every action is accountable |
-| **Isolated execution** | ✅ | `vz-exploit` / `vz-fuzz` / `vz-c2-cycle` / `vz-stress` run the whole battery inside a crash- and egress-isolated guest — no host risk |
+| **Isolated execution** | ✅ | Host control plane `vz-status`/`vz-start`/`vz-exec`/… drives **Tart** (same as `anubis vz`). Live offensive work and `vz-stress` (= disposable-guest gate `scripts/run_offensive_platform_gate.sh`) run inside crash-isolated guests — not on the host |
 | **Reporting** | ✅ | `anubis bounty-report` turns an evidence bundle into a structured responsible-disclosure report |
 | **High-risk primitives** | 🟡 | process injection is **PLAN_ONLY by default**; live inject requires double authorization. SMB/WinRM lateral remains **PLAN_ONLY** (never executes) |
 
@@ -353,7 +353,7 @@ Anubis states exactly what it proves and what it does not:
 - **Native SMT is authoritative by default** on the proven fragment (RUP-certified Unsat; model-replayed Sat). Z3 still cross-checks when present. Opt out with `ANUBIS_NATIVE_AUTHORITATIVE=0`.
 - **Generics are runtime-erased** and multi-file `import` resolution is in progress — each an explicit, fails-closed boundary, not a hidden gap. Implicit flow (assignment under a secret PC) is **rejected**, not merely warned; the named residual is full PC labelling at every join.
 - **The offensive platform is for authorized engagements**, isolated in VZ guests, with the riskiest primitives PLAN_ONLY and every action receipted.
-- **Phases 9–10 (independent-stranger reproduction, a frozen 1.0 spec) are open** — neither is marked done; both are operator/third-party commitments, not code. (Phase 4 — self-hosting the effect/type/taint engines — reached DoD: all three now match the Rust checker on the self-host-expressible surface, differential-gated and sealed.)
+- **Phases 9–10 carry a witnessed run and a published freeze, and neither is a soundness seal.** Phase 9 has an independent clean-clone stranger reproduction on a DATED commit; the post-drift re-baseline is unsealed. Phase 10 publishes `SPEC_1_0_FREEZE.md` + `SEMVER_1_0_POLICY.md`. Both are green as ENGINEERING milestones, and neither discharges the soundness promise while `docs/CLAIMS.md` § "Open — load-bearing" stands. (Phase 4 — self-hosting the effect/type/taint engines — reached DoD: all three now match the Rust checker on the self-host-expressible surface, differential-gated and sealed.)
 
 ---
 

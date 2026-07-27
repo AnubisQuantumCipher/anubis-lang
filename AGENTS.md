@@ -10,8 +10,16 @@ Last verified against the tree: 2026-07-27.
 A proof-carrying systems language with a **Safe mode** and a **Research (offensive) mode**. Its
 entire promise is one sentence:
 
-> **`anubis check` passing means the program cannot violate its stated contracts, effects,
-> capabilities, or information-flow policy at runtime.**
+> **`anubis check` passing means Anubis found no way for the program to violate its stated
+> contracts, effects, capabilities, or information-flow policy at runtime — and everything it could
+> not decide, it refused rather than assumed.**
+>
+> That is the goal AND the honest form of the claim. It is deliberately not "cannot violate":
+> absolute totality is not established, and stating it that way was FALSE as recently as
+> 2026-07-27, when `fn app(f){print(f());} … app(key)` passed `check` on a fully green board and
+> printed the secret at runtime. **Green means no KNOWN defects, not no defects.** The residual is
+> named, not implied — `docs/CLAIMS.md` § "Open — load-bearing" is the single living list, and a
+> claim stronger than that list is a bug in the claim.
 
 SMT-backed contracts, taint and information-flow enforcement, effect and capability tracking, a
 from-scratch native SMT solver whose authority is bounded to Lean-proven bit-blasts, and a
@@ -108,7 +116,7 @@ red: STOP and say so. Do not fall through to the host.**
 ## Current state (2026-07-27)
 
 Green under a pinned binary, 12-gate `SEAL_PASS`, `known_fail=0`:
-security **242/242** · language **244/244** · stdlib fail-closed **45/45** · runtime 4/4 ·
+security **294/294** · language **244/244** · stdlib fail-closed **80/80** · runtime 4/4 ·
 selfhost 9/9 · taint/type/effect/capset self-host **0 disagreements** · formal gate PASS with every
 theorem machine-checked and no `sorry`/`admit`/`axiom` · native-authoritative **719 files, 0
 mismatches**.
