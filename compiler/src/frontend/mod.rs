@@ -2731,11 +2731,31 @@ impl Parser {
         let _ = self.expect_token(Token::LBrace, "expected `{` after module name");
         let mut items = vec![];
         while !self.at_eof() && !self.check_token(&Token::RBrace) {
+            // Attributes come BEFORE the item, so they must be parsed before dispatching on the
+            // item keyword. This loop used to test `check_keyword("fn")` first and only then call
+            // `parse_attributes()` — which can never fire, because when an attribute is present
+            // the cursor is sitting on `@`, not on `fn`. Every attributed function inside a
+            // `module { … }` therefore fell through to "expected item in module". `parse_impl`
+            // already had the correct order; this is the same loop with the two lines swapped.
+            //
+            // The practical effect was worse than a parse error: `@research(authorization: …)` is
+            // the AUTHORIZATION carrier for the research lane, so the one attribute a module-scoped
+            // function most needs was the one it could not be given.
+            let attrs = self.parse_attributes();
             if self.check_keyword("fn") {
-                let attrs = self.parse_attributes();
                 if let Some(item) = self.parse_fn(attrs, Visibility::Private) {
                     items.push(item);
                 }
+            } else if !attrs.is_empty() {
+                // An attribute was written and the item it decorates cannot carry it. Say so
+                // rather than dropping it: a silently discarded `@research(authorization: …)`
+                // would read as authorized to the author and unauthorized to the checker, which
+                // is the exact write-it-down-then-ignore-it failure this language exists to stop.
+                self.diagnostic(
+                    "attributes are only accepted on `fn` items inside a module",
+                    self.current_span(),
+                );
+                self.bump();
             } else if self.check_keyword("import") {
                 if let Some(item) = self.parse_import() {
                     items.push(item);

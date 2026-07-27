@@ -384,7 +384,7 @@ mod tests {
             .expect_err("float into u32 annotation must be rejected");
         assert!(err.contains("ANUBIS_TYPE_MISMATCH"), "got: {err}");
         // tainted wrapper must not hide it (research mode where tainted is legal).
-        let src = "fn main() { research { let x: tainted<u32> = 3.14; sink(x); } }";
+        let src = "@research(authorization: \"unit-test\", scope: \"lib-test\", reason: \"compiler regression fixture\", non_destructive: true) fn main() { research { let x: tainted<u32> = 3.14; sink(x); } }";
         let parsed = frontend::parse_source_detailed(src);
         let res = typecheck(parsed.ast, frontend::Mode::Research);
         assert!(
@@ -709,6 +709,7 @@ mod tests {
     #[test]
     fn parses_research_with_tainted_and_symbolic() {
         let src = r#"
+        @research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
         fn poc() {
             research {
                 // intent: "demo overflow"
@@ -815,6 +816,7 @@ mod tests {
         // Real safe-mode enforcement (raw pointers, tainted sinks) still lives in `typecheck`,
         // upstream of lowering, so nothing is weakened.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn trigger() {
     research {
         let x: tainted<u32> = symbolic();
@@ -845,6 +847,7 @@ fn trigger() {
     #[test]
     fn research_constraints_include_nested_assume_and_assert() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn trigger() {
     research {
         let y: tainted<u32> = symbolic();
@@ -883,6 +886,7 @@ fn trigger() {
         // marker whose runtime summary reports the taint analysis, instead of the retired template
         // that faked a "wrote at idx N" memory op.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn trigger() {
     research {
         let y: tainted<u32> = symbolic();
@@ -1001,6 +1005,7 @@ fn trigger() {
 import bounty.net;
 
 module poc {
+    @research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
     fn entry(input: tainted<u32>) {
         research {
             let x: tainted<u32> = symbolic();
@@ -1063,6 +1068,7 @@ module poc {
     #[test]
     fn taint_tracks_sink_and_declassify_traces() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn report() {
     research {
         let raw: tainted<u32> = symbolic();
@@ -1098,6 +1104,7 @@ fn report() {
     #[test]
     fn z3_solver_reports_counterexample_for_failed_assertion() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -1130,6 +1137,7 @@ fn bad() {
     #[test]
     fn solver_keeps_literal_widths_per_symbolic_variable() {
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn poc() {
     research {
         let buf: *mut u8 = 0 as *mut u8;
@@ -3076,6 +3084,7 @@ fn main() {
         // `assumptions ∧ ¬assertion`. Real replay: independently re-verify z3's OWN model
         // against the SAME query it decided, rather than trusting the model text.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -3106,6 +3115,7 @@ fn bad() {
         // replay must reject it because it re-derives the answer from the query itself — it
         // does not depend on which value is forged.
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -3568,6 +3578,7 @@ fn main() { f(3.0); }
         // Force a sat path then forge — unit-level on SolverCheck detail after check_obligations
         // already tags genuine models as "(replayed)".
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();
@@ -6235,6 +6246,7 @@ fn main() {
         let artifact_path = out_dir.join("artifact-input");
         std::fs::write(&artifact_path, b"reference artifact").unwrap();
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn report() {
     research {
         let raw: tainted<u32> = symbolic();
@@ -6410,6 +6422,7 @@ fn report() {
         let artifact_path = out_dir.join("artifact-input");
         std::fs::write(&artifact_path, b"solver artifact").unwrap();
         let src = r#"
+@research(authorization: "unit-test", scope: "lib-test", reason: "compiler regression fixture", non_destructive: true)
 fn bad() {
     research {
         let x: tainted<u32> = symbolic();

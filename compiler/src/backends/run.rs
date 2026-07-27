@@ -940,7 +940,7 @@ fn emit_fn_core(
         // (no AnubisValue inner). Falls back to native outer + AnubisValue inner otherwise.
         if let Some(native_body) = try_emit_mono_full_native_body(params, body, abi)? {
             return Ok(format!(
-                "fn {rust_name}({outer}) -> {ret_ty} {{\n{native_body}}}\n"
+                "fn {rust_name}({outer}) -> {ret_ty} {{\n    __anb_stack_guard();\n{native_body}}}\n"
             ));
         }
 
@@ -957,7 +957,7 @@ fn emit_fn_core(
         }
         let unwrap = abi.ret.coerce_from_anubis("__anb_ret");
         return Ok(format!(
-            "fn {rust_name}({outer}) -> {ret_ty} {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    let __anb_ret = __anb_body({fwd});\n    {unwrap}\n}}\n",
+            "fn {rust_name}({outer}) -> {ret_ty} {{\n    __anb_stack_guard();\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    let __anb_ret = __anb_body({fwd});\n    {unwrap}\n}}\n",
             fwd = fwd.join(", "),
         ));
     }
@@ -995,14 +995,14 @@ fn emit_fn_core(
             fwd.push(id);
         }
         Ok(format!(
-            "fn {rust_name}({outer}) -> AnubisValue {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    {guard_fn}(__anb_body({fwd}), {namelit})\n}}\n",
+            "fn {rust_name}({outer}) -> AnubisValue {{\n    __anb_stack_guard();\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    {guard_fn}(__anb_body({fwd}), {namelit})\n}}\n",
             outer = outer_params.join(", "),
             fwd = fwd.join(", "),
             namelit = rust_string_lit(name)?,
         ))
     } else {
         Ok(format!(
-            "fn {rust_name}({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n}}\n"
+            "fn {rust_name}({inner_sig}) -> AnubisValue {{\n    __anb_stack_guard();\n{body_src}    {tail_src}\n}}\n"
         ))
     }
 }
@@ -1117,6 +1117,10 @@ pub fn lower_program_to_rust_with_mono(
         false,
         mono,
         mono_call_sites,
+        // 768 MiB of the 1 GiB worker stack. The 256 MiB left over is deliberate headroom: the
+        // trap must have room to panic, unwind and print, which is the whole point of trapping
+        // before the real ceiling instead of after it.
+        768 * 1024 * 1024,
     )
 }
 
@@ -1146,6 +1150,10 @@ pub fn lower_program_to_guest(items: &[Item]) -> Result<String> {
         true,  // inject proof-input runtime for guest
         &[],   // guest path: no mono inventory yet (safe default)
         &[],
+        // 0 = guard disabled. The zkVM guest's stack size is not something this file measures, and
+        // a budget picked by guessing would trap correct programs or miss the case it exists for.
+        // Left explicitly unguarded and stated, rather than guarded on an invented number.
+        0,
     )
 }
 
@@ -1159,6 +1167,7 @@ fn lower_program_with_entry(
     guest_proof_inputs: bool,
     mono: &[crate::middle::MonoSpecialization],
     mono_call_sites: &[crate::middle::MonoCallSite],
+    stack_budget_bytes: usize,
 ) -> Result<String> {
     let mut fns = Vec::new();
     collect_fns(items, &mut fns);
@@ -1370,7 +1379,7 @@ fn anubis_cap_export(cap: AnubisValue, _reason: AnubisValue) -> AnubisValue { ca
     };
     Ok(format!(
         "{header}{prelude}\n{core}\n{keychain}\n{crypto}\n{poc}\n{proof}\n{functions}\n{entry}",
-        header = "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\n",
+        header = format!("#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\nconst __ANB_STACK_BUDGET: usize = {stack_budget_bytes};\n"),
         prelude = prelude,
         core = ANUBIS_CORE_RUNTIME_RS,
         keychain = keychain_se,
@@ -2366,6 +2375,45 @@ fn anubis_require_int(v: &AnubisValue, name: &str) {
     if !matches!(v, AnubisValue::Int(_)) {
         panic!("ANUBIS_TYPE_VIOLATION: integer parameter `{}` received a non-integer value at runtime; the checker models it as an i64, so a float/string/other argument is fail-closed rather than silently mis-proved", name);
     }
+}
+// Unbounded recursion must fail CLOSED like every other runtime trap, not abort the process.
+//
+// The whole trap design rests on one sentence in `lower_program_to_rust`: a fail-closed trap panics
+// the worker, the hook prints the ANUBIS_* code, `join()` returns Err, we exit non-zero. That is
+// true of panics. It is NOT true of a stack overflow: Rust's overflow handler ABORTS immediately
+// without unwinding, so the process dies with `fatal runtime error: stack overflow` and none of the
+// diagnostic path runs. The one failure that most needs an attributable message is exactly the one
+// that bypasses it -- measured on a mutual-return cycle `check` accepts (CLAIMS item 13).
+//
+// So guard the resource itself. The stack grows DOWN on every target this runs on, so
+// `base - here` is the bytes consumed; comparing against a budget below the real ceiling traps
+// while there is still room to panic, unwind, and print. Guarding BYTES rather than a frame COUNT
+// is what makes this correct regardless of frame size: a function with large locals trips after
+// fewer calls, which is the right answer, and a shallow-frame function still gets its full depth.
+//
+// The base is captured lazily on the first user-function entry rather than injected by the entry
+// stub, so no lowering can silently opt out by forgetting to initialize it.
+thread_local! {
+    static __ANB_STACK_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[inline]
+fn __anb_stack_guard() {
+    if __ANB_STACK_BUDGET == 0 {
+        return;
+    }
+    // `&0u8` would NOT work here: Rust const-promotes it to a 'static reference, so it reports a
+    // rodata address and the guard silently never fires. It must be a real stack local, kept from
+    // being optimized away.
+    let here_marker: u8 = 0;
+    let here = std::hint::black_box(&here_marker) as *const u8 as usize;
+    __ANB_STACK_BASE.with(|b| {
+        let base = b.get();
+        if base == 0 {
+            b.set(here);
+        } else if base.saturating_sub(here) > __ANB_STACK_BUDGET {
+            panic!("ANUBIS_RECURSION_LIMIT: recursion consumed more than {} MiB of stack without returning; `anubis check` does not prove termination, so a non-terminating program can pass the checker and this trap is how it fails closed rather than aborting the process", __ANB_STACK_BUDGET / (1024 * 1024));
+        }
+    });
 }
 // Same guard on a function's RETURN value (the model is only sound if an integer-typed function
 // actually yields an integer). Returns the value through so it can wrap any return path.
@@ -6379,6 +6427,50 @@ mod run_tests {
     }
 
     #[test]
+    fn every_emitted_user_fn_carries_the_stack_guard() {
+        // The recursion trap is only as good as its coverage: `emit_fn_core` has FOUR emission
+        // shapes (full-native mono, boxed mono, return-guarded, plain) and a fifth added later
+        // that forgets the guard would reopen the process-abort behaviour silently. Count the
+        // emitted `fn ` definitions against the guard calls instead of trusting review.
+        //
+        // The program below is chosen to exercise several shapes at once: a monomorphizable
+        // arithmetic fn, a declared-integer-return fn, and an untyped fn.
+        let src = "fn sq(x: u32) -> u32 { return x * x; } \
+                   fn tag(s) { return s; } \
+                   fn main() { print(sq(3)); print(tag(1)); }";
+        let toks = crate::frontend::lex(src);
+        let items = crate::frontend::parse(toks).expect("parse");
+        let rust = lower_program_to_rust(&items.items, false).expect("lower");
+        // Only the user-function definitions, not the runtime's own helpers: user fns are emitted
+        // into `functions_src` with the `anb_` prefix that `sanitize_ident`/`rust_name` applies.
+        let user_fns = rust.matches("\nfn anb_").count();
+        let guards = rust.matches("__anb_stack_guard();").count();
+        assert!(
+            user_fns >= 3,
+            "expected the 3 user fns to be emitted, saw {user_fns}"
+        );
+        assert_eq!(
+            guards, user_fns,
+            "every emitted user function must call __anb_stack_guard(); {user_fns} fns but \
+             {guards} guards — an emission shape is missing it, which silently restores the \
+             process-abort-on-stack-overflow behaviour"
+        );
+    }
+
+    #[test]
+    fn unbounded_recursion_traps_instead_of_aborting() {
+        // CLAIMS item 13: `check` ACCEPTS a mutual-return cycle, and `run` used to die with
+        // `fatal runtime error: stack overflow, aborting` — an abort, not a panic, so none of the
+        // fail-closed diagnostic path ran. It must now surface an attributable ANUBIS_* code.
+        run_expect_trap(
+            "fn ping() -> i64 { return pong(); } \
+             fn pong() -> i64 { return ping(); } \
+             fn main() { print(ping()); }",
+            "ANUBIS_RECURSION_LIMIT",
+        );
+    }
+
+    #[test]
     fn deep_recursion_runs_on_large_stack() {
         // The program runs on a 1 GiB worker stack, so recursion far past the 8 MiB main-thread
         // ceiling (~8500 frames) succeeds. 100k deep would overflow the OS main stack.
@@ -8052,7 +8144,15 @@ mod run_tests {
             run("fn main() { print(reduce([42], |a, b| a + b)); }"),
             "42"
         );
-        assert_eq!(run("fn main() { print(reduce([], |a, b| a + b)); }"), "0");
+        // A SEEDLESS reduce over an EMPTY list has no answer to give. This once returned "0",
+        // which is only right if the closure happens to be `+`: the same code returns 0 for a
+        // multiply fold (identity is 1) and a type error for a string-concat fold. reduce cannot
+        // know the closure's identity element, so it fails closed — and this assertion, which
+        // encoded the old silent-wrong result, is the stale half.
+        run_expect_trap(
+            "fn main() { print(reduce([], |a, b| a + b)); }",
+            "ANUBIS_EMPTY_COLLECTION",
+        );
         // Named 2-param function in either position:
         assert_eq!(
             run("fn add(a, b) { return a + b; } fn main() { print(reduce([1,2,3], add, 0)); }"),
