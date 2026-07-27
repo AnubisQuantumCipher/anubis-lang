@@ -611,6 +611,105 @@ fn access_chain_has_symbolic_index(e: &Expr) -> bool {
     }
 }
 
+/// Give a `for` loop's VARIABLE the callable identity of the elements it ranges over.
+///
+/// `let xs = [|| write_file(..)]; for f in xs { f(); }` charged nothing: the loop variable was bound
+/// with no `closure_lambda`, so the application site saw an opaque name. The elements' closures were
+/// already recorded on the collection's binding — the direct `xs[0]()` form was ALREADY rejected —
+/// so this was a parity hole, not a missing feature.
+///
+/// Identity only. The charge still happens at the APPLICATION site, so a loop that never applies the
+/// variable pays nothing, which is what keeps this from being a wall.
+///
+/// Shared by `analyze_stmts` and `walk_block_effects` on purpose: seeding one walker and not the
+/// other is the exact disease that produced most of this file's false accepts.
+fn seed_loop_var_callable(
+    var: &str,
+    source: &crate::frontend::ForSource,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) {
+    let crate::frontend::ForSource::Collection { expr } = source else {
+        return;
+    };
+    let elem = match expr {
+        Expr::Var(root) => any_effectful_field_closure(root, scope),
+        Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+            // Inline literal: collect its closures under a scratch binding and reuse the same
+            // resolver, so the literal and named-variable forms cannot diverge.
+            let mut fc = BTreeMap::new();
+            collect_container_closures(expr, "", scope, ctx, &mut fc);
+            let tmp = "_anb_for_src";
+            let mut probe = scope.clone();
+            probe.insert(
+                tmp.to_string(),
+                ScopeBinding {
+                    info: BindingInfo {
+                        name: tmp.to_string(),
+                        ty: None,
+                        mode: String::new(),
+                        tainted: false,
+                        taint_source: None,
+                        declassified: false,
+                        span: None,
+                    },
+                    closure_arity: None,
+                    closure_lambda: None,
+                    field_closures: fc,
+                    fn_alias: None,
+                    secret: false,
+                },
+            );
+            any_effectful_field_closure(tmp, &probe)
+        }
+        _ => None,
+    };
+    let Some(lam) = elem else { return };
+    let b = scope
+        .entry(var.to_string())
+        .or_insert_with(|| ScopeBinding {
+            info: BindingInfo {
+                name: var.to_string(),
+                ty: None,
+                mode: String::new(),
+                tainted: false,
+                taint_source: None,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            closure_lambda: None,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            secret: false,
+        });
+    b.closure_lambda = Some(lam);
+}
+
+/// Any lambda stored under `root`'s `field_closures`, for the EFFECT lane.
+///
+/// [`any_capturing_field_closure`] filters for closures that CAPTURE a secret or tainted value,
+/// which is the right question for the information-flow lanes and the wrong one for effects: a
+/// `|| write_file(..)` captures nothing at all, yet is exactly the closure a capability check must
+/// see. Reusing the capturing filter for effects is why `for f in [|| write_file(..)] { f(); }`
+/// charged nothing.
+///
+/// RESIDUAL, stated rather than hidden: only one closure can be carried in `closure_lambda`, so a
+/// container holding SEVERAL different closures resolves to the first and a heterogeneous container
+/// can still under-charge. That is strictly better than the previous behaviour (which saw nothing at
+/// all) but it is not a proof, and closing it needs the same set-widening as M2 Consumer B. The
+/// single-closure container — the shape that actually appears — is exact.
+fn any_effectful_field_closure(
+    root: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> Option<Box<Expr>> {
+    let b = scope.get(root)?;
+    b.field_closures
+        .values()
+        .find(|l| matches!(l.as_ref(), Expr::Lambda { .. }))
+        .cloned()
+}
+
 /// First secret/taint-capturing lambda stored under `root`'s `field_closures` (any nested path).
 fn any_capturing_field_closure(
     root: &str,
@@ -7269,6 +7368,13 @@ fn analyze_stmts(
                     &ctx.method_secret_fns,
                     &ctx.struct_fields,
                 );
+                // M1: give the loop VARIABLE the callable identity of the elements it ranges over.
+                // The direct `xs[0]()` form was ALREADY rejected, so this was a parity hole rather
+                // than a missing feature. Identity only — the charge still happens at the APPLICATION
+                // site, so a loop that never applies `f` pays nothing. Seeded in BOTH this enforcing
+                // walker and `walk_block_effects`; seeding one and not the other is the exact
+                // walker-parity disease behind most of this file's false accepts.
+                seed_loop_var_callable(var, source, scope, ctx);
                 analyze_stmts(body, mode, scope, fn_symbols, effects, assumptions, ctx);
                 let body_scope = scope.clone();
                 restore_block_scope(scope, &snap_scope);
@@ -9365,6 +9471,8 @@ fn walk_block_effects(
                     }
                 }
                 let snap = scope.clone();
+                // M1: see `seed_loop_var_callable` — seeded in this walker AND in `analyze_stmts`.
+                seed_loop_var_callable(var, source, scope, ctx);
                 walk_block_effects(body, None, mode, scope, effects, ctx);
                 *scope = snap;
             }
