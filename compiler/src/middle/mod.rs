@@ -240,25 +240,47 @@ fn fn_alias_of(
         // through this join while function references did not — a wiring gap, not a missing
         // mechanism. This is that wire.
         Expr::If { then, else_, .. } => {
-            let a = fn_alias_of(then, scope, ctx);
-            let b = fn_alias_of(else_, scope, ctx);
-            let dangerous = |n: &String| ctx.secret_fns.contains(n) || ctx.tainting_fns.contains(n);
-            match (a, b) {
-                (Some(x), Some(y)) => {
-                    if dangerous(&x) {
-                        Some(x)
-                    } else if dangerous(&y) {
-                        Some(y)
-                    } else {
-                        Some(x)
-                    }
-                }
-                (Some(x), None) | (None, Some(x)) => Some(x),
-                (None, None) => None,
-            }
+            join_fn_alias([then.as_ref(), else_.as_ref()].into_iter(), scope, ctx)
         }
+        Expr::Match { arms, .. } => join_fn_alias(arms.iter().map(|a| &a.body), scope, ctx),
         _ => None,
     }
+}
+
+/// The function identity a JOIN denotes — one arm of an `if`/`match` used as a value.
+///
+/// `let f = if c { key } else { other }` binds something that, when applied, may run `key`. Both
+/// join forms returned `None` from `fn_alias_of`, so the alias was dropped at the join and `app(f)`
+/// accepted while the unconditional `let f = key` correctly rejected.
+///
+/// Resolving to a DANGEROUS branch is the fail-closed choice, and it is why this returns early on
+/// the first one found. `fn_alias` holds a single name while a join can offer several, so picking
+/// arbitrarily would let branch ORDER decide soundness. Where no branch is dangerous the names are
+/// equally safe, so the first resolvable one is kept and ordinary conditional-dispatch code still
+/// resolves.
+///
+/// `if` and `match` share this rather than carrying two copies: they are the same question, and two
+/// implementations of one question drifting apart is the defect this file keeps producing.
+///
+/// Recursive through `fn_alias_of`, so nested joins resolve.
+fn join_fn_alias<'a>(
+    branches: impl Iterator<Item = &'a Expr>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> Option<String> {
+    let mut first: Option<String> = None;
+    for b in branches {
+        let Some(n) = fn_alias_of(b, scope, ctx) else {
+            continue;
+        };
+        if ctx.secret_fns.contains(&n) || ctx.tainting_fns.contains(&n) {
+            return Some(n);
+        }
+        if first.is_none() {
+            first = Some(n);
+        }
+    }
+    first
 }
 
 /// Recursively collect closures stored ANYWHERE inside a container literal, keyed by a dotted ACCESS
