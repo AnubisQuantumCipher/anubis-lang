@@ -19,13 +19,16 @@ done
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
-FIXDIR="tests/fixtures/turing_core"
+source "$REPO/scripts/lib/gate_common.sh"
+FIXDIR="${ANUBIS_TURING_CORPUS:-tests/fixtures/turing_core}"
 mkdir -p "$OUT"
 
-# Prefer the release binary (what release/A15 gates use); fall back to debug.
-if [ -x target/release/anubis ]; then BIN="target/release/anubis"
+# Honor an immutable caller pin; otherwise prefer release, then debug.
+if [ -n "${ANUBIS_BIN:-}" ]; then BIN="$ANUBIS_BIN"
+elif [ -x target/release/anubis ]; then BIN="target/release/anubis"
 elif [ -x target/debug/anubis ]; then BIN="target/debug/anubis"
 else echo "FAIL: no anubis binary (build with cargo build --release -p anubis)"; exit 1; fi
+[[ -x "$BIN" ]] || { echo "FAIL: binary not executable: $BIN"; exit 127; }
 
 pass=0; fail=0; total=0
 report="$OUT/report.json"
@@ -34,7 +37,19 @@ echo "  \"binary\": \"$BIN\"," >> "$report"
 echo "  \"fixtures\": [" >> "$report"
 first=1
 
-for anb in "$FIXDIR"/*.anb; do
+shopt -s nullglob
+fixtures=( "$FIXDIR"/*.anb )
+shopt -u nullglob
+if ! require_nonempty_corpus "${#fixtures[@]}" "$FIXDIR/*.anb"; then
+  echo '  ],' >> "$report"
+  echo '  "total": 0, "passed": 0, "failed": 0,' >> "$report"
+  echo '  "overall_verdict": "FAIL"' >> "$report"
+  echo '}' >> "$report"
+  echo "Overall: FAIL (0/0)"
+  exit 1
+fi
+
+for anb in "${fixtures[@]}"; do
   name="$(basename "$anb" .anb)"
   exp="$FIXDIR/$name.expected"
   total=$((total+1))
@@ -53,14 +68,18 @@ for anb in "$FIXDIR"/*.anb; do
       detail="stdout mismatch: got [$actual] want [$expected]"
     fi
   fi
-  if [ "$status" = "PASS" ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+  if score_fixture PASS "$status"; then pass=$((pass+1)); else fail=$((fail+1)); fi
   [ $first -eq 1 ] && first=0 || echo "," >> "$report"
   printf '    {"name": "%s", "status": "%s", "detail": %s}' \
     "$name" "$status" "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$detail")" >> "$report"
   printf '%-24s %s  (%s)\n' "$name" "$status" "$detail"
 done
 
-verdict="FAIL"; [ $fail -eq 0 ] && [ $pass -gt 0 ] && verdict="PASS"
+set +e
+finalize "$total" "$pass" "$fail" 0
+final_rc=$?
+set -e
+verdict="$GATE_FINAL_STATUS"; [ "$verdict" = PASS ] || verdict=FAIL
 echo "" >> "$report"
 echo "  ]," >> "$report"
 echo "  \"total\": $total, \"passed\": $pass, \"failed\": $fail," >> "$report"

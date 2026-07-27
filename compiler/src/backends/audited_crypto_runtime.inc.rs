@@ -153,10 +153,21 @@ fn anubis_hkdf_sha256(
     let ikm_b = anubis_crypto_bytes(&ikm);
     let salt_b = anubis_crypto_bytes(&salt);
     let info_b = anubis_crypto_bytes(&info);
-    let n = length.as_i64().max(0) as usize;
-    if n == 0 {
-        return anubis_mk_list(vec![]);
+    // RFC 5869 §2.3: L ∈ [1, 255*HashLen]. Prior code silently coerced negative L to 0 via
+    // `.max(0)` and returned an empty byte list — a SILENT_WRONG that would feed a downstream
+    // `ensures(len(key) == 32)` and let a contract hold "for the wrong reason" (the caller
+    // sees an empty vec and never checks). Fail closed on non-positive length, matching
+    // `anubis_random_bytes`'s posture. Kept parity with the pure lane so both host runtimes
+    // enforce the same domain (a caller that verifies against pure and runs against audited —
+    // or vice versa — cannot straddle a boundary at which one side silently accepts).
+    let n_raw = length.as_i64();
+    if n_raw < 1 {
+        panic!(
+            "ANUBIS_CRYPTO_HKDF_LENGTH: L must be >= 1 (RFC 5869), got {}",
+            n_raw
+        );
     }
+    let n = n_raw as usize;
     if n > 255 * 32 {
         panic!(
             "ANUBIS_CRYPTO_HKDF_TOO_LONG: requested {} bytes (max {})",
@@ -350,7 +361,20 @@ fn anubis_pbkdf2_hmac_sha256(
     if iters < 1 || iters > u32::MAX as i64 {
         panic!("ANUBIS_CRYPTO_PBKDF2_ITERATIONS: must be in 1..2^32-1");
     }
-    let n = length.as_i64().max(0) as usize;
+    // RFC 8018 §5.2 dkLen: must be a positive integer, at most (2^32-1)*hLen. Prior code
+    // silently coerced non-positive length to 0 via `.max(0)` and returned an empty byte
+    // list — same SILENT_WRONG shape closed on HKDF. Kept parity with the pure lane so both
+    // host runtimes enforce the same domain (a caller that verifies against pure and runs
+    // against audited — or vice versa — cannot straddle a boundary at which one side silently
+    // accepts).
+    let n_raw = length.as_i64();
+    if n_raw < 1 {
+        panic!(
+            "ANUBIS_CRYPTO_PBKDF2_LENGTH: dkLen must be >= 1 (RFC 8018), got {}",
+            n_raw
+        );
+    }
+    let n = n_raw as usize;
     let dk = anubis_pbkdf2_hmac_sha256_raw(
         &anubis_crypto_bytes(&password),
         &anubis_crypto_bytes(&salt),

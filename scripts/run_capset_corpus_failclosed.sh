@@ -18,6 +18,7 @@
 # Silent corpus shrink is forbidden: xargs failures and empty RAW are FAIL, not PASS.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 # Resolved in --one (must be pre-set by main or env) and again in main.
 BIN="${ANUBIS_BIN:-./target/release/anubis}"; SH=selfhost/src/anubis_sh.anb
 
@@ -88,8 +89,8 @@ trap 'rm -f "$RAW" "$ERR" "$LIST"' EXIT
 # Count on-disk corpus first — scored must equal this (truncation / silent shrink).
 find examples tests/fixtures selfhost/src -name '*.anb' | sort >"$LIST"
 expected=$(wc -l <"$LIST" | tr -d ' ')
-if [ "${expected:-0}" -eq 0 ]; then
-  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (empty corpus under examples|tests/fixtures|selfhost/src)" >&2
+if ! require_nonempty_corpus "${expected:-0}" "examples|tests/fixtures|selfhost/src"; then
+  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL" >&2
   exit 1
 fi
 
@@ -110,19 +111,13 @@ grep '^ANOMALY' "$RAW" || true
 [ "${STRICT:-0}" = 1 ] && grep '^CONSERVATIVE' "$RAW" || true
 echo "CAPSET_CORPUS_FAILCLOSED: OK=$ok CONSERVATIVE=$cons SKIP=$skip DISAGREE=$dis ANOMALY=$anom scored=$scored expected=$expected xargs_rc=$xargs_rc"
 
-if [ "$scored" -eq 0 ]; then
-  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (zero scored lines — empty corpus or all children died silently)" >&2
-  if [ -s "$ERR" ]; then echo "--- xargs stderr ---"; cat "$ERR"; fi
-  exit 1
-fi
-# Truncation / silent shrink (Seshat R8): every on-disk file must produce one classification line.
-if [ "$scored" -lt "$expected" ]; then
-  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (TRUNCATED_RUN: scored=$scored < expected=$expected — mid-run death/skip shrinks denominator)" >&2
+set +e
+finalize "$expected" "$((ok + cons + skip))" "$((dis + anom))" 0
+final_rc=$?
+set -e
+if [ "$final_rc" -ne 0 ]; then
+  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL ($GATE_FINAL_STATUS: $GATE_FINAL_REASON)" >&2
   if [ -s "$ERR" ]; then echo "--- xargs stderr ---"; head -50 "$ERR"; fi
-  exit 1
-fi
-if [ "$scored" -gt "$expected" ]; then
-  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (corpus_count_surplus: scored=$scored > expected=$expected)" >&2
   exit 1
 fi
 # xargs exits 123 if any child nonzero. Our --one paths always exit 0 by design; nonzero means

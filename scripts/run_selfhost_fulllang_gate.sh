@@ -18,6 +18,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/selfhost_fulllang_gate}"
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -78,8 +79,8 @@ fi
 shopt -s nullglob
 files=(examples/*.anb)
 shopt -u nullglob
-if [[ ${#files[@]} -eq 0 ]]; then
-  echo "SELFHOST_FULLLANG_GATE: FAIL (no examples/*.anb — empty corpus is not PASS)"; exit 1
+if ! require_nonempty_corpus "${#files[@]}" "examples/*.anb"; then
+  echo "SELFHOST_FULLLANG_GATE: FAIL (empty corpus)"; exit 1
 fi
 
 for f in "${files[@]}"; do
@@ -124,11 +125,15 @@ done
   echo "oracle: host \`anubis run\` vs self-host compile->rustc->run over examples/*.anb"
 } | tee -a "$OUT/summary.txt"
 
-if [[ "$fail" -gt 0 ]]; then
+set +e
+finalize "${#files[@]}" "$((pass + skip))" "$fail" "$timed_out"
+final_rc=$?
+set -e
+if [[ "$GATE_FINAL_STATUS" == "FAIL" ]]; then
   echo "SELFHOST_FULLLANG_GATE: FAIL ($pass pass / $fail fail / $skip skip / $timed_out timeout)"
   exit 1
 fi
-if [[ "$timed_out" -gt 0 ]]; then
+if [[ "$GATE_FINAL_STATUS" == "INCOMPLETE" ]]; then
   echo "SELFHOST_FULLLANG_GATE: FAIL ($timed_out timeout(s) — not scored as skip; hollow PASS forbidden under load)"
   exit 2
 fi

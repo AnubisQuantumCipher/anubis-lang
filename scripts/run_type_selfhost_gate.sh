@@ -35,6 +35,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 SH=selfhost/src/anubis_sh.anb
 CORPUS=tests/fixtures/types_selfhost
 
@@ -61,7 +62,12 @@ for f in "$CORPUS"/*.anb; do
   [ -e "$f" ] || continue
   n=$((n+1))
   name=$(basename "$f")
-  exp=$( { grep -m1 '// EXPECT:' "$f" || true; } | sed 's|.*EXPECT: *||' | tr -d '[:space:]')
+  if parse_expectation "$f" "${name%.anb}" none; then
+    exp="$GATE_EXPECT"
+  else
+    exp="MALFORMED"
+    echo "  $name MALFORMED ($GATE_MALFORMED)"
+  fi
 
   rust_ty=$( { "$BIN" check "$f" 2>&1 || true; } | extract_types | tr '\n' ',')
 
@@ -82,7 +88,7 @@ for f in "$CORPUS"/*.anb; do
   fi
 
   anb_verdict="PASS"; [ "$anb_rc" -ne 0 ] && anb_verdict="FAIL"
-  if [ "$anb_verdict" = "$exp" ]; then
+  if score_fixture "$exp" "$anb_verdict"; then
     expect_ok=$((expect_ok+1)); em="ok"
   else
     expect_bad=$((expect_bad+1)); em="EXPECT-MISMATCH($anb_verdict!=$exp)"
@@ -94,11 +100,13 @@ done
 echo ""
 echo "TYPE_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree | EXPECT ok=$expect_ok mismatch=$expect_bad"
 
-if [ "$n" -eq 0 ]; then
-  echo "TYPE_SELFHOST_GATE: FAIL (empty/missing corpus — hollow PASS forbidden)"
-  exit 1
-fi
-if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ]; then
+set +e
+finalize "$n" "$expect_ok" "$expect_bad" 0
+expect_rc=$?
+finalize "$n" "$agree" "$disagree" 0
+diff_rc=$?
+set -e
+if [ "$expect_rc" -ne 0 ] || [ "$diff_rc" -ne 0 ]; then
   echo "TYPE_SELFHOST_GATE: FAIL"
   exit 1
 fi

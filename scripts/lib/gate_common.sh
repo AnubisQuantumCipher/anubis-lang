@@ -4,31 +4,109 @@
 # invariants that must not vary between harnesses.
 
 # parse_expectation FILE BASENAME [NAME_POLICY]
-# Result variables: GATE_EXPECT, GATE_MALFORMED.
+# Result variables: GATE_EXPECT, GATE_MALFORMED, GATE_EXPECT_COUNT.
 # NAME_POLICY "accept_reject" binds *_accepts/*_rejects to their headers.
+# NAME_POLICY "should_fail_closed" binds names containing should_fail_closed to FAIL.
+#
+# Only an exact `// EXPECT: PASS|FAIL` line in the leading comment/blank header block
+# is authoritative. Program-body strings and comments are not fixture metadata.
 parse_expectation() {
-  local file="$1" base="$2" name_policy="${3:-none}"
-  GATE_EXPECT="$(grep -oE 'EXPECT: (PASS|FAIL)' "$file" 2>/dev/null \
-    | head -1 | awk '{print $2}' || true)"
+  GATE_EXPECT=""
   GATE_MALFORMED=""
+  GATE_EXPECT_COUNT=0
 
-  if [[ -z "$GATE_EXPECT" ]]; then
-    GATE_MALFORMED="missing EXPECT: header"
+  if [[ $# -lt 2 ]]; then
+    GATE_MALFORMED="parse_expectation requires FILE and BASENAME"
+    return 2
+  fi
+
+  local file="$1" base="$2" name_policy="${3:-none}"
+  if [[ -L "$file" ]]; then
+    GATE_MALFORMED="fixture is a symbolic link"
+    return 1
+  fi
+  if [[ ! -f "$file" ]]; then
+    GATE_MALFORMED="fixture is not a regular file"
+    return 1
+  fi
+  if [[ ! -r "$file" ]]; then
+    GATE_MALFORMED="fixture is unreadable"
+    return 1
+  fi
+  if [[ ! -s "$file" ]]; then
+    GATE_MALFORMED="fixture is empty"
     return 1
   fi
 
-  if [[ "$name_policy" == "accept_reject" ]]; then
-    case "$base" in
-      *_rejects)
-        [[ "$GATE_EXPECT" == "FAIL" ]] \
-          || GATE_MALFORMED="name says _rejects but header says EXPECT: $GATE_EXPECT"
-        ;;
-      *_accepts)
-        [[ "$GATE_EXPECT" == "PASS" ]] \
-          || GATE_MALFORMED="name says _accepts but header says EXPECT: $GATE_EXPECT"
-        ;;
-    esac
+  local parsed conflict
+  if ! parsed="$(awk '
+    BEGIN { in_header=1; count=0; first=""; conflict=0 }
+    {
+      sub(/\r$/, "", $0)
+      if (in_header) {
+        if ($0 ~ /^[[:space:]]*$/) next
+        if ($0 ~ /^[[:space:]]*\/\//) {
+          if ($0 ~ /^[[:space:]]*\/\/[[:space:]]*EXPECT:[[:space:]]*(PASS|FAIL)[[:space:]]*$/) {
+            value=$0
+            sub(/^[[:space:]]*\/\/[[:space:]]*EXPECT:[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            count++
+            if (first == "") first=value
+            else if (value != first) conflict=1
+          }
+          next
+        }
+        in_header=0
+      }
+    }
+    END { printf "%d|%s|%d\n", count, first, conflict }
+  ' "$file" 2>/dev/null)"; then
+    GATE_MALFORMED="could not parse fixture header"
+    return 1
   fi
+  IFS='|' read -r GATE_EXPECT_COUNT GATE_EXPECT conflict <<<"$parsed"
+
+  if [[ "$GATE_EXPECT_COUNT" -eq 0 ]]; then
+    GATE_MALFORMED="missing EXPECT: header"
+    return 1
+  fi
+  if [[ "$GATE_EXPECT_COUNT" -gt 1 ]]; then
+    if [[ "$conflict" -eq 1 ]]; then
+      GATE_MALFORMED="multiple conflicting EXPECT: headers"
+    else
+      GATE_MALFORMED="multiple EXPECT: headers"
+    fi
+    return 1
+  fi
+
+  case "$name_policy" in
+    none)
+      ;;
+    accept_reject)
+      if [[ "$base" == *"_rejects"* && "$base" == *"_accepts"* ]]; then
+        GATE_MALFORMED="name contains both _rejects and _accepts"
+      else
+        case "$base" in
+          *_rejects)
+            [[ "$GATE_EXPECT" == "FAIL" ]] \
+              || GATE_MALFORMED="name says _rejects but header says EXPECT: $GATE_EXPECT"
+            ;;
+          *_accepts)
+            [[ "$GATE_EXPECT" == "PASS" ]] \
+              || GATE_MALFORMED="name says _accepts but header says EXPECT: $GATE_EXPECT"
+            ;;
+        esac
+      fi
+      ;;
+    should_fail_closed)
+      if [[ "$base" == *"should_fail_closed"* && "$GATE_EXPECT" != "FAIL" ]]; then
+        GATE_MALFORMED="name says should_fail_closed but header says EXPECT: $GATE_EXPECT"
+      fi
+      ;;
+    *)
+      GATE_MALFORMED="unknown expectation name policy: $name_policy"
+      ;;
+  esac
 
   [[ -z "$GATE_MALFORMED" ]]
 }
@@ -36,6 +114,10 @@ parse_expectation() {
 # score_fixture EXPECTED ACTUAL
 # Result variable: GATE_FIXTURE_STATUS.
 score_fixture() {
+  GATE_FIXTURE_STATUS="INVALID"
+  if [[ $# -ne 2 ]]; then
+    return 2
+  fi
   local expected="$1" actual="$2"
   GATE_FIXTURE_STATUS="FAIL"
   case "$expected" in PASS|FAIL) ;; *) return 2 ;; esac
@@ -49,8 +131,20 @@ score_fixture() {
 
 # require_nonempty_corpus COUNT DESCRIPTION
 require_nonempty_corpus() {
+  GATE_CORPUS_ERROR=""
+  if [[ $# -ne 2 ]]; then
+    GATE_CORPUS_ERROR="require_nonempty_corpus requires COUNT and DESCRIPTION"
+    echo "INVALID CORPUS COUNT: $GATE_CORPUS_ERROR - refusing to report PASS" >&2
+    return 2
+  fi
   local count="$1" description="$2"
-  if [[ ! "$count" =~ ^[0-9]+$ || "$count" -eq 0 ]]; then
+  if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    GATE_CORPUS_ERROR="count is not a canonical non-negative integer: $count"
+    echo "INVALID CORPUS COUNT: $GATE_CORPUS_ERROR - refusing to report PASS" >&2
+    return 2
+  fi
+  if [[ "$count" == "0" ]]; then
+    GATE_CORPUS_ERROR="no fixtures matched $description"
     echo "EMPTY CORPUS: no fixtures matched $description - refusing to report PASS" >&2
     return 1
   fi
@@ -58,19 +152,40 @@ require_nonempty_corpus() {
 }
 
 # finalize TOTAL PASSED FAILED [INCOMPLETE]
-# Result variable: GATE_FINAL_STATUS (PASS, FAIL, or INCOMPLETE).
+# Result variables: GATE_FINAL_STATUS (PASS, FAIL, INCOMPLETE, or INVALID)
+# and GATE_FINAL_REASON.
 finalize() {
+  GATE_FINAL_STATUS="INVALID"
+  GATE_FINAL_REASON=""
+  if [[ $# -lt 3 || $# -gt 4 ]]; then
+    GATE_FINAL_REASON="finalize requires TOTAL PASSED FAILED [INCOMPLETE]"
+    return 2
+  fi
   local total="$1" passed="$2" failed="$3" incomplete="${4:-0}"
-  GATE_FINAL_STATUS="FAIL"
+  local value
+  for value in "$total" "$passed" "$failed" "$incomplete"; do
+    if [[ ! "$value" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      GATE_FINAL_REASON="counter is not a canonical non-negative integer: $value"
+      return 2
+    fi
+  done
+
   require_nonempty_corpus "$total" "the configured corpus" || return 1
+  if [[ $((passed + failed + incomplete)) -ne "$total" ]]; then
+    GATE_FINAL_STATUS="INCOMPLETE"
+    GATE_FINAL_REASON="counters do not sum to total: total=$total passed=$passed failed=$failed incomplete=$incomplete"
+    return 2
+  fi
   if [[ "$failed" -gt 0 ]]; then
+    GATE_FINAL_STATUS="FAIL"
+    GATE_FINAL_REASON="$failed fixture(s) failed"
     return 1
   fi
-  if [[ "$incomplete" -gt 0 || $((passed + failed + incomplete)) -ne "$total" ]]; then
+  if [[ "$incomplete" -gt 0 ]]; then
     GATE_FINAL_STATUS="INCOMPLETE"
+    GATE_FINAL_REASON="$incomplete fixture(s) incomplete"
     return 2
   fi
   GATE_FINAL_STATUS="PASS"
   return 0
 }
-

@@ -303,10 +303,17 @@ fn anubis_hkdf_sha256(
         salt_b = vec![0u8; 32];
     }
     let info_b = anubis_crypto_bytes(&info);
-    let n = length.as_i64().max(0) as usize;
-    if n == 0 {
-        return anubis_mk_list(vec![]);
+    // RFC 5869 §2.3: L ∈ [1, 255*HashLen]. Prior code silently coerced negative L to 0 via
+    // `.max(0)` and returned an empty byte list — a SILENT_WRONG that would feed a downstream
+    // `ensures(len(key) == 32)` and let a contract hold "for the wrong reason" (the caller
+    // sees an empty vec and never checks). Fail closed on non-positive length, matching
+    // `anubis_random_bytes`'s posture. NEGATIVE inputs are honestly reported so a signed
+    // overflow at the call site is caught rather than laundered.
+    let n_raw = length.as_i64();
+    if n_raw < 1 {
+        panic!("ANUBIS_CRYPTO_HKDF_LENGTH: L must be >= 1 (RFC 5869), got {}", n_raw);
     }
+    let n = n_raw as usize;
     if n > 255 * 32 {
         panic!("ANUBIS_CRYPTO_HKDF_TOO_LONG: requested {} bytes (max {})", n, 255 * 32);
     }

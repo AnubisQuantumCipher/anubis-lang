@@ -40,6 +40,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 STAMP="$(date +%Y%m%dT%H%M%S)_$$"
 OUT_DIR="out/run_failclosed_gate/${STAMP}"
@@ -159,20 +160,19 @@ run_bucket() {
     failed="$(jq -r '.failed // 0' "$j")"
     timed_out="$(jq -r '.timed_out // 0' "$j")"
   fi
-  # empty corpus is FAIL (nobody looked)
-  if [[ "$total" -eq 0 ]]; then
-    verdict="FAIL"
-    rc=1
-  fi
+  set +e
+  finalize "$total" "$passed" "$failed" "$timed_out"
+  local final_rc=$?
+  set -e
   local status="FAIL"
-  if [[ "$verdict" == "PASS" && "$rc" -eq 0 ]]; then
+  if [[ "$GATE_FINAL_STATUS" == "PASS" && "$verdict" == "PASS" && "$rc" -eq 0 ]]; then
     status="PASS"
-  elif [[ "$verdict" == "PASS_WITH_TIMEOUTS" || "$verdict" == "TIMEOUT" || "$rc" -eq 2 ]]; then
+  elif [[ "$GATE_FINAL_STATUS" == "INCOMPLETE" && ( "$verdict" == "PASS_WITH_TIMEOUTS" || "$verdict" == "TIMEOUT" || "$rc" -eq 2 ) ]]; then
     status="TIMEOUT"
   else
     status="FAIL"
   fi
-  echo "  bucket[$name]: status=$status verdict=$verdict passed=$passed/$total failed=$failed timeouts=$timed_out rc=$rc"
+  echo "  bucket[$name]: status=$status verdict=$verdict passed=$passed/$total failed=$failed timeouts=$timed_out rc=$rc finalize_rc=$final_rc"
   eval "BUCKET_${name}_STATUS='$status'"
   eval "BUCKET_${name}_PASSED='$passed'"
   eval "BUCKET_${name}_TOTAL='$total'"

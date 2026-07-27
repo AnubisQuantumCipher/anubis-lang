@@ -7,11 +7,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-BIN=./target/release/anubis
+source "$ROOT/scripts/lib/gate_common.sh"
+BIN="${ANUBIS_BIN:-./target/release/anubis}"
 LOG="$(mktemp)"
 : > "$LOG"
 
-cargo build -q --release -p anubis
+[[ -x "$BIN" ]] || { echo "NATIVE_SHADOW_GATE: FAIL (binary not executable: $BIN)"; exit 127; }
 export ANUBIS_NATIVE_SHADOW=1
 export ANUBIS_NATIVE_SHADOW_LOG="$LOG"
 
@@ -34,6 +35,10 @@ echo "  DEFER       = $defer   (native declined → z3)"
 echo "  DISAGREE    = $disagree"
 rm -f "$LOG"
 
+if ! require_nonempty_corpus "$n" "examples|tests/fixtures/**/*.anb"; then
+  echo "NATIVE_SHADOW_GATE: FAIL (empty corpus)"
+  exit 1
+fi
 if [ "$disagree" -gt 0 ]; then
   echo "NATIVE_SHADOW_GATE: FAIL ($disagree disagreements — see stderr ANUBIS_NATIVE_DISAGREE lines)"
   exit 1

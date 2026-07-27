@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 # Gate 2/3 language fixture runner
 # Respects // EXPECT: PASS|FAIL and // ERROR_CONTAINS: ...
@@ -25,6 +28,7 @@ echo '{"fixtures": [], "overall_verdict": "PENDING"}' > "$report"
 # `audit_unified.sh` reproduced the split into CI by building release and then invoking this gate
 # unpinned.
 if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  [[ -x "$ANUBIS_BIN" ]] || { echo "FATAL: ANUBIS_BIN=$ANUBIS_BIN is not executable" >&2; exit 127; }
   LANG_CMD=("$ANUBIS_BIN")
   executed_via="preset:$ANUBIS_BIN"
 elif [[ -x "./target/release/anubis" ]]; then
@@ -43,7 +47,17 @@ total=0
 passed=0
 failed=0
 
-for f in "$FIXTURE_DIR"/*.anb; do
+shopt -s nullglob
+fixtures=( "$FIXTURE_DIR"/*.anb )
+shopt -u nullglob
+if ! require_nonempty_corpus "${#fixtures[@]}" "$FIXTURE_DIR/*.anb"; then
+  jq '.overall_verdict = "FAIL" | .total = 0 | .passed = 0 | .failed = 0 | .note = "no fixtures matched"' \
+    "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
+  echo "Overall: FAIL (0/0)"
+  exit 1
+fi
+
+for f in "${fixtures[@]}"; do
   [[ -f "$f" ]] || continue
   base=$(basename "$f" .anb)
   total=$((total+1))
@@ -65,25 +79,12 @@ for f in "$FIXTURE_DIR"/*.anb; do
   rc=$?
   set -e
 
-  # A missing EXPECT header is MALFORMED, not "expected to pass". Defaulting to PASS made this gate
-  # fail OPEN: a fixture with a typo'd header was graded as expected-to-pass, so a program that
-  # SHOULD be rejected scored green merely by being accepted. The filename states the intent
-  # independently, so when both exist they must agree.
-  malformed=""
-  expect=$(grep -oE 'EXPECT: (PASS|FAIL)' "$f" | head -1 | awk '{print $2}' || true)
-  if [[ -z "$expect" ]]; then
-    malformed="missing EXPECT: header"
-  else
-    case "$base" in
-      *_rejects) [[ "$expect" == "FAIL" ]] || malformed="name says _rejects but header says EXPECT: $expect" ;;
-      *_accepts) [[ "$expect" == "PASS" ]] || malformed="name says _accepts but header says EXPECT: $expect" ;;
-    esac
-  fi
-  if [[ -n "$malformed" ]]; then
-    echo "  MALFORMED: $malformed"
+  if ! parse_expectation "$f" "$base" accept_reject; then
+    echo "  MALFORMED: $GATE_MALFORMED"
     failed=$((failed+1))
     continue
   fi
+  expect="$GATE_EXPECT"
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || echo "")
 
   # Determine if this run was a failure (syntax error, type error, taint violation, etc.)
@@ -142,7 +143,7 @@ for f in "$FIXTURE_DIR"/*.anb; do
     fi
   fi
 
-  if [[ $ok -eq 1 ]]; then
+  if [[ $ok -eq 1 ]] && score_fixture "$expect" "$verdict"; then
     passed=$((passed+1))
     status="PASS"
   else
@@ -156,18 +157,12 @@ for f in "$FIXTURE_DIR"/*.anb; do
      '.fixtures += [{"name":$b, "expected":$e, "actual":$v, "status":$s}]' "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
 done
 
-if [[ $failed -eq 0 ]]; then
-  overall="PASS"
-else
-  overall="FAIL"
-fi
-# A gate that measured NOTHING has not passed. Without this, a mistyped FIXTURE_DIR or a corpus that
-# failed to check out leaves the glob unmatched, so total=0, failed=0, and the gate prints PASS —
-# maximally green precisely when it verified nothing at all. The security gate already guards this.
-if [[ $total -eq 0 ]]; then
-  overall="FAIL"
-  echo "EMPTY CORPUS: no fixtures matched $FIXTURE_DIR/*.anb — refusing to report PASS"
-fi
+set +e
+finalize "$total" "$passed" "$failed" 0
+final_rc=$?
+set -e
+overall="$GATE_FINAL_STATUS"
+[[ "$overall" == "PASS" ]] || overall="FAIL"
 
 jq --arg o "$overall" --argjson t $total --argjson p $passed --argjson f $failed \
    '.overall_verdict = $o | .total = $t | .passed = $p | .failed = $f' "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"

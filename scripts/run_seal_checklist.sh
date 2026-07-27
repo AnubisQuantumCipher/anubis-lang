@@ -191,6 +191,7 @@ REQUIRED_GATE_SCRIPTS=(
   scripts/run_stdlib_failclosed_gate.sh
   scripts/run_run_failclosed_gate.sh
   scripts/check_capset_registry_parity.sh
+  scripts/check_gate_common_adoption.sh
   scripts/run_formal_gate.sh
   scripts/run_native_authoritative_gate.sh
   scripts/run_selfhost_gate.sh
@@ -727,6 +728,11 @@ run_gate capset_registry_parity \
   '^CAPSET_REGISTRY_PARITY_GATE: PASS\b' \
   '^CAPSET_REGISTRY_PARITY_GATE: FAIL\b' \
   --no-pin-use -- bash scripts/check_capset_registry_parity.sh
+
+run_gate gate_common_adoption \
+  '^GATE_COMMON_ADOPTION_GATE: PASS\b' \
+  '^GATE_COMMON_ADOPTION_GATE: FAIL\b' \
+  --no-pin-use -- bash scripts/check_gate_common_adoption.sh
 
 if command -v lake >/dev/null 2>&1 || [[ -x "$HOME/.elan/bin/lake" ]]; then
   if ! command -v lake >/dev/null 2>&1 && [[ -x "$HOME/.elan/bin/lake" ]]; then

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 # Gate 15 — Security Superpowers fixture runner
 # Respects // EXPECT: PASS|FAIL and // ERROR_CONTAINS: ...
@@ -26,6 +29,7 @@ SECURITY_DIR="examples/security"
 # silently change which binary the remaining fixtures grade.
 # An externally-provided ANUBIS_BIN wins over auto-detection.
 if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  [[ -x "$ANUBIS_BIN" ]] || { echo "FATAL: ANUBIS_BIN=$ANUBIS_BIN is not executable" >&2; exit 127; }
   executed_via="preset"
 elif [[ -x "./target/release/anubis" ]]; then
   ANUBIS_BIN="./target/release/anubis"
@@ -55,7 +59,17 @@ total=0
 passed=0
 failed=0
 
-for f in "$SECURITY_DIR"/*.anb; do
+shopt -s nullglob
+fixtures=( "$SECURITY_DIR"/*.anb )
+shopt -u nullglob
+if ! require_nonempty_corpus "${#fixtures[@]}" "$SECURITY_DIR/*.anb"; then
+  jq '. + {total:0, passed:0, failed:0, overall_verdict:"FAIL", note:"no fixtures matched"}' \
+    "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
+  echo "Overall: FAIL (0/0)"
+  exit 1
+fi
+
+for f in "${fixtures[@]}"; do
   [[ -f "$f" ]] || continue
   base=$(basename "$f" .anb)
   total=$((total+1))
@@ -63,6 +77,18 @@ for f in "$SECURITY_DIR"/*.anb; do
 
   outd="$OUT_DIR/$base"
   mkdir -p "$outd"
+
+  if ! parse_expectation "$f" "$base" accept_reject; then
+    echo "  MALFORMED: $GATE_MALFORMED"
+    echo "$GATE_MALFORMED" > "$outd/malformed.txt"
+    failed=$((failed+1))
+    jq --arg name "$base" --arg reason "$GATE_MALFORMED" --arg evidence_path "$outd" \
+      '.fixtures += [{"name": $name, "status": "FAIL", "expected": "MALFORMED", "actual": "MALFORMED", "malformed_reason": $reason, "evidence_path": $evidence_path}]' \
+      "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
+    continue
+  fi
+  expect="$GATE_EXPECT"
+
   set +e
   cmd="$ANUBIS_BIN check $f --evidence --out $outd"
   echo "$cmd" > "$outd/command.txt"
@@ -70,39 +96,6 @@ for f in "$SECURITY_DIR"/*.anb; do
   rc=$?
   set -e
 
-  # A fixture with no EXPECT header is MALFORMED, never "expected to pass".
-  #
-  # This used to default to PASS, which made the gate fail OPEN in its most dangerous direction: a
-  # leak fixture dropped in with a typo'd or missing header was graded as expected-to-pass, and if
-  # the checker accepted the leak the gate scored it GREEN. The filename carries the intent
-  # (`_rejects` asserts the program MUST be rejected) and the scoring ignored it entirely.
-  malformed=""
-  expect=$(grep -oE 'EXPECT: (PASS|FAIL)' "$f" | head -1 | awk '{print $2}' || true)
-  if [[ -z "$expect" ]]; then
-    malformed="missing EXPECT: header"
-  fi
-
-  # The filename is a second, independent statement of intent. When both are present they must
-  # agree — a `_rejects` fixture claiming EXPECT: PASS is a contradiction, and whichever one is
-  # wrong, the fixture is not testing what its name says it tests.
-  if [[ -z "$malformed" ]]; then
-    case "$base" in
-      *_rejects) [[ "$expect" == "FAIL" ]] || malformed="name says _rejects but header says EXPECT: $expect" ;;
-      *_accepts) [[ "$expect" == "PASS" ]] || malformed="name says _accepts but header says EXPECT: $expect" ;;
-    esac
-  fi
-
-  # Record it in the report like any other fixture. Skipping the record would make a malformed
-  # fixture DISAPPEAR from the report — the same disease this check exists to cure.
-  if [[ -n "$malformed" ]]; then
-    echo "  MALFORMED: $malformed"
-    echo "$malformed" > "$outd/malformed.txt"
-    failed=$((failed+1))
-    jq --arg name "$base" --arg reason "$malformed" --arg evidence_path "$outd" \
-      '.fixtures += [{"name": $name, "status": "FAIL", "expected": "MALFORMED", "actual": "MALFORMED", "malformed_reason": $reason, "evidence_path": $evidence_path}]' \
-      "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
-    continue
-  fi
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || true)
   err_needle="${err_needle//$'\r'/}"
 
@@ -160,7 +153,7 @@ for f in "$SECURITY_DIR"/*.anb; do
     fi
   fi
 
-  if [[ "$actual" == "$expect" ]]; then
+  if score_fixture "$expect" "$actual"; then
     passed=$((passed+1))
     status="PASS"
   else
@@ -177,13 +170,12 @@ for f in "$SECURITY_DIR"/*.anb; do
     "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
 done
 
-overall="PASS"
-if [[ $failed -gt 0 ]]; then
-  overall="FAIL"
-fi
-if [[ $total -eq 0 ]]; then
-  overall="FAIL"
-fi
+set +e
+finalize "$total" "$passed" "$failed" 0
+final_rc=$?
+set -e
+overall="$GATE_FINAL_STATUS"
+[[ "$overall" == "PASS" ]] || overall="FAIL"
 
 jq --arg overall "$overall" --argjson total "$total" --argjson passed "$passed" --argjson failed "$failed" \
   '. + {total: $total, passed: $passed, failed: $failed, overall_verdict: $overall}' \

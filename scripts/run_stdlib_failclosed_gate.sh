@@ -28,6 +28,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 OUT_DIR="out/stdlib_failclosed_gate"
 FIXTURE_DIR="tests/fixtures/stdlib"
@@ -81,8 +82,7 @@ shopt -s nullglob
 fixtures=( "$FIXTURE_DIR"/$GLOB_PAT )
 shopt -u nullglob
 
-if [[ ${#fixtures[@]} -eq 0 ]]; then
-  echo "FATAL: no fixtures match $FIXTURE_DIR/$GLOB_PAT" >&2
+if ! require_nonempty_corpus "${#fixtures[@]}" "$FIXTURE_DIR/$GLOB_PAT"; then
   jq --arg overall FAIL --argjson total 0 --argjson passed 0 --argjson failed 0 \
      --arg bin "$ANUBIS_BIN" --arg mtime "$bin_mtime" \
      '. + {total:0, passed:0, failed:0, overall_verdict:"FAIL", instrument:{path:$bin, mtime:$mtime}, note:"no fixtures matched"}' \
@@ -100,25 +100,20 @@ for f in "${fixtures[@]}"; do
   rm -rf "$outd"
   mkdir -p "$outd"
 
-  malformed=""
-  expect=$(grep -oE 'EXPECT: (PASS|FAIL)' "$f" | head -1 | awk '{print $2}' || true)
-  if [[ -z "$expect" ]]; then
-    malformed="missing EXPECT: header"
-  elif [[ "$base" == *should_fail_closed* && "$expect" != "FAIL" ]]; then
-    malformed="name says should_fail_closed but header says EXPECT: $expect"
-  fi
-  if [[ -n "$malformed" ]]; then
+  if ! parse_expectation "$f" "$base" should_fail_closed; then
+    expect="${GATE_EXPECT:-}"
     actual="MALFORMED"
     status="FAIL"
     failed=$((failed + 1))
-    echo "  MALFORMED: $malformed"
+    echo "  MALFORMED: $GATE_MALFORMED"
     jq --arg name "$base" --arg status "$status" --arg expect "$expect" \
-       --arg actual "$actual" --arg path "$f" --arg detail "$malformed" \
+       --arg actual "$actual" --arg path "$f" --arg detail "$GATE_MALFORMED" \
       '.fixtures += [{"name":$name,"path":$path,"status":$status,"expected":$expect,
         "actual":$actual,"malformed":$detail}]' \
       "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
     continue
   fi
+  expect="$GATE_EXPECT"
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || true)
   err_needle="${err_needle//$'\r'/}"
   # Strip trailing comments after needle if any (keep first token-ish phrase)
@@ -199,7 +194,7 @@ for f in "${fixtures[@]}"; do
       fi
     fi
 
-    if [[ "$actual" == "$expect" ]]; then
+    if score_fixture "$expect" "$actual"; then
       passed=$((passed + 1))
       status="PASS"
     else
@@ -223,12 +218,12 @@ for f in "${fixtures[@]}"; do
   fi
 done
 
-overall="PASS"
-if [[ $failed -gt 0 || $total -eq 0 ]]; then
-  overall="FAIL"
-elif [[ $timed_out -gt 0 ]]; then
-  overall="FAIL"
-fi
+set +e
+finalize "$total" "$passed" "$failed" "$timed_out"
+final_rc=$?
+set -e
+overall="$GATE_FINAL_STATUS"
+[[ "$overall" == "PASS" ]] || overall="FAIL"
 
 if command -v jq >/dev/null 2>&1; then
   jq --arg overall "$overall" --argjson total "$total" --argjson passed "$passed" --argjson failed "$failed" \

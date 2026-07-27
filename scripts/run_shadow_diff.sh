@@ -21,6 +21,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 BIN="${ANUBIS_BIN:-./target/release/anubis}"
 OUT="out/shadow_diff"
 SEARCH_DIRS=()
@@ -49,8 +50,7 @@ fi
 while IFS= read -r _f; do FILES+=("$_f"); done < <(find "${SEARCH_DIRS[@]}" \
   -name '*.anb' -not -path '*/.claude/*' -not -path '*/out/*' 2>/dev/null | sort)
 
-if [[ ${#FILES[@]} -eq 0 ]]; then
-  echo "EMPTY CORPUS: no .anb files found under ${SEARCH_DIRS[*]} - refusing to report PASS"
+if ! require_nonempty_corpus "${#FILES[@]}" "${SEARCH_DIRS[*]}/*.anb"; then
   echo "SHADOW_DIFF: FAIL (empty corpus)"
   exit 1
 fi

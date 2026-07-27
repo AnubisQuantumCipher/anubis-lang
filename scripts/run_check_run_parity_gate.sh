@@ -121,8 +121,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
-ANUBIS="${ANUBIS:-$ROOT/target/release/anubis}"
+ANUBIS="${ANUBIS_BIN:-${ANUBIS:-$ROOT/target/release/anubis}}"
 TIMEOUT_SECS="${ANUBIS_PARITY_GATE_TIMEOUT:-150}"
 OUT_DIR="out/check_run_parity_gate"
 SEARCH_DIRS=()
@@ -390,10 +391,17 @@ if [[ "$divergences" -gt 0 ]]; then
   echo
 fi
 
+# Validate that every discovered file reached exactly one terminal classification.
+classified=$((compared + skipped_no_main + skipped_timeout + skipped_crash))
+set +e
+finalize "$total" "$classified" 0 0
+partition_rc=$?
+set -e
+
 # ---- JSON report ----
 # FAIL only when DANGEROUS (R) or CONSERVATIVE remain. NON_RUN_BY_DESIGN alone
 # is a documented residual (check ≠ run for proof/shell), not a gate failure.
-if [[ "$total" -eq 0 ]]; then
+if [[ "$partition_rc" -ne 0 ]]; then
   overall_verdict="FAIL"
 elif [[ "$compared" -eq 0 ]]; then
   overall_verdict="FAIL"
@@ -444,8 +452,8 @@ fi
 echo "report: $OUT_DIR/report.json"
 echo
 
-if [[ "$total" -eq 0 ]]; then
-  echo "GATE: FAIL — no .anb files found under: ${SEARCH_DIRS[*]} (misconfigured --dir?)"
+if [[ "$partition_rc" -ne 0 ]]; then
+  echo "GATE: FAIL - corpus accounting invalid: $GATE_FINAL_STATUS ($GATE_FINAL_REASON)"
   exit 2
 fi
 

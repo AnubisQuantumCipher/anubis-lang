@@ -7743,6 +7743,124 @@ fn main() {
         .expect("clean push method must accept");
     }
 
+    /// Phase-1 close-out (adversary R3): identity forwarders, return-join Block/method producers,
+    /// and integrity container-as-arg must not launder secret/taint. Drives the real `tc_ok`
+    /// typecheck path — not a reimplementation of the walkers.
+    #[test]
+    fn phase1_fn_value_identity_and_return_join_parity() {
+        // #1 builtin identity of a secret-returning free fn, then apply → reject
+        let err_id = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn main() { let f = identity(key); print(f()); }"#,
+        )
+        .expect_err("identity(key) then apply must reject");
+        assert!(
+            err_id.contains("ANUBIS_SECRET_EXFILTRATION") || err_id.contains("secret"),
+            "identity: expected secret diagnostic, got: {err_id}"
+        );
+        // pure twin
+        tc_ok(
+            r#"fn safe() -> i64 { return 7; }
+               fn main() { let f = identity(safe); print(f()); }"#,
+        )
+        .expect("identity(safe) then apply must accept");
+
+        // #2 param-forwarding identity
+        let err_fwd = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn id(x) { return x; }
+               fn main() { let f = id(key); print(f()); }"#,
+        )
+        .expect_err("id(key) then apply must reject");
+        assert!(
+            err_fwd.contains("ANUBIS_SECRET_EXFILTRATION") || err_fwd.contains("secret"),
+            "param-fwd: expected secret diagnostic, got: {err_fwd}"
+        );
+        tc_ok(
+            r#"fn safe() -> i64 { return 8; }
+               fn id(x) { return x; }
+               fn main() { let f = id(safe); print(f()); }"#,
+        )
+        .expect("id(safe) then apply must accept");
+
+        // R3-A nested braced return-if (Block of Stmt::If)
+        let err_nest = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn safe() -> i64 { return 0; }
+               fn get(c, d) {
+                   return if c {
+                       if d { key } else { safe }
+                   } else {
+                       safe
+                   };
+               }
+               fn main() { let f = get(true, true); print(f()); }"#,
+        )
+        .expect_err("nested braced return-if with secret arm must reject");
+        assert!(
+            err_nest.contains("ANUBIS_SECRET_EXFILTRATION") || err_nest.contains("secret"),
+            "nested return-if: expected secret diagnostic, got: {err_nest}"
+        );
+
+        // R3-B method return-if (both orders covered by one secret arm)
+        let err_meth = tc_ok(
+            r#"fn key() -> secret<i64> { return 42; }
+               fn safe() -> i64 { return 0; }
+               struct S { x: i64 }
+               impl S {
+                   fn get(self, c) {
+                       return if c { key } else { safe };
+                   }
+               }
+               fn main() {
+                   let s = S { x: 0 };
+                   let f = s.get(true);
+                   print(f());
+               }"#,
+        )
+        .expect_err("method return-if with secret arm must reject");
+        assert!(
+            err_meth.contains("ANUBIS_SECRET_EXFILTRATION") || err_meth.contains("secret"),
+            "method return-if: expected secret diagnostic, got: {err_meth}"
+        );
+        tc_ok(
+            r#"fn a() -> i64 { return 1; }
+               fn b() -> i64 { return 2; }
+               struct S { x: i64 }
+               impl S {
+                   fn get(self, c) {
+                       return if c { a } else { b };
+                   }
+               }
+               fn main() {
+                   let s = S { x: 0 };
+                   let f = s.get(true);
+                   print(f());
+               }"#,
+        )
+        .expect("method return-if both pure arms must accept");
+
+        // Integrity container-as-arg: list of bare tainting fn applied into shell
+        let err_list = tc_ok(
+            r#"fn key() -> tainted<i64> { return 42; }
+               fn app(fs) uses(shell) { shell(fs[0]()); }
+               fn main() uses(shell) { app([key]); }"#,
+        )
+        .expect_err("list-as-arg of tainting fn to shell must reject");
+        assert!(
+            err_list.contains("ANUBIS_INTERPROC_SINK")
+                || err_list.contains("TAINTED")
+                || err_list.contains("taint"),
+            "list-as-arg integrity: expected taint/sink diagnostic, got: {err_list}"
+        );
+        tc_ok(
+            r#"fn a() -> i64 { return 1; }
+               fn app(fs) { print(fs[0]()); }
+               fn main() { app([a]); }"#,
+        )
+        .expect("pure list-as-arg applied must accept");
+    }
+
     #[test]
     fn map_entry_closure_application_is_enforced() {
         // SECURITY (Phase-9 closeout): map-keyed closures applied via `m["f"](0)` or bare-key

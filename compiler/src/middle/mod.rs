@@ -2078,6 +2078,21 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                 // forwarder for being declared in an `impl`.
                                 unanimous_forwarded_return(&rets, &alias)
                             };
+                            // Free-fn twin: disagreeing `return if` / `return match` is not a
+                            // unanimous forward (correct for the forwarder lane) but identity still
+                            // needs the UNPEELED join so `join_fn_alias` can fail closed on the
+                            // secret/tainting arm. Method map stays separate — never merge bare
+                            // method names into the free-fn registry (AGENTS.md).
+                            let sole = sole.or_else(|| {
+                                let cand = if rets.len() == 1 {
+                                    rets.into_iter().next()
+                                } else if tv.len() == 1 {
+                                    Some(tv[0].clone())
+                                } else {
+                                    None
+                                }?;
+                                matches!(cand, Expr::If { .. } | Expr::Match { .. }).then_some(cand)
+                            });
                             if let Some(r) = sole {
                                 ctx.method_sole_return
                                     .entry(name.clone())
@@ -5735,8 +5750,37 @@ fn apply_container_mutation_taint(
         }
         _ => return,
     };
+    // CLAIMS item 7: the fn-IDENTITY carrier through a container built by `push`/`insert`.
+    //
+    // `expr_taint_source_m` / `expr_secret_source_m` recognise a Var only when the LOCAL BINDING
+    // itself carries the label — the sound rule for VALUES, but a bare reference to a top-level
+    // `secret<T>`- / `tainted<T>`-returning function has no local binding at all, so those
+    // predicates read the pushed element clean and the container never gets its `.secret` /
+    // `.tainted` mutation. Downstream, `expr_secret_source_m(Var("fs"))` at the interproc egress
+    // check reads `fs.secret == false` and the leak accepted:
+    //
+    //     fn key() -> secret<i64> { return 42; }
+    //     fn app(fs) { print(fs[0]()); }                        // param 0 in `param_egress`
+    //     fn main() { let fs = []; push(fs, key); app(fs); }   // check exit 0, run printed 42
+    //
+    // The ETA twin `push(fs, || key())` correctly rejects today, and the LITERAL twin `[key]`
+    // rejects too, because both routes are checked through `container_element_secret` /
+    // `container_element_taint` — the helpers introduced for the array/struct/map/enum literal
+    // arms of `expr_{secret,taint}_source_m` that promote a bare fn-identity Var to the label its
+    // equivalent lambda carries. This is the same walker-parity gap the literal path closed
+    // months ago: the push seeder was computing labels with the wrong (lower) predicate.
+    //
+    // Fix is the smaller of two options: use the existing container-element helpers here, so a
+    // pushed element is treated the same way regardless of how it entered the container. The
+    // alternative — a third fn-identity arm on `resolve_applied_container_lambda` — would add a
+    // second code path that must stay in sync with the first, precisely the walker-parity
+    // failure this file keeps reproducing.
+    //
+    // Cannot over-reject a merely-HELD secret function: application-awareness lives downstream in
+    // `param_egress` / the direct apply-site checks (which fire only when the container is
+    // actually consumed), so a container that only HOLDS a secret-returning function stays clean.
     let any_taint = value_args.iter().find_map(|a| {
-        expr_taint_source_m(
+        container_element_taint(
             a,
             scope,
             tainting_fns,
@@ -5746,7 +5790,7 @@ fn apply_container_mutation_taint(
         )
     });
     let any_secret = value_args.iter().any(|a| {
-        expr_secret_source_m(
+        container_element_secret(
             a,
             scope,
             secret_fns,
@@ -18958,8 +19002,12 @@ fn expr_taint_source_m(
         // `sink(Enum::V(tainted))` / `sink({k: tainted})` laundered taint through the aggregate — an
         // adversary-shaped bypass (the composite-laundering boundary the review confirmed, closed here
         // symmetrically with the secrecy dual and the interprocedural param-flow summary).
+        //
+        // Container arms use `container_element_taint` so a bare tainting fn NAME element reads the
+        // same as the equivalent lambda — `app([key])` with `key -> tainted` must behave like
+        // `app([|| key()])`, which already rejects (parity with `container_element_secret`).
         Expr::ArrayLiteral { elements } => elements.iter().find_map(|e| {
-            expr_taint_source_m(
+            container_element_taint(
                 e,
                 scope,
                 tainting_fns,
@@ -18969,7 +19017,7 @@ fn expr_taint_source_m(
             )
         }),
         Expr::StructLiteral { fields, .. } => fields.iter().find_map(|(_, e)| {
-            expr_taint_source_m(
+            container_element_taint(
                 e,
                 scope,
                 tainting_fns,
@@ -18979,7 +19027,7 @@ fn expr_taint_source_m(
             )
         }),
         Expr::EnumConstruct { fields, .. } => fields.iter().find_map(|e| {
-            expr_taint_source_m(
+            container_element_taint(
                 e,
                 scope,
                 tainting_fns,
@@ -18998,7 +19046,7 @@ fn expr_taint_source_m(
                 struct_fields,
             )
             .or_else(|| {
-                expr_taint_source_m(
+                container_element_taint(
                     v,
                     scope,
                     tainting_fns,
@@ -19355,6 +19403,42 @@ fn container_element_secret(
         .get(n)
         .and_then(|b| b.fn_alias.clone())
         .filter(|a| secret_fns.contains(a))
+        .map(|a| format!("return value of `{a}`"))
+}
+
+/// Integrity dual of [`container_element_secret`]: a bare **tainting** function name stored as a
+/// container element / field / map value must label the container the same way the lambda twin does.
+/// Without this, `app([key])` with `key -> tainted` accepted at the call boundary while conf's
+/// `app([key])` with `key -> secret` correctly rejected — walker parity gap (adversary R3 integrity).
+///
+/// Does NOT over-reject mere storage of a tainting name that is never applied: the call-site
+/// consumer still requires `param_sinks` / a sink path. Application-awareness lives there.
+fn container_element_taint(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    tainting_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_tainting_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+) -> Option<String> {
+    if let Some(found) = expr_taint_source_m(
+        e,
+        scope,
+        tainting_fns,
+        param_return_taint,
+        method_tainting_fns,
+        struct_fields,
+    ) {
+        return Some(found);
+    }
+    let Expr::Var(n) = e else { return None };
+    if tainting_fns.contains(n) {
+        return Some(format!("return value of `{n}`"));
+    }
+    scope
+        .get(n)
+        .and_then(|b| b.fn_alias.clone())
+        .filter(|a| tainting_fns.contains(a))
         .map(|a| format!("return value of `{a}`"))
 }
 

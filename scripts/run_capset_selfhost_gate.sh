@@ -25,6 +25,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 BIN="${ANUBIS_BIN:-./target/release/anubis}"
 SH=selfhost/src/anubis_sh.anb
 CORPUS="${ANUBIS_CAPSET_SELFHOST_CORPUS:-tests/fixtures/capset_selfhost}"
@@ -82,7 +83,7 @@ norm_caps() {
   printf '%s\n' "$caps" | { grep -vE '^$' || true; } | sort -u | tr '\n' ','
 }
 
-agree=0; disagree=0; skip=0; anomaly=0; expect_ok=0; expect_bad=0; n=0
+agree=0; disagree=0; skip=0; anomaly=0; anomaly_rows=0; expect_ok=0; expect_bad=0; n=0
 echo "== capset-selfhost differential (Anubis-authored capability set  vs  Rust vz confine) =="
 for f in "$CORPUS"/*.anb; do
   [ -e "$f" ] || continue
@@ -120,6 +121,7 @@ for f in "$CORPUS"/*.anb; do
     anomaly=$((anomaly+1)); row_anomaly=1
   fi
   if [[ $row_anomaly -ne 0 ]]; then
+    anomaly_rows=$((anomaly_rows+1))
     continue
   fi
 
@@ -147,14 +149,17 @@ done
 
 echo ""
 echo "CAPSET_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree SKIP=$skip ANOMALY=$anomaly | marker ok=$expect_ok bad=$expect_bad"
-if [[ "$n" -eq 0 ]]; then
-  echo "EMPTY CORPUS: no fixtures matched $CORPUS/*.anb - refusing to report PASS"
+set +e
+finalize "$n" "$((agree + skip))" "$((disagree + anomaly_rows))" 0
+final_rc=$?
+set -e
+if [[ "$final_rc" -ne 0 ]]; then
   echo "CAPSET_SELFHOST_GATE: FAIL"; exit 1
 fi
 if [[ "$agree" -eq 0 ]]; then
   echo "CAPSET_SELFHOST_GATE: FAIL (zero productive comparisons; all SKIP/ANOMALY is hollow)"; exit 1
 fi
-if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ] || [ "$anomaly" -gt 0 ]; then
+if [ "$expect_bad" -gt 0 ] || [ "$anomaly" -gt 0 ]; then
   echo "CAPSET_SELFHOST_GATE: FAIL"; exit 1
 fi
 echo "CAPSET_SELFHOST_GATE: PASS (0 disagreements; Anubis-authored capability set == Rust program_capability_set)"

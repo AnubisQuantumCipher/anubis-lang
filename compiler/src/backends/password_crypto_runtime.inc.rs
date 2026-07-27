@@ -52,7 +52,20 @@ fn anubis_pbkdf2_hmac_sha256(
     if iters < 1 || iters > u32::MAX as i64 {
         panic!("ANUBIS_CRYPTO_PBKDF2_ITERATIONS: must be in 1..2^32-1");
     }
-    let n = length.as_i64().max(0) as usize;
+    // RFC 8018 §5.2 dkLen: must be a positive integer, at most (2^32-1)*hLen. Prior code
+    // silently coerced non-positive length to 0 via `.max(0)` and returned an empty byte
+    // list — same SILENT_WRONG shape closed on HKDF. A caller that passes a signed-overflow
+    // value or a length computed from an off-by-one otherwise sees an empty derived key and
+    // may hand it downstream (e.g. as an AEAD key) where a length-32 check would fail with
+    // a confusing error. Fail-closed at the KDF boundary is where the label belongs.
+    let n_raw = length.as_i64();
+    if n_raw < 1 {
+        panic!(
+            "ANUBIS_CRYPTO_PBKDF2_LENGTH: dkLen must be >= 1 (RFC 8018), got {}",
+            n_raw
+        );
+    }
+    let n = n_raw as usize;
     let dk = anubis_pbkdf2_hmac_sha256_raw(
         &anubis_crypto_bytes(&password),
         &anubis_crypto_bytes(&salt),
