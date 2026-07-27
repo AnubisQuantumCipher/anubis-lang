@@ -19612,6 +19612,95 @@ fn seed_effect_pattern(
 /// outer 5). `tail` marks whether this statement sequence is in the function's tail position, so a
 /// bare trailing expression counts as an implicit return only when it truly is one (never a
 /// mid-function side-effecting statement, nor a loop body's last statement). Declassify-before-return
+/// Seed a summary walker's scope with match/if-let binders whose DECLARED enum payload carries an
+/// information-flow qualifier.
+///
+/// D4 residual, caught by GROK-HORUS's re-census. The enforcing walker learned declared payloads
+/// (`seed_effect_pattern`), but the SUMMARY walkers evaluate `return x` against the current lexical
+/// scope, which never contains match-arm binders — so a function that extracts a qualified payload
+/// and returns it was not marked as tainting/secret-returning, and `shell(get())` / `print(get())`
+/// checked clean at the CALL SITE. The direct in-function form was already rejected, which is what
+/// makes this a walker-parity residual rather than a new class.
+///
+/// Over-approximate by construction: a binder is labelled if ANY arm's declared payload is
+/// qualified. That is the fail-closed direction for a summary — a missed label silently un-labels a
+/// whole function for every caller, while an extra one can only over-report.
+fn seed_declared_pattern_binders(
+    stmt: &Stmt,
+    types: &PlaceTypes<'_>,
+    is_qualified: fn(&str) -> bool,
+    scope: &mut BTreeMap<String, ScopeBinding>,
+    mark: impl Fn(&mut ScopeBinding),
+) {
+    let mut pats: Vec<&Pattern> = Vec::new();
+    collect_stmt_patterns(stmt, &mut pats);
+    let mut names = BTreeSet::new();
+    for p in pats {
+        qualified_pattern_binders(p, types, is_qualified, &mut names);
+    }
+    for n in names {
+        let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
+            info: BindingInfo {
+                name: n.clone(),
+                ty: None,
+                mode: String::new(),
+                tainted: false,
+                taint_source: None,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            closure_lambda: None,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            secret: false,
+        });
+        mark(b);
+    }
+}
+
+/// Every pattern appearing in a statement, including inside expression-position `match` / `if let`.
+fn collect_stmt_patterns<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Pattern>) {
+    fn in_expr<'a>(e: &'a Expr, out: &mut Vec<&'a Pattern>) {
+        match e {
+            Expr::Match { arms, .. } => {
+                for a in arms {
+                    out.push(&a.pattern);
+                    in_expr(&a.body, out);
+                }
+            }
+            Expr::IfLet {
+                pattern,
+                then,
+                else_,
+                ..
+            } => {
+                out.push(pattern);
+                in_expr(then, out);
+                in_expr(else_, out);
+            }
+            Expr::Block { stmts, tail } => {
+                for st in stmts {
+                    collect_stmt_patterns(st, out);
+                }
+                if let Some(t) = tail {
+                    in_expr(t, out);
+                }
+            }
+            Expr::If { then, else_, .. } => {
+                in_expr(then, out);
+                in_expr(else_, out);
+            }
+            _ => {}
+        }
+    }
+    match stmt {
+        Stmt::ExprStmt(e) => in_expr(e, out),
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => in_expr(init, out),
+        _ => {}
+    }
+}
+
 /// reads clean automatically via `expr_taint_source`'s `Declassify` arm. Monotone in `tainting_fns`.
 fn body_returns_taint(
     stmts: &[Stmt],
@@ -19834,6 +19923,26 @@ fn body_returns_taint(
             _ => {
                 // Explicit `return X` in this (non-block) statement — statement position or hidden in
                 // an expression (match/if arm) — checked against the CURRENT lexical scope.
+                //
+                // D4 residual: that scope never contains MATCH-ARM BINDERS, so a function extracting
+                // a declared-`tainted` enum payload and returning it was not marked as tainting, and
+                // the CALL SITE checked clean. Seed those binders first, into a local copy so the
+                // labels cannot escape this statement.
+                let mut scope_local;
+                let scope: &mut BTreeMap<String, ScopeBinding> = {
+                    scope_local = scope.clone();
+                    seed_declared_pattern_binders(
+                        stmt,
+                        struct_fields,
+                        ty::is_tainted,
+                        &mut scope_local,
+                        |b| {
+                            b.info.tainted = true;
+                            b.info.taint_source = Some("declared enum payload".to_string());
+                        },
+                    );
+                    &mut scope_local
+                };
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 if rets.iter().any(|e| {
@@ -20421,6 +20530,23 @@ fn body_returns_secret(
                 }
             }
             _ => {
+                // D4 residual, confidentiality twin of the taint summary walker: the scope a
+                // `return X` is evaluated against never contains MATCH-ARM BINDERS, so a function
+                // extracting a declared-`secret` enum payload and returning it was not marked as
+                // secret-returning and the CALL SITE checked clean. Seed those binders into a local
+                // copy so the labels cannot escape this statement.
+                let mut scope_local;
+                let scope: &mut BTreeMap<String, ScopeBinding> = {
+                    scope_local = scope.clone();
+                    seed_declared_pattern_binders(
+                        stmt,
+                        struct_fields,
+                        ty::is_secret,
+                        &mut scope_local,
+                        |b| b.secret = true,
+                    );
+                    &mut scope_local
+                };
                 let mut rets = Vec::new();
                 collect_returns_in_stmt(stmt, &mut rets);
                 if rets.iter().any(|e| {

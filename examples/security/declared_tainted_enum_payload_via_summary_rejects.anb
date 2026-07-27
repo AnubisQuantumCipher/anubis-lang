@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Integrity twin of `declared_secret_enum_payload_via_summary_rejects`. Both summary walkers carried
+// the identical gap and both are seeded in the same commit — closing one lane and leaving its
+// sibling is precisely the shape that produced this residual in the first place.
+enum E { A(tainted<i64>), B }
+fn get() -> i64 {
+    let e = E::A(42);
+    match e {
+        E::A(x) => { return x; }
+        E::B => { return 0; }
+    }
+}
+fn main() uses(shell) { shell(get()); }
