@@ -1784,6 +1784,37 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                             // H5 — several returns that all forward the SAME parameter.
                             unanimous_forwarded_return(&rets, &alias)
                         };
+                        // A return whose branches DISAGREE (`return if c { key } else { safe }`)
+                        // is not a unanimous forward, so `sole` is None and nothing is recorded —
+                        // correct for the FORWARDER lane, which needs unanimity to be sound.
+                        //
+                        // But identity analysis asks a different question. It does not need to know
+                        // which function is returned; it needs to know the SET, so it can fail closed
+                        // on the dangerous one. `unanimous_forwarded_return` peels the join through
+                        // `expr_tail_values` and then discards it for disagreeing arms, so the join
+                        // structure never survives to storage and `fn_alias_of`'s join arm is never
+                        // reached. Producer and consumer disagreeing on the SHAPE of a value is this
+                        // file's documented disease, here in its return-position form.
+                        //
+                        // Recording the UNPEELED join keeps both lanes correct: the forwarder lane
+                        // still consults its own predicate and still sees no unanimous forward, while
+                        // identity resolution gets the `If`/`Match` it needs and picks the dangerous
+                        // branch. Loosening `unanimous_forwarded_return` instead would have broken
+                        // the lane it exists for.
+                        let sole = sole.or_else(|| {
+                            let mut rets = Vec::new();
+                            for st in body {
+                                collect_returns_in_stmt(st, &mut rets);
+                            }
+                            let cand = if rets.len() == 1 {
+                                rets.into_iter().next()
+                            } else if tv.len() == 1 {
+                                Some(tv[0].clone())
+                            } else {
+                                None
+                            }?;
+                            matches!(cand, Expr::If { .. } | Expr::Match { .. }).then_some(cand)
+                        });
                         if let Some(r) = sole {
                             ctx.fn_sole_return.insert(
                                 name.clone(),
