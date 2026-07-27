@@ -686,6 +686,71 @@ fn seed_loop_var_callable(
     b.closure_lambda = Some(lam);
 }
 
+/// Every closure a multi-candidate initializer (`if` / `match` / `if let` / block in value position)
+/// may evaluate to, in source order.
+///
+/// Peels with `expr_tail_values` — the same peeler the forwarder registration and the taint/secret
+/// resolvers use — so a construct those lanes learn to peel is peeled here too. A candidate resolves
+/// if it is a lambda literal or a variable already bound to one; anything else is skipped, which
+/// under-approximates and therefore keeps the pre-existing fail-open rather than inventing a charge.
+// Boxed deliberately: these feed `closure_lambda: Option<Box<Expr>>` and
+// `field_closures: BTreeMap<String, Box<Expr>>`, so unboxing here would only force a re-box at
+// every use site.
+#[allow(clippy::vec_box)]
+fn multi_candidate_closures(init: &Expr, scope: &BTreeMap<String, ScopeBinding>) -> Vec<Box<Expr>> {
+    let mut peeled = Vec::new();
+    expr_tail_values(init, &mut peeled);
+    peeled
+        .iter()
+        .filter_map(|c| match c {
+            Expr::Lambda { .. } => Some(Box::new(c.clone())),
+            Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every closure the name `callee` may denote when applied as `callee(..)`.
+///
+/// M2 Consumer B. `let f = if c { || write_file(..) } else { || print(0) }; f();` binds a
+/// MULTI-CANDIDATE closure, and only one lambda fits in `closure_lambda`. Picking one would be
+/// unsound-by-arbitrary-choice — it can select the pure arm and miss the writing one — so the bind
+/// stores the primary in `closure_lambda` and the remaining candidates in `field_closures` under the
+/// reserved `ALT_CLOSURE_PREFIX`, and every application charges the UNION of all of them.
+///
+/// This is the first place in this arc where the safe direction has a visible cost: a program whose
+/// gated closure sits in the NOT-TAKEN arm now rejects. That is sound conservative analysis and it is
+/// intended — `if_expr_pure_closure_apply_accepts` pins that an all-pure multi-arm bind still passes,
+/// so only genuinely mixed pure/effectful binds pay.
+///
+/// The prefix is reserved and cannot collide with a real access path: `flatten_access_path` keys are
+/// built from field names and literal indices, and `push`/`insert` use `_pN`.
+// Boxed deliberately: these feed `closure_lambda: Option<Box<Expr>>` and
+// `field_closures: BTreeMap<String, Box<Expr>>`, so unboxing here would only force a re-box at
+// every use site.
+#[allow(clippy::vec_box)]
+fn applied_closure_candidates(
+    callee: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+) -> Vec<Box<Expr>> {
+    let mut out = Vec::new();
+    if let Some(b) = scope.get(callee) {
+        if let Some(l) = b.closure_lambda.clone() {
+            out.push(l);
+        }
+        for (k, l) in &b.field_closures {
+            if k.starts_with(ALT_CLOSURE_PREFIX) {
+                out.push(l.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Reserved `field_closures` key prefix for the NON-primary candidates of a multi-candidate closure
+/// bind. See [`applied_closure_candidates`].
+const ALT_CLOSURE_PREFIX: &str = "_altclosure";
+
 /// Any lambda stored under `root`'s `field_closures`, for the EFFECT lane.
 ///
 /// [`any_capturing_field_closure`] filters for closures that CAPTURE a secret or tainted value,
@@ -5393,6 +5458,18 @@ fn analyze_stmts(
                             })
                         }
                     }
+                    // M2-B: a MULTI-CANDIDATE initializer — `let f = if c { || write_file(..) }
+                    // else { || print(0) };`. The branch arms are peeled with `expr_tail_values`
+                    // (the same peeler the forwarder registration and the label resolvers use), and
+                    // the FIRST resolvable lambda becomes the primary; the rest are stored below
+                    // under `ALT_CLOSURE_PREFIX` so the application site can charge the union.
+                    // Picking one and discarding the others would be unsound-by-arbitrary-choice.
+                    Expr::If { .. }
+                    | Expr::IfLet { .. }
+                    | Expr::Match { .. }
+                    | Expr::Block { .. } => {
+                        multi_candidate_closures(init, scope).into_iter().next()
+                    }
                     _ => None,
                 };
                 // j1 backstop: ANY symbolic index in the chain whose root holds a
@@ -5426,6 +5503,22 @@ fn analyze_stmts(
                         m
                     }
                 };
+                // M2-B: stash the NON-primary candidates of a multi-candidate closure bind so the
+                // application site can charge their union. Keyed under the reserved
+                // `ALT_CLOSURE_PREFIX`, which cannot collide with a real access path.
+                let mut fclos = fclos;
+                if matches!(
+                    init,
+                    Expr::If { .. } | Expr::IfLet { .. } | Expr::Match { .. } | Expr::Block { .. }
+                ) {
+                    for (n, lam) in multi_candidate_closures(init, scope)
+                        .into_iter()
+                        .enumerate()
+                        .skip(1)
+                    {
+                        fclos.insert(format!("{ALT_CLOSURE_PREFIX}{n}"), lam);
+                    }
+                }
                 let fal = fn_alias_of(init, scope, ctx);
                 scope.insert(
                     name.clone(),
@@ -8556,7 +8649,9 @@ fn analyze_expr_effect(
             // never enforced. Descend into the stored lambda body here, params inserted as fresh unlabelled
             // bindings (a param SHADOWS a same-named captured var), under a CLONE of the ambient scope so a
             // captured tainted/secret binding is seen.
-            if let Some(lam) = scope.get(callee).and_then(|b| b.closure_lambda.clone()) {
+            // M2-B: charge the UNION of every closure this name may denote, not just the
+            // primary — see `applied_closure_candidates`.
+            for lam in applied_closure_candidates(callee, scope) {
                 if let Expr::Lambda { params, body } = lam.as_ref() {
                     let mut local = scope.clone();
                     // Bind each param to the label of the ARGUMENT applied at this position — `let f =
