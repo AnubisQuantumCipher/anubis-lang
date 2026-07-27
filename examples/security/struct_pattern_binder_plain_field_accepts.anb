@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Over-rejection guard: destructuring an UNQUALIFIED field must keep working. If the binder fix
+// ever marks every struct-pattern binding regardless of declared type, this fixture catches it.
+struct P { x: i64 }
+fn main() {
+    let p = P { x: 7 };
+    let P { x } = p;
+    print(x);
+}

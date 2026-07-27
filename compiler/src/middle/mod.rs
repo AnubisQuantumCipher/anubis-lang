@@ -7137,7 +7137,13 @@ fn analyze_stmts(
                 // inferred variable, update its tracked type to the new value's type (or clear it
                 // when dynamic) so later uses see the current type rather than a stale one.
                 if let Expr::Var(name) = target {
-                    let got = infer_expr_type_scoped(value, scope);
+                    // GROK-HORUS's Let-vs-Assign asymmetry: the `let` path falls back to
+                    // `place_struct_type` so `let s = get()` keeps the struct type, but ASSIGN used
+                    // only `infer_expr_type_scoped`, which does not resolve a Call or CallExpr — so
+                    // `s = get()` WIPED the type to None and a field declared `secret<T>` read off
+                    // `s` afterwards had nothing to key on. One path learned it, its sibling did not.
+                    let got = infer_expr_type_scoped(value, scope)
+                        .or_else(|| place_struct_type(value, scope, &ctx.place_types()));
                     if ctx.annotated_vars.contains(name) {
                         if let (Some(expected), Some(got)) = (
                             scope.get(name).and_then(|b| b.info.ty.clone()),
@@ -20608,9 +20614,23 @@ fn qualified_pattern_binders(
                 qualified_pattern_binders(p, types, is_qualified, out);
             }
         }
-        Pattern::Struct { fields, .. } => {
-            for (_, p) in fields {
-                qualified_pattern_binders(p, types, is_qualified, out);
+        // A struct pattern binds values OUT of declared fields, so it must consult the field types
+        // exactly as `FieldAccess` does — otherwise `let V { k } = v` launders a declared
+        // `secret<T>` field that `print(v.k)` correctly rejects. This arm previously recursed
+        // WITHOUT any type lookup, which is the twin of the enum-payload gap closed in D4: the arm
+        // existed, so the match stayed total and the compiler had nothing to complain about, but the
+        // arm did not do the one thing it is for. Totality catches a new VARIANT, not an
+        // under-implemented one.
+        Pattern::Struct { name, fields } => {
+            let tys = types.fields.get(name);
+            for (f, sub) in fields {
+                if tys
+                    .and_then(|m| m.get(f))
+                    .is_some_and(|t| is_qualified(t.split('=').next_back().unwrap_or(t)))
+                {
+                    out.extend(sub.bound_names());
+                }
+                qualified_pattern_binders(sub, types, is_qualified, out);
             }
         }
         Pattern::Wildcard | Pattern::Binding(_) | Pattern::Literal(_) | Pattern::StrLiteral(_) => {}
