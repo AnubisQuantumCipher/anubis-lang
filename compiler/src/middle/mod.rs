@@ -5497,6 +5497,51 @@ fn analyze_stmts(
                                 .unwrap_or_default()
                         }
                     }
+                    // M1 final piece — the interprocedural FACTORY. `let b = make();` where
+                    // `make` returns `Holder { act: || write_file(..) }` collected nothing, because
+                    // the collector ran over the CALL expression and the struct literal lives inside
+                    // the callee's body. The identical struct built INLINE was already rejected, so
+                    // this was the last parity hole in the container family rather than a missing
+                    // feature.
+                    //
+                    // `ctx.fn_sole_return` / `ctx.method_sole_return` already record what a function
+                    // returns, for the forwarder lane. Reused here rather than adding a second
+                    // return-summary registry — and kept in SEPARATE free-fn and method maps, since
+                    // merging bare method names into a free-fn map is a four-times-proven defect
+                    // generator in this file.
+                    //
+                    // Only self-contained closures survive: `collect_container_closures` runs over the
+                    // callee's returned expression in the CALLER's scope, so a lambda literal in a
+                    // field is recovered while one that closes over a callee local resolves to
+                    // nothing and keeps the pre-existing fail-open. Under-approximate, never invented.
+                    Expr::Call { callee, .. } => {
+                        let mut m = BTreeMap::new();
+                        collect_container_closures(init, "", scope, ctx, &mut m);
+                        if m.is_empty() {
+                            if let Some((_, ret)) = ctx.fn_sole_return.get(callee) {
+                                collect_container_closures(&ret.clone(), "", scope, ctx, &mut m);
+                            }
+                        }
+                        m
+                    }
+                    Expr::CallExpr { callee, .. } => {
+                        let mut m = BTreeMap::new();
+                        collect_container_closures(init, "", scope, ctx, &mut m);
+                        if m.is_empty() {
+                            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                                if let Some((_, ret)) = ctx.method_sole_return.get(field) {
+                                    collect_container_closures(
+                                        &ret.clone(),
+                                        "",
+                                        scope,
+                                        ctx,
+                                        &mut m,
+                                    );
+                                }
+                            }
+                        }
+                        m
+                    }
                     _ => {
                         let mut m = BTreeMap::new();
                         collect_container_closures(init, "", scope, ctx, &mut m);
