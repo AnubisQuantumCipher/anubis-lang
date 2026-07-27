@@ -225,6 +225,38 @@ fn fn_alias_of(
                 scope.get(n).and_then(|b| b.fn_alias.clone())
             }
         }
+        // A CONDITIONAL choice of function is still a function identity:
+        // `let f = if c { key } else { other }` binds something that, when applied, may run `key`.
+        // This arm returned `None`, so the alias was dropped at the join and `app(f)` accepted while
+        // the unconditional `let f = key` correctly rejected.
+        //
+        // Resolving to the DANGEROUS branch is the fail-closed choice. `fn_alias` holds one name and
+        // a join can offer two, so picking arbitrarily would decide soundness by branch order; the
+        // secret/tainting branch is preferred precisely so it cannot be lost to a coin flip. Where
+        // no branch is dangerous, either name is equally safe and the first resolvable one is kept
+        // so ordinary conditional-dispatch code still resolves.
+        //
+        // GROK-SEKHMET established by measurement that ordinary secret VALUES already propagate
+        // through this join while function references did not — a wiring gap, not a missing
+        // mechanism. This is that wire.
+        Expr::If { then, else_, .. } => {
+            let a = fn_alias_of(then, scope, ctx);
+            let b = fn_alias_of(else_, scope, ctx);
+            let dangerous = |n: &String| ctx.secret_fns.contains(n) || ctx.tainting_fns.contains(n);
+            match (a, b) {
+                (Some(x), Some(y)) => {
+                    if dangerous(&x) {
+                        Some(x)
+                    } else if dangerous(&y) {
+                        Some(y)
+                    } else {
+                        Some(x)
+                    }
+                }
+                (Some(x), None) | (None, Some(x)) => Some(x),
+                (None, None) => None,
+            }
+        }
         _ => None,
     }
 }
