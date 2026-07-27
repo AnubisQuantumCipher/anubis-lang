@@ -132,6 +132,13 @@ else
 fi
 
 BIN="$(pwd)/target/release/anubis"
+# EXPORT it, so every downstream gate grades the binary G4 just built.
+#
+# Without this, each gate re-derived its own instrument: the security gate found release on disk,
+# the language gate defaulted to `cargo run --` (debug), and CI published the two resulting numbers
+# side by side as if they described one build. They described two. A unified audit that builds a
+# binary and then lets its gates pick their own is not unified — it is two audits sharing a report.
+export ANUBIS_BIN="$BIN"
 if [[ ! -x "$BIN" ]]; then
   echo "FATAL: release binary missing after G4. Aborting remaining gates." | tee -a "$LOG"
   gate "G4_binary_exists" "FAIL" "target/release/anubis not found"

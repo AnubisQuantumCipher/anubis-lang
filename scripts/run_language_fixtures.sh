@@ -15,17 +15,29 @@ report="$OUT_DIR/fixture_report.json"
 REPORT_TMP="$report.tmp.$$"
 echo '{"fixtures": [], "overall_verdict": "PENDING"}' > "$report"
 
-# Pin instrument once for the whole run. Default remains `cargo run --` (DEBUG) so historical
-# numbers do not shift; seal runs must set ANUBIS_BIN to the same release snapshot as security.
+# Pin the instrument ONCE for the whole run, using the SAME cascade as the security gate.
+#
+# This used to default to `cargo run --` (DEBUG) while the security gate defaulted to the release
+# binary, with a comment justifying it as "so historical numbers do not shift". That justification
+# does not survive measurement: both grade 244/244 on the release binary, so aligning them shifts
+# nothing. What the split DID cost was real — the project's two headline numbers were produced by two
+# different builds, so "244/244 and 244/244" described two instruments and could not be compared.
+# `audit_unified.sh` reproduced the split into CI by building release and then invoking this gate
+# unpinned.
 if [[ -n "${ANUBIS_BIN:-}" ]]; then
   LANG_CMD=("$ANUBIS_BIN")
   executed_via="preset:$ANUBIS_BIN"
+elif [[ -x "./target/release/anubis" ]]; then
+  LANG_CMD=("./target/release/anubis")
+  executed_via="release"
+elif [[ -x "./target/debug/anubis" ]]; then
+  LANG_CMD=("./target/debug/anubis")
+  executed_via="debug"
 else
   LANG_CMD=(cargo run --)
-  executed_via="cargo-run-debug-default"
+  executed_via="cargo"
 fi
-echo "instrument: via=$executed_via out=$OUT_DIR (security grades release by default; this gate defaults DEBUG)" \
-  | tee "$OUT_DIR/instrument.txt"
+echo "instrument: via=$executed_via out=$OUT_DIR" | tee "$OUT_DIR/instrument.txt"
 
 total=0
 passed=0
@@ -148,6 +160,13 @@ if [[ $failed -eq 0 ]]; then
   overall="PASS"
 else
   overall="FAIL"
+fi
+# A gate that measured NOTHING has not passed. Without this, a mistyped FIXTURE_DIR or a corpus that
+# failed to check out leaves the glob unmatched, so total=0, failed=0, and the gate prints PASS —
+# maximally green precisely when it verified nothing at all. The security gate already guards this.
+if [[ $total -eq 0 ]]; then
+  overall="FAIL"
+  echo "EMPTY CORPUS: no fixtures matched $FIXTURE_DIR/*.anb — refusing to report PASS"
 fi
 
 jq --arg o "$overall" --argjson t $total --argjson p $passed --argjson f $failed \
