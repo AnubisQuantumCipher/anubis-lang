@@ -4626,15 +4626,52 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                     Stmt::ExprStmt(e) => {
                         discharge_calls_in_expr(ctx, assumptions, e);
                     }
-                    // A STATEMENT-position `if`/`while`/`for`/`match`/`loop`/`assign` inside a value block
-                    // (`{ if d { let b=…; g(b) } … }`) carries control flow / loop-carried writes this
-                    // lightweight expression walker does not model — descending soundly needs the
-                    // statement-level path-condition + havoc + frame machinery (`analyze_stmts`). Left
-                    // undescended: a contracted call buried in such a nested statement stays at the
-                    // pre-existing fail-open (a documented residual, one level deeper than the tail/expr-stmt
-                    // call this arm closes — NOT a regression, the block was fully deferred before). Any
-                    // embedded write was already de-modeled by the enclosing `invalidate_embedded_writes`, so
-                    // no fact this arm relies on can be stale.
+                    // M3 (GROK-SEKHMET's grouping): a statement-position `if` inside a value block
+                    // hid contracted calls from discharge entirely — `{ if d { g(a); } 1 }` never
+                    // proved `g`'s `requires`, so the program was ACCEPTED with its precondition
+                    // unchecked. Witnessed by `value_block_nested_if_requires_discharge_rejects`.
+                    //
+                    // Two things make this descendable where the loop forms below still are not.
+                    // First, an `if` carries no loop-carried writes, and any embedded write was
+                    // already de-modeled by the enclosing `invalidate_embedded_writes`, so no fact
+                    // relied on here can be stale. Second, the branch guard is exactly the
+                    // `push_branch_path_condition` machinery this walker already uses.
+                    //
+                    // The guard is LOAD-BEARING, not a refinement: discharging `g(a)` inside
+                    // `if a > 0 { … }` without `a > 0` in scope would fail to prove a correct
+                    // program — a false REJECT. `push_branch_path_condition` silently no-ops on a
+                    // non-modelable guard, so descending unconditionally would do exactly that.
+                    // Hence: descend ONLY when the push actually added a fact, detected by the
+                    // assumption stack growing. A non-modelable guard keeps the pre-existing
+                    // fail-open rather than trading a false accept for a false reject.
+                    //
+                    // The branch body is re-entered through THIS SAME `Expr::Block` arm rather than
+                    // a parallel descent, so it inherits the shadow guard and the fact/solver-var
+                    // scoping above for free — the recurring lesson that a second walker over the
+                    // same construct is how these lanes drift apart.
+                    Stmt::If { cond, then, else_ } => {
+                        // The condition itself is evaluated unconditionally.
+                        discharge_calls_in_expr(ctx, assumptions, cond);
+                        for (body, negate) in [(Some(then), false), (else_.as_ref(), true)] {
+                            let Some(body) = body else { continue };
+                            let a0 = assumptions.len();
+                            let g0 = ctx.active_branch_guards.len();
+                            push_branch_path_condition(ctx, assumptions, cond, negate);
+                            if assumptions.len() > a0 {
+                                let blk = Expr::Block {
+                                    stmts: body.clone(),
+                                    tail: None,
+                                };
+                                discharge_calls_in_expr(ctx, assumptions, &blk);
+                            }
+                            assumptions.truncate(a0);
+                            ctx.active_branch_guards.truncate(g0);
+                        }
+                    }
+                    // The remaining statement-position forms — `while`/`for`/`loop`/`match`/`assign` —
+                    // carry loop-carried writes or multi-arm binding this lightweight expression
+                    // walker does not model; descending soundly needs the statement-level havoc +
+                    // frame machinery in `analyze_stmts`. They stay at the pre-existing fail-open.
                     _ => {}
                 }
             }
