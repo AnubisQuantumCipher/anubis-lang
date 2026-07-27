@@ -214,6 +214,29 @@ fn fn_alias_of(
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
 ) -> Option<String> {
+    fn_alias_of_d(init, scope, ctx, 0)
+}
+
+/// Depth-bounded core of [`fn_alias_of`].
+///
+/// The `Expr::Call` arm resolves THROUGH a callee's returned expression, so mutual recursion
+/// (`a(){return b()}` with `b(){return a()}`) and self-return (`f(){return f}`) would recurse
+/// forever. This project has already shipped one compiler hang, so the bound is not optional and is
+/// not a nit — an analysis that can diverge is a denial of service on `anubis check`.
+///
+/// The bound is a DEFERRAL, never an assertion: running out of depth returns `None`, which can only
+/// fail to resolve an identity and therefore only fail to reject. It cannot invent one.
+const FN_ALIAS_MAX_DEPTH: u32 = 8;
+
+fn fn_alias_of_d(
+    init: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> Option<String> {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return None;
+    }
     match init {
         Expr::Var(n) => {
             // A user fn, a BUILTIN sink/egress (so `let f = shell; f(input())` resolves `f` back to
@@ -240,9 +263,32 @@ fn fn_alias_of(
         // through this join while function references did not — a wiring gap, not a missing
         // mechanism. This is that wire.
         Expr::If { then, else_, .. } => {
-            join_fn_alias([then.as_ref(), else_.as_ref()].into_iter(), scope, ctx)
+            join_fn_alias([then.as_ref(), else_.as_ref()].into_iter(), scope, ctx, depth)
         }
-        Expr::Match { arms, .. } => join_fn_alias(arms.iter().map(|a| &a.body), scope, ctx),
+        Expr::Match { arms, .. } => join_fn_alias(arms.iter().map(|a| &a.body), scope, ctx, depth),
+        // A CALL whose callee RETURNS a function is still a function identity:
+        // `fn get_key(){ return key; }` then `let g = get_key(); print(g())` leaked, while the
+        // eta twin `return || key();` correctly rejected.
+        //
+        // Resolves through the callee's recorded returned expression, so this is transitive by
+        // construction: `b(){ return a() }` resolves by re-entering this same arm on `a()`, and a
+        // return-position `if`/`match` resolves via the join arms above. That is why this is one arm
+        // rather than a separate return-summary registry — the cases compose instead of each needing
+        // their own rule.
+        //
+        // Free-fn and METHOD returns stay in separate maps deliberately. Merging bare method names
+        // into the free-fn namespace is a four-times-proven defect generator in this file.
+        Expr::Call { callee, .. } => {
+            let ret = ctx.fn_sole_return.get(callee).map(|(_, r)| r.clone())?;
+            fn_alias_of_d(&ret, scope, ctx, depth + 1)
+        }
+        Expr::CallExpr { callee, .. } => {
+            let Expr::FieldAccess { field, .. } = callee.as_ref() else {
+                return None;
+            };
+            let ret = ctx.method_sole_return.get(field).map(|(_, r)| r.clone())?;
+            fn_alias_of_d(&ret, scope, ctx, depth + 1)
+        }
         _ => None,
     }
 }
@@ -267,10 +313,11 @@ fn join_fn_alias<'a>(
     branches: impl Iterator<Item = &'a Expr>,
     scope: &BTreeMap<String, ScopeBinding>,
     ctx: &SemanticContext,
+    depth: u32,
 ) -> Option<String> {
     let mut first: Option<String> = None;
     for b in branches {
-        let Some(n) = fn_alias_of(b, scope, ctx) else {
+        let Some(n) = fn_alias_of_d(b, scope, ctx, depth + 1) else {
             continue;
         };
         if ctx.secret_fns.contains(&n) || ctx.tainting_fns.contains(&n) {

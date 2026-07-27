@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// CORPUS-1 2026-07-27. Integrity dual of `declared_secret_fn_value_returned_rejects`: a
+// `-> tainted<i64>` function returned by a second function (as a value), applied at the call site,
+// reaching a `shell` sink. TODAY: check PASSES (check-side only — `shell` is non-runnable).
+fn key() -> tainted<i64> { return 42; }
+fn get_key() { return key; }
+fn main() uses(shell) { let g = get_key(); shell(g()); }
