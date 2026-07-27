@@ -2386,7 +2386,9 @@ fn collect_items(
             // Methods are analyzed like free functions (their `self`/params are in scope for the
             // body) but flagged `is_method`, so they are not registered as callable-by-name —
             // they dispatch on the receiver and must not shadow a same-named builtin.
-            Item::Impl { methods, .. } => {
+            Item::Impl {
+                type_name, methods, ..
+            } => {
                 for m in methods {
                     if let Item::Fn {
                         name,
@@ -2418,10 +2420,25 @@ fn collect_items(
                         if item_verified {
                             ctx.verified = true;
                         }
+                        // Give `self` the IMPL's type so a field read off it resolves. An impl
+                        // method's `self` param carries no declared type, so `self.k` had no struct
+                        // type to key on and a field declared `secret<T>` was ignored — the D1/D2/D3
+                        // work made call RESULTS resolve but left the receiver itself untyped.
+                        // GROK-SEKHMET round 9, free hunt.
+                        let params_self: Vec<(String, String)> = params
+                            .iter()
+                            .map(|(n, t)| {
+                                if n == "self" && t.is_empty() {
+                                    (n.clone(), type_name.clone())
+                                } else {
+                                    (n.clone(), t.clone())
+                                }
+                            })
+                            .collect();
                         analyze_function(
                             name,
                             module,
-                            params,
+                            &params_self,
                             body,
                             ret.as_deref(),
                             requires,
@@ -5679,7 +5696,17 @@ fn analyze_stmts(
                 };
                 let info = BindingInfo {
                     name: name.clone(),
-                    ty: ty.clone().or_else(|| infer_expr_type_scoped(init, scope)),
+                    // D1 residual (GROK-SEKHMET round 9): `let s = get(); print(s.k)` where `get`
+                    // returns a struct with a declared `secret` field. `get().k` read DIRECTLY was
+                    // already rejected, but binding the result first dropped the type, because
+                    // `infer_expr_type_scoped` does not resolve a CALL's return type — so the
+                    // declared field qualifier had nothing to key on. `place_struct_type` learned
+                    // call results for D1/D2/D3; reuse it here rather than teaching a second
+                    // resolver, and the binding-then-read form is the one real code actually writes.
+                    ty: ty
+                        .clone()
+                        .or_else(|| infer_expr_type_scoped(init, scope))
+                        .or_else(|| place_struct_type(init, scope, &ctx.place_types())),
                     mode: mode_name(mode).into(),
                     tainted,
                     taint_source: taint_source.clone(),
@@ -7346,27 +7373,15 @@ fn analyze_stmts(
                 .is_some();
                 // Snapshot BEFORE inserting pattern bindings so they do not leak past the loop.
                 let snap_scope = scope.clone();
+                // Routed through the SHARED seeder rather than inserting binders inline. The inline
+                // version predated `seed_effect_pattern` and therefore missed everything that seeder
+                // has since learned — in particular D4's declared enum-payload qualifier, so
+                // `while let E::Box(x) = e { print(x) }` leaked a payload declared `secret<T>` while
+                // the `if let` and `match` twins rejected. GROK-SEKHMET round 9.
+                //
+                // A second binder-seeding path is exactly how these lanes drift; there is now one.
+                seed_effect_pattern(scope, pattern, &wl_taint, wl_secret, &ctx.place_types());
                 for n in pattern.bound_names() {
-                    let info = BindingInfo {
-                        name: n.clone(),
-                        ty: None,
-                        mode: mode_name(mode).into(),
-                        tainted: wl_taint.is_some(),
-                        taint_source: wl_taint.clone(),
-                        declassified: false,
-                        span: None,
-                    };
-                    scope.insert(
-                        n.clone(),
-                        ScopeBinding {
-                            info,
-                            closure_arity: None,
-                            closure_lambda: None,
-                            field_closures: BTreeMap::new(),
-                            fn_alias: None,
-                            secret: wl_secret,
-                        },
-                    );
                     ctx.known_bindings.insert(n);
                 }
                 // Solver soundness: a `while let` pattern binder SHADOWS any outer binding of the same name
@@ -19734,6 +19749,30 @@ fn collect_stmt_patterns<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Pattern>) {
     match stmt {
         Stmt::ExprStmt(e) => in_expr(e, out),
         Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => in_expr(init, out),
+        // `while let PAT = scrut { … }` binds a pattern too, and its body can `return` the binder —
+        // the summary walkers must see that pattern or a declared payload extracted through a
+        // `while let` and returned leaks at the CALL SITE. Same residual as the `match` form.
+        Stmt::WhileLet { pattern, body, .. } => {
+            out.push(pattern);
+            for st in body {
+                collect_stmt_patterns(st, out);
+            }
+        }
+        Stmt::If { then, else_, .. } => {
+            for st in then {
+                collect_stmt_patterns(st, out);
+            }
+            if let Some(e) = else_ {
+                for st in e {
+                    collect_stmt_patterns(st, out);
+                }
+            }
+        }
+        Stmt::While { body, .. } | Stmt::Loop { body, .. } | Stmt::For { body, .. } => {
+            for st in body {
+                collect_stmt_patterns(st, out);
+            }
+        }
         _ => {}
     }
 }
@@ -20478,6 +20517,32 @@ fn body_returns_secret(
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
                 let saved = scope.clone();
+                // A `while let` BINDS a pattern; without seeding it, a declared enum payload
+                // extracted here and returned leaks at the CALL SITE while the in-function form
+                // rejects. Same residual the `match` form had.
+                if let Stmt::WhileLet { pattern, .. } = stmt {
+                    let mut names = BTreeSet::new();
+                    qualified_pattern_binders(pattern, struct_fields, ty::is_secret, &mut names);
+                    for n in names {
+                        let b = scope.entry(n.clone()).or_insert_with(|| ScopeBinding {
+                            info: BindingInfo {
+                                name: n.clone(),
+                                ty: None,
+                                mode: String::new(),
+                                tainted: false,
+                                taint_source: None,
+                                declassified: false,
+                                span: None,
+                            },
+                            closure_arity: None,
+                            closure_lambda: None,
+                            field_closures: BTreeMap::new(),
+                            fn_alias: None,
+                            secret: false,
+                        });
+                        b.secret = true;
+                    }
+                }
                 if body_returns_secret(
                     body,
                     scope,
