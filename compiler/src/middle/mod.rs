@@ -2144,9 +2144,18 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
                 else_,
                 ..
             } => in_expr(scrutinee) || in_expr(then) || in_expr(else_),
+            // The arm GUARD is a held expression too. Scrutinee and body were walked, the guard was
+            // not, so `match n { x if (|| { @research { … } true })() => … }` elevated with no
+            // authorization. Fourth position found in this walk, and the variant was named in every
+            // one of them — which is the whole argument for auditing POSITIONS, not just variants.
             Expr::Match {
                 scrutinee, arms, ..
-            } => in_expr(scrutinee) || arms.iter().any(|a| in_expr(&a.body)),
+            } => {
+                in_expr(scrutinee)
+                    || arms
+                        .iter()
+                        .any(|a| a.guard.as_ref().is_some_and(in_expr) || in_expr(&a.body))
+            }
             Expr::Lambda { body, .. } => in_expr(body),
 
             // Containers and calls: a lambda carrying a block can sit anywhere inside one.
@@ -17761,7 +17770,7 @@ fn walk_block_taint(
                     method_tainting_fns,
                     struct_fields,
                 );
-                seed_taint_pattern(local, pattern, &label);
+                seed_taint_pattern(local, pattern, &label, struct_fields);
                 for n in pattern.bound_names() {
                     if let Some(b) = local.get_mut(&n) {
                         b.info.span = Some((span.start, span.end));
@@ -17851,7 +17860,7 @@ fn walk_block_taint(
                 let snap = local.clone();
                 let mut body_c = local.clone();
                 // Oracle seeds `while let` pattern vars CLEAN (analyze_stmts WhileLet arm).
-                seed_taint_pattern(&mut body_c, pattern, &None);
+                seed_taint_pattern(&mut body_c, pattern, &None, struct_fields);
                 walk_block_taint(
                     body,
                     &mut body_c,
@@ -17933,7 +17942,7 @@ fn walk_block_taint(
                 let mut arm_cs = Vec::new();
                 for arm in arms {
                     let mut c = local.clone();
-                    seed_taint_pattern(&mut c, &arm.pattern, &st);
+                    seed_taint_pattern(&mut c, &arm.pattern, &st, struct_fields);
                     if let Expr::Block { stmts, .. } = &arm.body {
                         walk_block_taint(
                             stmts,
@@ -17965,7 +17974,7 @@ fn walk_block_taint(
                     struct_fields,
                 );
                 let mut then_c = local.clone();
-                seed_taint_pattern(&mut then_c, pattern, &st);
+                seed_taint_pattern(&mut then_c, pattern, &st, struct_fields);
                 if let Expr::Block { stmts, .. } = then.as_ref() {
                     walk_block_taint(
                         stmts,
@@ -18735,7 +18744,7 @@ fn expr_taint_source_m(
             );
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
-                seed_taint_pattern(&mut local, &arm.pattern, &scrut);
+                seed_taint_pattern(&mut local, &arm.pattern, &scrut, struct_fields);
                 expr_taint_source_m(
                     &arm.body,
                     &local,
@@ -18762,7 +18771,7 @@ fn expr_taint_source_m(
                 struct_fields,
             );
             let mut local = scope.clone();
-            seed_taint_pattern(&mut local, pattern, &scrut);
+            seed_taint_pattern(&mut local, pattern, &scrut, struct_fields);
             expr_taint_source_m(
                 then,
                 &local,
@@ -19578,8 +19587,21 @@ fn seed_taint_pattern(
     scope: &mut BTreeMap<String, ScopeBinding>,
     pattern: &Pattern,
     label: &Option<String>,
+    types: &PlaceTypes<'_>,
 ) {
+    // D4 integrity parity, confirmed a REAL residual (not a designed asymmetry) by GROK-HORUS's
+    // seam gate: `seed_secret_pattern` learned declared enum payloads and this twin did not, so a
+    // payload declared `tainted<T>` was labelled on the confidentiality side and not on the
+    // integrity side. Same rule, same place, or the two lanes drift — which is this file's most
+    // repeated defect.
+    let mut declared = BTreeSet::new();
+    qualified_pattern_binders(pattern, types, ty::is_tainted, &mut declared);
     for n in pattern.bound_names() {
+        let label = &if label.is_none() && declared.contains(&n) {
+            Some(format!("declared enum payload `{n}`"))
+        } else {
+            label.clone()
+        };
         scope.insert(
             n.clone(),
             ScopeBinding {
@@ -20054,7 +20076,7 @@ fn body_returns_taint(
                     method_tainting_fns,
                     struct_fields,
                 );
-                seed_taint_pattern(scope, pattern, &label);
+                seed_taint_pattern(scope, pattern, &label, struct_fields);
             }
             Stmt::If { then, else_, .. } => {
                 // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
@@ -20673,6 +20695,40 @@ fn body_returns_secret(
                     method_secret_fns,
                     struct_fields,
                 );
+            }
+            // H8 twin, confirmed a REAL residual by GROK-HORUS's seam gate: `body_returns_taint` has
+            // a `LetPattern` arm and this one did not, so a destructured secret was invisible to the
+            // confidentiality SUMMARY while the integrity summary saw it. Mirrors the taint arm
+            // exactly — the hidden-`return`-in-initializer check, then pattern-wide seeding from the
+            // initializer's label. Over-approximate by construction: destructuring seeds every bound
+            // name, which is the fail-closed direction for a summary, since a missed label silently
+            // un-labels a whole function for every caller.
+            Stmt::LetPattern { pattern, init, .. } => {
+                let mut rets = Vec::new();
+                expr_returns(init, &mut rets);
+                if rets.iter().any(|e| {
+                    expr_secret_source_m(
+                        e,
+                        scope,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    )
+                    .is_some()
+                }) {
+                    return true;
+                }
+                let secret = expr_secret_source_m(
+                    init,
+                    scope,
+                    secret_fns,
+                    param_return_taint,
+                    method_secret_fns,
+                    struct_fields,
+                )
+                .is_some();
+                seed_secret_pattern(scope, pattern, secret, struct_fields);
             }
             Stmt::If { then, else_, .. } => {
                 let saved = scope.clone();
