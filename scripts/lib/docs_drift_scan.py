@@ -15,13 +15,33 @@ from typing import Any, Dict, List, Tuple
 
 LIVE_FILES = [
     "AGENTS.md",
-    "Agents.md",
+    "README.md",
+    "LANGUAGE.md",
+    "docs/CLAIMS.md",
+    "docs/language/BUILTINS.md",
+    "docs/language/ROADMAP.md",
+    "docs/language/STDLIB_CORE.md",
+    "MATURITY_CLAIM_MATRIX.md",
+    "SPEC_1_0_FREEZE.md",
+    "docs/language/SPEC_1_0_FREEZE.md",
+    "A_PLUS_ACCEPTANCE_CRITERIA.md",
+    "A_PLUS_CLOSEOUT.md",
+    "A_PLUS_FINAL_REPORT.md",
+    "TUTORIAL.md",
+    "docs/language/TUTORIAL.md",
+]
+
+# Numeric live stamps predate the semantic-claim sweep and intentionally remain limited to the
+# canonical live status/spec surfaces. Archive-heavy roadmap/matrix/report files are claim-scanned,
+# but their dated historical N/N rows are not reinterpreted as live stamps.
+LIVE_STAMP_FILES = {
+    "AGENTS.md",
     "README.md",
     "LANGUAGE.md",
     "docs/CLAIMS.md",
     "docs/language/BUILTINS.md",
     "docs/language/STDLIB_CORE.md",
-]
+}
 
 DATED_LINE = re.compile(
     r"as of |as-of|seal date|seal-date|historical|snapshot of|on this seal|"
@@ -32,11 +52,76 @@ DATED_LINE = re.compile(
 
 # Do-not-stamp / quoted ban exemplars are not themselves violations.
 META_BAN_EXEMPT = re.compile(
-    r"do not(\s|\*|_|`)*stamp|do not(\s|\*|_|`)*rewrite|deliberately not|found no way|"
-    r"false as|marked \*\*FALSE|stronger than that list|"
-    r"CLAIMS\.md|Open — load-bearing|no KNOWN defects|not no defects|"
-    r"named residual|bounded residual|PARTIAL as total|not a total|"
-    r"not a proof of total|empty published residual",
+    r"do not(\s|\*|_|`)*(?:stamp|claim|rewrite|publish)|deliberately not|found no way|"
+    r"false as|marked \*\*FALSE|not claimed|stronger than that list|"
+    r"not no defects|PARTIAL as total|not a total|"
+    r"not a proof of total|not total language soundness|"
+    r"does not mean every|does not mean no defects|cannot be read as",
+    re.I,
+)
+
+# High-signal semantic claims only. A generic ban on words such as "always" and "never" produced
+# policy/procedure false positives ("never use the bare alias") and was not maintainable. These
+# patterns instead target the exact proof/soundness overclaims that can silently outrun evidence.
+ABSOLUTE_CLAIM_PATTERNS = [
+    (
+        "check-run-invariant",
+        re.compile(
+            r"green `?anubis check`? never certifies a contract that `?anubis run`? violates",
+            re.I,
+        ),
+    ),
+    (
+        "absolute-check-promise",
+        re.compile(
+            r"cannot violate (?:its|the program(?:'s)?) stated contracts, effects, capabilities, "
+            r"or information-flow policy at runtime",
+            re.I,
+        ),
+    ),
+    (
+        "privacy-absolute",
+        re.compile(
+            r"secret bits never leave|guarantees? (?:that )?nothing private leaves|"
+            r"private (?:data|bits?) (?:can(?:not|'t)|never) (?:leave|escape)",
+            re.I,
+        ),
+    ),
+    (
+        "fails-closed-everywhere",
+        re.compile(r"fails? closed,? everywhere", re.I),
+    ),
+    (
+        "totality-finality",
+        re.compile(
+            r"Safe(?:-mode)? (?:is )?total(?: IFC| information-flow)?|"
+            r"(?:false-accept class|research elevation) closed forever|"
+            r"roadmap soundness complete|100% secure|(?:^|\W)no defects(?:\W|$)",
+            re.I,
+        ),
+    ),
+    (
+        "aggregate-proof",
+        re.compile(
+            r"every guarantee is (?:either )?proven(?:[- ]or[- ]|[- ])scoped|"
+            r"no guarantee is overstated",
+            re.I,
+        ),
+    ),
+    (
+        "approximate-walker-count",
+        re.compile(r"~\s*\d+[^\n]{0,80}\bwalkers?\b", re.I),
+    ),
+]
+
+FIXPOINT_SEAL = re.compile(
+    r"(?:fixpoint[^\n]{0,80}(?:\bsealed\b|VM-sealed)|"
+    r"(?:\bsealed\b|VM-sealed)[^\n]{0,80}fixpoint)",
+    re.I,
+)
+FIXPOINT_EVIDENCE = re.compile(
+    r"vm/pins/anubis-[0-9a-f]+|scripts/vm/EXPECTED_FIXPOINT_VM|"
+    r"out/[^ )`]+|sha-?256",
     re.I,
 )
 
@@ -57,19 +142,50 @@ def extract_pair_after(line: str, keyword: re.Pattern[str]) -> str | None:
     return p.group(0)
 
 
-def scan(root: Path, measured: Dict[str, int]) -> Tuple[List[str], int]:
+def paragraph_context(lines: List[str], index: int) -> str:
+    """Return a small prose paragraph around index; table rows remain isolated."""
+    if lines[index].lstrip().startswith("|"):
+        return lines[index]
+    lo = index
+    hi = index
+    while lo > 0 and lines[lo - 1].strip() and not lines[lo - 1].lstrip().startswith("|"):
+        lo -= 1
+        if index - lo >= 4:
+            break
+    while hi + 1 < len(lines) and lines[hi + 1].strip() and not lines[hi + 1].lstrip().startswith("|"):
+        hi += 1
+        if hi - index >= 4:
+            break
+    return "\n".join(lines[lo : hi + 1])
+
+
+def scan(root: Path, measured: Dict[str, int]) -> Tuple[List[str], int, int]:
     failures: List[str] = []
     stamps = 0
+    claim_guards = 0
 
     for rel in LIVE_FILES:
         path = root / rel
         if not path.is_file():
             continue
         lines = path.read_text(errors="replace").splitlines()
+        in_fence = False
+        historical_section = False
         for i, line in enumerate(lines, 1):
-            dated = is_dated(line)
+            if line.lstrip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if rel == "docs/language/ROADMAP.md" and re.search(
+                r"^## Earlier status —", line
+            ):
+                historical_section = True
+            context = paragraph_context(lines, i - 1)
+            stamp_dated = is_dated(line)
+            claim_dated = historical_section or is_dated(context)
 
-            if not dated:
+            if not stamp_dated and rel in LIVE_STAMP_FILES:
                 # security N/N (keyword-local)
                 pair = extract_pair_after(
                     line, re.compile(r"security(\s+fixtures)?", re.I)
@@ -235,39 +351,20 @@ def scan(root: Path, measured: Dict[str, int]) -> Tuple[List[str], int]:
                             f"measured {measured['lean_mod']}"
                         )
 
-            # Absolute phrases
-            if not dated and not META_BAN_EXEMPT.search(line):
-                if re.search(
-                    r"cannot violate its stated contracts, effects, capabilities, "
-                    r"or information-flow policy at runtime",
-                    line,
-                    re.I,
-                ) and not re.search(r"found no way", line, re.I):
+            # Absolute semantic claims. Exemptions must negate/scope the claim itself; merely linking
+            # CLAIMS.md is intentionally insufficient because that used to suppress unsafe prose.
+            if not claim_dated and not META_BAN_EXEMPT.search(context):
+                for rule, pattern in ABSOLUTE_CLAIM_PATTERNS:
+                    claim_guards += 1
+                    if pattern.search(line):
+                        failures.append(f"UNFALSIFIABLE_CLAIM {rel}:{i} {rule}")
+                claim_guards += 1
+                if FIXPOINT_SEAL.search(line) and not FIXPOINT_EVIDENCE.search(context):
                     failures.append(
-                        f"ABSOLUTE_PHRASE {rel}:{i} absolute-check-promise"
-                    )
-                if re.search(r"fails closed, everywhere, on purpose", line, re.I):
-                    failures.append(
-                        f"ABSOLUTE_PHRASE {rel}:{i} fails-closed-everywhere"
-                    )
-                if re.search(
-                    r"Safe is total IFC|Safe-mode is total|"
-                    r"research elevation closed forever|"
-                    r"100% secure|roadmap soundness complete",
-                    line,
-                    re.I,
-                ):
-                    failures.append(f"ABSOLUTE_PHRASE {rel}:{i} totality-ban")
-                if re.search(
-                    r"self-host fixpoint sealed|\bfixpoint sealed\b", line, re.I
-                ) and not re.search(
-                    r"vm/pins/|sha256|publish_pin|EXPECTED_FIXPOINT", line, re.I
-                ):
-                    failures.append(
-                        f"ABSOLUTE_PHRASE {rel}:{i} sealed-without-pin"
+                        f"UNFALSIFIABLE_CLAIM {rel}:{i} sealed-without-evidence-path"
                     )
 
-    return failures, stamps
+    return failures, stamps, claim_guards
 
 
 def main(argv: List[str]) -> int:
@@ -288,9 +385,10 @@ def main(argv: List[str]) -> int:
         "lean_th": derived["lean"]["theorems"],
         "lean_mod": derived["lean"]["modules"],
     }
-    failures, stamps = scan(root, measured)
+    failures, stamps, claim_guards = scan(root, measured)
     out = {
         "stamps_checked": stamps,
+        "claim_guards_checked": claim_guards,
         "scan_failures": len(failures),
         "failures": failures,
         "measured": measured,

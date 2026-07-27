@@ -63,13 +63,13 @@ Absence of a red row is **not** evidence of absence.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **294/294 PASS**. Live disk inventory **294** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **296/296 PASS**. Live disk inventory **296** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
-| **Stdlib fail-closed** | **86/86 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
+| **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 842 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 867 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
@@ -130,7 +130,7 @@ Adopted verbatim from the agent that measured it, in preference to any whole-sur
 
 > **`anubis run` fail-closed is instrumented for the collection-first-argument matrix and the sealed
 > domain/wrong-type cells under `tests/fixtures/stdlib/*should_fail_closed.anb` (86 fixtures after
-> A–L + M–Z merge + elevation corpus), plus DOC_OK locks under `tests/fixtures/stdlib/doc_ok/` (18 fixtures). It is NOT
+> A–L + M–Z merge + elevation corpus), plus DOC_OK locks under `tests/fixtures/stdlib/doc_ok/` (23 fixtures). It is NOT
 > fail-closed over the full 213-builtin surface: crypto/hash/KDF/random/x25519, unenumerated
 > arity/IO/capability matrices, and intentional soft conversions (`int`/`float`/`parse_*`, string
 > auto-stringify, IEEE NaN/inf on real floats, position-predicate −1, empty sum/product monoids)
@@ -261,11 +261,11 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **294/294** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **86/86** |
+| Safe taint enforcement | security **296/296** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
-| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 842 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
+| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 867 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
-| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 294/294** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 296/296** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
 | Symbolic-index secret-capturing closure application | **CLAIMED 2026-07-25** | `arr[idx](…)` with non-literal `idx` fail-closed when container holds secret/taint-capturing element (j1 twin of `let g = arr[i]`); unit `symbolic_index_secret_capturing_list_application_fails_closed`; clean symbolic still accepts | Residual: full PC-join; untyped formals still interproc |
 | Nested container closure application (`outer[0][0]`, `b.fs[i]`, bind + mid-bind) | **CLAIMED 2026-07-25** | Nested Index/FieldAccess CallExpr + **bind** (`let g = outer[i][0]; g(0)`) + **intermediate mid-bind** (`let mid = outer[0]; mid[0](0)` re-keys `field_closures`; symbolic mid union-projects first segments fail-closed); unit `nested_container_closure_application_fails_closed` (apply + bind + mid lit/sym/clean); clean nested still accepts | Residual: full PC-join not claimed |
 | if-expr-built containers seed `field_closures` (incl. nested `Stmt::If` + let-inner) | **CLAIMED 2026-07-25** | `collect_container_closures` walks `Expr::If`/`Match`/`Block`; nested bare `if` as `Stmt::If`; unit `nested_container_closure_application_fails_closed` | Residual: full PC-join not claimed |

@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_HKDF_TOO_LONG
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: HKDF output capped at 255*HashLen = 8160 bytes (RFC 5869 §2.3).
+fn main() {
+    print(hkdf_sha256("ikm", "", "info", 8161));
+}

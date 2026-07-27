@@ -51,7 +51,7 @@ Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|
 | Gate 2 real language core (comments/fn/let/primitives/expr/control/structs/calls/builtins/attrs) | PARTIAL | 25 fixtures (20 PASS 5+ FAIL) + parser/AST/HIR/MIR + typecheck + runner + fresh a15 evidence with verdict FAIL for syntax/unknown/type/taint | bash scripts/run_language_fixtures.sh --out out/a15... ; jq . fixture_report.json ; cat */check-summary.json | grep verdict | comments // ; fn main typed params/return; let :u32/u8; arith + - * == < ; if/else ; while planned; struct lit/field; calls (user+builtin symbolic/assume/assert/taint_source/declassify/sink); @safe @research @proof @audit @effect parsed/preserved; no full modules/Result/enums yet |
-| Gate 3 parser/AST/HIR/MIR maturity (spans, no panic, JSON emit, diags) | PARTIAL | --evidence produces *.ast.json *.hir.json *.mir.json ; parse_source_detailed + strict Err on diags; spans in AST/Stmt/Expr; clean diags for bad input | cargo run -- check f --evidence --out d ; find d -name '*.ast.json' ; grep -R ANUBIS_ d/ | never panics (lenient recovery + diags); file/line via spans; AST/ HIR/MIR JSON for ordinary workflows |
+| Gate 3 parser/AST/HIR/MIR maturity (spans, no panic, JSON emit, diags) | PARTIAL | --evidence produces *.ast.json *.hir.json *.mir.json ; parse_source_detailed + strict Err on diags; spans in AST/Stmt/Expr; clean diags for bad input | cargo run -- check f --evidence --out d ; find d -name '*.ast.json' ; grep -R ANUBIS_ d/ | Named malformed-input fixtures complete without panic (not a total parser-panic claim); file/line via spans; AST/HIR/MIR JSON for ordinary workflows |
 | Type checker + ANUBIS_* codes (unknown, mismatch, taint etc) | PARTIAL | ANUBIS_UNKNOWN_VARIABLE, ANUBIS_TYPE_MISMATCH, ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY emitted in check_error + bundle checks; fixtures enforce | cargo run -- check unknown... ; grep -R ANUBIS_ out/... ; same for type/taint/declass_missing | duplicate let / arity / cond type / missing return / field defined in typecheck; taint/declass rules unchanged |
 | Float→integer narrowing rejection (Phase-2 slice 1) | under Command | `ty::assignable`/`ty::is_float` (middle/ty.rs) wired at let-init/assign/arg/return; `ty::compatible` + `ty_parity` oracle unchanged | `cargo test -p anubis-compiler float_does_not_narrow` ; `narrowing_rule_does_not_reject` ; `assignable_rejects` | First rule consuming structured `Ty`. Directional: float→int rejected, int→float widening + width-interop kept. Faithful to runtime: bitwise/shift/`~`→int, float arith→float, if/match float only if every inferable branch float (adversary-verified: false positives on bitwise + mixed-branch found and fixed). Boundary: float via call-return/index/statement-if-in-block infers None → not yet narrowed (safe, documented in UNSUPPORTED.md) |
 | CLI ordinary workflow usable | PARTIAL | anubis check <f> ; build ; prove --backend risc0 ; verify-bundle ; verify-receipt ; doctor ; --evidence --out ; --emit ast,hir,mir | cargo run -- check ... ; cargo run --release -p anubis -- prove ... ; docs/CLI.md | check does not emit native by default; errors readable; doctor covers rust/risc0/metal/git/evidence |
@@ -596,7 +596,7 @@ closed and locked in `b2_soundness_fail_closed_regressions`. The unifying defect
 are compile-time only — the transpiler emits NO runtime check for `requires`/`ensures`** (verified: a
 violated `ensures(result == "wrong")` returning `"ok"` was accepted). So a *skipped* contract is
 enforced nowhere; the old "non-integer contracts are left to runtime" claim was false. The fix makes
-the whole class fail closed: an `ensures` is either discharged by the solver or the function is
+the named B2 regression class fail closed: in those fixtures an `ensures` is either discharged by the solver or the function is
 rejected.
 
 | Root cause | Firsthand violation (check ACCEPT → run) | Fix |
@@ -622,9 +622,9 @@ contract, string/list/bool-variable postconditions, floats, truncating casts, an
 solver cannot model are all **rejected** (`ANUBIS_CONTRACT_UNPROVABLE`) — use a runtime `assert` in the
 body for a dynamic check (that IS enforced at runtime). A tail-position direct call
 `fn g()->u32 { helper(x) }` is rejected — bind via `let r = helper(x); return r;` to carry the
-`ensures`. Loop-carried reasoning is B3. The checker is SOUND: a green `anubis check` means every
-declared contract was actually proved — it may decline to certify a contract it cannot model, but it
-never certifies a violable one.
+`ensures`. Loop-carried reasoning is B3. In the named B2 fixture set, a green `anubis check` records
+that each emitted declared-contract obligation was discharged; this historical row does not prove
+that every current AST position emits the obligation it should.
 
 ## Refinement-type foundation — B3 (loop invariants) + control-flow soundness (2026-07-10)
 
@@ -641,8 +641,8 @@ fail-closed (no `old()`); (14) `expr_to_smt_value` modeled a truncating cast as 
 Every defect was firsthand-reproduced (`check` accept + a concrete `anubis run` violation —
 before fixing, and locked with a regression test in `b3_loop_invariants_verify_inductively`,
 `loop_body_assert_not_discharged_against_stale_state`, `solver_modelability_is_function_local_and_shadow_safe`,
-and the B2 contract tests). The inductive-invariant ENGINE proved sound from round ~7 onward; the later
-rounds surfaced pre-existing weaknesses in the general checker's control-flow/state handling that B3's
+and the B2 contract tests). From round ~7 onward, the named inductive-invariant battery found no new
+engine-local counterexample; later rounds surfaced pre-existing weaknesses in the general checker's control-flow/state handling that B3's
 rigor exposed. The twelve closed defects:
 
 | # | Class | Defect (all were `check`-accepted, runtime-violated) | Fix |
@@ -673,9 +673,9 @@ still ACCEPT. **265 compiler tests; 56 tools tests; fixtures 26/26; PCA 13/13; p
 sound not silent); an accumulator invariant needs an explicit overflow bound; an in-body `assert` over
 a loop-carried variable is deferred to the runtime (which enforces `assert`) rather than proved. A
 call's `requires` in pure expression position (`g(bad)+1`) is not yet enforced — but no `ensures` is
-assumed there either, so nothing is laundered (a completeness gap, not a false proof). The checker is
-SOUND for its supported subset: a green `anubis check` over an invariant loop or a contract means it was
-actually proved; anything it cannot model soundly is rejected, never silently accepted.
+assumed there either, so nothing is laundered in the cited fixtures (a completeness gap, not a false
+proof). The B3 gate demonstrates discharge/rejection for its named supported cases; it is not evidence
+that every current or future expression-holding position reaches that engine.
 
 ## A+ Maturity Gaps Closed (2026-07-11)
 

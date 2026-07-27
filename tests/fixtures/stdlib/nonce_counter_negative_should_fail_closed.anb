@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_NONCE_COUNTER
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: AEAD counter-based nonce must be non-negative.
+fn main() {
+    print(aead_nonce_from_counter(-1));
+}

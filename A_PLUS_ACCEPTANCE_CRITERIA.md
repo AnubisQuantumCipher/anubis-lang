@@ -60,14 +60,14 @@ fn main() {
 - Evidence records research mode + reason when used.
 
 ## GATE 7 — Solver correctness
-Every symbolic assertion:
+Every symbolic assertion in the currently declared solver fragment:
 - SMT encodes actual program relationships
 - counterexamples execute or are replayable against source semantics
 - no free variables pretending to be program values
 - bitvector widths and overflow explicit
 
 ## GATE 8 — Evidence schema
-Every build (success or fail) produces bundle with:
+Every build path exercised by the current evidence gate (success and deliberate failure) produces a bundle with:
 - manifest.json
 - MANIFEST.sha256
 - source copy + hash
@@ -125,7 +125,7 @@ A+ requires **no mandatory gate failures**.
 
 ---
 
-Run `bash scripts/audit_a_plus.sh` to execute the full sealed gate suite. It runs the repo safety check and delegates to the canonical runner `scripts/audit_unified.sh`, which executes every gate (G1–G15) and writes an honest PASS/FAIL/SKIP verdict plus `gate_report.json` to `out/unified_gate/<STAMP>/`, exiting non-zero if any gate fails.
+Run `bash scripts/audit_a_plus.sh` to execute the declared sealed gate suite. It runs the repo safety check and delegates to the canonical runner `scripts/audit_unified.sh`, which executes the enumerated G1–G15 set and writes a PASS/FAIL/SKIP verdict plus `gate_report.json` to `out/unified_gate/<STAMP>/`, exiting non-zero if a declared gate fails.
 
 The default/full profile is sealed only at exactly 15/15 with zero failures, skips, or external
 gates. Stock GitHub macOS runners cannot provide nested Apple virtualization, the canonical

@@ -2425,6 +2425,37 @@ fn check_calls_expr(
 /// to enforce the block's contents — it answers one question: does this function elevate mode from
 /// its own source?
 fn body_has_mode_elevator(body: &[Stmt]) -> bool {
+    // FIELD-TOTAL over Pattern. Pattern carries no Expr today, but consuming every named field here
+    // means adding one (or adding any other field) is an E0027 compile error until this boundary
+    // decides how to walk it.
+    fn in_pattern(pattern: &crate::frontend::Pattern) -> bool {
+        use crate::frontend::Pattern;
+        match pattern {
+            Pattern::Wildcard => false,
+            // Tuple variants carrying no code: a binder NAME and literal values cannot hide an
+            // elevator. Bare `_` rather than named bindings — an or-pattern must bind the same
+            // variables in every alternative, and naming them here bought nothing.
+            Pattern::Binding(_) | Pattern::Literal(_) | Pattern::StrLiteral(_) => false,
+            Pattern::Or(patterns) | Pattern::List(patterns) => {
+                patterns.iter().any(in_pattern)
+            }
+            Pattern::Struct { name: _name, fields } => fields
+                .iter()
+                .any(|(_field_name, nested)| in_pattern(nested)),
+            Pattern::EnumVariant {
+                enum_name: _enum_name,
+                variant: _variant,
+                bindings,
+                named_bindings,
+            } => {
+                bindings.iter().any(in_pattern)
+                    || named_bindings
+                        .iter()
+                        .any(|(_field_name, nested)| in_pattern(nested))
+            }
+        }
+    }
+
     // TOTAL over `Expr` — no wildcard arm. This is a SECURITY BOUNDARY: a variant this walk fails to
     // descend into is a path along which `@research { … }` elevates mode with no authorization, so a
     // newly added `Expr` must FAIL TO COMPILE here rather than silently reopen the bypass.
@@ -2439,63 +2470,111 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             Expr::Var(_)
             | Expr::Literal(_)
             | Expr::StrLiteral(_)
-            | Expr::Symbolic { .. }
-            | Expr::TaintSource { .. }
-            | Expr::UnifiedBuffer { .. }
-            | Expr::RawPtr { .. }
+            | Expr::Symbolic { ty: _ }
+            | Expr::TaintSource { label: _ }
+            | Expr::UnifiedBuffer { ty: _ }
+            | Expr::RawPtr { mutable: _ }
             | Expr::Other(_) => false,
 
             Expr::Block { stmts, tail } => in_stmts(stmts) || tail.as_deref().is_some_and(in_expr),
             Expr::If {
-                cond, then, else_, ..
+                cond,
+                then,
+                else_,
+                span: _,
             } => in_expr(cond) || in_expr(then) || in_expr(else_),
             // The SCRUTINEE is an expression too, and dropping it was a live bypass:
             // `if let x = if true { @research { … } 1 } else { 0 } { … }` elevated with no
             // authorization. Totality over `Expr` is not enough on its own — every expression a
             // node HOLDS has to be walked, or the enum being exhaustive just means the hole moved.
             Expr::IfLet {
+                pattern,
                 scrutinee,
                 then,
                 else_,
-                ..
-            } => in_expr(scrutinee) || in_expr(then) || in_expr(else_),
+                span: _,
+            } => {
+                in_pattern(pattern)
+                    || in_expr(scrutinee)
+                    || in_expr(then)
+                    || in_expr(else_)
+            }
             // The arm GUARD is a held expression too. Scrutinee and body were walked, the guard was
             // not, so `match n { x if (|| { @research { … } true })() => … }` elevated with no
             // authorization. Fourth position found in this walk, and the variant was named in every
             // one of them — which is the whole argument for auditing POSITIONS, not just variants.
             Expr::Match {
-                scrutinee, arms, ..
+                scrutinee,
+                arms,
+                span: _,
             } => {
                 in_expr(scrutinee)
                     || arms
                         .iter()
-                        .any(|a| a.guard.as_ref().is_some_and(in_expr) || in_expr(&a.body))
+                        .any(|arm| {
+                            let crate::frontend::MatchArm {
+                                pattern,
+                                guard,
+                                body,
+                            } = arm;
+                            in_pattern(pattern)
+                                || guard.as_ref().is_some_and(in_expr)
+                                || in_expr(body)
+                        })
             }
-            Expr::Lambda { body, .. } => in_expr(body),
+            Expr::Lambda { params: _, body } => in_expr(body),
 
             // Containers and calls: a lambda carrying a block can sit anywhere inside one.
             Expr::ArrayLiteral { elements } => elements.iter().any(in_expr),
-            Expr::MapLiteral { entries, .. } => {
+            Expr::MapLiteral { entries, span: _ } => {
                 entries.iter().any(|(k, v)| in_expr(k) || in_expr(v))
             }
-            Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| in_expr(v)),
-            Expr::EnumConstruct { fields, .. } => fields.iter().any(in_expr),
-            Expr::Call { args, .. } => args.iter().any(in_expr),
+            Expr::StructLiteral {
+                name: _,
+                fields,
+                span: _,
+            } => fields.iter().any(|(_, v)| in_expr(v)),
+            Expr::EnumConstruct {
+                enum_name: _,
+                variant: _,
+                fields,
+                field_names: _,
+                span: _,
+            } => fields.iter().any(in_expr),
+            Expr::Call { callee: _, args } => args.iter().any(in_expr),
             Expr::CallExpr { callee, args } => in_expr(callee) || args.iter().any(in_expr),
             Expr::Index { base, index } => in_expr(base) || in_expr(index),
-            Expr::FieldAccess { base, .. } => in_expr(base),
-            Expr::Binary { lhs, rhs, .. } => in_expr(lhs) || in_expr(rhs),
-            Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => in_expr(expr),
+            Expr::FieldAccess {
+                base,
+                field: _,
+                span: _,
+            } => in_expr(base),
+            Expr::Binary { op: _, lhs, rhs } => in_expr(lhs) || in_expr(rhs),
+            Expr::Unary { op: _, expr } | Expr::Cast { expr, ty: _ } => in_expr(expr),
             Expr::Try(inner) | Expr::Assume(inner) | Expr::Assert(inner) => in_expr(inner),
-            Expr::Tainted { inner, .. } => in_expr(inner),
-            Expr::Declassify { inner, .. } => in_expr(inner),
+            Expr::Tainted { ty: _, inner } => in_expr(inner),
+            Expr::Declassify {
+                inner,
+                policy: _,
+                reason: _,
+            } => in_expr(inner),
         }
     }
     fn in_stmts(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|st| match st {
-            Stmt::ResearchBlock { .. } | Stmt::ExploitBlock { .. } => true,
-            Stmt::Let { init, .. } => in_expr(init),
-            Stmt::LetPattern { init, .. } => in_expr(init),
+            Stmt::ResearchBlock { intent: _, body: _ }
+            | Stmt::ExploitBlock { intent: _, body: _ } => true,
+            Stmt::Let {
+                name: _,
+                ty: _,
+                init,
+                span: _,
+            } => in_expr(init),
+            Stmt::LetPattern {
+                pattern,
+                init,
+                span: _,
+            } => in_pattern(pattern) || in_expr(init),
             Stmt::ExprStmt(e) => in_expr(e),
             Stmt::Assign { target, value } => in_expr(target) || in_expr(value),
             Stmt::If { cond, then, else_ } => {
@@ -2523,16 +2602,20 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             // Same omission on the statement side: `while let x = <expr> { … }` holds a scrutinee
             // expression that was never walked.
             // `WhileLet` carries no invariant list, so nothing to add here.
-            Stmt::WhileLet { expr, body, .. } => in_expr(expr) || in_stmts(body),
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => in_pattern(pattern) || in_expr(expr) || in_stmts(body),
             Stmt::Loop { body, invariant } => invariant.iter().any(in_expr) || in_stmts(body),
             // A `for`'s SOURCE is an expression too — the range bounds or the collection — and
             // dropping it let `for i in 0..(|| { @research { … } 1 })()` elevate unauthorized.
             // Third position in this walk where a node HELD an expression that was never walked.
             Stmt::For {
+                var: _,
                 source,
                 body,
                 invariant,
-                ..
             } => {
                 let src = match source {
                     crate::frontend::ForSource::Range { start, end } => {
@@ -2545,7 +2628,7 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 [gpu, cpu, prove].into_iter().flatten().any(|b| in_stmts(b))
             }
-            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => false,
+            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { forall: _ } => false,
         })
     }
     in_stmts(body)

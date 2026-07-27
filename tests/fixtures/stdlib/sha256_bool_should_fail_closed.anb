@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_BYTES_KIND
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: bool is not accepted as crypto input.
+fn main() {
+    print(sha256(true));
+}

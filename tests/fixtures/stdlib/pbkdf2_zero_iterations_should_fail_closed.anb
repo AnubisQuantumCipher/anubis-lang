@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_PBKDF2_ITERATIONS
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: PBKDF2 iterations must be >= 1 (RFC 8018).
+fn main() {
+    print(pbkdf2_hmac_sha256("password", "salt", 0, 32));
+}

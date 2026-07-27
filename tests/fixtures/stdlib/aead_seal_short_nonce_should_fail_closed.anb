@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_AEAD_NONCE_LEN
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: nonce must be exactly 12 bytes.
+fn main() {
+    print(aead_seal(random_bytes(32), "short", "aad", "pt"));
+}

@@ -55,7 +55,7 @@ Anubis is dual-mode:
 
 - **Safe (default):** `tainted` data must not reach sinks without an explicit
   `declassify(value, policy, reason)`. Confidential `secret<T>` values must not reach
-  egress without the same. Leak programs fail closed.
+egress without the same. The tutorial's paired leak fixtures reject; this is not a total IFC claim.
 - **Research / exploit:** intentional dual-use surface for authorized lab work;
   requires `--allow-research` on CLI paths that execute research constructs.
 
@@ -199,7 +199,8 @@ See `docs/language/PACKAGES.md`. Gate: `bash scripts/run_package_gate.sh`.
 
 ## 7. REPL
 
-The REPL is **check-first**: every entry is parsed, typechecked, and obligation-checked
+The REPL is **check-first**: entries accepted by the current REPL grammar pass through parse,
+type, and obligation checks
 before evaluation.
 
 ```bash
@@ -219,7 +220,7 @@ anubis repl --exact --eval '2 + 3'
 - **Default:** fast AST interpreter (`compiler/src/interp`) for snappy exploration.
 - **`--exact`:** incremental compile through `anubis run` lowering when you need
   production fidelity (lists of structs, full native builtins, etc.).
-- Type errors fail closed (non-zero exit on `--eval`):
+- The listed type-error examples reject with a non-zero exit on `--eval`:
 
 ```bash
 anubis repl --eval 'let x: u32 = true'   # fails

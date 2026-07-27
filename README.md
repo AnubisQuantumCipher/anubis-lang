@@ -13,7 +13,9 @@
 ![License](https://img.shields.io/badge/license-BUSL--1.1-blue)
 ![Status](https://img.shields.io/badge/status-pre--1.0_·_evidence--native-orange)
 
-*The one invariant everything else serves: a green `anubis check` never certifies a contract that `anubis run` violates — and secret bits never leave as a public compile-time fact.*
+*The objective everything else serves: a green `anubis check` means the checker found no way for the
+program to violate its stated contracts, effects, capabilities, or information-flow policy. Green
+means no known defect; the load-bearing residual is always [`docs/CLAIMS.md`](docs/CLAIMS.md).*
 
 </div>
 
@@ -173,19 +175,19 @@ Status: ✅ **real** (implemented + gated) · 🟡 **partial** (real slices, hon
 | | Status | |
 |---|---|---|
 | **Contract checking** | ✅ | `requires` / `ensures` / `assert` discharged by SMT, with real solver counterexamples; `--suggest-contracts` infers clauses for you |
-| **Fail-closed build** | ✅ | `anubis build` runs the *same* verification and refuses on any unproven contract (`--no-verify` to opt out) |
+| **Verified build front door** | ✅ | Without the explicit `--no-verify` escape hatch, `anubis build` runs the same checker and refuses the currently modeled unproven-contract cases; whole-language residuals remain in [`docs/CLAIMS.md`](docs/CLAIMS.md) |
 | **Contract lanes** | 🟡 | integer (exact i64) ✅ · float **comparison** · string **equality/length** · bounded arrays · loop invariants · struct fields — **everything outside the modeled fragment fails closed** |
 | **Native SMT solver** | ✅ | the zero-dependency, Lean-verified QF_BV solver above; **default-authoritative** on the proven integer fragment (opt-out `=0`); Z3 cross-checks when present |
-| **Mechanized soundness** | ✅ | 162 Lean 4 theorems across 15 modules: encoding soundness, the bit-blaster, Safe-mode non-interference, effect soundness — `run_formal_gate.sh` proves the build carries **no `sorry`/`admit`/`axiom`** |
+| **Mechanized components** | ✅ | 162 Lean 4 theorems across 15 modules cover the stated encoding, bit-blast, non-interference, and effect lemmas; `run_formal_gate.sh` checks those theorem files and rejects `sorry`/`admit`/`axiom`. This is not a proof of total language soundness |
 
 ### 🔒 Secure by construction — types that stop data from leaking
 
 | | Status | |
 |---|---|---|
-| **Information flow** | ✅ | `tainted<T>` (integrity) + `secret<T>` (confidentiality) tracked through the program; a secret reaching a public sink is a compile error unless routed through `declassify(value, policy, reason)` |
-| **The lethal trifecta** | ✅ | a function that *reads private data*, *takes untrusted input*, **and** *can exfiltrate* is rejected — `ANUBIS_LETHAL_TRIFECTA`, the AI-agent exfiltration bug as a type error |
+| **Information flow** | 🟡 | `tainted<T>` (integrity) + `secret<T>` (confidentiality) are enforced across the currently instrumented carriers; the named sink fixtures reject unless routed through `declassify(value, policy, reason)`. Composition completeness is not claimed; see [`docs/CLAIMS.md`](docs/CLAIMS.md) |
+| **The lethal trifecta** | 🟡 | the named direct and summarized forms that *read private data*, *take untrusted input*, **and** *can exfiltrate* reject with `ANUBIS_LETHAL_TRIFECTA`; residual composition shapes remain governed by [`docs/CLAIMS.md`](docs/CLAIMS.md) |
 | **Effects & capabilities** | ✅ | transitive effect inference (`fs.read` `fs.write` `net.send` `shell` `time.now` `rand.gen`); linear **use-once** capability tokens (`cap_acquire`/`cap_use`) — reuse is `ANUBIS_CAPABILITY_REUSE` |
-| **Implicit-flow rejection** | ✅ | assignment-to-public under a secret program counter is **rejected** (`ANUBIS_IMPLICIT_FLOW`) — covering `if`/`match`/guards/`while`/`for`/`if let`, statement and value position, and the tail-return form. **Honest boundary:** full Jif/FlowCaml-style PC labelling at every join is not implemented; deeper forms stay fail-closed rather than silently accepted |
+| **Implicit-flow rejection** | 🟡 | named assignment-to-public forms under a secret program counter reject with `ANUBIS_IMPLICIT_FLOW` — covering the cited `if`/`match`/guard/loop/`if let` fixtures in statement and value position. **Honest boundary:** full Jif/FlowCaml-style PC labelling at every join is not implemented, so behavior outside those fixtures is a named residual, not claimed fail-closed |
 
 ### 🧾 Prove (zero-knowledge) — attest a computation without revealing it
 
@@ -201,13 +203,13 @@ Status: ✅ **real** (implemented + gated) · 🟡 **partial** (real slices, hon
 
 | | Status | |
 |---|---|---|
-| **Effect-derived confinement** | ✅ | `anubis vz confine <program>` derives an Apple Virtualization isolation manifest **from the program's proven effect set** — a second boundary consistent-*by-construction* with `anubis check`, sealed into evidence bundles and **re-derived on verify** (a forged grant fails closed) |
-| **VZ apply mount posture** | ✅ | `anubis vz apply` filters engagement `--dir` mounts fail-closed against proven mount posture (`none` denies; `read-only` forces `:ro`) |
+| **Effect-derived confinement** | 🟡 | `anubis vz confine <program>` derives a manifest from the checker's emitted effect set; the named bundle/tamper controls re-derive and byte-compare it on verify. This is evidence for the declared schema, not proof that effect discovery is complete |
+| **VZ apply mount posture** | 🟡 | the named apply-gate cases show `none` denying and `read-only` forcing `:ro`; unenumerated apply combinations are not covered by that observation |
 | **VZ apply network posture** | ✅ | No open NAT by default; `--allow-host` → Softnet default-deny + `/32` allows when `softnet` is on PATH; `--allow-open-nat` explicit residual |
-| **Effect-derived entitlement profile** | ✅ | `anubis entitlements <program>` derives a macOS App Sandbox / entitlement profile from the **same** proven effect set; sealed + re-derived on verify. **Derived profile, not enforced until signed** (`apple_enforced_claim: false`) |
+| **Effect-derived entitlement profile** | 🟡 | `anubis entitlements <program>` derives a profile from the checker's emitted effect set; named verification controls re-derive it. **Derived profile, not enforced until signed** (`apple_enforced_claim: false`) |
 | **Non-exportable linear caps + Keychain/SE** | ✅ | Static export-seal; macOS Keychain bind (`kc:`) under signed Development path; optional SE (`se:`); soft fallback; gate `scripts/run_keychain_se_gate.sh` |
 | **VM lifecycle (tart lane)** | ✅ | `anubis vz` create / boot / exec / snapshot / stop / delete — the full Virtualization.framework lifecycle behind one CLI, on Apple Silicon |
-| **Native VZ backend** | 🟡 | a direct `objc2-virtualization` binding (`vz native-preflight`): a proven-net-free program gets a **true zero-NIC air-gap** (0 network devices, hypervisor-enforced); per-hostname egress is substrate-staged. Needs one **unrestricted** entitlement, applied by a **local ad-hoc signature** — `scripts/build_signed_anubis.sh`, **no Apple Developer account** ([details](docs/APPLE_NATIVE.md#code-signing--the-do-i-need-an-apple-developer-account-question)) |
+| **Native VZ backend** | 🟡 | `vz native-preflight` validates the generated configuration and its named negative control; the net-free configuration contains zero network devices. Per-hostname egress is substrate-staged, so no broader air-gap claim follows |
 
 ### ⚔️ Research — an accountable offensive toolchain (authorized use)
 
@@ -237,7 +239,7 @@ Anubis carries a full, **engagement-scoped** offensive platform for authorized s
 | **Executable core** | ✅ | Turing-complete: loops, recursion, mutation, enums + `match`, `for x in xs` / `for i in a..b`, structs, maps, closures, `Option`/`Result`/`?`, **213 builtins** (inventory: [`docs/language/BUILTINS.md`](docs/language/BUILTINS.md)) — native Apple-Silicon executables |
 | **Type system** | ✅ / 🟡 | bidirectional inference, traits + coherence; generics are runtime-erased + dynamically checked (not yet statically monomorphized); multi-file `import` resolution is 🟡 in progress |
 | **Developer experience** | ✅ | `fmt` (self-verifying), `test` (`// EXPECT: PASS\|FAIL`), `doc` (Contracts section), `repl`, `lsp` (contract hovers), tree-sitter grammar + VS Code extension — `run_dx_gate.sh` (15/15) |
-| **Self-hosting spine** | ✅ | `selfhost/` compiles itself: a real stage0→stage3 bootstrap sealed to a **byte-identical fixpoint**; and the **effect, type, and taint checker engines are now Anubis-authored too**, each differential-gated 0-disagreement vs the Rust checker (`run_{effect,capset,type,taint}_selfhost_gate.sh`) and VM-sealed; reproducibility + diverse-double-compile gates landed |
+| **Self-hosting spine** | 🟡 | `selfhost/` implements a stage0→stage3 bootstrap plus Anubis-authored effect, type, and taint engines. The named differential gates report the corpus comparison; the post-registry VM fixpoint is currently **unsealed** and must not be represented as current proof (see [`docs/CLAIMS.md`](docs/CLAIMS.md)) |
 
 ---
 
@@ -249,10 +251,10 @@ trigger-happy** — the same program with the leak removed passes.
 
 | Program | What it shows |
 |---|---|
-| ⭐ **[NEXUS](examples/showcase/nexus/)** — secure AI agent (475 lines) | the **flagship**: an autonomous agent whose safety is *compiler-proved* — private beliefs can't leak, untrusted input can't hijack it, egress is a use-once capability, the lethal trifecta can't fire, and it proves its own integrity. `check` clean **and** `run` |
+| ⭐ **[NEXUS](examples/showcase/nexus/)** — secure AI agent (475 lines) | the **flagship fixture**: its checked source exercises private-state, untrusted-input, capability-egress, and integrity controls; `check` and `run` are the evidence for this program, not a total-language proof |
 | ⭐ **[Anubis Vault](examples/showcase/anubis_vault/)** — high-threat password manager | operational CLI vault: Argon2id + AEAD + dual/duress worlds + clearance/burn + **verified-lane caps that run** + build-once multi-op contacts CRUD + real unlink destroy; `check --verified` and `run` both green; thorough battery in-tree |
 | [`ring_buffer_underflow.anb`](examples/showcase/ring_buffer_underflow.anb) | the solver hands you the **counterexample** — `check` disproves `ensures(result >= 0)` at the wraparound state, then proves the fix |
-| [`verified_private_settlement.anb`](examples/showcase/verified_private_settlement.anb) | **contracts + secrets in one file**: SMT-proved debit/credit over `secret<i64>` balances, and the info-flow lane guarantees nothing private leaves |
+| [`verified_private_settlement.anb`](examples/showcase/verified_private_settlement.anb) | **contracts + secrets in one file**: the named SMT debit/credit obligations discharge and the fixture's explicit secret-to-public guards reject |
 | [`verified_loop.anb`](examples/showcase/verified_loop.anb) | a **loop invariant** discharged to establish a postcondition |
 | [`suggest_contracts_demo.anb`](examples/showcase/suggest_contracts_demo.anb) | `check --suggest-contracts` **infers** the missing `requires`/`ensures` for you |
 | [`tainted_input_to_shell_rejects.anb`](examples/security/tainted_input_to_shell_rejects.anb) | **command injection is a compile error** — `input() → shell()` is `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY` |
@@ -275,19 +277,23 @@ An 11-phase maturity arc; the living source of truth is [`docs/language/ROADMAP.
 
 | Phase | State | What that means today |
 |---|---|---|
-| **0 — Trust spine** | ✅ Done | reproducible build + real self-host bootstrap + byte-identical fixpoint seal (re-sealed on each checker slice; current VM fixpoint pinned in `scripts/vm/EXPECTED_FIXPOINT_VM`) |
+| **0 — Trust spine** | 🟡 Partial | reproducible-build and self-host gates exist; `scripts/vm/EXPECTED_FIXPOINT_VM` records the historical VM expectation, while the post-registry VM re-seal remains pending in [`docs/CLAIMS.md`](docs/CLAIMS.md) |
 | **1 — Type system** | ✅ Done | bidirectional inference, generics, traits + coherence — enforcing |
-| **2 — Capability & effect** | ✅ Done | transitive effects, linear capability tokens, the **lethal trifecta as a compile error** |
-| **3 — Verified surface** | 🟢 At DoD | SMT contract lanes for int / float / string / arrays / loops / structs; everything outside fails closed |
-| **4 — Port checker into Anubis** | 🟢 At DoD | all three semantic engines — **effect, type, taint** — are now Anubis-authored in `selfhost/` and **match the Rust checker** (each differential-gated 0-disagreement and VM-sealed); parse + codegen were already self-hosted. Residuals are structural (type HM/generics — unreachable in the self-host grammar) or deferred-precision (taint closure/container interproc, where the self-hosted engine soundly under-reports) |
-| **5 — Mechanized soundness** | 🟢 At DoD | 162 Lean 4 theorems across 15 modules: encoding soundness, the native bit-blaster, non-interference, effect soundness — no `sorry`/`admit`/`axiom` |
-| **6 — Proof-carrying packages** | 🟢 At DoD | signed bundles, re-derived-on-verify summaries, contract enforcement across dependencies |
+| **2 — Capability & effect** | 🔴 Not soundness-complete | transitive effects, linear capability tokens, and named lethal-trifecta fixtures exist; field/walker parity remains the load-bearing residual |
+| **3 — Verified surface** | 🟡 Scoped | SMT contract lanes for the named int / float / string / array / loop / struct fragments; behavior outside the enumerated negative controls remains governed by [`docs/CLAIMS.md`](docs/CLAIMS.md) |
+| **4 — Port checker into Anubis** | 🟡 Partial | all three semantic engines — **effect, type, taint** — are Anubis-authored in `selfhost/`; the named differential gates measure agreement on their declared corpora. The post-registry VM re-seal and broader self-host grammar remain residuals |
+| **5 — Mechanized components** | 🟡 Scoped | `bash scripts/run_formal_gate.sh` checks 162 Lean 4 theorems across 15 modules and rejects `sorry`/`admit`/`axiom`; this does not close the whole-language false-accept class |
+| **6 — Proof-carrying packages** | 🟡 Scoped | the package gate exercises signed bundles, re-derived summaries, tamper controls, and named dependency-contract cases; universal dependency closure is not claimed |
 | **7 — Minimize TCB** | 🟢 Advanced | native QF_BV solver + Lean bit-blast + **verified RUP Unsat cert**; **default = native-authoritative** (opt-out `=0`); residual: second independently-authored frontend; division deferred |
 | **8 — Developer experience** | 🟢 At DoD | LSP, formatter, REPL, doc-gen, tree-sitter, tutorial, spec — `run_dx_gate.sh` (15/15) |
 | **9 — External reproduction** | 🟢 Done (witnessed) | independent clean-clone stranger run recorded: selfhost 9/9, repro 6/6 (Docker hermetic), DDC 34/34, fixtures 244/244, formal PASS — [`docs/language/phase9_independent_witness/`](docs/language/phase9_independent_witness/) |
 | **10 — Production 1.0** | 🟢 Done (freeze) | [`SPEC_1_0_FREEZE.md`](docs/language/SPEC_1_0_FREEZE.md) + [`SEMVER_1_0_POLICY.md`](docs/language/SEMVER_1_0_POLICY.md); multi-party Phase 9 witnesses; package/DX gates green |
 
-**The discipline is auditable, not advertised.** Development happens on the `a-plus-maturity/20260705-1649` branch; the formal gate machine-checks the Lean proofs; every solver slice is sealed against the byte-identical self-host fixpoint before it may commit; and soundness is stress-tested by **whole-surface audits that build and run candidate programs** hunting for any case where a green check disagrees with the runtime. CI runs the same 15-gate front door a stranger runs on a fresh clone.
+**The discipline is intended to be auditable.** The formal gate machine-checks the in-tree Lean
+proofs, the seal checklist exercises its declared gate set, and adversarial audits build and run
+candidate programs looking for check/runtime disagreement. Those are bounded observations—not a
+proof that the candidate space or all future commits are covered; the living residual is
+[`docs/CLAIMS.md`](docs/CLAIMS.md).
 
 ---
 

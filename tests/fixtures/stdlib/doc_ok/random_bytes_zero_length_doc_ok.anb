@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 0
+// DOC_OK / CRYPTO LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// random_bytes(0) returns an empty byte list. The runtime checks n < 0 (fail-closed)
+// but accepts 0 — returning exactly what the caller asked for. Downstream consumers
+// (aead_seal, etc.) enforce their own length requirements.
+fn main() {
+    print(len(random_bytes(0)));
+}

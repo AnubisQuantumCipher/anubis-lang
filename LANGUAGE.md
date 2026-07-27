@@ -102,7 +102,8 @@ grid["row"][col].value = v;
 
 Compound assignment works on any place: `+= -= *= /= %= &= |= ^= <<= >>=`.
 
-**Indexing is fail-closed.** An explicit index expression asserts the position exists:
+**Indexing rule (current list/string/map receivers).** An explicit index expression asserts the
+position exists; the named out-of-bounds and missing-key fixtures trap rather than return a value:
 `xs[i]` on a list past its bounds, `s[i]` / `char_at(s, i)` past a string's length, and `m[k]`
 on an absent map key all **panic** (`ANUBIS_INDEX_OUT_OF_BOUNDS` / `ANUBIS_MISSING_KEY`) rather
 than silently returning `0`; indexing a non-collection panics `ANUBIS_NOT_INDEXABLE`. Negative
@@ -248,20 +249,22 @@ in `[0, 2^32)`. The upper `requires(x < 1000000)` above is load-bearing: without
 at `i64::MAX` and `result > x` becomes false, so the checker (correctly) rejects the unbounded form
 rather than certify a violable contract.
 
-**Contracts are compile-time only and FAIL CLOSED.** `requires`/`ensures` are *not* checked at
+**Contracts are compile-time only.** Within the modeled fragment below, `requires`/`ensures` are
+checked fail-closed at compile time; they are *not* checked at
 runtime — the transpiler emits no runtime guard for them — so a contract the solver does not prove is
 enforced nowhere. Therefore every `ensures` must be either discharged by the solver or **rejected**
-(`ANUBIS_CONTRACT_UNPROVABLE`); it is never silently accepted. A postcondition the bit-vector solver
+(`ANUBIS_CONTRACT_UNPROVABLE`). The named unmodelable-postcondition fixtures reject; completeness
+outside those forms is not claimed. A postcondition the bit-vector solver
 cannot faithfully model is rejected, including: a value from a call whose contract isn't carried (bind
 it via `let r = f(x); return r;`), a **float** (`f64` is not an i64 bit-vector), a **truncating cast**
 (`x as u8` changes the value), an **oversized integer literal** (beyond `i64::MAX`), and an **untyped
 or reassigned** variable in the predicate. Only integer/arithmetic predicates over `+ - * & | ^` and
 comparisons (in i64) are provable; `/ % << >>` and string/list/bool predicates are not — for a *dynamic*
 postcondition, use a runtime `assert(...)` in the body (which **is** enforced at runtime) instead of an
-`ensures`. Every return path is checked, and a self-contradictory precondition (`requires`/`assume`
-that cannot both hold) is rejected as a vacuous proof rather than used to certify anything. So a green
-`anubis check` means every declared contract was actually proved — nothing more, nothing skipped. See
-`MATURITY_CLAIM_MATRIX.md` for the exact, honest scope.
+`ensures`. The currently enumerated return positions are checked, and a self-contradictory precondition (`requires`/`assume`
+that cannot both hold) is rejected as a vacuous proof rather than used to certify anything. A green
+`anubis check` means all obligations the checker emitted were discharged; it does not prove that no
+AST position was omitted. See `MATURITY_CLAIM_MATRIX.md` and `docs/CLAIMS.md` for the living scope.
 
 **Loop invariants (`invariant`).** A `while` loop may declare `invariant(P)` clauses between its
 condition and body. The checker verifies each by the Hoare rule — it holds on entry (base case) and is
@@ -284,8 +287,9 @@ sequence of integer assignments (a branch, nested loop, `match`, `break`/`contin
 shadowing `let`, or an expression that embeds a write is rejected — those cannot be modeled as one
 transition), and the invariant must be provable in i64 without overflow (so an accumulator usually
 needs an explicit upper bound). Invariants on `for`/`loop` are rejected (rewrite as a `while`). A
-green check over an invariant loop means the invariant was actually proved inductive — a loop whose
-body the checker cannot model soundly is rejected, never silently accepted.
+green check over the named invariant fixtures means their emitted base and preservation obligations
+were discharged. Loop body shapes listed above reject when the checker cannot model them soundly.
+This is the declared fragment boundary, not a proof that every future AST position is covered.
 
 ## Closures and higher-order functions
 
@@ -328,7 +332,8 @@ let ops = [square, |x| x + 1];
 print(ops[0](5));                                 // 25
 ```
 
-A user-defined function always takes precedence over a builtin of the same name, so builtin
+Name-resolution rule: in the currently implemented direct-call resolver, a user-defined function
+takes precedence over a builtin of the same name, so builtin
 names are effectively reservable.
 
 ## Structs
@@ -400,7 +405,7 @@ Enums support unit, tuple, and struct-shaped variants. `match` is an expression 
 value) and can also stand as a statement. Arms are tried top-to-bottom; the first arm whose
 pattern matches — and whose guard, if any, passes — wins.
 
-Enum construction is **fail-closed**: a `Foo::Bar` whose type `Foo` is not a declared enum is
+For parsed enum-construction expressions, an unknown `Foo` in `Foo::Bar` is rejected
 rejected (`ANUBIS_UNKNOWN_ENUM`) — this also catches a Rust-style qualified call `pkg::fn(...)`,
 since the call namespace is flat — and a `Foo::Bar` naming a real enum but an absent variant is
 rejected (`ANUBIS_UNKNOWN_VARIANT`). Neither silently becomes a stringy value at runtime.
@@ -476,7 +481,7 @@ element — may hold another pattern. So `Some(Point { x, y })`, `Ok([a, b])`, a
 Exhaustiveness: a `match` on a known enum type must cover every variant or include an
 irrefutable arm (`_` or a bare binding). Guarded arms do not count toward coverage, since a
 guard may fail. Non-enum scrutinees (ints, strings, lists) can't be statically enumerated, so
-they **fail closed at runtime** instead: if no arm matches and there is no `_`, the program
+they use a runtime rejection instead: if no arm matches and there is no `_`, the program
 traps with `ANUBIS_MATCH_UNMATCHED` rather than silently producing a value. Nested matches
 compose freely — a match may appear in another match's arm, in a loop body, as a function
 argument, or inside a closure.

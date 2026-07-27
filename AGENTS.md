@@ -23,7 +23,8 @@ entire promise is one sentence:
 
 SMT-backed contracts, taint and information-flow enforcement, effect and capability tracking, a
 from-scratch native SMT solver whose authority is bounded to Lean-proven bit-blasts, and a
-self-hosted checker written in Anubis itself. It fails closed by design.
+self-hosted checker written in Anubis itself. It is designed to fail closed; any observed exception
+belongs in `docs/CLAIMS.md`, not behind an absolute claim.
 
 **Making the language "complete" means making that sentence TRUE**, not adding features.
 
@@ -43,8 +44,8 @@ Nearly every false accept ever found here is the same disease:
 
 Two corollaries that have each cost real time:
 
-- **Walker parity.** There are ~19 independent value-flow walkers over the same AST with nothing
-  synchronising them, plus an *enforcing* lane and a *summary* lane for taint and secret. Fixing one
+- **Walker parity.** There are many independently maintained value-flow walkers over the same AST,
+  plus an *enforcing* lane and a *summary* lane for taint and secret. Fixing one
   and not its sibling leaves a working launder path — that happened four separate times in one
   session. When you fix a construct, check every walker that handles it.
 - **Under-approximating catch-alls.** A `_ => {}` arm that silently reports "clean" is a defect
@@ -116,9 +117,9 @@ red: STOP and say so. Do not fall through to the host.**
 ## Current state (2026-07-27)
 
 Green under a pinned binary, 12-gate `SEAL_PASS`, `known_fail=0`:
-security **294/294** · language **244/244** · stdlib fail-closed **86/86** · runtime 4/4 ·
+security **296/296** · language **244/244** · stdlib fail-closed **104/104** · runtime 4/4 ·
 selfhost 9/9 · taint/type/effect/capset self-host **0 disagreements** · formal gate PASS with every
-theorem machine-checked and no `sorry`/`admit`/`axiom` · native-authoritative **842 files, 0
+theorem machine-checked and no `sorry`/`admit`/`axiom` · native-authoritative **867 files, 0
 mismatches**.
 
 Reproduce all of it with one command: **`bash scripts/run_seal_checklist.sh`**. It rebuilds once,

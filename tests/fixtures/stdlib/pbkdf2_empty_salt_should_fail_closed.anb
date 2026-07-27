@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_PBKDF2_SALT
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: PBKDF2 salt must be non-empty (prefer >= 16 bytes).
+fn main() {
+    print(pbkdf2_hmac_sha256("password", "", 1000, 32));
+}

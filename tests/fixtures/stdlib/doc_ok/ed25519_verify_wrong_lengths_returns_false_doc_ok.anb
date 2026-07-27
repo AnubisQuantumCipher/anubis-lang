@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: false
+// DOC_OK / CRYPTO LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// ed25519_verify returns false (not panic) for wrong-length PK or signature.
+// This is correct: a verifier should reject invalid inputs, not crash.
+fn main() {
+    print(ed25519_verify("short-pk", "msg", "short-sig"));
+}

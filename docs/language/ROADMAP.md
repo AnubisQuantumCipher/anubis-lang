@@ -42,8 +42,9 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > *soundness* claim** while CLAIMS open §1 stands (false-accept / walker-parity class).
 > Engineering gates (Lean formal gate, native authoritative, language 244 fixtures,
 > self-host 9/9 host preflight) can still be green — that is **not** the language promise.
-> Language promise: *`anubis check` PASS ⇒ program cannot violate stated contracts,
-> effects, capabilities, or information-flow at runtime.* Open false accepts break it.
+> Language objective: *`anubis check` PASS ⇒ the checker found no way for the program to violate
+> its stated contracts, effects, capabilities, or information-flow policy at runtime.* The living
+> load-bearing residual is `docs/CLAIMS.md`; green is not a totality claim.
 
 
 > **⚠️ NOT CURRENT STATUS (GROK-MAAT 2026-07-26).** This block is edited in place rather than
@@ -130,8 +131,9 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > dedicated fixes rather than rushing them: the fail-open-vs-fail-closed stance for genuinely-unmodelable
 > in-body asserts (a language-design decision), and a call-site `requires` bypass for calls inside
 > block-bodied branches (`if c { let t=…; f(t) }` — the discharge walker's documented block/if-let residual).
-> No guarantee is overstated; each boundary above is either machine-checked, gate-verified, or explicitly
-> marked as scoped/human. That is the honest definition of done for a language of this class.
+> The report attempted to scope each boundary as machine-checked, gate-observed, or human; the
+> addendum below records later counterexamples, so this is historical process intent rather than
+> evidence that every guarantee was correctly scoped.
 >
 > **Addendum (2026-07-26):** that framing held on 2026-07-20/25 for the boundaries it names, but is
 > not a claim that no further false accepts exist — the whack-a-mole pattern this file documents
@@ -296,4 +298,4 @@ Phase nine is the one the dissertation names as most valuable and the one you ca
 
 Phase ten is production hardening and the 1.0 spec freeze — maturity proven by use rather than asserted. The language demonstrates itself by building real systems in its class behind proper host applications with authenticated data and human approval: a high-assurance financial engine matured from your ledger kernel, an agentic control plane where the trifecta-as-compile-error from Phase two is deployed in a real orchestrator, evidence-native security tooling where a bug-bounty finding ships with a receipt a skeptical triager can re-derive, and consensus and ledger cores where the proofs are load-bearing. Alongside it comes the stability contract: semantic versioning, a backwards-compatibility policy, and a frozen 1.0 specification for the stable surface, so the language becomes something others can build on for a decade. Definition of done is real systems shipped in at least two target domains with their evidence bundles, and a versioned spec freeze.
 
-Two honest truths to close on. First, completion for a language is asymptotic — the incumbents you'd stand beside have decades and communities, and no roadmap reaches "one hundred percent done" as a discrete event; what these phases give you is the point at which the distinctive stack is complete, every guarantee is either proven or precisely scoped, and the residuals are named rather than hidden, which for this language is the only definition of done that would be honest. Second, if I had to name the single highest-leverage move in the whole arc, it is Phase two — the capability-and-effect system that makes the lethal trifecta a compile error — because it is the one capability that no incumbent can stack onto what they already have, and it is the one that turns "a verification-first language" into "the language you must use to build an agent that cannot be turned against you." Everything else deepens or proves or propagates; that phase is the thing that makes it a class of its own. The trust spine you already banked is what makes anyone believe the claim when you make it.
+Two honest truths to close on. First, completion for a language is asymptotic — the incumbents you'd stand beside have decades and communities, and no roadmap reaches "one hundred percent done" as a discrete event; what these phases aim to provide is a distinctive stack whose current claims are tied to named evidence or residuals; later counterexamples show that remains an objective, not a completion certificate, which for this language is the only definition of done that would be honest. Second, if I had to name the single highest-leverage move in the whole arc, it is Phase two — the capability-and-effect system that makes the lethal trifecta a compile error — because it is the one capability that no incumbent can stack onto what they already have, and it is the one that turns "a verification-first language" into "a language designed to make named agent-confusion and exfiltration paths compile-time errors." Everything else deepens or proves or propagates; that phase is the thing that makes it a class of its own. The trust spine you already banked is what makes anyone believe the claim when you make it.

@@ -31,7 +31,7 @@ This file is the stranger-facing **complete** inventory. `LANGUAGE.md` still doc
 Many collection/math/crypto edge cases used to return a **silent wrong value** (`0`, `[]`,
 no-op) under `anubis run`. That class is **gone** for the gated surface:
 
-- Gate: `bash scripts/run_stdlib_failclosed_gate.sh` → **86/86 PASS** (re-verified 2026-07-27;
+- Gate: `bash scripts/run_stdlib_failclosed_gate.sh` → **104/104 PASS** (re-verified 2026-07-27;
   fixture count grew from the earlier 32-set).
 - Fixtures: `tests/fixtures/stdlib/*_should_fail_closed.anb` (exercise via **`anubis run`**, not
   `check` — these are runtime panics).

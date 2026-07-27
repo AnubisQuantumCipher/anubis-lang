@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_X25519_PK_LEN
+// RUNTIME: exercise via `anubis run` (runtime panic, not a compile-time error).
+// SEALED 2026-07-27: X25519 public key must be exactly 32 bytes.
+fn main() {
+    print(hybrid_seal("not-32-bytes", "aad", "plaintext"));
+}

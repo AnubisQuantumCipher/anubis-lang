@@ -12,6 +12,7 @@
 #   bash scripts/run_docs_drift_gate.sh
 #   bash scripts/run_docs_drift_gate.sh --out out/docs_drift
 #   bash scripts/run_docs_drift_gate.sh --scan-root path/to/fixture_docs
+#   bash scripts/run_docs_drift_gate.sh --derived-json path/to/derived.json  # tests only
 #   bash scripts/run_docs_drift_gate.sh --self-test
 #
 # Declared verdict (seal-scored):
@@ -27,11 +28,13 @@ cd "$ROOT"
 OUT_DIR="out/docs_drift_gate"
 SCAN_ROOT="$ROOT"
 SELF_TEST=0
+DERIVED_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) OUT_DIR="$2"; shift 2 ;;
     --scan-root) SCAN_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
+    --derived-json) DERIVED_OVERRIDE="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
     -h|--help)
       sed -n '2,28p' "$0"
@@ -43,6 +46,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$DERIVED_OVERRIDE" && "$SELF_TEST" -ne 1 ]]; then
+  echo "--derived-json is test-only and requires --self-test" >&2
+  exit 2
+fi
 
 mkdir -p "$OUT_DIR"
 REPORT_TXT="$OUT_DIR/docs_drift_report.txt"
@@ -58,7 +66,16 @@ fi
 : >"$REPORT_TXT"
 
 # ── 1. Re-derive ─────────────────────────────────────────────────────────────
-python3 "$DERIVE_PY" "$ROOT" >"$OUT_DIR/derived.json"
+if [[ -n "$DERIVED_OVERRIDE" ]]; then
+  if [[ ! -f "$DERIVED_OVERRIDE" ]]; then
+    echo "DOCS_DRIFT_GATE: FAIL"
+    echo "missing --derived-json input: $DERIVED_OVERRIDE" >&2
+    exit 1
+  fi
+  cp "$DERIVED_OVERRIDE" "$OUT_DIR/derived.json"
+else
+  python3 "$DERIVE_PY" "$ROOT" >"$OUT_DIR/derived.json"
+fi
 
 eval "$(python3 -c '
 import json
@@ -97,13 +114,14 @@ SCAN_RC=$?
 set -e
 
 STAMPS_CHECKED="$(python3 -c 'import json; print(json.load(open("'"$OUT_DIR"'/scan.json"))["stamps_checked"])')"
+CLAIM_GUARDS_CHECKED="$(python3 -c 'import json; print(json.load(open("'"$OUT_DIR"'/scan.json"))["claim_guards_checked"])')"
 SCAN_FAILS="$(python3 -c 'import json; print(json.load(open("'"$OUT_DIR"'/scan.json"))["scan_failures"])')"
 python3 -c '
 import json
 d=json.load(open("'"$OUT_DIR"'/scan.json"))
 open("'"$OUT_DIR"'/scan_failures.log","w").write("\n".join(d["failures"])+("\n" if d["failures"] else ""))
 '
-echo "stamps_checked=$STAMPS_CHECKED scan_fails=$SCAN_FAILS" | tee -a "$REPORT_TXT"
+echo "stamps_checked=$STAMPS_CHECKED claim_guards_checked=$CLAIM_GUARDS_CHECKED scan_fails=$SCAN_FAILS" | tee -a "$REPORT_TXT"
 if [[ "$SCAN_FAILS" -gt 0 ]]; then
   echo "---- scan failures ----" | tee -a "$REPORT_TXT"
   cat "$OUT_DIR/scan_failures.log" | tee -a "$REPORT_TXT" || true
@@ -156,28 +174,28 @@ run_self_test() {
 
   _qty_fail security \
     "## Current state"$'\n'"security **${wrong_sec}/${wrong_sec}**" \
-    "security claimed"
+    "security claimed" || return 1
   _qty_fail language \
     "## Current state"$'\n'"language **${wrong_lang}/${wrong_lang}**" \
-    "language claimed"
+    "language claimed" || return 1
   _qty_fail stdlib \
     "## Current state"$'\n'"stdlib fail-closed **${wrong_std}/${wrong_std}**" \
-    "stdlib_failclosed claimed"
+    "stdlib_failclosed claimed" || return 1
   _qty_fail native \
     "## Current state"$'\n'"native-authoritative **${wrong_nat} files, 0 mismatches**." \
-    "native_corpus claimed"
+    "native_corpus claimed" || return 1
   _qty_fail builtins \
     "## Current state"$'\n'"Builtins are ${wrong_bi}." \
-    "builtins claimed"
+    "builtins claimed" || return 1
   _qty_fail lean \
     "## Current state"$'\n'"Lean is ${wrong_th} theorems across ${wrong_mod} modules." \
-    "lean_"
+    "lean_" || return 1
   _qty_fail doc_ok \
     "## Current state"$'\n'"DOC_OK locks under tests/fixtures/stdlib/doc_ok/ (${wrong_dok} fixtures)." \
-    "stdlib_doc_ok claimed"
+    "stdlib_doc_ok claimed" || return 1
   _qty_fail modules \
     "## Current state"$'\n'"Standard library: ${wrong_smod} content-locked Anubis-source modules (compiler/stdlib/std/)." \
-    "stdlib_modules claimed"
+    "stdlib_modules claimed" || return 1
 
   # Combined drift_fail (security still covered)
   mkdir -p "$tdir/drift_fail"
@@ -243,20 +261,31 @@ EOF
   fi
   echo "SELFTEST PASS: dated_pass ignores historical N" | tee -a "$REPORT_TXT"
 
-  # ban_fail
-  mkdir -p "$tdir/ban_fail"
-  cat >"$tdir/ban_fail/AGENTS.md" <<'EOF'
-`anubis check` passing means the program cannot violate its stated contracts, effects, capabilities, or information-flow policy at runtime.
-EOF
-  set +e
-  python3 "$SCAN_PY" "$tdir/ban_fail" "$OUT_DIR/derived.json" >"$tdir/guards/ban_fail.json"
-  set -e
-  fc="$(python3 -c 'import json; print(json.load(open("'"$tdir"'/guards/ban_fail.json"))["scan_failures"])')"
-  if [[ "$fc" -lt 1 ]]; then
-    echo "SELFTEST FAIL: ban_fail did not fire" | tee -a "$REPORT_TXT"
-    return 1
-  fi
-  echo "SELFTEST PASS: ban_fail fired" | tee -a "$REPORT_TXT"
+  # One deliberate FAIL per semantic-claim guard.
+  _qty_fail claim_check_run \
+    'A green `anubis check` never certifies a contract that `anubis run` violates.' \
+    "check-run-invariant" || return 1
+  _qty_fail claim_absolute_promise \
+    'The program cannot violate its stated contracts, effects, capabilities, or information-flow policy at runtime.' \
+    "absolute-check-promise" || return 1
+  _qty_fail claim_privacy \
+    'The info-flow lane guarantees nothing private leaves.' \
+    "privacy-absolute" || return 1
+  _qty_fail claim_everywhere \
+    'Safe fails closed, everywhere.' \
+    "fails-closed-everywhere" || return 1
+  _qty_fail claim_totality \
+    'Safe-mode is total IFC.' \
+    "totality-finality" || return 1
+  _qty_fail claim_aggregate \
+    'Every guarantee is proven-or-scoped.' \
+    "aggregate-proof" || return 1
+  _qty_fail claim_walker_count \
+    'There are ~19 independent value-flow walkers.' \
+    "approximate-walker-count" || return 1
+  _qty_fail claim_seal \
+    'The self-host fixpoint is sealed.' \
+    "sealed-without-evidence-path" || return 1
 
   # ban_pass
   mkdir -p "$tdir/ban_pass"
@@ -275,21 +304,6 @@ EOF
     return 1
   fi
   echo "SELFTEST PASS: ban_pass residual-linked / meta banlist" | tee -a "$REPORT_TXT"
-
-  # seal_fail
-  mkdir -p "$tdir/seal_fail"
-  cat >"$tdir/seal_fail/AGENTS.md" <<'EOF'
-The self-host fixpoint sealed and may be trusted.
-EOF
-  set +e
-  python3 "$SCAN_PY" "$tdir/seal_fail" "$OUT_DIR/derived.json" >"$tdir/guards/seal_fail.json"
-  set -e
-  fc="$(python3 -c 'import json; print(json.load(open("'"$tdir"'/guards/seal_fail.json"))["scan_failures"])')"
-  if [[ "$fc" -lt 1 ]]; then
-    echo "SELFTEST FAIL: seal_fail did not fire" | tee -a "$REPORT_TXT"
-    return 1
-  fi
-  echo "SELFTEST PASS: seal_fail fired" | tee -a "$REPORT_TXT"
 
   echo "SELFTEST: all guards demonstrated" | tee -a "$REPORT_TXT"
   return 0
