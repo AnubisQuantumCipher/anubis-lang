@@ -2015,6 +2015,8 @@ fn anubis_max(items: Vec<AnubisValue>) -> AnubisValue {
     })
 }
 fn anubis_pow(base: AnubisValue, exp: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&base, "pow");
+    anubis_require_numeric(&exp, "pow");
     if base.is_float() || exp.is_float() {
         AnubisValue::Float(base.as_f64().powf(exp.as_f64()))
     } else {
@@ -2023,12 +2025,12 @@ fn anubis_pow(base: AnubisValue, exp: AnubisValue) -> AnubisValue {
         else { AnubisValue::Int(base.as_i64().wrapping_pow(e as u32)) }
     }
 }
-fn anubis_sqrt(v: AnubisValue) -> AnubisValue { AnubisValue::Float(v.as_f64().sqrt()) }
+fn anubis_sqrt(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "sqrt"); AnubisValue::Float(v.as_f64().sqrt()) }
 // floor/ceil/round/trunc are the identity on an integer (an i64 has no fractional part, and
 // routing it through f64 would corrupt magnitudes above 2^53). Only floats are rounded.
 fn anubis_floor(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "floor"); match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().floor() as i64) } }
 fn anubis_ceil(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "ceil"); match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().ceil() as i64) } }
-fn anubis_round(v: AnubisValue) -> AnubisValue { match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().round() as i64) } }
+fn anubis_round(v: AnubisValue) -> AnubisValue { anubis_require_numeric(&v, "round"); match v { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(v.as_f64().round() as i64) } }
 fn anubis_gcd(a: AnubisValue, b: AnubisValue) -> AnubisValue {
     anubis_require_numeric(&a, "gcd");
     anubis_require_numeric(&b, "gcd");
@@ -2138,8 +2140,17 @@ fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
 }
 fn anubis_substr(s: AnubisValue, start: AnubisValue, len: AnubisValue) -> AnubisValue {
     let chars: Vec<char> = s.display_string().chars().collect();
-    let st = start.as_i64().max(0) as usize;
-    let ln = len.as_i64().max(0) as usize;
+    // Was `.max(0)` — negative start/len silently became empty-prefix (Phase-5 M–Z SILENT_WRONG).
+    let st_raw = start.as_i64();
+    if st_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: substr start must be non-negative, got {}", st_raw);
+    }
+    let ln_raw = len.as_i64();
+    if ln_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: substr length must be non-negative, got {}", ln_raw);
+    }
+    let st = st_raw as usize;
+    let ln = ln_raw as usize;
     anubis_mk_str(chars.into_iter().skip(st).take(ln).collect())
 }
 fn anubis_slice(x: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisValue {
@@ -2222,16 +2233,24 @@ fn anubis_parse_float_opt(v: AnubisValue) -> AnubisValue {
 }
 
 fn anubis_range(a: AnubisValue, b: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&a, "range");
+    anubis_require_numeric(&b, "range");
     let (mut i, hi) = (a.as_i64(), b.as_i64());
     let mut out = Vec::new();
     while i < hi { out.push(AnubisValue::Int(i)); i += 1; }
     anubis_mk_list(out)
 }
 fn anubis_range_step(a: AnubisValue, b: AnubisValue, step: AnubisValue) -> AnubisValue {
+    anubis_require_numeric(&a, "range");
+    anubis_require_numeric(&b, "range");
+    anubis_require_numeric(&step, "range");
     let (mut i, hi, st) = (a.as_i64(), b.as_i64(), step.as_i64());
+    if st == 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: range step must be non-zero, got 0");
+    }
     let mut out = Vec::new();
     if st > 0 { while i < hi { out.push(AnubisValue::Int(i)); i += st; } }
-    else if st < 0 { while i > hi { out.push(AnubisValue::Int(i)); i += st; } }
+    else { while i > hi { out.push(AnubisValue::Int(i)); i += st; } }
     anubis_mk_list(out)
 }
 fn anubis_reverse(x: AnubisValue) -> AnubisValue {
@@ -2795,9 +2814,9 @@ fn anubis_iter(v: AnubisValue) -> Vec<AnubisValue> {
 }
 
 // ---- math ----
-fn anubis_sin(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().sin()) }
+fn anubis_sin(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "sin"); AnubisValue::Float(x.as_f64().sin()) }
 fn anubis_cos(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "cos"); AnubisValue::Float(x.as_f64().cos()) }
-fn anubis_tan(x: AnubisValue) -> AnubisValue { AnubisValue::Float(x.as_f64().tan()) }
+fn anubis_tan(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "tan"); AnubisValue::Float(x.as_f64().tan()) }
 fn anubis_asin(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "asin"); AnubisValue::Float(x.as_f64().asin()) }
 fn anubis_acos(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "acos"); AnubisValue::Float(x.as_f64().acos()) }
 fn anubis_atan(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "atan"); AnubisValue::Float(x.as_f64().atan()) }
@@ -2809,8 +2828,8 @@ fn anubis_log2(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "log2
 fn anubis_logb(x: AnubisValue, base: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "log"); anubis_require_numeric(&base, "log"); AnubisValue::Float(x.as_f64().log(base.as_f64())) }
 fn anubis_cbrt(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "cbrt"); AnubisValue::Float(x.as_f64().cbrt()) }
 fn anubis_hypot(x: AnubisValue, y: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "hypot"); anubis_require_numeric(&y, "hypot"); AnubisValue::Float(x.as_f64().hypot(y.as_f64())) }
-fn anubis_trunc(x: AnubisValue) -> AnubisValue { match x { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(x.as_f64().trunc() as i64) } }
-fn anubis_sign(x: AnubisValue) -> AnubisValue { let v = x.as_f64(); AnubisValue::Int(if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }) }
+fn anubis_trunc(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "trunc"); match x { AnubisValue::Int(n) => AnubisValue::Int(n), _ => AnubisValue::Int(x.as_f64().trunc() as i64) } }
+fn anubis_sign(x: AnubisValue) -> AnubisValue { anubis_require_numeric(&x, "sign"); let v = x.as_f64(); AnubisValue::Int(if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }) }
 fn anubis_clamp(x: AnubisValue, lo: AnubisValue, hi: AnubisValue) -> AnubisValue {
     anubis_require_numeric(&x, "clamp");
     anubis_require_numeric(&lo, "clamp");
@@ -2876,7 +2895,12 @@ fn anubis_capitalize(s: AnubisValue) -> AnubisValue {
 }
 fn anubis_pad(s: AnubisValue, width: AnubisValue, pad: AnubisValue, at_start: bool) -> AnubisValue {
     let s = s.display_string();
-    let w = width.as_i64().max(0) as usize;
+    // Was `.max(0)` — negative width silently became a no-op (Phase-5 M–Z SILENT_WRONG).
+    let w_raw = width.as_i64();
+    if w_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: pad width must be non-negative, got {}", w_raw);
+    }
+    let w = w_raw as usize;
     let p = { let ps = pad.display_string(); if ps.is_empty() { " ".to_string() } else { ps } };
     let have = s.chars().count();
     if have >= w { return anubis_mk_str(s); }
@@ -3102,7 +3126,19 @@ fn anubis_times(n: AnubisValue, f: AnubisValue) -> AnubisValue {
     if n.is_closure() {
         panic!("ANUBIS_TYPE_ERROR: times expects a count as its first argument — times(count, closure), got a closure");
     }
-    let n = n.as_i64().max(0);
+    // Was `n.as_i64().max(0)` — `times(-1, f)` returned `[]` and `times("2", f)` soft-coerced the
+    // string to 2 and ran the body (Phase-5 M–Z SILENT_WRONG).
+    let n_raw = match n {
+        AnubisValue::Int(v) => v,
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: times expects an int count as its first argument, got {}",
+            other.type_name()
+        ),
+    };
+    if n_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: times count must be non-negative, got {}", n_raw);
+    }
+    let n = n_raw;
     anubis_mk_list((0..n).map(|i| f.call_closure(vec![AnubisValue::Int(i)])).collect())
 }
 

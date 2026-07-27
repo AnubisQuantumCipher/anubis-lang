@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: None
+// DOC_OK — parse_int_opt returns None on bad input (intentional Option form).
+fn main() {
+    print(parse_int_opt("xx"));
+}

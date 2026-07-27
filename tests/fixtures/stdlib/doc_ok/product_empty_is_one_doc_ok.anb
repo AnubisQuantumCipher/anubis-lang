@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 1
+// DOC_OK / empty product monoid identity — product([]) is 1, not a defect.
+fn main() {
+    print(product([]));
+}

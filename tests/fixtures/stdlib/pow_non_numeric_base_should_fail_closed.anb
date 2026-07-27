@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run`.
+// Phase-5 M-Z SILENT_WRONG: pin anubis-106d335d0f64, pow("2", 3) -> 8
+fn main() {
+    print(pow("2", 3));
+}

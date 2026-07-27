@@ -124,6 +124,37 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 3. **Self-host registry — HOST-FIXED; VM seal pending.**  
    Do not publish post-drift host fixpoint as sealed.
 
+### `anubis run` fail-closed — the bounded residual (2026-07-27)
+
+Adopted verbatim from the agent that measured it, in preference to any whole-surface green number:
+
+> **`anubis run` fail-closed is instrumented for the collection-first-argument matrix and the sealed
+> domain/wrong-type cells under `tests/fixtures/stdlib/*should_fail_closed.anb` (76 fixtures after
+> A–L + M–Z merge), plus DOC_OK locks under `tests/fixtures/stdlib/doc_ok/` (18 fixtures). It is NOT
+> fail-closed over the full 213-builtin surface: crypto/hash/KDF/random/x25519, unenumerated
+> arity/IO/capability matrices, and intentional soft conversions (`int`/`float`/`parse_*`, string
+> auto-stringify, IEEE NaN/inf on real floats, position-predicate −1, empty sum/product monoids)
+> remain outside that claim.**
+
+Coverage is a three-way union, stated so it is auditable rather than assumed:
+
+| Slice | Names | Status |
+|---|---:|---|
+| A–L | 107 | sealed, 15 fail-closed fixtures |
+| M–Z non-crypto | 87 | sealed, 16 fail-closed fixtures |
+| crypto / hash / KDF / random / x25519 / `pwn.anb` | 19 | **UNMEASURED** |
+
+**213** is derived by command from `run.rs` (the deduplicated union of `emit_builtin_call`, its
+inline `matches!`, `is_proof_input_builtin`, `is_poc_kit_builtin`, `is_non_run_builtin`), not from the
+README's "~150".
+
+31 builtins were returning a plausible WRONG value at `rc=0` rather than refusing — `factorial("5")`
+→ `120`, `pow("2", 3)` → `8`, `len(42)` → `0`, `substr("hello", -1, 2)` → `he`,
+`times("2", |i| i)` → `[0, 1]`. That is the failure mode that corrupts a proof instead of stopping
+it: the value reaches a `requires`/`ensures` and makes the contract hold for the wrong reason. All 31
+now fail closed; documented leniency is unchanged and locked by must-stay-PASS fixtures, verified by
+the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  

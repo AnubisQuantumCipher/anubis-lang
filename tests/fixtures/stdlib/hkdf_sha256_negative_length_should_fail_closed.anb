@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_HKDF_LENGTH
+// RUNTIME: exercise via `anubis run` (this is a runtime panic; `anubis check` still passes,
+// this is a *runtime* fail-closed gate).
+// Companion of hkdf_sha256_zero_length_should_fail_closed.anb: a signed-overflow value or a
+// length computed from an off-by-one otherwise silently produced an empty key.
+fn main() {
+    print(hkdf_sha256("ikm", "salt", "info", -1));
+}
