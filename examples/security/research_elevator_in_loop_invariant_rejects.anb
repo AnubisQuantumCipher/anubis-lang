@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+// The bare `loop` twin. All three loop forms carry an invariant list and all three were blind.
+
+fn main() {
+  loop invariant((|| { @research { let y = 1; } true })()) {
+    break;
+  }
+  print(1);
+}
+

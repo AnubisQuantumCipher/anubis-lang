@@ -2501,22 +2501,46 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             Stmt::If { cond, then, else_ } => {
                 in_expr(cond) || in_stmts(then) || else_.as_deref().is_some_and(in_stmts)
             }
-            Stmt::While { cond, body, .. } => in_expr(cond) || in_stmts(body),
+            // A loop's INVARIANT list holds expressions too, and the `..` dropped them — the
+            // FOURTH position in this walk where a node held an expression that was never walked,
+            // and structurally identical to the three below.
+            //
+            // `while i < 1 invariant(@research { shell("id"); } true) { … }` was rejected, but for
+            // an UNRELATED reason (`ANUBIS_LOOP_INVARIANT_UNVERIFIABLE`) — the detector never saw
+            // the elevator, so no `ANUBIS_RESEARCH_MISSING_AUTHORIZATION` was raised and the
+            // evidence mode stayed `safe`. A guarantee that holds only because a different check
+            // happens to fail is not a guarantee: relax invariant verification, or make one
+            // verifiable, and it becomes a live unauthorized elevation.
+            //
+            // Unauthorized elevation is the worst defect this language can have. A leak breaks one
+            // program's guarantee; an elevator turns enforcement OFF and every subsequent
+            // "check passed" for that program means nothing.
+            Stmt::While {
+                cond,
+                body,
+                invariant,
+            } => in_expr(cond) || invariant.iter().any(in_expr) || in_stmts(body),
             // Same omission on the statement side: `while let x = <expr> { … }` holds a scrutinee
             // expression that was never walked.
+            // `WhileLet` carries no invariant list, so nothing to add here.
             Stmt::WhileLet { expr, body, .. } => in_expr(expr) || in_stmts(body),
-            Stmt::Loop { body, .. } => in_stmts(body),
+            Stmt::Loop { body, invariant } => invariant.iter().any(in_expr) || in_stmts(body),
             // A `for`'s SOURCE is an expression too — the range bounds or the collection — and
             // dropping it let `for i in 0..(|| { @research { … } 1 })()` elevate unauthorized.
             // Third position in this walk where a node HELD an expression that was never walked.
-            Stmt::For { source, body, .. } => {
+            Stmt::For {
+                source,
+                body,
+                invariant,
+                ..
+            } => {
                 let src = match source {
                     crate::frontend::ForSource::Range { start, end } => {
                         in_expr(start) || in_expr(end)
                     }
                     crate::frontend::ForSource::Collection { expr } => in_expr(expr),
                 };
-                src || in_stmts(body)
+                src || invariant.iter().any(in_expr) || in_stmts(body)
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 [gpu, cpu, prove].into_iter().flatten().any(|b| in_stmts(b))

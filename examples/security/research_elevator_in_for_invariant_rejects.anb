@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+// The `for` twin — same omission, different loop form.
+
+fn main() {
+  for i in 0..1 invariant((|| { @research { let y = 1; } true })()) {
+    print(i);
+  }
+}
+
