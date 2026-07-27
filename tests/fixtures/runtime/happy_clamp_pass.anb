@@ -1,0 +1,6 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 5
+// RUNTIME control: valid clamp must succeed and print the clamped value.
+fn main() {
+    print(clamp(5, 0, 10));
+}

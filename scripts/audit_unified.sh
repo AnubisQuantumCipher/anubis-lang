@@ -36,7 +36,9 @@
 # Each gate is fail-closed: a missing tool, nonzero exit, or unexpected output
 # is FAIL. The overall verdict is PASS only if every gate passes.
 # ============================================================================
-set -uo pipefail
+# set -e: a bare cargo/tool crash must not fall through to a green Overall (Seshat R8).
+# Child gates are already wrapped in `if bash …`; unguarded failures abort before verdict.
+set -euo pipefail
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="out/unified_gate/${STAMP}"

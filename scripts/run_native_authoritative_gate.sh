@@ -74,6 +74,11 @@ rm -f "$DISAGREE_LOG.cur"
 echo "NATIVE_AUTHORITATIVE equivalence over $n files: mismatches=$mismatches disagreements=$disagreements"
 if [ "$disagreements" -gt 0 ]; then cat "$DISAGREE_LOG"; fi
 rm -f "$DISAGREE_LOG"
+# Hollow PASS guard (Seshat R8): zero files compared is not equivalence.
+if [ "$n" -eq 0 ]; then
+  echo "NATIVE_AUTHORITATIVE_GATE: FAIL (zero files compared — hollow PASS forbidden)"
+  exit 1
+fi
 
 # ---- TCB-drop demo: z3 hidden from PATH ----
 PASS_FIX=tests/fixtures/native_authoritative/int_contract_proves.anb

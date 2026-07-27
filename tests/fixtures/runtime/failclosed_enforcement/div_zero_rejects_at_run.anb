@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_DIV_BY_ZERO
+// RUNTIME: control-class enforcement still holds after stdlib land.
+fn main() {
+    print(1 / 0);
+}

@@ -82,11 +82,19 @@ fi
 
 RAW=$(mktemp)
 ERR=$(mktemp)
-trap 'rm -f "$RAW" "$ERR"' EXIT
+LIST=$(mktemp)
+trap 'rm -f "$RAW" "$ERR" "$LIST"' EXIT
+
+# Count on-disk corpus first — scored must equal this (truncation / silent shrink).
+find examples tests/fixtures selfhost/src -name '*.anb' | sort >"$LIST"
+expected=$(wc -l <"$LIST" | tr -d ' ')
+if [ "${expected:-0}" -eq 0 ]; then
+  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (empty corpus under examples|tests/fixtures|selfhost/src)" >&2
+  exit 1
+fi
 
 set +e
-find examples tests/fixtures selfhost/src -name '*.anb' | sort \
-  | xargs -P 10 -I{} bash "$0" --one {} >"$RAW" 2>"$ERR"
+xargs -P 10 -I{} bash "$0" --one {} <"$LIST" >"$RAW" 2>"$ERR"
 xargs_rc=$?
 set -e
 
@@ -100,11 +108,21 @@ scored=$((ok + cons + skip + dis + anom))
 grep '^DISAGREE' "$RAW" || true
 grep '^ANOMALY' "$RAW" || true
 [ "${STRICT:-0}" = 1 ] && grep '^CONSERVATIVE' "$RAW" || true
-echo "CAPSET_CORPUS_FAILCLOSED: OK=$ok CONSERVATIVE=$cons SKIP=$skip DISAGREE=$dis ANOMALY=$anom scored=$scored xargs_rc=$xargs_rc"
+echo "CAPSET_CORPUS_FAILCLOSED: OK=$ok CONSERVATIVE=$cons SKIP=$skip DISAGREE=$dis ANOMALY=$anom scored=$scored expected=$expected xargs_rc=$xargs_rc"
 
 if [ "$scored" -eq 0 ]; then
   echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (zero scored lines — empty corpus or all children died silently)" >&2
   if [ -s "$ERR" ]; then echo "--- xargs stderr ---"; cat "$ERR"; fi
+  exit 1
+fi
+# Truncation / silent shrink (Seshat R8): every on-disk file must produce one classification line.
+if [ "$scored" -lt "$expected" ]; then
+  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (TRUNCATED_RUN: scored=$scored < expected=$expected — mid-run death/skip shrinks denominator)" >&2
+  if [ -s "$ERR" ]; then echo "--- xargs stderr ---"; head -50 "$ERR"; fi
+  exit 1
+fi
+if [ "$scored" -gt "$expected" ]; then
+  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (corpus_count_surplus: scored=$scored > expected=$expected)" >&2
   exit 1
 fi
 # xargs exits 123 if any child nonzero. Our --one paths always exit 0 by design; nonzero means
@@ -122,9 +140,15 @@ if [ "$anom" -gt 0 ]; then
   echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL ($anom format anomaly/ies — panics or drift would previously shrink the denominator silently)"
   exit 1
 fi
+# All-SKIP is hollow: no real OK/CONSERVATIVE comparison ran (broken BIN → every SKIP → green).
+productive=$((ok + cons))
+if [ "$productive" -eq 0 ]; then
+  echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (zero productive OK+CONSERVATIVE — all SKIP/empty is hollow PASS)" >&2
+  exit 1
+fi
 if [ "${STRICT:-0}" = 1 ] && [ "$cons" -gt 0 ]; then
   echo "CAPSET_CORPUS_FAILCLOSED_GATE: FAIL (STRICT: $cons CONSERVATIVE — a Rust builtin is unrecognized by sh_is_known_builtin)"
   exit 1
 fi
-echo "CAPSET_CORPUS_FAILCLOSED_GATE: PASS (0 over-grants; 0 anomalies; scored=$scored${cons:+; $cons conservative}${STRICT:+ / STRICT exact})"
+echo "CAPSET_CORPUS_FAILCLOSED_GATE: PASS (0 over-grants; 0 anomalies; scored=$scored/$expected productive=$productive${cons:+; $cons conservative}${STRICT:+ / STRICT exact})"
 exit 0

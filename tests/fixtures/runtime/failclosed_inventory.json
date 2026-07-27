@@ -1,0 +1,114 @@
+{
+  "schema": "anubis.run_failclosed_inventory.v1",
+  "updated": "2026-07-27",
+  "purpose": "Honest residual list for the run-failclosed meta-gate. A green instrumented surface is not a clean bill of health while OPEN or UNENUMERATED rows remain.",
+  "instrumented_closed": {
+    "stdlib_should_fail_closed": {
+      "glob": "tests/fixtures/stdlib/*should_fail_closed.anb",
+      "last_measured": "45/45 PASS",
+      "covers": "empty/domain/type/non-collection matrix in NON_COLLECTION_SURFACE.md + prior 27-site land"
+    },
+    "doc_ok_ieee": {
+      "glob": "tests/fixtures/stdlib/doc_ok/*.anb",
+      "last_measured": "2/2 PASS",
+      "covers": "float /0 → inf, sqrt(neg) → NaN — MUST stay PASS"
+    },
+    "permanent_controls": {
+      "glob": "tests/fixtures/runtime/*.anb",
+      "covers": "div0 int, index OOB, happy clamp, side-effect write"
+    },
+    "enforcement": {
+      "glob": "tests/fixtures/runtime/failclosed_enforcement/*.anb",
+      "covers": "taint→shell refuse at run; int div0"
+    }
+  },
+  "doc_ok_excluded_from_failclosed_claim": [
+    {
+      "id": "ieee_float_div0_inf",
+      "note": "1.0/0.0 → ±inf; NOT a defect"
+    },
+    {
+      "id": "ieee_sqrt_neg_nan",
+      "note": "sqrt(-1.0) → NaN; NOT a defect"
+    },
+    {
+      "id": "lenient_parse_int_float",
+      "note": "int/float/parse_* → 0; LANGUAGE documented; parse_*_opt is fail-closed escape"
+    },
+    {
+      "id": "position_sentinel_neg1",
+      "note": "position no-match → -1; safe index sentinel"
+    },
+    {
+      "id": "string_auto_stringify",
+      "note": "upper/split/replace/starts_with on non-strings via display_string; language-wide"
+    },
+    {
+      "id": "get_default_soft",
+      "note": "get(coll,k,default) is intentional fail-soft"
+    }
+  ],
+  "open_named_residuals": [
+    {
+      "id": "check_path_false_accepts",
+      "severity": "BLOCKS_WHOLE_CLAIM",
+      "status": "OPEN",
+      "summary": "Check-path FA class (historical ~22 / ~17 CRITICAL). Run preflight trusts typecheck_ex — FA at check is FA at run.",
+      "settling_evidence": [
+        "Each FA witness: DIRECT form reject + LAUNDERED form reject after fix",
+        "Security fixture suite green with FA class closed (not merely 219/219 while reds remain elsewhere)",
+        "Walker/single-path design evidence class cannot recur (HORUS matrix + rehunt)",
+        "Sealed command logs under implementer/ or fleet scratchpad"
+      ],
+      "not_settled_by": [
+        "stdlib 45/45",
+        "vault run clean",
+        "PCA taint_clean agree"
+      ]
+    },
+    {
+      "id": "struct_field_missing_int0",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "summary": "Missing struct/map field read often yields Int(0) in dynamic record paths — design residue, not in 45 corpus.",
+      "settling_evidence": [
+        "Patch + fixtures OR explicit language design note that dynamic fields invent 0"
+      ]
+    },
+    {
+      "id": "take_drop_substr_negative_clamp",
+      "severity": "LOW",
+      "status": "OPEN_SOFT",
+      "summary": "take/drop/substr use .max(0) on negative counts/indices — Python-like soft clamp, not in fail-closed corpus.",
+      "settling_evidence": [
+        "Patch to ANUBIS_INVALID_ARGUMENT + fixtures OR DOC_OK row + product acceptance"
+      ]
+    }
+  ],
+  "unenumerated_surfaces": [
+    {
+      "id": "full_builtin_union",
+      "summary": "Builtins are ~213 by five-function union in run.rs. NON_COLLECTION_SURFACE.md covers the collection/string/map first-arg class systematically; it does NOT enumerate every builtin domain/IO/coercion edge.",
+      "risk": "Another SEKHMET-style hole can exist outside the matrix (e.g. I/O, crypto edge, typed coercion) until an explicit full-builtin audit is finished."
+    },
+    {
+      "id": "io_error_paths",
+      "summary": "read_file missing path, write permission, etc. — not in should_fail_closed corpus as a systematic matrix.",
+      "risk": "Silent empty string / invent vs panic not fully instrumented."
+    },
+    {
+      "id": "native_lowering_non_run",
+      "summary": "is_non_run_builtin (shell/symbolic/…) — intentional non-run; check≠run by design.",
+      "risk": "Product residual, not silent-wrong value — must stay named in docs."
+    },
+    {
+      "id": "research_host_gate",
+      "summary": "ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW — correct mode gate, not a fail-closed hole."
+    }
+  ],
+  "stamp_rules": {
+    "PASS_INSTRUMENTED": "All instrumented fail-closed + doc_ok + control + enforcement buckets green. Means: the surfaces we chose to look at are green. Does NOT mean run is fail-closed as a whole.",
+    "PASS_RUNTIME_FAILCLOSED_WHOLE": "PASS_INSTRUMENTED AND open_named_residuals with severity BLOCKS_WHOLE_CLAIM are all CLOSED with settling evidence AND product accepts DOC_OK exclusions AND unenumerated_surfaces are either enumerated+tested or explicitly accepted as residual.",
+    "never_auto_close_fa": true
+  }
+}

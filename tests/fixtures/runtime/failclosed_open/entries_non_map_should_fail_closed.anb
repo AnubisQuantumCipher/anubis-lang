@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: OPEN residual. entries(non-map) returns [] (run.rs anubis_entries).
+fn main() {
+    print(entries([1, 2]));
+}

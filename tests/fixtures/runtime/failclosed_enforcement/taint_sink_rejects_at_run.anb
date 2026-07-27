@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// RUNTIME: enforcement binding — undeclassified input→shell must refuse native execution.
+// (May surface as ANUBIS_EXECUTION_CHECK_FAILED wrapping the taint code.)
+fn main() uses(shell) {
+    let cmd = input();
+    shell(cmd);
+}
