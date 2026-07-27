@@ -269,7 +269,15 @@ never terminates is a check/run divergence of a different kind, and is being cha
     identity spine structurally cannot serve it, because a set of user functions has nothing to put
     in it for `input`.
 
-13. **`run` never terminates on a mutual-return cycle that `check` ACCEPTS — OPEN (2026-07-27).**
+13. **`run` aborted the process on a mutual-return cycle that `check` ACCEPTS — CLOSED (2026-07-27).**
+    Fixed: a stack-bytes guard (768 MiB of the 1 GiB worker stack) turns it into an attributable
+    `ANUBIS_RECURSION_LIMIT` trap that exits non-zero, instead of `fatal runtime error: stack
+    overflow, aborting`. `check` still does not prove termination — that is unchanged and is not
+    claimed — but a non-terminating accept now FAILS CLOSED like every other runtime trap rather
+    than killing the process without a diagnostic. The zkVM guest lowering is deliberately left
+    unguarded rather than guarded on a stack size this repo does not measure.
+
+    Original text:
     Measured: genuine infinite recursion after a `check` ACCEPT, ~100% CPU, RSS flat at ~6MB over 7s
     (so a stack-overflow abort does not rescue it). The checker correctly terminates in ~6ms and
     DEFERS; the runtime does not.
