@@ -278,18 +278,127 @@ fn fn_alias_of_d(
         //
         // Free-fn and METHOD returns stay in separate maps deliberately. Merging bare method names
         // into the free-fn namespace is a four-times-proven defect generator in this file.
-        Expr::Call { callee, .. } => {
+        Expr::Call { callee, args } => {
+            // A PASS-THROUGH BUILTIN hands its argument straight back, so the identity that reaches
+            // the caller is the argument's: `let f = identity(key); print(f())` leaked because a
+            // builtin has no user-level body for the return machinery below to walk.
+            //
+            // Enumerated from the runtime rather than guessed — these are exactly the builtins whose
+            // implementation body is verbatim their parameter:
+            //
+            //     fn anubis_identity(x: AnubisValue) -> AnubisValue { x }
+            //     fn anubis_secret_source(x: AnubisValue) -> AnubisValue { x }
+            //
+            // A one-off match on `identity` would have missed `secret_source`, which is why the set
+            // was derived by scanning `run.rs` for that shape. If a third pass-through builtin is
+            // added, it belongs here — and it will show up the same way.
+            if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 {
+                if let Some(n) = fn_alias_of_d(&args[0], scope, ctx, depth + 1) {
+                    return Some(n);
+                }
+            }
+            // An IDENTITY FORWARDER hands back one of its own arguments, so the identity that
+            // reaches the caller is the ARGUMENT's, not anything in the callee's body:
+            // `fn id(x){ return x; }` then `let f = id(key); print(f())` leaked, because the callee's
+            // returned expression is its parameter `x` — a name that means nothing in the caller's
+            // scope — so resolving through `fn_sole_return` alone yielded nothing.
+            //
+            // `fn_returns_param` already records exactly this (which formal a function forwards,
+            // closed under chains by `compute_returns_param_fixpoint`). It was populated and simply
+            // never consulted for identity. Resolve the ARGUMENT at that position instead, which also
+            // makes chains work for free: `id(fwd(key))` resolves by re-entering this arm.
+            if let Some((pnames, j)) = ctx.fn_returns_param.get(callee) {
+                if pnames.len() == args.len() {
+                    if let Some(a) = args.get(*j) {
+                        if let Some(n) = fn_alias_of_d(a, scope, ctx, depth + 1) {
+                            return Some(n);
+                        }
+                    }
+                }
+            }
             let ret = ctx.fn_sole_return.get(callee).map(|(_, r)| r.clone())?;
             fn_alias_of_d(&ret, scope, ctx, depth + 1)
         }
-        Expr::CallExpr { callee, .. } => {
-            let Expr::FieldAccess { field, .. } = callee.as_ref() else {
+        Expr::CallExpr { callee, args } => {
+            let Expr::FieldAccess { base, field, .. } = callee.as_ref() else {
                 return None;
             };
+            // Method-side identity forwarder: `impl S { fn id(self, x) { return x; } }` then
+            // `s.id(key)` — `method_returns_param` is the twin of free-fn `fn_returns_param`.
+            // Self is index 0; call args are indices 1.. so formal j maps to args[j-1] when j>0.
+            if let Some((pnames, j)) = ctx.method_returns_param.get(field) {
+                if pnames.len() == args.len() + 1 {
+                    let forwarded: Option<&Expr> = if *j == 0 {
+                        Some(base.as_ref())
+                    } else {
+                        args.get(*j - 1)
+                    };
+                    if let Some(a) = forwarded {
+                        if let Some(n) = fn_alias_of_d(a, scope, ctx, depth + 1) {
+                            return Some(n);
+                        }
+                    }
+                }
+            }
             let ret = ctx.method_sole_return.get(field).map(|(_, r)| r.clone())?;
             fn_alias_of_d(&ret, scope, ctx, depth + 1)
         }
+        // Braced arms of `return if c { if d { key } else { safe } } else { safe }` parse as
+        // `Expr::Block` whose body is `Stmt::If`, not `Expr::If` — without this arm the join
+        // structure is invisible and identity fails open (adversary R3-A).
+        Expr::Block { stmts, tail } => {
+            let mut candidates: Vec<&Expr> = Vec::new();
+            collect_block_fn_alias_candidates(stmts, tail.as_deref(), &mut candidates);
+            if candidates.is_empty() {
+                return None;
+            }
+            join_fn_alias(candidates.into_iter(), scope, ctx, depth)
+        }
         _ => None,
+    }
+}
+
+/// Value expressions a block may evaluate to for identity resolution.
+///
+/// A block with a `tail` expression has that value; otherwise the last statement's value(s).
+/// `Stmt::If` / match-like control flow contributes every arm (fail-closed join later). Sequential
+/// non-value statements are skipped. Under-approximates unknown stmt shapes (returns nothing for
+/// them) — fail-open on identity, never invents one.
+fn collect_block_fn_alias_candidates<'a>(
+    stmts: &'a [Stmt],
+    tail: Option<&'a Expr>,
+    out: &mut Vec<&'a Expr>,
+) {
+    if let Some(t) = tail {
+        out.push(t);
+        return;
+    }
+    if let Some(last) = stmts.last() {
+        collect_stmt_fn_alias_candidates(last, out);
+    }
+}
+
+fn collect_stmt_fn_alias_candidates<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Expr>) {
+    match stmt {
+        // Push the whole expression — `fn_alias_of_d` / `join_fn_alias` already handle
+        // `Expr::If` / `Expr::Match` / nested `Expr::Block` when the statement is an expression.
+        Stmt::ExprStmt(e) => out.push(e),
+        Stmt::If { then, else_, .. } => {
+            collect_stmt_list_fn_alias_candidates(then, out);
+            if let Some(e) = else_ {
+                collect_stmt_list_fn_alias_candidates(e, out);
+            }
+        }
+        // While/for/research/assign: not a block value for callable return; skip (under-approx).
+        _ => {}
+    }
+}
+
+fn collect_stmt_list_fn_alias_candidates<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Expr>) {
+    // A branch body is itself a statement list: prefer last stmt as the branch value, same as
+    // blocks without tails. If the sole content is nested If/Match, collect all arms.
+    if let Some(last) = stmts.last() {
+        collect_stmt_fn_alias_candidates(last, out);
     }
 }
 
@@ -9038,6 +9147,24 @@ fn analyze_expr_effect(
                 if let Some(egress_params) = ctx.param_egress.get(resolved_callee).cloned() {
                     for i in egress_params {
                         if let Some(arg) = args.get(i) {
+                            // An argument whose FUNCTION IDENTITY resolves to a secret-returning
+                            // function is an exfiltration when the callee applies it and egresses —
+                            // even though the argument is not itself a secret VALUE, so
+                            // `expr_secret_source_m` reads clean.
+                            //
+                            // Generalises rather than special-cases: `fn_alias_of` already resolves
+                            // a bare name, an alias chain, an if/match join, a pass-through builtin,
+                            // an identity forwarder, and a returned function, so every one of those
+                            // shapes is covered in argument position by asking it here.
+                            // `app(identity(key))` was the last open form and needed no rule of its
+                            // own.
+                            //
+                            // Cannot over-reject: this block runs only for parameters the callee
+                            // ACTUALLY egresses (`ctx.param_egress`), so a function merely passed and
+                            // never applied is untouched.
+                            let ident_secret = fn_alias_of(arg, scope, ctx)
+                                .filter(|n| ctx.secret_fns.contains(n))
+                                .map(|n| format!("return value of `{n}`"));
                             if let Some(source) = expr_secret_source_m(
                                 arg,
                                 scope,
@@ -9045,7 +9172,9 @@ fn analyze_expr_effect(
                                 &ctx.param_return_taint,
                                 &ctx.method_secret_fns,
                                 &ctx.place_types(),
-                            ) {
+                            )
+                            .or(ident_secret)
+                            {
                                 ctx.emit(
                                     SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_EXFILTRATION".into()),
