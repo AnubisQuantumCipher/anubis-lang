@@ -189,7 +189,7 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
 
     Verdict-diff on the pinned binary: security 306/306; language 244/244. Zero accept→reject flips.
 
-11. **`ensures` is not composed into the caller's `requires` discharge — OPEN (2026-07-27).**
+11. **A NESTED call expression as an argument bypasses `requires` discharge — OPEN (2026-07-27).**
 
     ```anubis
     fn neg() -> i64 ensures(result < 0) { return -5; }
@@ -197,20 +197,25 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
     fn main() { print(need(neg())); }     // check exit 0; run PRINTS -5
     ```
 
-    Two declared contracts that are PROVABLY CONTRADICTORY, both present in the same program, and the
-    checker accepts. This is not "the solver could not prove it" — it is holding a proof of violation
-    and never composing the two halves.
+    My first framing of this — "the ensures→requires direction is unimplemented" — was WRONG, and the
+    adversary's matrix corrected it. Composition DOES work; it is the nested-call ARGUMENT POSITION
+    that is not reasoned about:
 
     | form | verdict |
     |---|---|
     | `need(-5)` literal | REJECT |
-    | `need(neg())` with `ensures(result < 0)` | **ACCEPT, run prints -5** |
-    | `let v = neg(); need(v)` | **ACCEPT, run prints -5** |
+    | `let x = -5; need(x)` | REJECT — literal provenance tracked through `let` |
+    | `let x = neg(); need(x)` with `ensures(result < 0)` | **REJECT — composition FIRES** |
+    | `need(neg())` nested call | **ACCEPT, run prints -5** |
+    | `need(opaque())`, no `ensures` | ACCEPT, run prints -5 |
+    | `let x = opaque(); need(x)` | ACCEPT, run prints -5 |
 
-    **NOT a carrier defect.** The DIRECT call leaks identically, so fn-value carriers are incidental —
-    filing it under the carrier class would have been wrong. `LANGUAGE.md:239-244` states that
-    contracts compose and the caller must satisfy the callee's obligations; the ensures→requires
-    direction is unimplemented.
+    So binding the call result to a `let` first is enough to make the checker reason about it, and
+    the identical expression written inline is not. That is a much smaller and more precise defect
+    than "composition is missing", and it points at argument-expression handling in
+    `discharge_call_requires` rather than at the contract summary.
+
+    NOT a carrier defect — the direct call leaks identically, so fn-value carriers are incidental.
 
     Control and guard are in the corpus (`contract_requires_literal_rejects`,
     `contract_ensures_satisfies_requires_accepts`); the RED fixture is held out until fixed.
