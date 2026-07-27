@@ -189,6 +189,31 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
 
     Verdict-diff on the pinned binary: security 307/307; language 244/244. Zero accept→reject flips.
 
+### The singleton contract policy — documented residual (2026-07-27)
+
+Item 10 shipped as SINGLETON-only after the set-valued attempt was reverted. Scored against the
+shipped binary by the adversary, from predictions written before it existed:
+
+| behaviour | status |
+|---|---|
+| single named callee through any carrier | DISCHARGED |
+| 10-hop alias chain | resolves to the function; no Empty-vs-Unknown bug |
+| mutual return cycle | terminates in ~6ms; no checker hang |
+| multi-name `if`/`match` join | **DEFERS** — accepts without discharging |
+| container-of-join, wide match | **DEFERS** |
+
+The deferrals are the intended under-approximation, not an oversight: a join of two contracted
+functions with different preconditions cannot be discharged against one arbitrarily chosen name, and
+fail-closing on it would reject idiomatic higher-order code — the exact failure that flipped nine
+fixtures in the first attempt.
+
+A `check` ACCEPT on a deferred join is a FAIL-OPEN DEFERRAL, not a proof that the contract holds.
+That distinction is the honest reading of item 10's closure.
+
+**Runtime residual, separate from the checker:** `run` of a mutual-return cycle LOOPS. The checker
+correctly terminates and defers; the runtime does not. A program `check` accepts whose execution
+never terminates is a check/run divergence of a different kind, and is being characterized.
+
 11. **A NESTED call expression as an argument bypasses `requires` discharge — OPEN (2026-07-27).**
 
     ```anubis
