@@ -1,3 +1,4 @@
+// EXPECT: PASS
 // poc_feel_threshold.anb
 // Hands-on PoC: binary-search the lab oracle crash threshold with packing.
 // Gold target aborts when stdin len > 64. We probe short vs long and seal a

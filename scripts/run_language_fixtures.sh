@@ -53,7 +53,25 @@ for f in "$FIXTURE_DIR"/*.anb; do
   rc=$?
   set -e
 
-  expect=$(grep -o 'EXPECT: [A-Z]*' "$f" | head -1 | awk '{print $2}' || echo "PASS")
+  # A missing EXPECT header is MALFORMED, not "expected to pass". Defaulting to PASS made this gate
+  # fail OPEN: a fixture with a typo'd header was graded as expected-to-pass, so a program that
+  # SHOULD be rejected scored green merely by being accepted. The filename states the intent
+  # independently, so when both exist they must agree.
+  malformed=""
+  expect=$(grep -oE 'EXPECT: (PASS|FAIL)' "$f" | head -1 | awk '{print $2}' || true)
+  if [[ -z "$expect" ]]; then
+    malformed="missing EXPECT: header"
+  else
+    case "$base" in
+      *_rejects) [[ "$expect" == "FAIL" ]] || malformed="name says _rejects but header says EXPECT: $expect" ;;
+      *_accepts) [[ "$expect" == "PASS" ]] || malformed="name says _accepts but header says EXPECT: $expect" ;;
+    esac
+  fi
+  if [[ -n "$malformed" ]]; then
+    echo "  MALFORMED: $malformed"
+    failed=$((failed+1))
+    continue
+  fi
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || echo "")
 
   # Determine if this run was a failure (syntax error, type error, taint violation, etc.)
