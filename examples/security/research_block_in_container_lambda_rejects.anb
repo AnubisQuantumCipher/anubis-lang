@@ -1,0 +1,22 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_RESEARCH_MISSING_AUTHORIZATION
+// Lead agent 2026-07-27. A REAL AUTHORIZATION BYPASS in the fix that closed the authorization
+// bypass, found by attacking my own commit rather than waiting for an adversary.
+//
+// `body_has_mode_elevator` decides whether a function elevates mode from its own source, and it is
+// therefore a SECURITY BOUNDARY. Its first version had a wildcard arm: it descended into lambdas but
+// not into the ARRAY LITERAL holding one, so a `@research { ... }` block inside a lambda stored in a
+// container elevated out of Safe mode with no authorization at all.
+//
+// That is the same disease as everything else closed in this arc — an under-approximating catch-all
+// — appearing in the code written to close it. The walk is now TOTAL over `Expr` with no wildcard,
+// proven by inserting a deliberate variant and observing this function fail to compile (E0004 at the
+// walk site), so a newly added AST node cannot silently reopen the bypass.
+//
+// Nine other elevation paths were probed alongside this one — lambdas, match arms, while and for
+// bodies, impl methods, `@safe` enclaves, `@exploit`, deep nesting, and assignment position — and all
+// reject.
+fn main() {
+    let xs = [|| { @research { shell("true"); } 0 }];
+    print(xs[0]());
+}

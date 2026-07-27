@@ -2110,8 +2110,26 @@ fn check_calls_expr(
 /// to enforce the block's contents — it answers one question: does this function elevate mode from
 /// its own source?
 fn body_has_mode_elevator(body: &[Stmt]) -> bool {
+    // TOTAL over `Expr` — no wildcard arm. This is a SECURITY BOUNDARY: a variant this walk fails to
+    // descend into is a path along which `@research { … }` elevates mode with no authorization, so a
+    // newly added `Expr` must FAIL TO COMPILE here rather than silently reopen the bypass.
+    //
+    // The first version of this walk had a wildcard and I found the hole by attacking my own fix: a
+    // block inside a lambda stored in an ARRAY LITERAL passed, because the walk descended into
+    // lambdas but not into the container holding one. Same class as everything else in this arc, in
+    // code written to close that class.
     fn in_expr(e: &Expr) -> bool {
         match e {
+            // Cannot contain a statement, so cannot contain a block.
+            Expr::Var(_)
+            | Expr::Literal(_)
+            | Expr::StrLiteral(_)
+            | Expr::Symbolic { .. }
+            | Expr::TaintSource { .. }
+            | Expr::UnifiedBuffer { .. }
+            | Expr::RawPtr { .. }
+            | Expr::Other(_) => false,
+
             Expr::Block { stmts, tail } => in_stmts(stmts) || tail.as_deref().is_some_and(in_expr),
             Expr::If {
                 cond, then, else_, ..
@@ -2121,7 +2139,23 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
                 scrutinee, arms, ..
             } => in_expr(scrutinee) || arms.iter().any(|a| in_expr(&a.body)),
             Expr::Lambda { body, .. } => in_expr(body),
-            _ => false,
+
+            // Containers and calls: a lambda carrying a block can sit anywhere inside one.
+            Expr::ArrayLiteral { elements } => elements.iter().any(in_expr),
+            Expr::MapLiteral { entries, .. } => {
+                entries.iter().any(|(k, v)| in_expr(k) || in_expr(v))
+            }
+            Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| in_expr(v)),
+            Expr::EnumConstruct { fields, .. } => fields.iter().any(in_expr),
+            Expr::Call { args, .. } => args.iter().any(in_expr),
+            Expr::CallExpr { callee, args } => in_expr(callee) || args.iter().any(in_expr),
+            Expr::Index { base, index } => in_expr(base) || in_expr(index),
+            Expr::FieldAccess { base, .. } => in_expr(base),
+            Expr::Binary { lhs, rhs, .. } => in_expr(lhs) || in_expr(rhs),
+            Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => in_expr(expr),
+            Expr::Try(inner) | Expr::Assume(inner) | Expr::Assert(inner) => in_expr(inner),
+            Expr::Tainted { inner, .. } => in_expr(inner),
+            Expr::Declassify { inner, .. } => in_expr(inner),
         }
     }
     fn in_stmts(stmts: &[Stmt]) -> bool {
@@ -2130,15 +2164,18 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             Stmt::Let { init, .. } => in_expr(init),
             Stmt::LetPattern { init, .. } => in_expr(init),
             Stmt::ExprStmt(e) => in_expr(e),
-            Stmt::Assign { value, .. } => in_expr(value),
+            Stmt::Assign { target, value } => in_expr(target) || in_expr(value),
             Stmt::If { cond, then, else_ } => {
                 in_expr(cond) || in_stmts(then) || else_.as_deref().is_some_and(in_stmts)
             }
-            Stmt::While { body, .. }
-            | Stmt::WhileLet { body, .. }
-            | Stmt::Loop { body, .. }
-            | Stmt::For { body, .. } => in_stmts(body),
-            _ => false,
+            Stmt::While { cond, body, .. } => in_expr(cond) || in_stmts(body),
+            Stmt::WhileLet { body, .. } | Stmt::Loop { body, .. } | Stmt::For { body, .. } => {
+                in_stmts(body)
+            }
+            Stmt::HybridBlock { gpu, cpu, prove } => {
+                [gpu, cpu, prove].into_iter().flatten().any(|b| in_stmts(b))
+            }
+            Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => false,
         })
     }
     in_stmts(body)
