@@ -372,6 +372,22 @@ fn collect_container_closures(
             Expr::Var(v) => {
                 if let Some(l) = scope.get(v).and_then(|b| b.closure_lambda.clone()) {
                     out.insert(segkey, l);
+                } else if let Some(lam) = eta_expand_fn_ref(v, scope, &ctx.fn_params) {
+                    // A bare reference to a NAMED function, eta-expanded into the lambda it is
+                    // equivalent to. Storing the raw `Var` (below) records the element but every
+                    // closure-BODY consumer matches only `Expr::Lambda` and skips it, so
+                    // `app([key])` with `fs[0]()` laundered a declared secret while the byte-
+                    // identical `app([|| key()])` correctly rejected.
+                    //
+                    // Measured before the change, on the same binary: a LAMBDA in this position
+                    // rejects both locally and across a param boundary, and an ordinary secret
+                    // VALUE in this position rejects too. Only the bare name got through — the
+                    // container machinery was already complete and simply was not consulted for
+                    // function references.
+                    //
+                    // One arm covers list elements, struct fields, map values and enum payloads
+                    // because all four build `entries` above and share this loop.
+                    out.insert(segkey, Box::new(lam));
                 } else {
                     // A bare reference (`Box { f: leak }`) — record the `Var` itself so an application
                     // `b.f(args)` can resolve it: if it names a free function with an interproc
@@ -19088,6 +19104,53 @@ fn is_egress_sink(callee: &str) -> bool {
 /// fixpoint) passes an empty set. (The former 4-arg `expr_secret_source` wrapper was removed once #70
 /// routed the last summary caller through `_m` with an empty set — the taint side keeps its wrapper
 /// because condition/declassify-trace reads still use it.)
+/// The secrecy of a CONTAINER ELEMENT, treating a bare function NAME the way the equivalent lambda
+/// is already treated.
+///
+/// `app([|| key()])` correctly rejects when the callee applies the element and egresses the result.
+/// `app([key])` — the same program, eta-reduced — accepted and printed the secret at runtime. The
+/// container arms recurse with `expr_secret_source_m`, whose `Expr::Var` arm looks the name up as a
+/// VALUE in scope and finds nothing, because a top-level function is not a scope binding. So the
+/// element read clean and the interprocedural egress check never fired.
+///
+/// This is parity, not a new policy: the answer for a named secret-returning function is the answer
+/// this analysis already gives for the lambda that calls it.
+///
+/// It does NOT widen over-rejection. Application-awareness lives in `param_egress` — the callee must
+/// actually egress that parameter for the caller-side check to run at all — which is why
+/// `fn app(fs) { print(1); } app([|| key()])` accepts today and still accepts after this. A function
+/// merely STORED in a container and never applied stays clean.
+///
+/// Resolves through `fn_alias` so `let g = key; app([g])` reads the same as `app([key])`.
+fn container_element_secret(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    secret_fns: &BTreeSet<String>,
+    param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+    method_secret_fns: &BTreeSet<String>,
+    struct_fields: &PlaceTypes<'_>,
+) -> Option<String> {
+    if let Some(found) = expr_secret_source_m(
+        e,
+        scope,
+        secret_fns,
+        param_return_taint,
+        method_secret_fns,
+        struct_fields,
+    ) {
+        return Some(found);
+    }
+    let Expr::Var(n) = e else { return None };
+    if secret_fns.contains(n) {
+        return Some(format!("return value of `{n}`"));
+    }
+    scope
+        .get(n)
+        .and_then(|b| b.fn_alias.clone())
+        .filter(|a| secret_fns.contains(a))
+        .map(|a| format!("return value of `{a}`"))
+}
+
 fn expr_secret_source_m(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -19315,8 +19378,11 @@ fn expr_secret_source_m(
         }
         // Composite / control-flow value propagation — the confidentiality dual of the same arms on
         // `expr_taint_source`: a secret stashed in a container, or a branch of a match/if, carries.
+        // Container arms use `container_element_secret` so a bare fn NAME element reads the same as
+        // the equivalent lambda — `app([key])` must behave like `app([|| key()])`, which already
+        // rejects. All four literal forms share the helper rather than repeating the check.
         Expr::ArrayLiteral { elements } => elements.iter().find_map(|e| {
-            expr_secret_source_m(
+            container_element_secret(
                 e,
                 scope,
                 secret_fns,
@@ -19326,7 +19392,7 @@ fn expr_secret_source_m(
             )
         }),
         Expr::StructLiteral { fields, .. } => fields.iter().find_map(|(_, e)| {
-            expr_secret_source_m(
+            container_element_secret(
                 e,
                 scope,
                 secret_fns,
@@ -19336,7 +19402,7 @@ fn expr_secret_source_m(
             )
         }),
         Expr::EnumConstruct { fields, .. } => fields.iter().find_map(|e| {
-            expr_secret_source_m(
+            container_element_secret(
                 e,
                 scope,
                 secret_fns,
@@ -19355,7 +19421,7 @@ fn expr_secret_source_m(
                 struct_fields,
             )
             .or_else(|| {
-                expr_secret_source_m(
+                container_element_secret(
                     v,
                     scope,
                     secret_fns,
