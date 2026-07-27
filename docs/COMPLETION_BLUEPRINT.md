@@ -69,6 +69,51 @@ sound. Its *soundness* claim was not. Keep the first, discard the second.
 
 ---
 
+## PROGRESS — 2026-07-27 (measured, re-derive before quoting)
+
+| Gate | Start of day | Now |
+|---|---:|---:|
+| security fixtures | 242/244 **FAIL** | **294/294 PASS** |
+| language fixtures | 244/244 | **244/244** |
+| stdlib fail-closed | 45/45 | **80/80** |
+
+**Phase 1 — DONE.** Twelve function-identity carriers closed: bare name, alias chain, if-join,
+match-join, struct-pattern binder, local container, container-as-argument (list/struct/map/enum),
+return, multi-hop return, return-position join, method return, identity forwarder, pass-through
+builtin, argument position, and the `push`-built container. Both lanes (secret and tainted). The
+adversary's pre-registered residual set went 21/30 → 30/30.
+
+**Phase 2 — partially discharged.** The three totality lessons are recorded in-code, each learned by
+being wrong: totality over `Expr` is necessary and NOT sufficient (the struct-pattern arm existed and
+did nothing); the walk must be total over the forms that HOLD expressions; and a `..` in a match arm
+is the tell — it discarded `invariant: Vec<Expr>` in the elevator detector, the FOURTH instance of
+that shape in one walker.
+
+**Phase 3 — DONE.** Fail-open `EXPECT` default, instrument drift, empty-corpus guards, all-SKIP
+hollow pass, unguarded `grep` under `pipefail`, and constituent gates reselecting their own binary.
+The seal could print `SEAL_PASS` with two gates SKIPPED and a constituent grading
+`/tmp/WRONG-BINARY` — demonstrated by counterexample, now impossible. `scripts/lib/gate_common.sh`
+plus content-addressed read-only binary pins (`scripts/publish_pin.sh`).
+
+**Phase 5 — bounded residual published.** 31 builtins returned a plausible WRONG value at rc=0 and
+now fail closed. **213** builtins derived by command against the README's "~150". Coverage is a
+three-way union (A–L 107 sealed, M–Z non-crypto 87 sealed, crypto 19 UNMEASURED) and the residual is
+in `docs/CLAIMS.md` verbatim rather than rounded off.
+
+**Open, and named:**
+
+- crypto/hash/KDF/random/x25519 builtin slice — unmeasured
+- research-mode receipt chain — `seal_action`/`collect_loot`/`scrape_guest` have zero real call
+  sites on the tart path; guest crashes produce no evidence while `campaign-init` advances the chain
+- `vz-c2-cycle` — agent beacons and tasks queue, results stay `[]`
+- **`push` returns `0`, and `check` does not catch its misuse:**
+  `let ys = push(xs, 3); len(ys)` — `check` rc=0, `run` rc=1 (panic). A check/run divergence of the
+  CLAIMS item 2 class, and a footgun: functional-style use silently yields a non-container.
+- VM seal (CLAIMS item 3)
+- the headline promise rewrite + drift gate
+
+---
+
 ## PHASE 1 — Close the false-accept class ← THE BLOCKER
 
 The disease, from `docs/CLAIMS.md`:
