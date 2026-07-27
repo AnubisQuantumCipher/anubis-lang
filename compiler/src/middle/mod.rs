@@ -19746,6 +19746,94 @@ fn seed_effect_pattern(
 /// outer 5). `tail` marks whether this statement sequence is in the function's tail position, so a
 /// bare trailing expression counts as an implicit return only when it truly is one (never a
 /// mid-function side-effecting statement, nor a loop body's last statement). Declassify-before-return
+/// Seed a summary walker's scope with LOCAL CLOSURE bindings found anywhere in a statement.
+///
+/// The summary walkers evaluate `return X` against their current scope and never modelled local
+/// closures, so `let f = || return x; return f();` was opaque to them: `f` had no `closure_lambda`,
+/// the call resolved to nothing, and a function extracting a labelled value through a closure was
+/// not marked as returning one — the leak reappeared at the CALL SITE while the enforcing lane
+/// caught the direct form. Last residual of the escaping-closure class.
+///
+/// `seed_body_local_lambdas` does this for a Block EXPRESSION; the summary walkers hold a statement,
+/// so this is its statement-level sibling. Both exist rather than one because they key off different
+/// AST positions; the seeding rule is identical and deliberately so.
+fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBinding>) {
+    fn seed_one(name: &str, init: &Expr, scope: &mut BTreeMap<String, ScopeBinding>) {
+        let lam: Option<Box<Expr>> = match init {
+            Expr::Lambda { .. } => Some(Box::new(init.clone())),
+            Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+            _ => None,
+        };
+        if let Some(lam) = lam {
+            let e = scope
+                .entry(name.to_string())
+                .or_insert_with(|| ScopeBinding {
+                    info: BindingInfo {
+                        name: name.to_string(),
+                        ty: None,
+                        mode: String::new(),
+                        tainted: false,
+                        taint_source: None,
+                        declassified: false,
+                        span: None,
+                    },
+                    closure_arity: None,
+                    closure_lambda: None,
+                    field_closures: BTreeMap::new(),
+                    fn_alias: None,
+                    secret: false,
+                });
+            e.closure_lambda = Some(lam);
+        }
+    }
+    fn in_stmts(stmts: &[Stmt], scope: &mut BTreeMap<String, ScopeBinding>) {
+        for st in stmts {
+            walk(st, scope);
+        }
+    }
+    fn in_expr(e: &Expr, scope: &mut BTreeMap<String, ScopeBinding>) {
+        match e {
+            Expr::Block { stmts, tail } => {
+                in_stmts(stmts, scope);
+                if let Some(t) = tail {
+                    in_expr(t, scope);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for a in arms {
+                    in_expr(&a.body, scope);
+                }
+            }
+            Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+                in_expr(then, scope);
+                in_expr(else_, scope);
+            }
+            _ => {}
+        }
+    }
+    fn walk(st: &Stmt, scope: &mut BTreeMap<String, ScopeBinding>) {
+        match st {
+            Stmt::Let { name, init, .. } => {
+                seed_one(name, init, scope);
+                in_expr(init, scope);
+            }
+            Stmt::ExprStmt(e) => in_expr(e, scope),
+            Stmt::If { then, else_, .. } => {
+                in_stmts(then, scope);
+                if let Some(e) = else_ {
+                    in_stmts(e, scope);
+                }
+            }
+            Stmt::While { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. } => in_stmts(body, scope),
+            _ => {}
+        }
+    }
+    walk(stmt, scope);
+}
+
 /// Seed a summary walker's scope with match/if-let binders whose DECLARED enum payload carries an
 /// information-flow qualifier.
 ///
@@ -20099,6 +20187,7 @@ fn body_returns_taint(
                             b.info.taint_source = Some("declared enum payload".to_string());
                         },
                     );
+                    seed_stmt_local_lambdas(stmt, &mut scope_local);
                     &mut scope_local
                 };
                 let mut rets = Vec::new();
@@ -20729,6 +20818,7 @@ fn body_returns_secret(
                         &mut scope_local,
                         |b| b.secret = true,
                     );
+                    seed_stmt_local_lambdas(stmt, &mut scope_local);
                     &mut scope_local
                 };
                 let mut rets = Vec::new();

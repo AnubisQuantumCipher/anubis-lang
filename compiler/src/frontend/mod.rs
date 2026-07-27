@@ -1808,6 +1808,46 @@ impl Parser {
         while !self.at_eof() {
             let attrs = self.parse_attributes();
             let vis = self.parse_visibility();
+            // Only `fn` (and impl methods) CARRY attributes into the AST — struct, enum, module and
+            // the rest drop them, so `#[totally_made_up] struct S {}` silently accepted an attribute
+            // that meant nothing. `reject_unknown_attributes` in the middle end can only see what the
+            // AST kept, so a non-fn item's attributes have to be judged here, at the point they are
+            // discarded. Found by GROK-SEKHMET round 9 after the fn form was already closed — the
+            // fix had been applied to the item kind that stores attributes and not to the ones that
+            // throw them away, which is the same one-of-N shape as everything else in this arc.
+            if !self.check_keyword("fn") {
+                for a in &attrs {
+                    if !matches!(
+                        a.name.as_str(),
+                        "research"
+                            | "exploit"
+                            | "poc"
+                            | "fuzz"
+                            | "emulation"
+                            | "proof"
+                            | "defensive"
+                            | "audit"
+                            | "verified"
+                            | "safe"
+                            | "agent"
+                            | "cfg"
+                            | "derive"
+                            | "inline"
+                            | ""
+                    ) {
+                        self.diagnostic(
+                            format!(
+                                "ANUBIS_UNKNOWN_ATTRIBUTE: unknown attribute `{}`; an unrecognized \
+                                 attribute is rejected rather than ignored, because an authority \
+                                 mark that silently does nothing is worse than none",
+                                a.name
+                            )
+                            .as_str(),
+                            self.current_span(),
+                        );
+                    }
+                }
+            }
             if self.check_keyword("fn") {
                 if let Some(item) = self.parse_fn(attrs, vis) {
                     items.push(item);
