@@ -2144,6 +2144,68 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
     in_stmts(body)
 }
 
+/// Every attribute name the compiler gives meaning to.
+///
+/// An UNKNOWN attribute used to be accepted silently, which is the worst failure mode a
+/// proof-carrying language has: `#[verifed]` — one letter off `verified` — CHECKED GREEN while the
+/// program silently lost its verification lane, and `#[totally_made_up]` was equally welcome. An
+/// authority mark that does nothing is worse than no mark, because the author believes they have a
+/// guarantee they do not have. Found by GROK-THOTH's day-one stranger pass.
+///
+/// The set is deliberately the UNION of what the compiler acts on and what the corpus already uses,
+/// including names handled elsewhere (`cfg`/`derive`/`inline` are carried for tooling), so failing
+/// closed here rejects typos and inventions without breaking a working program.
+const KNOWN_ATTRIBUTES: &[&str] = &[
+    "research",
+    "exploit",
+    "poc",
+    "fuzz",
+    "emulation",
+    "proof",
+    "defensive",
+    "audit",
+    "verified",
+    "safe",
+    "agent",
+    "cfg",
+    "derive",
+    "inline",
+];
+
+/// Reject an attribute the compiler does not recognize, rather than ignoring it.
+fn reject_unknown_attributes(
+    attributes: &[crate::frontend::Attribute],
+    span: Span,
+    ctx: &mut SemanticContext,
+) {
+    for attr in attributes {
+        if KNOWN_ATTRIBUTES.contains(&attr.name.as_str()) {
+            continue;
+        }
+        // Suggest the closest known name when the author plainly meant one — a typo in an authority
+        // mark is the case this exists for, so saying "unknown" without the remedy would trade a
+        // silent failure for an unhelpful wall.
+        let hint = KNOWN_ATTRIBUTES
+            .iter()
+            .find(|k| {
+                let (a, b) = (attr.name.as_str(), **k);
+                a.len().abs_diff(b.len()) <= 2
+                    && a.chars().filter(|c| b.contains(*c)).count() * 4 >= b.len() * 3
+            })
+            .map(|k| format!(" (did you mean `{k}`?)"))
+            .unwrap_or_default();
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_UNKNOWN_ATTRIBUTE".into()),
+            message: format!(
+                "unknown attribute `{}`{hint}; an unrecognized attribute is rejected rather than \
+                 ignored, because an authority mark that silently does nothing is worse than none",
+                attr.name
+            ),
+            span: Some((span.start, span.end)),
+        });
+    }
+}
+
 fn require_research_authorization_metadata(
     declared_mode: Mode,
     elevator_in_body: bool,
@@ -2245,6 +2307,7 @@ fn collect_items(
                 ..
             } => {
                 let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
+                reject_unknown_attributes(attributes, *span, ctx);
                 require_research_authorization_metadata(
                     *mode,
                     body_has_mode_elevator(body),
@@ -2304,6 +2367,7 @@ fn collect_items(
                     {
                         let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
                         // Same Gate-15 policy as free functions (must not drift).
+                        reject_unknown_attributes(attributes, *span, ctx);
                         require_research_authorization_metadata(
                             *mode,
                             body_has_mode_elevator(body),
