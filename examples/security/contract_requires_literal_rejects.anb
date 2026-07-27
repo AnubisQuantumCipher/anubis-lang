@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_
+// Control: a literal argument violating `requires` IS caught. This is what makes the composition
+// case a genuine gap rather than "preconditions are not checked".
+fn need(y: i64) -> i64 requires(y > 0) { return y; }
+fn main() { print(need(-5)); }

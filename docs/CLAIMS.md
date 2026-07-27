@@ -63,13 +63,13 @@ Absence of a red row is **not** evidence of absence.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **303/303 PASS**. Live disk inventory **303** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **305/305 PASS**. Live disk inventory **305** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 874 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 876 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
@@ -238,6 +238,32 @@ represented by one arbitrarily chosen name. Contracts need the SET; labels need 
 That distinction is why patching the leaking surfaces one at a time would reproduce the class a sixth
 time.
 
+11. **`ensures` is not composed into the caller's `requires` discharge — OPEN (2026-07-27).**
+
+    ```anubis
+    fn neg() -> i64 ensures(result < 0) { return -5; }
+    fn need(y: i64) -> i64 requires(y > 0) { return y; }
+    fn main() { print(need(neg())); }     // check exit 0; run PRINTS -5
+    ```
+
+    Two declared contracts that are PROVABLY CONTRADICTORY, both present in the same program, and the
+    checker accepts. This is not "the solver could not prove it" — it is holding a proof of violation
+    and never composing the two halves.
+
+    | form | verdict |
+    |---|---|
+    | `need(-5)` literal | REJECT |
+    | `need(neg())` with `ensures(result < 0)` | **ACCEPT, run prints -5** |
+    | `let v = neg(); need(v)` | **ACCEPT, run prints -5** |
+
+    **NOT a carrier defect.** The DIRECT call leaks identically, so fn-value carriers are incidental —
+    filing it under the carrier class would have been wrong. `LANGUAGE.md:239-244` states that
+    contracts compose and the caller must satisfy the callee's obligations; the ensures→requires
+    direction is unimplemented.
+
+    Control and guard are in the corpus (`contract_requires_literal_rejects`,
+    `contract_ensures_satisfies_requires_accepts`); the RED fixture is held out until fixed.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
@@ -313,11 +339,11 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **303/303** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **305/305** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
-| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 874 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
+| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 876 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
-| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 303/303** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 305/305** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
 | Symbolic-index secret-capturing closure application | **CLAIMED 2026-07-25** | `arr[idx](…)` with non-literal `idx` fail-closed when container holds secret/taint-capturing element (j1 twin of `let g = arr[i]`); unit `symbolic_index_secret_capturing_list_application_fails_closed`; clean symbolic still accepts | Residual: full PC-join; untyped formals still interproc |
 | Nested container closure application (`outer[0][0]`, `b.fs[i]`, bind + mid-bind) | **CLAIMED 2026-07-25** | Nested Index/FieldAccess CallExpr + **bind** (`let g = outer[i][0]; g(0)`) + **intermediate mid-bind** (`let mid = outer[0]; mid[0](0)` re-keys `field_closures`; symbolic mid union-projects first segments fail-closed); unit `nested_container_closure_application_fails_closed` (apply + bind + mid lit/sym/clean); clean nested still accepts | Residual: full PC-join not claimed |
 | if-expr-built containers seed `field_closures` (incl. nested `Stmt::If` + let-inner) | **CLAIMED 2026-07-25** | `collect_container_closures` walks `Expr::If`/`Match`/`Block`; nested bare `if` as `Stmt::If`; unit `nested_container_closure_application_fails_closed` | Residual: full PC-join not claimed |

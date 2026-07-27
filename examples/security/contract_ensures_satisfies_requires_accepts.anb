@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Over-rejection guard: when the callee's `ensures` genuinely SATISFIES the caller's `requires`, the
+// program must keep compiling. A composition fix that rejects this breaks every legitimate contract
+// chain in the language.
+fn pos() -> i64 ensures(result > 0) { return 5; }
+fn need(y: i64) -> i64 requires(y > 0) { return y; }
+fn main() { print(need(pos())); }
