@@ -2134,7 +2134,16 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             Expr::If {
                 cond, then, else_, ..
             } => in_expr(cond) || in_expr(then) || in_expr(else_),
-            Expr::IfLet { then, else_, .. } => in_expr(then) || in_expr(else_),
+            // The SCRUTINEE is an expression too, and dropping it was a live bypass:
+            // `if let x = if true { @research { … } 1 } else { 0 } { … }` elevated with no
+            // authorization. Totality over `Expr` is not enough on its own — every expression a
+            // node HOLDS has to be walked, or the enum being exhaustive just means the hole moved.
+            Expr::IfLet {
+                scrutinee,
+                then,
+                else_,
+                ..
+            } => in_expr(scrutinee) || in_expr(then) || in_expr(else_),
             Expr::Match {
                 scrutinee, arms, ..
             } => in_expr(scrutinee) || arms.iter().any(|a| in_expr(&a.body)),
@@ -2169,8 +2178,21 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
                 in_expr(cond) || in_stmts(then) || else_.as_deref().is_some_and(in_stmts)
             }
             Stmt::While { cond, body, .. } => in_expr(cond) || in_stmts(body),
-            Stmt::WhileLet { body, .. } | Stmt::Loop { body, .. } | Stmt::For { body, .. } => {
-                in_stmts(body)
+            // Same omission on the statement side: `while let x = <expr> { … }` holds a scrutinee
+            // expression that was never walked.
+            Stmt::WhileLet { expr, body, .. } => in_expr(expr) || in_stmts(body),
+            Stmt::Loop { body, .. } => in_stmts(body),
+            // A `for`'s SOURCE is an expression too — the range bounds or the collection — and
+            // dropping it let `for i in 0..(|| { @research { … } 1 })()` elevate unauthorized.
+            // Third position in this walk where a node HELD an expression that was never walked.
+            Stmt::For { source, body, .. } => {
+                let src = match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        in_expr(start) || in_expr(end)
+                    }
+                    crate::frontend::ForSource::Collection { expr } => in_expr(expr),
+                };
+                src || in_stmts(body)
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 [gpu, cpu, prove].into_iter().flatten().any(|b| in_stmts(b))
