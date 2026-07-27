@@ -279,6 +279,30 @@ never terminates is a check/run divergence of a different kind, and is being cha
     implicit expectation that the program is runnable, and a non-terminating accept is a distinct
     failure from a leaking accept.
 
+### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
+
+After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
+surfaces closed, the adversary's judgment — requested explicitly as a judgment, not a measurement:
+
+**The carrier class is exhausted as a CALLEE/VALUE-IDENTITY class.** Its definition: enforcement that
+looks up a security obligation using the identity of a *callable*, and loses it when that callable is
+stored, passed, joined or returned.
+
+| keying | surfaces | carrier-vulnerable |
+|---|---|---|
+| **NAME** (string at the call node) | `requires` (closed), `ensures` composition (closed), sink/effect/export/trifecta name tables, bare-builtin (item 12) | yes, unless identity is recovered |
+| **SET / summary** | effect rows, taint/secret labels, fn identities (singleton), gate tags | immune — the summary travels with the value |
+| **TOKEN** | capability linearity, NE seal | different disease entirely |
+
+The exhaustion claim is bounded to that definition and carries named falsifiers rather than being
+asserted. A surface that is neither name-keyed, set-keyed nor token-keyed would fall outside the audit
+and would falsify it; none has been found.
+
+**Two agents converged independently on the sequencing**: one resolver first, then wire the defensive
+policy consumers to its exact/singleton result. The auditor declined to build a third
+builtin-identity mechanism on the grounds that it would overlap the effect-tag resolver already being
+designed — the second time in this arc that declining to patch was the more useful output.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
