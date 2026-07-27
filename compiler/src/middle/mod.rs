@@ -751,6 +751,49 @@ fn applied_closure_candidates(
 /// bind. See [`applied_closure_candidates`].
 const ALT_CLOSURE_PREFIX: &str = "_altclosure";
 
+/// Reserved parameter prefix for eta-expanded function references. Not a legal source identifier, so
+/// a synthesized binder can never capture or shadow a user name.
+const ETA_PARAM_PREFIX: &str = "_eta";
+
+/// Eta-expand a first-class reference to a NAMED function into the lambda it is equivalent to:
+/// `key` → `|_eta0| key(_eta0)`, arity taken from `ctx.fn_params`.
+///
+/// Passing a function BY NAME and passing `|x| f(x)` are the same program, but only the second was
+/// analysed. Every call-site check that resolves a closure argument matched an inline `Expr::Lambda`
+/// or a var carrying a `closure_lambda`; a bare top-level fn name has neither, so resolution returned
+/// `None` and the check was skipped entirely. That is why `app(key)` accepted and leaked at runtime
+/// while the eta-equivalent `app(|| key())` — and the local alias `let g = key; print(g())` — both
+/// correctly rejected.
+///
+/// Eta-expanding here rather than adding a parallel summary is deliberate: the labels on a call to
+/// `key` are already computed correctly by the existing machinery, so the fix is to give that
+/// machinery a form it recognises instead of teaching a second code path the same facts. A second
+/// path that must be kept in sync with the first is how this file grew its walker-parity defects.
+///
+/// Resolves through `fn_alias`, so an alias chain (`let g = key; app(g)`) expands to the same lambda.
+/// Returns `None` for anything that is not a known free function, which can only fail to reject.
+fn eta_expand_fn_ref(
+    name: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    fn_params: &BTreeMap<String, Vec<String>>,
+) -> Option<Expr> {
+    let target = if fn_params.contains_key(name) {
+        name.to_string()
+    } else {
+        scope.get(name).and_then(|b| b.fn_alias.clone())?
+    };
+    let arity = fn_params.get(&target)?.len();
+    let params: Vec<String> = (0..arity).map(|i| format!("{ETA_PARAM_PREFIX}{i}")).collect();
+    let args = params.iter().map(|p| Expr::Var(p.clone())).collect();
+    Some(Expr::Lambda {
+        params,
+        body: Box::new(Expr::Call {
+            callee: target,
+            args,
+        }),
+    })
+}
+
 /// Any lambda stored under `root`'s `field_closures`, for the EFFECT lane.
 ///
 /// [`any_capturing_field_closure`] filters for closures that CAPTURE a secret or tainted value,
@@ -8399,6 +8442,7 @@ fn unanimous_forwarded_return(rets: &[Expr], alias: &BTreeMap<String, String>) -
 fn resolve_closure_arg(
     arg: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
+    fn_params: &BTreeMap<String, Vec<String>>,
     fn_returns_lambda: &BTreeMap<String, (Vec<String>, Expr)>,
     fn_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
     method_returns_lambda: &BTreeMap<String, (Vec<String>, Expr)>,
@@ -8424,9 +8468,15 @@ fn resolve_closure_arg(
     }
     match arg {
         Expr::Lambda { params, body } => Some((params.clone(), (**body).clone())),
+        // A var bound to a lambda resolves; a bare top-level fn NAME has no `closure_lambda` and
+        // used to fall through to `None`, skipping this whole check. Passing `key` and passing
+        // `|| key()` are the same program, so eta-expand the name and let the identical path run.
         Expr::Var(g) => match scope.get(g).and_then(|b| b.closure_lambda.as_deref()) {
             Some(Expr::Lambda { params, body }) => Some((params.clone(), (**body).clone())),
-            _ => None,
+            _ => match eta_expand_fn_ref(g, scope, fn_params) {
+                Some(Expr::Lambda { params, body }) => Some((params, *body)),
+                _ => None,
+            },
         },
         // A returned-closure passed INLINE (`run(mk())` where `fn mk(){ return |x| k; }`): resolve
         // the callee's recorded returned lambda (its leading straight-line lets already inlined by
@@ -8784,6 +8834,7 @@ fn analyze_expr_effect(
                         } else if let Some((params, body)) = resolve_closure_arg(
                             arg,
                             scope,
+                            &ctx.fn_params,
                             &ctx.fn_returns_lambda,
                             &ctx.fn_returns_param,
                             &ctx.method_returns_lambda,
@@ -8860,6 +8911,7 @@ fn analyze_expr_effect(
                             } else if let Some((params, body)) = resolve_closure_arg(
                                 arg,
                                 scope,
+                                &ctx.fn_params,
                                 &ctx.fn_returns_lambda,
                                 &ctx.fn_returns_param,
                                 &ctx.method_returns_lambda,
@@ -9080,9 +9132,14 @@ fn analyze_expr_effect(
                 for i in applied {
                     let resolved: Option<Expr> = match args.get(i) {
                         Some(l @ Expr::Lambda { .. }) => Some(l.clone()),
+                        // A bare top-level fn NAME has no `closure_lambda`, so this returned `None`
+                        // and skipped the whole check — `app(key)` leaked while `app(|| key())` and
+                        // `let g = key; print(g())` both rejected. Eta-expand it into the lambda it
+                        // is equivalent to and let the existing descent do the work.
                         Some(Expr::Var(g)) => scope
                             .get(g)
-                            .and_then(|b| b.closure_lambda.as_deref().cloned()),
+                            .and_then(|b| b.closure_lambda.as_deref().cloned())
+                            .or_else(|| eta_expand_fn_ref(g, scope, &ctx.fn_params)),
                         _ => None,
                     };
                     if let Some(Expr::Lambda { params, body }) = resolved {

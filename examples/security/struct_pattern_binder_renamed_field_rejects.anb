@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// CORPUS-1 2026-07-27. Defect B, the RENAMED-BINDER face: `let V { k: renamed } = v;` binds the
+// declared-secret field `k` to a DIFFERENT local name. This probes whether the fix attributes the
+// qualifier to the sub-pattern's bound name generally, or only to the field-name shorthand
+// (`let V { k } = v`). TODAY: already REJECTS correctly (coverage guard, verified by direct run) —
+// the qualifier follows the rename.
+struct V { k: secret<i64> }
+fn main() {
+    let v = V { k: 42 };
+    let V { k: renamed } = v;
+    print(renamed);
+}

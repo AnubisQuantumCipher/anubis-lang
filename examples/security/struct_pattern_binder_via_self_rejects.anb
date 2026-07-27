@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// CORPUS-1 2026-07-27. Defect B, the DESTRUCTURED-SELF face. Impl method params are plain
+// identifiers, including `self` (no pattern params in the signature — confirmed against the parser),
+// so this exercises `let V { k } = self;` inside the method body. This form depends on TWO
+// independently-landed fixes composing correctly: `self` inheriting the impl's type name at the
+// analysis boundary (`declared_secret_field_via_self_rejects`) and the struct-pattern-binder fix
+// (Defect B) consulting that type. TODAY: already REJECTS correctly (coverage guard, verified by
+// direct run) — the composition holds.
+struct V { k: secret<i64> }
+impl V {
+    fn leak(self) {
+        let V { k } = self;
+        print(k);
+    }
+}
+fn main() {
+    let v = V { k: 42 };
+    v.leak();
+}

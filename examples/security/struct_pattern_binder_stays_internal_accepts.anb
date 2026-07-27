@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// CORPUS-1 2026-07-27. Over-rejection guard for Defect B: a `secret<T>` field destructured via a
+// struct pattern but never read by an egress sink must keep passing. A secret bound by a pattern and
+// then simply left unused is not exfiltration — the binder fix must key on a subsequent sink, not on
+// the destructuring itself.
+struct V { k: secret<i64> }
+fn main() {
+    let v = V { k: 42 };
+    let V { k } = v;
+}

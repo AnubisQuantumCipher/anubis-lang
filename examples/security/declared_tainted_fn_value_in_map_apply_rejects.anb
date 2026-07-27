@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// CORPUS-1 2026-07-27. Integrity dual of `declared_secret_fn_value_in_map_apply_rejects`: a
+// `-> tainted<i64>` function stored as a map value, applied via `m["k"]()`, reaching a `shell` sink.
+// TODAY: already REJECTS correctly (coverage guard, verified by direct run; check-side only).
+fn key() -> tainted<i64> { return 42; }
+fn main() uses(shell) { let m = { "k": key }; shell(m["k"]()); }

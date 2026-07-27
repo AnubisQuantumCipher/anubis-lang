@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// CORPUS-1 2026-07-27. Defect B, the FOR-LOOP-BOUND face. This language's `for` header only accepts
+// a plain identifier (no destructuring in the header itself — confirmed against the parser), so this
+// exercises the realistic composition: a for-loop-bound struct value destructured via `let` inside
+// the loop body, testing the loop's scope entry against the pattern-binder fix. TODAY: already
+// REJECTS correctly (coverage guard, verified by direct run).
+struct V { k: secret<i64> }
+fn main() {
+    let vs = [V { k: 42 }];
+    for item in vs {
+        let V { k } = item;
+        print(k);
+    }
+}
