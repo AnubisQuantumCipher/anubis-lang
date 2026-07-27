@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CAPABILITY_REUSE
+fn spend(t) { cap_use(t); }
+@verified
+fn f() uses(net.send) {
+    let n = cap_acquire("net.send");
+    send("h", 80, "x");
+    spend(n);
+}
+fn main() { }

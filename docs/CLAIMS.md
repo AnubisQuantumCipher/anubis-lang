@@ -63,13 +63,13 @@ Absence of a red row is **not** evidence of absence.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **298/298 PASS**. Live disk inventory **298** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **299/299 PASS**. Live disk inventory **299** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 869 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 870 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
@@ -155,38 +155,24 @@ it: the value reaches a `requires`/`ensures` and makes the contract hold for the
 now fail closed; documented leniency is unchanged and locked by must-stay-PASS fixtures, verified by
 the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
 
-9. **Capability double-spend across a function boundary — OPEN (found 2026-07-27).**
-   A use-once token spent CAUSALLY by a privileged builtin, then spent again by being passed to a
-   user function that calls `cap_use`, is not detected as reuse:
+9. **Capability double-spend across a function boundary — NOT A DEFECT (withdrawn 2026-07-27).**
+   I recorded this as open earlier the same day and I was WRONG. The probe put `@verified` on the
+   callee (`spend`) rather than on the function holding the causal spend (`f`). Verification is
+   PER-ITEM (`compiler/src/middle/mod.rs:2809-2814`): capability linearity counts ordinary argument
+   occurrences in both lanes, but privileged-builtin CAUSAL SPEND is enabled only in the verified
+   lane. So the default check correctly saw one consume, not two.
 
-   ```anubis
-   @verified
-   fn spend(t) { cap_use(t); }
-   fn f() uses(net.send) {
-       let n = cap_acquire("net.send");
-       send("h", 80, "x");   // causal spend
-       spend(n);             // second spend — ACCEPTED
-   }
-   ```
+   With `@verified` on `f`, the same program rejects with `ANUBIS_CAPABILITY_REUSE` on the current
+   pinned compiler. The corrected fixture is
+   `cap_causal_then_userfn_corrected_rejects.anb`, now in the corpus.
 
-   Three-way discriminator, so this is a composition gap and not a blanket blind spot:
+   Caught by the AUDITOR agent, which refused to write the fix I asked for and produced the deciding
+   `file:line` instead. Recorded rather than deleted: a false OPEN item in this list is a fabrication
+   in the direction of alarm, and the list is only useful if wrong entries are retracted as visibly
+   as right ones are added.
 
-   | program | verdict |
-   |---|---|
-   | `spend(n); spend(n)` — two user-fn occurrences | REJECT |
-   | `send(…); cap_use(n)` — causal + builtin | REJECT |
-   | `send(…); spend(n)` — causal + user-fn | **ACCEPT** |
-
-   Neither mechanism is broken alone; the causal-spend and occurrence-consumption bookkeeping do not
-   COMPOSE. Same disease as the information-flow carriers closed the same day — a label crossing a
-   function boundary and being lost — now found in the capability pillar, which had not been probed.
-
-   The two passing controls are in the corpus
-   (`cap_causal_then_builtin_double_spend_rejects`, `cap_two_userfn_double_spend_rejects`). The RED
-   fixture is written and deliberately held out of tree until the fix lands, so the corpus stays
-   honest rather than green-by-omission.
-
-10. **Contract `requires` not discharged through a fn-value carrier — OPEN (found 2026-07-27).**
+10. **Contract `requires` not discharged through a fn-value carrier — OPEN, DEFAULT LANE
+    (2026-07-27).**
 
     ```anubis
     fn f(x: i64) -> i64 requires(x > 0) { return x; }
@@ -194,16 +180,20 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
     fn main() { app(f); }        // check exit 0; run PRINTS -1
     ```
 
-    Runtime witness: the function executes with `x = -1` against `requires(x > 0)`. Also open through
-    a container (`app([f])`) and a return (`fn get(){ return f; }`).
+    The inconsistency is INSIDE the default lane, which is what makes it a defect rather than an
+    opt-in boundary:
 
-    | form | verdict |
-    |---|---|
-    | `f(-1)` direct | REJECT, run refuses |
-    | `let n = -1; f(n)` | REJECT |
-    | `app(f)` / `app([f])` / returned `f` | **ACCEPT, run prints -1** |
+    | form | default lane | `@verified` on the caller |
+    |---|---|---|
+    | `f(-1)` direct | REJECT | REJECT |
+    | `app(f)` carrier | **ACCEPT, run prints -1** | REJECT |
 
-    The two controls are in the corpus; the RED fixture is held out until fixed.
+    So the default lane DOES enforce `requires` on a direct call and does NOT enforce the same
+    contract one carrier away. `@verified` on the CALLER catches it; `@verified` on `f` does not,
+    since the discharge happens at the call site.
+
+    Also open through a container (`app([f])`) and a return (`fn get(){ return f; }`). Two controls
+    are in the corpus; the RED fixture is held out until fixed.
 
 ### The disease is cross-cutting — three of four pillars
 
@@ -214,7 +204,7 @@ Probing the other three with the same method:
 |---|---|
 | information-flow | 12 carriers CLOSED (2026-07-27) |
 | effects | HOLDS — undeclared write, closure-hidden write, write via returned closure all rejected |
-| capabilities | **OPEN** — item 9, causal spend + user-fn occurrence do not compose |
+| capabilities | HOLDS — item 9 withdrawn; my probe was mis-annotated, not a defect |
 | contracts | **OPEN** — item 10, `requires` not discharged through a fn-value carrier |
 
 A green information-flow board is therefore NOT evidence that the carrier class is closed. The same
@@ -295,11 +285,11 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **298/298** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **299/299** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
-| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 869 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
+| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 870 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
-| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 298/298** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 299/299** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
 | Symbolic-index secret-capturing closure application | **CLAIMED 2026-07-25** | `arr[idx](…)` with non-literal `idx` fail-closed when container holds secret/taint-capturing element (j1 twin of `let g = arr[i]`); unit `symbolic_index_secret_capturing_list_application_fails_closed`; clean symbolic still accepts | Residual: full PC-join; untyped formals still interproc |
 | Nested container closure application (`outer[0][0]`, `b.fs[i]`, bind + mid-bind) | **CLAIMED 2026-07-25** | Nested Index/FieldAccess CallExpr + **bind** (`let g = outer[i][0]; g(0)`) + **intermediate mid-bind** (`let mid = outer[0]; mid[0](0)` re-keys `field_closures`; symbolic mid union-projects first segments fail-closed); unit `nested_container_closure_application_fails_closed` (apply + bind + mid lit/sym/clean); clean nested still accepts | Residual: full PC-join not claimed |
 | if-expr-built containers seed `field_closures` (incl. nested `Stmt::If` + let-inner) | **CLAIMED 2026-07-25** | `collect_container_closures` walks `Expr::If`/`Match`/`Block`; nested bare `if` as `Stmt::If`; unit `nested_container_closure_application_fails_closed` | Residual: full PC-join not claimed |
