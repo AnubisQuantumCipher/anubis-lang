@@ -1,0 +1,24 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// FABLE5 2026-07-27. Chain case for the identity-let alias normalization that closes
+// `h5_return_alias_same_param_rejects`. One branch returns the parameter after TWO renames
+// (`let a = f; let b = a; return b;`), the other returns `f` directly. Syntactic unanimity fails at
+// every step, but it is the same forwarder three names apart, so a gated closure passed through it
+// escapes the capability check.
+// This exists separately from the single-rename fixture because the alias map must CHAIN: admitting
+// `a -> f` but not resolving `b` through it would close the one-hop form and leave this open, which
+// is the kind of half-fix that reads as green.
+fn pick(c: bool, f) {
+    if c {
+        let a = f;
+        let b = a;
+        return b;
+    } else {
+        return f;
+    }
+}
+fn main() {
+    let leaked = pick(true, || write_file("h5_alias_chain.txt", "y"));
+    leaked();
+    print(1);
+}

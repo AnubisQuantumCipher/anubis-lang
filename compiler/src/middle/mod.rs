@@ -1421,15 +1421,16 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         // M2-A bug: `return if c { f } else { f };` is ONE return, so it took the
                         // single-return path and was registered as an opaque `If` expression rather
                         // than as a forwarder of `f`.
+                        let alias = identity_let_alias_map(body);
                         let sole: Option<Expr> = if tv.len() == 1 {
-                            unanimous_forwarded_return(&tv[..1])
+                            unanimous_forwarded_return(&tv[..1], &alias)
                         } else {
                             let mut rets = Vec::new();
                             for st in body {
                                 collect_returns_in_stmt(st, &mut rets);
                             }
                             // H5 — several returns that all forward the SAME parameter.
-                            unanimous_forwarded_return(&rets)
+                            unanimous_forwarded_return(&rets, &alias)
                         };
                         if let Some(r) = sole {
                             ctx.fn_sole_return.insert(
@@ -1561,12 +1562,13 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                             }
                             // Same uniform routing as the free-fn half above, for the same reason:
                             // the peel must see the single-return case too.
+                            let alias = identity_let_alias_map(body);
                             let sole: Option<Expr> = if tv.len() == 1 {
-                                unanimous_forwarded_return(&tv[..1])
+                                unanimous_forwarded_return(&tv[..1], &alias)
                             } else {
                                 // H5 applies to the method half too — a branch forwarder is no less a
                                 // forwarder for being declared in an `impl`.
-                                unanimous_forwarded_return(&rets)
+                                unanimous_forwarded_return(&rets, &alias)
                             };
                             if let Some(r) = sole {
                                 ctx.method_sole_return
@@ -7718,10 +7720,83 @@ fn resolve_closure_value(
 /// to an arbitrary branch would be unsound-by-arbitrary-choice, and charging all of them needs the
 /// set-widening this deliberately does not do (it would over-reject a program whose gated value
 /// sits in the not-taken arm). Disagreeing candidates therefore stay at the existing fail-open.
-fn unanimous_forwarded_return(rets: &[Expr]) -> Option<Expr> {
+/// Identity-`let` alias roots for forwarder registration: `let a = f;` → `a ↦ f`, chained through
+/// `let b = a;` → `b ↦ f`.
+///
+/// M2-A closed the branch-EXPRESSION forwarder but not `let a = f; return a;`, where syntactic
+/// unanimity fails because one branch returns `a` and the other returns `f`. Same forwarder, one
+/// rename apart.
+///
+/// This deliberately reuses the two EXISTING pure body scanners rather than adding a walker, and it
+/// admits a name only when both agree it is a true identity alias. A name is admitted iff:
+///
+///   1. it is never an assignment target anywhere in the body (`collect_assigned_roots`) — otherwise
+///      `let mut a = f; a = g; return a` would register `f`;
+///   2. it is never bound twice (`collect_shadowed_lets`) — a second `let`, a pattern rebind, a
+///      `for` variable, or a nested block re-let disqualifies the name ENTIRELY, because guessing
+///      which binding a return refers to is exactly the shadow-conflation error this file has been
+///      burned by before;
+///   3. its initializer resolves to a single `Var` after chaining through aliases admitted so far.
+///
+/// Pattern bindings, `for` variables and `if let`/`while let` binders are never admitted: they are
+/// binders, not identity aliases. Every rule is an UNDER-approximation — a rejected name simply
+/// keeps the pre-existing fail-open, so the map can miss a forwarder but can never invent one.
+///
+/// Note `ctx.reassigned_roots` / `ctx.shadowed_lets` are per-function analysis state filled much
+/// later; at surface-registration time they are empty, so the collectors must be run on the body
+/// directly (GROK-SEKHMET's spec, which caught this ordering trap before I hit it).
+fn identity_let_alias_map(body: &[Stmt]) -> BTreeMap<String, String> {
+    let mut assigned = BTreeSet::new();
+    collect_assigned_roots(body, &mut assigned);
+    let mut shadowed = BTreeSet::new();
+    collect_shadowed_lets(body, &mut shadowed);
+
+    let mut alias: BTreeMap<String, String> = BTreeMap::new();
+    fn walk(
+        body: &[Stmt],
+        assigned: &BTreeSet<String>,
+        shadowed: &BTreeSet<String>,
+        alias: &mut BTreeMap<String, String>,
+    ) {
+        for s in body {
+            match s {
+                Stmt::Let { name, init, .. } => {
+                    if assigned.contains(name) || shadowed.contains(name) {
+                        continue;
+                    }
+                    if let Expr::Var(v) = init {
+                        // Chain through an already-admitted alias so `let b = a` reaches `f`.
+                        let root = alias.get(v).cloned().unwrap_or_else(|| v.clone());
+                        alias.insert(name.clone(), root);
+                    }
+                }
+                Stmt::If { then, else_, .. } => {
+                    walk(then, assigned, shadowed, alias);
+                    if let Some(e) = else_ {
+                        walk(e, assigned, shadowed, alias);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(body, &assigned, &shadowed, &mut alias);
+    alias
+}
+
+fn unanimous_forwarded_return(rets: &[Expr], alias: &BTreeMap<String, String>) -> Option<Expr> {
     let mut peeled: Vec<Expr> = Vec::new();
     for r in rets {
         expr_tail_values(r, &mut peeled);
+    }
+    // Normalize each peeled `Var` to its identity-alias root, so `let a = f; return a;` and
+    // `return f;` compare equal. Non-`Var` shapes and unaliased names pass through untouched.
+    for p in peeled.iter_mut() {
+        if let Expr::Var(v) = p {
+            if let Some(root) = alias.get(v) {
+                *p = Expr::Var(root.clone());
+            }
+        }
     }
     let (first, rest) = peeled.split_first()?;
     if rest.is_empty() {
