@@ -55,6 +55,17 @@ if [[ ! -x "$SRC" ]]; then
   exit 1
 fi
 
+# Warn when the CURRENT pin is older than the binary that would replace it. Publishing is manual by
+# design (agents must not see the instrument change mid-round), but FORGETTING to publish after a
+# build silently measures stale code — a gate then grades a compiler that predates the fix under
+# test and reports failures that are already fixed. That happened once; this is the tell.
+if [[ -f "$CURRENT" ]]; then
+  prev="$(cat "$CURRENT")"
+  if [[ -f "$prev" && "$SRC" -nt "$prev" ]]; then
+    echo "note: $SRC is newer than the current pin ($prev) — publishing a new one" >&2
+  fi
+fi
+
 mkdir -p "$PIN_DIR"
 sha="$(shasum -a 256 "$SRC" | cut -d' ' -f1)"
 short="${sha:0:12}"

@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INTERPROC_SINK
+// Integrity dual of the container-as-argument carrier. The confidentiality face was closed first;
+// this pins the taint face so the two lanes cannot drift apart again — fixing one lane and not its
+// dual is this project's most-repeated defect.
+fn t() -> tainted<i64> { return 42; }
+fn app(fs) uses(shell) { shell(fs[0]()); }
+fn main() uses(shell) { app([t]); }
