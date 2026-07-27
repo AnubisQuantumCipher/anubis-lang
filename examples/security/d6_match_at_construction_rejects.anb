@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// D6 through `match` rather than `if` — the isomorphic twin, included because this project has
+// repeatedly closed one join form and left its sibling open.
+struct S { k: secret<i64> }
+fn main() {
+    let s = match 1 { 1 => S { k: 42 }, _ => S { k: 0 } };
+    print(s.k);
+}

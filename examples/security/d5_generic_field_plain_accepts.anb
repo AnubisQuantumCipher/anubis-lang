@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// Over-rejection guard for D5: the SAME generic struct instantiated with a PUBLIC type must stay
+// printable. If instantiation ever marks every generic field regardless of the type argument, this
+// catches it.
+struct Box<T> { v: T }
+fn main() {
+    let b: Box<i64> = Box { v: 42 };
+    print(b.v);
+}

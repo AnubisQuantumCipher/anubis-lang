@@ -96,10 +96,26 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 
 ### Open — load-bearing (blocks honest "complete")
 
-1. **Composition residuals may remain (no freestanding "all declaration seams closed").**  
-   D1–D4 **closed** this stamp. Earlier HORUS residual shapes (e.g. **D5** generic field
-   instantiation, **D6** IF-at-construction) are **not** claimed closed unless fixtures +
-   mechanism land. Green board does not invent completeness.
+1. **Composition residuals — D1–D6 closed; the class is NOT claimed total.**
+   D1–D4 closed earlier this arc. **D5** (generic field instantiation) and **D6**
+   (IF-at-construction) now have fixtures and are closed (2026-07-27), which is what this entry
+   demanded — "not claimed closed unless fixtures + mechanism land":
+
+   | shape | fixture | verdict |
+   |---|---|---|
+   | D5 `Box<secret<i64>>` field via instantiation | `d5_generic_field_instantiation_rejects` | REJECT |
+   | D5 instantiation in a PARAMETER's declared type | `d5_generic_field_via_param_rejects` | REJECT |
+   | D6 construction inside a value-position `if` | `d6_if_at_construction_rejects` | REJECT |
+   | D6 construction inside a `match` | `d6_match_at_construction_rejects` | REJECT |
+
+   Each ships an over-rejection guard (`d5_generic_field_plain_accepts`,
+   `d6_if_at_construction_public_accepts`) so a future instantiation fix that marks EVERY generic
+   field, or every join-constructed struct, is caught rather than shipped.
+
+   **Still not a totality claim.** These six are the shapes that were NAMED. The
+   function-identity carrier family closed the same day (bare name, alias chain, if/match join,
+   list/struct/map/enum element, return, identity forwarder, pass-through builtin, argument
+   position) with one carrier still open — see item 7. Green board does not invent completeness.
 
 2. **check/run divergence — (R) CLOSED; (B) residual named.**  
    **(A)=0, (B)=7, (R)=3**; (R)+PCA **CLOSED**. **(B)** non-run by design — do not equate
@@ -113,8 +129,28 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
 5. **Research elevation requires authorization** — bypass **CLOSED** (`e6ebfd2`); dual-use
    research remains intentional with explicit authorization, not a Safe free ride.  
-6. **Harness integrity + instrument fact:** language fixtures defaulted **DEBUG** while security
-   graded **RELEASE**. Both accept **`ANUBIS_BIN`**. Seals must pin one binary.
+6. **Harness integrity + instrument fact — CLOSED 2026-07-27.** Language fixtures defaulted
+   **DEBUG** while security graded **RELEASE**, so the two headline numbers described two different
+   compilers. Both gates now use one instrument cascade and `audit_unified.sh` exports `ANUBIS_BIN`
+   after the build, so CI cannot publish two builds as one number.
+
+   Two further instrument defects were found and closed while verifying this: a fixture with no
+   `EXPECT:` header was graded **expected-to-pass** (a headerless `*_rejects.anb` containing a real
+   leak scored GREEN — demonstrated, not inferred), and the seal itself printed **SEAL_PASS** with
+   two required gates SKIPPED, a constituent grading `/tmp/WRONG-BINARY`, and a recorded snapshot
+   hash that did not match the artifact. Both are closed with microbenches that show each guard
+   FIRING rather than merely present.
+
+   Binaries are now published as content-addressed read-only pins (`scripts/publish_pin.sh`) so a
+   rebuild cannot mutate the instrument an agent is mid-measurement on.
+
+7. **Function-identity carrier — one open form.** A function reference reaching an application site
+   through a container built by `push`/`insert` rather than a literal
+   (`let fs = []; push(fs, key); app(fs)`) still accepts, while the eta twin
+   `push(fs, || key())` correctly rejects. Every other carrier in the family is closed with
+   fixtures. A candidate fix was written, measured INERT (the push resolver consults
+   capturing/effectful closures, and a synthesized `|| key()` is neither), and reverted rather than
+   shipped — dead code that looks like a fix is worse than a stated gap.
 
 ### Resolved this arc (do not re-open without new evidence)
 
