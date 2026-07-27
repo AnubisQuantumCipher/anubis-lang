@@ -155,6 +155,37 @@ it: the value reaches a `requires`/`ensures` and makes the contract hold for the
 now fail closed; documented leniency is unchanged and locked by must-stay-PASS fixtures, verified by
 the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
 
+9. **Capability double-spend across a function boundary — OPEN (found 2026-07-27).**
+   A use-once token spent CAUSALLY by a privileged builtin, then spent again by being passed to a
+   user function that calls `cap_use`, is not detected as reuse:
+
+   ```anubis
+   @verified
+   fn spend(t) { cap_use(t); }
+   fn f() uses(net.send) {
+       let n = cap_acquire("net.send");
+       send("h", 80, "x");   // causal spend
+       spend(n);             // second spend — ACCEPTED
+   }
+   ```
+
+   Three-way discriminator, so this is a composition gap and not a blanket blind spot:
+
+   | program | verdict |
+   |---|---|
+   | `spend(n); spend(n)` — two user-fn occurrences | REJECT |
+   | `send(…); cap_use(n)` — causal + builtin | REJECT |
+   | `send(…); spend(n)` — causal + user-fn | **ACCEPT** |
+
+   Neither mechanism is broken alone; the causal-spend and occurrence-consumption bookkeeping do not
+   COMPOSE. Same disease as the information-flow carriers closed the same day — a label crossing a
+   function boundary and being lost — now found in the capability pillar, which had not been probed.
+
+   The two passing controls are in the corpus
+   (`cap_causal_then_builtin_double_spend_rejects`, `cap_two_userfn_double_spend_rejects`). The RED
+   fixture is written and deliberately held out of tree until the fix lands, so the corpus stays
+   honest rather than green-by-omission.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  

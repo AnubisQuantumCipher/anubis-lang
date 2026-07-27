@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CAPABILITY_REUSE
+// Control for the fixture above: the SAME double-spend where the second consumer is the builtin
+// `cap_use` rather than a user function. This one is caught today, which is what makes the other a
+// genuine gap rather than a blanket blind spot.
+@verified
+fn f() uses(net.send) {
+    let n = cap_acquire("net.send");
+    send("h", 80, "x");
+    cap_use(n);
+}
+fn main() { }

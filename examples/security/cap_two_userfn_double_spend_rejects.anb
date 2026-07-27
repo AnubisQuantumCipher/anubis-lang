@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CAPABILITY_REUSE
+// Second control: two USER-FUNCTION occurrences with no causal spend. Also caught today, proving
+// user-fn argument occurrences do consume — so the gap is specifically the COMPOSITION of a causal
+// spend with a user-fn occurrence.
+@verified
+fn spend(t) { cap_use(t); }
+fn f() uses(net.send) {
+    let n = cap_acquire("net.send");
+    spend(n);
+    spend(n);
+}
+fn main() { }
