@@ -241,8 +241,16 @@ never terminates is a check/run divergence of a different kind, and is being cha
     ```
 
     `input` is a taint source. Passed as a first-class value it loses that identity, laundering BOTH
-    `ANUBIS_LETHAL_TRIFECTA` and `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`. The trifecta detector is
-    the property the NEXUS showcase is built on.
+    `ANUBIS_LETHAL_TRIFECTA` and `ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY`.
+
+    **Severity, corrected 2026-07-27:** this is a CHECK fail-open, NOT a runtime-witnessed bypass.
+    `run` refuses the program with `ANUBIS_UNSUPPORTED_NATIVE_LOWERING: builtin input cannot be used
+    as a first-class value`. My first write-up implied the trifecta could actually be exercised; it
+    cannot be, on this runtime. What breaks is `check` — which is the promise NEXUS and this document
+    rely on, so it remains open — but the distinction between "the checker certifies a policy
+    violation" and "an attacker gets the data" is exactly the kind this file exists to keep straight.
+
+    The alias form `let g = input; g()` is the same static hole (also check-ACCEPT).
 
     **Not a new defect** — the known bare-builtin gating gap reaching a third surface. The
     discriminator proves the carrier machinery itself is sound and only BUILTIN identity is lost:
@@ -260,6 +268,16 @@ never terminates is a check/run divergence of a different kind, and is being cha
     Fixing it needs the builtin-effect-tag resolution the adversary identified — the user-function
     identity spine structurally cannot serve it, because a set of user functions has nothing to put
     in it for `input`.
+
+13. **`run` never terminates on a mutual-return cycle that `check` ACCEPTS — OPEN (2026-07-27).**
+    Measured: genuine infinite recursion after a `check` ACCEPT, ~100% CPU, RSS flat at ~6MB over 7s
+    (so a stack-overflow abort does not rescue it). The checker correctly terminates in ~6ms and
+    DEFERS; the runtime does not.
+
+    A check/run divergence of a different kind from the information-flow ones: the program does not
+    produce a forbidden value, it produces no value ever. Recorded because "check passed" carries an
+    implicit expectation that the program is runnable, and a non-terminating accept is a distinct
+    failure from a leaking accept.
 
 ### Open — boundary honesty / process (not silent overclaims)
 
