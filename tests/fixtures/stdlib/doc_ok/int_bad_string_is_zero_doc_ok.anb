@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 0
+// DOC_OK / DOCUMENTED LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// LANGUAGE.md:518 — int/float/parse_* soft-parse failures yield 0 / 0.0.
+// A future "helpful" panic here is a regression against the language model.
+fn main() {
+    print(int("xx"));
+}

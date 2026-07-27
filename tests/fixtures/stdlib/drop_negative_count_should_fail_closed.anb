@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_ARGUMENT
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `drop([1,2,3], -1)` printed
+// `[1, 2, 3]` via `n.as_i64().max(0)` clamping (identity, not an error).
+fn main() {
+    print(drop([1, 2, 3], -1));
+}

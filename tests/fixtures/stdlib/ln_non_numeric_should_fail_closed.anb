@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L: non-numeric arg is TYPE_ERROR. Domain edges on real floats (ln(0), ln(-1))
+// remain DOC_OK IEEE — see doc_ok/ln_* fixtures. Do not conflate the two.
+fn main() {
+    print(ln("x"));
+}

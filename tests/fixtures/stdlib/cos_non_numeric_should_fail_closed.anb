@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `cos("pi")` printed `1.0`
+// (string soft-coerced to 0.0; cos(0)=1). Classic contract-launder path.
+fn main() {
+    print(cos("pi"));
+}

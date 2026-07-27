@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `is_empty(42)` printed `true` (rc=0).
+// Same residual class as `len` (`_ => 0`). Must fail closed.
+fn main() {
+    print(is_empty(42));
+}

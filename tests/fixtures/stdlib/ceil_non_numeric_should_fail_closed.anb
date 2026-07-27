@@ -1,0 +1,7 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `ceil("x")` printed `0`.
+fn main() {
+    print(ceil("x"));
+}

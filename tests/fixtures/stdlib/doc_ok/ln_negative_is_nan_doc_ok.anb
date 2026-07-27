@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: NaN
+// DOC_OK / IEEE 754 LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// ln(-1.0) yields NaN under the IEEE float model.
+fn main() {
+    print(ln(-1.0));
+}

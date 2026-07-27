@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_ARGUMENT
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// Phase-5 A–L SILENT_WRONG: on pin anubis-4909d6953c4c, `take([1,2,3], -1)` printed `[]`
+// via `n.as_i64().max(0)` clamping. Negative count is a domain error, not empty prefix.
+fn main() {
+    print(take([1, 2, 3], -1));
+}

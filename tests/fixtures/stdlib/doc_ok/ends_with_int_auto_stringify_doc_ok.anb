@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: true
+// DOC_OK / string auto-stringify LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// ends_with auto-stringifies the receiver (language-wide).
+fn main() {
+    print(ends_with(42, "2"));
+}

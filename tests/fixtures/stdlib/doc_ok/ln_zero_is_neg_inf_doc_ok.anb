@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: -inf
+// DOC_OK / IEEE 754 LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// ln(0.0) yields -inf under the IEEE float model (AGENTS.md documented leniency).
+fn main() {
+    print(ln(0.0));
+}

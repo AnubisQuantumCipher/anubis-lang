@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 0
+// DOC_OK / DOCUMENTED LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// LANGUAGE.md:518 — parse_int soft-parse failure yields 0.
+fn main() {
+    print(parse_int("xx"));
+}

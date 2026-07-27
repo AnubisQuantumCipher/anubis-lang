@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 0.0
+// DOC_OK / DOCUMENTED LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// LANGUAGE.md:518 — float soft-parse failure yields 0.0.
+fn main() {
+    print(float("xx"));
+}

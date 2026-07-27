@@ -1,0 +1,8 @@
+// EXPECT: PASS
+// STDOUT_CONTAINS: 42
+// DOC_OK / string auto-stringify LENIENCY — DO NOT PATCH TO FAIL-CLOSED.
+// lower/upper/capitalize display-stringify non-strings (language-wide;
+// see NON_COLLECTION_SURFACE.md).
+fn main() {
+    print(lower(42));
+}
