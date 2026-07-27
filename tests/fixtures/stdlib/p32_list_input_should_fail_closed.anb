@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_POC_PACK_TYPE
+// RUNTIME: exercise via `anubis run`.
+// Companion of p8_list_input_should_fail_closed.anb: p32 on a list produced `[5, 0, 0, 0]`
+// for a 5-element list.
+fn main() {
+    print(p32([9, 9, 9, 9, 9]));
+}

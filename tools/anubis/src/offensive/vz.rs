@@ -1035,7 +1035,7 @@ pub fn vz_agent_test(
         "{prelude}
 \"$BIN\" agent-generate \
   --engage \"$ENGAGE\" \
-  --name {agent_name} --os linux --sleep-ms {sleep_ms}
+  --name {agent_name} --os \"$(uname -s | tr '[:upper:]' '[:lower:]')\" --sleep-ms {sleep_ms}
 echo 'AGENT_BUILD_OK'
 ls -la \"$ENGAGE/agents/{agent_name}\"
 file \"$ENGAGE/agents/{agent_name}\"
@@ -1129,7 +1129,7 @@ done
 if ! printf '%s' "$HEALTH" | grep -q '"ok":true'; then
   echo "ANUBIS_VZ_C2_LISTENER_NOT_READY base=$C2_BASE health=$HEALTH"; exit 3
 fi
-"$BIN" agent-generate --engage "$ENGAGE" --name "$AGENT_NAME" --os linux --sleep-ms 300 2>&1
+"$BIN" agent-generate --engage "$ENGAGE" --name "$AGENT_NAME" --os "$(uname -s | tr '[:upper:]' '[:lower:]')" --sleep-ms 300 2>&1
 test -x "$ENGAGE/agents/$AGENT_NAME" || {{ echo "ANUBIS_VZ_C2_AGENT_MISSING"; exit 6; }}
 # Pre-queue against wildcard so the agent's first beacon drains work immediately.
 # (Post-start queue left tasks stranded in dogfood runs when the agent only

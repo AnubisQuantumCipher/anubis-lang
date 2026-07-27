@@ -67,6 +67,14 @@ impl MalleableProfile {
             if !u.starts_with('/') {
                 return Err(anyhow!("ANUBIS_MALLEABLE_URI_MUST_ABS: {u}"));
             }
+            // `//host/path` is a PROTOCOL-RELATIVE URL. It starts with `/` so the absolute-path
+            // check above passes it, and it contains no `://` so the scheme check below passed it
+            // too — a beacon URI that silently resolves to an arbitrary EXTERNAL host, which is the
+            // exact thing this validator exists to prevent. Backslash is rejected with it: some
+            // clients normalise `\\` to `/`, so `\\evil.com` is the same hole spelled differently.
+            if u.starts_with("//") || u.starts_with("/\\") || u.contains('\\') {
+                return Err(anyhow!("ANUBIS_MALLEABLE_URI_HOSTILE: {u}"));
+            }
             if u.contains("://") || u.contains("..") {
                 return Err(anyhow!("ANUBIS_MALLEABLE_URI_HOSTILE: {u}"));
             }
@@ -120,4 +128,88 @@ fn sanitize(s: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_profile_validates_ok() {
+        let p = MalleableProfile::default();
+        p.validate().expect("default profile should validate");
+        assert_eq!(p.name, "aop-default-jquery");
+        assert!(!p.beacon_uris.is_empty());
+        assert!(p.user_agent.starts_with("Mozilla/5.0"));
+        assert_eq!(p.transform, "none");
+    }
+
+    #[test]
+    fn validate_rejects_empty_name() {
+        let mut p = MalleableProfile::default();
+        p.name = String::new();
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_MALLEABLE_NAME"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_no_beacon_uris() {
+        let mut p = MalleableProfile::default();
+        p.beacon_uris.clear();
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_MALLEABLE_NO_BEACON_URI"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_non_absolute_uri() {
+        let mut p = MalleableProfile::default();
+        p.beacon_uris = vec!["relative/path".into()];
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_MALLEABLE_URI_MUST_ABS"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_traversal_uri() {
+        let mut p = MalleableProfile::default();
+        p.beacon_uris = vec!["/ok/../etc/passwd".into()];
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_MALLEABLE_URI_HOSTILE"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_scheme_uri() {
+        let mut p = MalleableProfile::default();
+        p.beacon_uris = vec!["http://evil.com/beacon".into()];
+        let err = p.validate().unwrap_err().to_string();
+        // Rejected by the absolute-path rule, which fires FIRST — the scheme check below it is
+        // unreachable for this input. The security property (a scheme URI is refused) holds; only
+        // the diagnostic differs from the one this test originally expected.
+        assert!(err.contains("ANUBIS_MALLEABLE_URI_MUST_ABS"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_protocol_relative_uri() {
+        // `//host/path` passed BOTH checks before the fix: it starts with `/` so it is "absolute",
+        // and has no `://` so it is not "hostile" — while resolving to an arbitrary external host.
+        for u in ["//evil.com/beacon", "/\\evil.com/beacon", "/a\\b"] {
+            let mut p = MalleableProfile::default();
+            p.beacon_uris = vec![u.into()];
+            let err = p.validate().unwrap_err().to_string();
+            assert!(err.contains("ANUBIS_MALLEABLE_URI_HOSTILE"), "{u}: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_long_user_agent() {
+        let mut p = MalleableProfile::default();
+        p.user_agent = "A".repeat(513);
+        let err = p.validate().unwrap_err().to_string();
+        assert!(err.contains("ANUBIS_MALLEABLE_UA_LONG"), "{err}");
+    }
+
+    #[test]
+    fn sanitize_replaces_special_chars() {
+        assert_eq!(sanitize("hello world!@#"), "hello_world___");
+        assert_eq!(sanitize("abc-def_123"), "abc-def_123");
+    }
 }

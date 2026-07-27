@@ -394,3 +394,75 @@ pub fn map_action_json(action: &str) -> serde_json::Value {
         "techniques": techs,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tactic_ids_are_all_ta_prefixed() {
+        for t in [
+            Tactic::Reconnaissance, Tactic::ResourceDevelopment, Tactic::InitialAccess,
+            Tactic::Execution, Tactic::Persistence, Tactic::PrivilegeEscalation,
+            Tactic::DefenseEvasion, Tactic::CredentialAccess, Tactic::Discovery,
+            Tactic::LateralMovement, Tactic::Collection, Tactic::CommandAndControl,
+            Tactic::Exfiltration, Tactic::Impact,
+        ] {
+            assert!(t.id().starts_with("TA"), "{:?} id={}", t, t.id());
+        }
+    }
+
+    #[test]
+    fn tactic_order_is_1_through_14_no_gaps() {
+        let mut orders: Vec<u8> = [
+            Tactic::Reconnaissance, Tactic::ResourceDevelopment, Tactic::InitialAccess,
+            Tactic::Execution, Tactic::Persistence, Tactic::PrivilegeEscalation,
+            Tactic::DefenseEvasion, Tactic::CredentialAccess, Tactic::Discovery,
+            Tactic::LateralMovement, Tactic::Collection, Tactic::CommandAndControl,
+            Tactic::Exfiltration, Tactic::Impact,
+        ].iter().map(|t| t.order()).collect();
+        orders.sort();
+        orders.dedup();
+        assert_eq!(orders, (1..=14).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn catalog_has_20_techniques_all_with_required_fields() {
+        let cat = catalog();
+        assert_eq!(cat.len(), 20, "catalog should have 20 techniques");
+        for tech in &cat {
+            assert!(!tech.id.is_empty(), "empty id");
+            assert!(!tech.name.is_empty(), "empty name");
+            assert!(!tech.aop_surface.is_empty(), "empty aop_surface for {}", tech.id);
+        }
+    }
+
+    #[test]
+    fn catalog_no_duplicate_ids() {
+        let cat = catalog();
+        let mut ids: Vec<String> = cat.iter().map(|t| t.id.clone()).collect();
+        ids.sort();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "duplicate technique IDs");
+    }
+
+    #[test]
+    fn map_action_recon_scan_returns_expected() {
+        let ids = map_action("recon scan");
+        assert!(ids.contains(&"T1595"), "missing T1595: {:?}", ids);
+        assert!(ids.contains(&"T1592"), "missing T1592: {:?}", ids);
+    }
+
+    #[test]
+    fn map_action_lateral_ssh_returns_t1021_004() {
+        let ids = map_action("lateral ssh");
+        assert!(ids.contains(&"T1021.004"), "missing T1021.004: {:?}", ids);
+    }
+
+    #[test]
+    fn map_action_unknown_returns_empty() {
+        let ids = map_action("zzzz-no-match-xyz");
+        assert!(ids.is_empty(), "expected empty: {:?}", ids);
+    }
+}

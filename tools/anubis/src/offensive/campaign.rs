@@ -196,10 +196,17 @@ fn render_markdown(pb: &CampaignPlaybook) -> String {
         "# Campaign: {}\n\nEngagement: `{}`\nAuth: {}\nIsolation: {}\n\n",
         pb.name, pb.engagement_id, pb.authorization, pb.isolation_policy
     );
+    // 1-INDEXED. `enumerate()` starts at 0, so a 7-phase campaign rendered "Phase 0" through
+    // "Phase 6" in an operator-facing report — off by one for every human who reads it, and for any
+    // downstream reference to "phase 3" of an engagement. Caught by a unit test whose expectation
+    // (phases 1..=7) was the correct one.
     for (i, ph) in pb.phases.iter().enumerate() {
         s.push_str(&format!(
             "## Phase {}: {} ({})\n\nRisk: `{}`\n\n### Objectives\n",
-            i, ph.name, ph.tactic_id, ph.risk
+            i + 1,
+            ph.name,
+            ph.tactic_id,
+            ph.risk
         ));
         for o in &ph.objectives {
             s.push_str(&format!("- {o}\n"));
@@ -239,4 +246,38 @@ pub fn status_json(eng: &Engagement, engage_dir: &Path) -> Result<serde_json::Va
         "path": path.display().to_string(),
         "attck_coverage_hint": attck::catalog().len(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+
+    #[test]
+    fn default_playbook_has_7_phases() {
+        let eng = Engagement::default_lab("campaign-test", "unit test auth");
+        let pb = default_playbook(&eng);
+        assert_eq!(pb.phases.len(), 7, "expected 7 campaign phases");
+    }
+
+    #[test]
+    fn default_playbook_phases_have_valid_tactic_ids() {
+        let eng = Engagement::default_lab("campaign-test2", "unit test auth");
+        let pb = default_playbook(&eng);
+        for phase in &pb.phases {
+            assert!(phase.tactic_id.starts_with("TA"), "bad tactic_id: {}", phase.tactic_id);
+            assert!(!phase.name.is_empty());
+            assert!(!phase.objectives.is_empty(), "empty objectives for {}", phase.name);
+        }
+    }
+
+    #[test]
+    fn render_markdown_contains_phase_headers_and_engagement_id() {
+        let eng = Engagement::default_lab("campaign-md", "unit test auth");
+        let pb = default_playbook(&eng);
+        let md = render_markdown(&pb);
+        assert!(md.contains("## Phase 1"), "missing phase 1 header");
+        assert!(md.contains("## Phase 7"), "missing phase 7 header");
+        assert!(md.contains(&eng.engagement_id), "missing engagement_id in markdown");
+    }
 }

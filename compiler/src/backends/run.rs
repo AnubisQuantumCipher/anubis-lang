@@ -3325,23 +3325,76 @@ fn anubis_to_bytes(v: &AnubisValue) -> Vec<u8> {
     }
 }
 
+/// Fail closed on a non-numeric argument to a pack/cyclic call. `.as_i64()` on a List returns
+/// the list's LENGTH, on a Map returns the entry count, on a Struct returns the field count —
+/// so `p8([9,9,9])` silently produced `[3]`, `p32([1,2,3,4,5])` produced `[5, 0, 0, 0]`, and
+/// `cyclic({"a":1,"b":2})` produced a 2-char pattern. That is worse than a crash for the same
+/// reason the `flat` recursion bug was: `flat`/`p*`/`cyclic` compose the bytes an exploit
+/// asserts things about, so a silently-wrong pack means a proof-carrying program emits a proof
+/// about the wrong artifact. Booleans and numeric strings are still accepted (they are
+/// documented-lenient numeric coercions per LANGUAGE.md); only structured values are refused.
+fn anubis_pack_require_numeric(fn_name: &str, v: &AnubisValue) {
+    match v {
+        AnubisValue::Int(_) | AnubisValue::Float(_) | AnubisValue::Bool(_) => {}
+        AnubisValue::Str(s) => {
+            let trimmed = s.trim();
+            if trimmed.parse::<i64>().is_err() && trimmed.parse::<f64>().is_err() {
+                panic!(
+                    "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got string `{s}` which does not parse as a number"
+                );
+            }
+        }
+        AnubisValue::List(_) => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got a list (use flat(list) to concatenate bytes, or pass an integer)"
+        ),
+        AnubisValue::Map(_) => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got a map"
+        ),
+        AnubisValue::Struct { ty, .. } => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got struct `{ty}`"
+        ),
+        AnubisValue::Enum { ty, tag, .. } => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got enum variant `{ty}::{tag}`"
+        ),
+        AnubisValue::Closure(_) => panic!(
+            "ANUBIS_POC_PACK_TYPE: `{fn_name}` requires a numeric argument; got a closure"
+        ),
+    }
+}
+
 fn anubis_p8(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p8", &v);
     anubis_mk_list(vec![AnubisValue::Int((v.as_i64() as u8) as i64)])
 }
 fn anubis_p16(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p16", &v);
     let n = v.as_i64() as u16;
     anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_p32(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p32", &v);
     let n = v.as_i64() as u32;
     anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_p64(v: AnubisValue) -> AnubisValue {
+    anubis_pack_require_numeric("p64", &v);
     let n = v.as_i64() as u64;
     anubis_mk_list(n.to_le_bytes().iter().map(|b| AnubisValue::Int(*b as i64)).collect())
 }
 fn anubis_cyclic(v: AnubisValue) -> AnubisValue {
-    let n = v.as_i64().max(0) as usize;
+    anubis_pack_require_numeric("cyclic", &v);
+    // `.max(0)` silently coerced a negative length to 0 and returned `[]` — same shape as the
+    // HKDF / PBKDF2 fixes: a caller that passes a signed-overflow value or a computed length
+    // otherwise silently got an empty pattern, which cyclic_find would then report "not found"
+    // for, hiding the real bug (bad length arithmetic) behind an already-known negative code path.
+    let n_raw = v.as_i64();
+    if n_raw < 0 {
+        panic!(
+            "ANUBIS_POC_CYCLIC_LENGTH: cyclic length must be >= 0, got {}",
+            n_raw
+        );
+    }
+    let n = n_raw as usize;
     let alphabet = b"abcdefghijklmnopqrstuvwxyz";
     anubis_mk_list((0..n).map(|i| AnubisValue::Int(alphabet[i % alphabet.len()] as i64)).collect())
 }

@@ -1,0 +1,8 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_POC_PACK_TYPE
+// RUNTIME: exercise via `anubis run`.
+// Companion of p8_list_input_should_fail_closed.anb: p16 on a list returned LE-packed length.
+// `p16([9,9,9])` produced `[3, 0]`.
+fn main() {
+    print(p16([9, 9, 9]));
+}

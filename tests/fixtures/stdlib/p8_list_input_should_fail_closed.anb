@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_POC_PACK_TYPE
+// RUNTIME: exercise via `anubis run` (this is a runtime panic; `anubis check` still passes,
+// this is a *runtime* fail-closed gate).
+// SILENT_WRONG closed: `anubis_p8` (compiler/src/backends/run.rs POC_KIT_RUNTIME_RS) called
+// `v.as_i64() as u8` on any argument. `AnubisValue::List.as_i64()` returns the LIST LENGTH, so
+// `p8([9,9,9])` silently produced `[3]` — a byte that means "the list had three elements"
+// rather than any element of the list. Payload writers who accidentally pass a list get bytes
+// nobody assembled, and the proof-carrying language emits a proof about the wrong artifact.
+fn main() {
+    print(p8([9, 9, 9]));
+}

@@ -139,7 +139,12 @@ pub enum VzCmd {
         user: String,
     },
     /// Run an Anubis PoC in a DISPOSABLE guest — clone → boot → sync PoC → `anubis run --allow-research`
-    /// inside → discard. Blast radius is the throwaway VM, never the host. Requires `--allow-research`.
+    /// inside → SCRAPE evidence → SEAL into engagement receipt chain → discard. Blast radius is the
+    /// throwaway VM, never the host. Requires `--allow-research`.
+    ///
+    /// `--engage <dir>` binds the run to a real engagement so the crash op advances `receipt-verify`;
+    /// without it, the run capability is minted with a stub id, no receipt is sealed, and a warning
+    /// is emitted (the honest posture — no proof was carried by that run).
     Exploit {
         /// The PoC `.anb` (relative to the host cwd).
         poc: String,
@@ -154,6 +159,11 @@ pub enum VzCmd {
         allow_research: bool,
         #[arg(long, default_value = "admin")]
         user: String,
+        /// Engagement directory (from `anubis engage-init`). When set, the action is sealed into the
+        /// engagement's hash-chained receipt chain and the guest-bound run capability carries the
+        /// engagement's real id/hash — so `anubis receipt-verify --engage <dir>` advances by one link.
+        #[arg(long)]
+        engage: Option<String>,
     },
     /// Derive the hypervisor CONFINEMENT policy from a program's PROVEN capability set (the six
     /// canonical effects), and print it as JSON. Fails closed: a program that does not pass
@@ -194,8 +204,9 @@ pub enum VzCmd {
         allow_host: Vec<String>,
     },
     /// Fuzz a **local binary** in a DISPOSABLE guest (clone → boot → sync target binary →
-    /// `anubis fuzz --target … --runs …` inside → discard). Matches the host fuzz CLI shape
-    /// (`--target` + `--runs`); `iterations` is an alias for `--runs` on the outer command.
+    /// `anubis fuzz --target … --runs …` inside → SCRAPE evidence → SEAL into engagement receipt
+    /// chain → discard). Matches the host fuzz CLI shape (`--target` + `--runs`); `iterations` is
+    /// an alias for `--runs` on the outer command. See `Exploit`'s `--engage` note above.
     Fuzz {
         /// Host path to the binary under test (staged into the guest and passed as `--target`).
         target: String,
@@ -212,6 +223,10 @@ pub enum VzCmd {
         allow_research: bool,
         #[arg(long, default_value = "admin")]
         user: String,
+        /// Engagement directory (from `anubis engage-init`). When set, the fuzz result is sealed into
+        /// the engagement's hash-chained receipt chain — see `Exploit`'s `--engage` note above.
+        #[arg(long)]
+        engage: Option<String>,
     },
 }
 
@@ -470,7 +485,12 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             let remote_command = if command_requires_run_capability(&command) {
                 let cmd_material = command.join("\0");
                 let cmd_digest = hex::encode(Sha256::digest(cmd_material.as_bytes()));
+                // `vz exec` has no `--engage` today (it just streams a command to a running guest);
+                // it uses the stub identity, matching the pre-fix behaviour. If we later want to
+                // seal `vz exec` actions, thread `--engage` here and the same wiring applies.
+                let identity = resolve_vz_engagement(None)?;
                 let (cap_key, program_digest) = stage_run_capability_to_guest(
+                    &identity,
                     &user,
                     &ip,
                     &name,
@@ -479,7 +499,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     Some(&cmd_digest),
                     &["process.spawn", "vm.execute"],
                 )?;
-                let env = run_cap_env_fragment(&name, &program_digest, &cap_key);
+                let env = run_cap_env_fragment(&identity, &name, &program_digest, &cap_key);
                 let quoted: Vec<String> = command.iter().map(|c| shell_single_quote(c)).collect();
                 let shell = format!("env {env} {}", quoted.join(" "));
                 eprintln!(
@@ -537,6 +557,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             keep,
             allow_research,
             user,
+            engage,
         } => {
             if !allow_research {
                 bail!(
@@ -544,6 +565,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                      --allow-research to acknowledge. The blast radius is the disposable guest, not the host."
                 );
             }
+            let identity = resolve_vz_engagement(engage.as_deref())?;
+            let poc_sha = file_sha256_hex(Path::new(&poc)).unwrap_or_else(|_| "sha-unavailable".into());
             disposable(&base, keep, |name, ip| {
                 const REMOTE_POC: &str = "/tmp/anubis-poc.anb";
                 sync_path_verified(&user, &ip, &poc, REMOTE_POC)?;
@@ -563,6 +586,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 }
                 let runner = sync_current_anubis(&user, &ip)?;
                 let (cap_key, program_digest) = stage_run_capability_to_guest(
+                    &identity,
                     &user,
                     &ip,
                     name,
@@ -575,13 +599,37 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     "[anubis vz] running `anubis run /tmp/anubis-poc.anb --allow-research` in disposable `{name}` \
                      with guest-bound run capability (single-use)"
                 );
-                // `$HOME` so relative `poc_kit/bin/vuln_local` resolves after stage.
-                let env = run_cap_env_fragment(name, &program_digest, &cap_key);
+                // `$HOME` so relative `poc_kit/bin/vuln_local` resolves after stage. `set -o pipefail`
+                // preserves the runner's exit code through the `tee`, so a crash/failure inside the
+                // PoC surfaces at ssh_exec while the guest still writes `/tmp/anubis-vz-evidence/poc.log`
+                // for the scrape pass below (which must read it BEFORE `tart stop`/`tart delete`).
+                let env = run_cap_env_fragment(&identity, name, &program_digest, &cap_key);
                 let remote = format!(
-                    "cd \"$HOME\" && env {env} {runner} run /tmp/anubis-poc.anb --allow-research",
+                    "set -o pipefail; mkdir -p /tmp/anubis-vz-evidence && \
+                     cd \"$HOME\" && env {env} {runner} run /tmp/anubis-poc.anb --allow-research \
+                     2>&1 | tee /tmp/anubis-vz-evidence/poc.log",
                     runner = shell_single_quote(&runner),
                 );
-                ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
+                let body_result = ssh_exec(user.clone(), ip.clone(), &["bash".into(), "-lc".into(), remote]);
+                // SCRAPE BEFORE TEARDOWN — the whole point of this lane. Runs regardless of whether
+                // the body succeeded, so a crash/timeout still leaves an evidence trail on disk.
+                let scrape = scrape_disposable_guest(&user, &ip);
+                let body_ok = body_result.is_ok();
+                let body_err_owned = body_result.as_ref().err().map(|e| format!("{e:#}"));
+                let sealed = seal_vz_disposable_action(
+                    &identity,
+                    "vz_exploit_run",
+                    name,
+                    &base,
+                    serde_json::json!({ "poc": poc, "poc_sha256": poc_sha }),
+                    body_ok,
+                    body_err_owned.as_deref(),
+                    scrape,
+                );
+                if !sealed && identity.engage_dir.is_some() {
+                    eprintln!("[anubis vz] WARNING: --engage was set but seal_action wrote nothing");
+                }
+                body_result
             })
         }
         VzCmd::Confine { program, out } => run_confine(&program, out),
@@ -602,6 +650,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             keep,
             allow_research,
             user,
+            engage,
         } => {
             if !allow_research {
                 bail!("ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz fuzz` runs offensive code — pass --allow-research.");
@@ -613,6 +662,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     host_target.display()
                 );
             }
+            let identity = resolve_vz_engagement(engage.as_deref())?;
+            let target_sha = file_sha256_hex(host_target).unwrap_or_else(|_| "sha-unavailable".into());
             let remote_target = guest_fuzz_target_path(&target)?;
             disposable(&base, keep, |name, ip| {
                 // Stage as a binary path (not a fake .anb): host CLI is `fuzz --target <binary> --runs N`.
@@ -624,6 +675,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 )?;
                 let runner = sync_current_anubis(&user, &ip)?;
                 let (cap_key, program_digest) = stage_run_capability_to_guest(
+                    &identity,
                     &user,
                     &ip,
                     name,
@@ -637,6 +689,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                      with guest-bound run capability"
                 );
                 let remote = fuzz_guest_shell_command(
+                    &identity,
                     &runner,
                     &remote_target,
                     iterations,
@@ -644,7 +697,28 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     &program_digest,
                     &cap_key,
                 );
-                ssh_exec(user, ip, &["bash".into(), "-lc".into(), remote])
+                let body_result = ssh_exec(user.clone(), ip.clone(), &["bash".into(), "-lc".into(), remote]);
+                let scrape = scrape_disposable_guest(&user, &ip);
+                let body_ok = body_result.is_ok();
+                let body_err_owned = body_result.as_ref().err().map(|e| format!("{e:#}"));
+                let sealed = seal_vz_disposable_action(
+                    &identity,
+                    "vz_fuzz_run",
+                    name,
+                    &base,
+                    serde_json::json!({
+                        "target": target,
+                        "target_sha256": target_sha,
+                        "iterations": iterations,
+                    }),
+                    body_ok,
+                    body_err_owned.as_deref(),
+                    scrape,
+                );
+                if !sealed && identity.engage_dir.is_some() {
+                    eprintln!("[anubis vz] WARNING: --engage was set but seal_action wrote nothing");
+                }
+                body_result
             })
         }
     }
@@ -891,7 +965,13 @@ fn guest_fuzz_target_path(host_target: &str) -> Result<String> {
 
 /// Inner guest shell for process fuzz — must match host `anubis fuzz --target … --runs …`
 /// (not positional .anb, not `--iterations`, not `--allow-research` on the fuzz subcommand).
+///
+/// Tees combined stdout+stderr to `/tmp/anubis-vz-evidence/poc.log` so `scrape_disposable_guest`
+/// reads it BEFORE `tart stop`/`tart delete` — the whole point of the receipt-chain fix. Uses
+/// `set -o pipefail` so a fuzz-side crash surfaces at the outer ssh_exec while the log still
+/// captures everything the runner wrote up to the crash.
 fn fuzz_guest_shell_command(
+    identity: &VzEngagementIdentity,
     runner: &str,
     remote_target: &str,
     runs: u64,
@@ -900,22 +980,26 @@ fn fuzz_guest_shell_command(
     cap_key: &str,
 ) -> String {
     format!(
-        "env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
+        "set -o pipefail; mkdir -p /tmp/anubis-vz-evidence && \
+         env ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
          ANUBIS_ISOLATION=tart-disposable-guest \
          ANUBIS_VZ_ENFORCE_RUN_CAP=1 \
          ANUBIS_RUN_CAP_PATH=/tmp/anubis-run-cap.json \
          ANUBIS_RUN_CAP_KEY={key} \
          ANUBIS_VZ_GUEST_ID={gid} \
          ANUBIS_PROGRAM_DIGEST={pd} \
-         ANUBIS_ENGAGEMENT_ID=vz-session \
-         ANUBIS_ENGAGEMENT_HASH=vz-session-hash \
-         {runner} fuzz --target {target} --runs {runs}",
+         ANUBIS_ENGAGEMENT_ID={eid} \
+         ANUBIS_ENGAGEMENT_HASH={eh} \
+         {runner} fuzz --target {target} --runs {runs} \
+         2>&1 | tee /tmp/anubis-vz-evidence/poc.log",
         runner = shell_single_quote(runner),
         target = shell_single_quote(remote_target),
         runs = runs,
         key = shell_single_quote(cap_key),
         gid = shell_single_quote(guest_id),
         pd = shell_single_quote(program_digest),
+        eid = shell_single_quote(&identity.engagement_id),
+        eh = shell_single_quote(&identity.engagement_hash),
     )
 }
 
@@ -995,6 +1079,72 @@ fn resolve_run_cap_effects(source_path: Option<&Path>, fallback: &[&str]) -> Vec
     }
 }
 
+/// Resolve an optional `--engage <dir>` into a (engage_dir, engagement_id, engagement_hash,
+/// authorization_digest) tuple. When `None`, returns the historical stub identity — kept for
+/// backward compat during the transition off the hardcoded `"vz-session"` — and prints an operator
+/// warning so a receipt-less run is never silent.
+///
+/// When `Some`, LOADS the engagement (which validates its content hash) and uses its real
+/// `engagement_id` + `content_hash` + `authorization`, so the guest-bound run capability BINDS to
+/// the same engagement the receipt chain records the action under. Any load failure is surfaced —
+/// receipts and capabilities must both refer to the same engagement, so a caller intending to seal
+/// must not silently fall back to the stub.
+///
+/// The stub identity `"vz-session"` still exists for the exact reason it did before: to keep a
+/// pre-engage-init development workflow runnable, so a first-time user does not need to init an
+/// engagement to try `vz exploit`. The trade — no proof-carrying receipt — is stated at run time
+/// with the same warning line so an auditor reading logs sees the honest boundary.
+fn resolve_vz_engagement(engage: Option<&str>) -> Result<VzEngagementIdentity> {
+    match engage {
+        Some(dir) => {
+            let path = Path::new(dir);
+            let eng = crate::offensive::load_engagement(path).with_context(|| {
+                format!(
+                    "ANUBIS_VZ_ENGAGE_LOAD: --engage `{dir}` did not load; run `anubis engage-init` \
+                     first, and pass the created directory"
+                )
+            })?;
+            let engage_dir = path.to_path_buf();
+            let engagement_id = eng.engagement_id.clone();
+            let engagement_hash = eng.content_hash.clone();
+            let authorization_digest = if eng.authorization.trim().is_empty() {
+                "vz-orchestrator-auth".to_string()
+            } else {
+                format!(
+                    "{:x}",
+                    Sha256::digest(eng.authorization.as_bytes())
+                )
+            };
+            Ok(VzEngagementIdentity {
+                engage_dir: Some(engage_dir),
+                engagement_id,
+                engagement_hash,
+                authorization_digest,
+            })
+        }
+        None => {
+            eprintln!(
+                "[anubis vz] WARNING: no --engage; capability is minted with the stub id \
+                 `vz-session` and no receipt is sealed. Pass `--engage <dir>` (from \
+                 `anubis engage-init`) to advance the engagement's hash-chained receipt chain."
+            );
+            Ok(VzEngagementIdentity {
+                engage_dir: None,
+                engagement_id: "vz-session".to_string(),
+                engagement_hash: "vz-session-hash".to_string(),
+                authorization_digest: "vz-orchestrator-auth".to_string(),
+            })
+        }
+    }
+}
+
+struct VzEngagementIdentity {
+    engage_dir: Option<PathBuf>,
+    engagement_id: String,
+    engagement_hash: String,
+    authorization_digest: String,
+}
+
 /// Mint a single-use guest-bound capability JSON on the host.
 ///
 /// `source_path` when set is hashed as both source and program digest; otherwise
@@ -1002,6 +1152,7 @@ fn resolve_run_cap_effects(source_path: Option<&Path>, fallback: &[&str]) -> Vec
 /// When `source_path` is an `.anb` file, allowed effects are derived from the shared
 /// proven-effect IR (aligned with `vz confine`); otherwise `effects` is used as fallback.
 fn mint_and_write_guest_cap(
+    identity: &VzEngagementIdentity,
     guest_id: &str,
     base: &str,
     source_path: Option<&Path>,
@@ -1026,9 +1177,9 @@ fn mint_and_write_guest_cap(
     let cap =
         crate::offensive::run_capability::mint(crate::offensive::run_capability::MintParams {
             key: &key,
-            engagement_id: "vz-session",
-            engagement_hash: "vz-session-hash",
-            authorization_digest: "vz-orchestrator-auth",
+            engagement_id: &identity.engagement_id,
+            engagement_hash: &identity.engagement_hash,
+            authorization_digest: &identity.authorization_digest,
             source_digest: &source_digest,
             compiler_digest: &compiler_digest,
             program_digest: &program_digest,
@@ -1049,6 +1200,7 @@ fn mint_and_write_guest_cap(
 
 /// Mint + rsync capability into guest; returns (cap_key, program_digest) for env injection.
 fn stage_run_capability_to_guest(
+    identity: &VzEngagementIdentity,
     user: &str,
     ip: &str,
     guest_id: &str,
@@ -1058,7 +1210,7 @@ fn stage_run_capability_to_guest(
     effects: &[&str],
 ) -> Result<(String, String)> {
     let (cap_path, cap_key, program_digest) =
-        mint_and_write_guest_cap(guest_id, base, source_path, program_digest, effects)?;
+        mint_and_write_guest_cap(identity, guest_id, base, source_path, program_digest, effects)?;
     let cap_host = cap_path
         .to_str()
         .ok_or_else(|| anyhow!("ANUBIS_RUN_CAP_PATH: non-UTF8"))?;
@@ -1067,7 +1219,12 @@ fn stage_run_capability_to_guest(
 }
 
 /// Shell env fragment that enforces guest-bound run capability validation.
-fn run_cap_env_fragment(guest_id: &str, program_digest: &str, cap_key: &str) -> String {
+fn run_cap_env_fragment(
+    identity: &VzEngagementIdentity,
+    guest_id: &str,
+    program_digest: &str,
+    cap_key: &str,
+) -> String {
     format!(
         "ANUBIS_VZ_GUEST=1 ANUBIS_OFFENSIVE_GATE_IN_GUEST=1 \
          ANUBIS_ISOLATION=tart-disposable-guest \
@@ -1076,13 +1233,117 @@ fn run_cap_env_fragment(guest_id: &str, program_digest: &str, cap_key: &str) -> 
          ANUBIS_RUN_CAP_KEY={key} \
          ANUBIS_VZ_GUEST_ID={gid} \
          ANUBIS_PROGRAM_DIGEST={pd} \
-         ANUBIS_ENGAGEMENT_ID=vz-session \
-         ANUBIS_ENGAGEMENT_HASH=vz-session-hash",
+         ANUBIS_ENGAGEMENT_ID={eid} \
+         ANUBIS_ENGAGEMENT_HASH={eh}",
         cap = shell_single_quote(REMOTE_RUN_CAP),
         key = shell_single_quote(cap_key),
         gid = shell_single_quote(guest_id),
         pd = shell_single_quote(program_digest),
+        eid = shell_single_quote(&identity.engagement_id),
+        eh = shell_single_quote(&identity.engagement_hash),
     )
+}
+
+/// BEFORE teardown, scrape a small, deterministic evidence bundle from the disposable guest:
+/// `uname -a`, hostname, uptime, guest wall-clock, and the tail of the PoC/fuzz log the runner
+/// tee'd to `/tmp/anubis-vz-evidence/poc.log` (created by the exploit/fuzz remote shell — see
+/// `remote_exploit_shell` / `fuzz_guest_shell_command`). Best-effort: every field individually
+/// falls to a marker string on SSH error, because losing scrape must not turn a real exploit
+/// result into a hard failure. Returns a JSON object the receipt payload sinks into.
+fn scrape_disposable_guest(user: &str, ip: &str) -> serde_json::Value {
+    fn cap_or_marker(user: &str, ip: &str, script: &str, marker: &str) -> String {
+        match ssh_capture(user, ip, &["bash".into(), "-lc".into(), script.into()]) {
+            Ok(s) => s,
+            Err(e) => format!("{marker}: {e:#}"),
+        }
+    }
+    let uname = cap_or_marker(user, ip, "uname -a", "ANUBIS_VZ_SCRAPE_UNAME_FAILED");
+    let hostname = cap_or_marker(user, ip, "hostname", "ANUBIS_VZ_SCRAPE_HOSTNAME_FAILED");
+    let uptime = cap_or_marker(user, ip, "uptime", "ANUBIS_VZ_SCRAPE_UPTIME_FAILED");
+    let guest_ts = cap_or_marker(user, ip, "date -u +%Y-%m-%dT%H:%M:%SZ", "ANUBIS_VZ_SCRAPE_DATE_FAILED");
+    // The PoC/fuzz shell is expected to tee its combined stdout+stderr to this file. Missing
+    // (empty output) means the runner never got past env staging — record that faithfully.
+    let poc_log_tail = cap_or_marker(
+        user,
+        ip,
+        "tail -c 4096 /tmp/anubis-vz-evidence/poc.log 2>/dev/null || echo ANUBIS_VZ_SCRAPE_NO_LOG",
+        "ANUBIS_VZ_SCRAPE_POC_LOG_FAILED",
+    );
+    let poc_log_sha256 = cap_or_marker(
+        user,
+        ip,
+        "if [ -f /tmp/anubis-vz-evidence/poc.log ]; then \
+             if command -v shasum >/dev/null 2>&1; then shasum -a 256 /tmp/anubis-vz-evidence/poc.log; \
+             elif command -v sha256sum >/dev/null 2>&1; then sha256sum /tmp/anubis-vz-evidence/poc.log; \
+             else echo ANUBIS_VZ_SCRAPE_NO_SHA_TOOL; \
+             fi; \
+         else echo ANUBIS_VZ_SCRAPE_NO_LOG; fi",
+        "ANUBIS_VZ_SCRAPE_POC_LOG_SHA_FAILED",
+    );
+    let evidence_ls = cap_or_marker(
+        user,
+        ip,
+        "ls -la /tmp/anubis-vz-evidence 2>/dev/null || echo ANUBIS_VZ_SCRAPE_NO_EVIDENCE_DIR",
+        "ANUBIS_VZ_SCRAPE_EVIDENCE_LS_FAILED",
+    );
+    serde_json::json!({
+        "uname": uname,
+        "hostname": hostname,
+        "uptime": uptime,
+        "guest_ts": guest_ts,
+        "poc_log_tail": poc_log_tail,
+        "poc_log_sha256": poc_log_sha256,
+        "evidence_ls": evidence_ls,
+    })
+}
+
+/// Seal a `vz_exploit_run` / `vz_fuzz_run` action into the engagement's hash-chained receipt chain.
+/// A no-op when `engage_dir` is `None` (the operator opted out of proof-carrying — see the
+/// warning in `resolve_vz_engagement`). Returns whether a receipt was written.
+fn seal_vz_disposable_action(
+    identity: &VzEngagementIdentity,
+    action: &str,
+    guest_id: &str,
+    base: &str,
+    payload_extra: serde_json::Value,
+    body_ok: bool,
+    body_err: Option<&str>,
+    scrape: serde_json::Value,
+) -> bool {
+    let Some(engage_dir) = identity.engage_dir.as_ref() else {
+        return false;
+    };
+    let payload = serde_json::json!({
+        "guest_id": guest_id,
+        "base": base,
+        "body_ok": body_ok,
+        "body_err": body_err,
+        "isolation": "tart-disposable-guest",
+        "extra": payload_extra,
+        "scrape": scrape,
+    });
+    match crate::offensive::seal_action(
+        engage_dir,
+        &identity.engagement_id,
+        action,
+        "vz-operator",
+        payload,
+    ) {
+        Ok(receipt) => {
+            eprintln!(
+                "[anubis vz] sealed `{}` into {} (seq={}, hash={}…)",
+                action,
+                engage_dir.display(),
+                receipt.seq,
+                &receipt.receipt_hash[..std::cmp::min(16, receipt.receipt_hash.len())]
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!("[anubis vz] WARNING: seal_action failed: {e:#}");
+            false
+        }
+    }
 }
 
 /// Copy the exact currently-running Anubis binary into the disposable guest. This avoids relying
@@ -1241,7 +1502,14 @@ mod ssh_transport_tests {
     #[test]
     fn fuzz_guest_command_matches_host_fuzz_cli_shape() {
         // Host: `anubis fuzz --target <bin> --runs N` — NOT positional .anb / --iterations / --allow-research.
+        let identity = VzEngagementIdentity {
+            engage_dir: None,
+            engagement_id: "vz-session".into(),
+            engagement_hash: "vz-session-hash".into(),
+            authorization_digest: "vz-orchestrator-auth".into(),
+        };
         let cmd = fuzz_guest_shell_command(
+            &identity,
             "/tmp/anubis-vz-runner",
             "/tmp/anubis-fuzz/vuln_local",
             42,
@@ -1265,7 +1533,35 @@ mod ssh_transport_tests {
         assert!(cmd.contains("ANUBIS_ISOLATION=tart-disposable-guest"));
         assert!(cmd.contains("ANUBIS_VZ_ENFORCE_RUN_CAP=1"));
         assert!(cmd.contains("ANUBIS_RUN_CAP_PATH=/tmp/anubis-run-cap.json"));
+        assert!(
+            cmd.contains("tee /tmp/anubis-vz-evidence/poc.log"),
+            "must tee combined output to /tmp/anubis-vz-evidence/poc.log for scrape: {cmd}"
+        );
+        assert!(
+            cmd.contains("set -o pipefail"),
+            "must use pipefail so a fuzz-side crash surfaces at the outer ssh_exec: {cmd}"
+        );
         assert!(!cmd.contains(".anb"));
+    }
+
+    #[test]
+    fn vz_engagement_identity_stub_when_no_engage() {
+        let id = resolve_vz_engagement(None).expect("stub identity");
+        assert_eq!(id.engagement_id, "vz-session");
+        assert_eq!(id.engagement_hash, "vz-session-hash");
+        assert!(id.engage_dir.is_none());
+    }
+
+    #[test]
+    fn scrape_disposable_guest_returns_json_object() {
+        // Runs against a bogus IP; every field falls to its marker string. The point is that the
+        // scrape function returns a stable-shape JSON object regardless of SSH availability, so a
+        // sealed receipt is always well-formed.
+        let v = scrape_disposable_guest("admin", "127.0.0.1:65432");
+        assert!(v.is_object());
+        for key in ["uname", "hostname", "uptime", "guest_ts", "poc_log_tail", "poc_log_sha256", "evidence_ls"] {
+            assert!(v.get(key).is_some(), "missing key `{key}` in scrape json");
+        }
     }
 
     #[test]
@@ -1305,13 +1601,19 @@ mod ssh_transport_tests {
 
     #[test]
     fn run_cap_env_fragment_enforces_guest_bound_fields() {
-        let env = run_cap_env_fragment("guest-1", "digest-aa", "key-bb");
+        let identity = VzEngagementIdentity {
+            engage_dir: None,
+            engagement_id: "vz-session".into(),
+            engagement_hash: "vz-session-hash".into(),
+            authorization_digest: "vz-orchestrator-auth".into(),
+        };
+        let env = run_cap_env_fragment(&identity, "guest-1", "digest-aa", "key-bb");
         assert!(env.contains("ANUBIS_VZ_ENFORCE_RUN_CAP=1"));
         assert!(env.contains("ANUBIS_RUN_CAP_PATH='/tmp/anubis-run-cap.json'"));
         assert!(env.contains("ANUBIS_RUN_CAP_KEY='key-bb'"));
         assert!(env.contains("ANUBIS_VZ_GUEST_ID='guest-1'"));
         assert!(env.contains("ANUBIS_PROGRAM_DIGEST='digest-aa'"));
-        assert!(env.contains("ANUBIS_ENGAGEMENT_ID=vz-session"));
+        assert!(env.contains("ANUBIS_ENGAGEMENT_ID='vz-session'"));
         assert!(env.contains("ANUBIS_VZ_GUEST=1"));
     }
 
@@ -1321,7 +1623,14 @@ mod ssh_transport_tests {
         // Use a real empty file as source so digest is stable.
         let src = dir.path().join("poc.anb");
         std::fs::write(&src, b"// lab").unwrap();
+        let identity = VzEngagementIdentity {
+            engage_dir: None,
+            engagement_id: "vz-session".into(),
+            engagement_hash: "vz-session-hash".into(),
+            authorization_digest: "vz-orchestrator-auth".into(),
+        };
         let (path, key, pd) = mint_and_write_guest_cap(
+            &identity,
             "unit-guest",
             "anubis-xcode",
             Some(&src),
@@ -1348,7 +1657,14 @@ mod ssh_transport_tests {
              fn main() uses(net.send) { beacon(); }\n",
         )
         .unwrap();
+        let identity = VzEngagementIdentity {
+            engage_dir: None,
+            engagement_id: "vz-session".into(),
+            engagement_hash: "vz-session-hash".into(),
+            authorization_digest: "vz-orchestrator-auth".into(),
+        };
         let (path, _key, _pd) = mint_and_write_guest_cap(
+            &identity,
             "unit-guest-net",
             "anubis-xcode",
             Some(&src),

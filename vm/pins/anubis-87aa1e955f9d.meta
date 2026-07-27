@@ -1,0 +1,4 @@
+pin:    vm/pins/anubis-87aa1e955f9d
+sha256: 87aa1e955f9d8b2977127febe4a117a06060247ba9860364aa780d83d03904f7
+source: target/release/anubis
+head:   0167233

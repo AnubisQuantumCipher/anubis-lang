@@ -873,20 +873,22 @@ enum Commands {
         json: bool,
     },
 
-    // ── T8: Apple VZ sandbox integration ──
-    /// Show VZ guest status (Apple Virtualization.framework).
+    // ── T8: Apple VZ sandbox integration (host control plane → Tart) ──
+    // Same substrate as `anubis vz …`. These top-level aliases are host-allowed
+    // orchestration; they never run exploit payloads on the host.
+    /// Show Tart guest status (same backend as `anubis vz list`).
     VzStatus {
         #[arg(long)]
         json: bool,
     },
 
-    /// VZ sandbox readiness doctor.
+    /// VZ / Tart readiness doctor for the offensive platform.
     VzDoctor {
         #[arg(long)]
         json: bool,
     },
 
-    /// Execute a command inside a VZ guest (network-isolated, crash-isolated).
+    /// Execute a command inside a running Tart guest over SSH (crash-isolated).
     VzExec {
         /// Guest name (default: anubis-xcode).
         #[arg(long, default_value = "anubis-xcode")]
@@ -3215,13 +3217,13 @@ fn main() -> Result<()> {
             } else {
                 println!("Anubis VZ Sandbox Doctor");
                 println!(
-                    "  backend:   tart ({})",
+                    "  backend:   tart ({})  [same substrate as `anubis vz`]",
                     if report["tart_available"].as_bool() == Some(true)
                         || report["vz_available"].as_bool() == Some(true)
                     {
                         "available"
                     } else {
-                        "MISSING"
+                        "MISSING — brew install cirruslabs/cli/tart"
                     }
                 );
                 println!(
@@ -3232,7 +3234,11 @@ fn main() -> Result<()> {
                         "missing"
                     }
                 );
-                println!("  legacy_vmctl: disabled (non-authoritative; use anubis vz)");
+                if report["legacy_vmctl"]["enabled"].as_bool() == Some(true) {
+                    println!("  legacy_vmctl: ENABLED (migration only — not isolation evidence)");
+                } else {
+                    println!("  legacy_vmctl: disabled (top-level vz-* uses Tart)");
+                }
                 println!(
                     "  offensive: {}",
                     if report["offensive_guest_ready"].as_bool() == Some(true) {
@@ -3286,9 +3292,9 @@ fn main() -> Result<()> {
                 if !result.stderr.is_empty() {
                     eprint!("{}", result.stderr);
                 }
-                if result.exit_code != 0 {
-                    return Err(anyhow!("ANUBIS_VZ_EXEC: exit {}", result.exit_code));
-                }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_EXEC: exit {}", result.exit_code));
             }
             Ok(())
         }
@@ -3308,6 +3314,9 @@ fn main() -> Result<()> {
                 serde_json::to_value(&result)?,
             );
             println!("{}", serde_json::to_string_pretty(&result)?);
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_EXPLOIT: exit {}", result.exit_code));
+            }
             Ok(())
         }
         Commands::VzFuzz {
@@ -3319,7 +3328,8 @@ fn main() -> Result<()> {
             out,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let result = offensive::vz::vz_fuzz(&eng, &guest, &target, runs, seed, &out)?;
+            let result =
+                offensive::vz::vz_fuzz(&eng, &engage, &guest, &target, runs, seed, &out)?;
             let _ = offensive::seal_action(
                 &engage,
                 &eng.engagement_id,
@@ -3328,6 +3338,9 @@ fn main() -> Result<()> {
                 serde_json::to_value(&result)?,
             );
             println!("{}", serde_json::to_string_pretty(&result)?);
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_FUZZ: exit {}", result.exit_code));
+            }
             Ok(())
         }
         Commands::VzAgentTest {
@@ -3338,7 +3351,8 @@ fn main() -> Result<()> {
             json,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let result = offensive::vz::vz_agent_test(&eng, &guest, &name, sleep_ms)?;
+            let result =
+                offensive::vz::vz_agent_test(&eng, &engage, &guest, &name, sleep_ms)?;
             let _ = offensive::seal_action(
                 &engage,
                 &eng.engagement_id,
@@ -3353,6 +3367,9 @@ fn main() -> Result<()> {
                 if !result.stderr.is_empty() {
                     eprint!("{}", result.stderr);
                 }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_AGENT_TEST: exit {}", result.exit_code));
             }
             Ok(())
         }
@@ -3371,7 +3388,8 @@ fn main() -> Result<()> {
                 ("id", "operator"),
                 ("uname", "operator"),
             ];
-            let result = offensive::vz::vz_c2_cycle(&eng, &guest, &agent_name, &tasks, timeout)?;
+            let result =
+                offensive::vz::vz_c2_cycle(&eng, &engage, &guest, &agent_name, &tasks, timeout)?;
             let _ = offensive::seal_action(
                 &engage,
                 &eng.engagement_id,
@@ -3383,6 +3401,12 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 print!("{}", result.stdout);
+                if !result.stderr.is_empty() {
+                    eprint!("{}", result.stderr);
+                }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_C2_CYCLE: exit {}", result.exit_code));
             }
             Ok(())
         }
@@ -3407,6 +3431,9 @@ fn main() -> Result<()> {
                 if result.exit_code != 0 {
                     eprintln!("\nstress battery exited with code {}", result.exit_code);
                 }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_STRESS: exit {}", result.exit_code));
             }
             Ok(())
         }
@@ -3451,6 +3478,9 @@ fn main() -> Result<()> {
                 if result.exit_code != 0 {
                     eprintln!("\nvz test suite exited with code {}", result.exit_code);
                 }
+            }
+            if result.exit_code != 0 {
+                return Err(anyhow!("ANUBIS_VZ_TEST_SUITE: exit {}", result.exit_code));
             }
             Ok(())
         }
