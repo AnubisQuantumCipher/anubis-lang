@@ -22,7 +22,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 BIN="${ANUBIS_BIN:-./target/release/anubis}"
-OUT="${1:-out/shadow_diff}"
+OUT="out/shadow_diff"
+SEARCH_DIRS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) OUT="$2"; shift 2 ;;
+    --dir) SEARCH_DIRS+=("$2"); shift 2 ;;
+    *)
+      if [[ "$OUT" == "out/shadow_diff" ]]; then OUT="$1"; shift; else echo "unknown arg: $1" >&2; exit 2; fi
+      ;;
+  esac
+done
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -33,8 +43,17 @@ fi
 # Corpus: every .anb the checker can see, excluding worktree copies and build scratch.
 # (while-read, not mapfile — macOS ships bash 3.2 which lacks mapfile.)
 FILES=()
-while IFS= read -r _f; do FILES+=("$_f"); done < <(find examples tests/fixtures selfhost/corpus selfhost/src compiler/stdlib \
+if [[ ${#SEARCH_DIRS[@]} -eq 0 ]]; then
+  SEARCH_DIRS=(examples tests/fixtures selfhost/corpus selfhost/src compiler/stdlib)
+fi
+while IFS= read -r _f; do FILES+=("$_f"); done < <(find "${SEARCH_DIRS[@]}" \
   -name '*.anb' -not -path '*/.claude/*' -not -path '*/out/*' 2>/dev/null | sort)
+
+if [[ ${#FILES[@]} -eq 0 ]]; then
+  echo "EMPTY CORPUS: no .anb files found under ${SEARCH_DIRS[*]} - refusing to report PASS"
+  echo "SHADOW_DIFF: FAIL (empty corpus)"
+  exit 1
+fi
 
 total_shadow=0
 expected=0

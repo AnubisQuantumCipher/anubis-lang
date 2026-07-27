@@ -13,7 +13,8 @@
 #                                        needle is a MISMATCH (fixture FAIL), never green.
 #
 # Sealed state (2026-07-27): EXPECT FAIL fixtures panic with ANUBIS_* codes under `anubis run`.
-# Gate is GREEN when 32/32 match ERROR_CONTAINS. Do not weaken fixtures to PASS.
+# Gate is GREEN when every matching fixture agrees with its ERROR_CONTAINS marker. Do not weaken
+# fixtures to PASS; the corpus cardinality is checked independently by the seal.
 #
 # Usage:
 #   bash scripts/run_stdlib_failclosed_gate.sh
@@ -22,7 +23,7 @@
 #   bash scripts/run_stdlib_failclosed_gate.sh --glob '*should_fail_closed.anb'
 #
 # Does NOT rebuild the binary (fleet multi-agent cargo lock discipline). Uses
-# ./target/release/anubis if present, else ./target/debug/anubis.
+# ANUBIS_BIN when supplied, else ./target/release/anubis, else ./target/debug/anubis.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -99,9 +100,24 @@ for f in "${fixtures[@]}"; do
   rm -rf "$outd"
   mkdir -p "$outd"
 
+  malformed=""
   expect=$(grep -oE 'EXPECT: (PASS|FAIL)' "$f" | head -1 | awk '{print $2}' || true)
   if [[ -z "$expect" ]]; then
-    expect="PASS"
+    malformed="missing EXPECT: header"
+  elif [[ "$base" == *should_fail_closed* && "$expect" != "FAIL" ]]; then
+    malformed="name says should_fail_closed but header says EXPECT: $expect"
+  fi
+  if [[ -n "$malformed" ]]; then
+    actual="MALFORMED"
+    status="FAIL"
+    failed=$((failed + 1))
+    echo "  MALFORMED: $malformed"
+    jq --arg name "$base" --arg status "$status" --arg expect "$expect" \
+       --arg actual "$actual" --arg path "$f" --arg detail "$malformed" \
+      '.fixtures += [{"name":$name,"path":$path,"status":$status,"expected":$expect,
+        "actual":$actual,"malformed":$detail}]' \
+      "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
+    continue
   fi
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || true)
   err_needle="${err_needle//$'\r'/}"

@@ -18,8 +18,13 @@ fail=0
 detail=()
 note() { detail+=("$1"); }
 
-BIN=./target/release/anubis
-cargo build -q --release -p anubis
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  BIN="$ANUBIS_BIN"
+  [[ -x "$BIN" ]] || { echo "DX_GATE: FAIL (ANUBIS_BIN=$BIN not executable)"; exit 127; }
+else
+  BIN=./target/release/anubis
+  cargo build -q --release -p anubis
+fi
 
 # 1) Unit: doc / interp / lsp_analysis
 if cargo test -p anubis-compiler --lib -- doc::tests interp::tests lsp_analysis 2>&1 | tee "$OUT/unit.log" | grep -q "test result: ok"; then
@@ -158,8 +163,7 @@ if [[ -n "$TS_BIN" ]]; then
     tail -20 "$OUT/ts_test.log" >>"$OUT/summary_fail.txt" 2>/dev/null || true
   fi
 elif [[ -f editors/tree-sitter-anubis/src/parser.c ]]; then
-  # CLI absent but generated parser present from a prior seal
-  pass=$((pass+1)); note "tree_sitter_cli_test: PASS (parser.c present; CLI skipped)"
+  fail=$((fail+1)); note "tree_sitter_cli_test: FAIL (parser.c present but CLI test was not executed)"
 else
   fail=$((fail+1)); note "tree_sitter_cli_test: FAIL (no CLI and no parser.c)"
 fi

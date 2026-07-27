@@ -46,6 +46,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 # --- defaults: UNIQUE stamp so concurrent agents never share a report path ---
 STAMP="$(date +%Y%m%dT%H%M%S)_$$"
@@ -93,7 +94,13 @@ jq_tmp() { echo "${1}.$$.$RANDOM.tmp"; }
 echo '{"fixtures": [], "overall_verdict": "PENDING"}' > "$report"
 
 # --- resolve binary (no rebuild) ---
-if [[ -x "./target/release/anubis" ]]; then
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  [[ -x "$ANUBIS_BIN" ]] || {
+    echo "FATAL: ANUBIS_BIN=$ANUBIS_BIN is not executable" >&2
+    exit 127
+  }
+  executed_via="preset:$ANUBIS_BIN"
+elif [[ -x "./target/release/anubis" ]]; then
   ANUBIS_BIN="./target/release/anubis"
   executed_via="release"
 elif [[ -x "./target/debug/anubis" ]]; then
@@ -108,6 +115,11 @@ bin_mtime="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' "$ANUBIS_BIN" 2>/dev/null || e
 bin_size="$(stat -f '%z' "$ANUBIS_BIN" 2>/dev/null || echo 0)"
 echo "instrument: $ANUBIS_BIN mtime=$bin_mtime size=$bin_size via=$executed_via out=$OUT_DIR" \
   | tee "$OUT_DIR/instrument.txt"
+if [[ "$ANUBIS_BIN" == /* ]]; then
+  ANUBIS_EXEC="$ANUBIS_BIN"
+else
+  ANUBIS_EXEC="$ROOT/$ANUBIS_BIN"
+fi
 
 # --- collect fixtures (bash 3.2 / set -u safe empty array) ---
 fixtures=()
@@ -126,8 +138,7 @@ passed=0
 failed=0
 timed_out=0
 
-if [[ ${#fixtures[@]} -eq 0 ]]; then
-  echo "FATAL: no fixtures match $FIXTURE_DIR/$GLOB_PAT" >&2
+if ! require_nonempty_corpus "${#fixtures[@]}" "$FIXTURE_DIR/$GLOB_PAT"; then
   _t=$(jq_tmp "$report")
   jq --arg overall FAIL --arg bin "$ANUBIS_BIN" --arg mtime "$bin_mtime" \
      --argjson size "$bin_size" --arg via "$executed_via" --arg out "$OUT_DIR" \
@@ -177,10 +188,21 @@ for f in "${fixtures[@]}"; do
   cp "$f" "$work/fixture.anb"
   fixture_run="$work/fixture.anb"
 
-  expect=$(grep -oE 'EXPECT: (PASS|FAIL)' "$f" | head -1 | awk '{print $2}' || true)
-  if [[ -z "${expect:-}" ]]; then
-    expect="PASS"
+  if ! parse_expectation "$f" "$base" accept_reject; then
+    expect="${GATE_EXPECT:-}"
+    actual="MALFORMED"
+    status="FAIL"
+    failed=$((failed + 1))
+    echo "  MALFORMED: $GATE_MALFORMED"
+    _t=$(jq_tmp "$report")
+    jq --arg name "$base" --arg status "$status" --arg expect "$expect" \
+       --arg actual "$actual" --arg path "$f" --arg detail "$GATE_MALFORMED" \
+      '.fixtures += [{"name":$name,"path":$path,"status":$status,"expected":$expect,
+        "actual":$actual,"malformed":$detail}]' \
+      "$report" > "$_t" && mv "$_t" "$report"
+    continue
   fi
+  expect="$GATE_EXPECT"
   err_needle=$(header_val "$f" "ERROR_CONTAINS")
   # Drop trailing inline comment after needle
   err_needle="${err_needle%% // *}"
@@ -200,11 +222,11 @@ for f in "${fixtures[@]}"; do
   set +e
   if command -v timeout >/dev/null 2>&1; then
     # Run with CWD = work so relative side effects land under --out only
-    (cd "$work" && timeout "$per_timeout" "$ROOT/$ANUBIS_BIN" run fixture.anb) \
+    (cd "$work" && timeout "$per_timeout" "$ANUBIS_EXEC" run fixture.anb) \
       >"$outd/run.log" 2>&1
     rc=$?
   else
-    (cd "$work" && "$ROOT/$ANUBIS_BIN" run fixture.anb) \
+    (cd "$work" && "$ANUBIS_EXEC" run fixture.anb) \
       >"$outd/run.log" 2>&1
     rc=$?
   fi
@@ -333,7 +355,7 @@ for f in "${fixtures[@]}"; do
     fi
   fi
 
-  if [[ "$actual" == "$expect" ]]; then
+  if score_fixture "$expect" "$actual"; then
     passed=$((passed + 1))
     status="PASS"
   else
@@ -361,17 +383,17 @@ done
 # overall FAIL if any real FAIL, or if total==0.
 # overall PASS if failed==0 and (passed+timed_out)==total and passed>=0.
 # If all timed out with zero fails: overall is TIMEOUT (not PASS) — cry-wolf free.
-overall="PASS"
-if [[ $failed -gt 0 ]]; then
-  overall="FAIL"
-elif [[ $total -eq 0 ]]; then
-  overall="FAIL"
-elif [[ $passed -eq 0 && $timed_out -gt 0 ]]; then
-  overall="TIMEOUT"
-elif [[ $timed_out -gt 0 && $failed -eq 0 ]]; then
-  # mixed pass + timeout: partial — still not a clean PASS
-  overall="PASS_WITH_TIMEOUTS"
-fi
+set +e
+finalize "$total" "$passed" "$failed" "$timed_out"
+set -e
+case "$GATE_FINAL_STATUS" in
+  PASS) overall="PASS" ;;
+  FAIL) overall="FAIL" ;;
+  INCOMPLETE)
+    if [[ $passed -eq 0 ]]; then overall="TIMEOUT"; else overall="PASS_WITH_TIMEOUTS"; fi
+    ;;
+  *) overall="FAIL" ;;
+esac
 
 _t=$(jq_tmp "$report")
 jq --arg overall "$overall" --argjson total "$total" --argjson passed "$passed" \

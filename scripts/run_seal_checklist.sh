@@ -2,7 +2,7 @@
 # Anubis end-of-arc SEAL CHECKLIST — executable, fail-closed, third-party runnable.
 #
 # One command that:
-#   1. Rebuilds the release binary ONCE (unless --bin / SEAL_BIN is pre-pinned)
+#   1. Resolves the current published immutable pin once (unless --bin / SEAL_BIN is supplied)
 #   2. Pins that exact binary (copy + ANUBIS_BIN) for every subsequent gate
 #   3. Runs every seal-trustworthy gate with PRIVATE --out dirs, in order
 #   4. Records binary identity (path, mtime, size, sha256) in the seal root
@@ -175,11 +175,31 @@ die_setup() {
 }
 
 # ── Preconditions ────────────────────────────────────────────────────────────
-command -v cargo >/dev/null 2>&1 || die_setup "cargo not on PATH"
 command -v python3 >/dev/null 2>&1 || die_setup "python3 required for seal verdict JSON"
+if ! command -v shasum >/dev/null 2>&1 && ! command -v sha256sum >/dev/null 2>&1; then
+  die_setup "shasum or sha256sum required for continuous pin verification"
+fi
 if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
   die_setup "neither timeout nor gtimeout on PATH (parity/runtime/native gates require it)"
 fi
+
+REQUIRED_GATE_SCRIPTS=(
+  scripts/run_security_fixtures.sh
+  scripts/run_language_fixtures.sh
+  scripts/run_runtime_fixtures.sh
+  scripts/run_check_run_parity_gate.sh
+  scripts/run_stdlib_failclosed_gate.sh
+  scripts/run_run_failclosed_gate.sh
+  scripts/check_capset_registry_parity.sh
+  scripts/run_formal_gate.sh
+  scripts/run_native_authoritative_gate.sh
+  scripts/run_selfhost_gate.sh
+  scripts/run_taint_selfhost_gate.sh
+  scripts/run_capset_selfhost_gate.sh
+)
+for required_script in "${REQUIRED_GATE_SCRIPTS[@]}"; do
+  [[ -f "$required_script" ]] || refuse "required gate script missing: $required_script"
+done
 
 log "==== ANUBIS SEAL CHECKLIST ===="
 log "profile=$PROFILE"
@@ -189,47 +209,88 @@ log "host=$(uname -s) $(uname -m)"
 log "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 log "scoring=declared_verdict_line_only (never body-grep FAIL — exp=FAIL columns are noise)"
 
-# ── Build once / pin ─────────────────────────────────────────────────────────
+# ── Resolve once / pin ───────────────────────────────────────────────────────
 SNAP="$SEAL_OUT/anubis.snap"
+SOURCE_PIN=""
 if [[ -n "$SEAL_BIN_ARG" ]]; then
   [[ -x "$SEAL_BIN_ARG" ]] || refuse "SEAL_BIN / --bin not executable: $SEAL_BIN_ARG"
   cp -p "$SEAL_BIN_ARG" "$SNAP"
+  SOURCE_PIN="$SEAL_BIN_ARG"
   log "using pre-pinned --bin=$SEAL_BIN_ARG"
 elif [[ -n "${SEAL_BIN:-}" ]]; then
   [[ -x "$SEAL_BIN" ]] || refuse "SEAL_BIN env not executable: $SEAL_BIN"
   cp -p "$SEAL_BIN" "$SNAP"
+  SOURCE_PIN="$SEAL_BIN"
   log "using pre-pinned SEAL_BIN=$SEAL_BIN"
 else
-  log "== cargo build --release -p anubis (single rebuild for this seal) =="
-  if ! cargo build --release -p anubis >"$SEAL_OUT/logs/cargo_build.log" 2>&1; then
-    tail -40 "$SEAL_OUT/logs/cargo_build.log" | tee -a "$SUMMARY"
-    refuse "cargo build --release -p anubis failed (see logs/cargo_build.log)"
-  fi
-  [[ -x "$ROOT/target/release/anubis" ]] || refuse "target/release/anubis missing after build"
-  cp -p "$ROOT/target/release/anubis" "$SNAP"
+  [[ -x scripts/publish_pin.sh ]] || refuse "scripts/publish_pin.sh missing or not executable"
+  set +e
+  SOURCE_PIN="$(scripts/publish_pin.sh --current 2>"$SEAL_OUT/logs/publish_pin_current.err")"
+  pin_rc=$?
+  set -e
+  [[ $pin_rc -eq 0 ]] || refuse "could not resolve published pin (rc=$pin_rc; see logs/publish_pin_current.err)"
+  [[ -x "$SOURCE_PIN" ]] || refuse "published pin not executable: $SOURCE_PIN"
+  cp -p "$SOURCE_PIN" "$SNAP"
+  log "using published current pin=$SOURCE_PIN"
 fi
 chmod +x "$SNAP" 2>/dev/null || true
+chmod a-w "$SNAP" 2>/dev/null || refuse "could not make snapshot read-only: $SNAP"
 [[ -x "$SNAP" ]] || refuse "snapshot binary not executable: $SNAP"
-
-export ANUBIS_BIN="$SNAP"
-export ANUBIS="$SNAP"
 
 BIN_MTIME="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' "$SNAP" 2>/dev/null || stat -c '%y' "$SNAP" 2>/dev/null || echo unknown)"
 BIN_SIZE="$(stat -f '%z' "$SNAP" 2>/dev/null || stat -c '%s' "$SNAP" 2>/dev/null || echo 0)"
 if command -v shasum >/dev/null 2>&1; then
+  SHA_TOOL="$(command -v shasum)"
+  SHA_MODE="shasum"
   BIN_SHA="$(shasum -a 256 "$SNAP" | awk '{print $1}')"
 elif command -v sha256sum >/dev/null 2>&1; then
+  SHA_TOOL="$(command -v sha256sum)"
+  SHA_MODE="sha256sum"
   BIN_SHA="$(sha256sum "$SNAP" | awk '{print $1}')"
 else
-  BIN_SHA="unavailable"
+  refuse "no SHA-256 implementation available after precondition"
 fi
+
+PIN_WRAPPER="$SEAL_OUT/anubis.pin"
+PIN_TRACE="$SEAL_OUT/pin_invocations.log"
+: >"$PIN_TRACE"
+{
+  # Some gates intentionally hide PATH to prove external solvers are not load-bearing.
+  # The launcher must remain executable in that environment.
+  echo '#!/bin/bash'
+  echo 'set -euo pipefail'
+  printf 'actual=%q\n' "$SNAP"
+  printf 'expected_sha=%q\n' "$BIN_SHA"
+  printf 'trace=%q\n' "$PIN_TRACE"
+  printf 'hash_tool=%q\n' "$SHA_TOOL"
+  printf 'hash_mode=%q\n' "$SHA_MODE"
+  echo 'if [[ "$hash_mode" == "shasum" ]]; then'
+  echo '  read -r current_sha _ < <("$hash_tool" -a 256 "$actual")'
+  echo 'else'
+  echo '  read -r current_sha _ < <("$hash_tool" "$actual")'
+  echo 'fi'
+  echo 'if [[ "$current_sha" != "$expected_sha" ]]; then'
+  echo '  echo "SEAL_PIN_HASH_MISMATCH: expected=$expected_sha actual=$current_sha path=$actual" >&2'
+  echo '  exit 125'
+  echo 'fi'
+  echo 'active_gate="${ANUBIS_SEAL_ACTIVE_GATE:-unattributed}"'
+  echo 'printf "%s|%s|%s\n" "$active_gate" "$current_sha" "$actual" >>"$trace"'
+  echo 'exec "$actual" "$@"'
+} >"$PIN_WRAPPER"
+chmod +x "$PIN_WRAPPER"
+
+export ANUBIS_BIN="$PIN_WRAPPER"
+export ANUBIS="$PIN_WRAPPER"
 
 {
   echo "seal_instrument_v1"
   echo "path=$SNAP"
+  echo "source_pin=$SOURCE_PIN"
   echo "mtime=$BIN_MTIME"
   echo "size_bytes=$BIN_SIZE"
   echo "sha256=$BIN_SHA"
+  echo "launcher=$PIN_WRAPPER"
+  echo "invocation_trace=$PIN_TRACE"
   echo "ANUBIS_BIN=$ANUBIS_BIN"
   echo "profile=$PROFILE"
 } | tee "$INSTRUMENT" | tee -a "$SUMMARY"
@@ -299,16 +360,24 @@ classify_verdict() {
 }
 
 _instrument_guards() {
-  if [[ "${ANUBIS_BIN:-}" != "$SNAP" ]]; then
-    refuse "ANUBIS_BIN drifted from seal snapshot (now=${ANUBIS_BIN:-unset})"
+  if [[ "${ANUBIS_BIN:-}" != "$PIN_WRAPPER" ]]; then
+    refuse "ANUBIS_BIN drifted from seal launcher (now=${ANUBIS_BIN:-unset})"
   fi
-  if [[ ! -x "$ANUBIS_BIN" ]]; then
-    refuse "ANUBIS_BIN not executable mid-seal"
+  if [[ ! -x "$ANUBIS_BIN" || ! -x "$SNAP" ]]; then
+    refuse "seal launcher or snapshot not executable mid-seal"
   fi
-  local now_size
+  local now_size now_sha
   now_size="$(stat -f '%z' "$SNAP" 2>/dev/null || stat -c '%s' "$SNAP" 2>/dev/null || echo 0)"
   if [[ "$now_size" != "$BIN_SIZE" ]]; then
     refuse "snapshot size changed mid-seal (was $BIN_SIZE now $now_size)"
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    now_sha="$(shasum -a 256 "$SNAP" | awk '{print $1}')"
+  else
+    now_sha="$(sha256sum "$SNAP" | awk '{print $1}')"
+  fi
+  if [[ "$now_sha" != "$BIN_SHA" ]]; then
+    refuse "snapshot sha256 changed mid-seal (was $BIN_SHA now $now_sha)"
   fi
 }
 
@@ -319,6 +388,8 @@ _instrument_guards() {
 run_gate() {
   local name="$1" pass_re="$2" fail_re="$3"
   shift 3
+  local pin_required=1
+  if [[ "${1:-}" == "--no-pin-use" ]]; then pin_required=0; shift; fi
   while [[ "${1:-}" == "--" ]]; do shift; done
   if [[ $# -eq 0 ]]; then
     log "GATE $name: FAIL (run_gate invoked with no command)"
@@ -339,10 +410,17 @@ run_gate() {
 
   _instrument_guards
 
+  local pin_before pin_after
+  pin_before="$(grep -c -F "${name}|" "$PIN_TRACE" 2>/dev/null || true)"
+
   set +e
-  env ANUBIS_BIN="$SNAP" ANUBIS="$SNAP" "$@" >"$glog" 2>&1
+  env ANUBIS_BIN="$PIN_WRAPPER" ANUBIS="$PIN_WRAPPER" \
+    ANUBIS_SEAL_ACTIVE_GATE="$name" "$@" >"$glog" 2>&1
   local rc=$?
   set -e
+
+  _instrument_guards
+  pin_after="$(grep -c -F "${name}|" "$PIN_TRACE" 2>/dev/null || true)"
 
   classify_verdict "$glog" "$pass_re" "$fail_re"
   printf '%s\n' "${_v_line:-}" >"$SEAL_OUT/gates/${name}.verdict_line"
@@ -370,9 +448,18 @@ run_gate() {
     tail -25 "$glog" | sed 's/^/  | /' | tee -a "$SUMMARY" || true
   fi
 
+  if [[ "$final" == "PASS" && "$pin_required" -eq 1 && "$pin_after" -le "$pin_before" ]]; then
+    final="FAIL"
+    log "GATE $name: FAIL (declared PASS without invoking the traced pinned binary)"
+    printf '%s\n' "no_traced_pin_invocation" >"$SEAL_OUT/gates/${name}.score_reason"
+  fi
+
   if [[ -f "$gdir/instrument.txt" && ! -s "$gdir/instrument.txt" ]]; then
     final="FAIL"
     log "GATE $name: FAIL (empty instrument.txt under private out)"
+  elif [[ -s "$gdir/instrument.txt" ]] && ! grep -qF "$PIN_WRAPPER" "$gdir/instrument.txt"; then
+    final="FAIL"
+    log "GATE $name: FAIL (private instrument.txt does not name traced pin launcher)"
   fi
 
   echo "$final" >"$SEAL_OUT/gates/${name}.status"
@@ -497,9 +584,11 @@ run_known_failing() {
   _instrument_guards
 
   set +e
-  env ANUBIS_BIN="$SNAP" ANUBIS="$SNAP" "$@" >"$glog" 2>&1
+  env ANUBIS_BIN="$PIN_WRAPPER" ANUBIS="$PIN_WRAPPER" \
+    ANUBIS_SEAL_ACTIVE_GATE="$name" "$@" >"$glog" 2>&1
   local rc=$?
   set -e
+  _instrument_guards
 
   classify_verdict "$glog" "$pass_re" "$fail_re"
   printf '%s\n' "${_v_line:-}" >"$SEAL_OUT/gates/${name}.verdict_line"
@@ -617,33 +706,27 @@ if [[ -f "$SEAL_OUT/gates/check_run_parity/report.json" ]]; then
   fi
 fi
 
-if [[ -f scripts/run_stdlib_failclosed_gate.sh ]]; then
-  run_gate stdlib_failclosed \
-    '^Overall: PASS\b' \
-    '^Overall: FAIL\b' \
-    -- bash scripts/run_stdlib_failclosed_gate.sh --out "$SEAL_OUT/gates/stdlib_failclosed"
-  postcheck_corpus_complete stdlib_failclosed \
-    "$SEAL_OUT/logs/stdlib_failclosed.log" "tests/fixtures/stdlib" "*should_fail_closed.anb" overall_slash
-fi
+run_gate stdlib_failclosed \
+  '^Overall: PASS\b' \
+  '^Overall: FAIL\b' \
+  -- bash scripts/run_stdlib_failclosed_gate.sh --out "$SEAL_OUT/gates/stdlib_failclosed"
+postcheck_corpus_complete stdlib_failclosed \
+  "$SEAL_OUT/logs/stdlib_failclosed.log" "tests/fixtures/stdlib" "*should_fail_closed.anb" overall_slash
 
 # Run-path fail-closed meta-gate (GROK-PTAH): buckets A–E + inventory stamp.
 # Seal accepts PASS_INSTRUMENTED (looked-at surfaces green) OR WHOLE.
 # Does NOT treat WHOLE as required — FA/unenumerated residuals stay honest.
 # Declared line is the score source; claim_run_failclosed_as_a_whole stays false
 # in the gate report while inventory blockers remain.
-if [[ -f scripts/run_run_failclosed_gate.sh ]]; then
-  run_gate run_failclosed \
-    '^GATE: PASS_(INSTRUMENTED|RUNTIME_FAILCLOSED_WHOLE)\b' \
-    '^GATE: FAIL\b' \
-    -- bash scripts/run_run_failclosed_gate.sh --out "$SEAL_OUT/gates/run_failclosed" --timeout 90
-fi
+run_gate run_failclosed \
+  '^GATE: PASS_(INSTRUMENTED|RUNTIME_FAILCLOSED_WHOLE)\b' \
+  '^GATE: FAIL\b' \
+  -- bash scripts/run_run_failclosed_gate.sh --out "$SEAL_OUT/gates/run_failclosed" --timeout 90
 
-if [[ -f scripts/check_capset_registry_parity.sh ]]; then
-  run_gate capset_registry_parity \
-    '^CAPSET_REGISTRY_PARITY_GATE: PASS\b' \
-    '^CAPSET_REGISTRY_PARITY_GATE: FAIL\b' \
-    -- bash scripts/check_capset_registry_parity.sh
-fi
+run_gate capset_registry_parity \
+  '^CAPSET_REGISTRY_PARITY_GATE: PASS\b' \
+  '^CAPSET_REGISTRY_PARITY_GATE: FAIL\b' \
+  --no-pin-use -- bash scripts/check_capset_registry_parity.sh
 
 if command -v lake >/dev/null 2>&1 || [[ -x "$HOME/.elan/bin/lake" ]]; then
   if ! command -v lake >/dev/null 2>&1 && [[ -x "$HOME/.elan/bin/lake" ]]; then
@@ -652,9 +735,9 @@ if command -v lake >/dev/null 2>&1 || [[ -x "$HOME/.elan/bin/lake" ]]; then
   run_gate formal \
     '^FORMAL_GATE: PASS\b' \
     '^FORMAL_GATE: FAIL\b' \
-    -- bash scripts/run_formal_gate.sh
+    --no-pin-use -- bash scripts/run_formal_gate.sh
 else
-  skip_gate formal "lake not on PATH — install elan/lake to enforce formal in seal"
+  refuse "formal prerequisite missing: lake not on PATH"
 fi
 
 if command -v z3 >/dev/null 2>&1; then
@@ -663,7 +746,7 @@ if command -v z3 >/dev/null 2>&1; then
     '^NATIVE_AUTHORITATIVE_GATE: FAIL\b' \
     -- bash scripts/run_native_authoritative_gate.sh
 else
-  skip_gate native_authoritative "z3 not on PATH — required by equivalence half of native gate"
+  refuse "native-authoritative prerequisite missing: z3 not on PATH"
 fi
 
 run_gate selfhost \
@@ -718,7 +801,7 @@ if [[ "$PROFILE" == "full" ]]; then
       '^CAPSET_CORPUS_FAILCLOSED_GATE: FAIL\b' \
       -- bash scripts/run_capset_corpus_failclosed.sh
   else
-    skip_gate capset_corpus "set ANUBIS_SEAL_CAPSET_CORPUS=1 to include (slow)"
+    log "EXCLUDED capset_corpus: set ANUBIS_SEAL_CAPSET_CORPUS=1 to add this optional full-profile gate"
   fi
 
   if [[ "${ANUBIS_SEAL_DDC:-0}" == "1" ]]; then
@@ -727,7 +810,7 @@ if [[ "$PROFILE" == "full" ]]; then
       '^SELFHOST_DDC_GATE: FAIL\b' \
       -- bash scripts/run_selfhost_ddc_gate.sh "$SEAL_OUT/gates/selfhost_ddc"
   else
-    skip_gate selfhost_ddc "set ANUBIS_SEAL_DDC=1 when non-LLVM gcc/tcc available"
+    log "EXCLUDED selfhost_ddc: set ANUBIS_SEAL_DDC=1 to add this optional full-profile gate"
   fi
 fi
 
@@ -741,6 +824,14 @@ fi
 end_size="$(stat -f '%z' "$SNAP" 2>/dev/null || stat -c '%s' "$SNAP" 2>/dev/null || echo 0)"
 if [[ "$end_size" != "$BIN_SIZE" ]]; then
   refuse "snapshot mutated during seal"
+fi
+if command -v shasum >/dev/null 2>&1; then
+  end_sha="$(shasum -a 256 "$SNAP" | awk '{print $1}')"
+else
+  end_sha="$(sha256sum "$SNAP" | awk '{print $1}')"
+fi
+if [[ "$end_sha" != "$BIN_SHA" ]]; then
+  refuse "snapshot sha256 mutated during seal (was $BIN_SHA now $end_sha)"
 fi
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
@@ -757,6 +848,9 @@ done
 
 if [[ "$gate_pass" -eq 0 ]]; then
   refuse "zero required gates PASSed — hollow seal forbidden"
+fi
+if [[ "$gate_skip" -gt 0 ]]; then
+  refuse "required gate skipped ($gate_skip SKIP status rows)"
 fi
 if [[ "$gate_fail" -gt 0 || "$gate_known_unexpected_pass" -gt 0 ]]; then
   log "SEAL_FAIL: fail=$gate_fail unexpected_known_pass=$gate_known_unexpected_pass"

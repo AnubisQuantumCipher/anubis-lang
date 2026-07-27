@@ -65,17 +65,23 @@ mkdir -p "$OUT_DIR"
 report="$OUT_DIR/run_failclosed_report.json"
 runner="$ROOT/scripts/run_runtime_fixtures.sh"
 
-if [[ ! -x "./target/release/anubis" && ! -x "./target/debug/anubis" ]]; then
+if [[ -n "${ANUBIS_BIN:-}" ]]; then
+  bin="$ANUBIS_BIN"
+elif [[ -x "./target/release/anubis" ]]; then
+  bin="./target/release/anubis"
+elif [[ -x "./target/debug/anubis" ]]; then
+  bin="./target/debug/anubis"
+else
   echo "FATAL: no anubis binary (will not cargo build)" >&2
   exit 127
 fi
+[[ -x "$bin" ]] || { echo "FATAL: binary not executable: $bin" >&2; exit 127; }
+export ANUBIS_BIN="$bin"
 if [[ ! -f "$runner" ]]; then
   echo "FATAL: missing $runner" >&2
   exit 2
 fi
 
-bin="./target/release/anubis"
-[[ -x "$bin" ]] || bin="./target/debug/anubis"
 bin_mtime="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' "$bin" 2>/dev/null || echo unknown)"
 
 echo "run-failclosed meta-gate"

@@ -25,11 +25,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-BIN=./target/release/anubis
+BIN="${ANUBIS_BIN:-./target/release/anubis}"
 SH=selfhost/src/anubis_sh.anb
-CORPUS=tests/fixtures/capset_selfhost
+CORPUS="${ANUBIS_CAPSET_SELFHOST_CORPUS:-tests/fixtures/capset_selfhost}"
 
-cargo build -q --release -p anubis
+if [[ ! -x "$BIN" ]]; then
+  echo "CAPSET_SELFHOST_GATE: FAIL (binary not executable: $BIN)"
+  exit 127
+fi
 
 # ── Builtin-recognition drift-check ──────────────────────────────────────────────────────────────
 # The self-hosted effect engine's `sh_is_known_builtin` MIRRORS backends/run.rs::is_builtin_name so an
@@ -79,7 +82,7 @@ norm_caps() {
   printf '%s\n' "$caps" | { grep -vE '^$' || true; } | sort -u | tr '\n' ','
 }
 
-agree=0; disagree=0; skip=0; expect_ok=0; expect_bad=0; n=0
+agree=0; disagree=0; skip=0; anomaly=0; expect_ok=0; expect_bad=0; n=0
 echo "== capset-selfhost differential (Anubis-authored capability set  vs  Rust vz confine) =="
 for f in "$CORPUS"/*.anb; do
   [ -e "$f" ] || continue
@@ -89,16 +92,41 @@ for f in "$CORPUS"/*.anb; do
   if printf '%s' "$rust_out" | grep -q "CONFINE_UNVERIFIED\|CONFINE_PARSE_FAILED"; then
     skip=$((skip+1)); printf "  %-38s SKIP (check-failed — vz confine refused)\n" "$name"; continue
   fi
-  rust_caps=$(printf '%s\n' "$rust_out" | grep -m1 -E "capabilities +:" | sed 's/.*: *//' | norm_caps)
-  rust_bnd=$(printf '%s\n' "$rust_out" | grep -m1 -E "effects_bounded +:" | sed 's/.*: *//' | tr -d '[:space:]')
+  rust_caps_line=$(printf '%s\n' "$rust_out" | grep -m1 -E "capabilities +:" || true)
+  rust_bnd_line=$(printf '%s\n' "$rust_out" | grep -m1 -E "effects_bounded +:" || true)
 
   # `anubis_sh.anb` has no research{}/exploit{} blocks or @research/@exploit attrs
   # -> program_mode = Mode::Safe -> this `run` needs no --allow-research. Passing it
   # would now FAIL on host with ANUBIS_RESEARCH_HOST_FORBIDDEN (commit 5fb7b67 made
   # `run --allow-research` VZ-guest-only). See scripts/run_selfhost_gate.sh.
   anb_out=$( { "$BIN" run "$SH" -- capset "$f" 2>&1 || true; } )
-  anb_caps=$(printf '%s\n' "$anb_out" | grep -m1 "CAPSET" | sed 's/.*caps=//; s/ *bounded=.*//' | norm_caps)
-  anb_bnd=$(printf '%s\n' "$anb_out" | grep -m1 "CAPSET" | sed 's/.*bounded=//' | tr -d '[:space:]')
+  anb_capset_line=$(printf '%s\n' "$anb_out" | grep -m1 "CAPSET" || true)
+
+  row_anomaly=0
+  if [[ -z "$rust_caps_line" ]]; then
+    echo "  $name ANOMALY (missing Rust capabilities line)"
+    anomaly=$((anomaly+1)); row_anomaly=1
+  fi
+  if [[ -z "$rust_bnd_line" ]]; then
+    echo "  $name ANOMALY (missing Rust effects_bounded line)"
+    anomaly=$((anomaly+1)); row_anomaly=1
+  fi
+  if [[ -z "$anb_capset_line" || "$anb_capset_line" != *"caps="* ]]; then
+    echo "  $name ANOMALY (missing Anubis CAPSET caps field)"
+    anomaly=$((anomaly+1)); row_anomaly=1
+  fi
+  if [[ -z "$anb_capset_line" || "$anb_capset_line" != *"bounded="* ]]; then
+    echo "  $name ANOMALY (missing Anubis CAPSET bounded field)"
+    anomaly=$((anomaly+1)); row_anomaly=1
+  fi
+  if [[ $row_anomaly -ne 0 ]]; then
+    continue
+  fi
+
+  rust_caps=$(printf '%s\n' "$rust_caps_line" | sed 's/.*: *//' | norm_caps)
+  rust_bnd=$(printf '%s\n' "$rust_bnd_line" | sed 's/.*: *//' | tr -d '[:space:]')
+  anb_caps=$(printf '%s\n' "$anb_capset_line" | sed 's/.*caps=//; s/ *bounded=.*//' | norm_caps)
+  anb_bnd=$(printf '%s\n' "$anb_capset_line" | sed 's/.*bounded=//' | tr -d '[:space:]')
 
   if [ "$rust_caps" = "$anb_caps" ] && [ "$rust_bnd" = "$anb_bnd" ]; then
     agree=$((agree+1)); verdict="AGREE"
@@ -109,8 +137,8 @@ for f in "$CORPUS"/*.anb; do
   # secondary: EXPECT-CAPSET marker (caps set + bounded)
   em=""
   if grep -q "EXPECT-CAPSET:" "$f"; then
-    exp_caps=$(grep -m1 "EXPECT-CAPSET:" "$f" | sed 's|.*EXPECT-CAPSET: *||; s/ *bounded=.*//' | norm_caps)
-    exp_bnd=$(grep -m1 "EXPECT-CAPSET:" "$f" | sed 's|.*bounded=||' | tr -d '[:space:]')
+    exp_caps=$( { grep -m1 "EXPECT-CAPSET:" "$f" || true; } | sed 's|.*EXPECT-CAPSET: *||; s/ *bounded=.*//' | norm_caps)
+    exp_bnd=$( { grep -m1 "EXPECT-CAPSET:" "$f" || true; } | sed 's|.*bounded=||' | tr -d '[:space:]')
     if [ "$exp_caps" = "$anb_caps" ] && [ "$exp_bnd" = "$anb_bnd" ]; then expect_ok=$((expect_ok+1)); em="marker-ok"; else expect_bad=$((expect_bad+1)); em="MARKER-MISMATCH(exp {$exp_caps}/$exp_bnd)"; fi
   fi
 
@@ -118,8 +146,15 @@ for f in "$CORPUS"/*.anb; do
 done
 
 echo ""
-echo "CAPSET_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree SKIP=$skip | marker ok=$expect_ok bad=$expect_bad"
-if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ]; then
+echo "CAPSET_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree SKIP=$skip ANOMALY=$anomaly | marker ok=$expect_ok bad=$expect_bad"
+if [[ "$n" -eq 0 ]]; then
+  echo "EMPTY CORPUS: no fixtures matched $CORPUS/*.anb - refusing to report PASS"
+  echo "CAPSET_SELFHOST_GATE: FAIL"; exit 1
+fi
+if [[ "$agree" -eq 0 ]]; then
+  echo "CAPSET_SELFHOST_GATE: FAIL (zero productive comparisons; all SKIP/ANOMALY is hollow)"; exit 1
+fi
+if [ "$disagree" -gt 0 ] || [ "$expect_bad" -gt 0 ] || [ "$anomaly" -gt 0 ]; then
   echo "CAPSET_SELFHOST_GATE: FAIL"; exit 1
 fi
 echo "CAPSET_SELFHOST_GATE: PASS (0 disagreements; Anubis-authored capability set == Rust program_capability_set)"

@@ -83,8 +83,8 @@ if [[ "${ANUBIS_REQUIRE_METAL:-}" == "1" ]] || [[ "${ANUBIS_METAL_GATE_REQUIRE:-
   exit 1
 fi
 
-# Default: honest skip when Metal HAL not selected (hosted GHA).
-if [[ "${ANUBIS_METAL_GATE_ALLOW_SKIP:-1}" == "1" ]]; then
+# Skip is explicit opt-in for a caller that is not making a Metal claim (for example hosted GHA).
+if [[ "${ANUBIS_METAL_GATE_ALLOW_SKIP:-0}" == "1" ]]; then
   echo "METAL_PROVE_GATE: SKIPPED (set ANUBIS_REQUIRE_METAL=1 on a Metal-ready AS runner to enforce)"
   echo "skipped" >"$OUT/status.txt"
   exit 0
