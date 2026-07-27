@@ -182,6 +182,62 @@ struct ScopeBinding {
     /// ANUBIS_INTERPROC_EXFILTRATION / ANUBIS_INTERPROC_SINK. Flow-sensitive (rides the scope, so a
     /// later reassignment naturally overwrites it) => no false reject. Pure analysis scratch.
     fn_alias: Option<String>,
+    /// Additive shared identity spine. Unlike `fn_alias`, this preserves every possible named
+    /// user-function identity and keeps `Unknown` distinct from a proven-empty set. Existing
+    /// label-lane consumers continue to use `fn_alias` unchanged.
+    fn_identities: FnIdentitySet,
+    /// Named-function identities stored at concrete aggregate access paths (`"0"`, `"field.1"`).
+    /// Separate from `field_closures`: eta expansion is useful for body descent but loses the
+    /// original set-valued identity required by contracts.
+    field_fn_identities: BTreeMap<String, FnIdentitySet>,
+}
+
+/// Set-valued identity of a first-class callable expression.
+///
+/// `Known(empty)` means the expression is known not to denote a named user function (for example a
+/// lambda or literal). `Unknown` means analysis could not determine the set; policies must choose
+/// explicitly whether that uncertainty is accepted or rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FnIdentitySet {
+    Known(BTreeSet<String>),
+    Unknown,
+}
+
+impl Default for FnIdentitySet {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl FnIdentitySet {
+    fn empty() -> Self {
+        Self::Known(BTreeSet::new())
+    }
+
+    fn one(name: String) -> Self {
+        Self::Known(BTreeSet::from([name]))
+    }
+
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Known(mut left), Self::Known(right)) => {
+                left.extend(right);
+                Self::Known(left)
+            }
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+        }
+    }
+
+    /// The only identity precision the first contract consumer accepts. A policy that discharges
+    /// against a guessed member of a join is unsound; discharging every member is sound but rejects
+    /// ordinary dynamic HOF/container code whose path is not modeled. Singleton-only is the bounded
+    /// improvement: exact identities compose, joins and unknown values retain the runtime boundary.
+    fn into_singleton(self) -> Option<String> {
+        match self {
+            Self::Known(candidates) if candidates.len() == 1 => candidates.into_iter().next(),
+            Self::Known(_) | Self::Unknown => None,
+        }
+    }
 }
 
 /// Arity of an initializer if it is a closure or first-class function reference, else `None`.
@@ -439,6 +495,237 @@ fn join_fn_alias<'a>(
     first
 }
 
+/// Additive, set-valued function-identity spine. Existing `fn_alias_of` callers intentionally remain
+/// untouched: that API selects one label-dangerous identity at a join, while this API preserves the
+/// complete known set for policies (contracts, sealedness, builtin gating) whose result cannot be
+/// represented by one preferred name.
+fn fn_identities_of(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> FnIdentitySet {
+    fn_identities_of_d(expr, scope, ctx, 0)
+}
+
+fn fn_identities_of_d(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> FnIdentitySet {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return FnIdentitySet::Unknown;
+    }
+    match expr {
+        Expr::Var(name) => {
+            if ctx.fn_params.contains_key(name) {
+                FnIdentitySet::one(name.clone())
+            } else if let Some(binding) = scope.get(name) {
+                binding.fn_identities.clone()
+            } else if crate::backends::run::is_builtin_name(name) {
+                FnIdentitySet::empty()
+            } else {
+                FnIdentitySet::Unknown
+            }
+        }
+        Expr::If { then, else_, .. } => fn_identities_of_d(then, scope, ctx, depth + 1)
+            .union(fn_identities_of_d(else_, scope, ctx, depth + 1)),
+        Expr::IfLet { then, else_, .. } => fn_identities_of_d(then, scope, ctx, depth + 1)
+            .union(fn_identities_of_d(else_, scope, ctx, depth + 1)),
+        Expr::Match { arms, .. } => arms.iter().fold(FnIdentitySet::empty(), |set, arm| {
+            set.union(fn_identities_of_d(&arm.body, scope, ctx, depth + 1))
+        }),
+        Expr::Call { callee, args } => {
+            if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 {
+                return fn_identities_of_d(&args[0], scope, ctx, depth + 1);
+            }
+            if let Some((param_names, index)) = ctx.fn_returns_param.get(callee) {
+                if param_names.len() == args.len() {
+                    if let Some(arg) = args.get(*index) {
+                        return fn_identities_of_d(arg, scope, ctx, depth + 1);
+                    }
+                }
+                return FnIdentitySet::Unknown;
+            }
+            if let Some((_param_names, returned)) = ctx.fn_sole_return.get(callee) {
+                return fn_identities_of_d(returned, scope, ctx, depth + 1);
+            }
+            FnIdentitySet::Unknown
+        }
+        Expr::CallExpr { callee, args } => {
+            let Expr::FieldAccess { field, .. } = callee.as_ref() else {
+                return FnIdentitySet::Unknown;
+            };
+            if let Some((param_names, index)) = ctx.method_returns_param.get(field) {
+                if param_names.len() == args.len() + 1 && *index > 0 {
+                    if let Some(arg) = args.get(*index - 1) {
+                        return fn_identities_of_d(arg, scope, ctx, depth + 1);
+                    }
+                }
+                return FnIdentitySet::Unknown;
+            }
+            if let Some((_param_names, returned)) = ctx.method_sole_return.get(field) {
+                return fn_identities_of_d(returned, scope, ctx, depth + 1);
+            }
+            FnIdentitySet::Unknown
+        }
+        Expr::Index { .. } | Expr::FieldAccess { .. } => {
+            fn_identities_at_path_expr(expr, scope, ctx, depth + 1)
+        }
+        Expr::Block { stmts, tail } => {
+            let mut candidates = Vec::new();
+            collect_block_fn_alias_candidates(stmts, tail.as_deref(), &mut candidates);
+            if candidates.is_empty() {
+                return FnIdentitySet::empty();
+            }
+            candidates.into_iter().fold(FnIdentitySet::empty(), |set, candidate| {
+                set.union(fn_identities_of_d(candidate, scope, ctx, depth + 1))
+            })
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            fn_identities_of_d(inner, scope, ctx, depth + 1)
+        }
+        // A lambda is callable but cannot carry a named function's declaration-site contract.
+        Expr::Lambda { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::MapLiteral { .. } => FnIdentitySet::empty(),
+        // These forms may produce an arbitrary dynamic value. Treating them as an empty candidate
+        // set would erase uncertainty; a policy must see `Unknown` and decide explicitly.
+        Expr::Try(_) | Expr::Other(_) => FnIdentitySet::Unknown,
+    }
+}
+
+fn fn_identities_at_path_expr(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> FnIdentitySet {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return FnIdentitySet::Unknown;
+    }
+    if let Some((root, path)) = flatten_access_path(expr) {
+        return scope
+            .get(&root)
+            .and_then(|binding| binding.field_fn_identities.get(&path))
+            .cloned()
+            .unwrap_or(FnIdentitySet::Unknown);
+    }
+    match expr {
+        Expr::Index { base, index } => {
+            let key = match index.as_ref() {
+                Expr::Literal(value) | Expr::StrLiteral(value) => value.as_str(),
+                _ => {
+                    let Some(root) = access_chain_root(base) else {
+                        return FnIdentitySet::Unknown;
+                    };
+                    let Some(binding) = scope.get(&root) else {
+                        return FnIdentitySet::Unknown;
+                    };
+                    let mut values = binding
+                        .field_fn_identities
+                        .values()
+                        .cloned();
+                    let Some(first) = values.next() else {
+                        return FnIdentitySet::Unknown;
+                    };
+                    return values.fold(first, FnIdentitySet::union);
+                }
+            };
+            fn_identities_at_contract_path(base, key, scope, ctx, depth + 1)
+        }
+        Expr::FieldAccess { base, field, .. } => {
+            fn_identities_at_contract_path(base, field, scope, ctx, depth + 1)
+        }
+        _ => FnIdentitySet::Unknown,
+    }
+}
+
+fn fn_identities_at_contract_path(
+    value: &Expr,
+    path: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> FnIdentitySet {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return FnIdentitySet::Unknown;
+    }
+    if path.is_empty() {
+        return fn_identities_of_d(value, scope, ctx, depth + 1);
+    }
+    if let Expr::Var(root) = value {
+        return scope
+            .get(root)
+            .and_then(|binding| binding.field_fn_identities.get(path))
+            .cloned()
+            .unwrap_or(FnIdentitySet::Unknown);
+    }
+    let (head, rest) = path.split_once('.').unwrap_or((path, ""));
+    match value {
+        Expr::ArrayLiteral { elements } => head
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| elements.get(index))
+            .map(|child| fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1))
+            .unwrap_or(FnIdentitySet::Unknown),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .find(|(name, _)| name == head)
+            .map(|(_, child)| {
+                fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1)
+            })
+            .unwrap_or(FnIdentitySet::Unknown),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .find_map(|(key, child)| match key {
+                Expr::StrLiteral(name) | Expr::Var(name) if name == head => Some(child),
+                _ => None,
+            })
+            .map(|child| fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1))
+            .unwrap_or(FnIdentitySet::Unknown),
+        Expr::EnumConstruct {
+            fields,
+            field_names,
+            ..
+        } => head
+            .parse::<usize>()
+            .ok()
+            .or_else(|| field_names.iter().position(|name| name == head))
+            .and_then(|index| fields.get(index))
+            .map(|child| fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1))
+            .unwrap_or(FnIdentitySet::Unknown),
+        Expr::If { then, else_, .. } => {
+            fn_identities_at_contract_path(then, path, scope, ctx, depth + 1).union(
+                fn_identities_at_contract_path(else_, path, scope, ctx, depth + 1),
+            )
+        }
+        Expr::Match { arms, .. } => arms.iter().fold(FnIdentitySet::empty(), |set, arm| {
+            set.union(fn_identities_at_contract_path(
+                &arm.body,
+                path,
+                scope,
+                ctx,
+                depth + 1,
+            ))
+        }),
+        _ => FnIdentitySet::Unknown,
+    }
+}
+
 /// Recursively collect closures stored ANYWHERE inside a container literal, keyed by a dotted ACCESS
 /// PATH (struct field names, list indices, map string keys, joined by `.`): `Outer { inner: Inner {
 /// f: g } }` → `"inner.f"`; `[Box { f: g }]` → `"0.f"`; `{ "k": g }` → `"k"`; `Box { f: g }` → `"f"`.
@@ -578,6 +865,91 @@ fn collect_container_closures(
             | Expr::Match { .. }
             | Expr::Block { .. } => collect_container_closures(val, &segkey, scope, ctx, out),
             _ => {}
+        }
+    }
+}
+
+/// Identity-spine twin of `collect_container_closures`: preserve named-function identity sets at
+/// concrete aggregate paths without eta-expanding them into a single lambda.
+fn collect_container_fn_identities(
+    init: &Expr,
+    prefix: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    out: &mut BTreeMap<String, FnIdentitySet>,
+) {
+    let path = |segment: &str| {
+        if prefix.is_empty() {
+            segment.to_string()
+        } else {
+            format!("{prefix}.{segment}")
+        }
+    };
+    let entries: Vec<(String, &Expr)> = match init {
+        Expr::ArrayLiteral { elements } => elements
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (path(&index.to_string()), value))
+            .collect(),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .map(|(name, value)| (path(name), value.as_ref()))
+            .collect(),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .filter_map(|(key, value)| match key {
+                Expr::StrLiteral(name) | Expr::Var(name) => Some((path(name), value)),
+                _ => None,
+            })
+            .collect(),
+        Expr::EnumConstruct { fields, .. } => fields
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (path(&index.to_string()), value))
+            .collect(),
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            collect_container_fn_identities(then, prefix, scope, ctx, out);
+            let mut other = BTreeMap::new();
+            collect_container_fn_identities(else_, prefix, scope, ctx, &mut other);
+            for (key, identities) in other {
+                out.entry(key)
+                    .and_modify(|current| {
+                        *current = current.clone().union(identities.clone());
+                    })
+                    .or_insert(identities);
+            }
+            return;
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                let mut arm_values = BTreeMap::new();
+                collect_container_fn_identities(&arm.body, prefix, scope, ctx, &mut arm_values);
+                for (key, identities) in arm_values {
+                    out.entry(key)
+                        .and_modify(|current| {
+                            *current = current.clone().union(identities.clone());
+                        })
+                        .or_insert(identities);
+                }
+            }
+            return;
+        }
+        _ => return,
+    };
+    for (key, value) in entries {
+        if matches!(
+            value,
+            Expr::ArrayLiteral { .. }
+                | Expr::StructLiteral { .. }
+                | Expr::MapLiteral { .. }
+                | Expr::EnumConstruct { .. }
+                | Expr::If { .. }
+                | Expr::IfLet { .. }
+                | Expr::Match { .. }
+        ) {
+            collect_container_fn_identities(value, &key, scope, ctx, out);
+        } else {
+            out.insert(key, fn_identities_of(value, scope, ctx));
         }
     }
 }
@@ -792,6 +1164,8 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_identities: FnIdentitySet::Unknown,
+                        field_fn_identities: BTreeMap::new(),
                         secret: false,
                     });
                     entry.closure_lambda = Some(lam);
@@ -883,6 +1257,8 @@ fn seed_loop_var_callable(
                     closure_lambda: None,
                     field_closures: fc,
                     fn_alias: None,
+                    fn_identities: FnIdentitySet::Unknown,
+                    field_fn_identities: BTreeMap::new(),
                     secret: false,
                 },
             );
@@ -907,6 +1283,8 @@ fn seed_loop_var_callable(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
             secret: false,
         });
     b.closure_lambda = Some(lam);
@@ -1243,6 +1621,13 @@ impl SemanticContext {
 /// Named so `method_contracts` stays readable; the shape mirrors `fn_contracts`' value type.
 type MethodContract = (Vec<String>, Vec<Expr>, Vec<Expr>);
 
+#[derive(Debug, Clone)]
+struct ParamContractApplication {
+    callee: Expr,
+    param_indices: BTreeSet<usize>,
+    args: Vec<Expr>,
+}
+
 #[derive(Debug, Default)]
 struct SemanticContext {
     hir: Hir,
@@ -1341,6 +1726,9 @@ struct SemanticContext {
     /// postcondition — the composition that makes contracts chain.
     #[allow(clippy::type_complexity)]
     fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
+    /// User function -> (formal names, unconditional applications of function-valued formals).
+    /// This is policy-neutral call-shape data; the contract policy supplies identity and discharge.
+    fn_param_contract_apps: BTreeMap<String, (Vec<String>, Vec<ParamContractApplication>)>,
     /// #76: impl-METHOD contracts, keyed by bare method name with `self` at parameter index 0.
     /// `None` marks an AMBIGUOUS name (declared by more than one impl), where a call site cannot know
     /// statically which contract applies.
@@ -1966,6 +2354,32 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     if !edges.is_empty() {
                         ctx.fn_forward_edges.insert(name.clone(), edges);
                     }
+                }
+                {
+                    let param_names: Vec<String> =
+                        params.iter().map(|(param, _)| param.clone()).collect();
+                    let param_indices: BTreeMap<String, usize> = param_names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, param)| (param.clone(), index))
+                        .collect();
+                    let shadowed = ctx
+                        .fn_param_shadowed
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut applications = collect_unconditional_param_contract_applications(
+                        body,
+                        &param_indices,
+                    );
+                    applications.retain(|application| {
+                        application
+                            .param_indices
+                            .iter()
+                            .all(|index| !shadowed.contains(index))
+                    });
+                    ctx.fn_param_contract_apps
+                        .insert(name.clone(), (param_names, applications));
                 }
                 // Flat function namespace: a redefinition is an error.
                 if !ctx.all_fns.insert(name.clone()) {
@@ -3021,6 +3435,8 @@ fn analyze_function(
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_identities: FnIdentitySet::Unknown,
+                        field_fn_identities: BTreeMap::new(),
                         secret: false,
                     },
                 )
@@ -3114,6 +3530,8 @@ fn analyze_function(
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
                     fn_alias: None,
+                    fn_identities: FnIdentitySet::Unknown,
+                    field_fn_identities: BTreeMap::new(),
                     // A `secret<T>` param qualifier auto-labels the parameter as secret (the
                     // confidentiality dual of the `tainted<T>` param seeded above), so a secret
                     // arriving via a param needs no `secret_source(..)` call — an egress of it is
@@ -4568,6 +4986,46 @@ fn merge_fn_alias_over(
                 }
             }
         }
+        // Additive spine merge: preserve every identity any reachable path may leave in the SAME
+        // binding. `Unknown` dominates, so a path the spine cannot resolve never masquerades as an
+        // empty candidate set. This does not alter the label lane's single preferred `fn_alias`.
+        let Some(outer) = scope.get(&name).cloned() else {
+            continue;
+        };
+        let effective: Vec<&ScopeBinding> = paths
+            .iter()
+            .map(|path| {
+                path.get(&name)
+                    .filter(|binding| binding.info.span == outer_span)
+                    .unwrap_or(&outer)
+            })
+            .collect();
+        let identities = effective
+            .iter()
+            .fold(FnIdentitySet::empty(), |set, binding| {
+                set.union(binding.fn_identities.clone())
+            });
+        let field_names: BTreeSet<String> = effective
+            .iter()
+            .flat_map(|binding| binding.field_fn_identities.keys().cloned())
+            .collect();
+        let mut fields = BTreeMap::new();
+        for field in field_names {
+            let identities = effective.iter().fold(FnIdentitySet::empty(), |set, binding| {
+                set.union(
+                    binding
+                        .field_fn_identities
+                        .get(&field)
+                        .cloned()
+                        .unwrap_or(FnIdentitySet::Unknown),
+                )
+            });
+            fields.insert(field, identities);
+        }
+        if let Some(binding) = scope.get_mut(&name) {
+            binding.fn_identities = identities;
+            binding.field_fn_identities = fields;
+        }
     }
 }
 
@@ -4900,6 +5358,74 @@ fn discharge_call_requires(
     all_requires_checkable
 }
 
+fn discharge_carried_call_requires(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    scope: &BTreeMap<String, ScopeBinding>,
+    outer_callee: &str,
+    outer_args: &[Expr],
+    depth: u32,
+) -> bool {
+    let Some((formal_names, applications)) =
+        ctx.fn_param_contract_apps.get(outer_callee).cloned()
+    else {
+        return true;
+    };
+    if formal_names.len() != outer_args.len() {
+        return true;
+    }
+    let substitutions: BTreeMap<String, Expr> = formal_names
+        .into_iter()
+        .zip(outer_args.iter().cloned())
+        .collect();
+    applications.into_iter().fold(true, |all, application| {
+        let concrete_callee = substitute_vars(&application.callee, &substitutions);
+        let concrete_args: Vec<Expr> = application
+            .args
+            .iter()
+            .map(|arg| substitute_vars(arg, &substitutions))
+            .collect();
+        discharge_resolved_call_requires_d(
+            ctx,
+            assumptions,
+            scope,
+            &concrete_callee,
+            &concrete_args,
+            depth + 1,
+        ) && all
+    })
+}
+
+fn discharge_resolved_call_requires(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+    args: &[Expr],
+) -> bool {
+    discharge_resolved_call_requires_d(ctx, assumptions, scope, callee, args, 0)
+}
+
+fn discharge_resolved_call_requires_d(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    scope: &BTreeMap<String, ScopeBinding>,
+    callee: &Expr,
+    args: &[Expr],
+    depth: u32,
+) -> bool {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return true;
+    }
+    let Some(candidate) = fn_identities_of(callee, scope, ctx).into_singleton() else {
+        return true;
+    };
+    let direct = discharge_call_requires(ctx, assumptions, &candidate, args);
+    let carried =
+        discharge_carried_call_requires(ctx, assumptions, scope, &candidate, args, depth);
+    direct && carried
+}
+
 /// The SOUND path-condition fact a `match` arm's pattern contributes about the scrutinee, for discharging
 /// contracted calls in the arm body/guard. A `Literal`/`StrLiteral` pattern means the arm runs iff the
 /// scrutinee equals that value → `scrutinee == literal`; an `Or` of literals → the disjunction. Any other
@@ -5094,18 +5620,35 @@ fn rename_binding(e: &Expr, name: &str, fresh: &str) -> Expr {
 /// STILL DEFERRED (the residual): `if let`/block/lambda bodies, and a `match` arm whose bound sub-values
 /// (enum/struct/list pattern) would constrain the call — those are unmodeled. Every discharged call is as
 /// sound as a direct call: the same `assumptions` (including the pushed path condition) are in scope.
-fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<String>, expr: &Expr) {
+fn discharge_calls_in_expr(
+    ctx: &mut SemanticContext,
+    assumptions: &mut Vec<String>,
+    scope: &BTreeMap<String, ScopeBinding>,
+    expr: &Expr,
+) {
     match expr {
         Expr::Call { callee, args } => {
-            discharge_call_requires(ctx, assumptions, callee, args);
+            discharge_resolved_call_requires(
+                ctx,
+                assumptions,
+                scope,
+                &Expr::Var(callee.clone()),
+                args,
+            );
             for a in args {
-                discharge_calls_in_expr(ctx, assumptions, a);
+                discharge_calls_in_expr(ctx, assumptions, scope, a);
             }
         }
         Expr::CallExpr { callee, args } => {
-            discharge_calls_in_expr(ctx, assumptions, callee);
+            // A non-field CallExpr is a first-class callable value (`arr[0](x)`, `(if c { f }
+            // else { g })(x)`, ...). Resolve its complete candidate set before descending into the
+            // expression. FieldAccess remains the existing method-call syntax and is handled below.
+            if !matches!(callee.as_ref(), Expr::FieldAccess { .. }) {
+                discharge_resolved_call_requires(ctx, assumptions, scope, callee, args);
+            }
+            discharge_calls_in_expr(ctx, assumptions, scope, callee);
             for a in args {
-                discharge_calls_in_expr(ctx, assumptions, a);
+                discharge_calls_in_expr(ctx, assumptions, scope, a);
             }
             // #76: a method call `recv.m(args)` parses as CallExpr{callee: FieldAccess{base, field}}.
             // Discharge the method's `requires` here — previously nothing did, so a contracted method
@@ -5120,16 +5663,16 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
         // under exactly the condition that guards it — then restore. Every other binary operator evaluates
         // both operands unconditionally.
         Expr::Binary { op, lhs, rhs } => {
-            discharge_calls_in_expr(ctx, assumptions, lhs);
+            discharge_calls_in_expr(ctx, assumptions, scope, lhs);
             if op == "&&" || op == "||" {
                 let snap = assumptions.len();
                 let snap_g = ctx.active_branch_guards.len();
                 push_branch_path_condition(ctx, assumptions, lhs, op == "||");
-                discharge_calls_in_expr(ctx, assumptions, rhs);
+                discharge_calls_in_expr(ctx, assumptions, scope, rhs);
                 assumptions.truncate(snap);
                 ctx.active_branch_guards.truncate(snap_g);
             } else {
-                discharge_calls_in_expr(ctx, assumptions, rhs);
+                discharge_calls_in_expr(ctx, assumptions, scope, rhs);
             }
         }
         // An `if`-EXPRESSION (`let z = if c { g(x) } else { h(y) };`): the condition is unconditional; each
@@ -5141,15 +5684,15 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
         Expr::If {
             cond, then, else_, ..
         } => {
-            discharge_calls_in_expr(ctx, assumptions, cond);
+            discharge_calls_in_expr(ctx, assumptions, scope, cond);
             let snap = assumptions.len();
             let snap_g = ctx.active_branch_guards.len();
             push_branch_path_condition(ctx, assumptions, cond, false);
-            discharge_calls_in_expr(ctx, assumptions, then);
+            discharge_calls_in_expr(ctx, assumptions, scope, then);
             assumptions.truncate(snap);
             ctx.active_branch_guards.truncate(snap_g);
             push_branch_path_condition(ctx, assumptions, cond, true);
-            discharge_calls_in_expr(ctx, assumptions, else_);
+            discharge_calls_in_expr(ctx, assumptions, scope, else_);
             assumptions.truncate(snap);
             ctx.active_branch_guards.truncate(snap_g);
         }
@@ -5165,7 +5708,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            discharge_calls_in_expr(ctx, assumptions, scrutinee);
+            discharge_calls_in_expr(ctx, assumptions, scope, scrutinee);
             // Arms are ordered: arm k runs only if NO earlier arm matched. So each arm additionally assumes
             // the NEGATION of what every preceding arm's non-match guarantees — this is what makes the
             // `match a { 0 => …, _ => recip(a) }` and `match a { _ if a>0 => …, _ => h(a) }` idioms sound
@@ -5302,10 +5845,10 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                     None => (arm.guard.as_ref(), &arm.body),
                 };
                 if let Some(guard) = eff_guard {
-                    discharge_calls_in_expr(ctx, assumptions, guard);
+                    discharge_calls_in_expr(ctx, assumptions, scope, guard);
                     push_branch_path_condition(ctx, assumptions, guard, false);
                 }
-                discharge_calls_in_expr(ctx, assumptions, eff_body);
+                discharge_calls_in_expr(ctx, assumptions, scope, eff_body);
                 assumptions.truncate(snap);
                 ctx.active_branch_guards.truncate(snap_g);
                 for fresh in &fresh_syms {
@@ -5337,36 +5880,36 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
             }
         }
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
-            discharge_calls_in_expr(ctx, assumptions, expr)
+            discharge_calls_in_expr(ctx, assumptions, scope, expr)
         }
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
-            discharge_calls_in_expr(ctx, assumptions, inner)
+            discharge_calls_in_expr(ctx, assumptions, scope, inner)
         }
         Expr::Assume(inner) | Expr::Assert(inner) | Expr::Try(inner) => {
-            discharge_calls_in_expr(ctx, assumptions, inner)
+            discharge_calls_in_expr(ctx, assumptions, scope, inner)
         }
         Expr::Index { base, index } => {
-            discharge_calls_in_expr(ctx, assumptions, base);
-            discharge_calls_in_expr(ctx, assumptions, index);
+            discharge_calls_in_expr(ctx, assumptions, scope, base);
+            discharge_calls_in_expr(ctx, assumptions, scope, index);
         }
-        Expr::FieldAccess { base, .. } => discharge_calls_in_expr(ctx, assumptions, base),
+        Expr::FieldAccess { base, .. } => discharge_calls_in_expr(ctx, assumptions, scope, base),
         Expr::ArrayLiteral { elements }
         | Expr::EnumConstruct {
             fields: elements, ..
         } => {
             for e in elements {
-                discharge_calls_in_expr(ctx, assumptions, e);
+                discharge_calls_in_expr(ctx, assumptions, scope, e);
             }
         }
         Expr::StructLiteral { fields, .. } => {
             for (_, v) in fields {
-                discharge_calls_in_expr(ctx, assumptions, v);
+                discharge_calls_in_expr(ctx, assumptions, scope, v);
             }
         }
         Expr::MapLiteral { entries, .. } => {
             for (k, v) in entries {
-                discharge_calls_in_expr(ctx, assumptions, k);
-                discharge_calls_in_expr(ctx, assumptions, v);
+                discharge_calls_in_expr(ctx, assumptions, scope, k);
+                discharge_calls_in_expr(ctx, assumptions, scope, v);
             }
         }
         // A BLOCK-bodied branch (`if c { let t = …; g(t) }` — a block is the `then`/`else_` of an `if`
@@ -5425,7 +5968,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                     Stmt::Let { name, ty, init, .. } => {
                         // Discharge contracted calls in the initializer (evaluated unconditionally, before
                         // the binding takes effect) — e.g. `let u = g(x) + 1;` in the block.
-                        discharge_calls_in_expr(ctx, assumptions, init);
+                        discharge_calls_in_expr(ctx, assumptions, scope, init);
                         // Model the binding as a scoped defining fact only when it is never reassigned AND
                         // never shadowed anywhere in the function — the SAME soundness boundary the
                         // statement-level float/string defining-fact lanes use. No frame sweep runs in this
@@ -5489,10 +6032,10 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                         }
                     }
                     Stmt::LetPattern { init, .. } => {
-                        discharge_calls_in_expr(ctx, assumptions, init);
+                        discharge_calls_in_expr(ctx, assumptions, scope, init);
                     }
                     Stmt::ExprStmt(e) => {
-                        discharge_calls_in_expr(ctx, assumptions, e);
+                        discharge_calls_in_expr(ctx, assumptions, scope, e);
                     }
                     // M3 (GROK-SEKHMET's grouping): a statement-position `if` inside a value block
                     // hid contracted calls from discharge entirely — `{ if d { g(a); } 1 }` never
@@ -5519,7 +6062,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                     // same construct is how these lanes drift apart.
                     Stmt::If { cond, then, else_ } => {
                         // The condition itself is evaluated unconditionally.
-                        discharge_calls_in_expr(ctx, assumptions, cond);
+                        discharge_calls_in_expr(ctx, assumptions, scope, cond);
                         for (body, negate) in [(Some(then), false), (else_.as_ref(), true)] {
                             let Some(body) = body else { continue };
                             let a0 = assumptions.len();
@@ -5530,7 +6073,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                                     stmts: body.clone(),
                                     tail: None,
                                 };
-                                discharge_calls_in_expr(ctx, assumptions, &blk);
+                                discharge_calls_in_expr(ctx, assumptions, scope, &blk);
                             }
                             assumptions.truncate(a0);
                             ctx.active_branch_guards.truncate(g0);
@@ -5544,7 +6087,7 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
                 }
             }
             if let Some(t) = tail {
-                discharge_calls_in_expr(ctx, assumptions, t);
+                discharge_calls_in_expr(ctx, assumptions, scope, t);
             }
             assumptions.truncate(snap);
             ctx.active_branch_guards.truncate(snap_g);
@@ -5570,8 +6113,8 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
         Expr::IfLet {
             scrutinee, else_, ..
         } => {
-            discharge_calls_in_expr(ctx, assumptions, scrutinee);
-            discharge_calls_in_expr(ctx, assumptions, else_);
+            discharge_calls_in_expr(ctx, assumptions, scope, scrutinee);
+            discharge_calls_in_expr(ctx, assumptions, scope, else_);
         }
         // Remaining deferred positions: an `if let` THEN branch (pattern-bound scope, see above) and lambda
         // bodies. Leaves (Var/Literal/Symbolic/…) hold no call. Undischarged.
@@ -5963,6 +6506,8 @@ fn labelled_param_binding(
         closure_lambda: None,
         field_closures: BTreeMap::new(),
         fn_alias: None,
+        fn_identities: FnIdentitySet::Unknown,
+        field_fn_identities: BTreeMap::new(),
         secret,
     }
 }
@@ -6357,6 +6902,18 @@ fn analyze_stmts(
                     }
                 }
                 let fal = fn_alias_of(init, scope, ctx);
+                let fn_identities = fn_identities_of(init, scope, ctx);
+                let field_fn_identities = match init {
+                    Expr::Var(source) => scope
+                        .get(source)
+                        .map(|binding| binding.field_fn_identities.clone())
+                        .unwrap_or_default(),
+                    _ => {
+                        let mut identities = BTreeMap::new();
+                        collect_container_fn_identities(init, "", scope, ctx, &mut identities);
+                        identities
+                    }
+                };
                 scope.insert(
                     name.clone(),
                     ScopeBinding {
@@ -6365,6 +6922,8 @@ fn analyze_stmts(
                         closure_lambda: cl,
                         field_closures: fclos,
                         fn_alias: fal,
+                        fn_identities,
+                        field_fn_identities,
                         secret: init_secret.is_some() || explicit_secret,
                     },
                 );
@@ -6572,7 +7131,7 @@ fn analyze_stmts(
                 // handled by the B2 block below (which also binds the ensures), so it's excluded here to
                 // avoid a double obligation.
                 if !matches!(init, Expr::Call { .. }) {
-                    discharge_calls_in_expr(ctx, assumptions, init);
+                    discharge_calls_in_expr(ctx, assumptions, scope, init);
                 }
                 // B2 composition: when the initializer calls a CONTRACTED function, specialize the
                 // callee's contract to this call — ASSERT its precondition (the caller must satisfy
@@ -6581,12 +7140,17 @@ fn analyze_stmts(
                 if let Expr::Call { callee, args } = init {
                     // ASSERT each precondition in its lane (the guard, if any, is in scope as a path
                     // condition, so a variable-arg call in a branch discharges soundly).
-                    let all_requires_checkable =
-                        discharge_call_requires(ctx, assumptions, callee, args);
+                    let all_requires_checkable = discharge_resolved_call_requires(
+                        ctx,
+                        assumptions,
+                        scope,
+                        &Expr::Var(callee.clone()),
+                        args,
+                    );
                     // Nested calls in the ARGUMENTS (`let z = f(g(x));`) are unconditionally evaluated —
                     // discharge them too; the top-level call is handled directly above (no double-count).
                     for a in args {
-                        discharge_calls_in_expr(ctx, assumptions, a);
+                        discharge_calls_in_expr(ctx, assumptions, scope, a);
                     }
                     if let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
                         if pnames.len() == args.len() {
@@ -6664,7 +7228,7 @@ fn analyze_stmts(
                 invalidate_embedded_writes(ctx, assumptions, init);
                 // The initializer is evaluated UNCONDITIONALLY (like a plain `let`), so discharge a
                 // contracted call in it (`let [p, q] = [g(a), 0];`).
-                discharge_calls_in_expr(ctx, assumptions, init);
+                discharge_calls_in_expr(ctx, assumptions, scope, init);
                 // #73: run the EFFECT/enforcement walk over the initializer, exactly as `Stmt::Let`
                 // does. Every Safe-mode capability gate, taint→sink, secret→egress and interprocedural
                 // sink/egress check is emitted from `analyze_expr_effect`; #69 seeded this arm's LABELS
@@ -6782,7 +7346,7 @@ fn analyze_stmts(
             Stmt::ExprStmt(Expr::Assume(expr)) => {
                 // A contracted call inside the assumed expression (`assume(g(x) == 0)`) is evaluated —
                 // discharge its precondition (unconditional positions of `expr`).
-                discharge_calls_in_expr(ctx, assumptions, expr);
+                discharge_calls_in_expr(ctx, assumptions, scope, expr);
                 // Only ASSUME what the solver can model SOUNDLY (mirrors the assert handler below). An
                 // unmodelable assumption — e.g. `assume((x as u8) == 0)`, whose truncating cast has no
                 // sound i64 identity — would otherwise be lowered as if `x == 0` and let the solver
@@ -6802,7 +7366,7 @@ fn analyze_stmts(
                 analyze_expr_effect(expr, mode, scope, effects, ctx);
                 // A contracted call inside the asserted expression (`assert(g(x) > 0)`) is evaluated —
                 // discharge its precondition (unconditional positions of `expr`).
-                discharge_calls_in_expr(ctx, assumptions, expr);
+                discharge_calls_in_expr(ctx, assumptions, scope, expr);
                 // Only discharge an assertion the solver can soundly model in QF_BV (a boolean
                 // formula over integer-modelable terms). A bare bool var, a string comparison, or
                 // any other value is left to the runtime `assert` — the checker must not fabricate
@@ -7179,7 +7743,7 @@ fn analyze_stmts(
                 // argument / operand / `return`-arg (`print(g(x))`, `h(g(x))`, `return g(x)`). Inside a
                 // branch the guard is in scope as a path condition. `return <expr>` parses as
                 // `Call{"return", ..}` (no contract → no-op), and the walk then reaches `g(x)` in its arg.
-                discharge_calls_in_expr(ctx, assumptions, expr);
+                discharge_calls_in_expr(ctx, assumptions, scope, expr);
             }
             Stmt::Assign { target, value } => {
                 analyze_expr_effect(value, mode, scope, effects, ctx);
@@ -7187,8 +7751,8 @@ fn analyze_stmts(
                 // precondition under the pre-assignment assumptions (with any branch guard in scope). The
                 // TARGET place-expression is also evaluated (`arr[g(i)] = x;` computes the index/base), so
                 // discharge calls in it too.
-                discharge_calls_in_expr(ctx, assumptions, value);
-                discharge_calls_in_expr(ctx, assumptions, target);
+                discharge_calls_in_expr(ctx, assumptions, scope, value);
+                discharge_calls_in_expr(ctx, assumptions, scope, target);
                 let value_taint = expr_taint_source_m(
                     value,
                     scope,
@@ -7559,6 +8123,7 @@ fn analyze_stmts(
                         // (to the new fn ref, or clears it for a non-fn value), so a call after the
                         // reassignment resolves through the CURRENT target — no stale-alias false reject.
                         let fal = fn_alias_of(value, scope, ctx);
+                        let fn_identities = fn_identities_of(value, scope, ctx);
                         // Refresh the container-closure paths so a reassignment `b = Box { f: h }`
                         // (h capturing a secret) is tracked — otherwise the stale field-closure of the
                         // ORIGINAL container hid the new closure's captured secret from the egress check
@@ -7574,11 +8139,30 @@ fn analyze_stmts(
                                 m
                             }
                         };
+                        let new_field_fn_identities = match value {
+                            Expr::Var(source) => scope
+                                .get(source)
+                                .map(|binding| binding.field_fn_identities.clone())
+                                .unwrap_or_default(),
+                            _ => {
+                                let mut identities = BTreeMap::new();
+                                collect_container_fn_identities(
+                                    value,
+                                    "",
+                                    scope,
+                                    ctx,
+                                    &mut identities,
+                                );
+                                identities
+                            }
+                        };
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
                             b.closure_lambda = cl;
                             b.fn_alias = fal;
+                            b.fn_identities = fn_identities;
                             b.field_closures = new_fclos;
+                            b.field_fn_identities = new_field_fn_identities;
                         }
                     }
                 }
@@ -7654,7 +8238,7 @@ fn analyze_stmts(
                 // The condition is evaluated UNCONDITIONALLY (before either branch), so a contracted call
                 // in it (`if g(a) > 0 { … }`) must have its precondition discharged — under the pre-branch
                 // assumptions (the guard is not yet in scope for its own condition).
-                discharge_calls_in_expr(ctx, assumptions, cond);
+                discharge_calls_in_expr(ctx, assumptions, scope, cond);
                 // A branch may not execute, so a fact it asserts (e.g. `x = 5`) must not leak out as
                 // unconditional. Analyze each branch under the pre-`if` assumptions (the branches are
                 // ALTERNATIVES — reset between them so `then`'s facts don't leak into `else`), then
@@ -7749,7 +8333,7 @@ fn analyze_stmts(
                 // contracted call in it (`while g(a) > 0 { … }`). A loop-carried variable in the condition
                 // is havoced below (→ unmodeled → skipped, the documented loop residual); a non-loop-var
                 // call still discharges under the pre-loop assumptions.
-                discharge_calls_in_expr(ctx, assumptions, cond);
+                discharge_calls_in_expr(ctx, assumptions, scope, cond);
                 effects.push("loop".into());
                 // B3: verify loop invariants (base case + preservation) BEFORE the body drops the
                 // loop-carried variables, so the base case sees their pre-loop state.
@@ -7784,7 +8368,12 @@ fn analyze_stmts(
                 merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(scope, &[&body_scope], &ctx.param_egress, &ctx.param_sinks);
+                merge_fn_alias_over(
+                    scope,
+                    &[&snap_scope, &body_scope],
+                    &ctx.param_egress,
+                    &ctx.param_sinks,
+                );
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 if let Some((post, _written, readmit)) = admit {
                     // A VERIFIED invariant DOES hold after the loop: re-model the tracked variables
@@ -7835,7 +8424,7 @@ fn analyze_stmts(
                 invalidate_embedded_writes(ctx, assumptions, expr);
                 // The scrutinee is evaluated at least once (unconditionally on entry) — discharge a
                 // contracted call in it (`while let Ok(v) = g(a) { … }`).
-                discharge_calls_in_expr(ctx, assumptions, expr);
+                discharge_calls_in_expr(ctx, assumptions, scope, expr);
                 // SECURITY (task #46, broad hunt wf_bf84c047 FP1): a `while let PAT = scrut` pattern binder
                 // INHERITS the scrutinee's taint/secret — extracting a value out of a tainted/secret
                 // container yields a tainted/secret value. The `if let` / `match` arms already seed this
@@ -7909,7 +8498,12 @@ fn analyze_stmts(
                 merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(scope, &[&body_scope], &ctx.param_egress, &ctx.param_sinks);
+                merge_fn_alias_over(
+                    scope,
+                    &[&snap_scope, &body_scope],
+                    &ctx.param_egress,
+                    &ctx.param_sinks,
+                );
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 for (n, m) in saved_models {
                     restore_binding_membership(ctx, &n, m);
@@ -7948,7 +8542,12 @@ fn analyze_stmts(
                 merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(scope, &[&body_scope], &ctx.param_egress, &ctx.param_sinks);
+                merge_fn_alias_over(
+                    scope,
+                    &[&snap_scope, &body_scope],
+                    &ctx.param_egress,
+                    &ctx.param_sinks,
+                );
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
             }
             Stmt::For {
@@ -8199,11 +8798,11 @@ fn analyze_stmts(
                 // contracted call in it (`for i in 0..g(a) { … }`) must have its precondition discharged.
                 match source {
                     crate::frontend::ForSource::Range { start, end } => {
-                        discharge_calls_in_expr(ctx, assumptions, start);
-                        discharge_calls_in_expr(ctx, assumptions, end);
+                        discharge_calls_in_expr(ctx, assumptions, scope, start);
+                        discharge_calls_in_expr(ctx, assumptions, scope, end);
                     }
                     crate::frontend::ForSource::Collection { expr } => {
-                        discharge_calls_in_expr(ctx, assumptions, expr);
+                        discharge_calls_in_expr(ctx, assumptions, scope, expr);
                     }
                 }
                 let taint_src = match source {
@@ -8272,6 +8871,8 @@ fn analyze_stmts(
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_identities: FnIdentitySet::Unknown,
+                        field_fn_identities: BTreeMap::new(),
                         secret: secret_src,
                     },
                 );
@@ -8314,7 +8915,12 @@ fn analyze_stmts(
                 merge_taint_over(scope, &[&snap_scope, &body_scope]);
                 // A loop body may reassign an fn-value alias to a leaking fn (`while c { f = leak }`);
                 // the value-label merge above does not carry the alias, so merge it too (hunt wf_5b2a1bcc).
-                merge_fn_alias_over(scope, &[&body_scope], &ctx.param_egress, &ctx.param_sinks);
+                merge_fn_alias_over(
+                    scope,
+                    &[&snap_scope, &body_scope],
+                    &ctx.param_egress,
+                    &ctx.param_sinks,
+                );
                 drop_written_after_scope(ctx, assumptions, snapshot, &[body]);
                 restore_binding_membership(ctx, var, saved_var_model);
                 // A VERIFIED for-range invariant holds after the loop: re-model the tracked variables
@@ -8936,6 +9542,8 @@ fn scope_with_closure_params(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
                 secret: false,
             },
         );
@@ -9629,6 +10237,8 @@ fn analyze_expr_effect(
                                     closure_lambda: None,
                                     field_closures: BTreeMap::new(),
                                     fn_alias: None,
+                                    fn_identities: FnIdentitySet::Unknown,
+                                    field_fn_identities: BTreeMap::new(),
                                     secret: arg_secret,
                                 },
                             );
@@ -14078,6 +14688,239 @@ fn substitute_result(e: &Expr, repl: &Expr) -> Expr {
     substitute_vars(e, &m)
 }
 
+fn contract_application_param_indices(
+    callee: &Expr,
+    params: &BTreeMap<String, usize>,
+) -> BTreeSet<usize> {
+    let mut names = BTreeSet::new();
+    collect_expr_vars(callee, &mut names);
+    names
+        .into_iter()
+        .filter_map(|name| params.get(&name).copied())
+        .collect()
+}
+
+/// Collect applications of function-valued formals that execute whenever the enclosing function
+/// executes. Conditional branches, short-circuit RHS expressions, and loop bodies are intentionally
+/// omitted: charging a contract from a path that may not run would be an over-rejection.
+fn collect_unconditional_param_contract_applications(
+    body: &[Stmt],
+    params: &BTreeMap<String, usize>,
+) -> Vec<ParamContractApplication> {
+    let mut out = Vec::new();
+    collect_unconditional_param_contract_stmts(body, params, &mut out);
+    out
+}
+
+fn collect_unconditional_param_contract_stmts(
+    body: &[Stmt],
+    params: &BTreeMap<String, usize>,
+    out: &mut Vec<ParamContractApplication>,
+) {
+    use crate::frontend::ForSource;
+    for stmt in body {
+        match stmt {
+            Stmt::Let {
+                name: _,
+                ty: _,
+                init,
+                span: _,
+            }
+            | Stmt::LetPattern {
+                pattern: _,
+                init,
+                span: _,
+            } => collect_unconditional_param_contract_expr(init, params, out),
+            Stmt::WhileLet {
+                pattern: _,
+                expr,
+                body: _,
+            } => collect_unconditional_param_contract_expr(expr, params, out),
+            Stmt::Assign { target, value } => {
+                collect_unconditional_param_contract_expr(target, params, out);
+                collect_unconditional_param_contract_expr(value, params, out);
+            }
+            Stmt::If {
+                cond,
+                then: _,
+                else_: _,
+            }
+            | Stmt::While {
+                cond,
+                body: _,
+                invariant: _,
+            } => collect_unconditional_param_contract_expr(cond, params, out),
+            Stmt::For {
+                var: _,
+                source,
+                body: _,
+                invariant: _,
+            } => match source {
+                ForSource::Range { start, end } => {
+                    collect_unconditional_param_contract_expr(start, params, out);
+                    collect_unconditional_param_contract_expr(end, params, out);
+                }
+                ForSource::Collection { expr } => {
+                    collect_unconditional_param_contract_expr(expr, params, out)
+                }
+            },
+            Stmt::ExprStmt(expr) => {
+                collect_unconditional_param_contract_expr(expr, params, out);
+                if matches!(expr, Expr::Call { callee, .. } if callee == "return") {
+                    break;
+                }
+            }
+            Stmt::Loop {
+                body: _,
+                invariant: _,
+            }
+            | Stmt::ResearchBlock { intent: _, body: _ }
+            | Stmt::ExploitBlock { intent: _, body: _ }
+            | Stmt::HybridBlock {
+                gpu: _,
+                cpu: _,
+                prove: _,
+            }
+            | Stmt::SpecBlock { forall: _ } => {}
+            Stmt::Break | Stmt::Continue => break,
+        }
+    }
+}
+
+fn collect_unconditional_param_contract_expr(
+    expr: &Expr,
+    params: &BTreeMap<String, usize>,
+    out: &mut Vec<ParamContractApplication>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            let callee_expr = Expr::Var(callee.clone());
+            let param_indices = contract_application_param_indices(&callee_expr, params);
+            if !param_indices.is_empty() {
+                out.push(ParamContractApplication {
+                    callee: callee_expr,
+                    param_indices,
+                    args: args.clone(),
+                });
+            }
+            for arg in args {
+                collect_unconditional_param_contract_expr(arg, params, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            // `recv.method(args)` is method dispatch, not application of the receiver as a
+            // function-valued parameter. Method contracts stay in their separate namespace and
+            // are discharged by `discharge_method_requires`; recording `recv` here made every
+            // method call through a formal look like an unresolved free-function application.
+            if !matches!(callee.as_ref(), Expr::FieldAccess { .. }) {
+                let param_indices = contract_application_param_indices(callee, params);
+                if !param_indices.is_empty() {
+                    out.push(ParamContractApplication {
+                        callee: callee.as_ref().clone(),
+                        param_indices,
+                        args: args.clone(),
+                    });
+                }
+            }
+            collect_unconditional_param_contract_expr(callee, params, out);
+            for arg in args {
+                collect_unconditional_param_contract_expr(arg, params, out);
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            collect_unconditional_param_contract_expr(lhs, params, out);
+            if op != "&&" && op != "||" {
+                collect_unconditional_param_contract_expr(rhs, params, out);
+            }
+        }
+        Expr::Unary { op: _, expr } | Expr::Cast { expr, ty: _ } => {
+            collect_unconditional_param_contract_expr(expr, params, out)
+        }
+        Expr::Tainted { ty: _, inner }
+        | Expr::Declassify {
+            inner,
+            policy: _,
+            reason: _,
+        }
+        | Expr::Assume(inner)
+        | Expr::Assert(inner)
+        | Expr::Try(inner) => collect_unconditional_param_contract_expr(inner, params, out),
+        Expr::ArrayLiteral { elements } => {
+            for element in elements {
+                collect_unconditional_param_contract_expr(element, params, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_unconditional_param_contract_expr(base, params, out);
+            collect_unconditional_param_contract_expr(index, params, out);
+        }
+        Expr::StructLiteral {
+            name: _,
+            fields,
+            span: _,
+        } => {
+            for (_, value) in fields {
+                collect_unconditional_param_contract_expr(value, params, out);
+            }
+        }
+        Expr::FieldAccess {
+            base,
+            field: _,
+            span: _,
+        } => collect_unconditional_param_contract_expr(base, params, out),
+        Expr::EnumConstruct {
+            enum_name: _,
+            variant: _,
+            fields,
+            field_names: _,
+            span: _,
+        } => {
+            for field in fields {
+                collect_unconditional_param_contract_expr(field, params, out);
+            }
+        }
+        Expr::MapLiteral { entries, span: _ } => {
+            for (key, value) in entries {
+                collect_unconditional_param_contract_expr(key, params, out);
+                collect_unconditional_param_contract_expr(value, params, out);
+            }
+        }
+        Expr::Match {
+            scrutinee,
+            arms: _,
+            span: _,
+        }
+        | Expr::If {
+            cond: scrutinee,
+            then: _,
+            else_: _,
+            span: _,
+        }
+        | Expr::IfLet {
+            pattern: _,
+            scrutinee,
+            then: _,
+            else_: _,
+            span: _,
+        } => collect_unconditional_param_contract_expr(scrutinee, params, out),
+        Expr::Block { stmts, tail } => {
+            collect_unconditional_param_contract_stmts(stmts, params, out);
+            if let Some(tail) = tail {
+                collect_unconditional_param_contract_expr(tail, params, out);
+            }
+        }
+        Expr::Lambda { params: _, body: _ }
+        | Expr::Var(_)
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Symbolic { ty: _ }
+        | Expr::TaintSource { label: _ }
+        | Expr::UnifiedBuffer { ty: _ }
+        | Expr::RawPtr { mutable: _ }
+        | Expr::Other(_) => {}
+    }
+}
+
 /// Task #48-A: scan a function body at its OWN execution level for (a) a direct application `p(...)`
 /// of param `p` and (b) any construct that shadows/reassigns the name `p`. A param that is applied
 /// but never shadowed is "descend-safe": passing a closure there is equivalent to applying it, so the
@@ -18401,6 +19244,8 @@ fn walk_block_taint(
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_identities: FnIdentitySet::Unknown,
+                        field_fn_identities: BTreeMap::new(),
                         secret: false,
                     },
                 );
@@ -18703,6 +19548,8 @@ fn walk_block_secret(
                         closure_lambda: None,
                         field_closures: BTreeMap::new(),
                         fn_alias: None,
+                        fn_identities: FnIdentitySet::Unknown,
+                        field_fn_identities: BTreeMap::new(),
                         secret: secret_src,
                     },
                 );
@@ -20150,6 +20997,8 @@ fn seed_one_let(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
             // This scope feeds the INTEGRITY return summary only; secrecy has its own parallel
             // seeder (`seed_one_let_secret`, feeding `compute_secret_fns`), so it is not seeded here.
             secret: false,
@@ -20199,6 +21048,8 @@ fn seed_taint_pattern(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
                 secret: false,
             },
         );
@@ -20306,6 +21157,8 @@ fn seed_effect_let(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
             secret: init_secret || explicit_secret,
         },
     );
@@ -20357,6 +21210,8 @@ fn seed_effect_pattern(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
                 secret,
             },
         );
@@ -20406,6 +21261,8 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
                     fn_alias: None,
+                    fn_identities: FnIdentitySet::Unknown,
+                    field_fn_identities: BTreeMap::new(),
                     secret: false,
                 });
             e.closure_lambda = Some(lam);
@@ -20500,6 +21357,8 @@ fn seed_declared_pattern_binders(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
             secret: false,
         });
         mark(b);
@@ -20884,6 +21743,8 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                     closure_lambda: None,
                     field_closures: BTreeMap::new(),
                     fn_alias: None,
+                    fn_identities: FnIdentitySet::Unknown,
+                    field_fn_identities: BTreeMap::new(),
                     secret,
                 },
             );
@@ -21129,6 +21990,8 @@ fn seed_one_let_secret(
             closure_lambda: None,
             field_closures: BTreeMap::new(),
             fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
             secret,
         },
     );
@@ -21240,6 +22103,8 @@ fn seed_secret_pattern(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
+                fn_identities: FnIdentitySet::Unknown,
+                field_fn_identities: BTreeMap::new(),
                 secret,
             },
         );
@@ -21382,6 +22247,8 @@ fn body_returns_secret(
                             closure_lambda: None,
                             field_closures: BTreeMap::new(),
                             fn_alias: None,
+                            fn_identities: FnIdentitySet::Unknown,
+                            field_fn_identities: BTreeMap::new(),
                             secret: false,
                         });
                         b.secret = true;
@@ -23687,5 +24554,237 @@ fn scan_param_bounds_expr(
             scan_param_bounds_expr(else_, p, lower, upper_le, upper_lt, idx);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod fn_identity_spine_tests {
+    use super::*;
+    use crate::frontend::MatchArm;
+
+    fn names(expected: &[&str]) -> FnIdentitySet {
+        FnIdentitySet::Known(expected.iter().map(|name| (*name).to_string()).collect())
+    }
+
+    fn context_with_functions(functions: &[&str]) -> SemanticContext {
+        let mut ctx = SemanticContext::default();
+        for function in functions {
+            ctx.fn_params.insert((*function).to_string(), Vec::new());
+        }
+        ctx
+    }
+
+    fn binding(identities: FnIdentitySet) -> ScopeBinding {
+        ScopeBinding {
+            info: BindingInfo {
+                name: "fixture".into(),
+                ty: None,
+                mode: "safe".into(),
+                tainted: false,
+                taint_source: None,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            closure_lambda: None,
+            secret: false,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            fn_identities: identities,
+            field_fn_identities: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn identity_spine_resolves_bare_user_function() {
+        let ctx = context_with_functions(&["f"]);
+        assert_eq!(
+            fn_identities_of(&Expr::Var("f".into()), &BTreeMap::new(), &ctx),
+            names(&["f"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_resolves_alias_chain() {
+        let ctx = context_with_functions(&["f"]);
+        let mut scope = BTreeMap::new();
+        let first = fn_identities_of(&Expr::Var("f".into()), &scope, &ctx);
+        scope.insert("a".into(), binding(first));
+        let second = fn_identities_of(&Expr::Var("a".into()), &scope, &ctx);
+        scope.insert("b".into(), binding(second));
+        assert_eq!(
+            fn_identities_of(&Expr::Var("b".into()), &scope, &ctx),
+            names(&["f"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_unions_if_join() {
+        let ctx = context_with_functions(&["f", "g"]);
+        let expr = Expr::If {
+            cond: Box::new(Expr::Literal("true".into())),
+            then: Box::new(Expr::Var("f".into())),
+            else_: Box::new(Expr::Var("g".into())),
+            span: Span::default(),
+        };
+        assert_eq!(
+            fn_identities_of(&expr, &BTreeMap::new(), &ctx),
+            names(&["f", "g"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_unions_match_join() {
+        let ctx = context_with_functions(&["f", "g"]);
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Var("choice".into())),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Literal("0".into()),
+                    guard: None,
+                    body: Expr::Var("f".into()),
+                },
+                MatchArm {
+                    pattern: Pattern::Wildcard,
+                    guard: None,
+                    body: Expr::Var("g".into()),
+                },
+            ],
+            span: Span::default(),
+        };
+        assert_eq!(
+            fn_identities_of(&expr, &BTreeMap::new(), &ctx),
+            names(&["f", "g"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_resolves_container_element() {
+        let ctx = context_with_functions(&["f"]);
+        let expr = Expr::Index {
+            base: Box::new(Expr::ArrayLiteral {
+                elements: vec![Expr::Var("f".into())],
+            }),
+            index: Box::new(Expr::Literal("0".into())),
+        };
+        assert_eq!(
+            fn_identities_of(&expr, &BTreeMap::new(), &ctx),
+            names(&["f"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_resolves_function_return() {
+        let mut ctx = context_with_functions(&["f", "get"]);
+        ctx.fn_sole_return
+            .insert("get".into(), (Vec::new(), Expr::Var("f".into())));
+        assert_eq!(
+            fn_identities_of(
+                &Expr::Call {
+                    callee: "get".into(),
+                    args: Vec::new(),
+                },
+                &BTreeMap::new(),
+                &ctx,
+            ),
+            names(&["f"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_resolves_identity_forwarder() {
+        let mut ctx = context_with_functions(&["f", "forward"]);
+        ctx.fn_returns_param
+            .insert("forward".into(), (vec!["value".into()], 0));
+        assert_eq!(
+            fn_identities_of(
+                &Expr::Call {
+                    callee: "forward".into(),
+                    args: vec![Expr::Var("f".into())],
+                },
+                &BTreeMap::new(),
+                &ctx,
+            ),
+            names(&["f"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_resolves_pass_through_builtin() {
+        let ctx = context_with_functions(&["f"]);
+        assert_eq!(
+            fn_identities_of(
+                &Expr::Call {
+                    callee: "identity".into(),
+                    args: vec![Expr::Var("f".into())],
+                },
+                &BTreeMap::new(),
+                &ctx,
+            ),
+            names(&["f"])
+        );
+    }
+
+    #[test]
+    fn identity_spine_returns_unknown_at_recursive_depth_limit() {
+        let mut ctx = context_with_functions(&["cycle"]);
+        ctx.fn_sole_return.insert(
+            "cycle".into(),
+            (
+                Vec::new(),
+                Expr::Call {
+                    callee: "cycle".into(),
+                    args: Vec::new(),
+                },
+            ),
+        );
+        assert_eq!(
+            fn_identities_of(
+                &Expr::Call {
+                    callee: "cycle".into(),
+                    args: Vec::new(),
+                },
+                &BTreeMap::new(),
+                &ctx,
+            ),
+            FnIdentitySet::Unknown
+        );
+    }
+
+    #[test]
+    fn requires_policy_selects_only_a_singleton_identity() {
+        assert_eq!(names(&["f"]).into_singleton().as_deref(), Some("f"));
+        assert_eq!(names(&[]).into_singleton(), None);
+        assert_eq!(names(&["f", "g"]).into_singleton(), None);
+        assert_eq!(FnIdentitySet::Unknown.into_singleton(), None);
+    }
+
+    #[test]
+    fn contract_application_summary_keeps_methods_out_of_free_fn_identity() {
+        let params = BTreeMap::from([("receiver".to_string(), 0), ("value".to_string(), 1)]);
+        let body = vec![Stmt::ExprStmt(Expr::CallExpr {
+            callee: Box::new(Expr::FieldAccess {
+                base: Box::new(Expr::Var("receiver".into())),
+                field: "method".into(),
+                span: Span::default(),
+            }),
+            args: vec![Expr::Var("value".into())],
+        })];
+        assert!(collect_unconditional_param_contract_applications(&body, &params).is_empty());
+    }
+
+    #[test]
+    fn contract_application_summary_keeps_indexed_callable_carrier() {
+        let params = BTreeMap::from([("functions".to_string(), 0)]);
+        let body = vec![Stmt::ExprStmt(Expr::CallExpr {
+            callee: Box::new(Expr::Index {
+                base: Box::new(Expr::Var("functions".into())),
+                index: Box::new(Expr::Literal("0".into())),
+            }),
+            args: vec![Expr::Literal("1".into())],
+        })];
+        let applications = collect_unconditional_param_contract_applications(&body, &params);
+        assert_eq!(applications.len(), 1);
+        assert_eq!(applications[0].param_indices, BTreeSet::from([0]));
     }
 }

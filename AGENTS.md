@@ -117,9 +117,9 @@ red: STOP and say so. Do not fall through to the host.**
 ## Current state (2026-07-27)
 
 Green under a pinned binary, 12-gate `SEAL_PASS`, `known_fail=0`:
-security **305/305** · language **244/244** · stdlib fail-closed **104/104** · runtime 4/4 ·
+security **306/306** · language **244/244** · stdlib fail-closed **104/104** · runtime 4/4 ·
 selfhost 9/9 · taint/type/effect/capset self-host **0 disagreements** · formal gate PASS with every
-theorem machine-checked and no `sorry`/`admit`/`axiom` · native-authoritative **876 files, 0
+theorem machine-checked and no `sorry`/`admit`/`axiom` · native-authoritative **877 files, 0
 mismatches**.
 
 Reproduce all of it with one command: **`bash scripts/run_seal_checklist.sh`**. It rebuilds once,

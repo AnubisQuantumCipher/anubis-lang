@@ -63,13 +63,13 @@ Absence of a red row is **not** evidence of absence.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **305/305 PASS**. Live disk inventory **305** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **306/306 PASS**. Live disk inventory **306** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 876 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 877 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
@@ -171,72 +171,23 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
    in the direction of alarm, and the list is only useful if wrong entries are retracted as visibly
    as right ones are added.
 
-10. **Contract `requires` not discharged through a fn-value carrier — OPEN, DEFAULT LANE
-    (2026-07-27).**
+10. **Contract `requires` through a fn-value carrier — CLOSED 2026-07-27.**
+    `fn app(g){print(g(-1));} app(f)` with `f` declaring `requires(x > 0)` accepted and printed -1.
+    Closed by a policy-neutral identity summary that discharges the callee's precondition when the
+    candidate resolves to a SINGLETON user function, and defers otherwise.
 
-    ```anubis
-    fn f(x: i64) -> i64 requires(x > 0) { return x; }
-    fn app(g) { print(g(-1)); }
-    fn main() { app(f); }        // check exit 0; run PRINTS -1
-    ```
+    Singleton-only is deliberate and is the SECOND attempt. A full set-valued policy was built,
+    applied, measured and REVERTED: it closed the gap and passed all four hand-written guards while
+    flipping NINE `_accepts` fixtures — including `anvil_threat_hunter`, a demo application. Every
+    flip was `ANUBIS_CONTRACT_CALLEE_UNKNOWN`: the policy rejected an unresolved dynamic callable
+    even where no contract had been proven. Fail-closed on unknown is right for a LABEL and wrong for
+    a contract, where "unknown callee" is the normal state of higher-order code.
 
-    The inconsistency is INSIDE the default lane, which is what makes it a defect rather than an
-    opt-in boundary:
+    A real namespace bug surfaced with it and is fixed: `recv.method(args)` was recorded as applying
+    a function-valued formal merely because the receiver expression mentioned a formal, which
+    accounted for the three method-shaped flips.
 
-    | form | default lane | `@verified` on the caller |
-    |---|---|---|
-    | `f(-1)` direct | REJECT | REJECT |
-    | `app(f)` carrier | **ACCEPT, run prints -1** | REJECT |
-
-    So the default lane DOES enforce `requires` on a direct call and does NOT enforce the same
-    contract one carrier away. `@verified` on the CALLER catches it; `@verified` on `f` does not,
-    since the discharge happens at the call site.
-
-    Also open through a container (`app([f])`) and a return (`fn get(){ return f; }`). Two controls
-    are in the corpus; the RED fixture is held out until fixed.
-
-### The carrier census — 19 enforcement surfaces, measured (2026-07-27)
-
-Three agents independently ran the same fn-value carrier battery (direct · local alias · param ·
-container · return · identity forwarder · pass-through builtin · if/match join) across every
-enforcement surface. This replaces the earlier "three of four pillars" framing, which was based on
-my hand-probing four surfaces.
-
-**Immune — resolve by a derived SET, label, token, or declaration site rather than a callee NAME:**
-
-| surface | why it survives the carrier |
-|---|---|
-| effects (`uses` declared-vs-inferred) | resolves through the EFFECT SET, not a name |
-| capability linearity / causal spend | token identity, not callee name |
-| `@research` / `@exploit` authorization | declaration-site check on the ITEM; a carrier cannot move an item |
-| `target_run` research-gating | `var_as_value()` refuses builtins as first-class values |
-| `shell`/`exec` gating | same architecture |
-| trifecta detector | already consults `fn_alias` through every carrier |
-| information-flow (secret/taint) | 12 carriers closed 2026-07-27 |
-
-**Leaking — key on the syntactic callee NAME:**
-
-| surface | evidence |
-|---|---|
-| contract `requires` discharge | 7 carriers, TRUE ACCEPT + runtime witness (`run` prints the forbidden value) |
-| contract `ensures` composition | 7 carriers, check fail-open |
-| bare-builtin gating | 3 carriers, true accept |
-| `cap_export` sealedness | 4 false accepts — `is_export_sink(callee)` reads the raw AST name (`capability.rs:2321`) |
-
-**Counts: 19 surfaces · 5 NAME-keyed · 10 true-accept leaking carriers with runtime witnesses.**
-
-### The architecture both auditors converged on, independently
-
-**A shared identity SPINE with separate policy APPLICATION** — not a single shared resolver.
-
-`fn_alias_of` cannot simply be reused as-is, and the reason is precise: it returns a single
-`Option<String>`, and an if/match join deliberately collapses several identities to one, preferring
-the `secret_fns`/`tainting_fns` branch. That preference is SOUND for a label (fail closed on the
-dangerous branch) and UNSOUND for a contract — two functions with different preconditions cannot be
-represented by one arbitrarily chosen name. Contracts need the SET; labels need the join.
-
-That distinction is why patching the leaking surfaces one at a time would reproduce the class a sixth
-time.
+    Verdict-diff on the pinned binary: security 306/306; language 244/244. Zero accept→reject flips.
 
 11. **`ensures` is not composed into the caller's `requires` discharge — OPEN (2026-07-27).**
 
@@ -339,11 +290,11 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **305/305** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **306/306** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
-| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 876 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
+| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 877 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
-| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 305/305** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 306/306** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
 | Symbolic-index secret-capturing closure application | **CLAIMED 2026-07-25** | `arr[idx](…)` with non-literal `idx` fail-closed when container holds secret/taint-capturing element (j1 twin of `let g = arr[i]`); unit `symbolic_index_secret_capturing_list_application_fails_closed`; clean symbolic still accepts | Residual: full PC-join; untyped formals still interproc |
 | Nested container closure application (`outer[0][0]`, `b.fs[i]`, bind + mid-bind) | **CLAIMED 2026-07-25** | Nested Index/FieldAccess CallExpr + **bind** (`let g = outer[i][0]; g(0)`) + **intermediate mid-bind** (`let mid = outer[0]; mid[0](0)` re-keys `field_closures`; symbolic mid union-projects first segments fail-closed); unit `nested_container_closure_application_fails_closed` (apply + bind + mid lit/sym/clean); clean nested still accepts | Residual: full PC-join not claimed |
 | if-expr-built containers seed `field_closures` (incl. nested `Stmt::If` + let-inner) | **CLAIMED 2026-07-25** | `collect_container_closures` walks `Expr::If`/`Match`/`Block`; nested bare `if` as `Stmt::If`; unit `nested_container_closure_application_fails_closed` | Residual: full PC-join not claimed |
