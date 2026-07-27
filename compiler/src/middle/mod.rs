@@ -9223,6 +9223,25 @@ fn analyze_expr_effect(
                 let mut local = scope.clone();
                 seed_effect_pattern(&mut local, &arm.pattern, &st, ss, &ctx.place_types());
                 propagate_pattern_closures(&mut local, scrutinee, &arm.pattern);
+                // A LAMBDA arm value is opaque at its definition, and this file's own justification
+                // for that is "safe only if EVERY application site descends". A closure built in an
+                // arm and returned OUT of the match breaks that premise: the arm's bindings are gone
+                // by the time it is applied, so the application-site descent walks the body in a
+                // scope where the captured binder does not exist and sees nothing.
+                // `let f = match e { E::Box(x) => || print(x) }; f()` leaked exactly that way.
+                //
+                // When a closure ESCAPES the scope that gave its captures meaning, the only place it
+                // can be judged is here. Descending at the definition site over-approximates — it
+                // charges even if the closure is never applied — which is the fail-closed direction
+                // and the same trade the container-closure lanes already make.
+                if let Expr::Lambda { params, body } = &arm.body {
+                    let mut inner = local.clone();
+                    for p in params {
+                        inner.remove(p);
+                    }
+                    seed_body_local_lambdas(body, &mut inner);
+                    analyze_expr_effect(body, mode, &inner, effects, ctx);
+                }
                 if let Some(guard) = &arm.guard {
                     // Guard is a secret PC even when the scrutinee is public (`n if n > secret`).
                     let mut assigned = BTreeSet::new();
@@ -19269,6 +19288,29 @@ fn expr_secret_source_m(
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
                 seed_secret_pattern(&mut local, &arm.pattern, scrut, struct_fields);
+                // A LAMBDA arm value is opaque at its definition — safe only while every application
+                // site descends in a scope that still holds what it captured. A closure built in an
+                // arm and returned OUT of the match escapes the arm scope, so the binder's label is
+                // gone by the time it is applied: `let f = match e { E::Box(x) => || print(x) }; f()`
+                // leaked. Check the capture here, where the arm's bindings still exist, and let the
+                // label ride out with the match's value.
+                if let Expr::Lambda { params, body } = &arm.body {
+                    let mut inner = local.clone();
+                    for p in params {
+                        inner.remove(p);
+                    }
+                    seed_body_local_lambdas(body, &mut inner);
+                    if let Some(src) = expr_secret_source_m(
+                        body,
+                        &inner,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    ) {
+                        return Some(src);
+                    }
+                }
                 expr_secret_source_m(
                     &arm.body,
                     &local,
