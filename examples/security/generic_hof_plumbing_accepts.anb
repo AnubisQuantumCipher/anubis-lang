@@ -1,0 +1,11 @@
+// EXPECT: PASS
+fn inc(x) { return x + 1; }
+fn positive(x) { return x > 0; }
+fn add(a, b) { return a + b; }
+fn main() {
+    let xs = [1, 2, 3];
+    let ys = map(xs, inc);
+    let zs = filter(ys, positive);
+    let total = reduce(zs, add, 0);
+    print(total);
+}

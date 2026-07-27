@@ -1,0 +1,4 @@
+// EXPECT: PASS
+fn f(x: i64) -> i64 requires(x > 0) { return x; }
+fn keep(g) { print("kept"); }
+fn main() { keep(f); }
