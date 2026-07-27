@@ -1416,19 +1416,20 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     // one tail value / one return, else skipped (an under-approximation never
                     // false-rejects).
                     {
+                        // Every path goes through `unanimous_forwarded_return` so its branch PEEL
+                        // applies uniformly. Routing only the many-returns case through it was the
+                        // M2-A bug: `return if c { f } else { f };` is ONE return, so it took the
+                        // single-return path and was registered as an opaque `If` expression rather
+                        // than as a forwarder of `f`.
                         let sole: Option<Expr> = if tv.len() == 1 {
-                            Some(tv[0].clone())
+                            unanimous_forwarded_return(&tv[..1])
                         } else {
                             let mut rets = Vec::new();
                             for st in body {
                                 collect_returns_in_stmt(st, &mut rets);
                             }
-                            if rets.len() == 1 {
-                                Some(rets.remove(0))
-                            } else {
-                                // H5 — several returns that all forward the SAME parameter.
-                                unanimous_forwarded_return(&rets)
-                            }
+                            // H5 — several returns that all forward the SAME parameter.
+                            unanimous_forwarded_return(&rets)
                         };
                         if let Some(r) = sole {
                             ctx.fn_sole_return.insert(
@@ -1558,10 +1559,10 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                     .entry(name.clone())
                                     .or_insert((pnames.clone(), lam));
                             }
+                            // Same uniform routing as the free-fn half above, for the same reason:
+                            // the peel must see the single-return case too.
                             let sole: Option<Expr> = if tv.len() == 1 {
-                                Some(tv[0].clone())
-                            } else if rets.len() == 1 {
-                                Some(rets[0].clone())
+                                unanimous_forwarded_return(&tv[..1])
                             } else {
                                 // H5 applies to the method half too — a branch forwarder is no less a
                                 // forwarder for being declared in an `impl`.
@@ -7699,15 +7700,36 @@ fn resolve_closure_value(
 /// arbitrary branch would be unsound-by-arbitrary-choice; resolving to all of them needs the set-valued
 /// resolver with widened sinks. That remains a KNOWN open residual, recorded here rather than implied
 /// closed — see the Tier 1 report.
+/// The single value every return of a forwarder yields, or `None` when they disagree.
+///
+/// M2 Consumer A: this used to compare the return expressions SYNTACTICALLY, so it recognised
+/// `if c { return f; } else { return f; }` (two `return` statements) but not
+/// `return if c { f } else { f };` — one return whose value is a branch EXPRESSION. Same forwarder,
+/// same parameter, different syntax, and the expression form silently registered nothing, so a
+/// gated closure forwarded through it escaped. Witnessed by `h5_return_if_expr_same_param_rejects`
+/// and its `match` twin.
+///
+/// The peel is `expr_tail_values`, which already flattens `If`/`IfLet`/`Match`/`Block` and bare
+/// `return` calls for the taint and secret resolvers — reused here rather than reimplemented, so a
+/// construct those lanes learn to peel is peeled here too.
+///
+/// A SINGLE peeled candidate is returned as-is, whatever its shape, preserving the previous
+/// behaviour for a sole `Lambda` return. Multiple candidates must be the SAME variable: resolving
+/// to an arbitrary branch would be unsound-by-arbitrary-choice, and charging all of them needs the
+/// set-widening this deliberately does not do (it would over-reject a program whose gated value
+/// sits in the not-taken arm). Disagreeing candidates therefore stay at the existing fail-open.
 fn unanimous_forwarded_return(rets: &[Expr]) -> Option<Expr> {
-    let first = rets.first()?;
+    let mut peeled: Vec<Expr> = Vec::new();
+    for r in rets {
+        expr_tail_values(r, &mut peeled);
+    }
+    let (first, rest) = peeled.split_first()?;
+    if rest.is_empty() {
+        return Some(first.clone());
+    }
     match first {
-        Expr::Var(v0) => {
-            if rets.iter().all(|r| matches!(r, Expr::Var(v) if v == v0)) {
-                Some(first.clone())
-            } else {
-                None
-            }
+        Expr::Var(v0) if peeled.iter().all(|r| matches!(r, Expr::Var(v) if v == v0)) => {
+            Some(first.clone())
         }
         _ => None,
     }
