@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): abs("nope") returns 0 instead of failing closed
+// (compiler/src/backends/run.rs anubis_abs, ~line 1976, via AnubisValue::as_i64() on a
+// Str that fails to parse -> 0). `0` is indistinguishable from `abs(0)`. Reuses the
+// ANUBIS_TYPE_ERROR code already established for e.g. sort_by's non-list-first-argument
+// check and anubis_iter's closure-not-iterable check.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(abs("nope"));
+}

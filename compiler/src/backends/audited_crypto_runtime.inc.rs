@@ -231,7 +231,11 @@ fn anubis_aead_nonce_from_counter(counter: AnubisValue) -> AnubisValue {
 }
 
 fn anubis_random_bytes(n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(0) as usize;
+    let n_raw = n.as_i64();
+    if n_raw < 0 {
+        panic!("ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH: byte count must be non-negative, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     if n > 1 << 20 {
         panic!("ANUBIS_CRYPTO_RANDOM_TOO_LARGE: max 1MiB per call");
     }

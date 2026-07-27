@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// PENDING (fails today): first(42) returns 42 via anubis_iter's `other => vec![other]`
+// fallback (run.rs:anubis_iter). The scalar is silently wrapped as a 1-element sequence.
+// Twin of first_empty_should_fail_closed.anb (wrong-type case).
+fn main() {
+    print(first(42));
+}

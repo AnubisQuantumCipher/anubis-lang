@@ -1,0 +1,22 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): map(42, f) silently wraps the scalar 42 into a 1-element list
+// and returns [f(42)] instead of failing closed (compiler/src/backends/run.rs
+// anubis_iter, ~line 2696-2710, fallback arm `other => vec![other]`). LANGUAGE.md
+// documents that "most list functions also accept a string (over its characters) or a
+// map (over its keys)" — List | String | Map is the full documented input contract for
+// map/filter/each/find/any/all/count/flat_map/unique/take/drop/take_while/drop_while/
+// chunk/window/position/product/first/last/concat/min_by/max_by/partition. An
+// Int/Bool/Struct/Enum is NOT one of those three shapes and should be rejected the same
+// way `anubis_iter` already rejects a Closure argument (see the ANUBIS_TYPE_ERROR panic
+// immediately above the `other => vec![other]` fallback this fixture targets) —
+// tightening that one fallback closes this hole for all ~20 functions that share it.
+// A corpus sweep (examples/**.anb, tests/**.anb) found zero call sites that pass a
+// bare scalar to any of these functions — see the patch spec for the full sweep.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn id(x) { return x; }
+fn main() {
+    print(map(42, id));
+}

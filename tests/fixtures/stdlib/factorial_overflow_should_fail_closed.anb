@@ -1,0 +1,23 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_OVERFLOW
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): factorial(21) returns -4249290049419214848 — a negative
+// number for a quantity that is by definition always positive — instead of failing
+// closed (compiler/src/backends/run.rs anubis_factorial, ~line 2739,
+// `acc.wrapping_mul(i)`). factorial(100) is worse: it silently returns 0.
+//
+// POLICY NOTE (see the patch spec / audit report for the full discussion): LANGUAGE.md
+// documents that `+ - * /` wrap on overflow as the language's general integer model, so
+// this is arguably "consistent" rather than "buggy" in isolation. This fixture takes
+// the position that a builtin the caller treats as an opaque computation (unlike a
+// visible `*` in the caller's own code, where the caller controls and can reason about
+// the operands) should not silently emit a nonsensical negative "count", and recommends
+// factorial specifically opt into checked arithmetic — the same way integer division
+// is already a checked exception to the wrapping-arithmetic policy (division panics on
+// divide-by-zero rather than wrapping). This is a judgment call for the operator to
+// ratify, not a mechanical fix.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(factorial(21));
+}

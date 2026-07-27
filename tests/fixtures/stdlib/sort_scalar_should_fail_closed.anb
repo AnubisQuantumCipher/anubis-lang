@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): sort(42) returns `42` unchanged instead of failing closed
+// (compiler/src/backends/run.rs::anubis_sort, ~line 2195, whose fallback arm is
+// `other => other` — the exact same silent-passthrough shape `sum` had before this
+// patch, but never previously identified: `sort` is not routed through `anubis_iter`,
+// so the `anubis_iter` fix does NOT close this one). Found independently by SONNET5-B
+// during the stdlib patch reconciliation, 2026-07-26 — present in NEITHER the SONNET5-C
+// nor the GROK-PTAH package; verified real (`sort(42)` -> `42`) against the current
+// binary before being added here. See scratchpad/fleet_20260726/stdlib_merged_package.md.
+fn main() {
+    let r = sort(42);
+    print(r);
+}

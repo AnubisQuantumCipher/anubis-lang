@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EMPTY_COLLECTION
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): pop([]) returns Int(0) and leaves the list unchanged instead
+// of failing closed (compiler/src/backends/run.rs anubis_pop, ~line 2226). A caller
+// cannot distinguish "popped a real 0" from "the list was already empty".
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    let mut xs = [];
+    print(pop(xs));
+}

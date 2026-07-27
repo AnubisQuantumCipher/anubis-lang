@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check`).
+// PENDING (fails today): remove("abc", 0) returns Int(0) (run.rs:anubis_remove catch-all).
+// Twin of remove_oob (wrong-type target).
+fn main() {
+    let mut s = "abc";
+    print(remove(s, 0));
+    print(s);
+}

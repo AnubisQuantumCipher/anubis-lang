@@ -1,0 +1,12 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_CODEPOINT
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): chr(0x110000) — one past the maximum valid Unicode scalar
+// value (0x10FFFF) — returns "" instead of failing closed (compiler/src/backends/run.rs
+// anubis_chr, ~line 2079). Same root cause as chr(-1); this fixture pins the upper
+// boundary, chr_negative_should_fail_closed.anb pins the lower one.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(chr(1114112));
+}

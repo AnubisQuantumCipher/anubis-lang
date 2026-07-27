@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INDEX_OUT_OF_BOUNDS
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): remove(xs, oob_index) returns Int(0) and leaves the list
+// unchanged instead of failing closed (compiler/src/backends/run.rs anubis_remove,
+// ~line 2239, via anubis_norm_index -> None). This reuses the SAME error code that
+// `xs[i]` already raises for an out-of-bounds index (index_get, ~line 1594) — remove()
+// takes an index argument exactly like `[]` does, so it should fail identically.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    let mut xs = [10, 20, 30];
+    print(remove(xs, 99));
+    print(xs);
+}

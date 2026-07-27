@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): keys([1, 2]) returns [] instead of failing closed
+// (compiler/src/backends/run.rs AnubisValue::map_keys, ~line 1709, whose fallback arm
+// for a non-Map is `_ => anubis_mk_list(vec![])`). `keys` is documented under "Maps"
+// (LANGUAGE.md) as a map-only accessor, unlike the generic list/string/map
+// polymorphism documented for iteration functions like `map`/`filter`/`find` — an
+// empty list here is indistinguishable from "this map genuinely has no keys".
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(keys([1, 2]));
+}

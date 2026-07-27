@@ -1689,8 +1689,9 @@ impl AnubisValue {
     }
 
     fn push_val(&mut self, val: AnubisValue) {
-        if let AnubisValue::List(v) = self {
-            std::rc::Rc::make_mut(v).push(val);
+        match self {
+            AnubisValue::List(v) => { std::rc::Rc::make_mut(v).push(val); }
+            other => panic!("ANUBIS_TYPE_ERROR: push expects a list, got {}", other.type_name()),
         }
     }
 
@@ -1711,7 +1712,7 @@ impl AnubisValue {
             AnubisValue::Map(m) => anubis_mk_list(
                 m.iter().map(|(k, _)| anubis_mk_str(k.clone())).collect()
             ),
-            _ => anubis_mk_list(vec![]),
+            other => panic!("ANUBIS_TYPE_ERROR: keys expects a map, got {}", other.type_name()),
         }
     }
 }
@@ -1974,6 +1975,9 @@ fn anubis_bool_of(v: AnubisValue) -> AnubisValue { AnubisValue::Bool(v.as_bool()
 fn anubis_type_of(v: AnubisValue) -> AnubisValue { anubis_mk_str(v.type_name().to_string()) }
 
 fn anubis_abs(v: AnubisValue) -> AnubisValue {
+    if !v.is_numeric() {
+        panic!("ANUBIS_TYPE_ERROR: abs expects a numeric argument, got {}", v.type_name());
+    }
     if v.is_float() { AnubisValue::Float(v.as_f64().abs()) } else { AnubisValue::Int(v.as_i64().wrapping_abs()) }
 }
 // Ordered via `anubis_value_cmp` — the same comparator `sort`/`min_by` use — so Int/Int compares
@@ -1985,10 +1989,14 @@ fn anubis_seq(items: Vec<AnubisValue>) -> Vec<AnubisValue> {
     items
 }
 fn anubis_min(items: Vec<AnubisValue>) -> AnubisValue {
-    anubis_seq(items).into_iter().reduce(anubis_min2).unwrap_or(AnubisValue::Int(0))
+    anubis_seq(items).into_iter().reduce(anubis_min2).unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: min has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
 }
 fn anubis_max(items: Vec<AnubisValue>) -> AnubisValue {
-    anubis_seq(items).into_iter().reduce(anubis_max2).unwrap_or(AnubisValue::Int(0))
+    anubis_seq(items).into_iter().reduce(anubis_max2).unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: max has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
 }
 fn anubis_pow(base: AnubisValue, exp: AnubisValue) -> AnubisValue {
     if base.is_float() || exp.is_float() {
@@ -2074,13 +2082,24 @@ fn anubis_index_of(hay: AnubisValue, needle: AnubisValue) -> AnubisValue {
     }
 }
 fn anubis_ord(v: AnubisValue) -> AnubisValue {
-    AnubisValue::Int(v.display_string().chars().next().map(|c| c as i64).unwrap_or(0))
+    match v.display_string().chars().next() {
+        Some(c) => AnubisValue::Int(c as i64),
+        None => panic!("ANUBIS_EMPTY_COLLECTION: ord(\"\") — the empty string has no first character"),
+    }
 }
 fn anubis_chr(v: AnubisValue) -> AnubisValue {
-    anubis_mk_str(char::from_u32(v.as_i64() as u32).map(|c| c.to_string()).unwrap_or_default())
+    let n = v.as_i64();
+    match char::from_u32(n as u32) {
+        Some(c) => anubis_mk_str(c.to_string()),
+        None => panic!("ANUBIS_INVALID_CODEPOINT: {} is not a valid Unicode scalar value (surrogate range D800-DFFF, negative, or > 0x10FFFF)", n),
+    }
 }
 fn anubis_repeat(s: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let count = n.as_i64().max(0) as usize;
+    let count_raw = n.as_i64();
+    if count_raw < 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: repeat count must be non-negative, got {}", count_raw);
+    }
+    let count = count_raw as usize;
     match s {
         AnubisValue::List(items) => {
             let mut out = Vec::new();
@@ -2199,7 +2218,7 @@ fn anubis_sort(x: AnubisValue) -> AnubisValue {
             items.sort_by(anubis_value_cmp);
             anubis_mk_list(items)
         }
-        other => other,
+        other => panic!("ANUBIS_TYPE_ERROR: sort expects a list, got {}", other.type_name()),
     }
 }
 fn anubis_sum(x: AnubisValue) -> AnubisValue {
@@ -2211,41 +2230,61 @@ fn anubis_sum(x: AnubisValue) -> AnubisValue {
                 AnubisValue::Int(items.iter().map(|v| v.as_i64()).sum())
             }
         }
-        other => other,
+        other => panic!("ANUBIS_TYPE_ERROR: sum expects a list, got {}", other.type_name()),
     }
 }
 fn anubis_keys(m: AnubisValue) -> AnubisValue { m.map_keys() }
 fn anubis_values(m: AnubisValue) -> AnubisValue {
-    match m { AnubisValue::Map(e) => anubis_mk_list(anubis_rc_take(e).into_iter().map(|(_, v)| v).collect()), _ => anubis_mk_list(vec![]) }
+    match m {
+        AnubisValue::Map(e) => anubis_mk_list(anubis_rc_take(e).into_iter().map(|(_, v)| v).collect()),
+        other => panic!("ANUBIS_TYPE_ERROR: values expects a map, got {}", other.type_name()),
+    }
 }
 fn anubis_has_key(m: AnubisValue, k: AnubisValue) -> AnubisValue {
     let key = k.display_string();
-    match m { AnubisValue::Map(e) => AnubisValue::Bool(e.iter().any(|(kk, _)| kk == &key)), _ => AnubisValue::Bool(false) }
+    match m {
+        AnubisValue::Map(e) => AnubisValue::Bool(e.iter().any(|(kk, _)| kk == &key)),
+        other => panic!("ANUBIS_TYPE_ERROR: has_key expects a map, got {}", other.type_name()),
+    }
 }
 
 fn anubis_pop(v: &mut AnubisValue) -> AnubisValue {
-    if let AnubisValue::List(l) = v { std::rc::Rc::make_mut(l).pop().unwrap_or(AnubisValue::Int(0)) } else { AnubisValue::Int(0) }
+    match v {
+        AnubisValue::List(l) => std::rc::Rc::make_mut(l).pop().unwrap_or_else(|| {
+            panic!("ANUBIS_EMPTY_COLLECTION: pop on an empty list (use is_empty(xs) to guard)")
+        }),
+        other => panic!("ANUBIS_TYPE_ERROR: pop expects a list, got {}", other.type_name()),
+    }
 }
 fn anubis_insert(v: &mut AnubisValue, i: AnubisValue, val: AnubisValue) -> AnubisValue {
-    if let AnubisValue::List(l) = v {
-        let raw = i.as_i64();
-        let len = l.len() as i64;
-        // Negative indices count from the end (consistent with element indexing).
-        let idx = if raw < 0 { (raw + len).max(0) } else { raw.min(len) } as usize;
-        std::rc::Rc::make_mut(l).insert(idx, val);
+    match v {
+        AnubisValue::List(l) => {
+            let raw = i.as_i64();
+            let len = l.len() as i64;
+            // Negative indices count from the end (consistent with element indexing).
+            let idx = if raw < 0 { (raw + len).max(0) } else { raw.min(len) } as usize;
+            std::rc::Rc::make_mut(l).insert(idx, val);
+        }
+        other => panic!("ANUBIS_TYPE_ERROR: insert expects a list, got {}", other.type_name()),
     }
     AnubisValue::Int(0)
 }
 fn anubis_remove(v: &mut AnubisValue, key: AnubisValue) -> AnubisValue {
     match v {
         AnubisValue::List(l) => {
-            match anubis_norm_index(key.as_i64(), l.len()) { Some(k) => std::rc::Rc::make_mut(l).remove(k), None => AnubisValue::Int(0) }
+            match anubis_norm_index(key.as_i64(), l.len()) {
+                Some(k) => std::rc::Rc::make_mut(l).remove(k),
+                None => panic!(
+                    "ANUBIS_INDEX_OUT_OF_BOUNDS: index {} is out of bounds for a list of length {} (use get(xs, i, default) for optional access)",
+                    key.as_i64(), l.len()
+                ),
+            }
         }
         AnubisValue::Map(m) => {
             let k = key.display_string();
             match m.iter().position(|(kk, _)| kk == &k) { Some(pos) => std::rc::Rc::make_mut(m).remove(pos).1, None => AnubisValue::Int(0) }
         }
-        _ => AnubisValue::Int(0),
+        other => panic!("ANUBIS_TYPE_ERROR: remove expects a list or map, got {}", other.type_name()),
     }
 }
 
@@ -2626,14 +2665,17 @@ fn anubis_reduce(list: AnubisValue, a: AnubisValue, b: AnubisValue) -> AnubisVal
 }
 // Seedless `reduce(list, closure)`: the FIRST element seeds the accumulator and the closure folds the
 // rest (standard seedless reduce, mirroring the semantics used when no initial value is supplied). An
-// empty list yields `Int(0)` — the additive identity for the common numeric fold — matching the other
-// empty-collection HOF conventions in this file.
+// empty list has no defined seed — fail closed (do not invent Int(0); that is only the additive
+// identity for numeric folds and is wrong for non-numeric reduce). Use reduce(list, closure, seed).
 fn anubis_reduce2(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     if !f.is_closure() {
         panic!("ANUBIS_TYPE_ERROR: reduce(list, closure) expects a closure as the second argument, got {}", f.type_name());
     }
     let mut it = anubis_iter(list).into_iter();
-    let mut acc = match it.next() { Some(x) => x, None => return AnubisValue::Int(0) };
+    let mut acc = match it.next() {
+        Some(x) => x,
+        None => panic!("ANUBIS_EMPTY_COLLECTION: reduce(list, closure) has no seed — the list is empty; use reduce(list, closure, seed) to supply one"),
+    };
     for x in it { acc = f.call_closure(vec![acc, x]); }
     acc
 }
@@ -2643,7 +2685,7 @@ fn anubis_each(list: AnubisValue, f: AnubisValue) -> AnubisValue {
 }
 fn anubis_find(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     for x in anubis_iter(list) { if f.call_closure(vec![x.clone()]).as_bool() { return x; } }
-    AnubisValue::Int(0)
+    panic!("ANUBIS_NO_MATCH: find() — no element satisfies the predicate (guard with any(xs, pred) first, or use position(xs, pred) if you only need the index)")
 }
 fn anubis_any(list: AnubisValue, f: AnubisValue) -> AnubisValue {
     AnubisValue::Bool(anubis_iter(list).into_iter().any(|x| f.call_closure(vec![x]).as_bool()))
@@ -2706,7 +2748,10 @@ fn anubis_iter(v: AnubisValue) -> Vec<AnubisValue> {
         AnubisValue::Closure(_) => panic!(
             "ANUBIS_TYPE_ERROR: a closure is not iterable — check the argument order (the collection must come before the closure)"
         ),
-        other => vec![other],
+        other => panic!(
+            "ANUBIS_TYPE_ERROR: expected a list, string, or map, got {} — check the argument order or that this value is actually a collection",
+            other.type_name()
+        ),
     }
 }
 
@@ -2729,18 +2774,36 @@ fn anubis_trunc(x: AnubisValue) -> AnubisValue { match x { AnubisValue::Int(n) =
 fn anubis_sign(x: AnubisValue) -> AnubisValue { let v = x.as_f64(); AnubisValue::Int(if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }) }
 fn anubis_clamp(x: AnubisValue, lo: AnubisValue, hi: AnubisValue) -> AnubisValue {
     if x.is_float() || lo.is_float() || hi.is_float() {
-        AnubisValue::Float(x.as_f64().max(lo.as_f64()).min(hi.as_f64()))
+        let (lo_f, hi_f) = (lo.as_f64(), hi.as_f64());
+        if lo_f > hi_f {
+            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted — lo ({}) > hi ({})", lo_f, hi_f);
+        }
+        AnubisValue::Float(x.as_f64().max(lo_f).min(hi_f))
     } else {
-        AnubisValue::Int(x.as_i64().max(lo.as_i64()).min(hi.as_i64()))
+        let (lo_i, hi_i) = (lo.as_i64(), hi.as_i64());
+        if lo_i > hi_i {
+            panic!("ANUBIS_INVALID_ARGUMENT: clamp bounds are inverted — lo ({}) > hi ({})", lo_i, hi_i);
+        }
+        AnubisValue::Int(x.as_i64().max(lo_i).min(hi_i))
     }
 }
 fn anubis_pi() -> AnubisValue { AnubisValue::Float(std::f64::consts::PI) }
 fn anubis_e() -> AnubisValue { AnubisValue::Float(std::f64::consts::E) }
 fn anubis_factorial(n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(0);
+    let n_raw = n.as_i64();
+    if n_raw < 0 {
+        panic!("ANUBIS_DOMAIN_ERROR: factorial is undefined for negative integers, got {}", n_raw);
+    }
+    let n = n_raw;
     let mut acc: i64 = 1;
-    let mut i = 2;
-    while i <= n { acc = acc.wrapping_mul(i); i += 1; }
+    let mut i: i64 = 2;
+    while i <= n {
+        acc = match acc.checked_mul(i) {
+            Some(v) => v,
+            None => panic!("ANUBIS_OVERFLOW: factorial({}) overflows i64 (i64::MAX is 9223372036854775807, reached between 20! and 21!)", n),
+        };
+        i += 1;
+    }
     AnubisValue::Int(acc)
 }
 
@@ -2823,11 +2886,19 @@ fn anubis_drop_while(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_mk_list(items[i..].to_vec())
 }
 fn anubis_chunk(a: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(1) as usize;
+    let n_raw = n.as_i64();
+    if n_raw <= 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: chunk size must be positive, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     anubis_mk_list(anubis_iter(a).chunks(n).map(|c| anubis_mk_list(c.to_vec())).collect())
 }
 fn anubis_window(a: AnubisValue, n: AnubisValue) -> AnubisValue {
-    let n = n.as_i64().max(1) as usize;
+    let n_raw = n.as_i64();
+    if n_raw <= 0 {
+        panic!("ANUBIS_INVALID_ARGUMENT: window size must be positive, got {}", n_raw);
+    }
+    let n = n_raw as usize;
     let items = anubis_iter(a);
     if items.len() < n { return anubis_mk_list(vec![]); }
     anubis_mk_list(items.windows(n).map(|w| anubis_mk_list(w.to_vec())).collect())
@@ -2846,8 +2917,16 @@ fn anubis_product(a: AnubisValue) -> AnubisValue {
         AnubisValue::Int(items.iter().map(|v| v.as_i64()).product())
     }
 }
-fn anubis_first(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().next().unwrap_or(AnubisValue::Int(0)) }
-fn anubis_last(a: AnubisValue) -> AnubisValue { anubis_iter(a).into_iter().last().unwrap_or(AnubisValue::Int(0)) }
+fn anubis_first(a: AnubisValue) -> AnubisValue {
+    anubis_iter(a).into_iter().next().unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: first has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
+}
+fn anubis_last(a: AnubisValue) -> AnubisValue {
+    anubis_iter(a).into_iter().last().unwrap_or_else(|| {
+        panic!("ANUBIS_EMPTY_COLLECTION: last has no element — the collection is empty (use is_empty(xs) to guard)")
+    })
+}
 /// True when a collection has no elements (empty ⟺ `len == 0`, matching `len`'s type coverage).
 /// Lets programs guard `pop`/`last`/index access without hand-writing `len(xs) > 0` everywhere.
 fn anubis_is_empty(v: AnubisValue) -> AnubisValue {
@@ -2869,12 +2948,12 @@ fn anubis_concat(a: AnubisValue, b: AnubisValue) -> AnubisValue {
 fn anubis_min_by(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_iter(a).into_iter()
         .min_by(|x, y| anubis_value_cmp(&f.call_closure(vec![x.clone()]), &f.call_closure(vec![y.clone()])))
-        .unwrap_or(AnubisValue::Int(0))
+        .unwrap_or_else(|| panic!("ANUBIS_EMPTY_COLLECTION: min_by has no element — the collection is empty (use is_empty(xs) to guard)"))
 }
 fn anubis_max_by(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     anubis_iter(a).into_iter()
         .max_by(|x, y| anubis_value_cmp(&f.call_closure(vec![x.clone()]), &f.call_closure(vec![y.clone()])))
-        .unwrap_or(AnubisValue::Int(0))
+        .unwrap_or_else(|| panic!("ANUBIS_EMPTY_COLLECTION: max_by has no element — the collection is empty (use is_empty(xs) to guard)"))
 }
 fn anubis_partition(a: AnubisValue, f: AnubisValue) -> AnubisValue {
     let mut yes = Vec::new();

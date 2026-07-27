@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_NO_MATCH
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): find(xs, pred) returns Int(0) when no element matches instead
+// of failing closed (compiler/src/backends/run.rs anubis_find, ~line 2644). Contrast
+// with `position(xs, pred)`, which correctly returns the -1 sentinel on no match
+// (a sentinel that works there because -1 is never a valid index; there is no
+// equivalent safe sentinel for an arbitrary element value, so `find` must fail closed
+// instead). Callers that want a non-panicking search should guard with `any(xs, pred)`
+// first, exactly as callers of `xs[i]` are told to guard with `i < len(xs)` or use
+// `get(xs, i, default)`.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn never(x) { return false; }
+fn main() {
+    let xs = [1, 2, 3];
+    print(find(xs, never));
+}

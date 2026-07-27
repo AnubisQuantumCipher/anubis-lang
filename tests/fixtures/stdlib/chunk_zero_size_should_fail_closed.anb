@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_ARGUMENT
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): chunk(xs, 0) silently treats a chunk size of 0 as 1
+// (compiler/src/backends/run.rs anubis_chunk, ~line 2825, `n.as_i64().max(1)`).
+// A caller who computed a chunk size of 0 by mistake gets a plausible-looking
+// (wrong) result instead of a signal that the size was invalid.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    let xs = [1, 2, 3, 4];
+    print(chunk(xs, 0));
+}

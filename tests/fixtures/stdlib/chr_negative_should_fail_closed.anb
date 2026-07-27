@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_CODEPOINT
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): chr(-1) returns "" instead of failing closed
+// (compiler/src/backends/run.rs anubis_chr, ~line 2079: `-1 as u32` wraps to
+// 4294967295, char::from_u32 returns None, `.unwrap_or_default()` silently produces
+// the empty string). An empty string is a valid, unremarkable value elsewhere in the
+// language (e.g. it prints identically to a program that legitimately built an empty
+// string), so this silently launders an invalid code point into ordinary output.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(chr(-1));
+}

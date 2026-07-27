@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_CRYPTO_RANDOM_NEGATIVE_LENGTH
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): random_bytes(-1) silently clamps a negative length to 0 and
+// returns an empty byte list (compiler/src/backends/audited_crypto_runtime.inc.rs and
+// pure_crypto_runtime.inc.rs, anubis_random_bytes, `n.as_i64().max(0)`). The same
+// function already fails closed on the OPPOSITE boundary
+// (ANUBIS_CRYPTO_RANDOM_TOO_LARGE when n > 1<<20) — the missing lower-bound check is
+// an asymmetry, not a deliberate leniency. A caller that computed a negative key/nonce
+// length from a bug gets a silently-empty (not obviously wrong) value instead of a
+// crypto-critical loud failure.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(random_bytes(-1));
+}

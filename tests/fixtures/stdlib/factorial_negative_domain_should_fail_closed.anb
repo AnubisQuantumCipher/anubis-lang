@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_DOMAIN_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): factorial(-1) returns 1 instead of failing closed
+// (compiler/src/backends/run.rs anubis_factorial, ~line 2739, `n.as_i64().max(0)`
+// silently maps every negative input to 0! = 1). Factorial is mathematically undefined
+// for negative integers — unlike the overflow case in
+// factorial_overflow_should_fail_closed.anb, this is a pure domain error, not a
+// wrapping-arithmetic tension, and should fail closed unconditionally.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(factorial(-1));
+}

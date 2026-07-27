@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): sum("abc") returns the string "abc" unchanged instead of
+// failing closed (compiler/src/backends/run.rs anubis_sum, ~line 2205, fallback arm
+// `other => other`). This does not even attempt numeric coercion — it silently passes
+// the argument through, which is the same class of bug the HOF audit already fixed for
+// sort_by's `other => other` fallback (see the comment at anubis_sort_by, ~line 2668).
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit.
+fn main() {
+    print(sum("abc"));
+}

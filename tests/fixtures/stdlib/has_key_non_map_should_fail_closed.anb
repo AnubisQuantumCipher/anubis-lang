@@ -1,0 +1,16 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): has_key([1, 2, 3], 1) returns `false` instead of failing closed
+// (compiler/src/backends/run.rs::anubis_has_key, ~line 2221, whose fallback arm for a
+// non-Map is `_ => AnubisValue::Bool(false)`). This is the highest-severity item in the
+// same-class-as-keys group: `has_key` is routinely used as a CAPABILITY / AUTHORIZATION
+// presence check (`if has_key(token_map, k) { ... }`); on a non-map argument the caller
+// silently gets "absent" rather than a signal that the value was never a map at all,
+// which is a fail-open outcome on an authorization-shaped decision.
+// Found during the SONNET5-B / GROK-PTAH stdlib patch reconciliation, 2026-07-26 —
+// independently verified real by both agents. See scratchpad/fleet_20260726/stdlib_merged_package.md.
+fn main() {
+    print(has_key([1, 2, 3], 1));
+}

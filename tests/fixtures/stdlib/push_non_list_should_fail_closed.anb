@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TYPE_ERROR
+// RUNTIME: exercise via `anubis run` (not `anubis check` — this is a runtime panic;
+// `anubis check` on this file passes clean today, verified 2026-07-26).
+// PENDING (fails today): push(s, "x") on a string variable `s` is a silent no-op — `s`
+// is printed unchanged (compiler/src/backends/run.rs AnubisValue::push_val, ~line 1691:
+// `if let AnubisValue::List(v) = self { ... }` has no else branch, so a non-list target
+// is dropped on the floor with no signal). `push`/`pop`/`insert`/`remove` are
+// documented under "Lists" (LANGUAGE.md) as list-mutation operations, not part of the
+// list/string/map iteration polymorphism documented for `map`/`filter`/etc.
+// See scratchpad/fleet_20260726/sonnet5c_stdlib_failclosed.md for the full audit
+// (which also flags pop/insert/remove on a non-list target as the same defect class,
+// sharing the same `_ => AnubisValue::Int(0)` / no-op pattern).
+fn main() {
+    let mut s = "hi";
+    push(s, "x");
+    print(s);
+}
