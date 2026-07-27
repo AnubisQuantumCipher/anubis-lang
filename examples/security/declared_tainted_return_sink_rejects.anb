@@ -1,0 +1,15 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// FABLE5 2026-07-26. The INTEGRITY dual of `declared_secret_return_print_rejects`, and the more
+// dangerous face: `compute_tainting_fns` was body-derived only, so a function DECLARED
+// `-> tainted<i64>` — one that explicitly announces "my result is untrusted" — had that contract
+// silently dropped, and passing its result straight to a sink CHECKED CLEAN. The author wrote the
+// signature correctly and the checker ignored it. FIX: the same `collect_declared_ret_qualified`
+// seed, applied to `tainting_fns`/`method_tainting_fns`.
+fn get() -> tainted<i64> {
+    return 42;
+}
+fn main() uses(shell) {
+    let x = get();
+    shell(x);
+}

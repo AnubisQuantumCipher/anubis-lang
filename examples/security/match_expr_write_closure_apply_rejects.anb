@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Walker-parity H18 (GROK-SEKHMET 2026-07-26), match-expr arm of the same apply-site hole.
+// Binding a write-lambda from a match-expression then applying it escapes Safe-mode effect
+// gates for the same reason as if_expr_write_closure_apply_rejects.anb.
+// TODAY (pre-fix binary): check PASSES and `anubis run` writes the file — known false accept.
+fn main() {
+    let f = match 1 {
+        0 => { || print(0) }
+        _ => { || write_file("h18_match_apply.txt", "y") }
+    };
+    f();
+    print(1);
+}

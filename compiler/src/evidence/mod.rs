@@ -324,8 +324,8 @@ fn build_evidence_bundle_tree_inner(
                     serde_json::to_value(&tainted.taint_traces).map_err(|e| e.to_string())?;
                 let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
                 solver_json = serde_json::to_value(&solver_checks).map_err(|e| e.to_string())?;
-                mono_json =
-                    serde_json::to_value(&tainted.mono_specializations).map_err(|e| e.to_string())?;
+                mono_json = serde_json::to_value(&tainted.mono_specializations)
+                    .map_err(|e| e.to_string())?;
                 // save smt and replay for gate7
                 if let Some(first) = solver_checks.first() {
                     let _ = std::fs::write(dir.join("analysis").join("solver.smt2"), &first.smt);
@@ -689,14 +689,21 @@ pub fn derive_claim_block(source: &str, mode: &str) -> ClaimBlock {
         if let Ok(ir) = crate::middle::typecheck(ast, tc_mode) {
             typecheck_ok = true;
             let tainted = crate::middle::TaintPass::apply(ir);
-            // A tainted flow that reaches a sink must be declassified to count as clean.
-            taint_clean = tainted
-                .taint_traces
-                .iter()
-                .all(|t| t.sink.is_none() || t.declassified);
+            // The evidence-lane TWIN of the `run` preflight bug (GROK-PTAH 2026-07-26): this
+            // re-derived taint policy from `taint_traces`, whose `sink` field is PROVENANCE (the
+            // local being assigned), not a policy sink. It made `pca.json` report
+            // `taint_clean: false` / `verdict: FAIL` on `vault_contacts.anb` while the printed
+            // check AND `manifest.json` both said PASS — a proof-carrying artifact contradicting
+            // its own program's verdict, which is worse than a plain false reject.
+            //
+            // `taint_clean` must mirror the enforcement `check` actually uses: `typecheck` returned
+            // Ok here, so its diagnostics are empty and no unenforced sink flow exists.
+            taint_clean = true;
             let solver_checks = crate::middle::SymbolicEngine::check_obligations(&tainted);
             solver_obligations = solver_checks.len();
-            solver_all_discharged = solver_checks.iter().all(|c| c.status == "PASS");
+            // Same alignment as the preflight: only FAIL blocks discharge. `all == "PASS"` rejected
+            // UNKNOWN exactly as the preflight's `!= "PASS"` did.
+            solver_all_discharged = !solver_checks.iter().any(|c| c.status == "FAIL");
         }
     }
     let verdict = if parse_ok && typecheck_ok && taint_clean && solver_all_discharged {

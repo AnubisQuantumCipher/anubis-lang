@@ -1,0 +1,9 @@
+// EXPECT: PASS
+// #72 over-rejection guard: an identity forwarder carrying a NON-capturing closure must still
+// compile. The forwarder resolution must resolve the closure without labelling it, or the fix would
+// trade a false accept for a false reject.
+fn fwd(f) { return f; }
+fn main() {
+    let g = fwd(|x| x + 1);
+    print(g(41));
+}

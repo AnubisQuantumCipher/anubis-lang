@@ -1,0 +1,27 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_AMBIGUOUS_METHOD_CONTRACT
+// Cluster H, sharper variant. The order-bug did not merely miss ambiguity -- it silently
+// applied impl A's `requires(amt <= 100)` to a call on a `B`-typed receiver, even though B's
+// own `f` carries no contract at all (`method_contracts` is bare-name-keyed with zero
+// receiver-type awareness). Before the fix, this exact program checked clean at amt=5 and
+// only rejected (with the WRONG error -- a disproved assertion borrowed from an unrelated
+// type) once amt exceeded A's threshold, proving the checker was silently gating B's calls
+// with A's promise instead of refusing to guess. Now it must reject unconditionally,
+// regardless of amt, with the ambiguity code, not an assertion-disproved code.
+struct A { v: i64 }
+struct B { v: i64 }
+impl B {
+    fn f(self, amt: i64) -> i64 {
+        self.v - amt
+    }
+}
+impl A {
+    fn f(self, amt: i64) -> i64 requires(amt <= 100) {
+        self.v + amt
+    }
+}
+fn main() {
+    let b = B { v: 10 };
+    let r = b.f(5);
+    print(r);
+}

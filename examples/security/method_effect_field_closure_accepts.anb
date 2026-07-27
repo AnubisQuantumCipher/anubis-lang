@@ -1,0 +1,18 @@
+// EXPECT: PASS
+// Cluster F over-rejection guard, second axis. `b.act(x)` where `act` is a CLOSURE STORED IN A FIELD
+// is NOT a method call, even though it parses to the same `Expr::CallExpr { callee: FieldAccess }`
+// node the new capability inheritance hooks into. It must keep going through the existing
+// `field_closures` descent (which walks the real lambda body) and must not be spuriously charged.
+//
+// KNOWN CONFLATION, deliberately NOT exercised here: if the field name COLLIDES with an impl method
+// name, the program is already rejected before reaching the capability lane —
+// `ANUBIS_ARITY_MISMATCH: method `f` expects 0 argument(s), got 1` — because method arity checking is
+// keyed by bare name with no receiver-type resolution. That reject predates this fix (verified
+// against the pre-fix binary). It means the collision case is currently moot, but if the arity check
+// is ever made receiver-aware, the bare-name capability lookup would become a live false reject on
+// that shape. Recorded so the dependency is not rediscovered the hard way.
+struct Holder { act: i64 }
+fn main() {
+    let b = Holder { act: |x| x + 1 };
+    print(b.act(41));
+}

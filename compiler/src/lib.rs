@@ -5653,9 +5653,10 @@ fn main() {
             ir.mono_specializations
         );
         // At least one concrete binding should be present for pinned args.
-        let has_concrete = ir.mono_specializations.iter().any(|m| {
-            m.function == "id" && m.type_args.values().any(|v| !v.is_empty())
-        });
+        let has_concrete = ir
+            .mono_specializations
+            .iter()
+            .any(|m| m.function == "id" && m.type_args.values().any(|v| !v.is_empty()));
         assert!(
             has_concrete,
             "expected concrete type_args on id mono instances: {:?}",
@@ -5726,7 +5727,11 @@ fn main() {
         );
         // Runtime still works through mono path.
         let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
-        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains('1') && stdout.contains("hi"),
@@ -5775,7 +5780,11 @@ fn main() {
             "expected full native let-chain body:\n{body}"
         );
         let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
-        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("12"), "unexpected stdout: {stdout}");
     }
@@ -5817,13 +5826,15 @@ fn main() {
             .expect("mono absv fn");
         let body = extract_rust_fn(&rust, &mono_name);
         assert!(
-            !body.contains("AnubisValue")
-                && !body.contains("__anb_body")
-                && body.contains("if "),
+            !body.contains("AnubisValue") && !body.contains("__anb_body") && body.contains("if "),
             "expected full native if body:\n{body}"
         );
         let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
-        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains('7') && stdout.contains('3'),
@@ -5870,7 +5881,11 @@ fn main() {
             "expected full native arith body:\n{body}"
         );
         let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
-        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("11"), "unexpected stdout: {stdout}");
     }
@@ -5895,9 +5910,9 @@ fn main() {
             ir.mono_call_sites
         );
         assert!(
-            ir.mono_call_sites.iter().any(|s| {
-                s.caller == "main" && s.function == "id" && !s.type_args.is_empty()
-            }),
+            ir.mono_call_sites
+                .iter()
+                .any(|s| { s.caller == "main" && s.function == "id" && !s.type_args.is_empty() }),
             "expected pinned id call sites under main: {:?}",
             ir.mono_call_sites
         );
@@ -5924,7 +5939,11 @@ fn main() {
             "expected mono clone references for both variable-pinned calls, got {mono_calls}"
         );
         let out = backends::run::compile_and_run_source(src, false, &[]).expect("run");
-        assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains('7') && stdout.contains("var"),

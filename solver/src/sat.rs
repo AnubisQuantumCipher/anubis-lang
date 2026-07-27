@@ -9,11 +9,60 @@
 //! level 0, i.e. a root refutation **with a checkable RUP/LRAT certificate**); anything it cannot
 //! finish within budget is `Unknown`, never a guessed verdict.
 //!
+//! **Termination (2026-07-26).** The conflict budget is the PRIMARY, deterministic bound: the same
+//! CNF always consumes the same conflicts, so a verdict never depends on machine speed or load.
+//! [`SolveLimits`] adds two subordinate guards so no obligation can grind unboundedly:
+//! * a `clause_limit` on the CNF itself (see [`Cnf::with_clause_limit`]) — a formula whose blast
+//!   overruns it is abandoned during CONSTRUCTION, before any search;
+//! * an optional wall-clock `deadline`, checked every [`DEADLINE_CHECK_CONFLICTS`] conflicts. This is
+//!   an outer net for the case a single conflict is itself expensive (a huge CNF with cheap conflicts
+//!   but very slow propagation), NOT the primary bound — it is sized so the conflict budget binds
+//!   first on every real obligation.
+//!
+//! Both guards can only turn a would-be verdict into `Unknown` (defer), never change a decided
+//! verdict, so neither can introduce a false accept.
+//!
 //! Every `Unsat` carries a self-contained [`crate::lrat::UnsatCert`]: the original DIMACS CNF plus a
 //! sequence of RUP-derived clauses ending in the empty clause. Callers must run
 //! [`crate::lrat::check_proof`] before trusting the verdict (the library API does this).
 
 use crate::lrat::{LratStep, UnsatCert};
+use std::time::Instant;
+
+/// How often the CDCL loop consults the wall-clock deadline, in conflicts. Small enough that the
+/// overshoot past the deadline is bounded by a few hundred conflicts of work, large enough that the
+/// `Instant::now()` call is not measurable next to conflict analysis.
+pub const DEADLINE_CHECK_CONFLICTS: u64 = 256;
+
+/// The bounds one solve runs under.
+#[derive(Debug, Clone)]
+pub struct SolveLimits {
+    /// Max conflicts before returning `Unknown`. Deterministic — the primary bound.
+    pub conflicts: u64,
+    /// Optional wall-clock cut-off. `None` = no time bound (used by the deterministic test suites).
+    pub deadline: Option<Instant>,
+}
+
+impl SolveLimits {
+    /// Conflict-bounded only — fully deterministic, no wall-clock component.
+    pub fn conflicts(budget: u64) -> SolveLimits {
+        SolveLimits {
+            conflicts: budget,
+            deadline: None,
+        }
+    }
+}
+
+/// A solve result together with how much of the budget it consumed. The conflict count is what the
+/// budget is tuned against (`ANUBIS_NATIVE_STATS_LOG`); it is telemetry only and never a verdict.
+#[derive(Debug, Clone)]
+pub struct SolveOutcome {
+    pub result: SatResult,
+    pub conflicts: u64,
+    /// True iff the run stopped because the wall-clock deadline passed (rather than the conflict
+    /// budget). Diagnostic only — both stops yield `SatResult::Unknown`.
+    pub timed_out: bool,
+}
 
 /// A boolean variable, 0-indexed.
 pub type Var = usize;
@@ -44,9 +93,17 @@ impl Lit {
     pub fn is_neg(self) -> bool {
         self.0 & 1 == 1
     }
-    /// Raw code (0..2*num_vars); used to index watch lists. Private to the module.
+    /// Raw code (0..2*num_vars); used to index watch lists. Private to the module — outside it, the
+    /// same number is only meaningful as an opaque identity ([`Lit::key`]).
     #[inline]
     fn code(self) -> usize {
+        self.key()
+    }
+    /// A stable, injective `usize` identity for this literal (variable *and* sign): equal keys ⇔ equal
+    /// literals. Exposed for the bit-blaster's structural-hashing gate cache, and deliberately NOT
+    /// documented as an index into anything the caller owns.
+    #[inline]
+    pub fn key(self) -> usize {
         self.0
     }
 }
@@ -91,12 +148,28 @@ fn clause_dimacs(lits: &[Lit]) -> Vec<i32> {
 pub struct Cnf {
     num_vars: usize,
     clauses: Vec<Vec<Lit>>,
+    /// Optional hard ceiling on the clause count. Once reached, further clauses are DROPPED and
+    /// [`Cnf::overflowed`] latches true. A caller that sets a limit MUST check `overflowed()` and
+    /// abandon the instance: a truncated clause set is a weaker formula, not the intended one.
+    clause_limit: Option<usize>,
+    overflowed: bool,
 }
 
 impl Cnf {
     pub fn new() -> Cnf {
         Cnf::default()
     }
+
+    /// A CNF that refuses to grow past `limit` clauses. The bit-blaster uses this so a pathological
+    /// obligation is abandoned during CONSTRUCTION — bounding memory and time before the search even
+    /// starts — instead of building a multi-hundred-megabyte instance the CDCL loop then grinds on.
+    pub fn with_clause_limit(limit: usize) -> Cnf {
+        Cnf {
+            clause_limit: Some(limit),
+            ..Cnf::default()
+        }
+    }
+
     /// Allocate a fresh variable.
     pub fn new_var(&mut self) -> Var {
         let v = self.num_vars;
@@ -104,7 +177,17 @@ impl Cnf {
         v
     }
     /// Add a clause (a disjunction of literals). An empty clause makes the instance trivially UNSAT.
+    ///
+    /// If a `clause_limit` is set and already reached, the clause is dropped and `overflowed` latches.
+    /// Dropping is safe ONLY because every caller that sets a limit treats `overflowed()` as
+    /// "abandon and defer" — see [`crate::blast::blast_with_map`].
     pub fn add_clause(&mut self, lits: Vec<Lit>) {
+        if let Some(limit) = self.clause_limit {
+            if self.clauses.len() >= limit {
+                self.overflowed = true;
+                return;
+            }
+        }
         self.clauses.push(lits);
     }
     pub fn num_vars(&self) -> usize {
@@ -113,6 +196,12 @@ impl Cnf {
     pub fn num_clauses(&self) -> usize {
         self.clauses.len()
     }
+    /// True iff a clause was ever dropped because the clause limit was reached. A `true` here makes
+    /// the instance UNUSABLE for deciding anything — the formula on hand is weaker than the one asked
+    /// about, so any verdict from it would be about a different formula.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
 
     /// Solve with a *conflict* budget (max number of conflicts before giving up). Returns `Unknown`
     /// if the budget is exhausted — sound: an undecided formula is never a verdict.
@@ -120,6 +209,21 @@ impl Cnf {
     /// On `Unsat`, the certificate's `original` is the post-simplify CNF (no tautologies) and
     /// `steps` is a RUP derivation ending in the empty clause.
     pub fn solve(&self, budget: u64) -> SatResult {
+        self.solve_limited(&SolveLimits::conflicts(budget)).result
+    }
+
+    /// As [`Cnf::solve`] but under full [`SolveLimits`] and reporting consumed conflicts.
+    ///
+    /// A truncated instance (`overflowed()`) is never solved: it returns `Unknown` immediately, so a
+    /// clause-limit overrun can only ever produce a deferral.
+    pub fn solve_limited(&self, limits: &SolveLimits) -> SolveOutcome {
+        if self.overflowed {
+            return SolveOutcome {
+                result: SatResult::Unknown,
+                conflicts: 0,
+                timed_out: false,
+            };
+        }
         let mut solver = Solver::new(self.num_vars);
         let mut original: Vec<Vec<i32>> = Vec::with_capacity(self.clauses.len());
         let mut next_id: u32 = 1;
@@ -147,26 +251,34 @@ impl Cnf {
             match lits.len() {
                 0 => {
                     // Empty clause in the formula ⇒ UNSAT with trivial empty RUP step.
-                    return SatResult::Unsat(UnsatCert {
-                        num_vars: self.num_vars,
-                        original,
-                        steps: vec![LratStep {
-                            id: next_id,
-                            lits: vec![],
-                        }],
-                    });
-                }
-                1 => {
-                    // Unit clause: assign at decision level 0. Conflicting units ⇒ UNSAT.
-                    if !solver.add_unit(lits[0]) {
-                        return SatResult::Unsat(UnsatCert {
+                    return SolveOutcome {
+                        result: SatResult::Unsat(UnsatCert {
                             num_vars: self.num_vars,
                             original,
                             steps: vec![LratStep {
                                 id: next_id,
                                 lits: vec![],
                             }],
-                        });
+                        }),
+                        conflicts: 0,
+                        timed_out: false,
+                    };
+                }
+                1 => {
+                    // Unit clause: assign at decision level 0. Conflicting units ⇒ UNSAT.
+                    if !solver.add_unit(lits[0]) {
+                        return SolveOutcome {
+                            result: SatResult::Unsat(UnsatCert {
+                                num_vars: self.num_vars,
+                                original,
+                                steps: vec![LratStep {
+                                    id: next_id,
+                                    lits: vec![],
+                                }],
+                            }),
+                            conflicts: 0,
+                            timed_out: false,
+                        };
                     }
                 }
                 _ => {
@@ -174,7 +286,12 @@ impl Cnf {
                 }
             }
         }
-        solver.search(budget, original, next_id)
+        let (result, timed_out) = solver.search(limits, original, next_id);
+        SolveOutcome {
+            result,
+            conflicts: solver.conflicts,
+            timed_out,
+        }
     }
 }
 
@@ -634,11 +751,20 @@ impl Solver {
         }
     }
 
-    /// The CDCL search loop, bounded by a conflict budget.
+    /// The CDCL search loop, bounded by [`SolveLimits`]. Returns the verdict plus whether the stop was
+    /// a wall-clock timeout (as opposed to the conflict budget).
     ///
     /// `original` / `next_id` track the certificate: every learned clause is appended as a RUP
     /// step; a decision-level-0 conflict closes with an empty-clause step.
-    fn search(&mut self, budget: u64, original: Vec<Vec<i32>>, mut next_id: u32) -> SatResult {
+    ///
+    /// Both bounds are checked at the SAME point — right after a non-root conflict — so a `Unsat`
+    /// already derived at level 0 is always returned rather than discarded by an expiring budget.
+    fn search(
+        &mut self,
+        limits: &SolveLimits,
+        original: Vec<Vec<i32>>,
+        mut next_id: u32,
+    ) -> (SatResult, bool) {
         let mut conflicts_since_restart: u64 = 0;
         let mut restart_num: u64 = 1;
         let mut restart_limit = luby(restart_num) * RESTART_BASE;
@@ -655,14 +781,26 @@ impl Solver {
                             id: next_id,
                             lits: vec![],
                         });
-                        return SatResult::Unsat(UnsatCert {
-                            num_vars: self.num_vars,
-                            original,
-                            steps,
-                        });
+                        return (
+                            SatResult::Unsat(UnsatCert {
+                                num_vars: self.num_vars,
+                                original,
+                                steps,
+                            }),
+                            false,
+                        );
                     }
-                    if self.conflicts > budget {
-                        return SatResult::Unknown;
+                    if self.conflicts > limits.conflicts {
+                        return (SatResult::Unknown, false);
+                    }
+                    // Wall-clock net, sampled so `Instant::now()` is amortized to nothing. Only
+                    // reachable once the conflict budget is large enough to keep us here this long.
+                    if let Some(deadline) = limits.deadline {
+                        if self.conflicts.is_multiple_of(DEADLINE_CHECK_CONFLICTS)
+                            && Instant::now() >= deadline
+                        {
+                            return (SatResult::Unknown, true);
+                        }
                     }
                     let (learnt, bt_level) = self.analyze(confl);
                     self.cancel_until(bt_level);
@@ -696,7 +834,7 @@ impl Solver {
                             let model = (0..self.num_vars)
                                 .map(|v| self.assigns[v] == LBool::True)
                                 .collect();
-                            return SatResult::Sat(model);
+                            return (SatResult::Sat(model), false);
                         }
                         Some(dlit) => {
                             self.new_decision_level();

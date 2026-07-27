@@ -402,7 +402,8 @@ mod tests {
 
     #[test]
     fn legacy_seal_without_research_effects_still_verifies() {
-        let src = "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
+        let src =
+            "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
         let mut sealed = derive_confinement("pkg", "0.0.0", src).unwrap();
         sealed.research_effects.clear(); // simulate pre-slice-3 seal
         verify_confinement_matches_source(src, &sealed).expect("legacy empty research_effects");

@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Cluster F (#14). A method's `uses(...)` was checked ONLY inside its own body and never propagated
+// to any caller. `save` declares fs.write honestly; `main` declares NOTHING and reaches the write
+// solely through the method call — `check passed`, and `anubis run` really created the file.
+// The `Expr::Call` arm inherited `ctx.fn_declared_effects`; the `Expr::CallExpr` (method) arm had no
+// analogous mechanism at all, so this was total: every capability, every depth.
+struct Logger { id: u32 }
+impl Logger {
+    fn save(self) uses(fs.write) {
+        write_file("cluster_f_1hop.txt", "y");
+    }
+}
+fn main() {
+    let l = Logger { id: 1 };
+    l.save();
+    print(1);
+}

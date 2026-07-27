@@ -1,0 +1,27 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Cluster F (#15). The gap was not depth-limited. `Inner.write_it` declares fs.write; `Outer.go`
+// declares nothing and calls it; `main` declares nothing and calls `go`. Three frames, zero
+// authorization above the leaf.
+// Enforcement is PER FRAME — `apply_inherited_capability` gates against `ctx.authorized_caps`, which
+// `analyze_function` sets to the currently-analyzed function's own declared set, and methods go
+// through `analyze_function` too. So `go` is rejected at ITS frame for omitting the declaration,
+// which is what makes the guarantee inductive instead of one-hop.
+struct Inner { id: u32 }
+impl Inner {
+    fn write_it(self) uses(fs.write) {
+        write_file("cluster_f_2hop.txt", "y");
+    }
+}
+struct Outer { id: u32 }
+impl Outer {
+    fn go(self) {
+        let i = Inner { id: 1 };
+        i.write_it();
+    }
+}
+fn main() {
+    let o = Outer { id: 1 };
+    o.go();
+    print(1);
+}

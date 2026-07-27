@@ -1,0 +1,26 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_ASSERTION_DISPROVED
+// Walker-parity H13 (GROK-SEKHMET 2026-07-26). W9 `discharge_calls_in_expr` only walks
+// Let/LetPattern/ExprStmt inside an expression-position Block (mod.rs Block arm) — a nested
+// *statement* `if` inside a value-position if-arm is left undescended, so a contracted call
+// buried there never has its `requires` discharged.
+// Discriminator: the identical `g(0)` as a free statement is rejected (see direct contracts);
+// this laundered shape must reject with the same needle once the walker is fixed.
+// TODAY (pre-fix binary): check PASSES — known false accept / residual; fixture is red until OPUS5.
+fn g(x: i64) -> i64 requires(x > 0) {
+    return x;
+}
+fn main() {
+    let a = 0;
+    let z = if true {
+        if true {
+            g(a);
+        } else {
+            0;
+        }
+        1
+    } else {
+        0
+    };
+    print(z);
+}

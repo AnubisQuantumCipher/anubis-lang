@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// #72 CHAINED forwarders: f2 forwards through f1. Closing this needs the forwarder relation under a
+// fixpoint — a single registration pass cannot mark f2 before f1 is known to be a forwarder.
+fn f1(g) { return g; }
+fn f2(g) { return f1(g); }
+fn main() {
+    let k = secret_source("k");
+    let h = f2(|x| print(k));
+    h(0);
+}

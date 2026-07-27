@@ -1,0 +1,11 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// #72 CONTAINER path: a forwarded closure stored in a list literal, then applied out of the list.
+// `collect_container_closures` dropped a `Call` element into its `_ => {}` catch-all, losing the
+// capture. A catch-all arm in a value-flow walker is a defect factory.
+fn fwd(f) { return f; }
+fn main() {
+    let k = secret_source("k");
+    let a = [fwd(|x| print(k))];
+    a[0](0);
+}

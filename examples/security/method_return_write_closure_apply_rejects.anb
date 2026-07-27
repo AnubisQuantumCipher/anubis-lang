@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Walker-parity H18 / Cluster F residual (GROK-SEKHMET 2026-07-26). A method returns a
+// write-lambda; the caller applies it. Free-fn twin (`fn make(){ return || write_file(...); }`)
+// is already rejected via `fn_returns_lambda`; methods never enter that table and
+// `resolve_closure_value` has no CallExpr arm — so this shape check-passes while the free-fn
+// isomorphic twin fails.
+// TODAY (pre-fix binary): check PASSES and `anubis run` writes the file — known false accept.
+struct Factory { id: u32 }
+impl Factory {
+    fn make_writer(self) {
+        return || write_file("h18_method_ret_apply.txt", "y");
+    }
+}
+fn main() {
+    let f = Factory { id: 1 };
+    let w = f.make_writer();
+    w();
+    print(1);
+}

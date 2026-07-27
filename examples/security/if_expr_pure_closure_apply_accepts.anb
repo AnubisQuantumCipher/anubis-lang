@@ -1,0 +1,13 @@
+// EXPECT: PASS
+// Walker-parity H18 over-rejection guard (if-expr arm). Pure lambda from if-expr then apply
+// must stay accepted after apply-site descent is wired — otherwise the H18 fix false-rejects
+// ordinary higher-order if-selection.
+// TODAY: check PASSES (and must keep passing after the H18 fix).
+fn main() {
+    let f = if true {
+        |x| x + 1
+    } else {
+        |x| x
+    };
+    print(f(40));
+}

@@ -1,0 +1,14 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// Walker-parity H16 (GROK-SEKHMET 2026-07-26). `push` of a write-lambda into a list, then
+// index-apply `xs[0]()`, never charges the gated body — container mutation seeds labels for
+// push/insert of values but does not give the later apply site a closure body to descend
+// (H18 apply-site family). Discriminator: local `let f = || write_file(...); f()` rejects.
+// TODAY (pre-fix binary): check PASSES and `anubis run` writes the file — known false
+// accept; fixture is red until OPUS5 ties push-seeded closures to apply-site effect walk.
+fn main() {
+    let mut xs = [];
+    push(xs, || write_file("h16_push_write.txt", "y"));
+    xs[0]();
+    print(1);
+}

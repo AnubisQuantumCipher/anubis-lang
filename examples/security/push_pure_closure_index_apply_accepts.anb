@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Walker-parity H16 over-rejection guard. Push a pure lambda, apply via index — must stay
+// accepted after the H16/H18 apply-site fix (over-charging every index apply would break
+// ordinary list-of-closures code).
+// TODAY: check PASSES (and must keep passing after the fix).
+fn main() {
+    let mut xs = [];
+    push(xs, |x| x + 1);
+    print(xs[0](40));
+}

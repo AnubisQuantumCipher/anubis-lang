@@ -1,0 +1,19 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// H2 + H3 — TWO independent holes, either alone sufficient to launder the closure:
+//   H2: `resolve_closure_value` matched only Lambda/Var/Call, so a method call `w.fwd(..)` fell to a
+//       `_ => None` wildcard and reported "denotes no closure" — which reads as CLEAN.
+//   H3: `Item::Impl` registration never wrote the forwarder registries at all, so even with a
+//       `CallExpr` arm there would have been no summary row for the method to resolve against.
+// Derived three independent ways: GROK-HORUS structurally (H2/H3), SONNET5-A by attack, GROK-SEKHMET
+// by attack from a different model family. The wildcard is why rustc could not tell us.
+struct W { id: u32 }
+impl W {
+    fn fwd(self, f) { return f; }
+}
+fn main() {
+    let k = secret_source("k");
+    let w = W { id: 1 };
+    let leaked = w.fwd(|x| print(k));
+    leaked(0);
+}

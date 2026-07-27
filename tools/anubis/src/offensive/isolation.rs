@@ -1,5 +1,17 @@
 //! Isolation gate for AOP + PoC kit (advance without regression).
 //!
+//! # Threat model
+//!
+//! The env/file markers checked by `in_vz_guest()` are a **safety** mechanism — they prevent
+//! accidental host execution of crash-capable code. They are NOT a security barrier: any
+//! process running as the user can set `ANUBIS_VZ_GUEST=1`. This is by design — the operator
+//! is the trust root and can always recompile the binary without the gate.
+//!
+//! Defense-in-depth: the canonical `anubis vz exploit`/`fuzz` path layers a **guest-bound
+//! run capability** (HMAC-validated, single-use nonce, guest/program/engagement-bound) on
+//! top of the marker gate. When `ANUBIS_VZ_ENFORCE_RUN_CAP=1` is set, both the marker AND
+//! a valid capability must be present. The capability cannot be forged without the HMAC key.
+//!
 //! # Two tiers
 //!
 //! ## A — Red-team / C2 platform (strict Apple Virtualization)

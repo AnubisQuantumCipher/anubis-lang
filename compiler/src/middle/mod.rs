@@ -121,6 +121,9 @@ pub struct MonoCallSite {
     pub type_args: BTreeMap<String, String>,
 }
 
+type MonoTypeArgs = Vec<(String, String)>;
+type MonoCallSiteRecord = (String, String, MonoTypeArgs);
+
 #[derive(Debug, Clone)]
 pub struct TypedIR {
     pub mode: BuildMode,
@@ -322,6 +325,22 @@ fn collect_container_closures(
                     // into its body; a Var is skipped by the closure-BODY consumers, which only match
                     // `Expr::Lambda`). Closes the named-fn-in-aggregate laundering (soundness hunt2).
                     out.insert(segkey, Box::new(Expr::Var(v.clone())));
+                }
+            }
+            // #72: an element built by a CALL — an identity forwarder (`[fwd(|x| print(k))]`) or a
+            // function returning a lambda literal (`[mk(k)]`). Both previously fell into the `_ => {}`
+            // catch-all, so the element's capture was dropped and `a[0](0)` laundered the secret.
+            Expr::Call { .. } => {
+                if let Some(l) = resolve_closure_value(
+                    val,
+                    scope,
+                    &ctx.fn_returns_lambda,
+                    &ctx.fn_returns_param,
+                    &ctx.method_returns_lambda,
+                    &ctx.method_returns_param,
+                    0,
+                ) {
+                    out.insert(segkey, l);
                 }
             }
             Expr::StructLiteral { .. }
@@ -776,6 +795,10 @@ impl SemanticContext {
     }
 }
 
+/// #76: an impl method's contract — (parameter names with `self` at index 0, `requires`, `ensures`).
+/// Named so `method_contracts` stays readable; the shape mirrors `fn_contracts`' value type.
+type MethodContract = (Vec<String>, Vec<Expr>, Vec<Expr>);
+
 #[derive(Debug, Default)]
 struct SemanticContext {
     hir: Hir,
@@ -874,6 +897,21 @@ struct SemanticContext {
     /// postcondition — the composition that makes contracts chain.
     #[allow(clippy::type_complexity)]
     fn_contracts: BTreeMap<String, (Vec<String>, Vec<Expr>, Vec<Expr>)>,
+    /// #76: impl-METHOD contracts, keyed by bare method name with `self` at parameter index 0.
+    /// `None` marks an AMBIGUOUS name (declared by more than one impl), where a call site cannot know
+    /// statically which contract applies.
+    ///
+    /// Before this existed, `Item::Impl` registered only method ARITIES, so a method's `requires` was
+    /// ASSUMED inside its own body while no call site was ever obliged to prove it — the precise
+    /// false-accept shape `discharge_call_requires` exists to prevent. `impl C { fn f(self, x: u32)
+    /// -> u32 requires(x > 10) ensures(result > 10) { x } }` accepted `c.f(0)` and returned `0` at
+    /// runtime, violating the certified postcondition, while the identical FREE function was correctly
+    /// rejected ANUBIS_ASSERTION_DISPROVED (confirmed false accept, probe `N_method_contract`,
+    /// 2026-07-26).
+    method_contracts: BTreeMap<String, Option<MethodContract>>,
+    /// #76: declared parameter TYPES for a contracted method (`self` at index 0), so the discharge
+    /// reuses the same f64/uN argument-coercion modelling as the free-fn path. `None` when ambiguous.
+    method_param_types: BTreeMap<String, Option<Vec<String>>>,
     /// Function name → declared `uses(...)` capability tags (raw strings from the AST).
     /// Phase-5: at a call site, the caller's inferred effects inherit the callee's declared
     /// capabilities so `std.io` / `std.pwn` wrappers cannot launder `fs.write` / `shell` past Safe.
@@ -894,6 +932,20 @@ struct SemanticContext {
     /// interproc twin of the var-bound closure fix. Single tail-lambda only (a conditional / multi-return
     /// lambda, or a nested lambda in the body that substitute_vars will not descend, stays a residual).
     fn_returns_lambda: BTreeMap<String, (Vec<String>, Expr)>,
+    /// #72: a function whose SOLE tail-returned value is one of its own PARAMETERS → (param names,
+    /// returned index). The identity-forwarder shape `fn fwd(f) { return f; }`, which `fn_returns_lambda`
+    /// structurally cannot see because the returned expression is a `Var`, not a lambda literal. Without
+    /// it, `let g = fwd(|x| print(k)); g(0)` laundered a secret-capturing closure through one hop: the
+    /// direct apply `(|x| print(k))(0)` and the applied-param forward `wrap(f){f(0)}` both rejected, but
+    /// return-of-a-closure-valued-param dropped the capture label entirely (confirmed false accept, probe
+    /// `p18_fwd_lambda`, 2026-07-26). Consulted wherever `fn_returns_lambda` is, so a call to a forwarder
+    /// resolves to the closure actually passed at that argument position.
+    fn_returns_param: BTreeMap<String, (Vec<String>, usize)>,
+    /// #72 raw material for [`compute_returns_param_fixpoint`]: every function whose body has exactly
+    /// one returned expression → (param names, that expression). Recorded regardless of shape so the
+    /// fixpoint can chase forwarder CHAINS (`fn f2(g) { return f1(g); }`), which a single pass cannot
+    /// see because `f1`'s own forwarder status may not be known yet.
+    fn_sole_return: BTreeMap<String, (Vec<String>, Expr)>,
     /// Task #48-A: for each function, the formal-parameter indices it APPLIES directly during its own
     /// execution (a `p(...)` call at F's level, NOT inside a nested lambda) and never shadows/reassigns.
     /// Passing a closure at such a position is equivalent to applying it, so the Safe-mode taint/effect
@@ -932,6 +984,54 @@ struct SemanticContext {
     /// p-1. Closes `m.deliver(secret)` / `r.go(tainted)` laundering through a method that egresses/sinks.
     method_param_sinks: BTreeMap<String, BTreeSet<usize>>,
     method_param_egress: BTreeMap<String, BTreeSet<usize>>,
+    /// Declared `uses(...)` capabilities of IMPL METHODS — the method half of the SINGLE
+    /// callee-declared-capability inheritance mechanism whose free-function half is
+    /// [`SemanticContext::fn_declared_effects`]. Keyed by BARE method name and UNIONED across every
+    /// impl declaring it, for the same reason as `method_param_sinks` above (receiver static type is
+    /// generally unrecoverable, so bare-name + union is the fail-closed choice — over-charging a
+    /// capability can only reject, never accept).
+    ///
+    /// **Kept SEPARATE from `fn_declared_effects`, never merged.** Methods are deliberately not
+    /// callable by bare name (see the `Item::Impl` arm of `analyze_items`), so a free function and a
+    /// method may share a name with different capabilities; unioning the two maps would charge a
+    /// free-fn call site for an unrelated method's capability, which is a false REJECT.
+    ///
+    /// **Why declared-only is sufficient (no inferred fixpoint needed).** Method bodies go through
+    /// `analyze_function` with their own `declared_effects` → `ctx.authorized_caps`, so a method whose
+    /// body reaches a gated capability — directly, or by inheriting a callee's declared caps — is
+    /// itself rejected in Safe mode unless it declares that capability. Therefore a method's declared
+    /// set over-approximates the gated capabilities its body can reach, and propagating it to callers
+    /// is sound at every depth: each frame must declare what it transitively reaches, inductively.
+    ///
+    /// Consulted ONLY in the `Expr::CallExpr` (method-call) arm of [`analyze_expr_effect`], which
+    /// hands it to [`apply_inherited_capability`] — the same helper the `Expr::Call` arm uses — so the
+    /// Safe-mode gate, the diagnostic wording, and the emitted effect tags cannot drift between the
+    /// two call shapes. Before this existed, ANY `struct` + `impl` method performing a gated effect
+    /// defeated Safe mode for every caller at every depth (`l.save()` where `save` declares
+    /// `uses(fs.write)` and `main` declares nothing → `check passed` + a real write at runtime).
+    method_declared_effects: BTreeMap<String, BTreeSet<String>>,
+    /// H3 — the METHOD HALF of the identity-forwarder registries whose free-function halves are
+    /// `fn_sole_return` / `fn_returns_lambda` / `fn_returns_param`. Keyed by BARE method name, with
+    /// parameter names INCLUDING `self` at index 0, matching the self-offset convention
+    /// `collect_impl_method_params_bodies` and `method_param_sinks` already use (summary index 0 ↔ the
+    /// receiver, index p≥1 ↔ call arg p-1).
+    ///
+    /// **SEPARATE from the free-fn maps, never merged.** Merging bare method names into a free-fn map
+    /// is a defect generator with three independent confirmations on this codebase: it is why
+    /// `fn_declared_effects` needed a method twin (Cluster F), and it is exactly the live bug in
+    /// `fn_effect_rows`, where `analyze_function` — which runs for free functions AND methods — looks
+    /// up a free-fn-only map by bare name, so a method named `f` silently inherits an unrelated free
+    /// function `f`'s transitive effect row. A resolver that looked up a bare method name in
+    /// `fn_returns_param` would reproduce that bug inside the closure lane.
+    ///
+    /// Before these existed, `Item::Impl` registration wrote only `method_arities`/`method_contracts`/
+    /// `method_param_types`/`method_declared_effects`, so a method-defined identity forwarder
+    /// (`impl W { fn fwd(self, f) { return f; } }`) had NO summary row at all and
+    /// `resolve_closure_value` could not have resolved it even with a `CallExpr` arm — the two holes
+    /// (H2, H3) were independent and either alone sufficed to launder a forwarded closure.
+    method_sole_return: BTreeMap<String, (Vec<String>, Expr)>,
+    method_returns_lambda: BTreeMap<String, (Vec<String>, Expr)>,
+    method_returns_param: BTreeMap<String, (Vec<String>, usize)>,
     /// Interprocedural return-secret / return-taint summaries for IMPL METHODS, keyed by BARE method
     /// name and UNIONED across every impl declaring it (receiver static type unrecoverable → fail-closed,
     /// like `method_param_sinks`). A method is in the set iff its RETURN value carries an INTERNALLY-minted
@@ -1022,9 +1122,9 @@ struct SemanticContext {
     /// codegen, absent from the `selfhost_schema` projection by construction.
     fn_effect_rows: BTreeMap<String, effects::EffectRow>,
     /// Static monomorphization instances discovered at generic call sites (deduped).
-    mono_specializations: BTreeSet<(String, Vec<(String, String)>)>,
+    mono_specializations: BTreeSet<(String, MonoTypeArgs)>,
     /// Ordered generic call sites: (caller, callee, sorted type_args pairs).
-    mono_call_sites: Vec<(String, String, Vec<(String, String)>)>,
+    mono_call_sites: Vec<MonoCallSiteRecord>,
 }
 
 pub fn typecheck(ast: AST, mode: Mode) -> Result<TypedIR, String> {
@@ -1051,6 +1151,9 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // Task #48: close `fn_applies_param` under transitive user-fn forwarding (a closure laundered through
     // two+ user fns), using the direct/HOF applies + forward edges collected above. Monotone → converges.
     compute_applies_param_fixpoint(&mut ctx);
+    // #72: close the identity-forwarder relation under chaining, so a closure laundered through two or
+    // more `fn fwd(f){return f}` hops still resolves to the closure actually passed.
+    compute_returns_param_fixpoint(&mut ctx);
     // Trait coherence + missing-required-method, over the trait environment captured before
     // `resolve_traits` erased it. Analysis-only: emits (shadow-gated) diagnostics and reads no
     // desugaring output, so it cannot move the fixpoint.
@@ -1065,7 +1168,8 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
         ctx.declared_traits.insert(tname.clone());
     }
     // Pass 1.5: interprocedural taint summaries (return-taint + param→sink), computed before
-    // per-function analysis so every `Call` the analysis sees can consult them.
+    // per-function analysis so every `Call` the analysis sees can consult them. The return-taint
+    // summary is a JOINT free-fn + impl-method fixpoint (#71) — see `compute_tainting_fns`.
     compute_tainting_fns(&ast.items, &mut ctx);
     // Interprocedural param→sink and param→egress summaries for free fns AND impl methods, in ONE
     // COMBINED joint fixpoint each (#68): a free fn can sink/egress a param THROUGH a method
@@ -1093,10 +1197,6 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
             &mut ctx.method_param_egress,
         );
     }
-    // Impl-method RETURN-taint summary (#67): a method whose return carries internally-minted taint —
-    // `let t = r.tag(); sink(t)` / `sink(r.tag())`. Must run AFTER compute_tainting_fns (frozen free-fn
-    // set); method→method chaining stays the #68 residual.
-    compute_method_tainting_fns(&ast.items, &mut ctx);
     compute_param_return_taint(&ast.items, &mut ctx);
     // Pass 1.5 confidentiality duals: the interprocedural SECRET summary (so `send(get_key())` fires
     // even when the secret is minted in a helper) and the leg-2 EXPOSURE summary (so a helper wrapping
@@ -1104,10 +1204,6 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // (default) and verified lanes). Both are monotone,
     // emit nothing themselves, and — like the taint summaries — populated before per-function analysis.
     compute_secret_fns(&ast.items, &mut ctx);
-    // Impl-method RETURN-secret summary (#67): a method whose return carries an internally-minted secret
-    // — the getter/accessor exfil `let k = v.key(); send(h,p,k)` / `send(h,p,v.key())`. Must run AFTER
-    // compute_secret_fns (frozen free-fn set); method→method chaining stays the #68 residual.
-    compute_method_secret_fns(&ast.items, &mut ctx);
     ctx.leg2_fns = trifecta::compute_leg2_fns(&ast.items);
     // Pass 1.6 (Phase-2 slice 1): transitive effect rows — a pure monotone fixpoint over the call
     // graph (middle/effects.rs). Reads only the pass-1 tables (`all_fns`, declared `uses`); emits
@@ -1309,6 +1405,34 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                             (params.iter().map(|(n, _)| n.clone()).collect(), recorded),
                         );
                     }
+                    // #72 IDENTITY FORWARDER: the sole tail value (or sole `return`) is one of this
+                    // function's own PARAMETERS — `fn fwd(f) { return f; }`. Recorded separately from
+                    // `fn_returns_lambda` because the returned expression is a `Var`, not a lambda
+                    // literal, so the block above structurally cannot see it. Same conservatism: exactly
+                    // one tail value / one return, else skipped (an under-approximation never
+                    // false-rejects).
+                    {
+                        let sole: Option<Expr> = if tv.len() == 1 {
+                            Some(tv[0].clone())
+                        } else {
+                            let mut rets = Vec::new();
+                            for st in body {
+                                collect_returns_in_stmt(st, &mut rets);
+                            }
+                            if rets.len() == 1 {
+                                Some(rets.remove(0))
+                            } else {
+                                // H5 — several returns that all forward the SAME parameter.
+                                unanimous_forwarded_return(&rets)
+                            }
+                        };
+                        if let Some(r) = sole {
+                            ctx.fn_sole_return.insert(
+                                name.clone(),
+                                (params.iter().map(|(n, _)| n.clone()).collect(), r),
+                            );
+                        }
+                    }
                 }
                 // Task #48-A / #48 transitive: record which param positions this fn APPLIES directly at
                 // its own level (`p(...)` or a HOF-forward `each([1],p)`, NOT inside a deferred lambda)
@@ -1384,8 +1508,89 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
             // a name defined with differing arities across impls is marked ambiguous (None).
             Item::Impl { methods, .. } => {
                 for m in methods {
-                    if let Item::Fn { name, params, .. } = m {
+                    if let Item::Fn {
+                        name,
+                        params,
+                        requires,
+                        ensures,
+                        effects: declared_effects,
+                        body,
+                        ..
+                    } = m
+                    {
+                        // H3 — register the method half of the IDENTITY-FORWARDER registries, mirroring
+                        // the `Item::Fn` block above. Param names include `self` at index 0 (the
+                        // self-offset convention). Without this, a method-defined forwarder had no
+                        // summary row anywhere, so the closure resolver could not resolve it even once
+                        // it learned to match `CallExpr` (H2) — the two holes were independent.
+                        //
+                        // Conservatism matches the free-fn path exactly: exactly ONE tail value / ONE
+                        // return, else skipped. A skipped method under-approximates (fails to resolve),
+                        // which can only fail to reject, never false-reject. First writer wins on a
+                        // bare-name clash across impls rather than unioning, because these registries
+                        // hold a single concrete EXPRESSION (unlike a capability SET, which has a
+                        // conservative join) — two impls returning different params is genuinely
+                        // ambiguous, and resolving to the wrong one would be a false REJECT.
+                        {
+                            let mut tv = Vec::new();
+                            tail_values(body, true, &mut tv);
+                            let mut rets = Vec::new();
+                            for st in body {
+                                collect_returns_in_stmt(st, &mut rets);
+                            }
+                            let pnames: Vec<String> =
+                                params.iter().map(|(n, _)| n.clone()).collect();
+                            let cand: Option<Expr> = if tv.len() == 1
+                                && matches!(&tv[0], Expr::Lambda { .. })
+                            {
+                                Some(tv[0].clone())
+                            } else if rets.len() == 1 && matches!(&rets[0], Expr::Lambda { .. }) {
+                                Some(rets[0].clone())
+                            } else {
+                                None
+                            };
+                            if let Some(lam @ Expr::Lambda { .. }) = cand {
+                                ctx.method_returns_lambda
+                                    .entry(name.clone())
+                                    .or_insert((pnames.clone(), lam));
+                            }
+                            let sole: Option<Expr> = if tv.len() == 1 {
+                                Some(tv[0].clone())
+                            } else if rets.len() == 1 {
+                                Some(rets[0].clone())
+                            } else {
+                                // H5 applies to the method half too — a branch forwarder is no less a
+                                // forwarder for being declared in an `impl`.
+                                unanimous_forwarded_return(&rets)
+                            };
+                            if let Some(r) = sole {
+                                ctx.method_sole_return
+                                    .entry(name.clone())
+                                    .or_insert((pnames, r));
+                            }
+                        }
+                        // Cluster F: record the method's declared `uses(...)` so a CALLER inherits it,
+                        // the method half of the one inheritance mechanism (`fn_declared_effects` is the
+                        // free-fn half; both are consumed via `apply_inherited_capability`). UNION across
+                        // impls sharing the bare name — unlike `method_contracts` below, where ambiguity
+                        // must collapse to `None` because a call site cannot pick WHICH obligation to
+                        // prove, a capability set has a well-defined conservative join: if any impl's `m`
+                        // may reach `shell`, a call to `m` must be charged `shell`. Union can only
+                        // over-charge (reject), never under-charge (accept).
+                        if !declared_effects.is_empty() {
+                            ctx.method_declared_effects
+                                .entry(name.clone())
+                                .or_default()
+                                .extend(declared_effects.iter().cloned());
+                        }
                         let arity = params.len();
+                        // #76: did an EARLIER impl already declare this bare name? Captured before
+                        // the arity registration below inserts it. A contract-FREE impl has to leave
+                        // this trace too: without it, a contracted impl declared LATER silently
+                        // adopts the name via `or_insert` and gates the earlier type's call sites
+                        // with a contract never written for it — a cross-type misapplication that
+                        // depended purely on declaration order.
+                        let declared_by_earlier_impl = ctx.method_arities.contains_key(name);
                         ctx.method_arities
                             .entry(name.clone())
                             .and_modify(|e| {
@@ -1394,6 +1599,33 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                 }
                             })
                             .or_insert(Some(arity));
+                        // #76: register the method's CONTRACT so call sites are obliged to prove its
+                        // `requires` (and may assume its `ensures`), exactly as for a free function.
+                        // A bare name declared by more than one impl is ambiguous (`None`) — a call
+                        // site cannot statically pick a contract, and the enforcing site rejects
+                        // rather than guess. `method_contracts` is keyed by bare name with no
+                        // receiver-type resolution, so ambiguity is the only sound answer, and it
+                        // must not depend on which impl the file happens to declare first.
+                        if !requires.is_empty() || !ensures.is_empty() {
+                            if declared_by_earlier_impl {
+                                ctx.method_contracts.insert(name.clone(), None);
+                                ctx.method_param_types.insert(name.clone(), None);
+                            } else {
+                                let contract = (
+                                    params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                                    requires.clone(),
+                                    ensures.clone(),
+                                );
+                                let ptypes =
+                                    params.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>();
+                                ctx.method_contracts.insert(name.clone(), Some(contract));
+                                ctx.method_param_types.insert(name.clone(), Some(ptypes));
+                            }
+                        } else if ctx.method_contracts.contains_key(name) {
+                            // A contract-free redefinition of a contracted name is equally ambiguous.
+                            ctx.method_contracts.insert(name.clone(), None);
+                            ctx.method_param_types.insert(name.clone(), None);
+                        }
                     }
                 }
             }
@@ -1670,9 +1902,8 @@ fn require_research_authorization_metadata(
     if !has_auth {
         ctx.diagnostics.push(SemanticDiagnostic {
             code: Some("ANUBIS_RESEARCH_MISSING_AUTHORIZATION".into()),
-            message:
-                "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
-                    .to_string(),
+            message: "research/poc/fuzz/proof/defensive/audit requires authorization=... metadata"
+                .to_string(),
             span: Some((span.start, span.end)),
         });
     }
@@ -1722,12 +1953,7 @@ fn collect_items(
                 ..
             } => {
                 let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
-                require_research_authorization_metadata(
-                    effective_mode,
-                    attributes,
-                    *span,
-                    ctx,
-                );
+                require_research_authorization_metadata(effective_mode, attributes, *span, ctx);
                 // Per-item verification lane: `@verified` / `#[verified]` on this fn.
                 let item_verified = attributes.iter().any(|a| a.name == "verified");
                 let saved_verified = ctx.verified;
@@ -3520,6 +3746,73 @@ fn flatten_and_exprs(e: &Expr) -> Vec<&Expr> {
     }
 }
 
+/// #76: discharge an impl-METHOD's `requires` at a `recv.m(args)` call site.
+///
+/// Reuses the free-function machinery verbatim by installing the method's contract under a synthetic
+/// key for the duration of the call, so the hardened argument modelling that path already carries —
+/// the #40 int→f64 rounding coercion, the A1 uN masking, the caller-local builtin-shadow handling and
+/// the mixed-lane `&&` decomposition — applies identically here instead of being re-implemented (and
+/// re-hardened) a second time. `self` is parameter 0, matching the runtime dispatch, so the receiver is
+/// prepended to the argument list.
+///
+/// AMBIGUOUS names fail closed: if two impls declare the same bare method name and either carries a
+/// contract, the call site cannot know which applies, so the program is REJECTED rather than
+/// discharged against a guessed contract.
+fn discharge_method_requires(
+    ctx: &mut SemanticContext,
+    assumptions: &[String],
+    method: &str,
+    recv: &Expr,
+    args: &[Expr],
+) -> bool {
+    let entry = match ctx.method_contracts.get(method) {
+        Some(e) => e.clone(),
+        None => return true, // no contract on this method name — nothing to discharge
+    };
+    let Some((pnames, creq, cens)) = entry else {
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_AMBIGUOUS_METHOD_CONTRACT".into()),
+            message: format!(
+                "method `{method}` is declared by more than one impl and at least one declaration \
+                 carries a `requires`/`ensures`, so the contract that applies at this call site is \
+                 not statically determined. Rename the methods, or remove the contract."
+            ),
+            span: None,
+        });
+        return false;
+    };
+    let ptypes = ctx
+        .method_param_types
+        .get(method)
+        .cloned()
+        .flatten()
+        .unwrap_or_default();
+    let key = format!("<method>{method}");
+    let mut full: Vec<Expr> = Vec::with_capacity(args.len() + 1);
+    full.push(recv.clone());
+    full.extend(args.iter().cloned());
+    let saved_contract = ctx.fn_contracts.insert(key.clone(), (pnames, creq, cens));
+    let saved_params = ctx.fn_params.insert(key.clone(), ptypes);
+    let ok = discharge_call_requires(ctx, assumptions, &key, &full);
+    match saved_contract {
+        Some(v) => {
+            ctx.fn_contracts.insert(key.clone(), v);
+        }
+        None => {
+            ctx.fn_contracts.remove(&key);
+        }
+    }
+    match saved_params {
+        Some(v) => {
+            ctx.fn_params.insert(key, v);
+        }
+        None => {
+            ctx.fn_params.remove(&key);
+        }
+    }
+    ok
+}
+
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -3941,6 +4234,12 @@ fn discharge_calls_in_expr(ctx: &mut SemanticContext, assumptions: &mut Vec<Stri
             discharge_calls_in_expr(ctx, assumptions, callee);
             for a in args {
                 discharge_calls_in_expr(ctx, assumptions, a);
+            }
+            // #76: a method call `recv.m(args)` parses as CallExpr{callee: FieldAccess{base, field}}.
+            // Discharge the method's `requires` here — previously nothing did, so a contracted method
+            // assumed its precondition in its own body with no call site ever obliged to prove it.
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                discharge_method_requires(ctx, assumptions, field, base, args);
             }
         }
         // `&&`/`||` short-circuit (run.rs:3027): the RHS runs only when the LHS does not decide — a
@@ -4874,31 +5173,19 @@ fn analyze_stmts(
                     // descends into e.g. `|x| write_file(<the tainted arg>)`. substitute_vars does not
                     // descend into the lambda WRAPPER, so we substitute into its BODY directly (a nested
                     // lambda in the body is not reached — a residual); the lambda's own params shadow.
-                    Expr::Call { callee, args } => {
-                        ctx.fn_returns_lambda.get(callee).and_then(|(pnames, lam)| {
-                            if pnames.len() != args.len() {
-                                return None;
-                            }
-                            if let Expr::Lambda {
-                                params: lparams,
-                                body,
-                            } = lam
-                            {
-                                let mut sub: BTreeMap<String, Expr> =
-                                    pnames.iter().cloned().zip(args.iter().cloned()).collect();
-                                for lp in lparams {
-                                    sub.remove(lp);
-                                }
-                                let new_body = substitute_vars(body, &sub);
-                                Some(Box::new(Expr::Lambda {
-                                    params: lparams.clone(),
-                                    body: Box::new(new_body),
-                                }))
-                            } else {
-                                None
-                            }
-                        })
-                    }
+                    // #72: routed through the shared resolver, which handles BOTH `make()` returning a
+                    // lambda literal (beta-substituted, as before) AND `fwd(f){return f}` identity
+                    // forwarders — including nested ones — that return a closure-valued PARAM.
+                    // H2: `let g = recv.fwd(|x| k);` resolves through the method registries too.
+                    Expr::Call { .. } | Expr::CallExpr { .. } => resolve_closure_value(
+                        init,
+                        scope,
+                        &ctx.fn_returns_lambda,
+                        &ctx.fn_returns_param,
+                        &ctx.method_returns_lambda,
+                        &ctx.method_returns_param,
+                        0,
+                    ),
                     // `let g = container[key]` / nested `outer[0][0]` — resolve via full access path.
                     // Concrete literal chains use flatten keys (`"0.0"`). Symbolic segment handled below.
                     Expr::Index { .. } | Expr::FieldAccess { .. } => {
@@ -5258,6 +5545,25 @@ fn analyze_stmts(
                 // The initializer is evaluated UNCONDITIONALLY (like a plain `let`), so discharge a
                 // contracted call in it (`let [p, q] = [g(a), 0];`).
                 discharge_calls_in_expr(ctx, assumptions, init);
+                // #73: run the EFFECT/enforcement walk over the initializer, exactly as `Stmt::Let`
+                // does. Every Safe-mode capability gate, taint→sink, secret→egress and interprocedural
+                // sink/egress check is emitted from `analyze_expr_effect`; #69 seeded this arm's LABELS
+                // but never called it, so a destructuring `let` was a blanket bypass of all of them:
+                // `let (a, b) = (shell("id"), 0);` CHECKED CLEAN with no `uses(shell)` while the
+                // identical `let a = shell("id");` was correctly rejected ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+                // (confirmed false accept, probe `G_letpattern_bypass`, 2026-07-26).
+                analyze_expr_effect(init, mode, scope, effects, ctx);
+                // Same rationale as the `Stmt::Let` twin: a `push`/`insert` in the initializer mutates
+                // the CONTAINER argument, not the bound names, so label the container root.
+                apply_container_mutation_taint(
+                    init,
+                    scope,
+                    &ctx.tainting_fns,
+                    &ctx.secret_fns,
+                    &ctx.param_return_taint,
+                    &ctx.method_tainting_fns,
+                    &ctx.method_secret_fns,
+                );
                 // #69: SEED taint/secret from the initializer. Before this the arm labelled nothing
                 // (not even inserting the bound names into `scope`), so a destructured secret/tainted
                 // source laundered: `let [a,b] = [secret_source("k"),0]; send(a)` and the direct-source
@@ -6528,6 +6834,31 @@ fn analyze_stmts(
                         ctx,
                     );
                 }
+                // H1 — charge the EFFECTS of the loop HEADER. `analyze_expr_effect` is the only function
+                // that emits `ANUBIS_EFFECT_FORBIDDEN_IN_MODE` (shell / fs.write / net.send), and this arm
+                // never called it: the `source` was handed to `invalidate_embedded_writes`,
+                // `discharge_calls_in_expr`, `expr_taint_source_m` and `expr_secret_source_m`, but never to
+                // the capability gate. So `for i in 0..write_file("f","x") { }` at the top of any function
+                // CHECK-PASSED and really created the file, while the byte-identical shape one syntactic
+                // level down — inside a closure or a value-position block, which routes through
+                // `walk_block_effects` — was correctly rejected. Verified REAL with a real write
+                // (SONNET5-A), derived structurally as H1 (GROK-HORUS).
+                //
+                // This is a straight PORT from that already-correct sibling (`walk_block_effects`'s
+                // `Stmt::For` arm), placed at the same point in the arm's order — after the implicit-flow
+                // check, before the invariant desugaring — so the two walkers now differ in nothing that
+                // concerns the loop header. Same defect class as this morning's `Stmt::LetPattern` fix
+                // (#73): one statement kind's sub-expression tree was reachable in one walker and not its
+                // twin. NOT a new mechanism — the mechanism existed and was simply not called from here.
+                match source {
+                    crate::frontend::ForSource::Range { start, end } => {
+                        analyze_expr_effect(start, mode, scope, effects, ctx);
+                        analyze_expr_effect(end, mode, scope, effects, ctx);
+                    }
+                    crate::frontend::ForSource::Collection { expr } => {
+                        analyze_expr_effect(expr, mode, scope, effects, ctx)
+                    }
+                }
                 // Phase-3: verify a `for i in start..end invariant(P) { body }` loop by DESUGARING to the
                 // exactly-equivalent `let i = start; while i < end invariant(P) { body; i = i + 1 }` and
                 // reusing verify_while_invariants — a range `for` IS that `while` (i binds start, runs while
@@ -6892,10 +7223,7 @@ fn expr_is_raw_ecdh_shared(e: &Expr) -> bool {
 fn is_aead_key_consumer(callee: &str) -> bool {
     matches!(
         callee,
-        "aead_seal"
-            | "aead_open"
-            | "chacha20_poly1305_seal"
-            | "chacha20_poly1305_open"
+        "aead_seal" | "aead_open" | "chacha20_poly1305_seal" | "chacha20_poly1305_open"
     ) || callee.ends_with("__aead_encrypt")
         || callee.ends_with("__aead_decrypt")
 }
@@ -6938,11 +7266,360 @@ fn expr_is_password_secret_call(e: &Expr) -> bool {
 /// secret/tainted capture — the arg VALUE itself is a plain closure (never a secret source), so the
 /// existing `expr_secret_source_m(arg)` check reads clean and the leak needs this body inspection
 /// (soundness hunt2 [06,07]). Returns cloned data so the caller can build a params-shadowed scope.
+/// #72: derive `fn_returns_param` from `fn_sole_return` by a monotone fixpoint.
+///
+/// A function is an IDENTITY FORWARDER at index `i` when its sole returned expression is either its
+/// own parameter `i`, or a call to an already-known forwarder whose forwarded argument is that
+/// parameter. The second clause is what makes CHAINS work — `fn f1(g){return g}` +
+/// `fn f2(g){return f1(g)}` needs round 1 to mark `f1` before round 2 can mark `f2`, so a single
+/// registration pass structurally cannot see it (probe `p83_double_fwd`).
+///
+/// Monotone (add-only over a finite name lattice) ⇒ terminates. Under-approximates by construction:
+/// anything not recognised is simply absent, which can only fail to reject, never false-reject.
+fn compute_returns_param_fixpoint(ctx: &mut SemanticContext) {
+    loop {
+        let mut newly: Vec<(String, (Vec<String>, usize))> = Vec::new();
+        for (name, (pnames, ret)) in &ctx.fn_sole_return {
+            if ctx.fn_returns_param.contains_key(name) {
+                continue;
+            }
+            let idx = match ret {
+                Expr::Var(v) => pnames.iter().position(|n| n == v),
+                Expr::Call { callee, args } => {
+                    ctx.fn_returns_param.get(callee).and_then(|(cpnames, j)| {
+                        if cpnames.len() != args.len() {
+                            return None;
+                        }
+                        match args.get(*j) {
+                            Some(Expr::Var(v)) => pnames.iter().position(|n| n == v),
+                            _ => None,
+                        }
+                    })
+                }
+                _ => None,
+            };
+            if let Some(i) = idx {
+                newly.push((name.clone(), (pnames.clone(), i)));
+            }
+        }
+        // H3 — the METHOD half of the same fixpoint, run in the SAME loop so forwarder chains cross the
+        // free-fn↔method boundary in either direction: a method forwarding to a free forwarder needs the
+        // free one marked first, and a free fn forwarding through `recv.m(x)` needs the method marked
+        // first. Two separate fixpoints would each terminate before the other could contribute, so a
+        // mixed chain would resolve only if the file happened to be ordered favourably.
+        let mut newly_m: Vec<(String, (Vec<String>, usize))> = Vec::new();
+        for (name, (pnames, ret)) in &ctx.method_sole_return {
+            if ctx.method_returns_param.contains_key(name) {
+                continue;
+            }
+            let idx = match ret {
+                // Direct: the method returns one of its own params (`self` is index 0).
+                Expr::Var(v) => pnames.iter().position(|n| n == v),
+                // Chained through a FREE forwarder: `fn m(self, f) { return fwd(f); }`.
+                Expr::Call { callee, args } => {
+                    ctx.fn_returns_param.get(callee).and_then(|(cpnames, j)| {
+                        if cpnames.len() != args.len() {
+                            return None;
+                        }
+                        match args.get(*j) {
+                            Some(Expr::Var(v)) => pnames.iter().position(|n| n == v),
+                            _ => None,
+                        }
+                    })
+                }
+                // Chained through ANOTHER METHOD: `fn m(self, f) { return self.fwd(f); }`. Self-offset:
+                // the callee summary's index 0 is its receiver (`base`), index p≥1 is call arg p-1.
+                Expr::CallExpr { callee, args } => match callee.as_ref() {
+                    Expr::FieldAccess { base, field, .. } => ctx
+                        .method_returns_param
+                        .get(field)
+                        .and_then(|(cpnames, j)| {
+                            if cpnames.len() != args.len() + 1 {
+                                return None;
+                            }
+                            let forwarded: Option<&Expr> = if *j == 0 {
+                                Some(base.as_ref())
+                            } else {
+                                args.get(*j - 1)
+                            };
+                            match forwarded {
+                                Some(Expr::Var(v)) => pnames.iter().position(|n| n == v),
+                                _ => None,
+                            }
+                        }),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(i) = idx {
+                newly_m.push((name.clone(), (pnames.clone(), i)));
+            }
+        }
+        if newly.is_empty() && newly_m.is_empty() {
+            break;
+        }
+        for (k, v) in newly {
+            ctx.fn_returns_param.insert(k, v);
+        }
+        for (k, v) in newly_m {
+            ctx.method_returns_param.insert(k, v);
+        }
+    }
+}
+
+/// #72: resolve the closure VALUE an expression denotes, following IDENTITY FORWARDERS transitively.
+///
+/// Handles, in order: a lambda literal; a var already bound to a closure; a call to a function that
+/// returns a lambda literal (`fn_returns_lambda`, beta-substituting the callee's params by the call
+/// args); and — the case this exists for — a call to a function whose sole return is one of its own
+/// params (`fn_returns_param`), which resolves to the ARG at that index and RECURSES, so nested
+/// forwarders (`fwd(fwd(|x| k))`) resolve too. Depth-capped purely as a cycle backstop; exceeding it
+/// returns None, which under-approximates and can only fail to reject, never false-reject.
+fn resolve_closure_value(
+    e: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    fn_returns_lambda: &BTreeMap<String, (Vec<String>, Expr)>,
+    fn_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
+    method_returns_lambda: &BTreeMap<String, (Vec<String>, Expr)>,
+    method_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
+    depth: u32,
+) -> Option<Box<Expr>> {
+    if depth > 8 {
+        return None;
+    }
+    match e {
+        Expr::Lambda { .. } => Some(Box::new(e.clone())),
+        Expr::Var(v) => scope.get(v).and_then(|b| b.closure_lambda.clone()),
+        Expr::Call { callee, args } => {
+            // H4 — resolve the callee through the function-value ALIAS chain BEFORE consulting the
+            // forwarder registries. This is the identical idiom `analyze_expr_effect` already uses for
+            // its `sink_callee` (see the `Expr::Call` arm there): the alias binding was computed for
+            // the capability/taint lanes and simply never reached this walker, so `let g = fwd;
+            // g(|x| print(k))(0)` looked up the registries under the raw AST text `"g"`, missed, and
+            // laundered the forwarded closure — while calling `fwd` directly was correctly rejected.
+            // Same walker-desync class as #74: one lane learned to resolve aliases, its sibling did not.
+            let callee: &str = scope
+                .get(callee)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(callee.as_str());
+            if let Some((pnames, Expr::Lambda { params, body })) = fn_returns_lambda.get(callee) {
+                if pnames.len() == args.len() {
+                    let mut sub: BTreeMap<String, Expr> =
+                        pnames.iter().cloned().zip(args.iter().cloned()).collect();
+                    for p in params {
+                        sub.remove(p);
+                    }
+                    return Some(Box::new(Expr::Lambda {
+                        params: params.clone(),
+                        body: Box::new(substitute_vars(body, &sub)),
+                    }));
+                }
+            }
+            if let Some((pnames, i)) = fn_returns_param.get(callee) {
+                if pnames.len() == args.len() {
+                    if let Some(a) = args.get(*i) {
+                        return resolve_closure_value(
+                            a,
+                            scope,
+                            fn_returns_lambda,
+                            fn_returns_param,
+                            method_returns_lambda,
+                            method_returns_param,
+                            depth + 1,
+                        );
+                    }
+                }
+            }
+            None
+        }
+        // H2 — METHOD CALL `recv.m(a, b)`. This arm did not exist: the walker matched only
+        // `Lambda`/`Var`/`Call`, so every method call fell to `_ => None` and any closure forwarded
+        // through an `impl` method resolved to nothing — the forwarded lambda became opaque and its
+        // captured secret/taint was laundered at the application site. Derived independently three ways
+        // (GROK-HORUS structurally as H2; SONNET5-A and GROK-SEKHMET by attack with real writes to
+        // disk), all landing here.
+        //
+        // SELF-OFFSET: a method summary's parameter list includes `self` at index 0, so summary index 0
+        // is the RECEIVER (`base`) and index p≥1 is call arg p-1 — the same convention
+        // `method_param_sinks` and the runtime's `call_args = [receiver, …args]` already use. Getting
+        // this off by one would silently resolve the wrong argument, so the arity guard below is
+        // `pnames.len() == args.len() + 1` rather than the free-fn `== args.len()`.
+        //
+        // Looks up the METHOD registries only — never the free-fn ones by bare name. See
+        // `method_sole_return`'s doc for why merging those namespaces is a three-times-confirmed
+        // defect generator on this codebase.
+        Expr::CallExpr { callee, args } => {
+            if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                if let Some((pnames, Expr::Lambda { params, body })) =
+                    method_returns_lambda.get(field)
+                {
+                    if pnames.len() == args.len() + 1 {
+                        // Beta-substitute the method's own params by the call site: `self` ← receiver,
+                        // then each declared param ← its argument. The returned lambda's OWN params
+                        // shadow and are removed, exactly as the free-fn path does.
+                        let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+                        sub.insert(pnames[0].clone(), (**base).clone());
+                        for (i, a) in args.iter().enumerate() {
+                            if let Some(pn) = pnames.get(i + 1) {
+                                sub.insert(pn.clone(), a.clone());
+                            }
+                        }
+                        for p in params {
+                            sub.remove(p);
+                        }
+                        return Some(Box::new(Expr::Lambda {
+                            params: params.clone(),
+                            body: Box::new(substitute_vars(body, &sub)),
+                        }));
+                    }
+                }
+                if let Some((pnames, i)) = method_returns_param.get(field) {
+                    if pnames.len() == args.len() + 1 {
+                        let forwarded: Option<&Expr> = if *i == 0 {
+                            Some(base.as_ref())
+                        } else {
+                            args.get(*i - 1)
+                        };
+                        if let Some(a) = forwarded {
+                            return resolve_closure_value(
+                                a,
+                                scope,
+                                fn_returns_lambda,
+                                fn_returns_param,
+                                method_returns_lambda,
+                                method_returns_param,
+                                depth + 1,
+                            );
+                        }
+                    }
+                }
+            }
+            None
+        }
+        // ---- TOTALITY (2026-07-26). No wildcard below this line, deliberately. ----
+        //
+        // The `_ => None` that used to stand here IS the reason H2 was invisible: a method call fell
+        // through it and reported "denotes no closure", which reads as CLEAN, so the missing arm was
+        // discovered by an adversary running programs instead of by rustc refusing to build. Every
+        // remaining `Expr` variant is now an explicit, documented decision, so adding a variant to the
+        // AST is a COMPILE ERROR here rather than a silent fail-open. Same shape as the in-tree
+        // precedent in `solver/src/fragment.rs::is_proven_authoritative`.
+        //
+        // Group 1 — CANNOT denote a closure value. A named noop, not a guess: these constructors
+        // produce a number, string, bool, pointer, or unit, so "no lambda" is the exact answer.
+        Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::Other(_) => None,
+        //
+        // Group 2 — a closure may be INSIDE, but this expression is not itself the closure, and a
+        // DEDICATED mechanism already resolves the stored value: `collect_container_closures` records
+        // closures by dotted access path into `ScopeBinding::field_closures`, and
+        // `resolve_applied_container_lambda` resolves an application through one. Returning `None` here
+        // routes to that machinery rather than duplicating it. Deliberate, and NOT a claim of coverage:
+        // SONNET5-A confirmed that machinery has its own live gaps (a struct-field closure arriving as
+        // a PARAMETER is invisible, because `field_closures` is populated only for a struct literal
+        // built in the same frame). Those are tracked separately — they are not fixable from this arm.
+        Expr::ArrayLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::Index { .. }
+        | Expr::FieldAccess { .. } => None,
+        //
+        // Group 3 — MULTI-CANDIDATE positions: these can genuinely yield a closure, but potentially a
+        // DIFFERENT one per branch/arm, and this resolver's return type is a single `Option`, as is its
+        // consumer (`ScopeBinding::closure_lambda` holds one lambda). Resolving to an arbitrary branch
+        // would be unsound-by-arbitrary-choice; resolving to all of them requires the set-valued
+        // resolver and widened sinks (the H5 multi-candidate follow-on). Explicit `None` with the reason
+        // recorded, so this is a KNOWN residual rather than an accident.
+        Expr::Match { .. } | Expr::If { .. } | Expr::IfLet { .. } | Expr::Block { .. } => None,
+        //
+        // Group 4 — label wrappers. `Tainted`/`Try` wrap a value whose closure identity is unchanged, so
+        // descending is both correct and fail-closed (it can only resolve MORE). `Declassify` is
+        // deliberately NOT descended: its whole purpose is to release a label, and resolving through it
+        // would re-attach the released closure's captures at the application site — a false reject.
+        Expr::Tainted { inner, .. } | Expr::Try(inner) => resolve_closure_value(
+            inner,
+            scope,
+            fn_returns_lambda,
+            fn_returns_param,
+            method_returns_lambda,
+            method_returns_param,
+            depth + 1,
+        ),
+        Expr::Declassify { .. } => None,
+    }
+}
+
+/// H5 — the one value EVERY return of a body agrees on, if they all agree.
+///
+/// Identity-forwarder detection asked for "exactly ONE collected return", but the property it actually
+/// needs is "every possible return is the SAME parameter". A branch forwarder
+/// `fn fwd(c, f) { if c { return f; } else { return f; } }` has two returns expressing ONE forwarding
+/// decision, and the count test dropped it entirely — so the forwarded closure went unresolved and its
+/// captured secret laundered, while the single-return spelling of the same function was correctly
+/// rejected. The `match` twin behaves identically.
+///
+/// Agreement is decided only on the shape the consumer can actually use — a bare `Expr::Var` — so this
+/// never records a value `compute_returns_param_fixpoint` would misread. `Expr` has no `PartialEq`, and
+/// deriving one across the whole AST to compare arbitrary returns would be a far larger change for no
+/// extra coverage here.
+///
+/// **Deliberately returns `None` when the returns DISAGREE** (`if c { return f; } else { return g; }`).
+/// That is not laziness: the function may return either parameter, and this registry maps a name to ONE
+/// index, as does its consumer (`ScopeBinding::closure_lambda` holds one lambda). Resolving to an
+/// arbitrary branch would be unsound-by-arbitrary-choice; resolving to all of them needs the set-valued
+/// resolver with widened sinks. That remains a KNOWN open residual, recorded here rather than implied
+/// closed — see the Tier 1 report.
+fn unanimous_forwarded_return(rets: &[Expr]) -> Option<Expr> {
+    let first = rets.first()?;
+    match first {
+        Expr::Var(v0) => {
+            if rets.iter().all(|r| matches!(r, Expr::Var(v) if v == v0)) {
+                Some(first.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn resolve_closure_arg(
     arg: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
     fn_returns_lambda: &BTreeMap<String, (Vec<String>, Expr)>,
+    fn_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
+    method_returns_lambda: &BTreeMap<String, (Vec<String>, Expr)>,
+    method_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
 ) -> Option<(Vec<String>, Expr)> {
+    // #72: an identity-forwarded closure (`run(fwd(|x| k))`) resolves through `resolve_closure_value`
+    // before the literal-shape arms below, which only see lambda / var / returns-lambda-literal.
+    // H2: `run(recv.fwd(|x| k))` — a METHOD-forwarded closure argument — resolves the same way.
+    if matches!(arg, Expr::Call { .. } | Expr::CallExpr { .. }) {
+        if let Some(b) = resolve_closure_value(
+            arg,
+            scope,
+            fn_returns_lambda,
+            fn_returns_param,
+            method_returns_lambda,
+            method_returns_param,
+            0,
+        ) {
+            if let Expr::Lambda { params, body } = *b {
+                return Some((params, *body));
+            }
+        }
+    }
     match arg {
         Expr::Lambda { params, body } => Some((params.clone(), (**body).clone())),
         Expr::Var(g) => match scope.get(g).and_then(|b| b.closure_lambda.as_deref()) {
@@ -7040,10 +7717,7 @@ fn analyze_expr_effect(
         Expr::Call { callee, args } => {
             // RWC Ch5: raw X25519 shared secret must not feed AEAD key slot (use hybrid_* or HKDF).
             if is_aead_key_consumer(callee)
-                && args
-                    .first()
-                    .map(expr_is_raw_ecdh_shared)
-                    .unwrap_or(false)
+                && args.first().map(expr_is_raw_ecdh_shared).unwrap_or(false)
             {
                 ctx.diagnostics.push(SemanticDiagnostic {
                     code: Some("ANUBIS_CRYPTO_MISUSE".into()),
@@ -7109,7 +7783,24 @@ fn analyze_expr_effect(
                     }
                 }
             }
-            if callee == "shell" || callee == "exec" || callee == "system" || callee == "target_run"
+            // #74: resolve a function-value alias ONCE, BEFORE the capability gates below.
+            //
+            // This binding used to be computed ~70 lines further down, so it served only the taint /
+            // secret lanes while every Safe-mode CAPABILITY gate (shell, fs.write, net.send) and the
+            // inherited-`uses(...)` lookup still keyed on the RAW callee. Aliasing a privileged builtin
+            // therefore laundered its capability outright: `let g = shell; g("id");` CHECKED CLEAN with
+            // no `uses(shell)` while the identical `shell("id");` was correctly rejected
+            // ANUBIS_EFFECT_FORBIDDEN_IN_MODE (confirmed false accept, probe `H_cap_alias_launder`,
+            // 2026-07-26). The same held for a user function carrying a `uses` clause. Non-alias calls
+            // are unaffected — `sink_callee == callee`.
+            let sink_callee: &str = scope
+                .get(callee)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(callee.as_str());
+            if sink_callee == "shell"
+                || sink_callee == "exec"
+                || sink_callee == "system"
+                || sink_callee == "target_run"
             {
                 effects.push("shell".to_string());
                 // Safe: forbidden unless `uses(shell)` (or uses(exec)/proc.exec) declared.
@@ -7122,15 +7813,15 @@ fn analyze_expr_effect(
                     });
                 }
             }
-            if callee == "read_file" || callee == "open" {
+            if sink_callee == "read_file" || sink_callee == "open" {
                 effects.push("file_read".to_string());
                 // file_read is allowed in Safe by default (legacy); verified lane still requires uses.
             }
-            if callee == "write_file"
-                || callee == "write"
-                || callee == "append_file"
-                || callee == "delete_file"
-                || callee == "remove_file"
+            if sink_callee == "write_file"
+                || sink_callee == "write"
+                || sink_callee == "append_file"
+                || sink_callee == "delete_file"
+                || sink_callee == "remove_file"
             {
                 effects.push("file_write".to_string());
                 // Safe: authorized when `uses(fs.write)` is declared on this function.
@@ -7144,11 +7835,11 @@ fn analyze_expr_effect(
                     });
                 }
             }
-            if callee.contains("network")
-                || callee == "send"
-                || callee == "connect"
-                || callee == "http_get"
-                || callee == "http_post"
+            if sink_callee.contains("network")
+                || sink_callee == "send"
+                || sink_callee == "connect"
+                || sink_callee == "http_get"
+                || sink_callee == "http_post"
             {
                 effects.push("network".to_string());
                 // Safe: authorized when `uses(net.send)` (or net.connect) is declared.
@@ -7161,10 +7852,10 @@ fn analyze_expr_effect(
                     });
                 }
             }
-            if matches!(callee.as_str(), "time" | "time_now" | "now") {
+            if matches!(sink_callee, "time" | "time_now" | "now") {
                 effects.push("time".to_string());
             }
-            if matches!(callee.as_str(), "rand" | "rand_gen" | "random") {
+            if matches!(sink_callee, "rand" | "rand_gen" | "random") {
                 effects.push("rand".to_string());
             }
             // Phase-5: inherit declared `uses(...)` from a user-defined callee (incl. namespaced
@@ -7172,19 +7863,13 @@ fn analyze_expr_effect(
             // would launder fs.write/shell past Safe — the wrapper itself has the uses clause, but
             // the *caller* never saw the capability. Fail-closed: same Safe/verified gates as a
             // direct builtin of that capability.
-            if let Some(caps) = ctx.fn_declared_effects.get(callee).cloned() {
+            // #74: keyed on the ALIAS-RESOLVED name, so `let g = privileged; g();` inherits the
+            // callee's declared `uses(...)` instead of laundering it.
+            if let Some(caps) = ctx.fn_declared_effects.get(sink_callee).cloned() {
                 for raw in caps {
                     apply_inherited_capability(raw, mode, effects, ctx);
                 }
             }
-            // Resolve a function-value alias so a call THROUGH `let f = shell; f(x)` (a BUILTIN sink/
-            // egress aliased to a local) consults the real sink at the DIRECT checks too — the interproc
-            // checks already resolve aliases; this closes the same gap for the builtin-sink direct case
-            // (soundness hunt 2026-07-20). Non-alias calls are unaffected (`sink_callee == callee`).
-            let sink_callee: &str = scope
-                .get(callee)
-                .and_then(|b| b.fn_alias.as_deref())
-                .unwrap_or(callee.as_str());
             if is_sink(sink_callee) {
                 effects.push(format!("sink:{}", sink_callee));
                 for arg in args {
@@ -7290,9 +7975,14 @@ fn analyze_expr_effect(
                                     span: None,
                                 });
                             }
-                        } else if let Some((params, body)) =
-                            resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda)
-                        {
+                        } else if let Some((params, body)) = resolve_closure_arg(
+                            arg,
+                            scope,
+                            &ctx.fn_returns_lambda,
+                            &ctx.fn_returns_param,
+                            &ctx.method_returns_lambda,
+                            &ctx.method_returns_param,
+                        ) {
                             // hunt2 [07]: the callee APPLIES-and-sinks this formal (a closure param),
                             // so a closure passed here leaks iff its BODY reads a tainted capture. The
                             // arg VALUE is a plain closure (no taint source) — inspect the body under a
@@ -7359,9 +8049,14 @@ fn analyze_expr_effect(
                                     },
                                     false,
                                 );
-                            } else if let Some((params, body)) =
-                                resolve_closure_arg(arg, scope, &ctx.fn_returns_lambda)
-                            {
+                            } else if let Some((params, body)) = resolve_closure_arg(
+                                arg,
+                                scope,
+                                &ctx.fn_returns_lambda,
+                                &ctx.fn_returns_param,
+                                &ctx.method_returns_lambda,
+                                &ctx.method_returns_param,
+                            ) {
                                 // hunt2 [06]: the callee APPLIES-and-egresses this formal (a closure
                                 // param), so a closure passed here exfiltrates iff its BODY reads a
                                 // secret capture. The arg VALUE is a plain closure (no secret source)
@@ -7902,6 +8597,55 @@ fn analyze_expr_effect(
             // body (#65); and a sink buried in non-linear control-flow inside a method's value-position
             // block (inherited from the summary walker's linear block handling).
             if let Expr::FieldAccess { base, field, .. } = callee.as_ref() {
+                // CLUSTER F — inherit the CALLEE METHOD's declared `uses(...)` into this caller's
+                // effect set. The method-call twin of the `ctx.fn_declared_effects` lookup in the
+                // `Expr::Call` arm, routed through the SAME `apply_inherited_capability` helper so the
+                // Safe-mode gate, the message, and the effect tags cannot drift apart.
+                //
+                // Without this, a method's `uses(...)` was checked ONLY inside its own body and never
+                // propagated anywhere: `impl Logger { fn save(self) uses(fs.write) { write_file(..) } }`
+                // called from a `main` that declares nothing gave `check passed` and then really wrote
+                // the file. The gap was total — every capability, gated or not, at every depth, direct
+                // or through a closure or a free-function forwarder.
+                //
+                // DEPTH is covered by this one insertion, because enforcement is PER FRAME:
+                // `apply_inherited_capability` gates against `ctx.authorized_caps`, which
+                // `analyze_function` sets to the *currently analyzed* function's own declared set — and
+                // methods are analyzed by `analyze_function` too. So an intermediate method or free-fn
+                // forwarder that omits the declaration is rejected at ITS frame, making the guarantee
+                // inductive in the number of hops rather than depth-limited. That part is verified at
+                // 1, 2 and 3+ hops and around mutual recursion.
+                //
+                // SCOPE — READ THIS BEFORE TRUSTING THE CLOSURE CASE. An earlier version of this
+                // comment claimed the closure route needed no separate handling and "fell out for
+                // free". That claim was WRONG and is corrected here, because an over-claiming comment
+                // is how the next reader inherits a false assumption.
+                //
+                // What is actually true: a gated method call reached through a closure is charged
+                // correctly *when the closure is VISIBLE to the closure-tracking machinery* — i.e. an
+                // inline lambda whose body `analyze_expr_effect` walks, or a lambda in a struct literal
+                // built in this same frame (the `field_closures` descent below). It is NOT charged when
+                // the closure is invisible to that machinery, and there are two PRE-EXISTING root
+                // causes for that, both of which reproduce identically for plain free functions and so
+                // are not specific to method dispatch:
+                //   1. a closure literal escaping through a `Call`/`CallExpr` RETURN VALUE (bare or
+                //      struct-wrapped) is tracked at neither its definition nor its application site;
+                //   2. a closure arriving inside a struct field as a PARAMETER is invisible —
+                //      `field_closures` is populated only for a struct literal constructed in the same
+                //      frame, and every parameter binding (`self` included) is seeded empty.
+                // Confirmed by attack with real writes to disk (SONNET5-A, 2026-07-26) and derived
+                // independently as structural holes H2–H5 in the walker-parity matrix. They are fixed
+                // in the closure-resolution abstraction, NOT here: this lookup's job is only to make a
+                // callee method's declared capabilities reachable from the method-call node.
+                //
+                // A field-stored closure applied as `b.f(x)` is NOT a method call; it is handled by the
+                // `field_closures` descent below, which walks the real lambda body, so it is unaffected
+                // by this lookup (a stored closure never appears in `method_declared_effects`).
+                if let Some(caps) = ctx.method_declared_effects.get(field).cloned() {
+                    for raw in caps {
+                        apply_inherited_capability(raw, mode, effects, ctx);
+                    }
+                }
                 // Safe-mode: secret arg into an explicitly public method formal (self-offset:
                 // call arg i → param type index i+1). Dual of free-fn secret→public formal.
                 if mode == Mode::Safe {
@@ -8650,13 +9394,17 @@ fn run_z3_obligation_with_smt(obligation: &SolverObligation, smt: String) -> Sol
     // Phase-7 z3-authoritative flip (opt-in): the native QF_BV solver decides the PRIMARY obligation
     // when it can — but ONLY over the PROOF-BACKED FRAGMENT. `native_check_sat_model_authoritative`
     // applies `fragment::is_proven_authoritative`, so a native verdict is returned only when EVERY op
-    // has a machine-checked bit-blast in BitBlast.lean. Unproven ops (div-rem / var×var-Mul / …) DEFER
-    // to z3. UNSAT (the trust-critical direction, especially z3-absent) requires ALL of: (1) proven
-    // fragment, (2) CDCL UnsatCert (root refutation), (3) independent `lrat::check_proof` accept —
-    // missing/invalid cert → native declines (`None`), never a bare Unsat. SAT (counterexample) is
-    // re-verified by independent `bv::Formula::eval` before return. While z3 is on PATH every native
-    // verdict is additionally cross-checked and a disagreement fails CLOSED. Native declines
-    // (out-of-fragment, float/string/array, over-budget, cert reject) fall through to z3 unchanged.
+    // has a machine-checked bit-blast in BitBlast.lean. Unproven ops (div-rem, bvashr, sign_extend)
+    // DEFER to z3; `Mul` — const and var×var alike — is proven and admitted. UNSAT (the trust-critical
+    // direction, especially z3-absent) requires ALL of: (1) proven fragment, (2) CDCL UnsatCert (root
+    // refutation), (3) independent `lrat::check_proof` accept — missing/invalid cert → native declines
+    // (`None`), never a bare Unsat. SAT (counterexample) is re-verified by independent
+    // `bv::Formula::eval` before return. While z3 is on PATH every native verdict is additionally
+    // cross-checked and a disagreement fails CLOSED. Native declines (out-of-fragment,
+    // float/string/array, over-budget, over-size, oversized certificate, cert reject) fall through to
+    // z3 unchanged — see `anubis_solver`'s four termination bounds (2026-07-26): a pre-blast gate-cost
+    // ceiling, a CNF clause ceiling, the CDCL conflict budget + wall-clock net, and a RUP
+    // certificate-work ceiling. Every one of them can only turn a verdict into a deferral.
     if native_authoritative() {
         match anubis_solver::native_check_sat_model_authoritative(&smt) {
             Some(anubis_solver::NativeVerdict::Unsat) => {
@@ -11700,8 +12448,36 @@ fn tail_values(body: &[Stmt], collect_tail_return: bool, out: &mut Vec<Expr>) {
                 None => out.push(zero_literal()),
             }
         }
-        // A tail `let`/assign/`while`/`for`/`loop`/etc. yields the default `0`.
-        Some(_) => out.push(zero_literal()),
+        // A statement kind with no tail-value model of its own: falling off its end yields the
+        // default `0`, so that is still pushed. But if it CONTAINS `return X` statements, those are
+        // possible function results too — and pushing ONLY the synthetic `0` reports a confidently
+        // WRONG answer rather than an incomplete one.
+        //
+        // CLUSTER A2 (2026-07-26). That is not hypothetical: `fn fwd(cond, f) { while cond { return
+        // f; } }` produced `out = [0]`, and the forwarder detection in `analyze_items` takes its fast
+        // path on `tv.len() == 1` WITHOUT inspecting what `tv[0]` is. So the function was recorded as
+        // returning the constant `0`, and — the actual damage — that mis-detection SUPPRESSED the
+        // `collect_returns_in_stmt` fallback which would have found the real `return f`. A synthesized
+        // value masquerading as the sole real one is strictly worse than a gap: it is a fail-open that
+        // looks like a decision.
+        //
+        // Fixed by consulting `collect_returns_in_stmt` rather than by adding per-statement arms. The
+        // sibling set is wider than loops — `While`/`WhileLet`/`Loop`/`For` plus `ResearchBlock`/
+        // `ExploitBlock`/`HybridBlock` bodies all hold statements that can `return` — and
+        // `collect_returns_in_stmt` is ALREADY total over every one of them, so reusing it covers the
+        // whole set and any `Stmt` variant added later, with no shape enumeration to drift.
+        //
+        // Gated on `collect_tail_return`, which already carries exactly the needed meaning: "am I the
+        // party responsible for collecting returns here, or has my caller already done it". The only
+        // caller that passes `false` is `expr_tail_values`' `Expr::Block` arm, which runs
+        // `collect_returns_in_stmt` over the same statements itself — so gating prevents double
+        // collection instead of introducing it.
+        Some(other) => {
+            if collect_tail_return {
+                collect_returns_in_stmt(other, out);
+            }
+            out.push(zero_literal());
+        }
     }
 }
 
@@ -16655,12 +17431,20 @@ fn expr_taint_source_m(
             method_tainting_fns,
         ),
         Expr::Call { callee, args } => {
+            // Integrity twin of the alias resolution in `expr_secret_source_m`: `let g = get; g()`
+            // must consult `get`'s summary, not the raw local name `g`. See that arm for the full
+            // rationale; keeping the two symmetric is what stops one lane from being laundered by a
+            // form the other lane already rejects.
+            let resolved = scope
+                .get(callee)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(callee.as_str());
             // C4: an I/O read is itself a taint source (untrusted input), even with clean args.
             if is_io_taint_source(callee) {
                 Some(format!("io source `{callee}`"))
-            } else if tainting_fns.contains(callee) {
-                Some(format!("return value of `{}`", callee))
-            } else if let Some(rets) = param_return_taint.get(callee) {
+            } else if tainting_fns.contains(resolved) {
+                Some(format!("return value of `{}`", resolved))
+            } else if let Some(rets) = param_return_taint.get(resolved) {
                 // Known user function: only params that the summary says reach the return.
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {
@@ -17162,11 +17946,23 @@ fn expr_secret_source_m(
     match expr {
         Expr::Var(name) => scope.get(name).filter(|b| b.secret).map(|_| name.clone()),
         Expr::Call { callee, args } => {
+            // Resolve a FUNCTION-VALUE ALIAS before consulting either summary: `let g = key; g()`
+            // parses as `Call { callee: "g" }`, and a raw-name lookup misses `key`'s entry. The
+            // binding already carries the transitively-resolved target (`fn_alias_of`), which the
+            // interproc sink/egress checks consult for exactly this reason — this reuses that
+            // resolution rather than adding a second one. Without it, aliasing launders any
+            // summary-derived label, including one seeded from a declared `-> secret<T>`
+            // (GROK-SEKHMET reopened the declared-return fix through this path). Falls back to the
+            // raw name, so a local closure binding still reaches the `closure_lambda` arm below.
+            let resolved = scope
+                .get(callee)
+                .and_then(|b| b.fn_alias.as_deref())
+                .unwrap_or(callee.as_str());
             if callee == SECRET_SOURCE_NAME {
                 Some(SECRET_SOURCE_NAME.to_string())
-            } else if secret_fns.contains(callee) {
-                Some(format!("return value of `{callee}`"))
-            } else if let Some(rets) = param_return_taint.get(callee) {
+            } else if secret_fns.contains(resolved) {
+                Some(format!("return value of `{resolved}`"))
+            } else if let Some(rets) = param_return_taint.get(resolved) {
                 // Known user function: only params the summary says reach the return carry secrecy.
                 rets.iter().find_map(|&i| {
                     args.get(i).and_then(|a| {
@@ -17851,6 +18647,47 @@ fn body_returns_taint(
                     method_tainting_fns,
                 );
             }
+            // H8 — the DESTRUCTURING twin of the arm above. This walker builds `ctx.tainting_fns`, the
+            // interprocedural return-taint summary every Safe-mode call site consults, and it had no
+            // `LetPattern` arm: `fn leak() { let [a] = [input()]; return a; }` fell to the catch-all,
+            // which collects nested `return`s but never seeds the bound names — so `a` was seen as CLEAN,
+            // `leak` never entered `tainting_fns`, and EVERY caller lost the taint. The single-binding
+            // spelling of the same function (`let a = input();`) was correctly summarized.
+            //
+            // Direct sibling of this morning's #73 fix, which closed `LetPattern` for the ENFORCING
+            // walker (W1) and left the SUMMARY walkers untouched. The pattern-aware seeder it needs —
+            // `seed_taint_pattern` — already exists in this file for a different walker; this arm calls
+            // it rather than introducing a second seeding path.
+            Stmt::LetPattern { pattern, init, .. } => {
+                // Same hidden-`return`-in-initializer check the `Let` arm performs.
+                let mut rets = Vec::new();
+                expr_returns(init, &mut rets);
+                if rets.iter().any(|e| {
+                    expr_taint_source_m(
+                        e,
+                        scope,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                    )
+                    .is_some()
+                }) {
+                    return true;
+                }
+                // Every name the pattern binds inherits the INITIALIZER's label. Over-approximate by
+                // construction: destructuring `[input()]` marks `a` tainted without tracking which
+                // element it came from. That is the fail-closed direction for a summary — a missed label
+                // silently un-taints a whole function for all its callers, while an extra one can only
+                // over-report.
+                let label = expr_taint_source_m(
+                    init,
+                    scope,
+                    tainting_fns,
+                    param_return_taint,
+                    method_tainting_fns,
+                );
+                seed_taint_pattern(scope, pattern, &label);
+            }
             Stmt::If { then, else_, .. } => {
                 // Branches inherit tail position; block-scoped `let`s must not leak past the `if`.
                 let saved = scope.clone();
@@ -18053,6 +18890,58 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
     }
 }
 
+/// Names whose **declared return type** carries an information-flow qualifier (`secret<T>` via
+/// [`ty::is_secret`], `tainted<T>` via [`ty::is_tainted`]).
+///
+/// This closes a false accept that both `compute_secret_fns` and `compute_tainting_fns` carried:
+/// each derives its summary **purely from the body**, so `fn key() -> secret<i64> { return 42; }`
+/// computed "returns nothing secret" — the body yields a bare literal — and the declaration was
+/// decorative. `print(key())` and `let s = key(); print(s)` both CHECKED CLEAN and leaked at
+/// runtime; the integrity dual `fn get() -> tainted<i64>` fed `shell(get())` unlabelled, which is
+/// command injection. Every rejection the corpus *did* produce came from an annotation the user
+/// wrote at the `let`/param site, never from the signature.
+///
+/// A declared qualifier is a **promise to callers**, so it seeds the summary directly rather than
+/// being inferred. Classifying UP is always sound — this is monotone-additive to sets that already
+/// only grow, so it can over-report (a false REJECT, caught by verdict-diff) but can never
+/// introduce a false ACCEPT. Deliberately no check that the body agrees: `-> secret<T>` returning a
+/// public literal is a legitimate classification, not an error.
+///
+/// **Free functions and impl methods are kept in SEPARATE sets.** Merging bare method names into a
+/// free-fn map is a four-times-confirmed defect generator here (`method_contracts`,
+/// `fn_declared_effects`, `fn_effect_rows`, the resolver). Methods union across impls sharing a
+/// bare name, matching `collect_impl_method_typed_bodies` — fail-closed, since a call site cannot
+/// pick which impl it meant and "some `m` returns a secret" must charge every `m`.
+fn collect_declared_ret_qualified(
+    items: &[Item],
+    is_qualified: fn(&str) -> bool,
+    free: &mut BTreeSet<String>,
+    methods: &mut BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            Item::Fn { name, ret, .. } => {
+                if ret.as_deref().is_some_and(is_qualified) {
+                    free.insert(name.clone());
+                }
+            }
+            Item::Impl { methods: ms, .. } => {
+                for m in ms {
+                    if let Item::Fn { name, ret, .. } = m {
+                        if ret.as_deref().is_some_and(is_qualified) {
+                            methods.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            Item::Module { items, .. } => {
+                collect_declared_ret_qualified(items, is_qualified, free, methods)
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Collect `(name, typed-params, body)` for every free function (recursing into modules), so a
 /// return-summary can honor a `secret<T>`/`tainted<T>` param qualifier via [`seed_qualifier_params`].
 #[allow(clippy::type_complexity)]
@@ -18118,27 +19007,57 @@ fn fn_returns_taint(
     )
 }
 
-/// Populate `ctx.tainting_fns` by a monotone fixpoint: repeatedly mark any not-yet-marked function
-/// whose return carries taint under the current summary, until no function is added. Converges in at
-/// most one round per function because the set only grows. Run once, before per-function analysis, so
-/// every `Call` the analysis later sees consults a complete summary.
+/// Populate `ctx.tainting_fns` AND `ctx.method_tainting_fns` in ONE COMBINED monotone fixpoint (#71).
+///
+/// A free fn and an impl method can each carry the other's return-taint, so the two summaries are
+/// MUTUALLY RECURSIVE and must converge together — exactly like `compute_sink_summaries_joint` for the
+/// param→sink direction. The former STAGED form (free-fn fixpoint to completion with an EMPTY method
+/// set, then the method fixpoint over the frozen free-fn set) was blind in the free-fn ← method
+/// direction: `impl R { fn tag(self){ input() } } fn relay(r){ r.tag() }` left `relay` unmarked, so
+/// `send(relay(r))` CHECKED CLEAN while the direct `send(r.tag())` was correctly rejected — a
+/// confirmed false accept (probe D, 2026-07-26). Marking both sets in the same round closes it in
+/// both directions and at any hop count.
+///
+/// Monotone (add-only over a finite name lattice) ⇒ terminates. Run once, before per-function
+/// analysis, so every `Call`/`CallExpr` the analysis later sees consults a complete summary.
 #[allow(clippy::type_complexity)]
 fn compute_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
+    // Integrity dual of the seed in `compute_secret_fns`: `-> tainted<T>` declares "my result is
+    // untrusted", and the body-only fixpoint below cannot see it, so `shell(get())` laundered.
+    collect_declared_ret_qualified(
+        items,
+        ty::is_tainted,
+        &mut ctx.tainting_fns,
+        &mut ctx.method_tainting_fns,
+    );
     let mut fns: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
     collect_fn_typed_bodies(items, &mut fns);
+    let mut methods: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
+    collect_impl_method_typed_bodies(items, &mut methods);
     loop {
-        let mut newly: Vec<String> = Vec::new();
+        // Snapshot the growing method set so both directions chain within one round.
+        let known_method = ctx.method_tainting_fns.clone();
+        let mut newly_free: Vec<String> = Vec::new();
+        let mut newly_method: Vec<String> = Vec::new();
         for (name, params, body) in &fns {
             if !ctx.tainting_fns.contains(name)
-                && fn_returns_taint(params, body, &ctx.tainting_fns, &BTreeSet::new())
+                && fn_returns_taint(params, body, &ctx.tainting_fns, &known_method)
             {
-                newly.push(name.clone());
+                newly_free.push(name.clone());
             }
         }
-        if newly.is_empty() {
+        for (name, params, body) in &methods {
+            if !ctx.method_tainting_fns.contains(name)
+                && fn_returns_taint(params, body, &ctx.tainting_fns, &known_method)
+            {
+                newly_method.push(name.clone());
+            }
+        }
+        if newly_free.is_empty() && newly_method.is_empty() {
             break;
         }
-        ctx.tainting_fns.extend(newly);
+        ctx.tainting_fns.extend(newly_free);
+        ctx.method_tainting_fns.extend(newly_method);
     }
 }
 
@@ -18448,81 +19367,56 @@ fn fn_returns_secret(
     )
 }
 
-/// Populate `ctx.secret_fns` by a monotone fixpoint — the exact dual of `compute_tainting_fns`.
+/// Populate `ctx.secret_fns` AND `ctx.method_secret_fns` in ONE COMBINED monotone fixpoint (#71) —
+/// the confidentiality dual of [`compute_tainting_fns`], with the same rationale: the free-fn and
+/// method return-secret summaries are mutually recursive, so staging them (free-fn first with an EMPTY
+/// method set) was blind in the free-fn ← method direction. `impl V { fn key(self){ secret_source(..) } }
+/// fn grab(v){ v.key() }` left `grab` unmarked, so `send(grab(v))` CHECKED CLEAN while the direct
+/// `send(v.key())` was correctly rejected — a confirmed false accept (probes B/E, 2026-07-26).
+/// Monotone ⇒ terminates.
 #[allow(clippy::type_complexity)]
 fn compute_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
+    // Seed from the DECLARATION before inferring from bodies: `-> secret<T>` is a promise to
+    // callers, and the body-only fixpoint below cannot see it. See `collect_declared_ret_qualified`.
+    collect_declared_ret_qualified(
+        items,
+        ty::is_secret,
+        &mut ctx.secret_fns,
+        &mut ctx.method_secret_fns,
+    );
     let mut fns: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
     collect_fn_typed_bodies(items, &mut fns);
-    loop {
-        let mut newly: Vec<String> = Vec::new();
-        for (name, params, body) in &fns {
-            if !ctx.secret_fns.contains(name)
-                && fn_returns_secret(params, body, &ctx.secret_fns, &BTreeSet::new())
-            {
-                newly.push(name.clone());
-            }
-        }
-        if newly.is_empty() {
-            break;
-        }
-        ctx.secret_fns.extend(newly);
-    }
-}
-
-/// Populate `ctx.method_secret_fns` — the impl-method twin of `compute_secret_fns`. A method is
-/// return-secret iff `fn_returns_secret` holds over its body (self@0), reusing the SAME body walker,
-/// which now consults BOTH the FROZEN free-fn set (`ctx.secret_fns`, at fixpoint — this runs after
-/// `compute_secret_fns`) AND the GROWING method set (snapshotted each round). This is a COMBINED
-/// fixpoint (#70): `fn alias(self){ return self.key() }` where `key` mints a secret is caught in round 2
-/// (round 1 marks `key`; round 2, with `key` now in the snapshot, the body walk's `CallExpr` arm sees
-/// `self.key()` as secret-returning → `alias` marked). Monotone (add-only over a finite name lattice) →
-/// terminates. UNION across impls is automatic (same bare-name key).
-#[allow(clippy::type_complexity)]
-fn compute_method_secret_fns(items: &[Item], ctx: &mut SemanticContext) {
     let mut methods: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
     collect_impl_method_typed_bodies(items, &mut methods);
     loop {
-        let mut newly: Vec<String> = Vec::new();
-        // Snapshot the growing method set so a method returning another method's secret chains.
         let known_method = ctx.method_secret_fns.clone();
+        let mut newly_free: Vec<String> = Vec::new();
+        let mut newly_method: Vec<String> = Vec::new();
+        for (name, params, body) in &fns {
+            if !ctx.secret_fns.contains(name)
+                && fn_returns_secret(params, body, &ctx.secret_fns, &known_method)
+            {
+                newly_free.push(name.clone());
+            }
+        }
         for (name, params, body) in &methods {
             if !ctx.method_secret_fns.contains(name)
                 && fn_returns_secret(params, body, &ctx.secret_fns, &known_method)
             {
-                newly.push(name.clone());
+                newly_method.push(name.clone());
             }
         }
-        if newly.is_empty() {
+        if newly_free.is_empty() && newly_method.is_empty() {
             break;
         }
-        ctx.method_secret_fns.extend(newly);
+        ctx.secret_fns.extend(newly_free);
+        ctx.method_secret_fns.extend(newly_method);
     }
 }
 
-/// Populate `ctx.method_tainting_fns` — the integrity dual of `compute_method_secret_fns` (#70 combined
-/// fixpoint): consults the frozen `ctx.tainting_fns` AND the growing method set (snapshotted per round),
-/// so `fn relay(self){ return self.tag() }` where `tag` returns `input()` is chained. Runs after
-/// `compute_tainting_fns`.
-#[allow(clippy::type_complexity)]
-fn compute_method_tainting_fns(items: &[Item], ctx: &mut SemanticContext) {
-    let mut methods: Vec<(String, &[(String, String)], &[Stmt])> = Vec::new();
-    collect_impl_method_typed_bodies(items, &mut methods);
-    loop {
-        let mut newly: Vec<String> = Vec::new();
-        let known_method = ctx.method_tainting_fns.clone();
-        for (name, params, body) in &methods {
-            if !ctx.method_tainting_fns.contains(name)
-                && fn_returns_taint(params, body, &ctx.tainting_fns, &known_method)
-            {
-                newly.push(name.clone());
-            }
-        }
-        if newly.is_empty() {
-            break;
-        }
-        ctx.method_tainting_fns.extend(newly);
-    }
-}
+// NOTE (#71): the former `compute_method_secret_fns` / `compute_method_tainting_fns` staged passes were
+// folded into the joint fixpoints above. Keeping them separate could only ever converge in the
+// method ← free-fn direction, never free-fn ← method, which was the false accept they now close.
 
 // ── Interprocedural param→sink summary (`ctx.param_sinks`) ───────────────────────────────────────
 // Monotone fixpoint: for each function, which formal parameters flow to a sink without declassify

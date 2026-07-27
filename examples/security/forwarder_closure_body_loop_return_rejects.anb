@@ -1,0 +1,17 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// Cluster A2 invariant guard — this shape was ALREADY rejected before the A2 fix (verified: pre-fix
+// exit 1, post-fix exit 1). It is here to stay green, not because A2 closed it.
+//
+// What it guards: the A2 fix is gated on `collect_tail_return`, the existing flag meaning "am I
+// responsible for collecting returns here, or has my caller already done it". The single caller passing
+// `false` is `expr_tail_values`' `Expr::Block` arm — which already runs `collect_returns_in_stmt` over
+// the same statements itself, which is exactly why this shape was covered all along. So the gate
+// prevents DOUBLE collection rather than creating a hole, and this fixture is the regression witness
+// for that reasoning: if the gate is ever removed (double collection) or inverted (hole), the
+// closure-body path is where it shows up first.
+fn main() {
+    let k = secret_source("k");
+    let f = |x| { while x > 0 { return k; } return 0; };
+    print(f(1));
+}

@@ -1,0 +1,18 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_SECRET_EXFILTRATION
+// H5 — forwarder detection required EXACTLY ONE collected return, but the property it needs is "every
+// possible return is the SAME parameter". Both branches here forward `f` — one forwarding decision
+// spelled with two `return`s — and the count test dropped the function from the registry entirely.
+// Directional proof: the single-return spelling of this same function is correctly rejected.
+fn fwd_same(cond, f) {
+    if cond {
+        return f;
+    } else {
+        return f;
+    }
+}
+fn main() {
+    let k = secret_source("k");
+    let leaked = fwd_same(true, |x| print(k));
+    leaked(0);
+}

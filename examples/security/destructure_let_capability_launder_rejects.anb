@@ -1,0 +1,9 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_EFFECT_FORBIDDEN_IN_MODE
+// #73. A destructuring `let` never ran `analyze_expr_effect` on its initializer, so EVERY Safe-mode
+// capability gate, taint->sink and secret->egress check was bypassed for that syntactic position.
+// `let a = shell("id")` was correctly rejected; the destructuring twin below checked clean.
+fn main() {
+    let (a, b) = (shell("id"), 0);
+    print(b);
+}

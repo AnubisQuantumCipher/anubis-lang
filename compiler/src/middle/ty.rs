@@ -580,7 +580,8 @@ pub(crate) fn synth(ictx: &mut InferCtx, env: &InferEnv, expr: &Expr) -> Ty {
         Expr::Literal(s) if s == "true" || s == "false" => Ty::Bool,
         // Mirror the runtime literal discrimination: an i64/u64-parseable literal is the
         // width-polymorphic integer default; a float-only literal is a float; a quoted literal is a
-        // string. (Kept identical to `infer_expr_type_scoped` so the two never disagree on literals.)
+        // string. Unary-minus over an integer literal is signed i64 so generic monomorphization does
+        // not reinterpret `-1` as the unsigned default and zero-extend it at runtime.
         Expr::Literal(s) if s.parse::<i64>().is_ok() || s.parse::<u64>().is_ok() => Ty::U32,
         Expr::Literal(s) if s.parse::<f64>().is_ok() => Ty::Float("f64".into()),
         Expr::Literal(s) if s.starts_with('"') || s.starts_with('\'') => Ty::Str,
@@ -589,6 +590,9 @@ pub(crate) fn synth(ictx: &mut InferCtx, env: &InferEnv, expr: &Expr) -> Ty {
         Expr::Var(n) => env.vars.get(n).map(|t| Ty::parse(t)).unwrap_or(Ty::Any),
         Expr::Unary { op, .. } if op == "!" => Ty::Bool,
         Expr::Unary { op, .. } if op == "~" => Ty::U32,
+        Expr::Unary { op, expr, .. } if op == "-" && integer_literal_expr(expr) => {
+            Ty::IntAlias("i64".into())
+        }
         Expr::Unary { expr, .. } => synth(ictx, env, expr),
         Expr::Binary { op, lhs, rhs } => synth_binary(ictx, env, op, lhs, rhs),
         Expr::ArrayLiteral { .. } => Ty::List(Box::new(Ty::Any)),
@@ -655,6 +659,20 @@ pub(crate) fn synth(ictx: &mut InferCtx, env: &InferEnv, expr: &Expr) -> Ty {
         // Everything else — `CallExpr` (first-class closure call), `Lambda`, `StructLiteral`,
         // `UnifiedBuffer`, `Assume`/`Assert`, `IfLet`, … — is left dynamic. Accept.
         _ => Ty::Any,
+    }
+}
+
+fn integer_literal_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(s) => {
+            let s = s.trim();
+            s.parse::<i64>().is_ok()
+                || s.strip_prefix("0x")
+                    .or_else(|| s.strip_prefix("0X"))
+                    .map(|h| i64::from_str_radix(h, 16).is_ok())
+                    .unwrap_or(false)
+        }
+        _ => false,
     }
 }
 
@@ -1154,6 +1172,17 @@ mod tests {
 
         // Literals.
         assert_eq!(synth(&mut c, &env, &Expr::Literal("1".into())), Ty::U32);
+        assert_eq!(
+            synth(
+                &mut c,
+                &env,
+                &Expr::Unary {
+                    op: "-".into(),
+                    expr: Box::new(Expr::Literal("1".into())),
+                }
+            ),
+            Ty::IntAlias("i64".into())
+        );
         assert_eq!(synth(&mut c, &env, &Expr::StrLiteral("a".into())), Ty::Str);
         // Call → declared return type; unknown/blank-return → Any (accept).
         assert_eq!(

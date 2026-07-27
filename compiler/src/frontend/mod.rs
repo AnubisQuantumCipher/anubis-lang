@@ -1960,6 +1960,14 @@ impl Parser {
                             };
                         }
                         args.push(AttrArg { key: k, value: val });
+                    } else {
+                        // PROGRESS GUARD: `expect_ident` records a diagnostic and returns None
+                        // WITHOUT consuming, so a non-identifier in key position (`@attr(1)`,
+                        // `@attr("x")`) advanced nothing. With neither this arm nor a following comma
+                        // the loop could not terminate — the compiler hung forever while pushing one
+                        // diagnostic per iteration into an unbounded Vec. Consume the offending token
+                        // so the loop always makes progress and the error is reported once.
+                        let _ = self.bump();
                     }
                     if self.check_token(&Token::Comma) {
                         let _ = self.bump();
@@ -2019,6 +2027,11 @@ impl Parser {
                 let _ = self.expect_token(Token::Colon, "expected `:` after field");
                 let fty = self.collect_type_until(&[Token::Comma, Token::RBrace, Token::Semi]);
                 fields.push((fname, fty));
+            } else {
+                // PROGRESS GUARD, same hazard as `parse_attributes`: `expect_ident` does not consume
+                // on failure, so a non-identifier in field position (`struct S { 1: u32 }`) hung the
+                // parser forever instead of reporting one error.
+                let _ = self.bump();
             }
             if self.check_token(&Token::Comma) || self.check_token(&Token::Semi) {
                 self.bump();

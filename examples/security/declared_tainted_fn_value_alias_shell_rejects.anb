@@ -1,0 +1,13 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// GROK-SEKHMET round2. Integrity dual of declared_secret_fn_value_alias_print_rejects.
+// Direct `shell(get())` with `fn get() -> tainted<i64>` rejects after declared-ret seed.
+// `let g = get; shell(g())` with uses(shell) still check-passes — tainting_fns lookup is
+// raw callee name, not fn_alias. pre=0 on post-declared-ret binary.
+fn get() -> tainted<i64> {
+    return 42;
+}
+fn main() uses(shell) {
+    let g = get;
+    shell(g());
+}

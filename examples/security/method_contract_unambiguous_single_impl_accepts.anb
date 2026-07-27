@@ -1,0 +1,16 @@
+// EXPECT: PASS
+// Cluster H regression guard. A single impl declaring a method contract, no colliding bare
+// name anywhere else in the program, must NOT be flagged ambiguous by the declaration-order
+// fix -- over-rejecting a genuinely unambiguous contract would trade the false accept for a
+// false reject on ordinary, correct code.
+struct A { v: i64 }
+impl A {
+    fn f(self, amt: i64) -> i64 requires(amt <= 100) {
+        self.v + amt
+    }
+}
+fn main() {
+    let a = A { v: 10 };
+    let r = a.f(5);
+    print(r);
+}

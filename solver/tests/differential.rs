@@ -208,6 +208,62 @@ fn gen_formula_w(rng: &mut Rng, widths: &[u32]) -> Formula {
     }
 }
 
+/// `blast::gate_cost` must OVER-approximate the real blast, as a property — not just on hand-picked
+/// shapes. The pre-blast gate ceiling (`MAX_BLAST_GATES`) is only a bound on the emitted CNF if this
+/// holds universally: an under-count would let an arbitrarily large formula through the one guard that
+/// runs before any allocation.
+///
+/// Every Tseitin gate allocates exactly one CNF variable, so `num_vars − (declared bits + bools + the
+/// forced-true constant)` is exactly the number of gates actually emitted. Reuses the differential
+/// generator so the shapes tracked here are the same ones the z3 batteries cover, including var-mul.
+/// Needs no z3.
+#[test]
+fn gate_cost_over_approximates_every_generated_formula() {
+    use anubis_solver::blast;
+    use anubis_solver::sat::Cnf;
+
+    let mut rng = Rng(0x8EBC6AF09C88C6E3);
+    let (mut checked, mut worst_ratio) = (0u64, 0.0f64);
+    for i in 0..3000 {
+        // Mix the general generator with explicit var×var products (the densest blast in the crate).
+        let f = if i % 4 == 3 {
+            let w = [4u32, 8, 16, 32, 64][rng.below(5) as usize];
+            let a = gen_term(&mut rng, w, 2);
+            let b = gen_term(&mut rng, w, 2);
+            let c = gen_term(&mut rng, w, 2);
+            Formula {
+                bv_vars: (0..3).map(|k| (format!("x{}", k), w)).collect(),
+                bool_vars: vec![],
+                asserts: vec![Pred::Eq(Term::Mul(Box::new(a), Box::new(b)), c)],
+            }
+        } else {
+            gen_formula_w(&mut rng, &[4, 8, 16, 32, 64])
+        };
+        let cost = blast::gate_cost(&f);
+        let mut cnf = Cnf::new();
+        if blast::blast(&f, &mut cnf).is_none() {
+            continue; // out-of-fragment (div/rem): nothing emitted, nothing to bound
+        }
+        let declared: usize =
+            f.bv_vars.iter().map(|(_, w)| *w as usize).sum::<usize>() + f.bool_vars.len() + 1;
+        let real_gates = cnf.num_vars().saturating_sub(declared) as u64;
+        assert!(
+            cost >= real_gates,
+            "gate_cost UNDER-counted ({cost} < {real_gates}) — MAX_BLAST_GATES would stop bounding \
+             the CNF. Formula:\n{}",
+            serialize(&f)
+        );
+        if real_gates > 0 {
+            worst_ratio = worst_ratio.max(cost as f64 / real_gates as f64);
+        }
+        checked += 1;
+    }
+    eprintln!(
+        "gate_cost upper-bound property: checked={checked} worst over-estimate={worst_ratio:.1}×"
+    );
+    assert!(checked > 1000, "too few formulas checked ({checked})");
+}
+
 #[test]
 fn native_agrees_with_z3_on_64bit_edge_cases() {
     if !z3_available() {
@@ -352,6 +408,89 @@ fn native_agrees_with_z3_on_wide_battery() {
 }
 
 /// Validates the z3-authoritative flip's newest, load-bearing machinery: the SAT MODEL that
+/// VARIABLE×VARIABLE multiply differential (added 2026-07-26).
+///
+/// `MulVar` is admitted to the native-authoritative fragment (`mulVar_correct`), but until now NO
+/// differential battery emitted one: `gen_term` only ever built `Mul(a, Const)`. So the schoolbook
+/// array multiplier — the widest, most gate-dense blast in the crate, and the one whose CNF the
+/// structural-hashing/constant-folding rewrite changes most — had zero empirical cross-check against
+/// z3. This closes that gap.
+///
+/// Widths stay small (4/6/8) because a var×var miter is resolution-hard at large widths: the point is
+/// to compare VERDICTS on instances that decide, not to stress the budget. Deferrals are allowed, as
+/// everywhere else; only a native/z3 disagreement fails.
+#[test]
+fn native_var_times_var_mul_agrees_with_z3() {
+    if !z3_available() {
+        eprintln!("z3 not on PATH — skipping var-mul differential test");
+        return;
+    }
+    let mut rng = Rng(0x14057B7EF767814F);
+    let (mut decided, mut deferred, mut disagreements) = (0u64, 0u64, 0u64);
+    let mut first_bad: Option<String> = None;
+    for _ in 0..1200 {
+        let w = [4u32, 6, 8][rng.below(3) as usize];
+        // A product of two independently-generated subterms, compared against a third — so the two
+        // multiplicands are genuinely variable, and sharing between them is incidental rather than
+        // guaranteed.
+        let a = gen_term(&mut rng, w, 2);
+        let b = gen_term(&mut rng, w, 2);
+        let c = gen_term(&mut rng, w, 2);
+        let prod = Term::Mul(Box::new(a), Box::new(b));
+        let inner = match rng.below(5) {
+            0 => Pred::Eq(prod, c),
+            1 => Pred::Ult(prod, c),
+            2 => Pred::Sle(prod, c),
+            3 => Pred::Uge(prod, c),
+            // A product of products: exercises a Mul nested inside a Mul operand.
+            _ => Pred::Eq(
+                Term::Mul(Box::new(prod), Box::new(gen_term(&mut rng, w, 1))),
+                c,
+            ),
+        };
+        let asserts = if rng.below(2) == 0 {
+            vec![Pred::Not(Box::new(inner))]
+        } else {
+            vec![inner]
+        };
+        let f = Formula {
+            bv_vars: (0..3).map(|i| (format!("x{}", i), w)).collect(),
+            bool_vars: vec![],
+            asserts,
+        };
+        let smt = serialize(&f);
+        match native_check_sat_budget(&smt, 200_000) {
+            None => deferred += 1,
+            Some(nat) => {
+                if let Some(zv) = z3(&smt) {
+                    if nat != zv {
+                        disagreements += 1;
+                        if first_bad.is_none() {
+                            first_bad = Some(format!("native={} z3={} on:\n{}", nat, zv, smt));
+                        }
+                    } else {
+                        decided += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "var-mul differential: decided-agree={} deferred={} DISAGREEMENTS={}",
+        decided, deferred, disagreements
+    );
+    assert_eq!(
+        disagreements,
+        0,
+        "native disagreed with z3 on a var×var multiply.\nFirst: {}",
+        first_bad.unwrap_or_default()
+    );
+    assert!(
+        decided > 100,
+        "var-mul battery decided too few ({decided}) — generator/budget sanity"
+    );
+}
+
 /// `native_check_sat_model` reconstructs from the CDCL assignment and re-verifies with its own
 /// independent evaluator (`bv::Formula::eval`) must be a REAL model — one z3 also accepts. For every
 /// random formula native calls SAT, we pin its model back as equality constraints and require z3 to

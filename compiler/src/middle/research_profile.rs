@@ -374,7 +374,11 @@ pub struct Evidence<T> {
 }
 
 impl<T> Evidence<T> {
-    pub fn lab_real(payload: T, content_hash: impl Into<String>, engagement_id: impl Into<String>) -> Self {
+    pub fn lab_real(
+        payload: T,
+        content_hash: impl Into<String>,
+        engagement_id: impl Into<String>,
+    ) -> Self {
         Self {
             payload,
             content_hash: content_hash.into(),
@@ -519,7 +523,9 @@ impl fmt::Display for ResearchProfileError {
 impl std::error::Error for ResearchProfileError {}
 
 /// Normalize a list of effect name strings into research IR (drops unknowns fail-closed via Result).
-pub fn normalize_effect_set(raw: &[&str]) -> Result<BTreeSet<SecurityEffect>, ResearchProfileError> {
+pub fn normalize_effect_set(
+    raw: &[&str],
+) -> Result<BTreeSet<SecurityEffect>, ResearchProfileError> {
     let mut out = BTreeSet::new();
     for r in raw {
         match SecurityEffect::parse(r) {
@@ -652,7 +658,10 @@ impl ProvenEffectSet {
 
     /// Sorted research-normalized effect name strings.
     pub fn research_effect_names(&self) -> Vec<String> {
-        self.effects.iter().map(|e| e.as_str().to_string()).collect()
+        self.effects
+            .iter()
+            .map(|e| e.as_str().to_string())
+            .collect()
     }
 
     /// Effect names for a guest-bound run capability: proven research effects
@@ -691,9 +700,8 @@ impl ProvenEffectSet {
 /// surface as `package::confinement::derive_confinement` (effect fixpoint only).
 /// Prefer [`proven_effects_via_typecheck`] when you already need a successful check.
 pub fn proven_effects_from_source(source: &str) -> Result<ProvenEffectSet, String> {
-    let ast = crate::frontend::parse_source(source).map_err(|e| {
-        format!("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED: {e}")
-    })?;
+    let ast = crate::frontend::parse_source(source)
+        .map_err(|e| format!("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED: {e}"))?;
     Ok(crate::middle::effects::program_proven_effects(&ast.items))
 }
 
@@ -702,9 +710,8 @@ pub fn proven_effects_from_source(source: &str) -> Result<ProvenEffectSet, Strin
 /// Fail-closed on parse or typecheck errors. Guarantees the same IR instance the
 /// checker produces for confine / pack consumers that re-parse (fixpoint is pure).
 pub fn proven_effects_via_typecheck(source: &str) -> Result<ProvenEffectSet, String> {
-    let ast = crate::frontend::parse_source(source).map_err(|e| {
-        format!("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED: {e}")
-    })?;
+    let ast = crate::frontend::parse_source(source)
+        .map_err(|e| format!("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED: {e}"))?;
     let mode = crate::frontend::Mode::Safe;
     let ir = crate::middle::typecheck(ast, mode)?;
     Ok(ir.proven_effects)
@@ -729,7 +736,10 @@ mod tests {
 
     #[test]
     fn profile_parse_and_vz_obligation() {
-        assert_eq!(ResearchProfile::parse("research"), Some(ResearchProfile::Research));
+        assert_eq!(
+            ResearchProfile::parse("research"),
+            Some(ResearchProfile::Research)
+        );
         assert_eq!(
             ResearchProfile::parse("crypto-research"),
             Some(ResearchProfile::CryptoResearch)
@@ -931,7 +941,8 @@ mod tests {
 
     #[test]
     fn typecheck_path_exposes_proven_effects_pure_and_net() {
-        let pure = "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
+        let pure =
+            "fn add(a: i64, b: i64) -> i64 { return a + b; }\nfn main() { let _ = add(1, 2); }\n";
         let p = proven_effects_via_typecheck(pure).expect("pure typecheck");
         assert!(p.effects_bounded);
         assert!(!p.has_net());
@@ -944,7 +955,9 @@ mod tests {
                    fn main() uses(net.send) { beacon(); }\n";
         let n = proven_effects_via_typecheck(net).expect("net typecheck");
         assert!(n.has_net());
-        assert!(n.research_effect_names().contains(&"net.connect".to_string()));
+        assert!(n
+            .research_effect_names()
+            .contains(&"net.connect".to_string()));
         assert!(!n.research_effect_names().iter().any(|e| e == "net.send"));
         let n2 = proven_effects_from_source(net).unwrap();
         assert_eq!(n.research_effect_names(), n2.research_effect_names());
@@ -954,7 +967,9 @@ mod tests {
     fn typecheck_path_fails_closed_on_bad_source() {
         let err = proven_effects_via_typecheck("fn main( {").unwrap_err();
         assert!(
-            err.contains("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED") || err.contains("error") || !err.is_empty()
+            err.contains("ANUBIS_PROVEN_EFFECTS_PARSE_FAILED")
+                || err.contains("error")
+                || !err.is_empty()
         );
     }
 }

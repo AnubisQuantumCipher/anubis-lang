@@ -1,0 +1,19 @@
+// EXPECT: PASS
+// Walker-parity H18 / Cluster F directional guard. Method returns a write-lambda but both
+// the method and `main` declare `uses(fs.write)`. Once inheritance + returned-closure
+// tracking land, this honest chain must remain accepted (same role as
+// method_effect_honest_chain_accepts.anb for direct method calls).
+// TODAY: check PASSES when declared (inheritance already charges declared methods; the
+// residual is the *undeclared* method-return shape).
+struct Factory { id: u32 }
+impl Factory {
+    fn make_writer(self) uses(fs.write) {
+        return || write_file("h18_method_ret_declared.txt", "y");
+    }
+}
+fn main() uses(fs.write) {
+    let f = Factory { id: 1 };
+    let w = f.make_writer();
+    w();
+    print(1);
+}

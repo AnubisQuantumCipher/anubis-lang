@@ -5390,22 +5390,24 @@ fn verify_before_native_execution(input: &Path, source: &str, verified_caps: boo
         .map_err(|e| anyhow!("ANUBIS_EXECUTION_CHECK_FAILED: {e}"))?;
     let tainted = TaintPass::apply(typed);
 
-    if let Some(trace) = tainted
-        .taint_traces
-        .iter()
-        .find(|trace| trace.sink.is_some() && !trace.declassified)
-    {
-        return Err(anyhow!(
-            "ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY: refusing native execution; tainted flow \
-             from `{}` to sink `{}` requires declassify()",
-            trace.source,
-            trace.sink.as_deref().unwrap_or("unknown")
-        ));
-    }
-
+    // GROK-PTAH 2026-07-26: this preflight used to RE-DERIVE taint policy by scanning
+    // `taint_traces` for `sink.is_some() && !declassified`. That field is PROVENANCE, not policy:
+    // the `Assign` arm (`middle/mod.rs` ~6065) stamps `sink: Some(name)` where `name` is the LOCAL
+    // BEING ASSIGNED, and `is_sink` contains no such name. So `run` rejected three Safe programs
+    // that `check` correctly accepted (`amnesia_unlearning_witness.anb` on local `negative_ok`,
+    // both `vault_contacts.anb` on local `salt_hex`) — a false REJECT that broke the language's
+    // core bargain that a green `check` means safe to run.
+    //
+    // Enforcement is unchanged: every REAL sink violation pushes a diagnostic at its call site, so
+    // `typecheck_ex` above already returns Err for direct tainted→sink, `ANUBIS_INTERPROC_SINK`,
+    // and secret egress. Only the duplicate, stricter re-read is gone. Do not reintroduce a second
+    // policy decision here — re-deriving a label at a consumer instead of carrying it from the
+    // producer is the shape that caused this bug and its evidence-lane twin.
     let failures: Vec<_> = SymbolicEngine::check_obligations(&tainted)
         .into_iter()
-        .filter(|check| check.status != "PASS")
+        // Match `check`/`build` (`== "FAIL"`): only FAIL is a hard reject. `!= "PASS"` also caught
+        // UNKNOWN, false-rejecting accept-biased non-contract obligations such as wrap-safety.
+        .filter(|check| check.status == "FAIL")
         .collect();
     if !failures.is_empty() {
         return Err(anyhow!(

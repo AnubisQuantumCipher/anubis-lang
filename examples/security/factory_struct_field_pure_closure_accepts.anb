@@ -1,0 +1,14 @@
+// EXPECT: PASS
+// Walker-parity H15 over-rejection guard. Free-fn factory returns a struct whose field is a
+// *pure* lambda (no gated effect). Must stay accepted once factory→field_closures wiring
+// exists — otherwise the H15 fix trades a false accept for a false reject on ordinary HO
+// factories.
+// TODAY: check PASSES (and must keep passing after the H15 fix).
+struct Holder { act: i64 }
+fn make() {
+    return Holder { act: |x| x + 1 };
+}
+fn main() {
+    let b = make();
+    print(b.act(40));
+}

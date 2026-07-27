@@ -8,6 +8,10 @@
 use crate::frontend::{Expr, Item, Stmt};
 use anyhow::{anyhow, Result};
 
+type MonoTypeArgs = Vec<(String, String)>;
+type MonoSiteQueue = Vec<(String, MonoTypeArgs)>;
+type MonoSitesByCaller = std::collections::BTreeMap<String, MonoSiteQueue>;
+
 /// Emit-time context threaded through lowering: the research gate plus the set of user function
 /// names, so a call resolves to (in priority order) a user function, a stdlib builtin, or the
 /// application of a closure-valued variable.
@@ -40,8 +44,7 @@ struct EmitCtx<'a> {
     /// Function currently being emitted (for ordered mono call-site queues).
     current_fn: Option<&'a str>,
     /// Per-caller ordered generic call sites: callee name + type_args pairs.
-    mono_sites_by_caller:
-        &'a std::collections::BTreeMap<String, Vec<(String, Vec<(String, String)>)>>,
+    mono_sites_by_caller: &'a MonoSitesByCaller,
     /// Per-caller consumption cursor into `mono_sites_by_caller`.
     mono_cursors: &'a std::collections::BTreeMap<String, std::cell::Cell<usize>>,
 }
@@ -83,7 +86,7 @@ impl MonoPrim {
     }
 
     /// Wrap an AnubisValue expression into this native type.
-    fn from_anubis(self, expr: &str) -> String {
+    fn coerce_from_anubis(self, expr: &str) -> String {
         match self {
             MonoPrim::Int => format!("({expr}).as_i64()"),
             MonoPrim::Float => format!("({expr}).as_f64()"),
@@ -101,7 +104,6 @@ impl MonoPrim {
             MonoPrim::String => format!("anubis_mk_str({expr})"),
         }
     }
-
 }
 
 /// Classify a specialized type annotation for unboxed ABI eligibility.
@@ -385,7 +387,10 @@ fn collect_fns<'a>(items: &'a [Item], out: &mut Vec<FnDef<'a>>) {
 
 /// Substitute a free type parameter annotation using monomorphization bindings.
 /// Bare `T` becomes the concrete type; compound annotations are left unchanged (accept-biased).
-fn subst_type_param(annotation: &str, type_args: &std::collections::BTreeMap<String, String>) -> String {
+fn subst_type_param(
+    annotation: &str,
+    type_args: &std::collections::BTreeMap<String, String>,
+) -> String {
     let t = annotation.trim();
     type_args
         .get(t)
@@ -394,11 +399,11 @@ fn subst_type_param(annotation: &str, type_args: &std::collections::BTreeMap<Str
 }
 
 /// Mangled Rust name for a monomorphized clone: `anb_id__mono__T_u32`.
-fn mono_rust_name(fn_name: &str, type_args: &std::collections::BTreeMap<String, String>) -> Result<String> {
-    let mut parts: Vec<String> = type_args
-        .iter()
-        .map(|(k, v)| format!("{k}_{v}"))
-        .collect();
+fn mono_rust_name(
+    fn_name: &str,
+    type_args: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
+    let mut parts: Vec<String> = type_args.iter().map(|(k, v)| format!("{k}_{v}")).collect();
     parts.sort();
     let tag = parts.join("__");
     Ok(format!(
@@ -431,9 +436,7 @@ fn mono_literal_matches(arg: &Expr, expected: &str) -> bool {
             }
             false
         }
-        Expr::Unary { op, expr, .. }
-            if op == "-" && matches!(expr.as_ref(), Expr::Literal(_)) =>
-        {
+        Expr::Unary { op, expr, .. } if op == "-" && matches!(expr.as_ref(), Expr::Literal(_)) => {
             crate::middle::ty::is_integer(t) || t == "int" || t == "i64" || t == "i32"
         }
         Expr::StrLiteral(_) => t == "string" || t == "str",
@@ -540,17 +543,29 @@ fn mono_expr_is_full_native_eligible(
         Expr::Binary { op, lhs, rhs, .. } => {
             matches!(
                 op.as_str(),
-                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||" | "=="
-                    | "!=" | "<" | "<=" | ">" | ">="
+                "+" | "-"
+                    | "*"
+                    | "/"
+                    | "%"
+                    | "&"
+                    | "|"
+                    | "^"
+                    | "<<"
+                    | ">>"
+                    | "&&"
+                    | "||"
+                    | "=="
+                    | "!="
+                    | "<"
+                    | "<="
+                    | ">"
+                    | ">="
             ) && mono_expr_is_full_native_eligible(lhs, live)
                 && mono_expr_is_full_native_eligible(rhs, live)
         }
         // Pure if-expression: cond and both arms must be pure.
         Expr::If {
-            cond,
-            then,
-            else_,
-            ..
+            cond, then, else_, ..
         } => {
             mono_expr_is_full_native_eligible(cond, live)
                 && mono_expr_is_full_native_eligible(then, live)
@@ -569,7 +584,7 @@ fn mono_expr_is_full_native_eligible(
 }
 
 /// Emit a native Rust expression for a full-unbox mono body (params already native-typed).
-fn emit_mono_native_expr(expr: &Expr, ret: MonoPrim) -> Result<String> {
+fn emit_mono_native_expr(expr: &Expr) -> Result<String> {
     match expr {
         Expr::Var(n) => sanitize_ident(n),
         Expr::Literal(s) => {
@@ -592,7 +607,7 @@ fn emit_mono_native_expr(expr: &Expr, ret: MonoPrim) -> Result<String> {
         }
         Expr::StrLiteral(s) => Ok(format!("{}.to_string()", rust_string_lit(s)?)),
         Expr::Unary { op, expr, .. } => {
-            let inner = emit_mono_native_expr(expr, ret)?;
+            let inner = emit_mono_native_expr(expr)?;
             match op.as_str() {
                 "-" => Ok(format!("-({inner})")),
                 "!" => Ok(format!("!({inner})")),
@@ -601,27 +616,24 @@ fn emit_mono_native_expr(expr: &Expr, ret: MonoPrim) -> Result<String> {
             }
         }
         Expr::Binary { op, lhs, rhs, .. } => {
-            let l = emit_mono_native_expr(lhs, ret)?;
-            let r = emit_mono_native_expr(rhs, ret)?;
+            let l = emit_mono_native_expr(lhs)?;
+            let r = emit_mono_native_expr(rhs)?;
             match op.as_str() {
-                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||" | "=="
-                | "!=" | "<" | "<=" | ">" | ">=" => Ok(format!("({l} {op} {r})")),
+                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||"
+                | "==" | "!=" | "<" | "<=" | ">" | ">=" => Ok(format!("({l} {op} {r})")),
                 other => Err(anyhow!("mono native: unsupported binary `{other}`")),
             }
         }
         Expr::If {
-            cond,
-            then,
-            else_,
-            ..
+            cond, then, else_, ..
         } => {
-            let c = emit_mono_native_expr(cond, MonoPrim::Bool)?;
-            let t = emit_mono_native_expr(then, ret)?;
-            let e = emit_mono_native_expr(else_, ret)?;
+            let c = emit_mono_native_expr(cond)?;
+            let t = emit_mono_native_expr(then)?;
+            let e = emit_mono_native_expr(else_)?;
             Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
         }
         Expr::Block { stmts, tail } if stmts.is_empty() => match tail {
-            Some(t) => emit_mono_native_expr(t, ret),
+            Some(t) => emit_mono_native_expr(t),
             None => Err(anyhow!("mono native: empty block")),
         },
         _ => Err(anyhow!("mono native: unsupported expression form")),
@@ -641,6 +653,7 @@ fn mono_block_pure_expr(stmts: &[Stmt]) -> Option<&Expr> {
 /// - single return/expr
 /// - `let` chains of pure inits + final return
 /// - trailing pure `if`/`else` (stmt or expr form)
+///
 /// Returns `None` to fall back to the AnubisValue-inner unboxed wrapper.
 fn try_emit_mono_full_native_body(
     params: &[(String, String)],
@@ -675,7 +688,7 @@ fn try_emit_mono_full_native_body(
                     return Ok(None);
                 }
                 let id = sanitize_ident(name)?;
-                let e = match emit_mono_native_expr(init, abi.ret) {
+                let e = match emit_mono_native_expr(init) {
                     Ok(s) => s,
                     Err(_) => return Ok(None),
                 };
@@ -684,10 +697,7 @@ fn try_emit_mono_full_native_body(
             }
             // Final pure if-stmt with pure then/else arms.
             Stmt::If {
-                cond,
-                then,
-                else_,
-                ..
+                cond, then, else_, ..
             } if is_last => {
                 let else_body = match else_ {
                     Some(e) => e.as_slice(),
@@ -707,15 +717,15 @@ fn try_emit_mono_full_native_body(
                 {
                     return Ok(None);
                 }
-                let c = match emit_mono_native_expr(cond, MonoPrim::Bool) {
+                let c = match emit_mono_native_expr(cond) {
                     Ok(s) => s,
                     Err(_) => return Ok(None),
                 };
-                let t = match emit_mono_native_expr(then_e, abi.ret) {
+                let t = match emit_mono_native_expr(then_e) {
                     Ok(s) => s,
                     Err(_) => return Ok(None),
                 };
-                let e = match emit_mono_native_expr(else_e, abi.ret) {
+                let e = match emit_mono_native_expr(else_e) {
                     Ok(s) => s,
                     Err(_) => return Ok(None),
                 };
@@ -735,7 +745,7 @@ fn try_emit_mono_full_native_body(
                         if !mono_expr_is_full_native_eligible(e, &live) {
                             return Ok(None);
                         }
-                        let expr_src = match emit_mono_native_expr(e, abi.ret) {
+                        let expr_src = match emit_mono_native_expr(e) {
                             Ok(s) => s,
                             Err(_) => return Ok(None),
                         };
@@ -748,7 +758,7 @@ fn try_emit_mono_full_native_body(
                 if !mono_expr_is_full_native_eligible(e, &live) {
                     return Ok(None);
                 }
-                let expr_src = match emit_mono_native_expr(e, abi.ret) {
+                let expr_src = match emit_mono_native_expr(e) {
                     Ok(s) => s,
                     Err(_) => return Ok(None),
                 };
@@ -793,7 +803,7 @@ fn emit_mono_arg_unboxed(arg: &Expr, prim: MonoPrim, ctx: &EmitCtx<'_>) -> Resul
         _ => {}
     }
     let v = safe_run_expr(arg, ctx)?;
-    Ok(prim.from_anubis(&v))
+    Ok(prim.coerce_from_anubis(&v))
 }
 
 /// Build the method registry: method name -> `(type, param_count)` for each defining type.
@@ -945,7 +955,7 @@ fn emit_fn_core(
                 MonoPrim::String => format!("anubis_mk_str({id})"),
             });
         }
-        let unwrap = abi.ret.from_anubis("__anb_ret");
+        let unwrap = abi.ret.coerce_from_anubis("__anb_ret");
         return Ok(format!(
             "fn {rust_name}({outer}) -> {ret_ty} {{\n    fn __anb_body({inner_sig}) -> AnubisValue {{\n{body_src}    {tail_src}\n    }}\n    let __anb_ret = __anb_body({fwd});\n    {unwrap}\n}}\n",
             fwd = fwd.join(", "),
@@ -1078,6 +1088,7 @@ pub fn lower_program_to_rust(items: &[Item], allow_research: bool) -> Result<Str
 
 /// Lower with a static monomorphization inventory from typecheck (`TypedIR.mono_specializations`
 /// + ordered `mono_call_sites` for variable-pinned dispatch).
+///
 /// Emits specialized clones and rewrites call sites (literal and variable-pinned) to those clones.
 pub fn lower_program_to_rust_with_mono(
     items: &[Item],
@@ -1224,10 +1235,7 @@ fn lower_program_with_entry(
             .then(a.rust_name.cmp(&b.rust_name))
     });
     // Ordered mono call sites by enclosing caller (typecheck walk order).
-    let mut mono_sites_by_caller: std::collections::BTreeMap<
-        String,
-        Vec<(String, Vec<(String, String)>)>,
-    > = std::collections::BTreeMap::new();
+    let mut mono_sites_by_caller: MonoSitesByCaller = std::collections::BTreeMap::new();
     for site in mono_call_sites {
         let pairs: Vec<(String, String)> = site
             .type_args
@@ -2479,13 +2487,45 @@ fn anubis_http_parse_url(url: &str) -> (bool, String, u16, String) {
 }
 /// HTTPS via host curl — body only on stdout; fail-closed on non-zero exit.
 fn anubis_http_via_curl(method: &str, url: &str, body: Option<&str>) -> AnubisValue {
-    use std::process::Command;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL", "--max-time", "30", "-X", method, url]);
-    if let Some(b) = body {
-        cmd.args(["-H", "Content-Type: application/octet-stream", "--data-binary", b]);
+    // SECURITY (#75): the request body is written to curl's STDIN and referenced by the FIXED literal
+    // `@-`, never passed inline as `--data-binary <body>`. curl interprets a `@`-prefixed data value as
+    // a FILENAME, so an inline body that merely BEGINS with `@` made curl read an arbitrary LOCAL FILE
+    // and transmit it — escalating the `net.send` capability into arbitrary local file read plus
+    // egress, with no fs.read capability and no diagnostic. Because `@-` is a constant, no
+    // program-controlled string can reach curl's filename parser at all.
+    if body.is_some() {
+        cmd.args([
+            "-H",
+            "Content-Type: application/octet-stream",
+            "--data-binary",
+            "@-",
+        ]);
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
     }
-    match cmd.output() {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => panic!(
+            "ANUBIS_IO_ERROR: https requires host `curl` on PATH (system TLS TCB): {}",
+            e
+        ),
+    };
+    if let Some(b) = body {
+        // Dropping the handle closes the pipe so curl sees EOF and stops reading.
+        if let Some(mut si) = child.stdin.take() {
+            if let Err(e) = si.write_all(b.as_bytes()) {
+                panic!("ANUBIS_IO_ERROR: https curl body write failed: {}", e);
+            }
+        }
+    }
+    match child.wait_with_output() {
         Ok(out) if out.status.success() => {
             anubis_mk_str(String::from_utf8_lossy(&out.stdout).into_owned())
         }
@@ -5238,7 +5278,129 @@ pub const ANUBIS_RUN_CRYPTO_CACHE_TAG: &str = "audited-crypto-v3";
 
 /// Shared cargo target dir so audited deps download once per machine.
 pub fn anubis_run_shared_target_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join("anubis-run-cargo-target")
+    if let Some(path) = std::env::var_os("ANUBIS_RUN_CARGO_TARGET_DIR") {
+        return std::path::PathBuf::from(path);
+    }
+    let tag: String = ANUBIS_RUN_CRYPTO_CACHE_TAG
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    std::env::temp_dir().join(format!("anubis-run-cargo-target-{tag}"))
+}
+
+struct RunCargoBuildLock {
+    lock_dir: std::path::PathBuf,
+}
+
+impl Drop for RunCargoBuildLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.lock_dir);
+    }
+}
+
+fn parse_run_build_timeout_secs(raw: Option<&str>) -> Option<std::time::Duration> {
+    const DEFAULT_SECS: u64 = 1800;
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SECS);
+    if secs == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(secs))
+    }
+}
+
+fn resolved_run_build_timeout() -> Option<std::time::Duration> {
+    parse_run_build_timeout_secs(
+        std::env::var("ANUBIS_RUN_BUILD_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn pid_is_alive(pid: u32) -> bool {
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn stale_run_build_lock_owner(lock_dir: &std::path::Path) -> bool {
+    let owner = match std::fs::read_to_string(lock_dir.join("owner")) {
+        Ok(owner) => owner,
+        Err(_) => return false,
+    };
+    let Some(pid) = owner
+        .lines()
+        .find_map(|line| line.strip_prefix("pid="))
+        .and_then(|pid| pid.trim().parse::<u32>().ok())
+    else {
+        return false;
+    };
+    !pid_is_alive(pid)
+}
+
+fn acquire_run_cargo_build_lock(target_dir: &std::path::Path) -> Result<RunCargoBuildLock> {
+    let lock_dir = target_dir.join(".anubis-build-mutex");
+    std::fs::create_dir_all(target_dir).map_err(|e| {
+        anyhow!(
+            "ANUBIS_RUN_BUILD_LOCK_FAILED: create target dir {}: {e}",
+            target_dir.display()
+        )
+    })?;
+    let start = std::time::Instant::now();
+    let deadline = resolved_run_build_timeout().map(|timeout| start + timeout);
+    loop {
+        match std::fs::create_dir(&lock_dir) {
+            Ok(()) => {
+                let owner = format!(
+                    "pid={}\nstarted_unix_ms={}\n",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                );
+                let _ = std::fs::write(lock_dir.join("owner"), owner);
+                return Ok(RunCargoBuildLock { lock_dir });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if stale_run_build_lock_owner(&lock_dir) {
+                    let _ = std::fs::remove_dir_all(&lock_dir);
+                    continue;
+                }
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    return Err(anyhow!(
+                        "ANUBIS_RUN_BUILD_LOCK_TIMEOUT: waited for generated-run cargo lock at {}",
+                        lock_dir.display()
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(anyhow!(
+                    "ANUBIS_RUN_BUILD_LOCK_FAILED: create {}: {e}",
+                    lock_dir.display()
+                ));
+            }
+        }
+    }
 }
 
 fn anubis_run_cargo_toml(package_name: &str) -> String {
@@ -5441,6 +5603,7 @@ pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) 
     std::fs::write(dir.join("src/main.rs"), rust_source)?;
 
     let target_dir = anubis_run_shared_target_dir();
+    let _build_lock = acquire_run_cargo_build_lock(&target_dir)?;
     let cargo_build = |offline: bool| -> Result<std::process::Output> {
         let mut command = std::process::Command::new("cargo");
         command.args(["build", "--release", "--quiet"]);
@@ -5449,9 +5612,15 @@ pub fn compile_native_rust_to_exe(rust_source: &str, out_exe: &std::path::Path) 
         }
         command
             .current_dir(&dir)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .output()
-            .map_err(|e| anyhow!("cargo spawn failed: {}", e))
+            .env("CARGO_TARGET_DIR", &target_dir);
+        let capped = run_child_capped(command, resolved_run_build_timeout())
+            .map_err(|e| anyhow!("cargo spawn failed: {}", e))?;
+        if capped.timed_out {
+            return Err(anyhow!(
+                "ANUBIS_RUN_BUILD_TIMEOUT: cargo build exceeded wall-clock budget"
+            ));
+        }
+        Ok(capped.output)
     };
 
     // Generated native projects use the audited dependency set already populated by the Anubis

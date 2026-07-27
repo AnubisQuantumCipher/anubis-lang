@@ -1,0 +1,26 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_AMBIGUOUS_METHOD_CONTRACT
+// Cluster H (2026-07-26 adversarial re-hunt of #76). The ambiguous-method-contract registration
+// used to key its "already declared?" check off `method_contracts` (only touched when a
+// declaration actually carried a contract), so a contract-FREE impl registered first left no
+// trace, and a contracted impl registered second silently became "the" answer for every
+// caller of `f`, on ANY receiver type -- purely a declaration-order accident, not the documented
+// fail-closed AMBIGUOUS verdict. Fixed by keying the "seen before" check off `method_arities`
+// (touched by every impl method, contracted or not) instead. This pins BOTH declaration orders.
+struct A { v: i64 }
+struct B { v: i64 }
+impl B {
+    fn f(self, amt: i64) -> i64 {
+        self.v - amt
+    }
+}
+impl A {
+    fn f(self, amt: i64) -> i64 requires(amt <= 100) {
+        self.v + amt
+    }
+}
+fn main() {
+    let a = A { v: 10 };
+    let r = a.f(5);
+    print(r);
+}
