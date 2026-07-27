@@ -1902,11 +1902,73 @@ impl Parser {
                 break;
             }
             self.bump();
-            let name = if s.starts_with('@') {
+            let mut name = if s.starts_with('@') {
                 s.trim_start_matches('@').to_string()
             } else {
                 s
             };
+            // A BARE `@` lexes on its own, leaving the attribute NAME as the next token. Without
+            // taking it here the name stayed in the statement stream, so `@reserach { ... }` parsed
+            // as `reserach { ... }` — a struct literal — and reported "expected : in struct lit".
+            // A one-letter typo in a mode-elevating attribute produced a diagnostic about struct
+            // syntax, pointing at neither the cause nor a remedy. GROK-THOTH's day-one blocker #4.
+            if name.is_empty() {
+                let next = self.tokens.get(self.pos).map(|t| t.token.clone());
+                if let Some(Token::Ident(n) | Token::Keyword(n)) = next {
+                    // Only claim the identifier when it is being used in ATTRIBUTE position — either
+                    // it takes arguments, or it heads a block. Otherwise leave it alone: `@` before
+                    // an ordinary expression is not an attribute and must not be swallowed.
+                    let after = self.tokens.get(self.pos + 1).map(|t| &t.token);
+                    if matches!(after, Some(Token::LParen) | Some(Token::LBrace)) {
+                        self.bump();
+                        name = n;
+                    }
+                }
+            }
+            if !name.is_empty()
+                && !matches!(
+                    name.as_str(),
+                    "safe"
+                        | "research"
+                        | "exploit"
+                        | "proof"
+                        | "audit"
+                        | "poc"
+                        | "fuzz"
+                        | "emulation"
+                        | "defensive"
+                        | "verified"
+                        | "agent"
+                )
+            {
+                let hint = [
+                    "research",
+                    "exploit",
+                    "poc",
+                    "fuzz",
+                    "proof",
+                    "defensive",
+                    "audit",
+                    "verified",
+                    "safe",
+                ]
+                .iter()
+                .find(|k| {
+                    let (a, b) = (name.as_str(), **k);
+                    a.len().abs_diff(b.len()) <= 2
+                        && a.chars().filter(|c| b.contains(*c)).count() * 4 >= b.len() * 3
+                })
+                .map(|k| format!(" (did you mean `@{k}`?)"))
+                .unwrap_or_default();
+                self.diagnostics.push(ParseDiagnostic {
+                    message: format!(
+                        "ANUBIS_UNKNOWN_ATTRIBUTE: unknown attribute `@{name}`{hint}; valid \
+                         attributes are research, exploit, poc, fuzz, emulation, proof, defensive, \
+                         audit, verified, safe"
+                    ),
+                    span: Span::default(),
+                });
+            }
             let mut args = vec![];
             if self.check_token(&Token::LParen) {
                 self.bump(); // (
@@ -2983,6 +3045,48 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
+        // A statement-position `@name { ... }` whose name is not a real block attribute used to
+        // report "expected : in struct lit": the lexer DROPS `@`, so `@reserach { ... }` reaches the
+        // parser as `reserach { ... }`, which looks exactly like a struct literal. A one-letter typo
+        // in a MODE-ELEVATING attribute produced a diagnostic about struct syntax, naming neither
+        // the cause nor a remedy. GROK-THOTH's day-one blocker #4.
+        //
+        // The sigil is unrecoverable here — emitting `@` as a token regressed seven fixtures that
+        // rely on it being dropped — so this keys on the shape that survives: a LOWERCASE identifier
+        // heading a block whose name near-misses a real block keyword. Struct literals are
+        // capitalised by convention, and requiring a near-miss keeps this to the typo case it exists
+        // for rather than second-guessing every `name { ... }`.
+        if let Token::Ident(name) = &self.current().token {
+            let name = name.clone();
+            let heads_block = matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.token),
+                Some(Token::LBrace)
+            );
+            let near_miss = ["research", "exploit"].into_iter().find(|k| {
+                name != *k
+                    && name.len().abs_diff(k.len()) <= 2
+                    && name.chars().filter(|c| k.contains(*c)).count() * 4 >= k.len() * 3
+            });
+            if let (true, true, Some(k)) = (
+                heads_block,
+                name.starts_with(|c: char| c.is_ascii_lowercase()),
+                near_miss,
+            ) {
+                self.diagnostic(
+                    format!(
+                        "ANUBIS_BLOCK_ATTRIBUTE_MISUSE: `{name}` is not a block attribute (did you \
+                         mean `@{k}`?); only `@research` and `@exploit` introduce a block"
+                    )
+                    .as_str(),
+                    self.current_span(),
+                );
+                // Consume the name and parse the block, so one typo does not cascade into a run of
+                // struct-literal errors that bury the real diagnostic.
+                self.bump();
+                let body = self.parse_block();
+                return Some(Stmt::ResearchBlock { intent: None, body });
+            }
+        }
         if self.check_keyword("let") {
             return self.parse_let();
         }
