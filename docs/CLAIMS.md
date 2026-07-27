@@ -220,6 +220,61 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
     Control and guard are in the corpus (`contract_requires_literal_rejects`,
     `contract_ensures_satisfies_requires_accepts`); the RED fixture is held out until fixed.
 
+### Offensive research half — bounded residual (2026-07-27)
+
+A green `evidence-verify` certifies that the receipt chain's own hashes are internally
+consistent (sequential ordering, payload-hash, receipt-hash recomputation, and — when a
+`mac_key.hex` is present — symmetric HMAC under
+`SHA256("anubis-receipt-mac-v1|" || key || "|" || receipt_hash)`). It does NOT certify:
+
+1. **Crash isolation is not air-gap.** VZ guest markers (`ANUBIS_VZ_GUEST=1`,
+   `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`, env `ANUBIS_ISOLATION` containing `tart`/`vz`/
+   `virtualization`, or the sentinel files `/etc/anubis-vz-guest` /
+   `$HOME/.anubis-vz-guest`) are a **safety** mechanism, not a security boundary. Any
+   user-level process can set `ANUBIS_VZ_GUEST=1`. The operator is the trust root
+   (`isolation.rs:5-8`). Defense-in-depth: when `ANUBIS_VZ_ENFORCE_RUN_CAP=1`, both the
+   marker AND a valid HMAC run-capability must be present — but the HMAC key is
+   process-local (not hardware-bound), so the boundary is "accidental host execution",
+   not "malicious host escape."
+
+2. **A hash-chained receipt is not third-party attestation.** The receipt chain uses
+   symmetric HMAC (`LAB_REAL_HMAC`), not Ed25519 PKI. It proves tamper-evidence to the
+   holder of the key; it does not prove anything to a party who did not hold the key at
+   chain-creation time. `evidence-verify` labels this honestly as `LAB_REAL_HMAC`, not
+   `LAB_REAL`. A receipt chain with HMAC green means "the chain has not been modified
+   since the key-holder sealed it." It does NOT mean "the engagement was authorized by
+   an external auditor."
+
+3. **`evidence-verify` green = the chain is intact, not that the engagement was
+   authorized.** The five check families (PCA re-derive, engagement `content_hash`,
+   receipt-chain hash+HMAC, run-capability schema+MAC, confinement re-derive) verify
+   internal artifact consistency. They do not verify: who authorized the engagement,
+   what the scope was, whether the operator identity is authentic, or whether the guest
+   was network-isolated during execution.
+
+4. **Host-forgeable markers: VZ isolation is SAFETY, not SECURITY.** The isolation gate
+   (`isolation.rs`) and the run-capability binding (`run_capability.rs`) together form
+   a two-factor safety check. Neither factor is hardware-rooted: the marker is an env
+   var, the capability key is process-local HMAC. An adversary with user-level host
+   access can set both. The design intent is to prevent the operator's own session from
+   accidentally running crash/exploit code on the host — not to prevent a motivated
+   attacker from bypassing the gate.
+
+5. **Guest scrape captures what it captures.** The `vz exploit`/`fuzz` path collects:
+   `uname -a`, hostname, selected log files, and the receipt chain. It does NOT capture:
+   full process listings, network traffic, screenshots, memory dumps, file-integrity
+   baselines, or guest-side authorization logs. A green scrape means "the collected
+   artifacts are internally consistent"; it does not mean "every guest-side event was
+   observed."
+
+**Counts on the receipt surface**: `vz exploit` and `vz fuzz` as run from `tart` guests
+today add **0 receipts** to the chain (AOP-48 confirmed: the `evidence-verify` path is
+green but the receipt-producing codepath in `vz.rs` is not wired to the
+`receipts::append` call). This means a green `evidence-verify` on a post-`vz exploit`
+bundle is checking a **pre-existing** chain, not one extended by the exploit run. The
+receipt chain proves what `anubis check` / `anubis build --evidence` sealed; it does
+not yet cover the offensive execution phase.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
