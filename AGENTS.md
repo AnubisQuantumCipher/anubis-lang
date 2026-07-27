@@ -126,3 +126,34 @@ truncated run cannot pass, and REFUSES to report PASS if any precondition is unm
   engagement receipt and no host evidence, so the proof-carrying thesis fails for exactly the
   operations that lane exists to prove.
 - The bare `anubis` shell alias is documented, not fixed.
+
+## The binary moves. Use a pin, not `target/release/anubis`.
+
+`cargo build` rewrites `target/release/anubis` IN PLACE. When the lead rebuilds while you are
+mid-round, your measurements straddle two different compilers — and recording a sha256 at the start
+does not save you, because the PATH you recorded has already changed underneath. This has cost real
+work: an adversary round legitimately recorded three different pins and re-ran everything twice, and
+the lead misread a working fix as broken.
+
+Resolve the pin ONCE at the start of a round and use it throughout:
+
+    ANUBIS_BIN="$(scripts/publish_pin.sh --current)"
+    "$ANUBIS_BIN" check foo.anb
+
+Pins are content-addressed and read-only, so a rebuild creates a NEW file and cannot mutate the one
+you are holding. If the lead publishes a new pin mid-round, finish on your old one — it still exists
+and still works — then re-measure deliberately instead of discovering the change inside your results.
+
+Report the pin PATH and its sha256, not just the sha256.
+
+**Only the lead builds and publishes pins**, and the lead says so when a new one lands.
+
+## Capture the exit code on the very next line
+
+    "$ANUBIS_BIN" check "$f" >/dev/null 2>&1
+    rc=$?                      # <- nothing may run before this
+
+`printf 'x %s %s' "$(basename $f)" "$?"` prints `basename`'s status, not the check's — the command
+substitution runs first. That misreporting made a working fix look broken twice in one session. In
+this repo a broken harness has produced "44/44 gates FAIL" (exit 127) and "1764 corpus failures"
+(timeouts). Validate the instrument before you believe the number.
