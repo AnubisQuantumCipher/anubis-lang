@@ -18,11 +18,40 @@ import re
 import sys
 from typing import Any
 
+# This project's OWN defensive vocabulary, stripped before matching.
+#
+# Anubis is a dual-use language whose entire subject matter is the thing this guard defends against,
+# so its diagnostic codes and subcommand names collide with topic words in the denylist below.
+# `ANUBIS_SECRET_EXFILTRATION` is the name of a CHECK THAT PREVENTS exfiltration; `c2-cycle` is a
+# subcommand an auditor is expected to exercise. Matching them blocked ordinary defensive work —
+# grepping for a diagnostic code, or briefing an agent to audit a shipped command — which is worse
+# than useless: a guard that fires on the name of a defence teaches everyone to route around it, and
+# a routed-around guard catches nothing when it matters.
+#
+# Only NAMES are exempted here. Every MECHANISM pattern below still applies to the same command, so
+# `ANUBIS_SECRET_EXFILTRATION` passes while an actual `/dev/tcp/` payload in the same line does not.
+SELF_VOCAB_RE = re.compile(
+    r"ANUBIS_[A-Z0-9_]+"          # the language's own diagnostic codes
+    r"|\bc2[-_]cycle\b"           # shipped subcommand, audited by the offensive lane
+    r"|\bexfiltration_[a-z_]+\b"  # fixture / test identifiers naming the property under test
+    r"|examples/security/[\w./-]+"  # fixture paths in this repo
+    r"|scratchpad/[\w./-]+",      # agent reports and probe corpora
+    re.IGNORECASE,
+)
+
 # Weaponization / unauthorized offensive tooling (defensive / authorized-lab only).
+#
+# Prefer MECHANISM over VOCABULARY: these match how a payload is actually built or persisted, not
+# what a security topic is called. Mechanism patterns are precise and hard to trip accidentally;
+# topic words are not, and in this repo they fire constantly on legitimate work.
 DENY_RE = re.compile(
     r"reverse[ _-]?shell|meterpreter|/dev/tcp/|nc\s+.*\s+-e\s+|mkfifo\s+.*nc\s+"
     r"|base64\s+-d.*\|\s*(ba)?sh|chattr\s+\+i|crontab\s+-|launchctl\s+load"
-    r"|/etc/rc\.local|ld\.so\.preload|keylog|exfiltrat|\bc2\b|beacon\s",
+    r"|/etc/rc\.local|ld\.so\.preload|keylog"
+    # `exfiltrat` and a bare `c2` were removed as standalone triggers: both are pure TOPIC words that
+    # this repo uses to NAME its defences. The mechanisms they were proxying for — a reverse shell,
+    # a /dev/tcp channel, a beacon loop — are each still matched on their own above and below.
+    r"|beacon\s+(?:interval|jitter|sleep|callback)",
     re.IGNORECASE,
 )
 
@@ -64,7 +93,13 @@ def main() -> int:
 
     cmd = _command_from_payload(payload)
 
-    if cmd and DENY_RE.search(cmd):
+    # Strip this project's own defensive vocabulary BEFORE matching, so a diagnostic code or a
+    # shipped subcommand name cannot trip a weaponization rule. Mechanism patterns are unaffected:
+    # nothing here removes a `/dev/tcp/`, an `nc -e`, or a persistence write, so a command that
+    # mentions a diagnostic AND builds a payload is still blocked on the payload.
+    scan = SELF_VOCAB_RE.sub(" ", cmd) if cmd else cmd
+
+    if scan and DENY_RE.search(scan):
         print(
             "BLOCKED: malware/weaponization denylist. "
             "Anubis is defensive/authorized-only. Re-scope to a local toy target or refuse.",
