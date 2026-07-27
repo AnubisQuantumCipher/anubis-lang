@@ -52,9 +52,31 @@ fi
 echo "builtin-registry drift-check: PASS (all volatile run.rs builtins mirrored in sh_is_known_builtin)"
 
 # Normalize a caps string (Rust human list "a, b" | Anubis "a,b," | "(none proven…)") -> sorted set.
+# Normalize a capability set for comparison, and apply the SAME grant projection to BOTH sides.
+#
+# `vz confine`'s `capabilities` line is `capabilities_present`, a GRANT projection in which
+# `fs.write` deliberately implies `fs.read` — a read-write mount posture needs both. The
+# Anubis-authored engine reports the RAW proven set. Comparing a projection against a raw set made
+# `c05_open_param_call` read rust={fs.read,fs.write} vs anb={fs.write} and fail the whole gate, with
+# NEITHER engine wrong: the program performs no read, the fixture header expects `fs.write`, and the
+# oracle was the thing comparing unlike quantities. Diagnosed by GROK-HORUS.
+#
+# Projecting both sides keeps the comparison honest without teaching either engine a fact it should
+# not hold: the Rust fixpoint stays write-only and the SH engine stays raw. Comparing raw sets on
+# both sides is NOT an option here — `research_effects` uses a different vocabulary
+# (`net.connect`/`process.spawn` vs `net.send`/`shell`), so it is not the same quantity either.
 norm_caps() {
-  { tr ',' '\n' | sed 's/[[:space:]]//g' \
-    | grep -vE '^$|^\(none|noneproven|maximallyconfinable' || true; } | sort -u | tr '\n' ','
+  local caps
+  caps=$( { tr ',' '\n' | sed 's/[[:space:]]//g' \
+    | grep -vE '^$|^\(none|noneproven|maximallyconfinable' || true; } | sort -u )
+  # `|| true` on EVERY grep: an unmatched grep under `set -euo pipefail` kills the gate mid-corpus
+  # and prints a partial, green-looking run — the hazard this script already warns about at the
+  # bracket-greps below, which I reintroduced here once and caught because c04 (the empty-capset
+  # fixture) truncated the output.
+  if printf '%s\n' "$caps" | grep -qx 'fs.write' 2>/dev/null; then
+    caps=$(printf '%s\n%s\n' "$caps" 'fs.read')
+  fi
+  printf '%s\n' "$caps" | { grep -vE '^$' || true; } | sort -u | tr '\n' ','
 }
 
 agree=0; disagree=0; skip=0; expect_ok=0; expect_bad=0; n=0
