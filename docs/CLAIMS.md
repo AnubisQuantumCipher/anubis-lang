@@ -193,10 +193,12 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
    rather than the container, so the program panics before reaching any sink. That is a deferral on
    an unrunnable program — and separately a footgun, tracked as item 8.
 
-8. **`push` returns `0`, and `check` does not catch its misuse.**
-   `let ys = push(xs, 3); len(ys)` — `check` rc=0, `run` rc=1 (panic). Functional-style use silently
-   yields a non-container. A check/run divergence of the item-2 class, found 2026-07-27 while
-   probing container mutation builtins.
+8. **`push` expression-position return — CLOSED 2026-07-27.** `let ys = push(xs, 3); len(ys)` had
+   `check` rc=0 and `run` rc=1 (panic): the expression lowering returned `AnubisValue::Int(0)`, a
+   placeholder, so functional-style use silently bound a non-container. It now returns the container,
+   matching its siblings (`pop`, `insert`, `remove` all return something meaningful). Statement-position
+   `push(xs, v)` is lowered separately and unaffected; both are pinned by
+   `push_expression_returns_container_doc_ok.anb`. Opened and closed the same day.
 
 ### Resolved this arc (do not re-open without new evidence)
 

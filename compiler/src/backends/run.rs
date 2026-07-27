@@ -4482,9 +4482,21 @@ fn safe_run_expr(expr: &Expr, ctx: &EmitCtx) -> Result<String> {
                     .collect::<Result<Vec<_>>>()?;
                 return match (callee.as_str(), rest.len()) {
                     ("pop", 0) => Ok(format!("anubis_pop(&mut {})", var)),
+                    // Return the CONTAINER, not a placeholder. This arm used to yield
+                    // `AnubisValue::Int(0)`, so `let ys = push(xs, 3); len(ys)` silently bound a
+                    // non-container: `check` passed and `run` panicked — a check/run divergence
+                    // produced by the lowering, not by the program.
+                    //
+                    // Functional-style use is the natural reading of an expression-position call,
+                    // and every sibling here already returns something meaningful (`pop` the
+                    // element, `insert`/`remove` the result). `push` was the only one handing back
+                    // a placeholder.
+                    //
+                    // Statement-position `push(xs, v)` is lowered separately and is unaffected;
+                    // `AnubisValue` is `Rc`-backed, so returning the container is an O(1) clone.
                     ("push", 1) => Ok(format!(
-                        "{{ {}.push_val({}); AnubisValue::Int(0) }}",
-                        var, rest[0]
+                        "{{ {}.push_val({}); {}.clone() }}",
+                        var, rest[0], var
                     )),
                     ("insert", 2) => Ok(format!(
                         "anubis_insert(&mut {}, {}, {})",
