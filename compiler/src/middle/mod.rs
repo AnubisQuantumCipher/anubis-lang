@@ -18172,6 +18172,16 @@ fn expr_taint_source_m(
                     .get(&root)
                     .and_then(|b| b.field_closures.get(&path).cloned())
             });
+            if let Some(Expr::Var(f)) = stored_closure.as_deref() {
+                // M1, integrity twin of the arm in `expr_secret_source_m` — see it for rationale.
+                let target = scope
+                    .get(f)
+                    .and_then(|b| b.fn_alias.as_deref())
+                    .unwrap_or(f.as_str());
+                if tainting_fns.contains(target) {
+                    return Some(format!("return value of `{target}`"));
+                }
+            }
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
                 for p in params {
@@ -18737,6 +18747,20 @@ fn expr_secret_source_m(
                     .get(&root)
                     .and_then(|b| b.field_closures.get(&path).cloned())
             });
+            if let Some(Expr::Var(f)) = stored_closure.as_deref() {
+                // M1: the stored callable may be a NAMED FUNCTION rather than a lambda —
+                // `let xs = [key]; print(xs[0]())`. The lookup above already finds it; only this
+                // consumer was lambda-only, so a named entry fell through as though the container
+                // held nothing and the secret escaped. Consults the same summary the bare `Call`
+                // arm does, through `fn_alias`, so a container of an ALIASED function resolves too.
+                let target = scope
+                    .get(f)
+                    .and_then(|b| b.fn_alias.as_deref())
+                    .unwrap_or(f.as_str());
+                if secret_fns.contains(target) {
+                    return Some(format!("return value of `{target}`"));
+                }
+            }
             if let Some(Expr::Lambda { params, body }) = stored_closure.as_deref() {
                 let mut inner = scope.clone();
                 for p in params {
