@@ -2096,15 +2096,92 @@ fn check_calls_expr(
 
 /// Gate 15: research/poc/fuzz/proof/defensive/audit attrs require non-empty `authorization=...`.
 /// Shared by free functions and impl methods so the policy cannot drift between surfaces.
+/// Whether a function body contains a `@research { … }` / `@exploit { … }` mode elevator ANYWHERE,
+/// including nested inside a value-position expression.
+///
+/// The frontend derives a function's declared mode by scanning its TOP-LEVEL statements only, so a
+/// block hidden in an expression — `let x = if true { @research { shell(..) } 1 } else { 0 };` —
+/// left the function's declared mode Safe. The authorization requirement therefore never applied,
+/// and the value-position walkers do not descend into these blocks either, so the elevated code was
+/// neither authorized nor enforced. GROK-SET round 7 found the divergence; the statement form
+/// rejects and the value form passed.
+///
+/// This scan exists to make AUTHORIZATION see what the elevator sees. It deliberately does not try
+/// to enforce the block's contents — it answers one question: does this function elevate mode from
+/// its own source?
+fn body_has_mode_elevator(body: &[Stmt]) -> bool {
+    fn in_expr(e: &Expr) -> bool {
+        match e {
+            Expr::Block { stmts, tail } => in_stmts(stmts) || tail.as_deref().is_some_and(in_expr),
+            Expr::If {
+                cond, then, else_, ..
+            } => in_expr(cond) || in_expr(then) || in_expr(else_),
+            Expr::IfLet { then, else_, .. } => in_expr(then) || in_expr(else_),
+            Expr::Match {
+                scrutinee, arms, ..
+            } => in_expr(scrutinee) || arms.iter().any(|a| in_expr(&a.body)),
+            Expr::Lambda { body, .. } => in_expr(body),
+            _ => false,
+        }
+    }
+    fn in_stmts(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|st| match st {
+            Stmt::ResearchBlock { .. } | Stmt::ExploitBlock { .. } => true,
+            Stmt::Let { init, .. } => in_expr(init),
+            Stmt::LetPattern { init, .. } => in_expr(init),
+            Stmt::ExprStmt(e) => in_expr(e),
+            Stmt::Assign { value, .. } => in_expr(value),
+            Stmt::If { cond, then, else_ } => {
+                in_expr(cond) || in_stmts(then) || else_.as_deref().is_some_and(in_stmts)
+            }
+            Stmt::While { body, .. }
+            | Stmt::WhileLet { body, .. }
+            | Stmt::Loop { body, .. }
+            | Stmt::For { body, .. } => in_stmts(body),
+            _ => false,
+        })
+    }
+    in_stmts(body)
+}
+
 fn require_research_authorization_metadata(
+    declared_mode: Mode,
+    elevator_in_body: bool,
     effective_mode: Mode,
     attributes: &[crate::frontend::Attribute],
     span: Span,
     ctx: &mut SemanticContext,
 ) {
-    if !matches!(effective_mode, Mode::Research) || attributes.is_empty() {
+    // The elevation must be AUTHORIZED whenever it is intrinsic to the code — an explicit
+    // research-family attribute, or a `@research { … }` / `@exploit { … }` block in the body, which
+    // is what makes `declared_mode` non-Safe.
+    //
+    // GROK-SET round 7 found the asymmetry this closes: `@research fn probe()` without metadata was
+    // rejected, while a BARE `@research { … }` block was accepted and elevated the whole function
+    // anyway — so any Safe program could obtain research capabilities by wrapping code in a block,
+    // defeating the policy the attribute form exists to enforce. The old `attributes.is_empty()`
+    // early-return was the hole: a function with NO attributes whose body contains a block has
+    // `declared_mode == Research` and was skipped entirely.
+    //
+    // A program-level `--allow-research` request is deliberately NOT covered. That elevation is an
+    // explicit operator decision made outside the source, and requiring per-function metadata for it
+    // would reject every legitimate research invocation — a wall, not a guardrail.
+    // NOTE the ordering: `elevator_in_body` must be consulted BEFORE any `effective_mode` gate.
+    // A block nested in a value-position expression leaves the frontend-derived mode SAFE — that is
+    // exactly the case being closed — so gating on the effective mode first would return early and
+    // miss it. This cost me one full build to notice.
+    let code_intrinsic = declared_mode != Mode::Safe
+        || elevator_in_body
+        || attributes.iter().any(|attr| {
+            matches!(
+                attr.name.as_str(),
+                "research" | "poc" | "fuzz" | "proof" | "defensive" | "audit" | "exploit"
+            )
+        });
+    if !code_intrinsic {
         return;
     }
+    let _ = effective_mode;
     let has_auth = attributes.iter().any(|attr| {
         matches!(
             attr.name.as_str(),
@@ -2168,7 +2245,14 @@ fn collect_items(
                 ..
             } => {
                 let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
-                require_research_authorization_metadata(effective_mode, attributes, *span, ctx);
+                require_research_authorization_metadata(
+                    *mode,
+                    body_has_mode_elevator(body),
+                    effective_mode,
+                    attributes,
+                    *span,
+                    ctx,
+                );
                 // Per-item verification lane: `@verified` / `#[verified]` on this fn.
                 let item_verified = attributes.iter().any(|a| a.name == "verified");
                 let saved_verified = ctx.verified;
@@ -2221,6 +2305,8 @@ fn collect_items(
                         let effective_mode = effective_item_mode(*mode, attributes, requested_mode);
                         // Same Gate-15 policy as free functions (must not drift).
                         require_research_authorization_metadata(
+                            *mode,
+                            body_has_mode_elevator(body),
                             effective_mode,
                             attributes,
                             *span,
