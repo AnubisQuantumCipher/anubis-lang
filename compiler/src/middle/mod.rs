@@ -1087,6 +1087,10 @@ struct SemanticContext {
     /// #76: declared parameter TYPES for a contracted method (`self` at index 0), so the discharge
     /// reuses the same f64/uN argument-coercion modelling as the free-fn path. `None` when ambiguous.
     method_param_types: BTreeMap<String, Option<Vec<String>>>,
+    /// D4: each enum variant's DECLARED payload types, keyed `Enum::Variant`. Positional entries for
+    /// a tuple variant, `field=Type` entries for a struct variant. Lets a `match` arm binder inherit
+    /// a payload declared `secret<T>` / `tainted<T>`, which the scrutinee-derived flag cannot see.
+    enum_payload_types: BTreeMap<String, Vec<String>>,
     /// D2: each impl method's DECLARED return type, bare-name keyed. Lets `place_struct_type`
     /// resolve the struct type of `v.make().k` so R1's declared-field-qualifier lookup reaches a
     /// method call result. Empty string = unknown or ambiguous across impls (fail-open).
@@ -1487,6 +1491,19 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
             } => {
                 let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
                 ctx.enum_variants.insert(name.clone(), names);
+                // D4: record each variant's declared PAYLOAD types. `enum_variants` holds only
+                // names, so a payload typed `secret<i64>` was invisible to the match-arm binder.
+                for v in variants {
+                    let tys: Vec<String> = match &v.kind {
+                        crate::frontend::EnumVariantKind::Unit => Vec::new(),
+                        crate::frontend::EnumVariantKind::Tuple(ts) => ts.clone(),
+                        crate::frontend::EnumVariantKind::Struct(fs) => {
+                            fs.iter().map(|(f, t)| format!("{f}={t}")).collect()
+                        }
+                    };
+                    ctx.enum_payload_types
+                        .insert(format!("{}::{}", name, v.name), tys);
+                }
                 if !generics.is_empty() {
                     ctx.type_generics.insert(name.clone(), generics.len());
                 }
@@ -5013,6 +5030,7 @@ pub(crate) struct PlaceTypes<'a> {
     fields: &'a BTreeMap<String, BTreeMap<String, String>>,
     fn_ret: &'a BTreeMap<String, String>,
     method_ret: &'a BTreeMap<String, String>,
+    enum_payloads: &'a BTreeMap<String, Vec<String>>,
 }
 
 impl SemanticContext {
@@ -5021,6 +5039,7 @@ impl SemanticContext {
             fields: &self.struct_fields,
             fn_ret: &self.fn_ret_types,
             method_ret: &self.method_ret_types,
+            enum_payloads: &self.enum_payload_types,
         }
     }
 }
@@ -6011,7 +6030,7 @@ fn analyze_stmts(
                     &ctx.place_types(),
                 )
                 .is_some();
-                seed_effect_pattern(scope, pattern, &taint, secret);
+                seed_effect_pattern(scope, pattern, &taint, secret, &ctx.place_types());
                 // Patch each bound name's span to the real `let`-pattern span. `seed_effect_pattern`
                 // inserts `span: None`, but `merge_taint_over` disambiguates a branch SHADOW from a
                 // reassignment by span identity — so without a real, distinct span a statement-position
@@ -6309,7 +6328,7 @@ fn analyze_stmts(
                 let mut arm_scopes = Vec::new();
                 for arm in arms {
                     let mut arm_scope = scope.clone();
-                    seed_effect_pattern(&mut arm_scope, &arm.pattern, &st, ss);
+                    seed_effect_pattern(&mut arm_scope, &arm.pattern, &st, ss, &ctx.place_types());
                     propagate_pattern_closures(&mut arm_scope, scrutinee, &arm.pattern);
                     // The arm's pattern binds names (`Shape::Box { center, .. }`) that the arm body reads;
                     // seed them so `analyze_stmts`' unknown-variable check does not false-fire on a valid
@@ -6395,7 +6414,7 @@ fn analyze_stmts(
                 let snap_asm = assumptions.clone();
                 let obl_mark = ctx.solver_obligations.len();
                 let mut then_scope = scope.clone();
-                seed_effect_pattern(&mut then_scope, pattern, &st, ss);
+                seed_effect_pattern(&mut then_scope, pattern, &st, ss, &ctx.place_types());
                 propagate_pattern_closures(&mut then_scope, scrutinee, pattern);
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
@@ -8960,7 +8979,7 @@ fn analyze_expr_effect(
             }
             for arm in arms {
                 let mut local = scope.clone();
-                seed_effect_pattern(&mut local, &arm.pattern, &st, ss);
+                seed_effect_pattern(&mut local, &arm.pattern, &st, ss, &ctx.place_types());
                 propagate_pattern_closures(&mut local, scrutinee, &arm.pattern);
                 if let Some(guard) = &arm.guard {
                     // Guard is a secret PC even when the scrutinee is public (`n if n > secret`).
@@ -9011,7 +9030,7 @@ fn analyze_expr_effect(
                 reject_implicit_flow_under_secret_pc(mode, ss, &assigned, scope, ctx);
             }
             let mut local = scope.clone();
-            seed_effect_pattern(&mut local, pattern, &st, ss);
+            seed_effect_pattern(&mut local, pattern, &st, ss, &ctx.place_types());
             propagate_pattern_closures(&mut local, scrutinee, pattern);
             analyze_expr_effect(then, mode, &local, effects, ctx);
             analyze_expr_effect(else_, mode, scope, effects, ctx);
@@ -9556,7 +9575,7 @@ fn walk_block_effects(
                     &ctx.place_types(),
                 )
                 .is_some();
-                seed_effect_pattern(scope, pattern, &t, s);
+                seed_effect_pattern(scope, pattern, &t, s, &ctx.place_types());
             }
             Stmt::Assign {
                 target: Expr::Var(name),
@@ -14229,10 +14248,12 @@ fn reject_secret_pc_public_return(
     let sf = ctx.struct_fields.clone();
     let frt = ctx.fn_ret_types.clone();
     let mrt = ctx.method_ret_types.clone();
+    let ept = ctx.enum_payload_types.clone();
     let struct_fields = PlaceTypes {
         fields: &sf,
         fn_ret: &frt,
         method_ret: &mrt,
+        enum_payloads: &ept,
     };
     let val_is_secret = |val: &Expr, scope: &BTreeMap<String, ScopeBinding>| {
         expr_secret_source_m(
@@ -14410,10 +14431,12 @@ fn reject_secret_scrutinee_returns_in_expr(
     let sf = ctx.struct_fields.clone();
     let frt = ctx.fn_ret_types.clone();
     let mrt = ctx.method_ret_types.clone();
+    let ept = ctx.enum_payload_types.clone();
     let struct_fields = PlaceTypes {
         fields: &sf,
         fn_ret: &frt,
         method_ret: &mrt,
+        enum_payloads: &ept,
     };
     let val_is_secret = |val: &Expr| {
         expr_secret_source_m(
@@ -17759,7 +17782,7 @@ fn walk_block_secret(
                     struct_fields,
                 )
                 .is_some();
-                seed_secret_pattern(local, pattern, secret);
+                seed_secret_pattern(local, pattern, secret, struct_fields);
                 for n in pattern.bound_names() {
                     if let Some(b) = local.get_mut(&n) {
                         b.info.span = Some((span.start, span.end));
@@ -17845,7 +17868,7 @@ fn walk_block_secret(
             Stmt::WhileLet { pattern, body, .. } => {
                 let snap = local.clone();
                 let mut body_c = local.clone();
-                seed_secret_pattern(&mut body_c, pattern, false);
+                seed_secret_pattern(&mut body_c, pattern, false, struct_fields);
                 walk_block_secret(
                     body,
                     &mut body_c,
@@ -17927,7 +17950,7 @@ fn walk_block_secret(
                 let mut arm_cs = Vec::new();
                 for arm in arms {
                     let mut c = local.clone();
-                    seed_secret_pattern(&mut c, &arm.pattern, ss);
+                    seed_secret_pattern(&mut c, &arm.pattern, ss, struct_fields);
                     if let Expr::Block { stmts, .. } = &arm.body {
                         walk_block_secret(
                             stmts,
@@ -17960,7 +17983,7 @@ fn walk_block_secret(
                 )
                 .is_some();
                 let mut then_c = local.clone();
-                seed_secret_pattern(&mut then_c, pattern, ss);
+                seed_secret_pattern(&mut then_c, pattern, ss, struct_fields);
                 if let Expr::Block { stmts, .. } = then.as_ref() {
                     walk_block_secret(
                         stmts,
@@ -19003,7 +19026,7 @@ fn expr_secret_source_m(
             .is_some();
             arms.iter().find_map(|arm| {
                 let mut local = scope.clone();
-                seed_secret_pattern(&mut local, &arm.pattern, scrut);
+                seed_secret_pattern(&mut local, &arm.pattern, scrut, struct_fields);
                 expr_secret_source_m(
                     &arm.body,
                     &local,
@@ -19031,7 +19054,7 @@ fn expr_secret_source_m(
             )
             .is_some();
             let mut local = scope.clone();
-            seed_secret_pattern(&mut local, pattern, scrut);
+            seed_secret_pattern(&mut local, pattern, scrut, struct_fields);
             expr_secret_source_m(
                 then,
                 &local,
@@ -19388,8 +19411,27 @@ fn seed_effect_pattern(
     pattern: &Pattern,
     taint: &Option<String>,
     secret: bool,
+    types: &PlaceTypes<'_>,
 ) {
+    // D4: a binder whose DECLARED enum-payload type carries a qualifier is labelled regardless of
+    // whether the SCRUTINEE was. `enum E { A(secret<i64>) }` + `match e { E::A(x) => print(x) }`
+    // leaked because the arm binders take ONE flag derived from the scrutinee, and `e` itself is not
+    // secret — the secrecy is declared on the PAYLOAD.
+    //
+    // This is the ENFORCING walker's seeding path; the summary walkers use `seed_secret_pattern`.
+    // Both are wired, because fixing one and not its sibling is the walker-parity failure this
+    // codebase keeps reproducing.
+    let mut declared_secret = BTreeSet::new();
+    qualified_pattern_binders(pattern, types, ty::is_secret, &mut declared_secret);
+    let mut declared_taint = BTreeSet::new();
+    qualified_pattern_binders(pattern, types, ty::is_tainted, &mut declared_taint);
     for n in pattern.bound_names() {
+        let secret = secret || declared_secret.contains(&n);
+        let taint = if taint.is_none() && declared_taint.contains(&n) {
+            Some(format!("declared enum payload `{n}`"))
+        } else {
+            taint.clone()
+        };
         scope.insert(
             n.clone(),
             ScopeBinding {
@@ -19964,12 +20006,79 @@ fn seed_one_let_secret(
 /// Seed every name a pattern binds into `scope` with the given SECRECY flag — the confidentiality
 /// dual of `seed_taint_pattern` (single-field: the secret walker's `Var` arm gates only on
 /// `.secret`). Inserting overwrites an outer same-named binding (shadow).
+/// Names a pattern binds whose DECLARED enum-payload type carries an information-flow qualifier.
+///
+/// D4: `enum E { A(secret<i64>) }` then `match e { E::A(x) => print(x) }` leaked. The arm binders are
+/// seeded from ONE flag derived from the scrutinee, and `e` itself is not secret — the secrecy is
+/// declared on the PAYLOAD, which nothing consulted because `enum_variants` stored only variant
+/// names.
+///
+/// Positional sub-patterns map to tuple payload types by index; named sub-patterns map to
+/// `field=Type` entries. Anything that does not line up is skipped, so this can miss a label but
+/// never invent one. Recurses so a qualified payload nested inside another pattern still seeds.
+fn qualified_pattern_binders(
+    pattern: &Pattern,
+    types: &PlaceTypes<'_>,
+    is_qualified: fn(&str) -> bool,
+    out: &mut BTreeSet<String>,
+) {
+    match pattern {
+        Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+            named_bindings,
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            let tys = types.enum_payloads.get(&key);
+            for (i, sub) in bindings.iter().enumerate() {
+                let qualified = tys
+                    .and_then(|t| t.get(i))
+                    .is_some_and(|t| is_qualified(t.split('=').next_back().unwrap_or(t)));
+                if qualified {
+                    out.extend(sub.bound_names());
+                }
+                qualified_pattern_binders(sub, types, is_qualified, out);
+            }
+            for (f, sub) in named_bindings {
+                let qualified = tys.is_some_and(|t| {
+                    t.iter().any(|e| {
+                        e.split_once('=')
+                            .is_some_and(|(n, ty)| n == f && is_qualified(ty))
+                    })
+                });
+                if qualified {
+                    out.extend(sub.bound_names());
+                }
+                qualified_pattern_binders(sub, types, is_qualified, out);
+            }
+        }
+        Pattern::Or(pats) | Pattern::List(pats) => {
+            for p in pats {
+                qualified_pattern_binders(p, types, is_qualified, out);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, p) in fields {
+                qualified_pattern_binders(p, types, is_qualified, out);
+            }
+        }
+        Pattern::Wildcard | Pattern::Binding(_) | Pattern::Literal(_) | Pattern::StrLiteral(_) => {}
+    }
+}
+
 fn seed_secret_pattern(
     scope: &mut BTreeMap<String, ScopeBinding>,
     pattern: &Pattern,
     secret: bool,
+    types: &PlaceTypes<'_>,
 ) {
+    // D4: a binder whose DECLARED enum-payload type is `secret<T>` is secret regardless of whether
+    // the SCRUTINEE was — the qualifier is on the payload, not the enum value.
+    let mut declared = BTreeSet::new();
+    qualified_pattern_binders(pattern, types, ty::is_secret, &mut declared);
     for n in pattern.bound_names() {
+        let secret = secret || declared.contains(&n);
         scope.insert(
             n.clone(),
             ScopeBinding {
