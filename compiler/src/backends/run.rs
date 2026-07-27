@@ -3297,7 +3297,18 @@ use std::os::unix::process::ExitStatusExt;
 
 fn anubis_to_bytes(v: &AnubisValue) -> Vec<u8> {
     match v {
-        AnubisValue::List(items) => items.iter().map(|x| (x.as_i64() as u8)).collect(),
+        // RECURSE, matching the Enum/Struct/Map arms below. Mapping `as_i64() as u8` over the
+        // elements silently coerced a NESTED list to its LENGTH, because `as_i64()` on a list
+        // returns its element count: `flat([[1,2],[3]])` produced `[2, 1]` — the two inner
+        // lengths — where payload assembly needs `[1, 2, 3]`.
+        //
+        // `flat` is how PoC payloads are built, so this is worse than a wrong answer: an exploit
+        // "proves" something about bytes nobody assembled, and a proof-carrying language emits a
+        // proof about the wrong artifact.
+        //
+        // Flat lists are unaffected — an `Int` element serialises to `vec![n as u8]` either way —
+        // so this fixes nesting without changing the common case.
+        AnubisValue::List(items) => items.iter().flat_map(anubis_to_bytes).collect(),
         AnubisValue::Str(s) => s.as_bytes().to_vec(),
         AnubisValue::Int(n) => vec![*n as u8],
         AnubisValue::Float(n) => vec![(*n as i64) as u8],

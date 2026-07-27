@@ -1,0 +1,19 @@
+// EXPECT: PASS
+// `flat` assembles a PoC payload from nested parts, so it must flatten recursively. It previously
+// mapped `as_i64() as u8` over the elements, and `as_i64()` on a list returns its LENGTH — so
+// `flat([[1,2],[3]])` produced `[2, 1]`, the two inner lengths, instead of `[1, 2, 3]`.
+//
+// This locks the corrected behaviour. A regression here does not merely return a wrong number: it
+// builds an exploit payload out of bytes nobody assembled, and any proof carried about that payload
+// describes the wrong artifact.
+fn main() {
+    let deep = flat([[1, 2], [3]]);
+    assert(len(deep) == 3);
+    let flat_in = flat([1, 2, 3]);
+    assert(len(flat_in) == 3);
+    let nested = flat([[[1, 2]], [3]]);
+    assert(len(nested) == 3);
+    let empty = flat([]);
+    assert(len(empty) == 0);
+    print("ok");
+}
