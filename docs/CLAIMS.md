@@ -63,13 +63,13 @@ Absence of a red row is **not** evidence of absence.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **307/307 PASS**. Live disk inventory **307** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **308/308 PASS**. Live disk inventory **308** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 878 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 879 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
@@ -187,7 +187,7 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
     a function-valued formal merely because the receiver expression mentioned a formal, which
     accounted for the three method-shaped flips.
 
-    Verdict-diff on the pinned binary: security 307/307; language 244/244. Zero accept→reject flips.
+    Verdict-diff on the pinned binary: security 308/308; language 244/244. Zero accept→reject flips.
 
 ### The singleton contract policy — documented residual (2026-07-27)
 
@@ -214,91 +214,24 @@ That distinction is the honest reading of item 10's closure.
 correctly terminates and defers; the runtime does not. A program `check` accepts whose execution
 never terminates is a check/run divergence of a different kind, and is being characterized.
 
-11. **A NESTED call expression as an argument bypasses `requires` discharge — OPEN (2026-07-27).**
+11. **Nested-call argument `requires` discharge — CLOSED 2026-07-27.**
+    `need(neg())` where `neg` declares `ensures(result < 0)` and `need` declares `requires(y > 0)`
+    accepted and printed -5. Closed: the inline call-argument form now routes through the same
+    reasoning that already handled the `let`-bound form.
 
-    ```anubis
-    fn neg() -> i64 ensures(result < 0) { return -5; }
-    fn need(y: i64) -> i64 requires(y > 0) { return y; }
-    fn main() { print(need(neg())); }     // check exit 0; run PRINTS -5
-    ```
+    The distinction that makes it safe, and the same one that governed item 10:
 
-    My first framing of this — "the ensures→requires direction is unimplemented" — was WRONG, and the
-    adversary's matrix corrected it. Composition DOES work; it is the nested-call ARGUMENT POSITION
-    that is not reasoned about:
-
-    | form | verdict |
+    | argument | verdict |
     |---|---|
-    | `need(-5)` literal | REJECT |
-    | `let x = -5; need(x)` | REJECT — literal provenance tracked through `let` |
-    | `let x = neg(); need(x)` with `ensures(result < 0)` | **REJECT — composition FIRES** |
-    | `need(neg())` nested call | **ACCEPT, run prints -5** |
-    | `need(opaque())`, no `ensures` | ACCEPT, run prints -5 |
-    | `let x = opaque(); need(x)` | ACCEPT, run prints -5 |
+    | `neg()` with `ensures(result < 0)` — CONTRADICTS the precondition | REJECT |
+    | `opaque()` with NO `ensures` — unknown | **ACCEPT** |
+    | `pos()` with `ensures(result > 0)` — satisfies | ACCEPT |
 
-    So binding the call result to a `let` first is enough to make the checker reason about it, and
-    the identical expression written inline is not. That is a much smaller and more precise defect
-    than "composition is missing", and it points at argument-expression handling in
-    `discharge_call_requires` rather than at the contract summary.
+    An unknown value is NOT assumed to violate. Only a declared postcondition that contradicts the
+    precondition rejects. Getting that backwards is what flipped nine fixtures in the first spine
+    attempt.
 
-    NOT a carrier defect — the direct call leaks identically, so fn-value carriers are incidental.
-
-    Control and guard are in the corpus (`contract_requires_literal_rejects`,
-    `contract_ensures_satisfies_requires_accepts`); the RED fixture is held out until fixed.
-
-### Offensive research half — bounded residual (2026-07-27)
-
-A green `evidence-verify` certifies that the receipt chain's own hashes are internally
-consistent (sequential ordering, payload-hash, receipt-hash recomputation, and — when a
-`mac_key.hex` is present — symmetric HMAC under
-`SHA256("anubis-receipt-mac-v1|" || key || "|" || receipt_hash)`). It does NOT certify:
-
-1. **Crash isolation is not air-gap.** VZ guest markers (`ANUBIS_VZ_GUEST=1`,
-   `ANUBIS_OFFENSIVE_GATE_IN_GUEST=1`, env `ANUBIS_ISOLATION` containing `tart`/`vz`/
-   `virtualization`, or the sentinel files `/etc/anubis-vz-guest` /
-   `$HOME/.anubis-vz-guest`) are a **safety** mechanism, not a security boundary. Any
-   user-level process can set `ANUBIS_VZ_GUEST=1`. The operator is the trust root
-   (`isolation.rs:5-8`). Defense-in-depth: when `ANUBIS_VZ_ENFORCE_RUN_CAP=1`, both the
-   marker AND a valid HMAC run-capability must be present — but the HMAC key is
-   process-local (not hardware-bound), so the boundary is "accidental host execution",
-   not "malicious host escape."
-
-2. **A hash-chained receipt is not third-party attestation.** The receipt chain uses
-   symmetric HMAC (`LAB_REAL_HMAC`), not Ed25519 PKI. It proves tamper-evidence to the
-   holder of the key; it does not prove anything to a party who did not hold the key at
-   chain-creation time. `evidence-verify` labels this honestly as `LAB_REAL_HMAC`, not
-   `LAB_REAL`. A receipt chain with HMAC green means "the chain has not been modified
-   since the key-holder sealed it." It does NOT mean "the engagement was authorized by
-   an external auditor."
-
-3. **`evidence-verify` green = the chain is intact, not that the engagement was
-   authorized.** The five check families (PCA re-derive, engagement `content_hash`,
-   receipt-chain hash+HMAC, run-capability schema+MAC, confinement re-derive) verify
-   internal artifact consistency. They do not verify: who authorized the engagement,
-   what the scope was, whether the operator identity is authentic, or whether the guest
-   was network-isolated during execution.
-
-4. **Host-forgeable markers: VZ isolation is SAFETY, not SECURITY.** The isolation gate
-   (`isolation.rs`) and the run-capability binding (`run_capability.rs`) together form
-   a two-factor safety check. Neither factor is hardware-rooted: the marker is an env
-   var, the capability key is process-local HMAC. An adversary with user-level host
-   access can set both. The design intent is to prevent the operator's own session from
-   accidentally running crash/exploit code on the host — not to prevent a motivated
-   attacker from bypassing the gate.
-
-5. **Guest scrape captures what it captures.** The `vz exploit`/`fuzz` path collects:
-   `uname -a`, hostname, selected log files, and the receipt chain. It does NOT capture:
-   full process listings, network traffic, screenshots, memory dumps, file-integrity
-   baselines, or guest-side authorization logs. A green scrape means "the collected
-   artifacts are internally consistent"; it does not mean "every guest-side event was
-   observed."
-
-**Counts on the receipt surface**: `vz exploit` and `vz fuzz` as run from `tart` guests
-today add **0 receipts** to the chain (AOP-48 confirmed: the `evidence-verify` path is
-green but the receipt-producing codepath in `vz.rs` is not wired to the
-`receipts::append` call). This means a green `evidence-verify` on a post-`vz exploit`
-bundle is checking a **pre-existing** chain, not one extended by the exploit run. The
-receipt chain proves what `anubis check` / `anubis build --evidence` sealed; it does
-not yet cover the offensive execution phase.
+    Verdict-diff on the pinned binary: security 308/308; language 244/244. Zero accept→reject flips.
 
 12. **The bare-builtin carrier defeats the LETHAL TRIFECTA detector — OPEN (2026-07-27).**
 
@@ -403,11 +336,11 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **307/307** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **308/308** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
-| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 878 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
+| Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 879 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
-| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 307/307** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 308/308** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
 | Symbolic-index secret-capturing closure application | **CLAIMED 2026-07-25** | `arr[idx](…)` with non-literal `idx` fail-closed when container holds secret/taint-capturing element (j1 twin of `let g = arr[i]`); unit `symbolic_index_secret_capturing_list_application_fails_closed`; clean symbolic still accepts | Residual: full PC-join; untyped formals still interproc |
 | Nested container closure application (`outer[0][0]`, `b.fs[i]`, bind + mid-bind) | **CLAIMED 2026-07-25** | Nested Index/FieldAccess CallExpr + **bind** (`let g = outer[i][0]; g(0)`) + **intermediate mid-bind** (`let mid = outer[0]; mid[0](0)` re-keys `field_closures`; symbolic mid union-projects first segments fail-closed); unit `nested_container_closure_application_fails_closed` (apply + bind + mid lit/sym/clean); clean nested still accepts | Residual: full PC-join not claimed |
 | if-expr-built containers seed `field_closures` (incl. nested `Stmt::If` + let-inner) | **CLAIMED 2026-07-25** | `collect_container_closures` walks `Expr::If`/`Match`/`Block`; nested bare `if` as `Stmt::If`; unit `nested_container_closure_application_fails_closed` | Residual: full PC-join not claimed |

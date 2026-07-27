@@ -5059,9 +5059,10 @@ fn merge_fn_alias_over(
 /// this because branches lacked their guard; the path-condition machinery made the gate obsolete.) KNOWN
 /// CONSERVATIVE BOUNDARY: a modeled arg under a NON-modelable guard (`if is_pos(a) { g(a) }`) pushes no
 /// path condition, so the discharge fires unguarded and REJECTS though the opaque guard may hold at
-/// runtime — sound (fail-closed), incomplete. RESIDUAL: this fires only on a DIRECT `Expr::Call` at a
-/// statement position; a call NESTED in an argument / binary operand / `return`-arg (`h(g(x))`,
-/// `print(g(x))`, `return g(x)`) or inside a `match`-arm / `if`-expression is NOT discharged (fail-open).
+/// runtime — sound (fail-closed), incomplete. Nested calls themselves are reached by
+/// `discharge_calls_in_expr`. A direct integer call used as an argument additionally composes declared
+/// unconditional `ensures` into this discharge; opaque/no-ensures calls and other nested result shapes
+/// remain unmodelled and defer rather than being presumed to violate a contract.
 /// Flatten a top-level `&&` conjunction into its leaf conjuncts (`A && (B && C)` → `[A, B, C]`), so each
 /// can discharge in its own lane. A non-`&&` expr yields itself. Used by discharge_call_requires so a
 /// MIXED-lane conjunction (`s == "ok" && len(s) >= 2`) is not left unmodelable-as-a-whole (fail-open).
@@ -5143,6 +5144,109 @@ fn discharge_method_requires(
     ok
 }
 
+/// Specialize the integer postconditions of one direct call to a concrete result expression.
+///
+/// This is the shared composition path for both `let x = callee(args)` and a direct call used as an
+/// argument. It deliberately returns no facts unless the callee declares at least one `ensures`, its
+/// preconditions were checkable, its arity matches, and its declared return type is integer. The uN
+/// parameter coercion is the same runtime-faithful substitution the original let-bound path used.
+fn specialize_int_call_ensures(
+    ctx: &SemanticContext,
+    callee: &str,
+    args: &[Expr],
+    result: Expr,
+    requires_checkable: bool,
+) -> Vec<Expr> {
+    if !requires_checkable {
+        return Vec::new();
+    }
+    let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee) else {
+        return Vec::new();
+    };
+    if pnames.len() != args.len()
+        || cens.is_empty()
+        || !ctx
+            .fn_ret_types
+            .get(callee)
+            .is_some_and(|ret| is_integer_ty(ret))
+    {
+        return Vec::new();
+    }
+    let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
+    let mut substitutions: BTreeMap<String, Expr> = pnames
+        .iter()
+        .cloned()
+        .zip(args.iter().enumerate().map(|(index, arg)| {
+            match ptypes
+                .get(index)
+                .and_then(|param_ty| ty::unsigned_mask_width(param_ty))
+            {
+                Some(width) => coerce_uint_arg(arg, width, &ctx.solver_int_vars),
+                None => arg.clone(),
+            }
+        }))
+        .collect();
+    substitutions.insert("result".to_string(), result);
+    cens.iter()
+        .map(|ensures| substitute_vars(ensures, &substitutions))
+        .collect()
+}
+
+/// Process-unique solver symbol for a direct call result used inline as another call's argument.
+/// The decimal prefix cannot be written as an Anubis identifier; the textual suffix keeps it
+/// distinct from the match-binding fresh-symbol namespace.
+static INLINE_CONTRACT_ARG_CTR: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Model `callee(args)` as a temporary integer result only when its declaration supplies enough
+/// information for the existing let-bound composition path: an integer return, non-empty `ensures`,
+/// and no `requires`. The no-requires restriction is the deliberately small first slice: assuming a
+/// postcondition before its own preconditions have been discharged would be unsound. A call with no
+/// postcondition remains the original opaque argument and is therefore deferred, never presumed bad.
+fn compose_inline_int_call_argument(
+    ctx: &mut SemanticContext,
+    arg: &Expr,
+) -> Option<(Expr, Vec<String>, String)> {
+    let Expr::Call {
+        callee,
+        args: inner_args,
+    } = arg
+    else {
+        return None;
+    };
+    let (_pnames, requires, ensures) = ctx.fn_contracts.get(callee)?;
+    if !requires.is_empty() || ensures.is_empty() {
+        return None;
+    }
+
+    let serial = INLINE_CONTRACT_ARG_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let fresh = format!("{serial}contractarg");
+    let concrete_ensures = specialize_int_call_ensures(
+        ctx,
+        callee,
+        inner_args,
+        Expr::Var(fresh.clone()),
+        true,
+    );
+    if concrete_ensures.is_empty() {
+        return None;
+    }
+
+    ctx.solver_int_vars.insert(fresh.clone());
+    ctx.symbolic_widths.insert(fresh.clone(), 64);
+    let facts: Vec<String> = concrete_ensures
+        .into_iter()
+        .filter(|ensures| is_bool_modelable(ensures, &ctx.solver_int_vars))
+        .map(|ensures| expr_to_smt(&ensures, &ctx.symbolic_widths))
+        .collect();
+    if facts.is_empty() {
+        ctx.solver_int_vars.remove(&fresh);
+        ctx.symbolic_widths.remove(&fresh);
+        return None;
+    }
+    Some((Expr::Var(fresh.clone()), facts, fresh))
+}
+
 fn discharge_call_requires(
     ctx: &mut SemanticContext,
     assumptions: &[String],
@@ -5155,6 +5259,24 @@ fn discharge_call_requires(
     if pnames.len() != args.len() {
         return true;
     }
+    // A direct call used as an argument can reuse the same postcondition facts as
+    // `let tmp = inner(); outer(tmp)`: replace only a declared, unconditional integer result with a
+    // fresh solver variable and add its specialized `ensures` to this outer discharge's assumptions.
+    // Opaque calls and calls without `ensures` remain unchanged and therefore stay unmodelled/accepted.
+    let mut composed_args = Vec::with_capacity(args.len());
+    let mut composed_assumptions = assumptions.to_vec();
+    let mut inline_fresh = Vec::new();
+    for arg in args {
+        if let Some((replacement, facts, fresh)) = compose_inline_int_call_argument(ctx, arg) {
+            composed_args.push(replacement);
+            composed_assumptions.extend(facts);
+            inline_fresh.push(fresh);
+        } else {
+            composed_args.push(arg.clone());
+        }
+    }
+    let args = composed_args.as_slice();
+    let assumptions = composed_assumptions.as_slice();
     // #40 — CALL-SITE f64-PARAM COERCION ROUNDING. `anubis_coerce_float_param` (run.rs) coerces an INTEGER
     // argument into an f64 param via `n as f64`, which ROUNDS (round-to-even) when |n| > 2^53. Substituting
     // the RAW integer arg and discharging the callee's `requires` in the EXACT integer lane certified
@@ -5354,6 +5476,10 @@ fn discharge_call_requires(
     // (#40); they exist only to force the precondition obligation to fail for this discharge.
     for hv in havoc_names {
         ctx.solver_float_vars.remove(&hv);
+    }
+    for fresh in inline_fresh {
+        ctx.solver_int_vars.remove(&fresh);
+        ctx.symbolic_widths.remove(&fresh);
     }
     all_requires_checkable
 }
@@ -7152,54 +7278,22 @@ fn analyze_stmts(
                     for a in args {
                         discharge_calls_in_expr(ctx, assumptions, scope, a);
                     }
-                    if let Some((pnames, _creq, cens)) = ctx.fn_contracts.get(callee).cloned() {
-                        if pnames.len() == args.len() {
-                            // A1 (task #50): coerce a u32-param argument to `(arg & (2^w-1))` before
-                            // substituting it into the callee's `ensures`, mirroring the runtime param
-                            // mask (`anubis_coerce_uint_param`). Closes the confirmed false accept where
-                            // `let r = g(3*x)` with `g(y:u32) ensures(result==y+1)` composed `r==3*x+1`
-                            // while the runtime returns `(3*x mod 2^32)+1`. An in-range arg (a u32 param
-                            // pinned to [0,2^32)) simplifies `(arg & mask)==arg`, so valid compositions
-                            // still prove. Parity with the requires coercion in discharge_call_requires.
-                            let ptypes = ctx.fn_params.get(callee).cloned().unwrap_or_default();
-                            let mut sub: BTreeMap<String, Expr> = pnames
-                                .iter()
-                                .cloned()
-                                .zip(args.iter().enumerate().map(|(i, a)| {
-                                    match ptypes.get(i).and_then(|t| ty::unsigned_mask_width(t)) {
-                                        Some(w) => coerce_uint_arg(a, w, &ctx.solver_int_vars),
-                                        None => a.clone(),
-                                    }
-                                }))
-                                .collect();
-                            // ASSUME the postcondition ONLY when every precondition was verifiable:
-                            // the ensures holds only under the precondition, so assuming it when a
-                            // `requires` was SKIPPED (a dynamic/unmodelable argument) would be an
-                            // unsound false proof (the caller could be violating the precondition).
-                            // Model this binding as a solver integer ONLY if the callee DECLARES an
-                            // integer return type. Return types are inert at runtime, so a `-> u32`
-                            // body is separately runtime-guarded (anubis_require_int_ret); but a
-                            // `-> f64` callee must NOT seed a float into the integer domain here (its
-                            // `ensures` may not even mention `result`, leaving the binding unconstrained
-                            // yet modeled as i64 — a certified-false cast/bitwise identity at runtime).
-                            let callee_returns_int = ctx
-                                .fn_ret_types
-                                .get(callee)
-                                .map(|t| is_integer_ty(t))
-                                .unwrap_or(false);
-                            if !cens.is_empty() && all_requires_checkable && callee_returns_int {
-                                // The callee guarantees an integer postcondition about its result,
-                                // so this binding is solver-modelable.
-                                ctx.solver_int_vars.insert(name.clone());
-                                sub.insert("result".to_string(), Expr::Var(name.clone()));
-                                for ens in &cens {
-                                    let concrete = substitute_vars(ens, &sub);
-                                    if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
-                                        let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
-                                        ctx.constraints.push(format!("(assert {})", smt));
-                                        assumptions.push(smt);
-                                    }
-                                }
+                    let concrete_ensures = specialize_int_call_ensures(
+                        ctx,
+                        callee,
+                        args,
+                        Expr::Var(name.clone()),
+                        all_requires_checkable,
+                    );
+                    if !concrete_ensures.is_empty() {
+                        // The callee guarantees an integer postcondition about its result, so this
+                        // binding is solver-modelable. Inline-call composition uses this exact helper.
+                        ctx.solver_int_vars.insert(name.clone());
+                        for concrete in concrete_ensures {
+                            if is_bool_modelable(&concrete, &ctx.solver_int_vars) {
+                                let smt = expr_to_smt(&concrete, &ctx.symbolic_widths);
+                                ctx.constraints.push(format!("(assert {})", smt));
+                                assumptions.push(smt);
                             }
                         }
                     }
@@ -24786,5 +24880,56 @@ mod fn_identity_spine_tests {
         let applications = collect_unconditional_param_contract_applications(&body, &params);
         assert_eq!(applications.len(), 1);
         assert_eq!(applications[0].param_indices, BTreeSet::from([0]));
+    }
+}
+
+#[cfg(test)]
+mod inline_contract_composition_tests {
+    use super::*;
+
+    fn less_than_zero() -> Expr {
+        Expr::Binary {
+            op: "<".into(),
+            lhs: Box::new(Expr::Var("result".into())),
+            rhs: Box::new(Expr::Literal("0".into())),
+        }
+    }
+
+    #[test]
+    fn inline_integer_call_reuses_declared_ensures() {
+        let mut ctx = SemanticContext::default();
+        ctx.fn_contracts.insert(
+            "neg".into(),
+            (Vec::new(), Vec::new(), vec![less_than_zero()]),
+        );
+        ctx.fn_params.insert("neg".into(), Vec::new());
+        ctx.fn_ret_types.insert("neg".into(), "i64".into());
+
+        let call = Expr::Call {
+            callee: "neg".into(),
+            args: Vec::new(),
+        };
+        let (replacement, facts, fresh) =
+            compose_inline_int_call_argument(&mut ctx, &call).expect("declared ensures");
+        assert!(matches!(replacement, Expr::Var(name) if name == fresh));
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0].contains("bvslt"));
+        assert!(ctx.solver_int_vars.contains(&fresh));
+    }
+
+    #[test]
+    fn inline_call_without_ensures_remains_opaque() {
+        let mut ctx = SemanticContext::default();
+        ctx.fn_contracts
+            .insert("opaque".into(), (Vec::new(), Vec::new(), Vec::new()));
+        ctx.fn_params.insert("opaque".into(), Vec::new());
+        ctx.fn_ret_types.insert("opaque".into(), "i64".into());
+
+        let call = Expr::Call {
+            callee: "opaque".into(),
+            args: Vec::new(),
+        };
+        assert!(compose_inline_int_call_argument(&mut ctx, &call).is_none());
+        assert!(ctx.solver_int_vars.is_empty());
     }
 }

@@ -1,0 +1,22 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_
+// A callee's `ensures` is not propagated to the caller's `requires` discharge, so two contracts that
+// are PROVABLY CONTRADICTORY are accepted:
+//
+//     neg() ensures(result < 0)      need(y) requires(y > 0)      need(neg())
+//
+// Both facts are declared and present in the same program. This is not "the solver could not prove
+// it" — it is the solver holding a proof of violation and never composing the two halves.
+//
+// Discriminator — the literal form IS caught, so precondition checking works and only COMPOSITION is
+// missing:
+//     need(-5)          REJECT
+//     need(neg())       ACCEPT, run prints -5     <- this fixture
+//     let v = neg(); need(v)   ACCEPT, run prints -5
+//
+// NOT a carrier defect: the DIRECT call leaks identically, so the fn-value carriers are incidental
+// here. `LANGUAGE.md:239-244` states that contracts compose and the caller must satisfy the callee's
+// obligations; the ensures->requires direction is unimplemented.
+fn neg() -> i64 ensures(result < 0) { return -5; }
+fn need(y: i64) -> i64 requires(y > 0) { return y; }
+fn main() { print(need(neg())); }
