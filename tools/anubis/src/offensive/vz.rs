@@ -152,11 +152,20 @@ fn workspace_root() -> Option<String> {
     None
 }
 
+/// Single source of truth for whether the legacy vmctl execution path is enabled.
+/// The vmctl backend is fail-closed (non-authoritative for isolation evidence) unless this env
+/// is explicitly set. `run_vmctl` gates on it and `vz_doctor` derives capability truth from it,
+/// so the doctor cannot claim a vmctl-backed command healthy while the command itself is disabled.
+/// Keep this the ONLY definition of the predicate.
+fn legacy_vmctl_enabled() -> bool {
+    std::env::var("ANUBIS_ALLOW_LEGACY_VMCTL").ok().as_deref() == Some("1")
+}
+
 fn run_vmctl(args: &[&str]) -> Result<std::process::Output> {
     // Canonical isolation is Tart via `anubis vz` (tools/anubis/src/vz.rs).
     // Legacy vmctl execution is fail-closed unless explicitly re-enabled for
     // migration diagnostics only — never for isolation evidence.
-    if std::env::var("ANUBIS_ALLOW_LEGACY_VMCTL").ok().as_deref() != Some("1") {
+    if !legacy_vmctl_enabled() {
         return Err(anyhow!(
             "ANUBIS_VZ_LEGACY_VMCTL_DISABLED: offensive vmctl path is non-authoritative and disabled. \
              Use `anubis vz status|exploit|fuzz|exec|sync` (tart / Apple Virtualization.framework). \
@@ -583,6 +592,16 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
 
     // Authoritative readiness = tart + golden + SSH key (not vmctl).
     let offensive_ready = tart_available && tart_has_golden && ssh_key.is_some();
+    // Route-truth for the vmctl-backed surfaces. agent-test / c2-cycle / stress / unit-tests all
+    // funnel through `vz_exec` -> `run_vmctl`, fail-closed unless ANUBIS_ALLOW_LEGACY_VMCTL=1.
+    // Deriving them from `offensive_ready` (the tart substrate) is what let the doctor report
+    // healthy for commands that exit 1 with ANUBIS_VZ_LEGACY_VMCTL_DISABLED.
+    let vmctl_enabled = legacy_vmctl_enabled();
+    // stress additionally needs its expansion script staged in the exports tree.
+    let stress_script_present = exports_path
+        .as_ref()
+        .map(|p| p.join("run_stress_expanded.sh").exists())
+        .unwrap_or(false);
     Ok(serde_json::json!({
         "canonical_backend": "tart",
         "vz_available": tart_available,
@@ -608,16 +627,19 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         "capabilities": {
             "exploit_sandbox": offensive_ready,
             "fuzz_sandbox": offensive_ready,
-            "agent_test": offensive_ready,
-            "c2_cycle": offensive_ready,
-            "stress_battery": offensive_ready,
-            "unit_tests": offensive_ready,
+            "agent_test": vmctl_enabled,
+            "c2_cycle": vmctl_enabled,
+            "stress_battery": vmctl_enabled && stress_script_present,
+            "unit_tests": vmctl_enabled,
             "requires": "tart + anubis-xcode + ~/.ssh/tart_anubis",
         },
         "policy": {
             "network_default": "off",
             "crash_isolated": true,
-            "evidence_collected": true,
+            // Evidence is collected only on the vmctl path (vz_exploit_run copies results + seals a
+            // receipt). The canonical tart path (vz.rs) collects nothing today, so this is false by
+            // default and true only when the evidence-collecting vmctl path is active.
+            "evidence_collected": vmctl_enabled,
             "host_never_executes_payloads": true,
             "canonical_cli": "anubis vz status|exploit|fuzz|exec|sync",
         },
