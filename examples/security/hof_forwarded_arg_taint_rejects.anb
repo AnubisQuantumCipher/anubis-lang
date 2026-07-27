@@ -1,0 +1,20 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_TAINTED_SINK_WITHOUT_DECLASSIFY
+// Lead agent 2026-07-27. COMMAND INJECTION through a higher-order function, and a general false
+// accept — not tied to any declared qualifier. Surfaced while chasing a narrower enum-payload probe
+// from GROK-SEKHMET round 9; the control showed it leaks with an ordinary `input()` too.
+//
+// `apply(f, v) { f(v); }` applies its closure parameter to its OTHER parameter. The call-site
+// descent bound the closure's params as FRESH UNLABELLED bindings, discarding the label of the
+// argument the callee actually forwards — so untrusted input reached `shell` with nothing charged,
+// while the direct `g(input())` form was correctly rejected.
+//
+// The fix binds those params to a conservative JOIN over the call's other arguments. Tracking which
+// argument the callee forwards would need a param-to-param application summary; over-approximating
+// can only over-charge a closure whose sibling argument is labelled, which is the fail-closed
+// direction this file uses for every summary.
+fn apply(f, v) { f(v); }
+fn main() uses(shell) {
+    let k = input();
+    apply(|v| { shell(v); }, k);
+}

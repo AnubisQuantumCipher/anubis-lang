@@ -9049,6 +9049,46 @@ fn analyze_expr_effect(
                         _ => None,
                     };
                     if let Some(Expr::Lambda { params, body }) = resolved {
+                        // The callee applies this closure to ITS OWN parameters, which are bound to
+                        // the caller's OTHER arguments — so the closure's params must carry those
+                        // arguments' labels. Binding them unlabelled (as this did) meant
+                        // `apply(f, v) { f(v); }` called as `apply(|v| shell(v), input())` charged
+                        // NOTHING: command injection through a higher-order function, while the
+                        // direct `g(input())` was correctly rejected. Same hole in the secret lane.
+                        // GROK-SEKHMET round 9 surfaced this via an enum payload; it is general.
+                        //
+                        // Conservative JOIN over the other arguments rather than tracking which one
+                        // the callee forwards: that would need a param→param application summary,
+                        // and over-approximating here can only over-charge a closure whose sibling
+                        // argument is labelled — the fail-closed direction, matching this file's
+                        // convention for summaries.
+                        let mut arg_taint: Option<String> = None;
+                        let mut arg_secret = false;
+                        for (j, a) in args.iter().enumerate() {
+                            if j == i {
+                                continue;
+                            }
+                            if arg_taint.is_none() {
+                                arg_taint = expr_taint_source_m(
+                                    a,
+                                    scope,
+                                    &ctx.tainting_fns,
+                                    &ctx.param_return_taint,
+                                    &ctx.method_tainting_fns,
+                                    &ctx.place_types(),
+                                );
+                            }
+                            arg_secret = arg_secret
+                                || expr_secret_source_m(
+                                    a,
+                                    scope,
+                                    &ctx.secret_fns,
+                                    &ctx.param_return_taint,
+                                    &ctx.method_secret_fns,
+                                    &ctx.place_types(),
+                                )
+                                .is_some();
+                        }
                         let mut local = scope.clone();
                         for pp in &params {
                             local.insert(
@@ -9058,8 +9098,8 @@ fn analyze_expr_effect(
                                         name: pp.clone(),
                                         ty: None,
                                         mode: String::new(),
-                                        tainted: false,
-                                        taint_source: None,
+                                        tainted: arg_taint.is_some(),
+                                        taint_source: arg_taint.clone(),
                                         declassified: false,
                                         span: None,
                                     },
@@ -9067,7 +9107,7 @@ fn analyze_expr_effect(
                                     closure_lambda: None,
                                     field_closures: BTreeMap::new(),
                                     fn_alias: None,
-                                    secret: false,
+                                    secret: arg_secret,
                                 },
                             );
                         }
