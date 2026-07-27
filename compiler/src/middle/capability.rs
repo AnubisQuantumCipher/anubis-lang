@@ -117,6 +117,12 @@ struct Lin<'a> {
     /// Locals bound to lambdas that captured ≥1 free Live capability. Linear: first apply
     /// or MOVE consumes; second apply → REUSE. Closes deep HO rebind of use-once tokens.
     linear_closures: BTreeMap<String, CapState>,
+    /// Locals bound to export-sink functions by value (`let f = print`, `let g = f`,
+    /// `let h = if c { print } else { send }`). Fail-closed join: if *either* branch
+    /// resolves to a sink, the alias is a sink.
+    sink_aliases: BTreeMap<String, String>,
+    /// Containers whose elements include ≥1 export-sink function (fail-closed).
+    container_sinks: BTreeMap<String, String>,
 }
 
 impl Lin<'_> {
@@ -183,6 +189,9 @@ pub(crate) struct CapProgramSummary {
     /// causal-spend. Built for functions called from a *different* function; roots self-authorize.
     /// Local string-literal acquire of kind K removes K from that function's pays set.
     caller_pays_effects: BTreeMap<String, BTreeSet<String>>,
+    /// User functions whose return value is an export-sink function (directly or through
+    /// local alias). Enables interproc sink-alias resolution: `let f = get_sink(); f(tok)`.
+    returns_export_sink: BTreeMap<String, String>,
 }
 
 type CapFnRef<'a> = (&'a str, &'a [(String, String)], &'a [Stmt], (usize, usize));
@@ -245,6 +254,8 @@ pub(crate) fn check_linearity(
         params: param_names,
         fn_name: fn_name.to_string(),
         linear_closures: BTreeMap::new(),
+        sink_aliases: BTreeMap::new(),
+        container_sinks: BTreeMap::new(),
     };
     let mut caps: CapMap = BTreeMap::new();
     walk_stmts(body, &mut caps, &mut lin);
@@ -348,6 +359,25 @@ pub(crate) fn build_cap_program_summary_from_fns(
             }
         }
         if summary.returns_nonexportable.len() == before {
+            break;
+        }
+    }
+    // Fixpoint: returns_export_sink may depend on callees.
+    loop {
+        let before = summary.returns_export_sink.len();
+        for (name, _params, body, _) in fns {
+            if summary.returns_export_sink.contains_key(*name) {
+                continue;
+            }
+            if let Some(sink) =
+                body_returns_export_sink(body, all_fns, &summary.returns_export_sink)
+            {
+                summary
+                    .returns_export_sink
+                    .insert((*name).to_string(), sink);
+            }
+        }
+        if summary.returns_export_sink.len() == before {
             break;
         }
     }
@@ -708,6 +738,106 @@ fn body_returns_nonexportable(
         false
     }
     walk(body, &mut ne, all_fns, returns_ne)
+}
+
+/// Resolve an expression to an export-sink name through local alias, interproc return,
+/// if/match join (fail-closed: either branch → sink), and block tail.
+fn resolve_sink_from_expr(
+    expr: &Expr,
+    local_aliases: &BTreeMap<String, String>,
+    all_fns: &BTreeSet<String>,
+    returns_sink: &BTreeMap<String, String>,
+) -> Option<String> {
+    match expr {
+        Expr::Var(v) => {
+            if is_export_sink(v) {
+                Some(v.clone())
+            } else {
+                local_aliases.get(v).cloned()
+            }
+        }
+        Expr::Call { callee, .. } if all_fns.contains(callee) => {
+            returns_sink.get(callee).cloned()
+        }
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            resolve_sink_from_expr(then, local_aliases, all_fns, returns_sink)
+                .or_else(|| resolve_sink_from_expr(else_, local_aliases, all_fns, returns_sink))
+        }
+        Expr::Match { arms, .. } => arms
+            .iter()
+            .find_map(|arm| resolve_sink_from_expr(&arm.body, local_aliases, all_fns, returns_sink)),
+        Expr::Block {
+            tail: Some(tail), ..
+        } => resolve_sink_from_expr(tail, local_aliases, all_fns, returns_sink),
+        _ => None,
+    }
+}
+
+/// Does this function body return an export-sink function value? Tracks local sink aliases
+/// through let/assign/return, then checks whether any return path yields one.
+fn body_returns_export_sink(
+    body: &[Stmt],
+    all_fns: &BTreeSet<String>,
+    returns_sink: &BTreeMap<String, String>,
+) -> Option<String> {
+    let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+    fn track_init(
+        name: &str,
+        init: &Expr,
+        aliases: &mut BTreeMap<String, String>,
+        all_fns: &BTreeSet<String>,
+        returns_sink: &BTreeMap<String, String>,
+    ) {
+        if let Some(s) = resolve_sink_from_expr(init, aliases, all_fns, returns_sink) {
+            aliases.insert(name.to_string(), s);
+        } else {
+            aliases.remove(name);
+        }
+    }
+    fn walk(
+        stmts: &[Stmt],
+        aliases: &mut BTreeMap<String, String>,
+        all_fns: &BTreeSet<String>,
+        returns_sink: &BTreeMap<String, String>,
+    ) -> Option<String> {
+        for s in stmts {
+            match s {
+                Stmt::Let { name, init, .. } => {
+                    track_init(name, init, aliases, all_fns, returns_sink);
+                }
+                Stmt::Assign {
+                    target: Expr::Var(name),
+                    value,
+                } => {
+                    track_init(name, value, aliases, all_fns, returns_sink);
+                }
+                Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
+                    if let Some(e) = args.first() {
+                        if let Some(s) =
+                            resolve_sink_from_expr(e, aliases, all_fns, returns_sink)
+                        {
+                            return Some(s);
+                        }
+                    }
+                }
+                Stmt::If { then, else_, .. } => {
+                    let mut ta = aliases.clone();
+                    if let Some(s) = walk(then, &mut ta, all_fns, returns_sink) {
+                        return Some(s);
+                    }
+                    if let Some(e) = else_ {
+                        let mut ea = aliases.clone();
+                        if let Some(s) = walk(e, &mut ea, all_fns, returns_sink) {
+                            return Some(s);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    walk(body, &mut aliases, all_fns, returns_sink)
 }
 
 /// Child of a `Stmt` that can host an export sink (value/header expr or nested body).
@@ -1341,6 +1471,20 @@ fn is_export_sink(callee: &str) -> bool {
     EXPORT_SINKS.contains(&callee)
 }
 
+/// Resolve an init expression to an export-sink name through per-function `sink_aliases`,
+/// interproc `returns_export_sink`, if/match join, block tail, and container extraction.
+fn resolve_sink_init(init: &Expr, lin: &Lin) -> Option<String> {
+    resolve_sink_from_expr(init, &lin.sink_aliases, lin.all_fns, &lin.summary.returns_export_sink)
+        .or_else(|| {
+            if let Expr::Index { base, .. } = init {
+                if let Expr::Var(n) = base.as_ref() {
+                    return lin.container_sinks.get(n).cloned();
+                }
+            }
+            None
+        })
+}
+
 /// Root variable of a place (`arr[i].f` → `arr`). Used for index/field NE stores.
 fn place_root_var(expr: &Expr) -> Option<&str> {
     match expr {
@@ -1919,6 +2063,23 @@ fn rebind(target: &str, init: &Expr, caps: &mut CapMap, lin: &mut Lin) {
         caps.remove(target); // lambda binding is not a token; linear_closures tracks it
         return;
     }
+    // Sink-alias tracking: seed before the MOVE / container / generic paths so that
+    // `let f = print; f(tok)` fires ANUBIS_CAPABILITY_EXPORT on `f(tok)`.
+    if let Some(resolved) = resolve_sink_init(init, lin) {
+        lin.sink_aliases.insert(target.to_string(), resolved);
+    } else {
+        lin.sink_aliases.remove(target);
+    }
+    // Container-sink tracking: `let arr = [print, send]` marks `arr` so that
+    // `let f = arr[i]; f(tok)` fires the same check.
+    if let Expr::ArrayLiteral { elements } = init {
+        for el in elements {
+            if let Some(s) = resolve_sink_init(el, lin) {
+                lin.container_sinks.insert(target.to_string(), s);
+                break;
+            }
+        }
+    }
     if let Expr::Var(src) = init {
         // MOVE of a linear closure binding (HO rebind).
         if let Some(st) = lin.linear_closures.get(src).copied() {
@@ -2129,11 +2290,17 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
             walk_expr(cond, caps, lin);
             let base = caps.clone();
             let base_c = lin.container_ne.clone();
+            let base_sa = lin.sink_aliases.clone();
+            let base_cs = lin.container_sinks.clone();
             walk_stmts(then, caps, lin);
             let then_end = caps.clone();
             let then_c = lin.container_ne.clone();
+            let then_sa = lin.sink_aliases.clone();
+            let then_cs = lin.container_sinks.clone();
             *caps = base.clone();
             lin.container_ne = base_c.clone();
+            lin.sink_aliases = base_sa.clone();
+            lin.container_sinks = base_cs.clone();
             let else_end = if let Some(else_body) = else_ {
                 walk_stmts(else_body, caps, lin);
                 Some(caps.clone())
@@ -2141,6 +2308,8 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
                 None
             };
             let else_c = lin.container_ne.clone();
+            let else_sa = lin.sink_aliases.clone();
+            let else_cs = lin.container_sinks.clone();
             let has_implicit_arm = else_end.is_none();
             let mut ends = vec![then_end];
             if let Some(e) = else_end {
@@ -2152,6 +2321,27 @@ fn walk_stmt(stmt: &Stmt, caps: &mut CapMap, lin: &mut Lin) {
             if has_implicit_arm {
                 lin.container_ne = lin.container_ne.union(&base_c).cloned().collect();
             }
+            // Fail-closed sink aliases: present on *any* arm → present after.
+            let mut merged_sa = then_sa;
+            for (k, v) in &else_sa {
+                merged_sa.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            if has_implicit_arm {
+                for (k, v) in &base_sa {
+                    merged_sa.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            lin.sink_aliases = merged_sa;
+            let mut merged_cs = then_cs;
+            for (k, v) in &else_cs {
+                merged_cs.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            if has_implicit_arm {
+                for (k, v) in &base_cs {
+                    merged_cs.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            lin.container_sinks = merged_cs;
         }
         Stmt::While {
             cond,
@@ -2318,7 +2508,14 @@ fn walk_expr(expr: &Expr, caps: &mut CapMap, lin: &mut Lin) {
             // Linear closure application (deep HO): g(…) consumes the closure binding.
             apply_linear_closure(callee, lin);
             // Export check BEFORE walking args (so Live non_exportable is still visible).
-            if is_export_sink(callee) && !lin.all_fns.contains(callee) {
+            // Resolve through sink_aliases: `let f = print; f(tok)` fires the same
+            // ANUBIS_CAPABILITY_EXPORT as `print(tok)`.
+            let resolved_callee: &str = lin
+                .sink_aliases
+                .get(callee)
+                .map(|s| s.as_str())
+                .unwrap_or(callee.as_str());
+            if is_export_sink(resolved_callee) && !lin.all_fns.contains(callee) {
                 for a in args {
                     check_export_arg(a, caps, lin);
                 }
