@@ -857,8 +857,15 @@ fn resolve_applied_container_lambda(
         {
             return Some(lam);
         }
-        // Fail-closed: push/insert of capturing lambdas may not use a concrete path key.
-        return any_capturing_field_closure(&root, scope, ctx);
+        // Fail-closed: `push`/`insert` seed under synthetic `_pN` keys, not the flatten path key
+        // the apply site computes (`xs[0]()` looks up `"0"`), so the concrete lookup above always
+        // misses for a mutated container and this fallback is the real resolver for that shape.
+        // It must consider EFFECTFUL closures too, not only capturing ones: `|| write_file(..)`
+        // captures nothing at all, so the capturing filter alone returned None and
+        // `push(xs, || write_file(..)); xs[0]()` charged nothing. Capturing is tried first because
+        // it is the more precise answer for the information-flow lanes.
+        return any_capturing_field_closure(&root, scope, ctx)
+            .or_else(|| any_effectful_field_closure(&root, scope));
     }
     // Symbolic segment in chain: fail-closed over all nested field_closures under the root.
     if access_chain_has_symbolic_index(callee) {
