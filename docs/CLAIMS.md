@@ -953,12 +953,52 @@ after the root guard and the round-14 set, all with the same shape: **the test g
 was trying to catch.** An ACCEPT is evidence of a defect only once the fixture has been read and a
 rejection confirmed available.
 
-**The callable story is therefore not closed**, but the residual is now two named shapes rather than
-a class: **method-formal namespace** and **interprocedural forwarder** (`s_inline_fwd`), plus
-`for_param_lambda`, which both reviewers read as the same producer/consumer shape at a lambda rather
-than a named fn. The guard weakness stated earlier still applies to any fix aimed at them: all
-must-stay-ACCEPT guards pass today, so **a no-op fix passes every one of them** — which is why each
-close above is recorded with its pure twin and not alone.
+**The callable story is therefore not closed.** The residual grew rather than shrank once a tool
+existed to look for it: a consumer-surface sweep on pin `anubis-566b336ca043` found **ten** shapes
+still accepting a leak that writes a real file — element-alias, pattern-bind, return-then-param,
+closure-param, method×for, direct_param_lambda, if_bind, method_formal, ret_lambda_param and
+match_param_elem. Five were known; five were found by probing the consumer side after six producers
+had been closed. `for_param_lambda` closed in the same window, and `while`, `pop`, `map`,
+struct-field and path-let are closed for named free functions.
+
+#### The pure twins for those ten prove NOTHING, and that is now measured rather than suspected
+
+This file has warned for weeks that **a no-op fix passes every must-stay-ACCEPT guard**. That was
+stated as a caveat. It is now a measurement.
+
+`scripts/guard_reachability.sh` is the dual of the fixture preflight: it poisons a passing guard and
+asks whether the analysis notices. A guard that accepts the pure program AND accepts the poisoned
+one is not evidence of correct restraint — the analysis never reached the shape at all.
+
+```
+g_elem_alias_pure         BLIND   pure ACCEPT, poison ACCEPT
+g_pattern_bind_pure       BLIND
+g_return_then_param_pure  BLIND
+g_closure_param_pure      BLIND
+g_method_for_pure         BLIND
+```
+
+All five. So "the pure guard still ACCEPTS" — cited repeatedly this session as evidence that a fix
+did not over-charge — **carries no information for an OPEN shape**. It reads as an all-clear and
+means "we never looked." A pure twin only becomes evidence once its shape is CLOSED and the poisoned
+twin rejects.
+
+This does not retract the closes recorded above: each of those has a leak twin that REJECTS, which
+is what makes its pure twin meaningful. It retracts the implied assurance for the ten still open.
+
+#### What the shipping corpus actually is
+
+The same sweep put the 317-fixture suite through the preflight. **Zero** `EXPECT: FAIL` fixtures are
+dead: all 213 genuinely fail and all 213 hit their declared `ERROR_CONTAINS` needle. No w06b-class
+fixture — one that grants the capability it tests — exists in the shipping corpus; the three found
+this session were all in scratch adversary sets. A naive `uses_on_path` scan flags 108 of the 213,
+and all 108 are dual-concern fixtures where the effect declaration is legitimate and the rejection
+is for confidentiality. That heuristic is therefore correct for adversary launder claims and wrong
+as a corpus gate, and is not used as one.
+
+The 104 `EXPECT: PASS` fixtures have **not** had this treatment. Poisoning all of them is the
+outstanding question, and until it is run the honest statement is that the suite's pass side is
+unaudited for reachability.
 
 ### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
 

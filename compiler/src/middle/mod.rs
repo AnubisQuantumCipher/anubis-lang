@@ -3581,6 +3581,10 @@ fn scan_applied_param_local_aliases(
                     }
                 } else if matches!(init, Expr::Var(root) if root == param) {
                     aliases.insert(name.clone(), String::new());
+                } else if let Expr::Var(source) = init {
+                    if let Some(path) = aliases.get(source).cloned() {
+                        aliases.insert(name.clone(), path);
+                    }
                 } else if let Expr::Call { callee, args } = init {
                     let from_param = args.first().is_some_and(|arg| {
                         matches!(arg, Expr::Var(root) if root == param)
