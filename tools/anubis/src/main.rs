@@ -991,13 +991,13 @@ enum Commands {
         json: bool,
     },
 
-    /// Start a VZ guest (network-isolated by default).
+    /// Start a Tart VZ guest. The default fails closed; Tart supports shared NAT only.
     VzStart {
         #[arg(long, default_value = "anubis-xcode")]
         guest: String,
-        /// Network mode: off (default), loopback, nat.
+        /// Requested mode. Tart accepts nat; off/loopback require `anubis vz native-boot` for structural isolation.
         #[arg(long, default_value = "off")]
-        network: String,
+        network: offensive::vz::VzNetwork,
     },
 
     /// Stop a VZ guest.
@@ -3454,13 +3454,11 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::VzStart { guest, network } => {
-            let net = match network.as_str() {
-                "nat" => offensive::vz::VzNetwork::Nat,
-                "loopback" => offensive::vz::VzNetwork::LoopbackOnly,
-                _ => offensive::vz::VzNetwork::Off,
-            };
-            offensive::vz::vz_start(&guest, &net)?;
-            println!("guest `{guest}` started (network={network})");
+            let effective = offensive::vz::vz_start(&guest, &network)?;
+            println!(
+                "guest `{guest}` started (effective_network={})",
+                effective.as_cli_name()
+            );
             Ok(())
         }
         Commands::VzStop { guest } => {

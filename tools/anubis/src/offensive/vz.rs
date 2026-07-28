@@ -360,7 +360,7 @@ pub fn vz_status() -> Result<Vec<VzGuest>> {
                 .unwrap_or("local")
                 .into(),
             running,
-            network: VzNetwork::Nat,
+            network: tart_reported_network(),
             backend: "tart".into(),
         });
     }
@@ -432,6 +432,20 @@ fn tart_reported_network() -> VzNetwork {
     VzNetwork::Nat
 }
 
+fn legacy_vmctl_network_flag(network: &VzNetwork) -> &'static str {
+    match network {
+        VzNetwork::Off | VzNetwork::LoopbackOnly => "off",
+        VzNetwork::Nat => "nat",
+    }
+}
+
+fn legacy_vmctl_effective_network(network: &VzNetwork) -> VzNetwork {
+    match network {
+        VzNetwork::Off | VzNetwork::LoopbackOnly => VzNetwork::Off,
+        VzNetwork::Nat => VzNetwork::Nat,
+    }
+}
+
 /// Resolve a requested top-level network mode into the exact Tart launch argv.
 /// Tart cannot structurally remove the NIC; only its default shared-NAT mode is admitted.
 fn tart_start_args(name: &str, network: &VzNetwork) -> Result<Vec<String>> {
@@ -448,23 +462,20 @@ fn tart_start_args(name: &str, network: &VzNetwork) -> Result<Vec<String>> {
     }
 }
 
-/// Start a VZ guest if not already running (Tart headless detach).
-pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
+/// Start a VZ guest if not already running and return the backend's effective network mode.
+pub fn vz_start(name: &str, network: &VzNetwork) -> Result<VzNetwork> {
     if legacy_vmctl_enabled() {
-        let net_flag = match network {
-            VzNetwork::Off => "off",
-            VzNetwork::LoopbackOnly => "off",
-            VzNetwork::Nat => "nat",
-        };
+        let effective = legacy_vmctl_effective_network(network);
+        let net_flag = legacy_vmctl_network_flag(network);
         let output = run_vmctl(&["start", name, "--net", net_flag])?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             if err.contains("already running") {
-                return Ok(());
+                return Ok(effective);
             }
             return Err(anyhow!("ANUBIS_VZ_START: {err}"));
         }
-        return Ok(());
+        return Ok(effective);
     }
 
     let _ = tart_bin()?;
@@ -474,7 +485,7 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
     if guest_is_running(name)? {
         // Warm-check SSH so "started" means operable, not merely listed.
         if guest_ip(name).is_ok() && guest_home(name).is_ok() {
-            return Ok(());
+            return Ok(tart_reported_network());
         }
         // Listed running but SSH dead — fall through is wrong; try stop+start once.
         let _ = tart_capture(&["stop", name]);
@@ -495,7 +506,7 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
                 if !ip.is_empty() {
                     // Soft SSH probe (may take a few seconds after IP appears).
                     if guest_home(name).is_ok() {
-                        return Ok(());
+                        return Ok(tart_reported_network());
                     }
                 }
             }

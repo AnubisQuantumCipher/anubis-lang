@@ -3017,6 +3017,17 @@ pub fn typecheck_ex(ast: AST, mode: Mode, verified: bool) -> Result<TypedIR, Str
     // #72: close the identity-forwarder relation under chaining, so a closure laundered through two or
     // more `fn fwd(f){return f}` hops still resolves to the closure actually passed.
     compute_returns_param_fixpoint(&mut ctx);
+    // Re-scan applied-parameter aliases now that FORWARDING is known.
+    //
+    // `register_program_surface` runs BEFORE this fixpoint, so `fn_returns_param` was EMPTY when
+    // the alias scanner consulted it, and `let g = id(f); g(...)` recorded nothing. A
+    // producer/consumer split in TIME rather than in structure: the consumer ran first.
+    //
+    // This second pass is MONOTONE — it only unions additional applied paths into maps that
+    // already exist — so it can close a leak and can never introduce one, and re-running it is
+    // safe in a way that re-running the whole surface registration (which also emits diagnostics)
+    // would not be.
+    rescan_applied_param_forwarders(&ast.items, &mut ctx);
     // Trait coherence + missing-required-method, over the trait environment captured before
     // `resolve_traits` erased it. Analysis-only: emits (shadow-gated) diagnostics and reads no
     // desugaring output, so it cannot move the fixpoint.
@@ -3368,7 +3379,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         // Preserve a callable extracted into a local (`let f = p[0]; f(...)`).
                         // The ordinary scan only sees the local callee and therefore cannot attach
                         // the application to the formal's concrete path.
-                        scan_applied_param_local_aliases(body, pname, &mut applies, &mut paths);
+                        scan_applied_param_local_aliases(body, pname, &mut applies, &mut paths, &ctx.fn_returns_param);
                         if shadows {
                             shadowed.push(i);
                         } else if applies {
@@ -3653,6 +3664,7 @@ fn scan_applied_param_local_aliases(
     param: &str,
     applies: &mut bool,
     paths: &mut BTreeSet<String>,
+    fn_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
 ) {
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     for stmt in body {
@@ -3693,12 +3705,72 @@ fn scan_applied_param_local_aliases(
                         };
                         aliases.insert(name.clone(), combined);
                     }
+                } else if let Some((_, fwd_idx)) = fn_returns_param.get(match init {
+                    Expr::Call { callee, .. } => callee.as_str(),
+                    _ => "",
+                }) {
+                    // A user function that FORWARDS one of its parameters is an identity for path
+                    // purposes: `let g = id(f)` must give `g` whatever path `f` had.
+                    //
+                    // `fn_returns_param` already records which formal a function forwards, and the
+                    // capability consumer already consults it — the ALIAS scanner did not, so a
+                    // callable laundered through a one-line forwarder became invisible. `id(f)`
+                    // failed at ONE level, not just in the `id(id(id(f)))` chain, so this was never
+                    // about depth.
+                    //
+                    // Resolving the forwarded ARGUMENT recursively is what makes chains work for
+                    // free: the argument of the outer call is itself an `Expr::Call` the same arm
+                    // handles.
+                    if let Expr::Call { args, .. } = init {
+                        if let Some(arg) = args.get(*fwd_idx) {
+                            if let Some((root, path)) = flatten_access_path(arg) {
+                                if root == param {
+                                    aliases.insert(name.clone(), path);
+                                } else if let Some(prefix) = aliases.get(&root).cloned() {
+                                    aliases.insert(name.clone(), prefix);
+                                }
+                            }
+                        }
+                    }
                 } else if let Expr::Call { callee, args } = init {
                     // The container argument may be the formal ITSELF or an already-recorded ALIAS
                     // of it. `let mut ys = xs; let f = pop(ys)` was invisible because this test
                     // accepted only the formal by name, so one rebind hid every element builtin —
                     // `pop`, `remove`, `first`, `last` alike. The alias map already holds `ys`;
                     // it simply was not consulted here.
+                    // A USER function that forwards one of its parameters is an alias too.
+                    //
+                    // `let g = id(f)` — and `id(id(id(f)))` — left `g` with no path back to the
+                    // formal, so a callable passed through any identity-shaped helper became
+                    // invisible. `fn_returns_param` ALREADY records exactly which formal a
+                    // function forwards; the alias scanner simply never consulted it.
+                    //
+                    // Resolving it here rather than adding `id` to a whitelist means every
+                    // user-written forwarder works, including chains, without naming any of them.
+                    // Resolve a forwarder CHAIN — `id(id(id(f)))` — by walking inward while each
+                    // layer is a known forwarder, then testing the innermost expression. Handling
+                    // only one layer closed `generic_id` and left `id_chain` open, which is the
+                    // same one-hop-versus-N-hop split that has appeared at every producer today.
+                    {
+                        let mut cur: &Expr = init;
+                        let mut depth = 0usize;
+                        while depth < 16 {
+                            let Expr::Call { callee: c, args: a } = cur else { break };
+                            let Some((_p, idx)) = fn_returns_param.get(c.as_str()) else { break };
+                            let Some(next) = a.get(*idx) else { break };
+                            cur = next;
+                            depth += 1;
+                        }
+                        if depth > 0 {
+                            if let Expr::Var(root) = cur {
+                                if root == param {
+                                    aliases.insert(name.clone(), String::new());
+                                } else if let Some(prefix) = aliases.get(root).cloned() {
+                                    aliases.insert(name.clone(), prefix);
+                                }
+                            }
+                        }
+                    }
                     let from_param = args.first().is_some_and(|arg| match arg {
                         Expr::Var(root) => root == param || aliases.contains_key(root),
                         _ => false,
@@ -3760,12 +3832,19 @@ fn scan_applied_param_local_aliases(
                         }
                     }
                 }
-                scan_applied_param_local_aliases(body, param, applies, paths);
+                scan_applied_param_local_aliases(body, param, applies, paths, fn_returns_param);
             }
             Stmt::ExprStmt(Expr::Call { callee, .. }) => {
                 if let Some(path) = aliases.get(callee) {
                     *applies = true;
-                    paths.insert(path.clone());
+                    // An EMPTY alias path means "the formal ITSELF", which is the plain
+                    // `fn app(f) { f(...) }` case the consumer already charges by parameter index.
+                    // Inserting `""` as a PATH instead makes the consumer resolve a path that names
+                    // nothing, so `let g = id(f); g(...)` recorded `applies` and then charged
+                    // nothing — the summary was right and the lookup it triggered was not.
+                    if !path.is_empty() {
+                        paths.insert(path.clone());
+                    }
                 }
             }
             Stmt::ExprStmt(Expr::CallExpr { callee, .. }) => {
@@ -3790,18 +3869,18 @@ fn scan_applied_param_local_aliases(
                 }
             }
             Stmt::If { then, else_, .. } => {
-                scan_applied_param_local_aliases(then, param, applies, paths);
+                scan_applied_param_local_aliases(then, param, applies, paths, fn_returns_param);
                 if let Some(branch) = else_ {
-                    scan_applied_param_local_aliases(branch, param, applies, paths);
+                    scan_applied_param_local_aliases(branch, param, applies, paths, fn_returns_param);
                 }
             }
             Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
-                scan_applied_param_local_aliases(body, param, applies, paths);
+                scan_applied_param_local_aliases(body, param, applies, paths, fn_returns_param);
             }
             Stmt::For { body, .. }
             | Stmt::ResearchBlock { body, .. }
             | Stmt::ExploitBlock { body, .. } => {
-                scan_applied_param_local_aliases(body, param, applies, paths);
+                scan_applied_param_local_aliases(body, param, applies, paths, fn_returns_param);
             }
             _ => {}
         }
@@ -10726,6 +10805,96 @@ fn expr_is_password_secret_call(e: &Expr) -> bool {
 ///
 /// Monotone (add-only over a finite name lattice) ⇒ terminates. Under-approximates by construction:
 /// anything not recognised is simply absent, which can only fail to reject, never false-reject.
+/// Second applied-parameter pass, run AFTER `compute_returns_param_fixpoint` so user-function
+/// forwarders (`fn id(x) -> T { x }`) are known. Unions into the existing maps; never removes.
+/// Functions that return one of their own parameters, by `return p;` or as the tail expression `p`.
+///
+/// `fn_returns_param` does NOT cover this. It is fed by `fn_sole_return`, which only records
+/// `If`/`Match` tails, so the plainest forwarder in the language — `fn id<T>(x: T) -> T { x }` —
+/// was absent from it and `let g = id(f); g(...)` recorded no path back to the formal. Detecting it
+/// here keeps the pass self-contained instead of depending on a map populated for another purpose.
+fn collect_forwarders(items: &[Item], out: &mut BTreeMap<String, (Vec<String>, usize)>) {
+    for item in items {
+        match item {
+            Item::Module { items, .. } => collect_forwarders(items, out),
+            Item::Fn {
+                name, params, body, ..
+            } => {
+                let mut rets = Vec::new();
+                for st in body {
+                    collect_returns_in_stmt(st, &mut rets);
+                }
+                let mut tv = Vec::new();
+                tail_values(body, true, &mut tv);
+                let cand = if rets.len() == 1 {
+                    rets.into_iter().next()
+                } else if rets.is_empty() && tv.len() == 1 {
+                    Some(tv[0].clone())
+                } else {
+                    None
+                };
+                if let Some(Expr::Var(v)) = cand {
+                    let pnames: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+                    if let Some(i) = pnames.iter().position(|n| *n == v) {
+                        out.insert(name.clone(), (pnames, i));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rescan_applied_param_forwarders(items: &[Item], ctx: &mut SemanticContext) {
+    let mut returns_param = ctx.fn_returns_param.clone();
+    collect_forwarders(items, &mut returns_param);
+    if returns_param.is_empty() {
+        return;
+    }
+    for item in items {
+        match item {
+            Item::Module { items, .. } => rescan_applied_param_forwarders(items, ctx),
+            Item::Fn {
+                name, params, body, ..
+            } => {
+                let mut applied_paths: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+                let mut applied: Vec<usize> = Vec::new();
+                for (i, (pname, _)) in params.iter().enumerate() {
+                    let (mut applies, mut paths) = (false, BTreeSet::new());
+                    scan_applied_param_local_aliases(
+                        body,
+                        pname,
+                        &mut applies,
+                        &mut paths,
+                        &returns_param,
+                    );
+                    if applies {
+                        applied.push(i);
+                        if !paths.is_empty() {
+                            applied_paths.insert(i, paths);
+                        }
+                    }
+                }
+                if !applied.is_empty() {
+                    let e = ctx.fn_applies_param.entry(name.clone()).or_default();
+                    for i in applied {
+                        if !e.contains(&i) {
+                            e.push(i);
+                        }
+                    }
+                }
+                if !applied_paths.is_empty() {
+                    let e = ctx.fn_applied_param_paths.entry(name.clone()).or_default();
+                    for (i, ps) in applied_paths {
+                        e.entry(i).or_default().extend(ps);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn compute_returns_param_fixpoint(ctx: &mut SemanticContext) {
     loop {
         let mut newly: Vec<(String, (Vec<String>, usize))> = Vec::new();
@@ -12004,6 +12173,32 @@ fn analyze_expr_effect(
                                             for raw in caps {
                                                 apply_inherited_capability(raw, mode, effects, ctx);
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // The parameter is applied AT THE FORMAL ITSELF — no path — so there is
+                            // no entry in `fn_applied_param_paths` and the whole charge above is
+                            // skipped.
+                            //
+                            // `fn app(f) { let g = f; g(...) }` recorded `applies = true` with an
+                            // empty path set, correctly: `g` IS the formal, not a field of it. The
+                            // consumer then found no paths and charged nothing, so the simplest
+                            // alias in the language — bind a callable formal to a local, apply the
+                            // local — passed `check` and wrote the file at runtime.
+                            //
+                            // Producer and consumer disagreeing on what "no path" MEANS: the
+                            // producer said "the formal itself", the consumer read "nothing to
+                            // charge". This is the same shape as every carrier defect in this file,
+                            // in the one place that decides the verdict.
+                            let ids = fn_identities_of(arg, scope, ctx);
+                            if let FnIdentitySet::Known(names) = ids {
+                                for name in names {
+                                    if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned()
+                                    {
+                                        for raw in caps {
+                                            apply_inherited_capability(raw, mode, effects, ctx);
                                         }
                                     }
                                 }
