@@ -99,12 +99,29 @@ def check(fn: str, scope: str = "all") -> list[str]:
     ast, mid = AST.read_text(), MID.read_text()
     body = walker_body(mid, fn)
     variants: dict = {}
-    if scope in ("all", "stmt"):
+    base = scope[len("partial-"):] if scope.startswith("partial-") else scope
+    if base in ("all", "stmt"):
         variants.update({f"Stmt::{k}": v for k, v in enum_variants(ast, "Stmt").items()})
-    if scope in ("all", "expr"):
+    if base in ("all", "expr"):
         variants.update({f"Expr::{k}": v for k, v in enum_variants(ast, "Expr").items()})
     if not variants:
-        raise SystemExit(f"unknown scope `{scope}` for `{fn}` (use all|expr|stmt)")
+        raise SystemExit(
+            f"unknown scope `{scope}` for `{fn}` (use all|expr|stmt, optionally partial- prefixed)"
+        )
+    # `partial-` = the contract for a SPECIALISED walker: it need not match every variant, but
+    # every variant it DOES match must bind all that variant's code-holding fields.
+    #
+    # This exists because of a defect found 2026-07-28 in the fix for another defect.
+    # `stmt_value_secret` — the helper written to extract a block's value — matched
+    # `Stmt::If { then, else_, .. }` and threw `cond` away, so a secret CONDITION selecting between
+    # two clean constants stayed invisible. That is the same `..` shape that had just been fixed in
+    # `Expr::If`, reproduced inside its own repair.
+    #
+    # A total-coverage demand cannot express that walker's contract: it deliberately handles only
+    # the last statement, so it scored ten "never matched" non-defects and the one real finding was
+    # unreachable. `partial-` says the thing that is actually true of it — match what you like, but
+    # do not half-read what you matched.
+    partial = scope.startswith("partial-")
 
     problems: list[str] = []
     for vname, fields in variants.items():
@@ -115,6 +132,10 @@ def check(fn: str, scope: str = "all") -> list[str]:
         pat = re.escape(vname) + r"\s*\{([^}]*)\}"
         arms = re.findall(pat, body)
         if not arms:
+            if partial:
+                # A specialised walker is allowed not to match a variant; it is not allowed to
+                # match one and read it partially. Skip, do not report.
+                continue
             # Variant never matched by name. Only safe if a catch-all covers it, and these walkers
             # are deliberately total — so an unmatched code-holding variant is itself the finding.
             problems.append(f"{fn}: {vname} is never matched (holds {code_fields})")

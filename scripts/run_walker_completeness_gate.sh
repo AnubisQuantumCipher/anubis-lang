@@ -39,6 +39,17 @@ WALKERS=(
   expr_taint_source_m:expr
   expr_secret_source_m:expr
   expr_param_flow:expr
+  # `partial-stmt` = a SPECIALISED walker's contract: it need not match every variant, but every
+  # variant it DOES match must bind all that variant's code-holding fields.
+  #
+  # These two extract a block's value from its last statement. They were written to CLOSE the
+  # `Expr::If` cond-drop and they REPRODUCED it — `Stmt::If { then, else_, .. }`, cond discarded,
+  # so a secret condition selecting between two clean constants stayed invisible. Same `..`, third
+  # place, inside its own repair. A total-coverage demand could not express their contract (they
+  # deliberately read only the last statement, scoring ten "never matched" non-defects and burying
+  # the one real finding), which is exactly why this contract exists.
+  stmt_value_secret:partial-stmt
+  stmt_value_taint:partial-stmt
 )
 
 if [[ "${1:-}" == "--self-test" ]]; then
