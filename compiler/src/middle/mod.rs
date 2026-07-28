@@ -658,6 +658,36 @@ fn fn_identities_of_d(
                 // Resolving the argument at the captured parameter's position is the same move
                 // `fn_returns_param` makes for a forwarded value, applied to a DEFERRED one: the
                 // closure has not run yet, but whatever it will apply is decided here.
+                // A RECURSIVE builder cannot be resolved by following its own return.
+                //
+                //     fn go(n, acc) { if n <= 0 { acc } else { go(n - 1, acc + [leak]) } }
+                //     let xs = go(2, []); xs[0](…)
+                //
+                // The sole return is an `If` whose else-arm calls `go` again, so following it
+                // either loops or stops at the depth guard and yields nothing — and the callable
+                // sits in `[leak]`, an ARGUMENT of the recursive call, not in the returned
+                // expression's own shape.
+                //
+                // Every container literal anywhere in the return expression is a value the
+                // accumulator may end up holding, so their identities are unioned. Bounded (one
+                // pass over one expression), fail-closed (it can only name MORE), and gated on
+                // self-reference so a non-recursive function is still resolved exactly.
+                if returned_is_recursive(callee, returned) {
+                    let mut lits = Vec::new();
+                    collect_array_literals(returned, &mut lits);
+                    let mut acc = FnIdentitySet::empty();
+                    for lit in lits {
+                        let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                        acc = match (&acc, &ids) {
+                            (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
+                            (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
+                            _ => FnIdentitySet::union(acc, ids),
+                        };
+                    }
+                    if matches!(acc, FnIdentitySet::Known(ref n) if !n.is_empty()) {
+                        return acc;
+                    }
+                }
                 if let Expr::Lambda { body, .. } = returned {
                     let mut carried = FnIdentitySet::empty();
                     for (i, pname) in param_names.iter().enumerate() {
@@ -13529,6 +13559,62 @@ fn expr_mentions_name(e: &Expr, name: &str) -> bool {
     rendered.contains(&format!("\"{name}\""))
 }
 
+/// Whether a function's return expression calls the function itself.
+fn returned_is_recursive(callee: &str, returned: &Expr) -> bool {
+    format!("{returned:?}").contains(&format!("callee: \"{callee}\""))
+}
+
+/// Every array/map literal appearing anywhere in an expression.
+///
+/// Rendered-walk avoided here because the RESULT is needed, not a yes/no — but the recursion is
+/// kept deliberately small and total over the container-bearing shapes a return expression can
+/// take. A shape it misses costs a missed identity, so the arms below are the ones a builder
+/// actually uses: branches, calls, binaries and blocks.
+fn collect_array_literals<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match e {
+        Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => out.push(e),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_array_literals(lhs, out);
+            collect_array_literals(rhs, out);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_array_literals(a, out);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_array_literals(callee, out);
+            for a in args {
+                collect_array_literals(a, out);
+            }
+        }
+        Expr::If { then, else_, .. } => {
+            collect_array_literals(then, out);
+            collect_array_literals(else_, out);
+        }
+        Expr::IfLet { then, else_, .. } => {
+            collect_array_literals(then, out);
+            collect_array_literals(else_, out);
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                collect_array_literals(&arm.body, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            for st in stmts {
+                if let Stmt::Let { init, .. } = st {
+                    collect_array_literals(init, out);
+                }
+            }
+            if let Some(t) = tail {
+                collect_array_literals(t, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn fn_identities_carried_by_value(
     value: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -13552,6 +13638,25 @@ fn fn_identities_carried_by_value(
                     .fold(FnIdentitySet::empty(), FnIdentitySet::union)
             })
             .unwrap_or(FnIdentitySet::Unknown),
+        // CONCATENATION carries what either side carries.
+        //
+        // `fn go(acc) -> any { return acc + [leak]; }` then `go([])[0](…)` had no arm here at all,
+        // so a container built by `+` resolved to Unknown and the callable inside it was never
+        // named. This is the shape a recursive accumulator uses — `go(n-1, acc + [leak])` — but
+        // the recursion was never the problem: the single-step form failed identically.
+        //
+        // A side that resolves to Unknown must not ERASE a side that resolves to Known, for the
+        // same reason the capture resolvers must not annihilate each other: Unknown here means
+        // "this operand carries nothing I can name", not "this expression may be anything".
+        Expr::Binary { lhs, rhs, .. } => {
+            let l = fn_identities_carried_by_value(lhs, scope, ctx);
+            let r = fn_identities_carried_by_value(rhs, scope, ctx);
+            match (&l, &r) {
+                (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => l,
+                (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => r,
+                _ => FnIdentitySet::union(l, r),
+            }
+        }
         _ => FnIdentitySet::Unknown,
     }
 }
