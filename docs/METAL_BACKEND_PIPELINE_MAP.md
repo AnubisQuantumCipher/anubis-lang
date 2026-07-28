@@ -89,7 +89,7 @@ From find + grep on /Users/sicarii/Desktop/metal-hybrid-prover:
 - `e2e/` (host + methods demonstrating get_prover_server + receipt.verify + lane)
 - `m0-metalhal-smoke/`
 - `results/*.json` (per-device)
-- `README.md`, `A_PLUS_FINAL_REPORT.md`, `MISSION_LEDGER.md` (contract + results)
+- `README.md`, `docs/history/A_PLUS_FINAL_REPORT.md`, `MISSION_LEDGER.md` (contract + results)
 - Key symbols observed in Anubis templates/tests: `StorageModeShared`, `MTLArgumentBuffersTier::Tier2`, `metal_lane_selected()`, `R0_DISABLE_METAL`, lane logs.
 
 Anubis depends on the **vendored patch path** and the **in-process proving contract** (get_prover_server + ProverOpts + real verify), not the full e2e binary of the reference.

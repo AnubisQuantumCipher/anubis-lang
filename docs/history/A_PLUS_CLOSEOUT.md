@@ -8,7 +8,7 @@
 **⚠️ Snapshot of the 2026-07-24 seal only.** It is **not** a current completion claim. Live
 inventory (2026-07-27 round 8): security **228/228** (green = no KNOWN defects, not no
 defects), language **244/244**, stdlib **45/45**. Living status:
-[`docs/CLAIMS.md` § Known open issues (2026-07-27)](docs/CLAIMS.md#known-open-issues-2026-07-27).
+[`docs/CLAIMS.md` § Known open issues (2026-07-27)](../../docs/CLAIMS.md#known-open-issues-2026-07-27).
 Every "DONE" / "CLAIMED" line below is accurate *as of the seal date*, not as present tense.
 
 ## Status

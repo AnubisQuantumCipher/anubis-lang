@@ -2,11 +2,11 @@
 
 **Baseline (2026-07-05):** C-grade real prototype per ANUBIS_REALITY_AUDIT.md — the *starting* point, not the current state.
 
-**Live status is well past this baseline.** The living language tracker is [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md), where phases 0–10 are already documented at the language/freeze level. For this repo-governing A+ roadmap, **Phase 9 is DONE** (`out/a_plus_phase9_final_rerun_20260723`, 15/15; G14 was 20/20). **Phase 10 is DONE** via [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md) and [`A_PLUS_CLOSEOUT.md`](A_PLUS_CLOSEOUT.md). **A15 was DONE on 2026-07-24:** [`implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md`](implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md) with re-derived front door `out/a_plus_a15_frontdoor_20260724-154145` → **15/15 PASS**, G14 **34/34**. **A+ was CLAIMED** on that seal (hostile findings F1–F4 remediated and re-verified).
+**Live status is well past this baseline.** The living language tracker is [`docs/language/ROADMAP.md`](../../docs/language/ROADMAP.md), where phases 0–10 are already documented at the language/freeze level. For this repo-governing A+ roadmap, **Phase 9 is DONE** (`out/a_plus_phase9_final_rerun_20260723`, 15/15; G14 was 20/20). **Phase 10 is DONE** via [`A_PLUS_FINAL_REPORT.md`](A_PLUS_FINAL_REPORT.md) and [`A_PLUS_CLOSEOUT.md`](A_PLUS_CLOSEOUT.md). **A15 was DONE on 2026-07-24:** [`implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md`](../../implementer/a_plus_audit_run/20260724-154145/full_language_audit/A15_FULL_LANGUAGE_AUDIT.md) with re-derived front door `out/a_plus_a15_frontdoor_20260724-154145` → **15/15 PASS**, G14 **34/34**. **A+ was CLAIMED** on that seal (hostile findings F1–F4 remediated and re-verified).
 
 **That seal is now stale relative to 2026-07-26 fleet findings.** The 15 gates do not cover the
 open soundness class. **Living status only:**
-[`docs/CLAIMS.md` § Known open issues (2026-07-26)](docs/CLAIMS.md#known-open-issues-2026-07-26).
+[`docs/CLAIMS.md` § Known open issues (2026-07-26)](../../docs/CLAIMS.md#known-open-issues-2026-07-26).
 
 Honest snapshot (GROK-MAAT round 8 — details only in CLAIMS):
 

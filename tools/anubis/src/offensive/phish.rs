@@ -88,6 +88,27 @@ pub fn phish_plan(
     Ok(plan)
 }
 
+fn pretexts(theme: &str) -> Vec<&'static str> {
+    match theme {
+        "password_reset" => vec![
+            "Mandatory password rotation notice",
+            "SSO session expired — re-auth",
+            "IT helpdesk ticket follow-up",
+        ],
+        "invoice" => vec![
+            "Unpaid invoice PDF link",
+            "Vendor portal document share",
+            "Finance approval request",
+        ],
+        "shipping" => vec!["Package delivery exception", "Customs hold on shipment"],
+        _ => vec![
+            "Generic security awareness test lure",
+            "Shared document notification",
+            "Calendar invite update",
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,26 +168,5 @@ mod tests {
             !html.contains("<form") && !html.contains("<input"),
             "stub must not collect credentials"
         );
-    }
-}
-
-fn pretexts(theme: &str) -> Vec<&'static str> {
-    match theme {
-        "password_reset" => vec![
-            "Mandatory password rotation notice",
-            "SSO session expired — re-auth",
-            "IT helpdesk ticket follow-up",
-        ],
-        "invoice" => vec![
-            "Unpaid invoice PDF link",
-            "Vendor portal document share",
-            "Finance approval request",
-        ],
-        "shipping" => vec!["Package delivery exception", "Customs hold on shipment"],
-        _ => vec![
-            "Generic security awareness test lure",
-            "Shared document notification",
-            "Calendar invite update",
-        ],
     }
 }

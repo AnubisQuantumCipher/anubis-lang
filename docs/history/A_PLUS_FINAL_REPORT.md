@@ -6,7 +6,7 @@
 
 **⚠️ Snapshot of the 2026-07-24 seal, now 2 days old** — including the `649` test count below,
 which is the count at that seal (current count, 2026-07-26: 707 compiler + 142 CLI tests, ~910
-workspace total). See [`docs/CLAIMS.md` § Known open issues (2026-07-26)](docs/CLAIMS.md#known-open-issues-2026-07-26)
+workspace total). See [`docs/CLAIMS.md` § Known open issues (2026-07-26)](../../docs/CLAIMS.md#known-open-issues-2026-07-26)
 for what this seal's gates did not cover.
 
 ## Phase 9 Verdict (historical)

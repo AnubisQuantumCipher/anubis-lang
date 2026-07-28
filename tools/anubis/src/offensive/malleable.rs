@@ -146,8 +146,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_name() {
-        let mut p = MalleableProfile::default();
-        p.name = String::new();
+        let p = MalleableProfile {
+            name: String::new(),
+            ..MalleableProfile::default()
+        };
         let err = p.validate().unwrap_err().to_string();
         assert!(err.contains("ANUBIS_MALLEABLE_NAME"), "{err}");
     }
@@ -162,24 +164,30 @@ mod tests {
 
     #[test]
     fn validate_rejects_non_absolute_uri() {
-        let mut p = MalleableProfile::default();
-        p.beacon_uris = vec!["relative/path".into()];
+        let p = MalleableProfile {
+            beacon_uris: vec!["relative/path".into()],
+            ..MalleableProfile::default()
+        };
         let err = p.validate().unwrap_err().to_string();
         assert!(err.contains("ANUBIS_MALLEABLE_URI_MUST_ABS"), "{err}");
     }
 
     #[test]
     fn validate_rejects_traversal_uri() {
-        let mut p = MalleableProfile::default();
-        p.beacon_uris = vec!["/ok/../etc/passwd".into()];
+        let p = MalleableProfile {
+            beacon_uris: vec!["/ok/../etc/passwd".into()],
+            ..MalleableProfile::default()
+        };
         let err = p.validate().unwrap_err().to_string();
         assert!(err.contains("ANUBIS_MALLEABLE_URI_HOSTILE"), "{err}");
     }
 
     #[test]
     fn validate_rejects_scheme_uri() {
-        let mut p = MalleableProfile::default();
-        p.beacon_uris = vec!["http://evil.com/beacon".into()];
+        let p = MalleableProfile {
+            beacon_uris: vec!["http://evil.com/beacon".into()],
+            ..MalleableProfile::default()
+        };
         let err = p.validate().unwrap_err().to_string();
         // Rejected by the absolute-path rule, which fires FIRST — the scheme check below it is
         // unreachable for this input. The security property (a scheme URI is refused) holds; only
@@ -192,8 +200,10 @@ mod tests {
         // `//host/path` passed BOTH checks before the fix: it starts with `/` so it is "absolute",
         // and has no `://` so it is not "hostile" — while resolving to an arbitrary external host.
         for u in ["//evil.com/beacon", "/\\evil.com/beacon", "/a\\b"] {
-            let mut p = MalleableProfile::default();
-            p.beacon_uris = vec![u.into()];
+            let p = MalleableProfile {
+                beacon_uris: vec![u.into()],
+                ..MalleableProfile::default()
+            };
             let err = p.validate().unwrap_err().to_string();
             assert!(err.contains("ANUBIS_MALLEABLE_URI_HOSTILE"), "{u}: {err}");
         }
@@ -201,8 +211,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_long_user_agent() {
-        let mut p = MalleableProfile::default();
-        p.user_agent = "A".repeat(513);
+        let p = MalleableProfile {
+            user_agent: "A".repeat(513),
+            ..MalleableProfile::default()
+        };
         let err = p.validate().unwrap_err().to_string();
         assert!(err.contains("ANUBIS_MALLEABLE_UA_LONG"), "{err}");
     }

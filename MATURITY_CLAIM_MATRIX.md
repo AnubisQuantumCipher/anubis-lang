@@ -1,15 +1,55 @@
-# Anubis Maturity Claim Matrix (Live)
+# Anubis Maturity Claim Matrix — the append-only tranche ledger
 
-> **Living status is not this file.** Dated rows below are accurate for their own date only.
-> **Single source of truth:** `docs/CLAIMS.md` § Known open issues (2026-07-27). Snapshot
-> (GROK-MAAT round 8): security **228/228**; language **244/244**; stdlib **45/45**; capset
-> **5/5**; formal PASS; native **681/0**. Disease across **eight+** classes. Green = **no KNOWN
-> defects**, not no defects. D1–D4 + research auth bypass + unknown-attr fail-closed. Test-count
-> rows stale.
+## You probably do not need this file
 
-> **Status vocabulary (2026-07-24):** freestanding `REAL` is banned. `under Command` means the claim is only as strong as re-running the **Command** column (and checking **Evidence**). Prefer sealed artifact paths for historical gates. See `docs/CLAIMS.md` session proof log for re-runs on this date.
+This is an **archive**, not a status page. It records what was claimed, with what evidence, on the
+day each tranche of work landed — every section below is accurate **for its own date and no other**.
+It grows by appending; nothing in it is rewritten when the tree moves on.
 
-Seeded from 2026-07-05 C-grade audit + plan baseline. Every row requires Status + Evidence path + Command.
+| If you want… | Read instead |
+|---|---|
+| **current status** — what is green, what is open right now | [`docs/CLAIMS.md`](docs/CLAIMS.md) § *Known open issues*. It is the single source of truth and it **wins over this file** wherever they disagree. |
+| what the language can do, with honest boundaries | [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) |
+| the phase-by-phase arc | [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md) |
+| to find *any* document | [`docs/README.md`](docs/README.md) |
+
+**The one job this file does that no other file does:** it lets you ask *"what did we claim about X,
+when, and what command backed it?"* — the paper trail behind a claim, not the claim's current truth.
+If you are not asking that question, close this file.
+
+## How to read it without reading all of it
+
+Do not scroll. Index it by command — these stay correct as the file grows:
+
+```bash
+grep -n '^## ' MATURITY_CLAIM_MATRIX.md              # every tranche, newest last, with line numbers
+grep -n '<topic>' MATURITY_CLAIM_MATRIX.md           # jump to a claim by keyword
+awk -F'|' '/^\|/ && NF>=6 {print $3}' MATURITY_CLAIM_MATRIX.md | sort | uniq -c | sort -rn
+```
+
+Every row is `Claim | Status | Evidence | Command | Notes`. **Read the Command column, not the
+Status column** — the status is only as strong as re-running that command against today's tree, and
+for the older sections it will not reproduce.
+
+## Status vocabulary
+
+Freestanding `REAL` is **banned**. A claim is one of: (a) re-runnable with command + observation,
+(b) sealed under a dated artifact path, (c) **partial** with the gap named, or (d) **not claimed**.
+`under Command` means the claim is only as strong as re-running the **Command** column and checking
+**Evidence**. Prefer sealed artifact paths for historical gates.
+
+**Green means no KNOWN defects — not no defects.** Absence of a red row is not evidence of absence.
+
+> **Note on the numbers below.** Fixture and theorem counts written into these rows were correct when
+> the row was appended and are **not** maintained afterwards. For current counts, re-derive:
+> `bash scripts/run_docs_drift_gate.sh`. A previous version of this header carried a snapshot of
+> those counts; it had drifted (security, stdlib and native-corpus figures were all stale) and was
+> removed on 2026-07-28 rather than refreshed — this file is not a status surface and should not
+> carry one.
+
+---
+
+Seeded from the 2026-07-05 C-grade audit + plan baseline. Every row requires Status + Evidence path + Command.
 
 | Claim | Status | Evidence | Command | Notes |
 |-------|--------|----------|---------|-------|

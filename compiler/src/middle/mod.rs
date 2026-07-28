@@ -202,16 +202,11 @@ struct ScopeBinding {
 /// `Known(empty)` means the expression is known not to denote a named user function (for example a
 /// lambda or literal). `Unknown` means analysis could not determine the set; policies must choose
 /// explicitly whether that uncertainty is accepted or rejected.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 enum FnIdentitySet {
     Known(BTreeSet<String>),
+    #[default]
     Unknown,
-}
-
-impl Default for FnIdentitySet {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl FnIdentitySet {
@@ -272,16 +267,11 @@ enum BuiltinGateTag {
 
 /// `Known(empty)` is a proven pure/non-builtin value. `Unknown` means the callable identity could
 /// not be determined. Default-lane policy deliberately defers Unknown; it never invents a gate.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 enum BuiltinGateTags {
     Known(BTreeSet<BuiltinGateTag>),
+    #[default]
     Unknown,
-}
-
-impl Default for BuiltinGateTags {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl BuiltinGateTags {
@@ -886,15 +876,16 @@ fn builtin_gate_tags_of_d(
                 seed_builtin_gate_tags(name)
             }
         }
-        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
-            builtin_gate_tags_of_d(then, scope, ctx, depth + 1)
-                .union(builtin_gate_tags_of_d(else_, scope, ctx, depth + 1))
-        }
-        Expr::Match { arms, .. } => {
-            arms.iter().fold(BuiltinGateTags::empty(), |tags, arm| {
-                tags.union(builtin_gate_tags_of_d(&arm.body, scope, ctx, depth + 1))
-            })
-        }
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => builtin_gate_tags_of_d(
+            then,
+            scope,
+            ctx,
+            depth + 1,
+        )
+        .union(builtin_gate_tags_of_d(else_, scope, ctx, depth + 1)),
+        Expr::Match { arms, .. } => arms.iter().fold(BuiltinGateTags::empty(), |tags, arm| {
+            tags.union(builtin_gate_tags_of_d(&arm.body, scope, ctx, depth + 1))
+        }),
         Expr::Call { callee, args } => {
             if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 {
                 return builtin_gate_tags_of_d(&args[0], scope, ctx, depth + 1);
@@ -1217,20 +1208,19 @@ fn builtin_gate_tags_at_path(
             .map(|child| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
             .unwrap_or(BuiltinGateTags::Unknown),
         Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
-            builtin_gate_tags_at_path(then, path, scope, ctx, depth + 1)
-                .union(builtin_gate_tags_at_path(else_, path, scope, ctx, depth + 1))
+            builtin_gate_tags_at_path(then, path, scope, ctx, depth + 1).union(
+                builtin_gate_tags_at_path(else_, path, scope, ctx, depth + 1),
+            )
         }
-        Expr::Match { arms, .. } => {
-            arms.iter().fold(BuiltinGateTags::empty(), |tags, arm| {
-                tags.union(builtin_gate_tags_at_path(
-                    &arm.body,
-                    path,
-                    scope,
-                    ctx,
-                    depth + 1,
-                ))
-            })
-        }
+        Expr::Match { arms, .. } => arms.iter().fold(BuiltinGateTags::empty(), |tags, arm| {
+            tags.union(builtin_gate_tags_at_path(
+                &arm.body,
+                path,
+                scope,
+                ctx,
+                depth + 1,
+            ))
+        }),
         _ => BuiltinGateTags::Unknown,
     }
 }
@@ -1347,9 +1337,10 @@ fn hof_result_builtin_gate_tags(
             builtin_gate_tags_carried_by_value_d(returned, &local, ctx, 0)
         }
         Expr::Lambda { params, body } => {
-            if params.first().is_some_and(|param| {
-                matches!(body.as_ref(), Expr::Var(name) if name == param)
-            }) {
+            if params
+                .first()
+                .is_some_and(|param| matches!(body.as_ref(), Expr::Var(name) if name == param))
+            {
                 return builtin_gate_tags_carried_by_value_d(source, scope, ctx, 0);
             }
             let mut local = scope.clone();
@@ -1422,9 +1413,13 @@ fn collect_builtin_container_result_gate_tags(
             true
         }
         "slice" | "reverse" | "sort" | "sort_by" | "take" | "drop" | "take_while"
-        | "drop_while" | "concat" | "zip" | "enumerate" | "flatten" | "unique"
-        | "chunk" | "window" | "partition" | "filter" | "values" | "entries" => {
-            let source_count = if matches!(callee, "concat" | "zip") { 2 } else { 1 };
+        | "drop_while" | "concat" | "zip" | "enumerate" | "flatten" | "unique" | "chunk"
+        | "window" | "partition" | "filter" | "values" | "entries" => {
+            let source_count = if matches!(callee, "concat" | "zip") {
+                2
+            } else {
+                1
+            };
             for source in args.iter().take(source_count) {
                 insert_synthetic_container_gate_tags(source, prefix, scope, ctx, out);
             }
@@ -1497,9 +1492,7 @@ fn collect_container_builtin_gate_tags_d(
                     depth + 1,
                 );
             } else {
-                collect_builtin_container_result_gate_tags(
-                    callee, args, prefix, scope, ctx, out,
-                );
+                collect_builtin_container_result_gate_tags(callee, args, prefix, scope, ctx, out);
             }
             return;
         }
@@ -1514,13 +1507,7 @@ fn collect_container_builtin_gate_tags_d(
                     out,
                 );
             } else if let Some(root) = access_chain_root(init) {
-                insert_synthetic_container_gate_tags(
-                    &Expr::Var(root),
-                    prefix,
-                    scope,
-                    ctx,
-                    out,
-                );
+                insert_synthetic_container_gate_tags(&Expr::Var(root), prefix, scope, ctx, out);
             }
             return;
         }
@@ -1549,23 +1536,9 @@ fn collect_container_builtin_gate_tags_d(
             .map(|(index, value)| (path(&index.to_string()), value))
             .collect(),
         Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
-            collect_container_builtin_gate_tags_d(
-                then,
-                prefix,
-                scope,
-                ctx,
-                out,
-                depth + 1,
-            );
+            collect_container_builtin_gate_tags_d(then, prefix, scope, ctx, out, depth + 1);
             let mut other = BTreeMap::new();
-            collect_container_builtin_gate_tags_d(
-                else_,
-                prefix,
-                scope,
-                ctx,
-                &mut other,
-                depth + 1,
-            );
+            collect_container_builtin_gate_tags_d(else_, prefix, scope, ctx, &mut other, depth + 1);
             for (key, tags) in other {
                 out.entry(key)
                     .and_modify(|current| *current = current.clone().union(tags.clone()))
@@ -1605,14 +1578,7 @@ fn collect_container_builtin_gate_tags_d(
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
         ) {
-            collect_container_builtin_gate_tags_d(
-                value,
-                &key,
-                scope,
-                ctx,
-                out,
-                depth + 1,
-            );
+            collect_container_builtin_gate_tags_d(value, &key, scope, ctx, out, depth + 1);
         } else {
             out.insert(key, builtin_gate_tags_of(value, scope, ctx));
         }
@@ -3586,16 +3552,19 @@ fn scan_applied_param_local_aliases(
                         aliases.insert(name.clone(), path);
                     }
                 } else if let Expr::Call { callee, args } = init {
-                    let from_param = args.first().is_some_and(|arg| {
-                        matches!(arg, Expr::Var(root) if root == param)
-                    });
+                    let from_param = args
+                        .first()
+                        .is_some_and(|arg| matches!(arg, Expr::Var(root) if root == param));
                     if from_param && matches!(callee.as_str(), "pop" | "last") {
                         aliases.insert(name.clone(), "*".to_string());
                     } else if from_param && matches!(callee.as_str(), "get" | "remove") {
-                        let path = args.get(1).and_then(|index| match index {
-                            Expr::Literal(v) | Expr::StrLiteral(v) => Some(v.clone()),
-                            _ => None,
-                        }).unwrap_or_else(|| "*".to_string());
+                        let path = args
+                            .get(1)
+                            .and_then(|index| match index {
+                                Expr::Literal(v) | Expr::StrLiteral(v) => Some(v.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| "*".to_string());
                         aliases.insert(name.clone(), path);
                     }
                 }
@@ -6070,9 +6039,11 @@ fn merge_fn_alias_over(
             .collect();
         let mut fields = BTreeMap::new();
         for field in field_names {
-            let identities = FnIdentitySet::union_present(effective.iter().map(|binding| {
-                binding.field_fn_identities.get(&field)
-            }));
+            let identities = FnIdentitySet::union_present(
+                effective
+                    .iter()
+                    .map(|binding| binding.field_fn_identities.get(&field)),
+            );
             fields.insert(field, identities);
         }
         // A join must not INVENT Unknown merely because one path has no entry. Preserve every
@@ -9180,7 +9151,7 @@ fn analyze_stmts(
                                     .insert(path.clone(), assigned_tags);
                                 for (field, tags) in assigned_fields {
                                     b.field_builtin_gate_tags
-                                        .insert(prefixed_gate_path(&path, &field), tags);
+                                        .insert(prefixed_gate_path(path, &field), tags);
                                 }
                             }
                             None => {
@@ -9198,7 +9169,9 @@ fn analyze_stmts(
                                     if let BuiltinGateTags::Known(t) = &assigned_carried {
                                         if !t.is_empty() {
                                             b.field_builtin_gate_tags.insert(
-                                                format!("{SYNTHETIC_BUILTIN_GATE_TAG_SLOT_PREFIX}0"),
+                                                format!(
+                                                    "{SYNTHETIC_BUILTIN_GATE_TAG_SLOT_PREFIX}0"
+                                                ),
                                                 assigned_carried.clone(),
                                             );
                                         }
@@ -9222,12 +9195,14 @@ fn analyze_stmts(
                             }
                             None => {
                                 for identities in b.field_fn_identities.values_mut() {
-                                    *identities = identities.clone().union(assigned_identity.clone());
+                                    *identities =
+                                        identities.clone().union(assigned_identity.clone());
                                 }
                                 if b.field_fn_identities.is_empty()
                                     && !matches!(&assigned_identity, FnIdentitySet::Known(found) if found.is_empty())
                                 {
-                                    b.field_fn_identities.insert("_p0".to_string(), assigned_identity);
+                                    b.field_fn_identities
+                                        .insert("_p0".to_string(), assigned_identity);
                                 }
                             }
                         }
@@ -9531,7 +9506,9 @@ fn analyze_stmts(
                                 .unwrap_or_default(),
                             _ => {
                                 let mut tags = BTreeMap::new();
-                                collect_container_builtin_gate_tags(value, "", scope, ctx, &mut tags);
+                                collect_container_builtin_gate_tags(
+                                    value, "", scope, ctx, &mut tags,
+                                );
                                 tags
                             }
                         };
@@ -11180,9 +11157,9 @@ fn analyze_expr_effect(
                 }
             }
             if is_sink(sink_callee)
-                || bound_gate_tags.as_ref().is_some_and(|tags| {
-                    tags.contains(&BuiltinGateTag::IntegritySink)
-                })
+                || bound_gate_tags
+                    .as_ref()
+                    .is_some_and(|tags| tags.contains(&BuiltinGateTag::IntegritySink))
             {
                 effects.push(format!("sink:{}", sink_callee));
                 for arg in args {
@@ -11223,9 +11200,9 @@ fn analyze_expr_effect(
             // `is_sink` so it also covers egress builtins (`http_post`, `connect`) not in that set.
             if mode == Mode::Safe
                 && (is_egress_sink(sink_callee)
-                    || bound_gate_tags.as_ref().is_some_and(|tags| {
-                        tags.contains(&BuiltinGateTag::EgressSink)
-                    }))
+                    || bound_gate_tags
+                        .as_ref()
+                        .is_some_and(|tags| tags.contains(&BuiltinGateTag::EgressSink)))
             {
                 for arg in args {
                     if let Some(source) = expr_secret_source_m(
@@ -11364,14 +11341,13 @@ fn analyze_expr_effect(
                                 ctx.fn_effect_rows
                                     .get(name)
                                     .is_some_and(|row| row.effects.iter().any(|e| is_sink(e)))
-                            }) {
-                                if mode == Mode::Safe {
-                                    ctx.diagnostics.push(SemanticDiagnostic {
+                            }) && mode == Mode::Safe
+                            {
+                                ctx.diagnostics.push(SemanticDiagnostic {
                                         code: Some("ANUBIS_INTERPROC_SINK".into()),
                                         message: format!("safe mode callable container passed into parameter {} of `{}` reaches a sink", i, callee),
                                         span: None,
                                     });
-                                }
                             }
                         }
                     }
@@ -11670,7 +11646,9 @@ fn analyze_expr_effect(
                             })
                             .unwrap_or_else(|| builtin_gate_tags_of(arg, scope, ctx));
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
-                        if let Some(paths) = applied_paths.as_ref().and_then(|by_param| by_param.get(&i)) {
+                        if let Some(paths) =
+                            applied_paths.as_ref().and_then(|by_param| by_param.get(&i))
+                        {
                             if paths.contains("*") {
                                 let mut closures = BTreeMap::new();
                                 collect_container_closures(arg, "", scope, ctx, &mut closures);
@@ -11697,7 +11675,9 @@ fn analyze_expr_effect(
                                 };
                                 if let FnIdentitySet::Known(names) = ids {
                                     for name in names {
-                                        if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned() {
+                                        if let Some(caps) =
+                                            ctx.fn_declared_effects.get(&name).cloned()
+                                        {
                                             for raw in caps {
                                                 apply_inherited_capability(raw, mode, effects, ctx);
                                             }
@@ -12594,15 +12574,7 @@ fn walk_block_effects(
                     &ctx.place_types(),
                 )
                 .is_some();
-                seed_effect_pattern(
-                    scope,
-                    pattern,
-                    init,
-                    &t,
-                    s,
-                    &ctx.place_types(),
-                    ctx,
-                );
+                seed_effect_pattern(scope, pattern, init, &t, s, &ctx.place_types(), ctx);
             }
             Stmt::Assign {
                 target: Expr::Var(name),
@@ -16678,7 +16650,9 @@ fn body_has_direct_callee(body: &[Stmt], name: &str) -> bool {
         }
         Stmt::If { then, else_, .. } => {
             body_has_direct_callee(then, name)
-                || else_.as_deref().is_some_and(|b| body_has_direct_callee(b, name))
+                || else_
+                    .as_deref()
+                    .is_some_and(|b| body_has_direct_callee(b, name))
         }
         Stmt::While { body, .. }
         | Stmt::WhileLet { body, .. }
@@ -16802,14 +16776,7 @@ fn scan_applied_param_expr(
                 if let Some(g) = &arm.guard {
                     scan_applied_param_expr(g, p, applies, shadows, paths, method_names);
                 }
-                scan_applied_param_expr(
-                    &arm.body,
-                    p,
-                    applies,
-                    shadows,
-                    paths,
-                    method_names,
-                );
+                scan_applied_param_expr(&arm.body, p, applies, shadows, paths, method_names);
             }
         }
         Expr::If {
@@ -21794,34 +21761,84 @@ fn expr_taint_source_m(
                 method_tainting_fns,
                 struct_fields,
             );
-            fn stmt_value_taint(list: &[Stmt], local: &BTreeMap<String, ScopeBinding>, tainting_fns: &BTreeSet<String>, param_return_taint: &BTreeMap<String, BTreeSet<usize>>, method_tainting_fns: &BTreeSet<String>, struct_fields: &PlaceTypes<'_>) -> Option<String> {
-                let Some(last) = list.last() else { return None };
+            fn stmt_value_taint(
+                list: &[Stmt],
+                local: &BTreeMap<String, ScopeBinding>,
+                tainting_fns: &BTreeSet<String>,
+                param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+                method_tainting_fns: &BTreeSet<String>,
+                struct_fields: &PlaceTypes<'_>,
+            ) -> Option<String> {
+                let last = list.last()?;
                 match last {
-                    Stmt::ExprStmt(expr) => expr_taint_source_m(expr, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields),
-                    Stmt::If { cond, then, else_ } => {
-                        expr_taint_source_m(cond, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields)
-                            .or_else(|| stmt_value_taint(then, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields))
-                            .or_else(|| else_.as_deref().and_then(|e| stmt_value_taint(e, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields)))
-                    }
+                    Stmt::ExprStmt(expr) => expr_taint_source_m(
+                        expr,
+                        local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                        struct_fields,
+                    ),
+                    Stmt::If { cond, then, else_ } => expr_taint_source_m(
+                        cond,
+                        local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                        struct_fields,
+                    )
+                    .or_else(|| {
+                        stmt_value_taint(
+                            then,
+                            local,
+                            tainting_fns,
+                            param_return_taint,
+                            method_tainting_fns,
+                            struct_fields,
+                        )
+                    })
+                    .or_else(|| {
+                        else_.as_deref().and_then(|e| {
+                            stmt_value_taint(
+                                e,
+                                local,
+                                tainting_fns,
+                                param_return_taint,
+                                method_tainting_fns,
+                                struct_fields,
+                            )
+                        })
+                    }),
                     _ => None,
                 }
-            };
+            }
             tail.as_deref()
-                .or_else(|| stmts.last().and_then(|stmt| match stmt {
-                    Stmt::ExprStmt(expr) => Some(expr),
-                    _ => None,
-                }))
-                .and_then(|t| {
-                expr_taint_source_m(
-                    t,
-                    &local,
-                    tainting_fns,
-                    param_return_taint,
-                    method_tainting_fns,
-                    struct_fields,
-                )
+                .or_else(|| {
+                    stmts.last().and_then(|stmt| match stmt {
+                        Stmt::ExprStmt(expr) => Some(expr),
+                        _ => None,
+                    })
                 })
-                .or_else(|| stmt_value_taint(stmts, &local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields))
+                .and_then(|t| {
+                    expr_taint_source_m(
+                        t,
+                        &local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                        struct_fields,
+                    )
+                })
+                .or_else(|| {
+                    stmt_value_taint(
+                        stmts,
+                        &local,
+                        tainting_fns,
+                        param_return_taint,
+                        method_tainting_fns,
+                        struct_fields,
+                    )
+                })
         }
         Expr::Match {
             scrutinee, arms, ..
@@ -21883,7 +21900,9 @@ fn expr_taint_source_m(
                 )
             })
         }
-        Expr::If { cond, then, else_, .. } => expr_taint_source_m(
+        Expr::If {
+            cond, then, else_, ..
+        } => expr_taint_source_m(
             cond,
             scope,
             tainting_fns,
@@ -21891,14 +21910,16 @@ fn expr_taint_source_m(
             method_tainting_fns,
             struct_fields,
         )
-        .or_else(|| expr_taint_source_m(
-            then,
-            scope,
-            tainting_fns,
-            param_return_taint,
-            method_tainting_fns,
-            struct_fields,
-        ))
+        .or_else(|| {
+            expr_taint_source_m(
+                then,
+                scope,
+                tainting_fns,
+                param_return_taint,
+                method_tainting_fns,
+                struct_fields,
+            )
+        })
         .or_else(|| {
             expr_taint_source_m(
                 else_,
@@ -22479,34 +22500,84 @@ fn expr_secret_source_m(
                 method_secret_fns,
                 struct_fields,
             );
-            fn stmt_value_secret(list: &[Stmt], local: &BTreeMap<String, ScopeBinding>, secret_fns: &BTreeSet<String>, param_return_taint: &BTreeMap<String, BTreeSet<usize>>, method_secret_fns: &BTreeSet<String>, struct_fields: &PlaceTypes<'_>) -> Option<String> {
-                let Some(last) = list.last() else { return None };
+            fn stmt_value_secret(
+                list: &[Stmt],
+                local: &BTreeMap<String, ScopeBinding>,
+                secret_fns: &BTreeSet<String>,
+                param_return_taint: &BTreeMap<String, BTreeSet<usize>>,
+                method_secret_fns: &BTreeSet<String>,
+                struct_fields: &PlaceTypes<'_>,
+            ) -> Option<String> {
+                let last = list.last()?;
                 match last {
-                    Stmt::ExprStmt(expr) => expr_secret_source_m(expr, local, secret_fns, param_return_taint, method_secret_fns, struct_fields),
-                    Stmt::If { cond, then, else_ } => {
-                        expr_secret_source_m(cond, local, secret_fns, param_return_taint, method_secret_fns, struct_fields)
-                            .or_else(|| stmt_value_secret(then, local, secret_fns, param_return_taint, method_secret_fns, struct_fields))
-                            .or_else(|| else_.as_deref().and_then(|e| stmt_value_secret(e, local, secret_fns, param_return_taint, method_secret_fns, struct_fields)))
-                    }
+                    Stmt::ExprStmt(expr) => expr_secret_source_m(
+                        expr,
+                        local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    ),
+                    Stmt::If { cond, then, else_ } => expr_secret_source_m(
+                        cond,
+                        local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    )
+                    .or_else(|| {
+                        stmt_value_secret(
+                            then,
+                            local,
+                            secret_fns,
+                            param_return_taint,
+                            method_secret_fns,
+                            struct_fields,
+                        )
+                    })
+                    .or_else(|| {
+                        else_.as_deref().and_then(|e| {
+                            stmt_value_secret(
+                                e,
+                                local,
+                                secret_fns,
+                                param_return_taint,
+                                method_secret_fns,
+                                struct_fields,
+                            )
+                        })
+                    }),
                     _ => None,
                 }
-            };
+            }
             tail.as_deref()
-                .or_else(|| stmts.last().and_then(|stmt| match stmt {
-                    Stmt::ExprStmt(expr) => Some(expr),
-                    _ => None,
-                }))
-                .and_then(|t| {
-                expr_secret_source_m(
-                    t,
-                    &local,
-                    secret_fns,
-                    param_return_taint,
-                    method_secret_fns,
-                    struct_fields,
-                )
+                .or_else(|| {
+                    stmts.last().and_then(|stmt| match stmt {
+                        Stmt::ExprStmt(expr) => Some(expr),
+                        _ => None,
+                    })
                 })
-                .or_else(|| stmt_value_secret(stmts, &local, secret_fns, param_return_taint, method_secret_fns, struct_fields))
+                .and_then(|t| {
+                    expr_secret_source_m(
+                        t,
+                        &local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    )
+                })
+                .or_else(|| {
+                    stmt_value_secret(
+                        stmts,
+                        &local,
+                        secret_fns,
+                        param_return_taint,
+                        method_secret_fns,
+                        struct_fields,
+                    )
+                })
         }
         Expr::Match {
             scrutinee, arms, ..
@@ -22593,7 +22664,9 @@ fn expr_secret_source_m(
                 )
             })
         }
-        Expr::If { cond, then, else_, .. } => expr_secret_source_m(
+        Expr::If {
+            cond, then, else_, ..
+        } => expr_secret_source_m(
             cond,
             scope,
             secret_fns,
@@ -22601,14 +22674,16 @@ fn expr_secret_source_m(
             method_secret_fns,
             struct_fields,
         )
-        .or_else(|| expr_secret_source_m(
-            then,
-            scope,
-            secret_fns,
-            param_return_taint,
-            method_secret_fns,
-            struct_fields,
-        ))
+        .or_else(|| {
+            expr_secret_source_m(
+                then,
+                scope,
+                secret_fns,
+                param_return_taint,
+                method_secret_fns,
+                struct_fields,
+            )
+        })
         .or_else(|| {
             expr_secret_source_m(
                 else_,
@@ -24541,7 +24616,9 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             s.extend(expr_param_flow(else_, flow));
             s
         }
-        Expr::If { cond, then, else_, .. } => {
+        Expr::If {
+            cond, then, else_, ..
+        } => {
             let mut s = expr_param_flow(cond, flow);
             s.extend(expr_param_flow(then, flow));
             s.extend(expr_param_flow(else_, flow));
@@ -26806,17 +26883,17 @@ mod builtin_gate_tag_tests {
             }),
             index: Box::new(Expr::Literal("0".into())),
         };
-        assert!(builtin_gate_tags_of(&expr, &BTreeMap::new(), &SemanticContext::default())
-            .contains(&BuiltinGateTag::TaintSource));
+        assert!(
+            builtin_gate_tags_of(&expr, &BTreeMap::new(), &SemanticContext::default())
+                .contains(&BuiltinGateTag::TaintSource)
+        );
     }
 
     #[test]
     fn returned_builtin_resolves_tags() {
         let mut ctx = SemanticContext::default();
-        ctx.fn_sole_return.insert(
-            "get".into(),
-            (Vec::new(), Expr::Var("input".into())),
-        );
+        ctx.fn_sole_return
+            .insert("get".into(), (Vec::new(), Expr::Var("input".into())));
         let call = Expr::Call {
             callee: "get".into(),
             args: Vec::new(),
@@ -26842,17 +26919,14 @@ mod builtin_gate_tag_tests {
         let ctx = SemanticContext::default();
         let mut scope = BTreeMap::new();
         let mut xs = binding(BuiltinGateTags::empty());
-        xs.field_builtin_gate_tags.insert(
-            "0".into(),
-            seed_builtin_gate_tags("input"),
-        );
+        xs.field_builtin_gate_tags
+            .insert("0".into(), seed_builtin_gate_tags("input"));
         scope.insert("xs".into(), xs);
         let call = Expr::Call {
             callee: "first".into(),
             args: vec![Expr::Var("xs".into())],
         };
-        assert!(builtin_gate_tags_of(&call, &scope, &ctx)
-            .contains(&BuiltinGateTag::TaintSource));
+        assert!(builtin_gate_tags_of(&call, &scope, &ctx).contains(&BuiltinGateTag::TaintSource));
     }
 
     #[test]
@@ -26860,10 +26934,8 @@ mod builtin_gate_tag_tests {
         let ctx = SemanticContext::default();
         let mut scope = BTreeMap::new();
         let mut xs = binding(BuiltinGateTags::empty());
-        xs.field_builtin_gate_tags.insert(
-            "0".into(),
-            seed_builtin_gate_tags("write_file"),
-        );
+        xs.field_builtin_gate_tags
+            .insert("0".into(), seed_builtin_gate_tags("write_file"));
         scope.insert("xs".into(), xs);
         let call = Expr::Call {
             callee: "len".into(),
@@ -26882,7 +26954,9 @@ mod builtin_gate_tag_tests {
                 Expr::ArrayLiteral {
                     elements: vec![Expr::Var("write_file".into())],
                 },
-                Expr::ArrayLiteral { elements: Vec::new() },
+                Expr::ArrayLiteral {
+                    elements: Vec::new(),
+                },
             ],
         };
         assert_eq!(
@@ -26901,17 +26975,17 @@ mod builtin_gate_tag_tests {
         let ctx = SemanticContext::default();
         let mut scope = BTreeMap::new();
         let mut map = binding(BuiltinGateTags::empty());
-        map.field_builtin_gate_tags.insert(
-            "k.g".into(),
-            seed_builtin_gate_tags("write_file"),
-        );
+        map.field_builtin_gate_tags
+            .insert("k.g".into(), seed_builtin_gate_tags("write_file"));
         scope.insert("m".into(), map);
         let extracted = Expr::Index {
             base: Box::new(Expr::Var("m".into())),
             index: Box::new(Expr::StrLiteral("k".into())),
         };
-        assert!(builtin_gate_tags_carried_by_value_d(&extracted, &scope, &ctx, 0)
-            .contains(&BuiltinGateTag::Capability("fs.write".into())));
+        assert!(
+            builtin_gate_tags_carried_by_value_d(&extracted, &scope, &ctx, 0)
+                .contains(&BuiltinGateTag::Capability("fs.write".into()))
+        );
     }
 
     #[test]

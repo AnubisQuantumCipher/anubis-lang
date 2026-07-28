@@ -1242,6 +1242,12 @@ fn mint_and_write_guest_cap(
 }
 
 /// Mint + rsync capability into guest; returns (cap_key, program_digest) for env injection.
+//
+// Eight parameters, one over the threshold. `user`/`ip`/`guest_id`/`base` genuinely do form a
+// "which guest, reached how" group and could become a struct — that refactor is worth doing and
+// is NOT being done here, mid-round, in a file another agent is actively editing. Recorded as a
+// deliberate deferral rather than dressed up as a judgement that the lint is wrong.
+#[allow(clippy::too_many_arguments)]
 fn stage_run_capability_to_guest(
     identity: &VzEngagementIdentity,
     user: &str,
@@ -1371,6 +1377,7 @@ fn scrape_disposable_guest(user: &str, ip: &str) -> serde_json::Value {
 /// Seal a `vz_exploit_run` / `vz_fuzz_run` action into the engagement's hash-chained receipt chain.
 /// A no-op when `engage_dir` is `None` (the operator opted out of proof-carrying — see the
 /// warning in `resolve_vz_engagement`). Returns whether a receipt was written.
+#[allow(clippy::too_many_arguments)]
 fn seal_vz_disposable_action(
     identity: &VzEngagementIdentity,
     action: &str,

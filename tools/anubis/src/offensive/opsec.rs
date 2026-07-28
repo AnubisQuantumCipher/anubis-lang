@@ -157,6 +157,28 @@ pub fn score_engagement(eng: &Engagement) -> Value {
     })
 }
 
+fn finding(sev: &str, code: &str, msg: &str) -> Value {
+    json!({ "severity": sev, "code": code, "message": msg })
+}
+
+/// Standing elite red-team OPSEC checklist (process, not just config).
+pub fn elite_checklist() -> Vec<Value> {
+    vec![
+        json!({"id":"ROE","item":"Written ROE / authorization ID on every engagement"}),
+        json!({"id":"SCOPE","item":"Explicit in-scope hosts, paths, CIDRs; fail closed outside"}),
+        json!({"id":"VZ","item":"AOP C2/inject/lateral only inside Apple VZ; PoC kit gold fixture may host-lab; prefer vz exploit|fuzz for primary crash evidence"}),
+        json!({"id":"RECEIPTS","item":"Hash-chained receipts for every operator action"}),
+        json!({"id":"ENCRYPT","item":"Encrypted C2 (aop-2) + optional mTLS"}),
+        json!({"id":"JITTER","item":"Beacon sleep + jitter to avoid fixed cadence"}),
+        json!({"id":"LEAST","item":"Least privilege RBAC + operator tokens"}),
+        json!({"id":"PLAN_ONLY","item":"Injection / SMB / phishing plans never auto-fire without dual auth"}),
+        json!({"id":"KILL","item":"Kill date + freeze path on Abort"}),
+        json!({"id":"PURPLE","item":"Map every live technique to ATT&CK for purple-team debrief"}),
+        json!({"id":"NO_IMPACT","item":"No destructive Impact (ransomware-class) automation"}),
+        json!({"id":"EVIDENCE","item":"Loot + report for defenders; human presses send on disclosure"}),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,26 +247,4 @@ mod tests {
             assert!(item["item"].as_str().is_some(), "each item needs text");
         }
     }
-}
-
-fn finding(sev: &str, code: &str, msg: &str) -> Value {
-    json!({ "severity": sev, "code": code, "message": msg })
-}
-
-/// Standing elite red-team OPSEC checklist (process, not just config).
-pub fn elite_checklist() -> Vec<Value> {
-    vec![
-        json!({"id":"ROE","item":"Written ROE / authorization ID on every engagement"}),
-        json!({"id":"SCOPE","item":"Explicit in-scope hosts, paths, CIDRs; fail closed outside"}),
-        json!({"id":"VZ","item":"AOP C2/inject/lateral only inside Apple VZ; PoC kit gold fixture may host-lab; prefer vz exploit|fuzz for primary crash evidence"}),
-        json!({"id":"RECEIPTS","item":"Hash-chained receipts for every operator action"}),
-        json!({"id":"ENCRYPT","item":"Encrypted C2 (aop-2) + optional mTLS"}),
-        json!({"id":"JITTER","item":"Beacon sleep + jitter to avoid fixed cadence"}),
-        json!({"id":"LEAST","item":"Least privilege RBAC + operator tokens"}),
-        json!({"id":"PLAN_ONLY","item":"Injection / SMB / phishing plans never auto-fire without dual auth"}),
-        json!({"id":"KILL","item":"Kill date + freeze path on Abort"}),
-        json!({"id":"PURPLE","item":"Map every live technique to ATT&CK for purple-team debrief"}),
-        json!({"id":"NO_IMPACT","item":"No destructive Impact (ransomware-class) automation"}),
-        json!({"id":"EVIDENCE","item":"Loot + report for defenders; human presses send on disclosure"}),
-    ]
 }

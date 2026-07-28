@@ -13,31 +13,44 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 
+# Root-relative "SPEC_1_0_FREEZE.md" and "TUTORIAL.md" were removed 2026-07-28. Neither file has
+# ever existed at the repository root, so `scan()` skipped each with a bare `continue` on every run
+# — two of fifteen declared owned docs silently absent, which is precisely the vacuous-coverage
+# shape the harness-integrity audit named. Their real locations under docs/language/ are listed and
+# were always the ones actually scanned; deleting the dead entries removes the illusion of coverage
+# without changing a single measured stamp.
 LIVE_FILES = [
     "AGENTS.md",
     "README.md",
     "LANGUAGE.md",
+    "docs/README.md",
+    "docs/CAPABILITIES.md",
+    "docs/EXAMPLES.md",
     "docs/CLAIMS.md",
     "docs/language/BUILTINS.md",
     "docs/language/ROADMAP.md",
     "docs/language/STDLIB_CORE.md",
     "MATURITY_CLAIM_MATRIX.md",
-    "SPEC_1_0_FREEZE.md",
     "docs/language/SPEC_1_0_FREEZE.md",
     "A_PLUS_ACCEPTANCE_CRITERIA.md",
-    "A_PLUS_CLOSEOUT.md",
-    "A_PLUS_FINAL_REPORT.md",
-    "TUTORIAL.md",
+    "docs/history/A_PLUS_CLOSEOUT.md",
+    "docs/history/A_PLUS_FINAL_REPORT.md",
     "docs/language/TUTORIAL.md",
 ]
 
 # Numeric live stamps predate the semantic-claim sweep and intentionally remain limited to the
 # canonical live status/spec surfaces. Archive-heavy roadmap/matrix/report files are claim-scanned,
 # but their dated historical N/N rows are not reinterpreted as live stamps.
+#
+# docs/CAPABILITIES.md joined 2026-07-28: the capability matrix moved out of README.md and carries
+# the live Lean, stdlib-module and builtin counts with it. Registering it here is what keeps those
+# stamps measured — a doc that is not in this set is not protected from drift, so an extraction that
+# skipped this step would have quietly lowered the ratchet instead of relocating coverage.
 LIVE_STAMP_FILES = {
     "AGENTS.md",
     "README.md",
     "LANGUAGE.md",
+    "docs/CAPABILITIES.md",
     "docs/CLAIMS.md",
     "docs/language/BUILTINS.md",
     "docs/language/STDLIB_CORE.md",
