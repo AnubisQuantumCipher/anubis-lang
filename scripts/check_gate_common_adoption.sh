@@ -22,6 +22,7 @@ exception_reason() {
     scripts/fixture_preflight.sh) echo "single-fixture classifier, not a corpus scorer; returns 0/2/3 for one pair and is guarded by --self-test (run as G22)" ;;
     scripts/guard_reachability.sh) echo "single-fixture classifier (poison a guard, see if the analysis notices); returns 0/2/3 for one pair and is guarded by --self-test" ;;
     scripts/instrument_hygiene.sh) echo "meta-check over the TOOLS rather than fixtures; scores no corpus and asserts on tool invariants" ;;
+    scripts/classify_builtin_surface.sh) echo "MEASURES the builtin surface into a matrix; it has no expected verdicts to score and never emits a PASS/FAIL — a coverage assertion over a corpus that does not exist would be meaningless" ;;
     scripts/run_author_diversity_gate.sh) echo "source authorship audit, not an Anubis fixture corpus" ;;
     scripts/run_check_confine_run_gate.sh) echo "fixed end-to-end confinement scenario" ;;
     scripts/run_dx_gate.sh) echo "fixed DX assertions; EXPECT text is test-runner input" ;;
