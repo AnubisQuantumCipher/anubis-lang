@@ -347,7 +347,7 @@ pub fn vz_status() -> Result<Vec<VzGuest>> {
                 .unwrap_or("local")
                 .into(),
             running,
-            network: VzNetwork::Off,
+            network: VzNetwork::Nat,
             backend: "tart".into(),
         });
     }
@@ -435,6 +435,22 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
     }
 
     let _ = tart_bin()?;
+
+    if matches!(network, VzNetwork::Off | VzNetwork::LoopbackOnly) {
+        return Err(anyhow!(
+            "ANUBIS_VZ_NET_STRUCTURAL: --network {net} is not enforceable on the Tart wrapper. \
+             Tart has no flag to remove the guest NIC — the previous code SILENTLY ran with full \
+             shared-NAT networking while labeling 'network: {net}'. Use --network nat for Tart \
+             guests, or use `anubis vz native-boot` for true zero-NIC isolation \
+             (networkDevices=[] at hypervisor level).",
+            net = match network {
+                VzNetwork::Off => "off",
+                VzNetwork::LoopbackOnly => "loopback",
+                _ => unreachable!(),
+            }
+        ));
+    }
+
     // Must use Tart running-state, not a stale `tart ip` after stop.
     if guest_is_running(name)? {
         // Warm-check SSH so "started" means operable, not merely listed.
@@ -447,10 +463,9 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
     }
     let bin = tart_bin()?;
     let mut args = vec!["run".to_string(), name.to_string(), "--no-graphics".into()];
-    // Softnet ≈ NAT-like guest networking; default Tart is more host-local.
-    if matches!(network, VzNetwork::Nat) {
-        args.push("--net-softnet".into());
-    }
+    // Tart's default is shared NAT (vmnet framework). --net-softnet gives a user-space
+    // networking stack with optional CIDR block/allow. Off/LoopbackOnly are rejected above.
+    args.push("--net-softnet".into());
     Command::new(bin)
         .args(&args)
         .stdin(Stdio::null())
@@ -557,7 +572,7 @@ pub fn vz_exec(
         stdout,
         stderr,
         duration_ms: duration.as_millis() as u64,
-        network: VzNetwork::Off,
+        network: VzNetwork::Nat,
         evidence_hash,
         backend: "tart".into(),
     })
@@ -1277,7 +1292,7 @@ pub fn vz_stress_battery(eng: &Engagement, guest: &str, engage_dir: &Path) -> Re
         stdout,
         stderr,
         duration_ms: duration.as_millis() as u64,
-        network: VzNetwork::Off,
+        network: VzNetwork::Nat,
         evidence_hash,
         backend: "tart-disposable-guest-gate".into(),
     };
