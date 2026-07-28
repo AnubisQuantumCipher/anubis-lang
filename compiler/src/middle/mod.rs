@@ -287,6 +287,25 @@ impl BuiltinGateTags {
         }
     }
 
+    /// Union a set of MAY-carry observations without letting an unrelated `Unknown` erase a
+    /// concrete gate already found. If no concrete tag is known, uncertainty remains `Unknown`;
+    /// otherwise the known tags are sound facts even though the value may carry additional ones.
+    fn union_concrete(tags: impl IntoIterator<Item = Self>) -> Self {
+        let mut concrete = BTreeSet::new();
+        let mut saw_unknown = false;
+        for tags in tags {
+            match tags {
+                Self::Known(found) => concrete.extend(found),
+                Self::Unknown => saw_unknown = true,
+            }
+        }
+        if !concrete.is_empty() || !saw_unknown {
+            Self::Known(concrete)
+        } else {
+            Self::Unknown
+        }
+    }
+
     fn contains(&self, wanted: &BuiltinGateTag) -> bool {
         matches!(self, Self::Known(tags) if tags.contains(wanted))
     }
@@ -848,18 +867,41 @@ fn builtin_gate_tags_of_d(
         }
         Expr::Call { callee, args } => {
             if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 {
-                return builtin_gate_tags_of_d(&args[0], scope, ctx, depth + 1);
+                return builtin_gate_tags_carried_by_value_d(&args[0], scope, ctx, depth + 1);
             }
             if let Some((param_names, index)) = ctx.fn_returns_param.get(callee) {
                 if param_names.len() == args.len() {
                     if let Some(arg) = args.get(*index) {
-                        return builtin_gate_tags_of_d(arg, scope, ctx, depth + 1);
+                        return builtin_gate_tags_carried_by_value_d(arg, scope, ctx, depth + 1);
                     }
                 }
                 return BuiltinGateTags::Unknown;
             }
-            if let Some((_param_names, returned)) = ctx.fn_sole_return.get(callee) {
-                return builtin_gate_tags_of_d(returned, scope, ctx, depth + 1);
+            if let Some((param_names, returned)) = ctx.fn_sole_return.get(callee) {
+                let substitutions: BTreeMap<String, Expr> = param_names
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect();
+                let returned = substitute_vars(returned, &substitutions);
+                return builtin_gate_tags_carried_by_value_d(
+                    &returned,
+                    scope,
+                    ctx,
+                    depth + 1,
+                );
+            }
+            // Value-lane parity: the result of an otherwise-unsummarized builtin MAY carry any
+            // labelled argument. This one rule covers element extractors, collection transforms,
+            // and map result carriers without maintaining three name tables that can drift. A
+            // user function or local binding with the same spelling wins before builtin seeding.
+            if !scope.contains_key(callee)
+                && !ctx.all_fns.contains(callee)
+                && crate::backends::run::is_builtin_name(callee)
+            {
+                return BuiltinGateTags::union_concrete(args.iter().map(|arg| {
+                    builtin_gate_tags_carried_by_value_d(arg, scope, ctx, depth + 1)
+                }));
             }
             BuiltinGateTags::Unknown
         }
@@ -918,6 +960,73 @@ fn builtin_gate_tags_of_d(
     }
 }
 
+/// Tags carried anywhere inside a value. Callable application still charges only at an application
+/// witness; this aggregate is used solely when an operation may return/forward an element or when a
+/// dynamic access path prevents a more precise lookup.
+fn builtin_gate_tags_carried_by_value_d(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> BuiltinGateTags {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return BuiltinGateTags::Unknown;
+    }
+    let mut observations = vec![builtin_gate_tags_of_d(expr, scope, ctx, depth + 1)];
+    match expr {
+        Expr::Var(name) => {
+            if let Some(binding) = scope.get(name) {
+                observations.extend(binding.field_builtin_gate_tags.values().cloned());
+            }
+        }
+        Expr::ArrayLiteral { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::If { .. }
+        | Expr::IfLet { .. }
+        | Expr::Match { .. } => {
+            let mut fields = BTreeMap::new();
+            collect_container_builtin_gate_tags(expr, "", scope, ctx, &mut fields);
+            observations.extend(fields.into_values());
+        }
+        Expr::Index { .. } | Expr::FieldAccess { .. } => {
+            if let Some((root, prefix)) = flatten_access_path(expr) {
+                if let Some(binding) = scope.get(&root) {
+                    let dotted = format!("{prefix}.");
+                    observations.extend(
+                        binding
+                            .field_builtin_gate_tags
+                            .iter()
+                            .filter(|(path, _)| path.starts_with(&dotted))
+                            .map(|(_, tags)| tags.clone()),
+                    );
+                }
+            }
+        }
+        Expr::Call { .. }
+        | Expr::CallExpr { .. }
+        | Expr::Block { .. }
+        | Expr::Tainted { .. }
+        | Expr::Declassify { .. }
+        | Expr::Lambda { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::Try(_)
+        | Expr::Other(_) => {}
+    }
+    BuiltinGateTags::union_concrete(observations)
+}
+
 fn builtin_gate_tags_at_path_expr(
     expr: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -952,7 +1061,17 @@ fn builtin_gate_tags_at_path_expr(
             .filter(|(key, _)| key.starts_with("_p"))
             .map(|(_, tags)| tags.clone())
             .reduce(BuiltinGateTags::union);
-        return pushed.unwrap_or(BuiltinGateTags::Unknown);
+        if let Some(tags) = pushed {
+            return tags;
+        }
+        // A returned/transformed container may have no recoverable element layout. Its root then
+        // stores the conservative union of carried tags; use it only when it is concrete and
+        // non-empty. Literal containers retain exact paths above and a clean root never invents a
+        // gate for a missing field.
+        if matches!(&binding.builtin_gate_tags, BuiltinGateTags::Known(tags) if !tags.is_empty()) {
+            return binding.builtin_gate_tags.clone();
+        }
+        return BuiltinGateTags::Unknown;
     }
     match expr {
         Expr::Index { base, index } => {
@@ -1066,6 +1185,34 @@ fn collect_container_builtin_gate_tags(
             format!("{prefix}.{segment}")
         }
     };
+    // Preserve exact paths through aliases and statically-visible user-function returns. The root
+    // aggregate is still recorded separately by `builtin_gate_tags_of`; these paths are what keep
+    // `[pure, gated][0]` precise after an interprocedural return instead of charging the sibling.
+    match init {
+        Expr::Var(name) => {
+            if let Some(binding) = scope.get(name) {
+                for (key, tags) in &binding.field_builtin_gate_tags {
+                    out.insert(path(key), tags.clone());
+                }
+            }
+            return;
+        }
+        Expr::Call { callee, args } => {
+            if let Some((param_names, returned)) = ctx.fn_sole_return.get(callee) {
+                let substitutions: BTreeMap<String, Expr> = param_names
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect();
+                let returned = substitute_vars(returned, &substitutions);
+                collect_container_builtin_gate_tags(
+                    &returned, prefix, scope, ctx, out,
+                );
+            }
+            return;
+        }
+        _ => {}
+    }
     let entries: Vec<(String, &Expr)> = match init {
         Expr::ArrayLiteral { elements } => elements
             .iter()
@@ -2239,6 +2386,11 @@ struct SemanticContext {
     /// This is the FIXPOINT result (direct/HOF applies + transitive forwarding); the raw direct+edges
     /// are collected in `register_program_surface` and closed by `compute_applies_param_fixpoint`.
     fn_applies_param: BTreeMap<String, Vec<usize>>,
+    /// Exact access paths applied from a formal at the declaration site. An empty path is the formal
+    /// itself; concrete dotted paths represent indexed/field callables. Kept separate from the
+    /// whole-param fixpoint so transitive unknowns remain conservative without erasing direct-path
+    /// precision at ordinary container HOF boundaries.
+    fn_applied_param_paths: BTreeMap<String, BTreeMap<usize, BTreeSet<String>>>,
     /// Task #48 (transitive closure forwarding): the parameter indices each fn SHADOWS/reassigns — used
     /// to gate the transitive fixpoint so a forwarded-but-shadowed param is never marked applied.
     fn_param_shadowed: BTreeMap<String, Vec<usize>>,
@@ -2772,13 +2924,27 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                 {
                     let mut applied = Vec::new();
                     let mut shadowed = Vec::new();
+                    let mut applied_paths = BTreeMap::new();
+                    let method_names: BTreeSet<String> =
+                        ctx.method_params.keys().cloned().collect();
                     for (i, (pname, _)) in params.iter().enumerate() {
                         let (mut applies, mut shadows) = (false, false);
-                        scan_applied_param_stmts(body, pname, &mut applies, &mut shadows);
+                        let mut paths = BTreeSet::new();
+                        scan_applied_param_stmts(
+                            body,
+                            pname,
+                            &mut applies,
+                            &mut shadows,
+                            &mut paths,
+                            &method_names,
+                        );
                         if shadows {
                             shadowed.push(i);
                         } else if applies {
                             applied.push(i);
+                            if !paths.is_empty() {
+                                applied_paths.insert(i, paths);
+                            }
                         }
                     }
                     if !applied.is_empty() {
@@ -2786,6 +2952,10 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                     }
                     if !shadowed.is_empty() {
                         ctx.fn_param_shadowed.insert(name.clone(), shadowed);
+                    }
+                    if !applied_paths.is_empty() {
+                        ctx.fn_applied_param_paths
+                            .insert(name.clone(), applied_paths);
                     }
                     let pidx: BTreeMap<String, usize> = params
                         .iter()
@@ -7943,7 +8113,15 @@ fn analyze_stmts(
                     &ctx.place_types(),
                 )
                 .is_some();
-                seed_effect_pattern(scope, pattern, &taint, secret, &ctx.place_types());
+                seed_effect_pattern(
+                    scope,
+                    pattern,
+                    init,
+                    &taint,
+                    secret,
+                    &ctx.place_types(),
+                    ctx,
+                );
                 // Patch each bound name's span to the real `let`-pattern span. `seed_effect_pattern`
                 // inserts `span: None`, but `merge_taint_over` disambiguates a branch SHADOW from a
                 // reassignment by span identity — so without a real, distinct span a statement-position
@@ -8241,7 +8419,15 @@ fn analyze_stmts(
                 let mut arm_scopes = Vec::new();
                 for arm in arms {
                     let mut arm_scope = scope.clone();
-                    seed_effect_pattern(&mut arm_scope, &arm.pattern, &st, ss, &ctx.place_types());
+                    seed_effect_pattern(
+                        &mut arm_scope,
+                        &arm.pattern,
+                        scrutinee,
+                        &st,
+                        ss,
+                        &ctx.place_types(),
+                        ctx,
+                    );
                     propagate_pattern_closures(&mut arm_scope, scrutinee, &arm.pattern);
                     // The arm's pattern binds names (`Shape::Box { center, .. }`) that the arm body reads;
                     // seed them so `analyze_stmts`' unknown-variable check does not false-fire on a valid
@@ -8327,7 +8513,15 @@ fn analyze_stmts(
                 let snap_asm = assumptions.clone();
                 let obl_mark = ctx.solver_obligations.len();
                 let mut then_scope = scope.clone();
-                seed_effect_pattern(&mut then_scope, pattern, &st, ss, &ctx.place_types());
+                seed_effect_pattern(
+                    &mut then_scope,
+                    pattern,
+                    scrutinee,
+                    &st,
+                    ss,
+                    &ctx.place_types(),
+                    ctx,
+                );
                 propagate_pattern_closures(&mut then_scope, scrutinee, pattern);
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
@@ -8534,9 +8728,22 @@ fn analyze_stmts(
                     //     and writing `xs[0]` says nothing certain about `xs` as a whole any more.
                     //     Dropping to Unknown defers; leaving the stale entry would keep asserting.
                     //
-                    // A non-literal index has no single path to refresh, so the root's recorded
-                    // paths are dropped to Unknown wholesale — the fail-closed direction, and the
-                    // same trade the symbolic-index read already makes.
+                    // A non-literal index has no single path to refresh. Dropping the root's paths
+                    // to `Unknown` wholesale LOOKS fail-closed and is not: `Unknown` charges
+                    // nothing, so wiping the map DELETES evidence rather than widening it.
+                    // Measured as a true fail-open with a runtime witness after the first version
+                    // of this fix shipped:
+                    //
+                    //     let xs = [write_file, pure];
+                    //     let i = 1;
+                    //     xs[i] = pure;                  // wiped every path to Unknown
+                    //     xs[0]("/tmp/f", "x");          // still write_file — ACCEPTED, wrote it
+                    //
+                    // The sound reading of a write through an unknown index is MONOTONE: one slot
+                    // now holds the new value, and nothing is known about WHICH, so no existing
+                    // element can be proven gone. Union the assigned value's tags into every
+                    // recorded path and keep what was already there. That only ever widens the
+                    // charged set, so it cannot lose a rejection the way the wipe did.
                     let assigned_tags = builtin_gate_tags_of(value, scope, ctx);
                     let assigned_path = flatten_access_path(target).map(|(_, path)| path);
                     if let Some(b) = scope.get_mut(root) {
@@ -8551,7 +8758,21 @@ fn analyze_stmts(
                             }
                             None => {
                                 for tags in b.field_builtin_gate_tags.values_mut() {
-                                    *tags = BuiltinGateTags::Unknown;
+                                    *tags = tags.clone().union(assigned_tags.clone());
+                                }
+                                // A container with no recorded paths yet still gains one: the
+                                // write put a value somewhere in it, and a later read of any slot
+                                // must be able to see that. Without this the union above has
+                                // nothing to widen and the write is silently forgotten.
+                                if b.field_builtin_gate_tags.is_empty() {
+                                    if let BuiltinGateTags::Known(t) = &assigned_tags {
+                                        if !t.is_empty() {
+                                            b.field_builtin_gate_tags.insert(
+                                                "_w0".to_string(),
+                                                assigned_tags.clone(),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -9162,7 +9383,15 @@ fn analyze_stmts(
                 // the `if let` and `match` twins rejected. GROK-SEKHMET round 9.
                 //
                 // A second binder-seeding path is exactly how these lanes drift; there is now one.
-                seed_effect_pattern(scope, pattern, &wl_taint, wl_secret, &ctx.place_types());
+                seed_effect_pattern(
+                    scope,
+                    pattern,
+                    expr,
+                    &wl_taint,
+                    wl_secret,
+                    &ctx.place_types(),
+                    ctx,
+                );
                 for n in pattern.bound_names() {
                     ctx.known_bindings.insert(n);
                 }
@@ -10901,9 +11130,24 @@ fn analyze_expr_effect(
             // shadows are enforced (`fn_applies_param`), so a non-applied/shadowed closure arg is never
             // spuriously charged (no false reject). Cloned out of `ctx` first to free the borrow.
             if let Some(applied) = ctx.fn_applies_param.get(callee).cloned() {
+                let applied_paths = ctx.fn_applied_param_paths.get(callee).cloned();
                 for i in applied {
                     if let Some(arg) = args.get(i) {
-                        let tags = builtin_gate_tags_of(arg, scope, ctx);
+                        let tags = applied_paths
+                            .as_ref()
+                            .and_then(|by_param| by_param.get(&i))
+                            .map(|paths| {
+                                BuiltinGateTags::union_concrete(paths.iter().map(|path| {
+                                    if path.is_empty() {
+                                        builtin_gate_tags_of(arg, scope, ctx)
+                                    } else if path == "*" {
+                                        builtin_gate_tags_carried_by_value_d(arg, scope, ctx, 0)
+                                    } else {
+                                        builtin_gate_tags_at_path(arg, path, scope, ctx, 0)
+                                    }
+                                }))
+                            })
+                            .unwrap_or_else(|| builtin_gate_tags_of(arg, scope, ctx));
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
                     }
                     let resolved: Option<Expr> = match args.get(i) {
@@ -11095,7 +11339,15 @@ fn analyze_expr_effect(
             }
             for arm in arms {
                 let mut local = scope.clone();
-                seed_effect_pattern(&mut local, &arm.pattern, &st, ss, &ctx.place_types());
+                seed_effect_pattern(
+                    &mut local,
+                    &arm.pattern,
+                    scrutinee,
+                    &st,
+                    ss,
+                    &ctx.place_types(),
+                    ctx,
+                );
                 propagate_pattern_closures(&mut local, scrutinee, &arm.pattern);
                 // A LAMBDA arm value is opaque at its definition, and this file's own justification
                 // for that is "safe only if EVERY application site descends". A closure built in an
@@ -11165,7 +11417,15 @@ fn analyze_expr_effect(
                 reject_implicit_flow_under_secret_pc(mode, ss, &assigned, scope, ctx);
             }
             let mut local = scope.clone();
-            seed_effect_pattern(&mut local, pattern, &st, ss, &ctx.place_types());
+            seed_effect_pattern(
+                &mut local,
+                pattern,
+                scrutinee,
+                &st,
+                ss,
+                &ctx.place_types(),
+                ctx,
+            );
             propagate_pattern_closures(&mut local, scrutinee, pattern);
             analyze_expr_effect(then, mode, &local, effects, ctx);
             analyze_expr_effect(else_, mode, scope, effects, ctx);
@@ -11733,7 +11993,15 @@ fn walk_block_effects(
                     &ctx.place_types(),
                 )
                 .is_some();
-                seed_effect_pattern(scope, pattern, &t, s, &ctx.place_types());
+                seed_effect_pattern(
+                    scope,
+                    pattern,
+                    init,
+                    &t,
+                    s,
+                    &ctx.place_types(),
+                    ctx,
+                );
             }
             Stmt::Assign {
                 target: Expr::Var(name),
@@ -15694,7 +15962,14 @@ fn collect_unconditional_param_contract_expr(
 /// so counting them would risk a false reject at a call site where no application actually occurs.
 /// Over-detecting a shadow only forgoes a descent (leaves the laundering hole open); it can never
 /// cause a false reject, so this is sound-by-under-approximation.
-fn scan_applied_param_stmts(body: &[Stmt], p: &str, applies: &mut bool, shadows: &mut bool) {
+fn scan_applied_param_stmts(
+    body: &[Stmt],
+    p: &str,
+    applies: &mut bool,
+    shadows: &mut bool,
+    paths: &mut BTreeSet<String>,
+    method_names: &BTreeSet<String>,
+) {
     use crate::frontend::ForSource;
     for s in body {
         match s {
@@ -15702,13 +15977,13 @@ fn scan_applied_param_stmts(body: &[Stmt], p: &str, applies: &mut bool, shadows:
                 if name == p {
                     *shadows = true;
                 }
-                scan_applied_param_expr(init, p, applies, shadows);
+                scan_applied_param_expr(init, p, applies, shadows, paths, method_names);
             }
             Stmt::LetPattern { pattern, init, .. } => {
                 if pattern.bound_names().iter().any(|n| n == p) {
                     *shadows = true;
                 }
-                scan_applied_param_expr(init, p, applies, shadows);
+                scan_applied_param_expr(init, p, applies, shadows, paths, method_names);
             }
             Stmt::WhileLet {
                 pattern,
@@ -15718,8 +15993,8 @@ fn scan_applied_param_stmts(body: &[Stmt], p: &str, applies: &mut bool, shadows:
                 if pattern.bound_names().iter().any(|n| n == p) {
                     *shadows = true;
                 }
-                scan_applied_param_expr(expr, p, applies, shadows);
-                scan_applied_param_stmts(body, p, applies, shadows);
+                scan_applied_param_expr(expr, p, applies, shadows, paths, method_names);
+                scan_applied_param_stmts(body, p, applies, shadows, paths, method_names);
             }
             Stmt::Assign { target, value } => {
                 if let Expr::Var(v) = target {
@@ -15727,21 +16002,23 @@ fn scan_applied_param_stmts(body: &[Stmt], p: &str, applies: &mut bool, shadows:
                         *shadows = true;
                     }
                 }
-                scan_applied_param_expr(target, p, applies, shadows);
-                scan_applied_param_expr(value, p, applies, shadows);
+                scan_applied_param_expr(target, p, applies, shadows, paths, method_names);
+                scan_applied_param_expr(value, p, applies, shadows, paths, method_names);
             }
             Stmt::If { cond, then, else_ } => {
-                scan_applied_param_expr(cond, p, applies, shadows);
-                scan_applied_param_stmts(then, p, applies, shadows);
+                scan_applied_param_expr(cond, p, applies, shadows, paths, method_names);
+                scan_applied_param_stmts(then, p, applies, shadows, paths, method_names);
                 if let Some(e) = else_ {
-                    scan_applied_param_stmts(e, p, applies, shadows);
+                    scan_applied_param_stmts(e, p, applies, shadows, paths, method_names);
                 }
             }
             Stmt::While { cond, body, .. } => {
-                scan_applied_param_expr(cond, p, applies, shadows);
-                scan_applied_param_stmts(body, p, applies, shadows);
+                scan_applied_param_expr(cond, p, applies, shadows, paths, method_names);
+                scan_applied_param_stmts(body, p, applies, shadows, paths, method_names);
             }
-            Stmt::Loop { body, .. } => scan_applied_param_stmts(body, p, applies, shadows),
+            Stmt::Loop { body, .. } => {
+                scan_applied_param_stmts(body, p, applies, shadows, paths, method_names)
+            }
             Stmt::For {
                 var, source, body, ..
             } => {
@@ -15750,27 +16027,27 @@ fn scan_applied_param_stmts(body: &[Stmt], p: &str, applies: &mut bool, shadows:
                 }
                 match source {
                     ForSource::Range { start, end } => {
-                        scan_applied_param_expr(start, p, applies, shadows);
-                        scan_applied_param_expr(end, p, applies, shadows);
+                        scan_applied_param_expr(start, p, applies, shadows, paths, method_names);
+                        scan_applied_param_expr(end, p, applies, shadows, paths, method_names);
                     }
                     ForSource::Collection { expr } => {
-                        scan_applied_param_expr(expr, p, applies, shadows)
+                        scan_applied_param_expr(expr, p, applies, shadows, paths, method_names)
                     }
                 }
-                scan_applied_param_stmts(body, p, applies, shadows);
+                scan_applied_param_stmts(body, p, applies, shadows, paths, method_names);
             }
             Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
-                scan_applied_param_stmts(body, p, applies, shadows)
+                scan_applied_param_stmts(body, p, applies, shadows, paths, method_names)
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 if let Some(b) = gpu {
-                    scan_applied_param_stmts(b, p, applies, shadows);
+                    scan_applied_param_stmts(b, p, applies, shadows, paths, method_names);
                 }
                 if let Some(b) = cpu {
-                    scan_applied_param_stmts(b, p, applies, shadows);
+                    scan_applied_param_stmts(b, p, applies, shadows, paths, method_names);
                 }
                 if let Some(b) = prove {
-                    scan_applied_param_stmts(b, p, applies, shadows);
+                    scan_applied_param_stmts(b, p, applies, shadows, paths, method_names);
                 }
             }
             Stmt::SpecBlock { forall } => {
@@ -15778,19 +16055,29 @@ fn scan_applied_param_stmts(body: &[Stmt], p: &str, applies: &mut bool, shadows:
                     *shadows = true;
                 }
             }
-            Stmt::ExprStmt(e) => scan_applied_param_expr(e, p, applies, shadows),
+            Stmt::ExprStmt(e) => {
+                scan_applied_param_expr(e, p, applies, shadows, paths, method_names)
+            }
             Stmt::Break | Stmt::Continue => {}
         }
     }
 }
 
 /// Expression half of `scan_applied_param_stmts`. A nested `Lambda` is a HARD STOP (deferred body).
-fn scan_applied_param_expr(e: &Expr, p: &str, applies: &mut bool, shadows: &mut bool) {
+fn scan_applied_param_expr(
+    e: &Expr,
+    p: &str,
+    applies: &mut bool,
+    shadows: &mut bool,
+    paths: &mut BTreeSet<String>,
+    method_names: &BTreeSet<String>,
+) {
     match e {
         // A direct application `p(...)` at this level is the target pattern.
         Expr::Call { callee, args } => {
             if callee == p {
                 *applies = true;
+                paths.insert(String::new());
             }
             // Task #48 (HOF-forwarding): a param passed at a higher-order-builtin closure-arg position
             // (`each([1], p)`, `map(p, xs)`, …) IS applied by that builtin, so it counts as an
@@ -15800,82 +16087,111 @@ fn scan_applied_param_expr(e: &Expr, p: &str, applies: &mut bool, shadows: &mut 
                 if let Some(Expr::Var(v)) = args.get(j) {
                     if v == p {
                         *applies = true;
+                        paths.insert(String::new());
                     }
                 }
             }
             for a in args {
-                scan_applied_param_expr(a, p, applies, shadows);
+                scan_applied_param_expr(a, p, applies, shadows, paths, method_names);
             }
         }
         Expr::CallExpr { callee, args } => {
             if let Expr::Var(v) = &**callee {
                 if v == p {
                     *applies = true;
+                    paths.insert(String::new());
+                }
+            } else {
+                // `p[0](...)` / `p.field(...)` applies a callable carried inside the formal. Keep
+                // its exact path so the caller charges that element rather than every sibling.
+                // A registered method name is deliberately excluded: `p.method(...)` is a method
+                // call on the receiver, not an application of a function value stored in `p`.
+                let is_method = matches!(
+                    callee.as_ref(),
+                    Expr::FieldAccess { field, .. } if method_names.contains(field)
+                );
+                if !is_method && access_chain_root(callee).is_some_and(|root| root == p) {
+                    *applies = true;
+                    let path = flatten_access_path(callee)
+                        .map(|(_, path)| path)
+                        .unwrap_or_else(|| "*".to_string());
+                    paths.insert(path);
                 }
             }
-            scan_applied_param_expr(callee, p, applies, shadows);
+            scan_applied_param_expr(callee, p, applies, shadows, paths, method_names);
             for a in args {
-                scan_applied_param_expr(a, p, applies, shadows);
+                scan_applied_param_expr(a, p, applies, shadows, paths, method_names);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            scan_applied_param_expr(lhs, p, applies, shadows);
-            scan_applied_param_expr(rhs, p, applies, shadows);
+            scan_applied_param_expr(lhs, p, applies, shadows, paths, method_names);
+            scan_applied_param_expr(rhs, p, applies, shadows, paths, method_names);
         }
         Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => {
-            scan_applied_param_expr(expr, p, applies, shadows)
+            scan_applied_param_expr(expr, p, applies, shadows, paths, method_names)
         }
         Expr::Tainted { inner, .. }
         | Expr::Assume(inner)
         | Expr::Assert(inner)
         | Expr::Declassify { inner, .. }
-        | Expr::Try(inner) => scan_applied_param_expr(inner, p, applies, shadows),
-        Expr::Index { base, index } => {
-            scan_applied_param_expr(base, p, applies, shadows);
-            scan_applied_param_expr(index, p, applies, shadows);
+        | Expr::Try(inner) => {
+            scan_applied_param_expr(inner, p, applies, shadows, paths, method_names)
         }
-        Expr::FieldAccess { base, .. } => scan_applied_param_expr(base, p, applies, shadows),
+        Expr::Index { base, index } => {
+            scan_applied_param_expr(base, p, applies, shadows, paths, method_names);
+            scan_applied_param_expr(index, p, applies, shadows, paths, method_names);
+        }
+        Expr::FieldAccess { base, .. } => {
+            scan_applied_param_expr(base, p, applies, shadows, paths, method_names)
+        }
         Expr::ArrayLiteral { elements } => {
             for el in elements {
-                scan_applied_param_expr(el, p, applies, shadows);
+                scan_applied_param_expr(el, p, applies, shadows, paths, method_names);
             }
         }
         Expr::StructLiteral { fields, .. } => {
             for (_, v) in fields {
-                scan_applied_param_expr(v, p, applies, shadows);
+                scan_applied_param_expr(v, p, applies, shadows, paths, method_names);
             }
         }
         Expr::EnumConstruct { fields, .. } => {
             for f in fields {
-                scan_applied_param_expr(f, p, applies, shadows);
+                scan_applied_param_expr(f, p, applies, shadows, paths, method_names);
             }
         }
         Expr::MapLiteral { entries, .. } => {
             for (k, v) in entries {
-                scan_applied_param_expr(k, p, applies, shadows);
-                scan_applied_param_expr(v, p, applies, shadows);
+                scan_applied_param_expr(k, p, applies, shadows, paths, method_names);
+                scan_applied_param_expr(v, p, applies, shadows, paths, method_names);
             }
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            scan_applied_param_expr(scrutinee, p, applies, shadows);
+            scan_applied_param_expr(scrutinee, p, applies, shadows, paths, method_names);
             for arm in arms {
                 if arm.pattern.bound_names().iter().any(|n| n == p) {
                     *shadows = true;
                 }
                 if let Some(g) = &arm.guard {
-                    scan_applied_param_expr(g, p, applies, shadows);
+                    scan_applied_param_expr(g, p, applies, shadows, paths, method_names);
                 }
-                scan_applied_param_expr(&arm.body, p, applies, shadows);
+                scan_applied_param_expr(
+                    &arm.body,
+                    p,
+                    applies,
+                    shadows,
+                    paths,
+                    method_names,
+                );
             }
         }
         Expr::If {
             cond, then, else_, ..
         } => {
-            scan_applied_param_expr(cond, p, applies, shadows);
-            scan_applied_param_expr(then, p, applies, shadows);
-            scan_applied_param_expr(else_, p, applies, shadows);
+            scan_applied_param_expr(cond, p, applies, shadows, paths, method_names);
+            scan_applied_param_expr(then, p, applies, shadows, paths, method_names);
+            scan_applied_param_expr(else_, p, applies, shadows, paths, method_names);
         }
         Expr::IfLet {
             pattern,
@@ -15887,14 +16203,14 @@ fn scan_applied_param_expr(e: &Expr, p: &str, applies: &mut bool, shadows: &mut 
             if pattern.bound_names().iter().any(|n| n == p) {
                 *shadows = true;
             }
-            scan_applied_param_expr(scrutinee, p, applies, shadows);
-            scan_applied_param_expr(then, p, applies, shadows);
-            scan_applied_param_expr(else_, p, applies, shadows);
+            scan_applied_param_expr(scrutinee, p, applies, shadows, paths, method_names);
+            scan_applied_param_expr(then, p, applies, shadows, paths, method_names);
+            scan_applied_param_expr(else_, p, applies, shadows, paths, method_names);
         }
         Expr::Block { stmts, tail } => {
-            scan_applied_param_stmts(stmts, p, applies, shadows);
+            scan_applied_param_stmts(stmts, p, applies, shadows, paths, method_names);
             if let Some(t) = tail {
-                scan_applied_param_expr(t, p, applies, shadows);
+                scan_applied_param_expr(t, p, applies, shadows, paths, method_names);
             }
         }
         // A nested lambda's body is DEFERRED — do not descend (see fn doc). Its params are irrelevant.
@@ -21944,6 +22260,57 @@ fn seed_effect_let(
     );
 }
 
+/// Record the concrete access path bound by each pattern name. This is deliberately total over
+/// `Pattern`: adding a new pattern form must update the security carrier rather than silently
+/// dropping its builtin tags.
+fn collect_pattern_binding_paths(
+    pattern: &Pattern,
+    prefix: &str,
+    out: &mut BTreeMap<String, String>,
+) {
+    let child_path = |segment: &str| {
+        if prefix.is_empty() {
+            segment.to_string()
+        } else {
+            format!("{prefix}.{segment}")
+        }
+    };
+    match pattern {
+        Pattern::Binding(name) => {
+            out.insert(name.clone(), prefix.to_string());
+        }
+        Pattern::List(patterns) => {
+            for (index, pattern) in patterns.iter().enumerate() {
+                collect_pattern_binding_paths(pattern, &child_path(&index.to_string()), out);
+            }
+        }
+        Pattern::Struct { name: _, fields } => {
+            for (field, pattern) in fields {
+                collect_pattern_binding_paths(pattern, &child_path(field), out);
+            }
+        }
+        Pattern::EnumVariant {
+            enum_name: _,
+            variant: _,
+            bindings,
+            named_bindings,
+        } => {
+            for (index, pattern) in bindings.iter().enumerate() {
+                collect_pattern_binding_paths(pattern, &child_path(&index.to_string()), out);
+            }
+            for (field, pattern) in named_bindings {
+                collect_pattern_binding_paths(pattern, &child_path(field), out);
+            }
+        }
+        Pattern::Or(patterns) => {
+            for pattern in patterns {
+                collect_pattern_binding_paths(pattern, prefix, out);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::StrLiteral(_) => {}
+    }
+}
+
 /// Seed every name a pattern binds with BOTH the scrutinee's integrity AND confidentiality labels
 /// (whole-value granularity). The effect dual of `seed_taint_pattern`/`seed_secret_pattern`, written
 /// as one insert so a destructured pattern var carries both labels the effect pass reads. Sets
@@ -21951,9 +22318,11 @@ fn seed_effect_let(
 fn seed_effect_pattern(
     scope: &mut BTreeMap<String, ScopeBinding>,
     pattern: &Pattern,
+    scrutinee: &Expr,
     taint: &Option<String>,
     secret: bool,
     types: &PlaceTypes<'_>,
+    ctx: &SemanticContext,
 ) {
     // D4: a binder whose DECLARED enum-payload type carries a qualifier is labelled regardless of
     // whether the SCRUTINEE was. `enum E { A(secret<i64>) }` + `match e { E::A(x) => print(x) }`
@@ -21967,12 +22336,35 @@ fn seed_effect_pattern(
     qualified_pattern_binders(pattern, types, ty::is_secret, &mut declared_secret);
     let mut declared_taint = BTreeSet::new();
     qualified_pattern_binders(pattern, types, ty::is_tainted, &mut declared_taint);
+    let mut binding_paths = BTreeMap::new();
+    collect_pattern_binding_paths(pattern, "", &mut binding_paths);
+    let mut scrutinee_fields = BTreeMap::new();
+    collect_container_builtin_gate_tags(scrutinee, "", scope, ctx, &mut scrutinee_fields);
     for n in pattern.bound_names() {
         let secret = secret || declared_secret.contains(&n);
         let taint = if taint.is_none() && declared_taint.contains(&n) {
             Some(format!("declared enum payload `{n}`"))
         } else {
             taint.clone()
+        };
+        let path = binding_paths.get(&n).map(String::as_str).unwrap_or("");
+        let builtin_gate_tags = if path.is_empty() {
+            builtin_gate_tags_of(scrutinee, scope, ctx)
+        } else {
+            builtin_gate_tags_at_path(scrutinee, path, scope, ctx, 0)
+        };
+        let field_builtin_gate_tags = if path.is_empty() {
+            scrutinee_fields.clone()
+        } else {
+            let dotted = format!("{path}.");
+            scrutinee_fields
+                .iter()
+                .filter_map(|(candidate, tags)| {
+                    candidate
+                        .strip_prefix(&dotted)
+                        .map(|rest| (rest.to_string(), tags.clone()))
+                })
+                .collect()
         };
         scope.insert(
             n.clone(),
@@ -21992,8 +22384,8 @@ fn seed_effect_pattern(
                 fn_alias: None,
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
-                builtin_gate_tags: BuiltinGateTags::Unknown,
-                field_builtin_gate_tags: BTreeMap::new(),
+                builtin_gate_tags,
+                field_builtin_gate_tags,
                 secret,
             },
         );
@@ -25748,5 +26140,107 @@ mod builtin_gate_tag_tests {
             ),
             BuiltinGateTags::Unknown
         );
+    }
+
+    #[test]
+    fn unsummarized_builtin_result_carries_container_tags() {
+        let ctx = SemanticContext::default();
+        let mut scope = BTreeMap::new();
+        let mut xs = binding(BuiltinGateTags::empty());
+        xs.field_builtin_gate_tags.insert(
+            "0".into(),
+            seed_builtin_gate_tags("input"),
+        );
+        scope.insert("xs".into(), xs);
+        let call = Expr::Call {
+            callee: "first".into(),
+            args: vec![Expr::Var("xs".into())],
+        };
+        assert!(builtin_gate_tags_of(&call, &scope, &ctx)
+            .contains(&BuiltinGateTag::TaintSource));
+    }
+
+    #[test]
+    fn returned_container_keeps_exact_paths() {
+        let mut ctx = SemanticContext::default();
+        ctx.fn_sole_return.insert(
+            "make".into(),
+            (
+                Vec::new(),
+                Expr::ArrayLiteral {
+                    elements: vec![Expr::Var("len".into()), Expr::Var("write_file".into())],
+                },
+            ),
+        );
+        let call = Expr::Call {
+            callee: "make".into(),
+            args: Vec::new(),
+        };
+        let mut paths = BTreeMap::new();
+        collect_container_builtin_gate_tags(&call, "", &BTreeMap::new(), &ctx, &mut paths);
+        assert_eq!(paths.get("0"), Some(&BuiltinGateTags::empty()));
+        assert!(paths
+            .get("1")
+            .is_some_and(|tags| tags.contains(&BuiltinGateTag::Capability("fs.write".into()))));
+    }
+
+    #[test]
+    fn pattern_binding_paths_are_exact() {
+        let pattern = Pattern::List(vec![
+            Pattern::Binding("first".into()),
+            Pattern::Struct {
+                name: "Box".into(),
+                fields: vec![("g".into(), Pattern::Binding("nested".into()))],
+            },
+        ]);
+        let mut paths = BTreeMap::new();
+        collect_pattern_binding_paths(&pattern, "", &mut paths);
+        assert_eq!(paths.get("first").map(String::as_str), Some("0"));
+        assert_eq!(paths.get("nested").map(String::as_str), Some("1.g"));
+    }
+
+    #[test]
+    fn applied_param_paths_exclude_registered_methods() {
+        let indexed = Expr::CallExpr {
+            callee: Box::new(Expr::Index {
+                base: Box::new(Expr::Var("xs".into())),
+                index: Box::new(Expr::Literal("0".into())),
+            }),
+            args: Vec::new(),
+        };
+        let (mut applies, mut shadows) = (false, false);
+        let mut paths = BTreeSet::new();
+        scan_applied_param_expr(
+            &indexed,
+            "xs",
+            &mut applies,
+            &mut shadows,
+            &mut paths,
+            &BTreeSet::new(),
+        );
+        assert!(applies);
+        assert_eq!(paths.into_iter().collect::<Vec<_>>(), vec!["0"]);
+
+        let method = Expr::CallExpr {
+            callee: Box::new(Expr::FieldAccess {
+                base: Box::new(Expr::Var("xs".into())),
+                field: "apply".into(),
+                span: Span::default(),
+            }),
+            args: Vec::new(),
+        };
+        let (mut applies, mut shadows) = (false, false);
+        let mut paths = BTreeSet::new();
+        let method_names = BTreeSet::from(["apply".to_string()]);
+        scan_applied_param_expr(
+            &method,
+            "xs",
+            &mut applies,
+            &mut shadows,
+            &mut paths,
+            &method_names,
+        );
+        assert!(!applies);
+        assert!(paths.is_empty());
     }
 }
