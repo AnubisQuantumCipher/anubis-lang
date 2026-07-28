@@ -4104,17 +4104,68 @@ fn collect_free_stmts(
 /// the runtime actually uses — which is the defect this repo has spent the day closing at every
 /// other layer. One source of truth, consulted twice.
 pub fn builtin_arity_error(callee: &str, argc: usize) -> Option<String> {
-    let placeholders: Vec<String> = (0..argc).map(|i| format!("__anb_arg{i}")).collect();
-    match emit_builtin_call(callee, &placeholders) {
-        Some(Err(e)) => {
-            let msg = e.to_string();
-            // ONLY arity. `emit_builtin_call` also refuses for reasons that are not the caller's
-            // fault at check time — an unsupported backend lane, a gated name — and rejecting on
-            // those would turn this into a false-reject engine.
-            msg.contains("expects").then_some(msg)
-        }
-        _ => None,
+    fn lowers(callee: &str, n: usize) -> bool {
+        let ph: Vec<String> = (0..n).map(|i| format!("__anb_arg{i}")).collect();
+        matches!(emit_builtin_call(callee, &ph), Some(Ok(_)))
     }
+    // VERIFIED minimums first, because the lowerer accepts some calls the language does not.
+    //
+    // `max()` and `min()` LOWER cleanly at zero arguments — `emit_builtin_call` has an arm for them
+    // and it is happy — and then the runtime panics `ANUBIS_EMPTY_COLLECTION: max has no element`.
+    // An arity error reinterpreted as a semantic one, at the layer below the one that could have
+    // refused it. Probing the lowerer therefore cannot see these; only a stated minimum can.
+    //
+    // Every entry was verified BOTH ways before being written: the deficient form fails at run, and
+    // a positive twin at the stated arity SUCCEEDS — `len([1])`, `max([1])`, `min([1])`,
+    // `flat([[1]])`, `declassify(1,"r")` all run=0.
+    //
+    // `pop`, `push`, `insert` and `remove` are deliberately ABSENT. They are mutation builtins
+    // whose positive twins failed at their stated arity in a one-liner probe — they need a `mut`
+    // binding — so their arity could not be verified the same way. An unverified entry here would
+    // be precisely the asserted-but-unmeasured claim this repo refuses.
+    let stated_min = match callee {
+        "len" | "max" | "min" | "flat" => Some(1),
+        "declassify" => Some(2),
+        _ => None,
+    };
+    if let Some(min) = stated_min {
+        return (argc < min)
+            .then(|| format!("builtin `{callee}` expects at least {min} argument(s), got {argc}"));
+    }
+    if lowers(callee, argc) {
+        return None;
+    }
+    // Refusing at `argc` is only an ARITY error if some OTHER count lowers. A builtin the lowerer
+    // never accepts at any count is refusing for a different reason — an unsupported backend lane,
+    // a gated name — and rejecting on that would make this a false-reject engine.
+    //
+    // Probing beats matching the message. The first version filtered on `"expects"`, which is what
+    // the `fixed()` helper says, and therefore missed every builtin that refuses through a
+    // different path: `len()`, `declassify()` and `flat()` all report
+    // ANUBIS_UNSUPPORTED_NATIVE_LOWERING, and `max()`/`min()` report ANUBIS_EMPTY_COLLECTION — an
+    // arity error wearing a semantic error's message. Asking "does another count work?" is
+    // independent of how the refusal is phrased.
+    const PROBE_MAX: usize = 4;
+    let accepted: Vec<usize> = (0..=PROBE_MAX).filter(|&n| lowers(callee, n)).collect();
+    if accepted.is_empty() {
+        // Builtins the LOWERER never sees. `len`, `max`, `min`, `flat` and `declassify` reach
+        // `is_builtin_name` through its `matches!` fallback and are lowered on other paths, so no
+        // probe of `emit_builtin_call` can derive their arity — it has no arm for them at all.
+        //
+        // This is the ONLY arity source for these names, not a second one, so it cannot drift from
+        // a table that does not exist. Every entry was verified BOTH ways before being added: the
+        // zero-argument form fails at run, and a positive twin at the stated arity SUCCEEDS
+        // (`len([1])`, `max([1])`, `min([1])`, `flat([[1]])`, `declassify(1,"r")` all run=0).
+        //
+        // `pop`, `push`, `insert` and `remove` are deliberately ABSENT. They are mutation builtins
+        // whose positive twins failed at their stated arity in a one-liner — they need a `mut`
+        // binding — so their arity could not be verified the same way, and an unverified entry
+        // here would be exactly the kind of asserted-but-unmeasured claim this repo refuses.
+        return None;
+    }
+    Some(format!(
+        "builtin `{callee}` cannot take {argc} argument(s); it lowers with {accepted:?}"
+    ))
 }
 
 fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
