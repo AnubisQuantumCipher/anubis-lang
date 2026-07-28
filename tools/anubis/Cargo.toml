@@ -41,4 +41,5 @@ risc0-circuit-rv32im = { version = "=4.0.4", features = ["prove"] }
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-virtualization = "0.3"
+block2 = "0.6"
 libc = "0.2"

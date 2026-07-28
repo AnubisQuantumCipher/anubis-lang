@@ -104,7 +104,11 @@ pub fn derive_native_posture(program: &str, allow_hosts: &[String]) -> Result<Na
 /// directory when `--staging-dir` is given), and prove (via `validateWithError:` +
 /// `VZVirtualMachine` init) that the entitlement is present and the confinement is structurally
 /// valid. Never boots a guest.
-pub fn native_preflight(program: &str, allow_hosts: &[String], staging_dir: Option<&str>) -> Result<()> {
+pub fn native_preflight(
+    program: &str,
+    allow_hosts: &[String],
+    staging_dir: Option<&str>,
+) -> Result<()> {
     let posture = derive_native_posture(program, allow_hosts)?;
 
     eprintln!("[anubis vz native-preflight] backend : objc2-virtualization (native, no tart)");
@@ -158,9 +162,9 @@ fn build_validate_instantiate(posture: &NativePosture, staging_dir: Option<&str>
     use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
     use objc2_virtualization::{
         VZDirectorySharingDeviceConfiguration, VZFileHandleNetworkDeviceAttachment,
-        VZLinuxBootLoader, VZNetworkDeviceConfiguration, VZSharedDirectory,
-        VZSingleDirectoryShare, VZVirtioFileSystemDeviceConfiguration,
-        VZVirtioNetworkDeviceConfiguration, VZVirtualMachine, VZVirtualMachineConfiguration,
+        VZLinuxBootLoader, VZNetworkDeviceConfiguration, VZSharedDirectory, VZSingleDirectoryShare,
+        VZVirtioFileSystemDeviceConfiguration, VZVirtioNetworkDeviceConfiguration,
+        VZVirtualMachine, VZVirtualMachineConfiguration,
     };
 
     let kpath = std::env::temp_dir().join("anubis-vznative-preflight-kernel");
@@ -226,10 +230,8 @@ fn build_validate_instantiate(posture: &NativePosture, staging_dir: Option<&str>
                 &dir_url,
                 false,
             );
-            let share = VZSingleDirectoryShare::initWithDirectory(
-                VZSingleDirectoryShare::alloc(),
-                &shared,
-            );
+            let share =
+                VZSingleDirectoryShare::initWithDirectory(VZSingleDirectoryShare::alloc(), &shared);
             let tag = NSString::from_str("anubis");
             let fs_dev = VZVirtioFileSystemDeviceConfiguration::initWithTag(
                 VZVirtioFileSystemDeviceConfiguration::alloc(),
@@ -304,17 +306,33 @@ fn boot_with_kernel(
     initrd: Option<&str>,
     staging_dir: Option<&str>,
 ) -> Result<()> {
+    use block2::RcBlock;
     use objc2::rc::Retained;
     use objc2::AnyThread;
-    use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
+    use objc2_foundation::{NSArray, NSError, NSFileHandle, NSString, NSURL};
     use objc2_virtualization::{
         VZDirectorySharingDeviceConfiguration, VZFileHandleNetworkDeviceAttachment,
-        VZLinuxBootLoader, VZNetworkDeviceConfiguration, VZSharedDirectory,
-        VZSingleDirectoryShare, VZVirtioFileSystemDeviceConfiguration,
-        VZVirtioNetworkDeviceConfiguration, VZVirtualMachine, VZVirtualMachineConfiguration,
+        VZFileHandleSerialPortAttachment, VZLinuxBootLoader, VZNetworkDeviceConfiguration,
+        VZSerialPortAttachment, VZSerialPortConfiguration, VZSharedDirectory,
+        VZSingleDirectoryShare, VZVirtioConsoleDeviceSerialPortConfiguration,
+        VZVirtioFileSystemDeviceConfiguration, VZVirtioNetworkDeviceConfiguration,
+        VZVirtualMachine, VZVirtualMachineConfiguration,
     };
-    use std::sync::Arc;
-    use std::thread;
+    use std::io::Write as _;
+    use std::os::fd::FromRawFd;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFRunLoopDefaultMode: *const core::ffi::c_void;
+        fn CFRunLoopRunInMode(
+            mode: *const core::ffi::c_void,
+            seconds: f64,
+            return_after_source_handled: u8,
+        ) -> i32;
+    }
 
     if !std::path::Path::new(kernel).is_file() {
         return Err(anyhow!(
@@ -330,6 +348,71 @@ fn boot_with_kernel(
     };
     let allow_count = policy.as_ref().map(|p| p.allowed_ipv4.len()).unwrap_or(0);
 
+    // ── Console I/O pipes ──
+    // stdin pipe: host writes commands to [1], framework reads from [0] → guest stdin.
+    // stdout pipe: guest stdout → framework writes to [1], host reads from [0].
+    let mut stdin_fds = [0i32; 2];
+    let mut stdout_fds = [0i32; 2];
+    unsafe {
+        if libc::pipe(stdin_fds.as_mut_ptr()) != 0 {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_PIPE: stdin: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if libc::pipe(stdout_fds.as_mut_ptr()) != 0 {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_PIPE: stdout: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+
+    // Pre-buffer probe commands. The pipe holds them until the guest's /bin/sh reads stdin.
+    {
+        let mut w = unsafe { std::fs::File::from_raw_fd(stdin_fds[1]) };
+        for cmd in [
+            "echo __ANUBIS_PROOF_START__",
+            "ip link show",
+            "ip addr show",
+            "ls /sys/class/net/ 2>/dev/null || echo NO_SYSFS",
+            "echo __ANUBIS_PROOF_DNS__",
+            "cat /etc/resolv.conf 2>&1 || echo NO_RESOLV_CONF",
+            "ping -c1 -W2 8.8.8.8 2>&1 || echo PING_FAILED",
+            "echo __ANUBIS_PROOF_END__",
+        ] {
+            writeln!(w, "{cmd}").map_err(|e| anyhow!("ANUBIS_VZNATIVE_STDIN_WRITE: {e}"))?;
+        }
+    } // w drops → closes stdin_fds[1] → guest sees EOF after commands
+
+    let console_output = Arc::new(Mutex::new(String::new()));
+    let done = Arc::new(AtomicBool::new(false));
+    let vm_started = Arc::new(AtomicBool::new(false));
+    let start_err: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    // Background reader: drains guest console output, prints to stderr, signals done.
+    let out_for_reader = console_output.clone();
+    let done_for_reader = done.clone();
+    let stdout_rd_fd = stdout_fds[0];
+    std::thread::spawn(move || {
+        let mut f = unsafe { std::fs::File::from_raw_fd(stdout_rd_fd) };
+        let mut buf = [0u8; 4096];
+        loop {
+            match std::io::Read::read(&mut f, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let s = String::from_utf8_lossy(&buf[..n]);
+                    eprint!("{s}");
+                    let mut out = out_for_reader.lock().unwrap();
+                    out.push_str(&s);
+                    if out.contains("__ANUBIS_PROOF_END__") {
+                        done_for_reader.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+    });
+
     unsafe {
         let cfg = VZVirtualMachineConfiguration::new();
         let min_mem = VZVirtualMachineConfiguration::minimumAllowedMemorySize();
@@ -337,6 +420,7 @@ fn boot_with_kernel(
         cfg.setMemorySize((1024u64 * 1024 * 1024).clamp(min_mem, max_mem));
         cfg.setCPUCount(VZVirtualMachineConfiguration::minimumAllowedCPUCount().max(1));
 
+        // ── Boot loader + kernel cmdline ──
         let ns_kpath = NSString::from_str(kernel);
         let kurl = NSURL::fileURLWithPath(&ns_kpath);
         let boot = VZLinuxBootLoader::initWithKernelURL(VZLinuxBootLoader::alloc(), &kurl);
@@ -345,8 +429,33 @@ fn boot_with_kernel(
             let iurl = NSURL::fileURLWithPath(&ns_i);
             boot.setInitialRamdiskURL(Some(&iurl));
         }
+        boot.setCommandLine(&NSString::from_str("console=hvc0 rdinit=/bin/sh"));
         cfg.setBootLoader(Some(&boot));
 
+        // ── Virtio console serial port ──
+        let fh_guest_in = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
+            NSFileHandle::alloc(),
+            stdin_fds[0],
+            true,
+        );
+        let fh_guest_out = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
+            NSFileHandle::alloc(),
+            stdout_fds[1],
+            true,
+        );
+        let serial_attach =
+            VZFileHandleSerialPortAttachment::initWithFileHandleForReading_fileHandleForWriting(
+                VZFileHandleSerialPortAttachment::alloc(),
+                Some(&fh_guest_in),
+                Some(&fh_guest_out),
+            );
+        let console_port = VZVirtioConsoleDeviceSerialPortConfiguration::new();
+        let attach_super: Retained<VZSerialPortAttachment> = serial_attach.into_super();
+        console_port.setAttachment(Some(&attach_super));
+        let port_super: Retained<VZSerialPortConfiguration> = console_port.into_super();
+        cfg.setSerialPorts(&NSArray::from_retained_slice(&[port_super]));
+
+        // ── Network devices ──
         let mut host_fd_for_pump: Option<i32> = None;
         match posture {
             NativePosture::ZeroNicAirGap => {
@@ -367,12 +476,12 @@ fn boot_with_kernel(
                     fds[0],
                     false,
                 );
-                let attach = VZFileHandleNetworkDeviceAttachment::initWithFileHandle(
+                let net_attach = VZFileHandleNetworkDeviceAttachment::initWithFileHandle(
                     VZFileHandleNetworkDeviceAttachment::alloc(),
                     &host_fh,
                 );
                 let dev = VZVirtioNetworkDeviceConfiguration::new();
-                dev.setAttachment(Some(&attach));
+                dev.setAttachment(Some(&net_attach));
                 let dev_super: Retained<VZNetworkDeviceConfiguration> = dev.into_super();
                 let arr = NSArray::from_retained_slice(&[dev_super]);
                 cfg.setNetworkDevices(&arr);
@@ -380,6 +489,7 @@ fn boot_with_kernel(
             }
         }
 
+        // ── VirtioFS shared directory (R26-3: staging, independent of console proof) ──
         if let Some(dir) = staging_dir {
             let abs = std::fs::canonicalize(dir)
                 .map_err(|e| anyhow!("ANUBIS_VZNATIVE_STAGING_DIR: canonicalize `{dir}`: {e}"))?;
@@ -395,10 +505,8 @@ fn boot_with_kernel(
                 &dir_url,
                 false,
             );
-            let share = VZSingleDirectoryShare::initWithDirectory(
-                VZSingleDirectoryShare::alloc(),
-                &shared,
-            );
+            let share =
+                VZSingleDirectoryShare::initWithDirectory(VZSingleDirectoryShare::alloc(), &shared);
             let tag = NSString::from_str("anubis");
             let fs_dev = VZVirtioFileSystemDeviceConfiguration::initWithTag(
                 VZVirtioFileSystemDeviceConfiguration::alloc(),
@@ -410,6 +518,7 @@ fn boot_with_kernel(
             cfg.setDirectorySharingDevices(&arr);
         }
 
+        // ── Validate config ──
         cfg.validateWithError().map_err(|e| {
             let d = e.localizedDescription().to_string();
             if d.contains("com.apple.security.virtualization") {
@@ -421,9 +530,10 @@ fn boot_with_kernel(
             }
         })?;
 
+        // ── Egress pump (PerHostnameEgress only) ──
         if let (Some(fd), Some(pol)) = (host_fd_for_pump, policy) {
             let pol = Arc::new(pol);
-            thread::spawn(move || {
+            std::thread::spawn(move || {
                 let mut buf = [0u8; 2048];
                 loop {
                     let n = libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len());
@@ -442,15 +552,73 @@ fn boot_with_kernel(
             );
         }
 
+        // ── Create and start the VM ──
         let nic_count = cfg.networkDevices().count();
         let share_count = cfg.directorySharingDevices().count();
-        let _vm: Retained<VZVirtualMachine> =
+        let vm: Retained<VZVirtualMachine> =
             VZVirtualMachine::initWithConfiguration(VZVirtualMachine::alloc(), &cfg);
+
         eprintln!(
-            "[anubis vz native-boot] VM instantiated (networkDevices={nic_count}, \
-             directorySharingDevices={share_count}). Zero-NIC air-gap is structural; \
-             egress pump enforces DNS-pinned policy when net-using."
+            "[anubis vz native-boot] config valid (networkDevices={nic_count}, \
+             directorySharingDevices={share_count}). Starting VM..."
         );
+
+        let started_cb = vm_started.clone();
+        let err_cb = start_err.clone();
+        let handler = RcBlock::new(move |err_ptr: *mut NSError| {
+            if !err_ptr.is_null() {
+                let e = &*err_ptr;
+                *err_cb.lock().unwrap() = Some(e.localizedDescription().to_string());
+            }
+            started_cb.store(true, Ordering::SeqCst);
+        });
+        vm.startWithCompletionHandler(&handler);
+
+        // Pump the main-thread run loop so VZ processes callbacks (start, I/O, etc.).
+        let deadline = Instant::now() + Duration::from_secs(45);
+        while Instant::now() < deadline {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, 0);
+
+            if vm_started.load(Ordering::SeqCst) {
+                if let Some(ref e) = *start_err.lock().unwrap() {
+                    return Err(anyhow!("ANUBIS_VZNATIVE_START_FAILED: {e}"));
+                }
+                if done.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+        }
+
+        if !vm_started.load(Ordering::SeqCst) {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_START_TIMEOUT: VM did not start within 45 s"
+            ));
+        }
+
+        let final_output = console_output.lock().unwrap().clone();
+        let proof_complete = done.load(Ordering::SeqCst);
+
+        eprintln!();
+        eprintln!(
+            "[anubis vz native-boot] === Console transcript (networkDevices={nic_count}) ==="
+        );
+        if final_output.is_empty() {
+            eprintln!("(no console output received)");
+        }
+        eprintln!("[anubis vz native-boot] === End transcript ===");
+
+        if proof_complete {
+            eprintln!(
+                "[anubis vz native-boot] ZERO-NIC PROOF CAPTURED. networkDevices={nic_count}. \
+                 Guest-side evidence is in the transcript above."
+            );
+        } else {
+            eprintln!(
+                "[anubis vz native-boot] WARNING: timed out before __ANUBIS_PROOF_END__ marker. \
+                 Partial output ({} bytes) may still contain evidence.",
+                final_output.len()
+            );
+        }
     }
     Ok(())
 }

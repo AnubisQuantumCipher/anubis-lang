@@ -52,3 +52,30 @@ modules and no VirtioFS at all**. The two goals are therefore separable:
 - **stage a PoC into the guest** — needs VirtioFS, hence the module load
 
 The first does not depend on the second. A zero-NIC proof should not wait on file staging.
+
+
+## The kernel Alpine ships cannot be booted by VZ, and the error says nothing
+
+`vmlinuz-virt` is an **EFI zboot** image: the real kernel gzipped inside a PE/COFF wrapper,
+`zimg` magic at offset 0x4. `file` calls it "PE32+ executable (EFI application) Aarch64", which
+reads like success. `VZLinuxBootLoader` needs a RAW arm64 `Image` and rejects it with:
+
+```
+ANUBIS_VZNATIVE_START_FAILED: Internal Virtualization error. The virtual machine failed to start.
+```
+
+No mention of the kernel, the format, or the fix. The tell is the arm64 boot header magic at
+offset 0x38, which must be `41524d64` (`ARM\x64`) and in the zboot file is not.
+
+`scripts/vm/fetch_guest_kernel.sh` fetches, detects zboot, extracts the payload and verifies the
+magic BEFORE publishing `Image-virt` — it refuses rather than writing a file that will fail the
+same opaque way later. Measured: payload_offset `0xcbb8`, size 9564917, compression `gzip`,
+decompressed 34668544 bytes with valid magic.
+
+## Boot confirmed 2026-07-28
+
+`Image-virt` + `initramfs-virt` boot to a shell under `VZLinuxBootLoader` with
+`networkDevices=0`. Guest console reached `Run /bin/sh as init process` and a prompt. The probe
+commands did not execute — stdin was pre-buffered and closed before `/bin/sh` opened it, so the
+zero-NIC evidence is not yet captured from inside the guest. The BOOT is proven; the PROOF is
+not, and those are recorded separately on purpose.

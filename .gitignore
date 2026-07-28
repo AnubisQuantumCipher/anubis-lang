@@ -86,3 +86,4 @@ vm/pins/anubis-*
 vm/kernels/vmlinuz-*
 vm/kernels/initramfs-*
 vm/kernels/config-*
+vm/kernels/Image-*
