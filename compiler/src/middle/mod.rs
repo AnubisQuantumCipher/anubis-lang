@@ -647,6 +647,30 @@ fn fn_identities_of_d(
                 }
                 return FnIdentitySet::Unknown;
             }
+            // A RECURSIVE BUILDER's container literals, when nothing else can name them.
+            //
+            // `fn go(n, acc) { if n <= 0 { acc } else { go(n-1, acc+[leak]) } }` never enters
+            // `fn_sole_return` — its tail is a statement-level `if`, and following the recursive
+            // branch would loop — so every resolver below has nothing to read. The callable is in
+            // `[leak]`, an ARGUMENT of the recursive call, which no amount of return-following
+            // reaches.
+            //
+            // Consulted BEFORE the sole-return path because it applies exactly where that path is
+            // absent, and it can only ADD identities.
+            if let Some(lits) = ctx.fn_recursive_container_ids.get(callee).cloned() {
+                let mut acc = FnIdentitySet::empty();
+                for lit in &lits {
+                    let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                    acc = match (&acc, &ids) {
+                        (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
+                        (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
+                        _ => FnIdentitySet::union(acc, ids),
+                    };
+                }
+                if matches!(acc, FnIdentitySet::Known(ref n) if !n.is_empty()) {
+                    return acc;
+                }
+            }
             if let Some((param_names, returned)) = ctx.fn_sole_return.get(callee) {
                 // A returned CLOSURE that captures a parameter carries that ARGUMENT's identity.
                 //
@@ -1966,6 +1990,33 @@ fn collect_container_fn_identities(
             }
             return;
         }
+        // A call to a RECURSIVE BUILDER contributes its container literals at the WILDCARD path.
+        //
+        // `let xs = go(2, [])` binds a value whose shape no arm here recognised — `go` is a Call,
+        // and the collector only understood literals — so `xs.field_fn_identities` stayed empty and
+        // every element access off it resolved to nothing.
+        //
+        // The wildcard is right rather than a concrete index: which position the accumulator ends
+        // up holding depends on the recursion depth, so "some element" is the honest path and it is
+        // the fail-closed one.
+        Expr::Call { callee, .. } => {
+            let Some(lits) = ctx.fn_recursive_container_ids.get(callee).cloned() else {
+                return;
+            };
+            let mut acc = FnIdentitySet::empty();
+            for lit in &lits {
+                let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                acc = match (&acc, &ids) {
+                    (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
+                    (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
+                    _ => FnIdentitySet::union(acc, ids),
+                };
+            }
+            if matches!(acc, FnIdentitySet::Known(ref n) if !n.is_empty()) {
+                out.insert(path("*"), acc);
+            }
+            return;
+        }
         Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
             collect_container_fn_identities(then, prefix, scope, ctx, out);
             let mut other = BTreeMap::new();
@@ -2902,6 +2953,17 @@ struct SemanticContext {
     /// fixpoint can chase forwarder CHAINS (`fn f2(g) { return f1(g); }`), which a single pass cannot
     /// see because `f1`'s own forwarder status may not be known yet.
     fn_sole_return: BTreeMap<String, (Vec<String>, Expr)>,
+    /// Container literals appearing anywhere in a RECURSIVE function's body, by function name.
+    ///
+    /// A recursive accumulator builds its result across calls — `fn go(n, acc) { if n <= 0 { acc }
+    /// else { go(n-1, acc + [leak]) } }` — and the callable sits in `[leak]`, an ARGUMENT of the
+    /// recursive call, not in any returned expression's own shape. `fn_sole_return` cannot help:
+    /// the tail is a statement-level `if`, and following it would loop.
+    ///
+    /// Recorded at registration where the body IS in scope, and consulted when resolving the
+    /// identity of a call to such a function. Bounded to one pass over one body, gated on
+    /// self-reference, and fail-closed — it can only name MORE callables, never fewer.
+    fn_recursive_container_ids: BTreeMap<String, Vec<Expr>>,
     /// Task #48-A: for each function, the formal-parameter indices it APPLIES directly during its own
     /// execution (a `p(...)` call at F's level, NOT inside a nested lambda) and never shadows/reassigns.
     /// Passing a closure at such a position is equivalent to applying it, so the Safe-mode taint/effect
@@ -3478,6 +3540,31 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                 rets.into_iter().next()
                             } else if tv.len() == 1 {
                                 Some(tv[0].clone())
+                            } else if rets.is_empty() {
+                                // The TAIL EXPRESSION itself, when there are no explicit returns.
+                                //
+                                // `tail_values` PEELS a conditional into its branch values, so a
+                                // function whose body is one `if` yields `tv.len() == 2` and the
+                                // guard above rejects it — the function never enters
+                                // `fn_sole_return` at all, and every downstream resolver has
+                                // nothing to read:
+                                //
+                                //     fn go(n, acc) { if n <= 0 { acc } else { go(n-1, acc+[leak]) } }
+                                //     let xs = go(2, []); xs[0](…)      passed check
+                                //
+                                // Taking the unpeeled expression is what the `If`/`Match` filter
+                                // below was always for: it wants the JOIN to reason about, and
+                                // peeling destroyed the join before the filter could see it.
+                                // Producer and consumer disagreeing on the SHAPE of a value, in
+                                // its return-position form — the same disease named thirty lines
+                                // above for `unanimous_forwarded_return`.
+                                //
+                                // Gated on `rets.is_empty()` so a function with explicit returns
+                                // keeps its existing, stricter treatment untouched.
+                                match body.last() {
+                                    Some(Stmt::ExprStmt(e)) => Some(e.clone()),
+                                    _ => None,
+                                }
                             } else {
                                 None
                             }?;
@@ -3488,6 +3575,33 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                 name.clone(),
                                 (params.iter().map(|(n, _)| n.clone()).collect(), r),
                             );
+                        }
+                        // A RECURSIVE builder's container literals, recorded here because this is
+                        // the only place the BODY is in scope.
+                        //
+                        //     fn go(n, acc) { if n <= 0 { acc } else { go(n-1, acc + [leak]) } }
+                        //     let xs = go(2, []); xs[0](…)          passed check
+                        //
+                        // `fn_sole_return` cannot reach it: the tail is a statement-level `if`, and
+                        // following the recursive branch would loop. The callable is in `[leak]` —
+                        // an ARGUMENT of the recursive call, not part of any returned expression's
+                        // own shape — so no amount of return-following finds it.
+                        //
+                        // Every container literal in the body is a value the accumulator may end up
+                        // holding. Bounded (one pass), gated on self-reference so a non-recursive
+                        // function is unaffected, and fail-closed: it can only name MORE callables.
+                        {
+                            let body_dbg = format!("{body:?}");
+                            if body_dbg.contains(&format!("callee: \"{name}\"")) {
+                                let mut lits = Vec::new();
+                                for st in body {
+                                    collect_array_literals_in_stmt(st, &mut lits);
+                                }
+                                if !lits.is_empty() {
+                                    ctx.fn_recursive_container_ids
+                                        .insert(name.clone(), lits.into_iter().cloned().collect());
+                                }
+                            }
                         }
                     }
                 }
@@ -13726,6 +13840,61 @@ fn returned_is_recursive(callee: &str, returned: &Expr) -> bool {
 /// kept deliberately small and total over the container-bearing shapes a return expression can
 /// take. A shape it misses costs a missed identity, so the arms below are the ones a builder
 /// actually uses: branches, calls, binaries and blocks.
+/// Every array/map literal reachable from a STATEMENT, for the recursive-builder record.
+fn collect_array_literals_in_stmt<'a>(st: &'a Stmt, out: &mut Vec<&'a Expr>) {
+    match st {
+        Stmt::Let { init, .. } | Stmt::LetPattern { init, .. } => collect_array_literals(init, out),
+        Stmt::Assign { target, value } => {
+            collect_array_literals(target, out);
+            collect_array_literals(value, out);
+        }
+        Stmt::ExprStmt(e) => collect_array_literals(e, out),
+        Stmt::If { cond, then, else_ } => {
+            collect_array_literals(cond, out);
+            for s in then {
+                collect_array_literals_in_stmt(s, out);
+            }
+            if let Some(b) = else_ {
+                for s in b {
+                    collect_array_literals_in_stmt(s, out);
+                }
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            collect_array_literals(cond, out);
+            for s in body {
+                collect_array_literals_in_stmt(s, out);
+            }
+        }
+        Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => {
+            for s in body {
+                collect_array_literals_in_stmt(s, out);
+            }
+        }
+        // `HybridBlock` carries THREE optional lanes rather than one body, and `SpecBlock` carries
+        // no statements at all. rustc named both — a reader scanning for "block-shaped" would have
+        // matched them by eye and gotten the field wrong.
+        Stmt::HybridBlock { gpu, cpu, prove } => {
+            for lane in [gpu, cpu, prove].into_iter().flatten() {
+                for s in lane {
+                    collect_array_literals_in_stmt(s, out);
+                }
+            }
+        }
+        Stmt::SpecBlock { .. } => {}
+        Stmt::WhileLet { expr, body, .. } => {
+            collect_array_literals(expr, out);
+            for s in body {
+                collect_array_literals_in_stmt(s, out);
+            }
+        }
+        Stmt::Break | Stmt::Continue => {}
+    }
+}
+
 fn collect_array_literals<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
     match e {
         Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => out.push(e),
@@ -13794,6 +13963,27 @@ fn fn_identities_carried_by_value(
                     .fold(FnIdentitySet::empty(), FnIdentitySet::union)
             })
             .unwrap_or(FnIdentitySet::Unknown),
+        // A call to a RECURSIVE BUILDER carries whatever its container literals hold.
+        //
+        // `let xs = go(2, []); xs[0](…)` resolves `xs[0]` through THIS function, not through
+        // `fn_identities_of_d` — so recording the builder's literals and consulting them only
+        // there left the element access with nothing to read. Producer correct, wrong consumer:
+        // the same split this file has closed at every other layer.
+        Expr::Call { callee, .. } => {
+            let Some(lits) = ctx.fn_recursive_container_ids.get(callee).cloned() else {
+                return FnIdentitySet::Unknown;
+            };
+            let mut acc = FnIdentitySet::empty();
+            for lit in &lits {
+                let ids = fn_identities_carried_by_value(lit, scope, ctx);
+                acc = match (&acc, &ids) {
+                    (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => acc,
+                    (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => ids,
+                    _ => FnIdentitySet::union(acc, ids),
+                };
+            }
+            acc
+        }
         // CONCATENATION carries what either side carries.
         //
         // `fn go(acc) -> any { return acc + [leak]; }` then `go([])[0](…)` had no arm here at all,
