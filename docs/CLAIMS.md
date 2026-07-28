@@ -409,7 +409,9 @@ never terminates is a check/run divergence of a different kind, and is being cha
     the site says the two paths should match; the mechanism is inference on one side and explicit
     consent on the other.
 
-18. **The tag lane has a standing DEFECT FACTORY — three shapes, still widening (2026-07-28).**
+18. **The tag-lane DEFECT FACTORY — CONVERGED on pin `anubis-dacf4a164a02`; a user-fn carrier class
+    is OPEN in its place (2026-07-28). The "still widening" judgment below was FALSIFIED by the
+    adversary that made it — read this item top to bottom, the history is the point.**
 
     Asked for a judgment on whether item 14's class is converging, the adversary said **NO**, and
     named why. Three recurring shapes account for every finding since the tag resolver landed:
@@ -473,6 +475,45 @@ never terminates is a check/run divergence of a different kind, and is being cha
 
     Recorded because "we fixed three things" is not the same claim as "the class is closed", and
     this arc has repeatedly found the second to be false right after the first was true.
+
+    ---
+
+    **CONVERGENCE TEST RUN — the criterion above was MET (2026-07-28,
+    `scratchpad/fleet_20260726/adversary_round17.md`, pin `anubis-dacf4a164a02`).**
+
+    The adversary that judged this class "still widening" pre-registered its predictions in writing
+    before measuring the rebuilt binary, then retired its own judgment:
+
+    | criterion (as stated above) | result |
+    |---|---|
+    | eight join sites | **8/8 REJECT** — j01–j07, j09, j10, j12 all flipped from ACCEPT+file |
+    | `_p`/`_w` synthetic parity (m22, m23) | **REJECT** |
+    | composite place-assign projection (p02, p04–p09) | **REJECT**; table completed with p13, no padding |
+    | c05 extract-to-let | **REJECT** |
+    | zero ACCEPT+file on the named sweep | **MET** |
+    | over-rejection guard G1–G8 | **all ACCEPT** — no false reject bought |
+    | m01/m02 monotone over-charge | unchanged, the documented fail-closed cost |
+
+    Scored 19 pre-registered cells, **no MISS**. "This falsifies *still widening* for that factory."
+
+    **What replaced it — a USER-FN carrier class, OPEN (i01–i05, ACCEPT + file written).** A user
+    function carrying an effect (`uses(fs.write)`) reaches an application site through `push` or a
+    field place-assign and is not charged, in a `main` that declares no such capability.
+
+    The root cause is **not** the join algebra, and the discriminator proves it: **`i02` has no
+    branch at all.** `push` of a *user fn* does not seed chargeable identity evidence, while the
+    list-literal twin (`[leak]`) and the builtin twin (`push(write_file)`) both do — a walker-parity
+    gap on the producer side, not a merge defect. Stated consequence, adopted verbatim: *fixing only
+    `unwrap_or(Unknown)` → empty will NOT close i02.*
+
+    `FnIdentitySet::union_present` (item text above) was therefore necessary but is **not**
+    sufficient. Lead measurements on the post-fix pin `anubis-cf98ccebb4c1`: security **311/311**,
+    language **244/244**, `cargo test --release -p anubis` **200 passed / 0 failed** — so the fix
+    bought no regression, and no claim that it closed the carrier class. Re-scoring of i01–i05 on
+    that pin is in flight.
+
+    **Status: the named tag factory is closed on a named pin; the callable story is NOT converged
+    while i02 writes a file under a green check.** Both halves are the claim.
 
 19. **The purple report makes FALSE ATT&CK coverage claims — OPEN, operator-facing (2026-07-28).**
 
