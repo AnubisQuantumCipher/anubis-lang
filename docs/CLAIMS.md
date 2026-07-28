@@ -300,7 +300,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
     implicit expectation that the program is runnable, and a non-terminating accept is a distinct
     failure from a leaking accept.
 
-14. **AGGREGATE PATH SEEDERS do not charge gate tags — OPEN, runtime-witnessed (2026-07-27).**
+14. **AGGREGATE PATH SEEDERS do not charge gate tags — PARTIALLY CLOSED, residual named (2026-07-28).**
 
     The tag resolver (item 12) closed local bind, param, join, return and identity-forwarder. It did
     NOT close the aggregate paths. These are **true accepts with runtime witnesses** — not check-only
@@ -317,10 +317,36 @@ never terminates is a check/run divergence of a different kind, and is being cha
     element, a pushed element, or a struct field does not. The difference is the container, and
     nothing else.
 
-    Diagnosed holes, in the order they should be fixed: (1) index apply does not charge
-    container-seeded tags; (2) `push`/`insert` do not seed tags on mutation; (3) struct-field apply
-    charge is incomplete. Smallest fixtures exist at `scratchpad/fleet_20260726/adversary/r11/`
-    (`t02_local_list_write`, `t12_push_write`, `t12_struct_write`).
+    **Status 2026-07-28 — five shapes CLOSED, a bounded residual NAMED.** Closed in `00380b8` and
+    `b3a8c2f`: index apply now charges container-seeded tags; `push`/`insert` seed on mutation,
+    including of a composite expression and of a local carrying field paths; struct-field apply has
+    parity; and a place assignment (`xs[0] = write_file`) no longer leaves the overwritten path
+    asserting `Known(∅)` — the one member of this family that did not merely fail open but
+    positively misclassified, and so was fixed first.
+
+    Verified against a battery the adversary pre-registered BEFORE those diffs existed: chains c01
+    and c04 now REJECT; **all eight over-rejection guards still ACCEPT**, including
+    `uses(fs.write)` + list apply, which it named as the likeliest casualty.
+
+    **Still open**, from an auditor parity matrix of every container operation against the value
+    lane (8 differing rows, ranked, with file:line, at
+    `scratchpad/fleet_20260726/auditor_round10.md`):
+
+    | # | row | failure mode |
+    |---|---|---|
+    | 2 | pattern-destructuring bind, incl. enum payload | binder seeds `Unknown` — fail-open deferral |
+    | 3 | container returned from a function | caller sees empty path map |
+    | 4 | container passed as an argument then indexed | params start Unknown; no container-path arg summary |
+    | 6 | element extractors (`get`/`first`/`last`/`pop`/`remove`) | builtin result Unknown |
+    | 7 | collection transforms (`slice`/`concat`/`map`/`filter`/…) | no pass-through table |
+    | 8 | map result carriers (`get`/`values`/`entries`/`merge`) | map extraction discards paths |
+
+    Rows 6–8 may be ONE mechanism rather than three: the value lane covers all of them with a single
+    conservative rule — an unsummarized builtin result carries any labelled argument — and the tag
+    resolver has no equivalent. That is being tested rather than assumed. One chain, c05
+    (map→struct→push→field), remains ACCEPT and may fall to row 8.
+
+    Every remaining row is a fail-open DEFERRAL, not a misclassification.
 
     **Not a new keying kind.** The adversary's exhaustion judgment survives this, refined: aggregate
     path seeders are an *implementation residual* of the SET/tag mechanism, not a sixth keying
