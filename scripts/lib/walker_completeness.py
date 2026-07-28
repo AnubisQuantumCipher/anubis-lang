@@ -225,7 +225,13 @@ def main() -> int:
     for spec in walkers:
         # Split on a trailing SCOPE only. `partition(":")` split inside the `::` of a qualified
         # name like `effects::walk_expr`, silently turning the module into the walker name.
-        SCOPES = {"all", "expr", "stmt", "partial-expr", "partial-stmt", "partial-all"}
+        # `pattern` was implemented in the variant mapping below but never allowed here, so every
+        # Pattern-scoped walker was unregisterable and four of them sat documented as "passes
+        # vacuously" when the real reason was a missing entry in this set.
+        SCOPES = {
+            "all", "expr", "stmt", "pattern",
+            "partial-all", "partial-expr", "partial-stmt", "partial-pattern",
+        }
         w, scope = spec, "all"
         if ":" in spec:
             head, _, tail = spec.rpartition(":")

@@ -58,6 +58,20 @@ WALKERS=(
   effects::walk_expr:partial-expr
   capability::walk_expr:partial-expr
   trifecta::walk_expr:partial-expr
+  # Registered 2026-07-28 once the checker gained tuple-variant parsing AND a `pattern` scope.
+  #
+  # These four were documented here as passing VACUOUSLY — "no inspectable arms". That was wrong
+  # about the cause. `propagate_pattern_closures` binds TEN `Pattern::` variants and
+  # `seed_secret_pattern` eight `Stmt::` ones; they looked empty because the checker only ever
+  # examined `Expr`, and because `pattern` was implemented in the variant mapping but missing from
+  # the SCOPES allow-list, so every Pattern-scoped registration was rejected as an unknown scope.
+  #
+  # A walker that "passes vacuously" and a walker the CHECKER cannot see are indistinguishable from
+  # the outside, and the note claiming the former stood for a day. Registry 9 -> 13.
+  propagate_pattern_closures:partial-pattern
+  seed_taint_pattern:partial-pattern
+  seed_effect_pattern:partial-expr
+  seed_secret_pattern:partial-stmt
 )
 
 # NOT REGISTERED, and the reason is the point.
