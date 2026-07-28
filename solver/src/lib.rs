@@ -511,8 +511,7 @@ mod tests {
         let last = art
             .proof_drat
             .lines()
-            .filter(|l| !l.trim().is_empty())
-            .next_back()
+            .rfind(|l| !l.trim().is_empty())
             .expect("proof has steps");
         assert_eq!(
             last.trim(),
