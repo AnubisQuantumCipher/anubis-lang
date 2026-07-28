@@ -373,6 +373,42 @@ never terminates is a check/run divergence of a different kind, and is being cha
     this arc exists to close. **Not enforced, not probed, not tested** — that is the honest status,
     and it should stay written that way until a predicate and a regression barrier exist.
 
+16. **The dual-use surface is 91% UNPROBED — stated, not implied (2026-07-28).**
+
+    Three rounds on that lane characterized one narrow vertical: `emit_builtin_call` →
+    `var_as_value` → carrier immunity → MODE-as-carrier → the item-15 barrier. That vertical is
+    well-understood. **Everything else is not**, and the measured figure is ~24,200 of ~26,700 lines
+    (`tools/anubis/src/offensive/` alone is 28 files / 9,964 lines, most of it untouched:
+    `listener.rs`, `engagement.rs`, `scope.rs`, `isolation.rs`, `receipts.rs`, `domain_packs.rs`,
+    `dns_codec.rs`).
+
+    Written down because "unprobed" recorded beats "probed" assumed. A green board on a lane where
+    91% was never examined is a statement about the 9%.
+
+    **Predicted class for the remainder, from the agent that probed the 9%: NAME-KEYED DISPATCH.**
+    An enumeration in one place, a consumer in another, strings as the connecting key, no shared
+    enum enforcing parity. That is precisely the shape of the C2 task-parser defect already found and
+    fixed. Named candidates: ATT&CK technique IDs, persistence mechanism names, malleable profile
+    fields. A prediction made before probing, so it can be scored.
+
+17. **`build` and `run` disagree on research CONSENT — mechanism gap, outcome currently agrees
+    (2026-07-28).**
+
+    `anubis run` requires an explicit `--allow-research` and refuses otherwise
+    (`ANUBIS_RUN_RESEARCH_REQUIRES_ALLOW`). `anubis build` has no such flag and INFERS the same
+    permission: `ir.has_research || (ir.mode != Safe && !ir.taint_labels.is_empty())`.
+
+    The second disjunct is **dead code** under current typecheck semantics — `has_research` is
+    already set for any function with `mode != Safe`, so it never changes the outcome. Both paths
+    therefore agree today, and the finding is LOW severity.
+
+    It is recorded anyway because it is a live maintenance hazard: if `has_research` is ever narrowed
+    to track only `@research` blocks, that dead disjunct silently reactivates and auto-enables the
+    research lane — `target_run`, host command execution — in a BUILT binary for programs the `run`
+    path would have refused, with the user never passing a consent flag at any point. The comment at
+    the site says the two paths should match; the mechanism is inference on one side and explicit
+    consent on the other.
+
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
 After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
