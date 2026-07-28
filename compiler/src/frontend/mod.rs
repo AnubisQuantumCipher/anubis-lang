@@ -1575,7 +1575,32 @@ pub fn lex_spanned(source: &str) -> Vec<SpannedToken> {
                     });
                 }
             }
-            _ => {}
+            // '@' is DELIBERATELY dropped. Attributes lex as BARE NAMES and `parse_attributes`
+            // consumes them that way; emitting '@' as a token regressed seven fixtures. This is
+            // load-bearing documented behaviour, not an oversight — do not "fix" it.
+            '@' => {}
+            // Everything else: REFUSE rather than assume.
+            //
+            // This arm was `_ => {}`: an unrecognized character was silently DELETED — no token,
+            // no diagnostic — and `check` then certified a program that was not the program on
+            // disk. Demonstrated 2026-07-28: a file containing U+00A7 passed `check` with rc=0.
+            //
+            // The blast radius was wider than one stray glyph, because identifiers are ASCII-only
+            // (`c.is_ascii_alphabetic() || c == '_'`), so EVERY non-ASCII letter landed here and
+            // vanished — as did non-ASCII whitespace such as U+00A0, the classic copy-paste hazard.
+            //
+            // The promise sentence is "everything it could not decide, it refused rather than
+            // assumed". A lexer that deletes input assumes, in the FRONT END, before any security
+            // analysis runs. Emitting the character as a token makes the parser refuse it.
+            other => {
+                tokens.push(SpannedToken {
+                    token: Token::Other(other.to_string()),
+                    span: Span {
+                        start,
+                        end: start + other.len_utf8(),
+                    },
+                });
+            }
         }
     }
     tokens.push(SpannedToken {
