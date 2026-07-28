@@ -816,6 +816,43 @@ It now breaks a gate rather than shipping: `run_walker_completeness_gate.sh` reg
 under the `partial-` contract (*match what you like, but do not half-read what you matched*), and
 re-planting the exact bug in a scratch copy turns that gate RED.
 
+### VZ isolation — the tart marker is FORGEABLE; the native air-gap is STRUCTURAL (probed 2026-07-28)
+
+Boundary item 4 has said "host-forgeable markers; operator is trust root" as an assertion. It was
+probed, and the answer splits into two very different stories that share one word.
+
+**The tart marker is trivially forgeable.** `seal_vz_disposable_action` (`vz.rs:1354`) writes
+`"isolation": "tart-disposable-guest"` as a **hardcoded string literal**, set by the HOST
+orchestrator — not derived from guest-side attestation, a guest co-signature, or any hardware
+measurement. `seal_action` (`receipts.rs:165`) accepts any JSON payload and chains hashes and MACs
+over it: **it protects the chain from post-hoc tampering, not the content from fabrication at write
+time.** A host process with access to the engagement directory can produce a byte-identical receipt
+with no guest involved at all.
+
+So a green `receipt-verify` proves *this receipt was written by something holding the engagement key
+and has not been altered since*. It does **not** prove a guest existed.
+
+**The native posture is real and structural.** `anubis vz native-preflight` (`vz_native.rs`) derives
+a `NativePosture` from the program's **proven effect set** and builds the
+`VZVirtualMachineConfiguration` that posture implies, then validates it:
+
+| proven effects | posture |
+|---|---|
+| net-free | `ZeroNicAirGap` — **zero network devices** |
+| declares `net.send` | `PerHostnameEgress` — one NIC, allow-list |
+| unbounded | `ZeroNicAirGap` — fail-closed on minimum knowledge |
+| program fails `anubis check` | **refused** — no proof to confine from |
+
+Zero `networkDevices` is not a firewall or a policy: the guest boots with no interface, so there is
+no IP, DNS, TCP or UDP. `native_posture_is_fail_closed` (`vz_native.rs:403`) locks that lattice.
+**This is the language deriving its own confinement from its own proof, and refusing to confine a
+program it cannot prove.**
+
+**The honest statement is therefore two statements.** Evidence sealed on the tart path carries a
+marker an auditor must take on the operator's word. Confinement on the native path is enforced by
+the hypervisor configuration and does not require trusting a string. Do not let the word
+"isolation" carry the second claim's weight on the first claim's evidence.
+
 ### Container-PARAM carrier — OPEN, and the boundary is the PATH, not the param (2026-07-28)
 
 A user function carrying `uses(fs.write)` reaches an application site through a **container passed
