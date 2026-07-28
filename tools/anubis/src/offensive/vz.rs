@@ -60,12 +60,25 @@ pub enum VzRole {
     Custom,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum VzNetwork {
+    #[value(name = "off")]
     Off,
+    #[value(name = "loopback")]
     LoopbackOnly,
+    #[value(name = "nat")]
     Nat,
+}
+
+impl VzNetwork {
+    pub fn as_cli_name(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::LoopbackOnly => "loopback",
+            Self::Nat => "nat",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,6 +428,26 @@ pub fn find_offensive_guest(preferred: Option<&str>) -> Result<VzGuest> {
     })
 }
 
+fn tart_reported_network() -> VzNetwork {
+    VzNetwork::Nat
+}
+
+/// Resolve a requested top-level network mode into the exact Tart launch argv.
+/// Tart cannot structurally remove the NIC; only its default shared-NAT mode is admitted.
+fn tart_start_args(name: &str, network: &VzNetwork) -> Result<Vec<String>> {
+    match network {
+        VzNetwork::Nat => Ok(crate::vz::tart_base_run_args(name, true)),
+        VzNetwork::Off | VzNetwork::LoopbackOnly => Err(anyhow!(
+            "ANUBIS_VZ_NET_STRUCTURAL: --network {net} is not enforceable on the Tart wrapper. \
+             Tart has no flag to remove the guest NIC — refusing instead of silently starting \
+             shared-NAT networking. Use --network nat for Tart guests, or use \
+             `anubis vz native-boot` for true zero-NIC isolation \
+             (networkDevices=[] at hypervisor level).",
+            net = network.as_cli_name(),
+        )),
+    }
+}
+
 /// Start a VZ guest if not already running (Tart headless detach).
 pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
     if legacy_vmctl_enabled() {
@@ -435,21 +468,7 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
     }
 
     let _ = tart_bin()?;
-
-    if matches!(network, VzNetwork::Off | VzNetwork::LoopbackOnly) {
-        return Err(anyhow!(
-            "ANUBIS_VZ_NET_STRUCTURAL: --network {net} is not enforceable on the Tart wrapper. \
-             Tart has no flag to remove the guest NIC — the previous code SILENTLY ran with full \
-             shared-NAT networking while labeling 'network: {net}'. Use --network nat for Tart \
-             guests, or use `anubis vz native-boot` for true zero-NIC isolation \
-             (networkDevices=[] at hypervisor level).",
-            net = match network {
-                VzNetwork::Off => "off",
-                VzNetwork::LoopbackOnly => "loopback",
-                _ => unreachable!(),
-            }
-        ));
-    }
+    let args = tart_start_args(name, network)?;
 
     // Must use Tart running-state, not a stale `tart ip` after stop.
     if guest_is_running(name)? {
@@ -462,10 +481,6 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<()> {
         std::thread::sleep(Duration::from_secs(2));
     }
     let bin = tart_bin()?;
-    let mut args = vec!["run".to_string(), name.to_string(), "--no-graphics".into()];
-    // Tart's default is shared NAT (vmnet framework). --net-softnet gives a user-space
-    // networking stack with optional CIDR block/allow. Off/LoopbackOnly are rejected above.
-    args.push("--net-softnet".into());
     Command::new(bin)
         .args(&args)
         .stdin(Stdio::null())
@@ -1468,6 +1483,32 @@ pub fn vz_snapshot(guest: &str, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tart_start_policy_rejects_structurally_unenforceable_modes() {
+        for (mode, name) in [
+            (VzNetwork::Off, "off"),
+            (VzNetwork::LoopbackOnly, "loopback"),
+        ] {
+            let err = tart_start_args("unit-guest", &mode)
+                .expect_err("Tart must fail closed for non-NAT modes")
+                .to_string();
+            assert!(err.contains("ANUBIS_VZ_NET_STRUCTURAL"), "got {err}");
+            assert!(err.contains(name), "got {err}");
+            assert!(err.contains("native-boot"), "got {err}");
+        }
+    }
+
+    #[test]
+    fn tart_nat_start_uses_canonical_default_nat_argv() {
+        let args = tart_start_args("unit-guest", &VzNetwork::Nat).expect("Tart NAT plan");
+        assert_eq!(args, crate::vz::tart_base_run_args("unit-guest", true));
+        assert_eq!(args, ["run", "unit-guest", "--no-graphics"]);
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--net-softnet")),
+            "ordinary Tart NAT must use the canonical shared-NAT path: {args:?}"
+        );
+    }
 
     #[test]
     fn legacy_vmctl_fails_closed_without_allow_env() {

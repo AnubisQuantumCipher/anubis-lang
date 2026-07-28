@@ -6816,6 +6816,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vz_start_rejects_unknown_network_mode_at_argument_parse() {
+        let err = Cli::try_parse_from([
+            "anubis",
+            "vz-start",
+            "--guest",
+            "unit-guest",
+            "--network",
+            "typo",
+        ])
+        .expect_err("unknown network mode must not silently coerce to off");
+        let rendered = err.to_string();
+        assert!(rendered.contains("invalid value 'typo'"), "got {rendered}");
+        for allowed in ["off", "loopback", "nat"] {
+            assert!(rendered.contains(allowed), "got {rendered}");
+        }
+    }
+
+    #[test]
+    fn vz_start_help_is_explicit_about_tart_nat_and_native_zero_nic() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let vz_start = command
+            .find_subcommand_mut("vz-start")
+            .expect("vz-start subcommand");
+        let help = vz_start.render_long_help().to_string();
+        assert!(!help.contains("network-isolated by default"), "{help}");
+        assert!(help.contains("shared NAT"), "{help}");
+        assert!(help.contains("native-boot"), "{help}");
+    }
+
+    #[test]
     fn program_mode_aggregates_all_functions_independent_of_source_order() {
         let safe_then_research = parse_source(
             r#"

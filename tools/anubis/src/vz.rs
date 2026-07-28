@@ -309,6 +309,16 @@ fn s(v: &str) -> String {
     v.to_string()
 }
 
+/// Canonical unconstrained Tart launch argv. Tart's default network is shared NAT;
+/// callers that need tighter confinement must append an explicitly derived policy.
+pub(crate) fn tart_base_run_args(name: &str, no_graphics: bool) -> Vec<String> {
+    let mut args = vec![s("run"), name.to_string()];
+    if no_graphics {
+        args.push(s("--no-graphics"));
+    }
+    args
+}
+
 pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
     match action {
         VzCmd::Status { json } => {
@@ -419,10 +429,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 confine_args = applied.tart_args;
                 run_mounts = applied.mounts;
             }
-            let mut args = vec![s("run"), name.clone()];
-            if no_graphics {
-                args.push(s("--no-graphics"));
-            }
+            let mut args = tart_base_run_args(&name, no_graphics);
             for a in &confine_args {
                 args.push(a.clone());
             }
@@ -1577,6 +1584,18 @@ fn indent(text: &str) -> String {
 #[cfg(test)]
 mod ssh_transport_tests {
     use super::*;
+
+    #[test]
+    fn canonical_tart_base_run_args_use_default_shared_nat() {
+        assert_eq!(
+            tart_base_run_args("unit-guest", true),
+            ["run", "unit-guest", "--no-graphics"]
+        );
+        assert_eq!(
+            tart_base_run_args("unit-guest", false),
+            ["run", "unit-guest"]
+        );
+    }
 
     #[test]
     fn common_ssh_args_pin_identity_and_disable_agent_fanout() {
