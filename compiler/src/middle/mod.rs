@@ -768,20 +768,45 @@ fn fn_identities_at_contract_path(
         return fn_identities_of_d(value, scope, ctx, depth + 1);
     }
     if let Expr::Var(root) = value {
-        return scope
-            .get(root)
-            .and_then(|binding| binding.field_fn_identities.get(path))
-            .cloned()
-            .unwrap_or(FnIdentitySet::Unknown);
+        let Some(binding) = scope.get(root) else {
+            return FnIdentitySet::Unknown;
+        };
+        if let Some(found) = binding.field_fn_identities.get(path) {
+            return found.clone();
+        }
+        let (head, rest) = path.split_once('.').unwrap_or((path, ""));
+        if head == "*" {
+            let mut values = binding
+                .field_fn_identities
+                .iter()
+                .filter_map(|(candidate, ids)| {
+                    let (_, suffix) = candidate.split_once('.').unwrap_or((candidate, ""));
+                    (rest.is_empty() || suffix == rest || suffix.ends_with(&format!(".{rest}")))
+                        .then_some(ids.clone())
+                });
+            let Some(first) = values.next() else {
+                return FnIdentitySet::Unknown;
+            };
+            return values.fold(first, FnIdentitySet::union);
+        }
+        return FnIdentitySet::Unknown;
     }
     let (head, rest) = path.split_once('.').unwrap_or((path, ""));
     match value {
-        Expr::ArrayLiteral { elements } => head
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| elements.get(index))
-            .map(|child| fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1))
-            .unwrap_or(FnIdentitySet::Unknown),
+        Expr::ArrayLiteral { elements } => {
+            if head == "*" {
+                elements
+                    .iter()
+                    .map(|child| fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1))
+                    .fold(FnIdentitySet::empty(), FnIdentitySet::union)
+            } else {
+                head.parse::<usize>()
+                    .ok()
+                    .and_then(|index| elements.get(index))
+                    .map(|child| fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1))
+                    .unwrap_or(FnIdentitySet::Unknown)
+            }
+        }
         Expr::StructLiteral { fields, .. } => fields
             .iter()
             .find(|(name, _)| name == head)

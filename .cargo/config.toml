@@ -1,25 +1,9 @@
-# Crash-prevention guardrail (added 2026-07-13 after repeated watchdog kernel panics).
+# The aarch64-linux-musl guest binary. Without this, cargo links the musl target with the HOST
+# Apple `cc`, which rejects GNU ld flags:
 #
-# Why: this machine (M4 Max, 16 cores) hard-rebooted three times on 2026-07-11..12
-# from `watchdog timeout: no checkins from watchdogd in 90 seconds` kernel panics —
-# i.e. the OS could not schedule its own watchdog daemon because every core was
-# saturated. A full-parallelism build of this repo (rustc codegen + risc0's C++
-# kernels via the cc-crate jobserver) stacked on top of many concurrent apps/agents
-# is the most likely trigger.
+#   ld: unknown options: --as-needed -Bstatic -Bdynamic --eh-frame-hdr -z --gc-sections
 #
-# `jobs = 10` caps cargo's build parallelism (both rustc units and the C++ jobserver)
-# so builds always leave ~6 cores of headroom for the OS scheduler, iCloud/Spotlight,
-# and your other tools. Builds stay fast; the machine can no longer be starved into a
-# watchdog panic by a build alone.
-#
-# Fully reversible: delete this file (or raise `jobs`) to restore default all-core builds.
-# NOTE: this bounds *build* concurrency only. risc0 *proving* spawns its own runtime
-# thread pool (hardware_concurrency) that this setting does not touch.
-[build]
-jobs = 10
-
-# The anubis CLI Commands enum is large (AOP T1–T9 + prove/vz/doctor surfaces).
-# clap's derive parser can overflow the default ~2MiB thread stack during unit
-# tests that call `Cli::try_parse_from`. 16MiB is enough on Apple Silicon debug.
-[env]
-RUST_MIN_STACK = "16777216"
+# The COMPILE succeeds without it — only the link fails — so the error reads like a code problem
+# rather than a toolchain one. `brew install FiloSottile/musl-cross/musl-cross` provides the linker.
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
