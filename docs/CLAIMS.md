@@ -1070,6 +1070,48 @@ under this mode" requires reading the mode attributes. `MODE_ALLOWS` is the trap
 accept a stripped `declassify` because their mode authorizes it, and scoring those as BLIND
 would have invented five defects that do not exist.
 
+### The callable false-accept class is WIDER than the ten shapes — 41 open routes (OPEN 2026-07-28)
+
+Ten carrier shapes were closed on 2026-07-28, each with a rejecting discriminator AND a guard that
+rejects poison. Red inventory zero, both held fixtures rejecting, security 317/317. On that
+evidence Phase 1 looked finished.
+
+It is not. The blueprint's last criterion is *"a fresh adversarial hunt over the carrier surface
+returns no new form"*, and the widest hunt yet run says:
+
+```
+routes tried    65
+expressible     65     zero MALFORMED — every probe COULD have rejected
+CLOSED          24
+YES_OPEN        41
+```
+
+Zero MALFORMED is what makes the number mean anything: each probe had a rejecting direct twin and
+no capability granted on the path, so 41 ACCEPTs are 41 findings rather than 41 badly-built
+fixtures. Evidence: `scratchpad/fleet_20260726/adversary/p15r1/`.
+
+**They are not 41 independent defects.** Grouped:
+
+| n | surface |
+|---|---|
+| 8 | higher-order builtins — `map` `filter` `reduce` `any` `each` `sort_by` `count` `fold` |
+| 14 | container routes — `zip`/`flatten`/`reverse`/`drop`/`first` extraction, nesting, concat |
+| 6 | method-shaped |
+| 5 | loop shapes |
+| 3 | option/let binders — `if let Some` / `while let Some` |
+| 3 | map iteration |
+| 2 | identity / generic pass-through |
+
+The ten closed shapes were a SUBSET of the class, not the class. This repo has recorded the lesson
+before, on this exact surface: *the higher-order surface is infinite whack-a-mole — fix the
+abstraction, not the form.* Four hunt rounds each found more until one path-keyed closure
+abstraction closed the class and roughly forty adjacent forms with it.
+
+**Phase 1 is therefore REOPENED.** Nothing about the ten closes is retracted — each still rejects,
+each still has a reaching guard. What is retracted is the inference from "the known list is
+closed" to "the class is closed", which is precisely the inference the hunt criterion exists to
+forbid.
+
 ### The float contract lane is NON-DETERMINISTIC at the solver budget (OPEN 2026-07-28)
 
 `float_contract_monotonicity_accepts` proves `0 < x < 1 ⇒ x*x < x` in QF_FP Float64/RNE. Whether
