@@ -1159,6 +1159,13 @@ pub fn lower_program_to_guest(items: &[Item]) -> Result<String> {
 
 /// Shared lowering: emit the AnubisValue runtime + every function, framed by a caller-provided
 /// `prelude` (e.g. a guest `use`) and `entry` (the real `fn main`).
+//
+// Eight parameters, one over the lint's threshold. Each is an independent lowering decision made
+// by a different caller — research gating, guest proof inputs, two monomorphisation tables, a
+// stack budget — and there is no cohesive struct hiding among them. Bundling them to satisfy a
+// count would add an indirection at every call site and make it EASIER, not harder, to pass the
+// wrong flag, because the arguments would stop being named at the call.
+#[allow(clippy::too_many_arguments)]
 fn lower_program_with_entry(
     items: &[Item],
     prelude: &str,
@@ -1377,9 +1384,12 @@ fn anubis_cap_export(cap: AnubisValue, _reason: AnubisValue) -> AnubisValue { ca
     } else {
         ANUBIS_KEYCHAIN_SE_RS.to_string()
     };
+    let header = format!(
+        "#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\nconst __ANB_STACK_BUDGET: usize = {stack_budget_bytes};\n"
+    );
     Ok(format!(
         "{header}{prelude}\n{core}\n{keychain}\n{crypto}\n{poc}\n{proof}\n{functions}\n{entry}",
-        header = format!("#![allow(dead_code, unused_mut, unused_variables, unused_assignments, unreachable_code, unused_parens, unused_imports, non_snake_case, unused_braces)]\nconst __ANB_STACK_BUDGET: usize = {stack_budget_bytes};\n"),
+        header = header,
         prelude = prelude,
         core = ANUBIS_CORE_RUNTIME_RS,
         keychain = keychain_se,
