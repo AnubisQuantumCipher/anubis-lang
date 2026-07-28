@@ -83,6 +83,34 @@ if [[ "$PROFILE" != "full" && "$PROFILE" != "hosted" ]]; then
 fi
 mkdir -p "$OUT"
 
+# An audit of a DIRTY TREE grades a state that never existed as a commit.
+#
+# Demonstrated 2026-07-28: a full run reported `FAIL G1_fmt` while `cargo fmt --check` was clean
+# both before and after, because another agent saved a file mid-run. The verdict described a tree
+# that existed for about four seconds. Worse, the same race silently STRIPS the code signature
+# from `target/release/anubis` when G4 rebuilds it, so a VZ gate run alongside an audit fails with
+# a missing-entitlement error that has nothing to do with the gate.
+#
+# Nothing in a 22-gate suite is worth reporting if the thing under test changed while it ran. This
+# refuses rather than producing a verdict about a moving target. Override is explicit and is
+# RECORDED IN THE REPORT, so a dirty run can never be mistaken later for a clean one.
+DIRTY="$(git status --porcelain 2>/dev/null | grep -vE '^\?\?' | head -20)"
+AUDIT_TREE_STATE="clean"
+if [[ -n "$DIRTY" ]]; then
+  if [[ "${ANUBIS_AUDIT_ALLOW_DIRTY:-0}" == "1" ]]; then
+    AUDIT_TREE_STATE="dirty-override"
+    echo "ANUBIS_AUDIT_DIRTY_TREE_OVERRIDE: grading a tree with uncommitted changes:" >&2
+    printf '%s\n' "$DIRTY" >&2
+  else
+    echo "ANUBIS_AUDIT_DIRTY_TREE: refusing to grade a tree with uncommitted changes." >&2
+    echo "  A verdict over a moving tree describes a state that was never committed, and a" >&2
+    echo "  concurrent write makes gates fail for reasons that have nothing to do with the gate." >&2
+    printf '%s\n' "$DIRTY" >&2
+    echo "  Commit or stash, or set ANUBIS_AUDIT_ALLOW_DIRTY=1 (recorded in the report)." >&2
+    exit 2
+  fi
+fi
+
 pass=0; fail=0; skip=0; external=0; total=0
 REPORT="$OUT/gate_report.json"
 LOG="$OUT/gate_log.txt"
@@ -157,7 +185,7 @@ if [[ ! -x "$BIN" ]]; then
   # Write partial report and exit
   JOINED=$(IFS=,; echo "${GATE_RESULTS[*]}")
   cat > "$REPORT" <<ENDJSON
-{"timestamp":"$STAMP","profile":"$PROFILE","pass":$pass,"fail":$fail,"skip":$skip,"external":$external,"total":$total,"verdict":"FAIL","gates":[$JOINED]}
+{"timestamp":"$STAMP","profile":"$PROFILE","tree_state":"$AUDIT_TREE_STATE","pass":$pass,"fail":$fail,"skip":$skip,"external":$external,"total":$total,"verdict":"FAIL","gates":[$JOINED]}
 ENDJSON
   echo ""
   echo "Overall: FAIL ($pass/$total passed, $fail failed, $skip skipped, $external external)"
@@ -437,7 +465,7 @@ fi
 
 JOINED=$(IFS=,; echo "${GATE_RESULTS[*]}")
 cat > "$REPORT" <<ENDJSON
-{"timestamp":"$STAMP","profile":"$PROFILE","pass":$pass,"fail":$fail,"skip":$skip,"external":$external,"total":$total,"verdict":"$VERDICT","gates":[$JOINED]}
+{"timestamp":"$STAMP","profile":"$PROFILE","tree_state":"$AUDIT_TREE_STATE","pass":$pass,"fail":$fail,"skip":$skip,"external":$external,"total":$total,"verdict":"$VERDICT","gates":[$JOINED]}
 ENDJSON
 
 echo "Overall: $VERDICT ($pass/$total passed, $fail failed, $skip skipped, $external external)" | tee -a "$LOG"
