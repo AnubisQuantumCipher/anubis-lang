@@ -197,12 +197,58 @@ authoritative.
 2. **The walk must be total over the forms that HOLD expressions**, not just over `Expr` itself.
    Totality stops a new variant; only descending into every held expression stops a new *position*.
 
-### Done when
+### The walker count was wrong by 4x — corrected 2026-07-28
 
-- Every construct that binds or carries a value is a named arm in ONE total walker
-- Adding a new binder/carrier variant **breaks the build** until its qualifier consumer is written
-- The ~7 parallel value-flow walkers are reduced to one shared abstraction, or proven kept in sync
-  by construction
+"~7" was never measured. The adversary censused it with `path:LINE` for every entry
+(`scratchpad/fleet_20260726/adversary_round21.md`):
+
+| scope | count |
+|---|---:|
+| primary value-flow propagators in `middle/mod.rs` | **23** |
+| sibling modules with their own `walk_expr` (`effects`, `capability`, `trifecta`) | +3 |
+| **total independent walkers** | **26** |
+
+Plus `analyze_stmts` (`middle/mod.rs:7671`) as the place-assign/let seeder — walker #0, the owner.
+
+And the finding that reframes this phase: **the count is going UP by design. Every closed parity
+hole has spawned a twin walker or a dual arm rather than collapsing into one abstraction.** Four
+rounds of findings — tag join vs identity join, literal producer vs mutation producer, return path
+vs param path — are all one shape: two walkers that should agree and do not.
+
+Known non-total today: `expr_taint_source_m` ends `_ => None` (`middle/mod.rs:21723`) — a *query*
+walker whose silent default is "not tainted". That is a fail-open default in the label lane.
+
+### Unification is the WRONG target — corrected 2026-07-28
+
+Asked whether the 26 could collapse into one, the adversary argued against the obvious answer and
+gave four structural reasons: the lanes carry **different monoids** (taint/secret are boolean
+join-OR; gate tags and identities are set monoids with `Unknown`; effects are rows; caps are
+linear); they have **different failure modes** (`Unknown`-as-no-op for tags vs `Unknown`-as-
+annihilator for identities vs clean-default for taint); **query / seed / charge are three genuine
+phases**; and the enforcing/summary twins (`analyze_stmts` vs `walk_block_*`) exist for
+value-position blocks and solver rollback.
+
+> **Unification of the monoid algebra is optional. Unification of construct coverage is mandatory.**
+
+The repo already owns the pattern that delivers the second: `solver/src/fragment.rs`'s
+`is_proven_authoritative` is a TOTAL match with no wildcard, so a new `Term` variant fails to
+**compile** rather than riding through as authoritative. It transfers with adaptation — one shared
+`Expr` descent with no wildcard arm; lane hooks as **required** trait methods so a missing hook is a
+compile error rather than a silent empty default; monoids kept separate; `collect_container_*` and
+`apply_container_mutation_taint` calling one shared `seed_element_callable`; and the apply site
+using the same path resolution as the seeders.
+
+### Done when (replaces the original criterion)
+
+- Every security walker that touches containers is either **(a)** a thin wrapper over a shared total
+  `Expr` visitor, or **(b)** listed in a drift gate that proves its match is total over `Expr`
+- `push` / place-assign / extract / param / return share **one** `seed_element` / `project_element`
+  API — not five implementations that must be remembered in parallel
+- Adding a new binder/carrier variant **breaks the build** until its consumer is written
+- A new lane cannot be added without implementing every construct hook
+
+The blueprint undercounted the walkers; the disease diagnosis was correct. This phase is **not**
+cheaper than it looked — it is the reason the false-accept class keeps regenerating one lane over.
 
 ---
 
