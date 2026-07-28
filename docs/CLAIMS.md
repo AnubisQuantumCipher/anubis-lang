@@ -737,6 +737,45 @@ digest, rather than exfiltrating them. A digest is evidence; a core dump is a li
 system whose identity is proving without revealing, scraping raw crash state to the host is
 architecturally backwards.
 
+### Secret-selected constants — direct form CLOSED, nested form OPEN and it reconstructs N BITS (2026-07-28)
+
+`Expr::If` discarded its condition in `expr_taint_source_m`, `expr_secret_source_m` and
+`expr_param_flow`, while `Expr::IfLet` thirty lines above bound and consulted its scrutinee and
+`analyze_expr_effect` — the effect lane — was clean. One shape, three functions, two lanes wrong.
+
+```
+let x = if secret_source(1) > 0 { 1 } else { 2 };   print(x);
+   before:  check ACCEPT rc=0, run prints 1
+   after:   REJECT, confidentiality AND integrity duals (w1, w1b, w5, w5b, w5c)
+```
+
+The implicit-flow lane never covered it: `reject_implicit_flow_under_secret_pc` fires on a public
+root **assigned** under a secret PC, not on a `let` whose init is a secret-**selected** constant.
+Closed in `92ff3d1`, both over-rejection guards holding, corpus 311/311 and 244/244 with zero
+accept→reject flips. Locked in: `run_walker_completeness_gate.sh` now registers all three walkers,
+and reverting `Expr::If.cond` in a scratch copy turns that gate RED.
+
+**Composition, measured rather than assumed — the two halves differ and the difference is the
+severity.**
+
+| shape | composes to an n-bit secret? |
+|---|---|
+| **direct** value-`if` — CLOSED | **No.** A single program packing many bits is rejected as a whole: 3-bit accumulate, a `while` loop packing `acc*2+bit`, `((s>>i)&1)` extraction, arms indexed by a secret, and three sequential `print(if secret …)` all REJECT. The fix is not a one-bit patch on this form. |
+| **nested** bare-`if`-in-block — **OPEN** | **Yes.** Reconstructs an n-bit secret **in one program**, ACCEPT + observed at runtime. |
+
+**So the open residual must not be described as "a one-bit channel" — that understates it.**
+
+```
+let x = if true { if secret_source(1) > 0 { 1 } else { 2 } } else { 0 };   print(x);
+   check rc=0 ACCEPT,  run prints 1
+   direct twin:                     REJECT
+   nested, result discarded:        ACCEPT   (correct non-observation)
+   nested with `let z = …; z`:      REJECT   (statement seeder sees it)
+```
+
+The label survives `Expr::Block`'s tail (`mod.rs:22186`); it dies when the inner `if` is the last
+statement of the block with no parsed tail, so the block value is never exposed. Under repair.
+
 ### Generics are a STRING HEURISTIC — two measured defects in opposite directions (OPEN 2026-07-28)
 
 `is_generic` (`compiler/src/middle/ty.rs:258`) decides whether a type annotation is a generic
