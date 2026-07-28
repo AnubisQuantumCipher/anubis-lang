@@ -77,6 +77,7 @@ pass=0; fail=0; skip=0; external=0; total=0
 REPORT="$OUT/gate_report.json"
 LOG="$OUT/gate_log.txt"
 GATE_RESULTS=()
+GATE_NAMES=()
 
 gate() {
   local name="$1" status="$2" detail="$3"
@@ -91,6 +92,7 @@ gate() {
     fail=$((fail+1))
   fi
   GATE_RESULTS+=("{\"gate\":\"$name\",\"status\":\"$status\",\"detail\":\"$detail\"}")
+  GATE_NAMES+=("$name")
   printf '%-6s %-40s %s\n' "$status" "$name" "$detail" | tee -a "$LOG"
 }
 
@@ -296,17 +298,84 @@ else
   gate "G15_dogfood_feel" "SKIP" "no examples/feel directory"
 fi
 
+# ── G16-G21: gates whose numbers the board publishes but CI never ran ──
+#
+# Until 2026-07-28 none of these ran on push. The 162 Lean theorems, the 104/104 fail-closed stdlib
+# matrix, the 882-file native-authoritative corpus, the docs-drift stamps and walker totality were
+# ALL locally-run assertions: a broken proof, an introduced `sorry`, or a drifted stamp shipped
+# green. A number that CI does not check is a number nobody is checking.
+
+if bash scripts/run_docs_drift_gate.sh --out "$OUT/g16_docs_drift" >"$OUT/g16_docs_drift.log" 2>&1; then
+  gate "G16_docs_drift" "PASS" "stamps re-derived, no drift"
+else
+  gate "G16_docs_drift" "FAIL" "documentation drifted from measured inventory (see g16_docs_drift.log)"
+fi
+
+if bash scripts/run_stdlib_failclosed_gate.sh --out "$OUT/g17_stdlib_fc" >"$OUT/g17_stdlib_fc.log" 2>&1; then
+  gate "G17_stdlib_failclosed" "PASS" "stdlib fail-closed matrix green"
+else
+  gate "G17_stdlib_failclosed" "FAIL" "stdlib fail-closed regression (see g17_stdlib_fc.log)"
+fi
+
+if bash scripts/run_native_authoritative_gate.sh >"$OUT/g18_native_auth.log" 2>&1; then
+  gate "G18_native_authoritative" "PASS" "native solver agrees with reference across the corpus"
+else
+  gate "G18_native_authoritative" "FAIL" "native/reference mismatch (see g18_native_auth.log)"
+fi
+
+if bash scripts/run_walker_completeness_gate.sh >"$OUT/g19_walker.log" 2>&1; then
+  gate "G19_walker_completeness" "PASS" "registered walkers bind every code-holding field"
+else
+  gate "G19_walker_completeness" "FAIL" "a walker discards a field code can hide in (see g19_walker.log)"
+fi
+
+if bash scripts/check_gate_common_adoption.sh >"$OUT/g20_gate_common.log" 2>&1; then
+  gate "G20_gate_common_adoption" "PASS" "no unknown fixture scorer bypasses the shared guards"
+else
+  gate "G20_gate_common_adoption" "FAIL" "a scorer neither uses gate_common nor has an exception (see g20_gate_common.log)"
+fi
+
+# Lean needs the elan/lake toolchain. Absent it, this is EXTERNAL — declared and counted, never a
+# silent pass. `command -v` before running, so a missing toolchain cannot masquerade as a proof.
+if command -v lake >/dev/null 2>&1 || [[ -x "$HOME/.elan/bin/lake" ]]; then
+  [[ -x "$HOME/.elan/bin/lake" ]] && export PATH="$HOME/.elan/bin:$PATH"
+  if bash scripts/run_formal_gate.sh >"$OUT/g21_formal.log" 2>&1; then
+    gate "G21_formal" "PASS" "every theorem machine-checked; no sorry/admit/free axiom"
+  else
+    gate "G21_formal" "FAIL" "formal gate red (see g21_formal.log)"
+  fi
+else
+  gate "G21_formal" "EXTERNAL" "lake/elan not installed on this runner; Lean proofs NOT checked here"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
 
+# Verdict by NAMED gate, not by arithmetic.
+#
+# This used to be `pass -eq 15 && ... && total -eq 15`. The exact-count check had the right
+# instinct — a gate cannot silently vanish — but it made the gate list unextendable without
+# editing magic numbers in two places, which is why six gates the board publishes were never
+# added. Naming them keeps the property AND says which one is missing instead of just that the
+# arithmetic no longer works.
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal"
+
+MISSING_GATES=""
+for g in $EXPECTED_GATES; do
+  case " ${GATE_NAMES[*]} " in *" $g "*) ;; *) MISSING_GATES="$MISSING_GATES $g" ;; esac
+done
+
 VERDICT="FAIL"
-if [[ "$PROFILE" == "full" ]]; then
-  if [[ $pass -eq 15 && $fail -eq 0 && $skip -eq 0 && $external -eq 0 && $total -eq 15 ]]; then
+if [[ -n "$MISSING_GATES" ]]; then
+  echo "ANUBIS_AUDIT_INCOMPLETE: gate(s) produced no result:$MISSING_GATES" | tee -a "$LOG"
+elif [[ $fail -eq 0 && $skip -eq 0 ]]; then
+  # `external` is declared, counted and printed — never folded into PASS silently.
+  if [[ "$PROFILE" == "full" && $external -eq 0 ]]; then
     VERDICT="PASS"
+  elif [[ "$PROFILE" == "hosted" ]]; then
+    VERDICT="HOSTED_PASS"
   fi
-elif [[ $pass -eq 14 && $fail -eq 0 && $skip -eq 0 && $external -eq 1 && $total -eq 15 ]]; then
-  VERDICT="HOSTED_PASS"
 fi
 
 JOINED=$(IFS=,; echo "${GATE_RESULTS[*]}")

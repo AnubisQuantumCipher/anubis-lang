@@ -13,6 +13,7 @@ exception_reason() {
     scripts/check_capset_registry_parity.sh) echo "source-registry comparison; no fixture verdicts" ;;
     scripts/check_metal_parity.sh) echo "hardware proof matrix finalized by gate11-metal-parity" ;;
     scripts/gate10_a15_reproduce.sh) echo "historical A15 reproduction driver" ;;
+    scripts/publish_pin.sh) echo "publishes a content-addressed binary pin; its stale-source guard globs *.anb and says 'fail', which trips the candidate heuristic — it scores no fixtures" ;;
     scripts/run_author_diversity_gate.sh) echo "source authorship audit, not an Anubis fixture corpus" ;;
     scripts/run_check_confine_run_gate.sh) echo "fixed end-to-end confinement scenario" ;;
     scripts/run_dx_gate.sh) echo "fixed DX assertions; EXPECT text is test-runner input" ;;
