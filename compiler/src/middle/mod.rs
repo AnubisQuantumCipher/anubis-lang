@@ -3575,14 +3575,14 @@ fn scan_applied_param_local_aliases(
     for stmt in body {
         match stmt {
             Stmt::Let { name, init, .. } => {
-                if let Some((root, path)) = flatten_access_path(init) {
-                    if root == param {
+                if let Expr::Var(source) = init {
+                    if source == param {
+                        aliases.insert(name.clone(), String::new());
+                    } else if let Some(path) = aliases.get(source).cloned() {
                         aliases.insert(name.clone(), path);
                     }
-                } else if matches!(init, Expr::Var(root) if root == param) {
-                    aliases.insert(name.clone(), String::new());
-                } else if let Expr::Var(source) = init {
-                    if let Some(path) = aliases.get(source).cloned() {
+                } else if let Some((root, path)) = flatten_access_path(init) {
+                    if root == param {
                         aliases.insert(name.clone(), path);
                     }
                 } else if let Expr::Call { callee, args } = init {
