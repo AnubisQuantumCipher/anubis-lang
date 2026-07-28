@@ -99,6 +99,27 @@ for f in "${fixtures[@]}"; do
   err_needle=$(grep -o 'ERROR_CONTAINS: .*' "$f" | sed 's/ERROR_CONTAINS: //' | head -1 || true)
   err_needle="${err_needle//$'\r'/}"
 
+  # An `ERROR_CONTAINS:` on an `EXPECT: PASS` fixture is meaningless BY DEFINITION — a passing
+  # program emits no error to contain — and the gate used to treat it as a real requirement, so
+  # the fixture failed for its comment rather than its behaviour.
+  #
+  # That happened: a fixture rewritten to fix a tautology carried the annotation
+  # `ERROR_CONTAINS: (none — this is a PASS fixture)`. `check` exited 0, the gate hunted for that
+  # literal string in the log, did not find it, and reported FAIL. The corpus went 317 -> 316 and
+  # the diagnosis pointed at the compiler, which was working correctly.
+  #
+  # A malformed fixture must be reported as MALFORMED, not as a failing test. Reading a FAIL and
+  # hunting the compiler is exactly the cost this catches.
+  if [[ "$expect" == "PASS" && -n "$err_needle" ]]; then
+    echo "  MALFORMED: EXPECT: PASS fixture declares ERROR_CONTAINS ('$err_needle') — a passing program has no error to contain"
+    printf 'EXPECT: PASS with ERROR_CONTAINS: %s\n' "$err_needle" > "$outd/malformed.txt"
+    failed=$((failed+1))
+    jq --arg name "$base" --arg reason "EXPECT: PASS fixture declares ERROR_CONTAINS" --arg evidence_path "$outd" \
+      '.fixtures += [{"name": $name, "status": "FAIL", "expected": "MALFORMED", "actual": "MALFORMED", "malformed_reason": $reason, "evidence_path": $evidence_path}]' \
+      "$report" > "$REPORT_TMP" && mv "$REPORT_TMP" "$report"
+    continue
+  fi
+
   cmd_failed=0
   if [[ $rc -ne 0 ]]; then
     cmd_failed=1

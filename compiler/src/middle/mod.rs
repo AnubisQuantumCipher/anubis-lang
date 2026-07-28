@@ -11662,10 +11662,14 @@ fn analyze_expr_effect(
                         if let Some(paths) =
                             applied_paths.as_ref().and_then(|by_param| by_param.get(&i))
                         {
-                            if paths.contains("*") {
+                            if paths.iter().any(|path| !path.is_empty()) {
                                 let mut closures = BTreeMap::new();
                                 collect_container_closures(arg, "", scope, ctx, &mut closures);
-                                for closure in closures.into_values() {
+                                let selected = closures
+                                    .into_iter()
+                                    .filter(|(path, _)| paths.contains("*") || paths.contains(path))
+                                    .map(|(_, closure)| closure);
+                                for closure in selected {
                                     if let Expr::Lambda { params, body } = closure.as_ref() {
                                         let mut local = scope.clone();
                                         for p in params {
