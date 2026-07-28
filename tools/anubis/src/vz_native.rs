@@ -38,6 +38,7 @@
 //! enforcing.
 
 use anyhow::{anyhow, Result};
+use sha2::{Digest, Sha256};
 
 /// The hardware confinement posture the native backend derives from a program's proven effect set.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,12 +297,13 @@ pub fn native_boot(
         eprintln!("[anubis vz native-boot] staging : {dir} (VirtioFS tag \"anubis\")");
     }
     eprintln!("[anubis vz native-boot] posture : {}", posture.label());
-    boot_with_kernel(&posture, kernel, initrd, staging_dir)
+    boot_with_kernel(&posture, program, kernel, initrd, staging_dir)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn boot_with_kernel(
     posture: &NativePosture,
+    program: &str,
     kernel: &str,
     initrd: Option<&str>,
     staging_dir: Option<&str>,
@@ -735,7 +737,7 @@ fn boot_with_kernel(
         // nothing. That was measured, not hypothesised — `CONFIG_VIRTIO_NET=m` and no module
         // loader under `rdinit=/bin/sh` made every guest look air-gapped.
         let lo_only = glob_value == "/sys/class/net/lo";
-        match posture {
+        let (verdict, posture_label) = match posture {
             NativePosture::ZeroNicAirGap => {
                 if !lo_only {
                     return Err(anyhow!(
@@ -757,6 +759,7 @@ fn boot_with_kernel(
                 eprintln!(
                     "  basis     : hypervisor-enforced (VZ networkDevices=0 + guest-side PCI-bus confirmation)"
                 );
+                ("ZERO_NIC_VERIFIED", "ZeroNicAirGap")
             }
             NativePosture::PerHostnameEgress { .. } => {
                 if lo_only {
@@ -775,8 +778,63 @@ fn boot_with_kernel(
                     "  note      : this run is also the POSITIVE CONTROL for the zero-NIC probe — \
 it proves the probe can see a NIC when one exists"
                 );
+                ("EGRESS_CONFIRMED", "PerHostnameEgress")
             }
-        }
+        };
+
+        // ── Receipt emission ──
+        // The receipt carries the evidence, not a boolean. An auditor re-derives the posture
+        // from the program, verifies the kernel hash against a known-good build, and reads
+        // the guest's own PCI enumeration and network interface list.
+        let transcript_sha256 = hex::encode(Sha256::digest(final_output.as_bytes()));
+        let program_sha256 = std::fs::read(program)
+            .map(|b| hex::encode(Sha256::digest(&b)))
+            .unwrap_or_else(|_| "unavailable".into());
+        let kernel_sha256 = std::fs::read(kernel)
+            .map(|b| hex::encode(Sha256::digest(&b)))
+            .unwrap_or_else(|_| "unavailable".into());
+
+        let pci_devices: Vec<&str> = proof_section
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                t.strip_prefix("__PCI_DEV__:")
+                    .filter(|v| !v.contains("$(") && !v.contains("~ #"))
+            })
+            .collect();
+        let virtio_net_present = pci_devices.iter().any(|d| d.contains("0x1041"));
+
+        let receipt = serde_json::json!({
+            "action": "native-boot-isolation-proof",
+            "isolation_basis": "hypervisor-enforced",
+            "verdict": verdict,
+            "posture": posture_label,
+            "posture_derived_from": "program_proven_effect_set",
+            "config": {
+                "networkDevices": nic_count,
+                "serialPorts": 1,
+                "directorySharingDevices": share_count,
+                "cmdline": "console=hvc0 rdinit=/bin/sh"
+            },
+            "program": program,
+            "program_sha256": program_sha256,
+            "kernel": kernel,
+            "kernel_sha256": kernel_sha256,
+            "evidence": {
+                "pci_devices": pci_devices,
+                "virtio_net_present": virtio_net_present,
+                "net_glob": glob_value,
+                "instrument_validated": true,
+                "no_dead_probes": true
+            },
+            "transcript_sha256": transcript_sha256,
+            "transcript_bytes": final_output.len()
+        });
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&receipt).unwrap_or_default()
+        );
     }
     Ok(())
 }
@@ -784,6 +842,7 @@ it proves the probe can see a NIC when one exists"
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 fn boot_with_kernel(
     _posture: &NativePosture,
+    _program: &str,
     _kernel: &str,
     _initrd: Option<&str>,
     _staging_dir: Option<&str>,
