@@ -370,6 +370,21 @@ fn boot_with_kernel(
         }
     }
 
+    // ── Staging canary ──
+    // Write a canary file with known content into the staging dir BEFORE boot. The guest reads
+    // its SHA256 from inside the VM. Content match proves the file crossed the VirtioFS boundary;
+    // a filename match alone could come from a stale mount.
+    let has_staging = staging_dir.is_some();
+    let canary_hash = if let Some(dir) = staging_dir {
+        let canary_content = format!("anubis-staging-canary program={program} kernel={kernel}");
+        let canary_path = std::path::Path::new(dir).join("__canary__");
+        std::fs::write(&canary_path, canary_content.as_bytes())
+            .map_err(|e| anyhow!("ANUBIS_VZNATIVE_CANARY_WRITE: {e}"))?;
+        hex::encode(Sha256::digest(canary_content.as_bytes()))
+    } else {
+        String::new()
+    };
+
     // stdin_fds[1] stays OPEN until the shell prompt appears in console output. The reader
     // thread injects probe commands when it detects `# ` (busybox prompt), then closes the
     // write end so the shell sees EOF after the last command.
@@ -436,6 +451,19 @@ fn boot_with_kernel(
                                 "echo __ANUBIS_PROOF_DNS__",
                                 "/bin/busybox cat /etc/resolv.conf 2>&1 || echo NO_RESOLV_CONF",
                                 "/bin/busybox ping -c1 -W2 8.8.8.8 2>&1 || echo PING_FAILED",
+                                // VirtioFS staging probe — runs ALWAYS. When --staging-dir is
+                                // given, the mount must succeed and the canary must be readable.
+                                // When NOT given, the mount must FAIL — that is the negative
+                                // control proving the probe can detect absence.
+                                "echo __STAGING_PROBE_START__",
+                                "/bin/busybox modprobe virtiofs 2>&1; echo __STAGING_MODPROBE_EXIT__:$?",
+                                "/bin/busybox mkdir -p /mnt/anubis 2>&1",
+                                "/bin/busybox mount -t virtiofs anubis /mnt/anubis 2>&1; echo __STAGING_MOUNT_EXIT__:$?",
+                                "echo __STAGING_GLOB__:$(/bin/busybox ls /mnt/anubis/ 2>&1)",
+                                // Content hash of the canary — proves the file crossed the
+                                // boundary, not just that a filename appeared.
+                                "/bin/busybox sha256sum /mnt/anubis/__canary__ 2>&1; echo __STAGING_CANARY_EXIT__:$?",
+                                "echo __STAGING_PROBE_END__",
                                 "echo __ANUBIS_PROOF_END__",
                             ] {
                                 let _ = writeln!(w, "{cmd}");
@@ -686,7 +714,23 @@ fn boot_with_kernel(
         };
         let proof_section = &final_output[proof_start..proof_end];
 
-        if proof_section.contains("not found") {
+        // Match the SHELL's missing-command form, not the phrase anywhere.
+        //
+        // A bare `contains("not found")` matched the KERNEL line
+        //
+        //     [    0.699189] virtio-fs: tag <anubis> not found
+        //
+        // which is the kernel correctly reporting that no virtiofs tag was configured — the
+        // EXPECTED result when `--staging-dir` is absent. So every plain zero-NIC run, the common
+        // case and the one this lane exists for, failed with "one or more probe commands reported
+        // 'not found'". A correct negative result read as a broken instrument.
+        //
+        // busybox ash emits `sh: NAME: not found` / `/bin/sh: NAME: not found`. Nothing else in a
+        // guest transcript takes that shape, and a kernel subsystem message never does.
+        let missing_tool = proof_section.lines().any(|l| {
+            (l.contains("sh: ") || l.contains("/bin/sh: ")) && l.trim_end().ends_with("not found")
+        });
+        if missing_tool {
             return Err(anyhow!(
                 "ANUBIS_VZNATIVE_INSTRUMENT_FAILED: one or more probe commands reported \
                  'not found' inside the guest. A missing tool and a missing NIC produce \
@@ -782,6 +826,114 @@ it proves the probe can see a NIC when one exists"
             }
         };
 
+        // ── Staging probe validation ──
+        // When --staging-dir is given: mount MUST succeed, canary content hash MUST match.
+        // When NOT given: mount MUST fail — that is the negative control.
+        let staging_section = final_output.find("__STAGING_PROBE_START__").and_then(|s| {
+            final_output
+                .find("__STAGING_PROBE_END__")
+                .map(|e| &final_output[s..e])
+        });
+
+        let (staging_mount_ok, staging_canary_match, staging_guest_hash, staging_glob_value) =
+            if let Some(section) = staging_section {
+                // Same narrowing as the proof-section check above, and for the same reason: a bare
+                // `contains("not found")` matches the KERNEL line
+                //
+                //     [    0.748830] virtio-fs: tag <anubis> not found
+                //
+                // which is the kernel correctly reporting that no virtiofs tag was configured —
+                // the EXPECTED state when `--staging-dir` is absent. That turned every plain
+                // zero-NIC run into a staging-instrument failure. Two detectors, one idiom, and
+                // fixing only the first left the second producing the identical false alarm.
+                let staging_tool_missing = section.lines().any(|l| {
+                    (l.contains("sh: ") || l.contains("/bin/sh: "))
+                        && l.trim_end().ends_with("not found")
+                });
+                if staging_tool_missing {
+                    return Err(anyhow!(
+                        "ANUBIS_VZNATIVE_STAGING_INSTRUMENT_FAILED: a staging probe command \
+                         reported 'not found'. A missing modprobe/mount is not evidence of \
+                         'no staging' — it is a broken instrument.\n{section}"
+                    ));
+                }
+
+                let mount_exit = section
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("__STAGING_MOUNT_EXIT__:"))
+                    .and_then(|v| v.trim().parse::<i32>().ok());
+                let mount_ok = mount_exit == Some(0);
+
+                let guest_hash: String = section
+                    .lines()
+                    .filter_map(|l| {
+                        let t = l.trim();
+                        let first = t.split_whitespace().next()?;
+                        (first.len() == 64 && first.chars().all(|c| c.is_ascii_hexdigit()))
+                            .then(|| first.to_string())
+                    })
+                    .next()
+                    .unwrap_or_default();
+
+                let canary_ok =
+                    !canary_hash.is_empty() && !guest_hash.is_empty() && canary_hash == guest_hash;
+
+                let glob_val: String = section
+                    .lines()
+                    .map(|l| l.trim())
+                    .rfind(|l| {
+                        l.starts_with("__STAGING_GLOB__:")
+                            && !l.contains("$(")
+                            && !l.contains("~ #")
+                    })
+                    .map(|l| l["__STAGING_GLOB__:".len()..].trim().to_string())
+                    .unwrap_or_default();
+
+                if has_staging {
+                    if !mount_ok {
+                        return Err(anyhow!(
+                            "ANUBIS_VZNATIVE_STAGING_MOUNT_FAILED: --staging-dir was given \
+                             but VirtioFS mount failed (exit={mount_exit:?}). The guest cannot \
+                             access staged files."
+                        ));
+                    }
+                    if !canary_ok {
+                        return Err(anyhow!(
+                            "ANUBIS_VZNATIVE_STAGING_CANARY_MISMATCH: canary content hash \
+                             from guest ({guest_hash}) does not match host ({canary_hash}). \
+                             The file did not cross the VirtioFS boundary correctly."
+                        ));
+                    }
+                    eprintln!(
+                        "[anubis vz native-boot] STAGING VERIFIED: VirtioFS mount succeeded, \
+                         canary content hash matched."
+                    );
+                } else {
+                    if mount_ok {
+                        return Err(anyhow!(
+                            "ANUBIS_VZNATIVE_STAGING_NEG_CONTROL_FAILED: no --staging-dir \
+                             was given, but VirtioFS mount succeeded. A staging probe that \
+                             reports success whether or not a share exists cannot distinguish \
+                             presence from absence."
+                        ));
+                    }
+                    eprintln!(
+                        "[anubis vz native-boot] STAGING NEGATIVE CONTROL: VirtioFS mount \
+                         failed as expected (no --staging-dir configured)."
+                    );
+                }
+
+                (mount_ok, canary_ok, guest_hash, glob_val)
+            } else {
+                if has_staging {
+                    return Err(anyhow!(
+                        "ANUBIS_VZNATIVE_STAGING_PROBE_MISSING: --staging-dir was given but \
+                         staging probe markers were not found in the transcript."
+                    ));
+                }
+                (false, false, String::new(), String::new())
+            };
+
         // ── Receipt emission ──
         // The receipt carries the evidence, not a boolean. An auditor re-derives the posture
         // from the program, verifies the kernel hash against a known-good build, and reads
@@ -826,6 +978,14 @@ it proves the probe can see a NIC when one exists"
                 "net_glob": glob_value,
                 "instrument_validated": true,
                 "no_dead_probes": true
+            },
+            "staging": {
+                "configured": has_staging,
+                "mount_succeeded": staging_mount_ok,
+                "canary_content_hash_host": canary_hash,
+                "canary_content_hash_guest": staging_guest_hash,
+                "canary_match": staging_canary_match,
+                "staging_glob": staging_glob_value
             },
             "transcript_sha256": transcript_sha256,
             "transcript_bytes": final_output.len()
