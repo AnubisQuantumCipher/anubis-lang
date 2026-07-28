@@ -2050,7 +2050,18 @@ fn flatten_access_path(e: &Expr) -> Option<(String, String)> {
             let seg = match index.as_ref() {
                 Expr::Literal(s) => s.trim().to_string(),
                 Expr::StrLiteral(s) => s.clone(),
-                _ => return None,
+                // A DYNAMIC index may denote ANY element, so it takes the wildcard segment rather
+                // than no path at all.
+                //
+                // Returning `None` here meant `let f = xs[i]` produced NO path back to the
+                // container, so a callable materialized through a computed index was invisible and
+                // `check` accepted a program that applies it without the capability. `xs[0]` was
+                // tracked and `xs[i]` was not, on otherwise identical code.
+                //
+                // `*` is the same may-denote-any-element segment `pop`/`last` already record, and
+                // it is the FAIL-CLOSED direction: the consumer unions every element's identity,
+                // so an unknown index is treated as possibly every element rather than none.
+                _ => "*".to_string(),
             };
             let (root, path) = flatten_access_path(base)?;
             let np = if path.is_empty() {
