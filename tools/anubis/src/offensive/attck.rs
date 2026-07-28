@@ -322,7 +322,8 @@ fn word_match(haystack: &str, keyword: &str) -> bool {
     for (i, _) in haystack.match_indices(keyword) {
         let before_ok = i == 0 || !haystack.as_bytes()[i - 1].is_ascii_alphanumeric();
         let after = i + keyword.len();
-        let after_ok = after >= haystack.len() || !haystack.as_bytes()[after].is_ascii_alphanumeric();
+        let after_ok =
+            after >= haystack.len() || !haystack.as_bytes()[after].is_ascii_alphanumeric();
         if before_ok && after_ok {
             return true;
         }
@@ -404,11 +405,20 @@ mod tests {
     #[test]
     fn tactic_ids_are_all_ta_prefixed() {
         for t in [
-            Tactic::Reconnaissance, Tactic::ResourceDevelopment, Tactic::InitialAccess,
-            Tactic::Execution, Tactic::Persistence, Tactic::PrivilegeEscalation,
-            Tactic::DefenseEvasion, Tactic::CredentialAccess, Tactic::Discovery,
-            Tactic::LateralMovement, Tactic::Collection, Tactic::CommandAndControl,
-            Tactic::Exfiltration, Tactic::Impact,
+            Tactic::Reconnaissance,
+            Tactic::ResourceDevelopment,
+            Tactic::InitialAccess,
+            Tactic::Execution,
+            Tactic::Persistence,
+            Tactic::PrivilegeEscalation,
+            Tactic::DefenseEvasion,
+            Tactic::CredentialAccess,
+            Tactic::Discovery,
+            Tactic::LateralMovement,
+            Tactic::Collection,
+            Tactic::CommandAndControl,
+            Tactic::Exfiltration,
+            Tactic::Impact,
         ] {
             assert!(t.id().starts_with("TA"), "{:?} id={}", t, t.id());
         }
@@ -417,12 +427,24 @@ mod tests {
     #[test]
     fn tactic_order_is_1_through_14_no_gaps() {
         let mut orders: Vec<u8> = [
-            Tactic::Reconnaissance, Tactic::ResourceDevelopment, Tactic::InitialAccess,
-            Tactic::Execution, Tactic::Persistence, Tactic::PrivilegeEscalation,
-            Tactic::DefenseEvasion, Tactic::CredentialAccess, Tactic::Discovery,
-            Tactic::LateralMovement, Tactic::Collection, Tactic::CommandAndControl,
-            Tactic::Exfiltration, Tactic::Impact,
-        ].iter().map(|t| t.order()).collect();
+            Tactic::Reconnaissance,
+            Tactic::ResourceDevelopment,
+            Tactic::InitialAccess,
+            Tactic::Execution,
+            Tactic::Persistence,
+            Tactic::PrivilegeEscalation,
+            Tactic::DefenseEvasion,
+            Tactic::CredentialAccess,
+            Tactic::Discovery,
+            Tactic::LateralMovement,
+            Tactic::Collection,
+            Tactic::CommandAndControl,
+            Tactic::Exfiltration,
+            Tactic::Impact,
+        ]
+        .iter()
+        .map(|t| t.order())
+        .collect();
         orders.sort();
         orders.dedup();
         assert_eq!(orders, (1..=14).collect::<Vec<u8>>());
@@ -435,7 +457,11 @@ mod tests {
         for tech in &cat {
             assert!(!tech.id.is_empty(), "empty id");
             assert!(!tech.name.is_empty(), "empty name");
-            assert!(!tech.aop_surface.is_empty(), "empty aop_surface for {}", tech.id);
+            assert!(
+                !tech.aop_surface.is_empty(),
+                "empty aop_surface for {}",
+                tech.id
+            );
         }
     }
 
@@ -482,51 +508,88 @@ mod tests {
                  detection gap for an action that was performed.  Either add a \
                  keyword branch in map_action or fix the aop_surface string.  \
                  map_action returned: {:?}",
-                tech.id, tech.name, tech.aop_surface, ids,
+                tech.id,
+                tech.name,
+                tech.aop_surface,
+                ids,
             );
         }
     }
 
     #[test]
     fn word_match_rejects_substring_inside_word() {
-        assert!(!word_match("attck_catalog", "cat"),
-            "\"cat\" inside \"catalog\" must not match — false T1083 on documentation module");
-        assert!(!word_match("mtls", "ls"),
-            "\"ls\" inside \"mtls\" must not match — false T1083 on C2 listener");
-        assert!(!word_match("lolbas_catalog", "cat"),
-            "\"cat\" inside \"catalog\" must not match — false T1083 on LOLBins catalog");
+        assert!(
+            !word_match("attck_catalog", "cat"),
+            "\"cat\" inside \"catalog\" must not match — false T1083 on documentation module"
+        );
+        assert!(
+            !word_match("mtls", "ls"),
+            "\"ls\" inside \"mtls\" must not match — false T1083 on C2 listener"
+        );
+        assert!(
+            !word_match("lolbas_catalog", "cat"),
+            "\"cat\" inside \"catalog\" must not match — false T1083 on LOLBins catalog"
+        );
     }
 
     #[test]
     fn word_match_accepts_delimited_keywords() {
         assert!(word_match("ls", "ls"), "bare \"ls\" must match");
-        assert!(word_match("agent:ls/pwd", "ls"), "colon-delimited \"ls\" must match");
-        assert!(word_match("agent:ls/pwd", "pwd"), "slash-delimited \"pwd\" must match");
+        assert!(
+            word_match("agent:ls/pwd", "ls"),
+            "colon-delimited \"ls\" must match"
+        );
+        assert!(
+            word_match("agent:ls/pwd", "pwd"),
+            "slash-delimited \"pwd\" must match"
+        );
         assert!(word_match("cat", "cat"), "bare \"cat\" must match");
-        assert!(word_match("agent:cat", "cat"), "colon-delimited \"cat\" must match");
+        assert!(
+            word_match("agent:cat", "cat"),
+            "colon-delimited \"cat\" must match"
+        );
     }
 
     #[test]
     fn map_action_ls_still_maps_to_t1083() {
         let ids = map_action("ls");
-        assert!(ids.contains(&"T1083"), "bare ls must still reach T1083: {:?}", ids);
+        assert!(
+            ids.contains(&"T1083"),
+            "bare ls must still reach T1083: {:?}",
+            ids
+        );
         let ids2 = map_action("agent:ls/pwd");
-        assert!(ids2.contains(&"T1083"), "agent:ls/pwd must still reach T1083: {:?}", ids2);
+        assert!(
+            ids2.contains(&"T1083"),
+            "agent:ls/pwd must still reach T1083: {:?}",
+            ids2
+        );
     }
 
     #[test]
     fn map_action_attck_catalog_no_false_t1083() {
         let ids = map_action("attck_catalog");
-        assert!(!ids.contains(&"T1083"),
+        assert!(
+            !ids.contains(&"T1083"),
             "attck_catalog must NOT map to T1083 — \"cat\" inside \
-             \"catalog\" is a substring collision, not file discovery: {:?}", ids);
+             \"catalog\" is a substring collision, not file discovery: {:?}",
+            ids
+        );
     }
 
     #[test]
     fn map_action_engage_init_maps_to_t1583() {
         let ids = map_action("engage-init");
-        assert!(ids.contains(&"T1583"), "engage-init must reach T1583: {:?}", ids);
+        assert!(
+            ids.contains(&"T1583"),
+            "engage-init must reach T1583: {:?}",
+            ids
+        );
         let ids2 = map_action("engage_init");
-        assert!(ids2.contains(&"T1583"), "engage_init must reach T1583: {:?}", ids2);
+        assert!(
+            ids2.contains(&"T1583"),
+            "engage_init must reach T1583: {:?}",
+            ids2
+        );
     }
 }

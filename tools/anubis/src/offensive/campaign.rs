@@ -265,9 +265,17 @@ mod tests {
         let eng = Engagement::default_lab("campaign-test2", "unit test auth");
         let pb = default_playbook(&eng);
         for phase in &pb.phases {
-            assert!(phase.tactic_id.starts_with("TA"), "bad tactic_id: {}", phase.tactic_id);
+            assert!(
+                phase.tactic_id.starts_with("TA"),
+                "bad tactic_id: {}",
+                phase.tactic_id
+            );
             assert!(!phase.name.is_empty());
-            assert!(!phase.objectives.is_empty(), "empty objectives for {}", phase.name);
+            assert!(
+                !phase.objectives.is_empty(),
+                "empty objectives for {}",
+                phase.name
+            );
         }
     }
 
@@ -278,6 +286,9 @@ mod tests {
         let md = render_markdown(&pb);
         assert!(md.contains("## Phase 1"), "missing phase 1 header");
         assert!(md.contains("## Phase 7"), "missing phase 7 header");
-        assert!(md.contains(&eng.engagement_id), "missing engagement_id in markdown");
+        assert!(
+            md.contains(&eng.engagement_id),
+            "missing engagement_id in markdown"
+        );
     }
 }

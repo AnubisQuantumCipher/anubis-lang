@@ -120,7 +120,10 @@ mod tests {
         for bad in blocked {
             let result = lateral_ssh(&eng, "10.0.0.1", "root", bad);
             let err = result.unwrap_err().to_string();
-            assert!(err.contains("ANUBIS_LATERAL_CMD_BLOCKED"), "should block `{bad}`: {err}");
+            assert!(
+                err.contains("ANUBIS_LATERAL_CMD_BLOCKED"),
+                "should block `{bad}`: {err}"
+            );
         }
     }
 
@@ -129,7 +132,9 @@ mod tests {
         let mut eng = Engagement::default_lab("lateral-test2", "unit test auth");
         eng.allowed_hosts.push("10.0.0.1".into());
         eng.allowed_lateral_hosts.push("10.0.0.1".into());
-        let err = lateral_ssh(&eng, "10.0.0.1", "root", "  ").unwrap_err().to_string();
+        let err = lateral_ssh(&eng, "10.0.0.1", "root", "  ")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("ANUBIS_LATERAL_EMPTY_CMD"), "{err}");
     }
 }

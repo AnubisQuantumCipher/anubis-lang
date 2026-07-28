@@ -1187,10 +1187,7 @@ pub fn vz_c2_cycle(
         guest,
         &hex::encode(Sha256::digest(agent_name.as_bytes()))[..8]
     ));
-    fs::write(
-        &host_eng_json,
-        serde_json::to_string_pretty(&cycle_eng)?,
-    )?;
+    fs::write(&host_eng_json, serde_json::to_string_pretty(&cycle_eng)?)?;
     let remote_eng = format!("{}/engagement.json", layout.engage);
     rsync_to_guest(guest, &host_eng_json, &remote_eng)?;
     let _ = fs::remove_file(&host_eng_json);
@@ -1536,10 +1533,7 @@ mod tests {
     #[test]
     fn ssh_remote_bash_lc_is_single_argv_wrapping_full_script() {
         let remote = ssh_remote_bash_lc("cd \"$HOME\" && echo hi");
-        assert!(
-            remote.starts_with("exec bash -lc "),
-            "got {remote}"
-        );
+        assert!(remote.starts_with("exec bash -lc "), "got {remote}");
         // Must be one token for SSH: no unquoted multi-argv bash -lc split.
         assert!(
             !remote.contains("bash -lc cd "),
@@ -1554,10 +1548,7 @@ mod tests {
     fn guest_cd_prefix_expands_home_instead_of_literal_dollar_home() {
         assert_eq!(guest_cd_prefix("$HOME"), "cd \"$HOME\"");
         assert_eq!(guest_cd_prefix("~"), "cd \"$HOME\"");
-        assert_eq!(
-            guest_cd_prefix("/Users/admin"),
-            "cd '/Users/admin'"
-        );
+        assert_eq!(guest_cd_prefix("/Users/admin"), "cd '/Users/admin'");
     }
 
     #[test]

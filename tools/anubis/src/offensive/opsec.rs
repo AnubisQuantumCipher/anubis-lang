@@ -169,7 +169,10 @@ mod tests {
         let score = result["score"].as_i64().unwrap();
         // default_lab has kill_date=2099 (-3), token_auth_enabled=false (-5) → max 92
         assert!(score < 100, "default lab should have deductions: {score}");
-        assert!(score > 60, "default lab with encryption should be decent: {score}");
+        assert!(
+            score > 60,
+            "default lab with encryption should be decent: {score}"
+        );
     }
 
     #[test]

@@ -273,8 +273,16 @@ mod tests {
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
-        assert!(covered.contains(&"T1071"), "c2 must map to T1071: {:?}", covered);
-        assert!(covered.contains(&"T1041"), "c2 must map to T1041: {:?}", covered);
+        assert!(
+            covered.contains(&"T1071"),
+            "c2 must map to T1071: {:?}",
+            covered
+        );
+        assert!(
+            covered.contains(&"T1041"),
+            "c2 must map to T1041: {:?}",
+            covered
+        );
         assert_eq!(
             covered.len(),
             2,

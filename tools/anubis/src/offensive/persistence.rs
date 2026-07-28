@@ -487,8 +487,7 @@ mod tests {
         let missing = dir.join("no-such.bin");
         let err = inject_plan(&eng, &dir, 0, &missing, true).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("ANUBIS_INJECT_SHELLCODE_MISSING"),
+            err.to_string().contains("ANUBIS_INJECT_SHELLCODE_MISSING"),
             "got {err}"
         );
         let _ = fs::remove_dir_all(&dir);

@@ -582,7 +582,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 );
             }
             let identity = resolve_vz_engagement(engage.as_deref())?;
-            let poc_sha = file_sha256_hex(Path::new(&poc)).unwrap_or_else(|_| "sha-unavailable".into());
+            let poc_sha =
+                file_sha256_hex(Path::new(&poc)).unwrap_or_else(|_| "sha-unavailable".into());
             disposable(&base, keep, |name, ip| {
                 const REMOTE_POC: &str = "/tmp/anubis-poc.anb";
                 sync_path_verified(&user, &ip, &poc, REMOTE_POC)?;
@@ -626,7 +627,11 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                      2>&1 | tee /tmp/anubis-vz-evidence/poc.log",
                     runner = shell_single_quote(&runner),
                 );
-                let body_result = ssh_exec(user.clone(), ip.clone(), &["bash".into(), "-lc".into(), remote]);
+                let body_result = ssh_exec(
+                    user.clone(),
+                    ip.clone(),
+                    &["bash".into(), "-lc".into(), remote],
+                );
                 // SCRAPE BEFORE TEARDOWN — the whole point of this lane. Runs regardless of whether
                 // the body succeeded, so a crash/timeout still leaves an evidence trail on disk.
                 let scrape = scrape_disposable_guest(&user, &ip);
@@ -643,7 +648,9 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     scrape,
                 );
                 if !sealed && identity.engage_dir.is_some() {
-                    eprintln!("[anubis vz] WARNING: --engage was set but seal_action wrote nothing");
+                    eprintln!(
+                        "[anubis vz] WARNING: --engage was set but seal_action wrote nothing"
+                    );
                 }
                 body_result
             })
@@ -660,7 +667,13 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             initrd,
             allow_host,
             staging_dir,
-        } => crate::vz_native::native_boot(&program, &kernel, initrd.as_deref(), &allow_host, staging_dir.as_deref()),
+        } => crate::vz_native::native_boot(
+            &program,
+            &kernel,
+            initrd.as_deref(),
+            &allow_host,
+            staging_dir.as_deref(),
+        ),
         VzCmd::Fuzz {
             target,
             iterations,
@@ -689,7 +702,8 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                 );
             }
             let identity = resolve_vz_engagement(engage.as_deref())?;
-            let target_sha = file_sha256_hex(host_target).unwrap_or_else(|_| "sha-unavailable".into());
+            let target_sha =
+                file_sha256_hex(host_target).unwrap_or_else(|_| "sha-unavailable".into());
             let remote_target = guest_fuzz_target_path(&target)?;
             disposable(&base, keep, |name, ip| {
                 // Stage as a binary path (not a fake .anb): host CLI is `fuzz --target <binary> --runs N`.
@@ -723,7 +737,11 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     &program_digest,
                     &cap_key,
                 );
-                let body_result = ssh_exec(user.clone(), ip.clone(), &["bash".into(), "-lc".into(), remote]);
+                let body_result = ssh_exec(
+                    user.clone(),
+                    ip.clone(),
+                    &["bash".into(), "-lc".into(), remote],
+                );
                 let scrape = scrape_disposable_guest(&user, &ip);
                 let body_ok = body_result.is_ok();
                 let body_err_owned = body_result.as_ref().err().map(|e| format!("{e:#}"));
@@ -742,7 +760,9 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                     scrape,
                 );
                 if !sealed && identity.engage_dir.is_some() {
-                    eprintln!("[anubis vz] WARNING: --engage was set but seal_action wrote nothing");
+                    eprintln!(
+                        "[anubis vz] WARNING: --engage was set but seal_action wrote nothing"
+                    );
                 }
                 body_result
             })
@@ -1136,10 +1156,7 @@ fn resolve_vz_engagement(engage: Option<&str>) -> Result<VzEngagementIdentity> {
             let authorization_digest = if eng.authorization.trim().is_empty() {
                 "vz-orchestrator-auth".to_string()
             } else {
-                format!(
-                    "{:x}",
-                    Sha256::digest(eng.authorization.as_bytes())
-                )
+                format!("{:x}", Sha256::digest(eng.authorization.as_bytes()))
             };
             Ok(VzEngagementIdentity {
                 engage_dir: Some(engage_dir),
@@ -1235,8 +1252,14 @@ fn stage_run_capability_to_guest(
     program_digest: Option<&str>,
     effects: &[&str],
 ) -> Result<(String, String)> {
-    let (cap_path, cap_key, program_digest) =
-        mint_and_write_guest_cap(identity, guest_id, base, source_path, program_digest, effects)?;
+    let (cap_path, cap_key, program_digest) = mint_and_write_guest_cap(
+        identity,
+        guest_id,
+        base,
+        source_path,
+        program_digest,
+        effects,
+    )?;
     let cap_host = cap_path
         .to_str()
         .ok_or_else(|| anyhow!("ANUBIS_RUN_CAP_PATH: non-UTF8"))?;
@@ -1286,7 +1309,12 @@ fn scrape_disposable_guest(user: &str, ip: &str) -> serde_json::Value {
     let uname = cap_or_marker(user, ip, "uname -a", "ANUBIS_VZ_SCRAPE_UNAME_FAILED");
     let hostname = cap_or_marker(user, ip, "hostname", "ANUBIS_VZ_SCRAPE_HOSTNAME_FAILED");
     let uptime = cap_or_marker(user, ip, "uptime", "ANUBIS_VZ_SCRAPE_UPTIME_FAILED");
-    let guest_ts = cap_or_marker(user, ip, "date -u +%Y-%m-%dT%H:%M:%SZ", "ANUBIS_VZ_SCRAPE_DATE_FAILED");
+    let guest_ts = cap_or_marker(
+        user,
+        ip,
+        "date -u +%Y-%m-%dT%H:%M:%SZ",
+        "ANUBIS_VZ_SCRAPE_DATE_FAILED",
+    );
     // The PoC/fuzz shell is expected to tee its combined stdout+stderr to this file. Missing
     // (empty output) means the runner never got past env staging — record that faithfully.
     let poc_log_tail = cap_or_marker(
@@ -1603,7 +1631,15 @@ mod ssh_transport_tests {
         // sealed receipt is always well-formed.
         let v = scrape_disposable_guest("admin", "127.0.0.1:65432");
         assert!(v.is_object());
-        for key in ["uname", "hostname", "uptime", "guest_ts", "poc_log_tail", "poc_log_sha256", "evidence_ls"] {
+        for key in [
+            "uname",
+            "hostname",
+            "uptime",
+            "guest_ts",
+            "poc_log_tail",
+            "poc_log_sha256",
+            "evidence_ls",
+        ] {
             assert!(v.get(key).is_some(), "missing key `{key}` in scrape json");
         }
     }

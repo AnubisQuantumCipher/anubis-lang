@@ -3771,13 +3771,20 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String, ctx: &EmitCt
 /// The test `gated_builtins_must_not_lower_in_emit_builtin_call` iterates them directly —
 /// adding a name here automatically protects it against value-position carrier bypass.
 const NON_RUN_BUILTINS: &[&str] = &[
-    "symbolic", "assume", "assert", "taint_source", "declassify",
-    "sink", "shell", "exec", "system", "memcpy", "sql",
+    "symbolic",
+    "assume",
+    "assert",
+    "taint_source",
+    "declassify",
+    "sink",
+    "shell",
+    "exec",
+    "system",
+    "memcpy",
+    "sql",
 ];
 
-const POC_KIT_BUILTINS: &[&str] = &[
-    "p8", "p16", "p32", "p64", "cyclic", "target_run", "flat",
-];
+const POC_KIT_BUILTINS: &[&str] = &["p8", "p16", "p32", "p64", "cyclic", "target_run", "flat"];
 
 fn is_non_run_builtin(callee: &str) -> bool {
     NON_RUN_BUILTINS.contains(&callee)
@@ -8685,8 +8692,7 @@ mod run_tests {
                 continue;
             }
             for arity in 0..=6usize {
-                let args: Vec<String> =
-                    (0..arity).map(|i| format!("__a{i}")).collect();
+                let args: Vec<String> = (0..arity).map(|i| format!("__a{i}")).collect();
                 assert!(
                     emit_builtin_call(name, &args).is_none(),
                     "CLAIMS-15 VIOLATION: gated builtin `{name}` gained a lowering \

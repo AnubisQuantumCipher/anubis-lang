@@ -3328,8 +3328,7 @@ fn main() -> Result<()> {
             out,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let result =
-                offensive::vz::vz_fuzz(&eng, &engage, &guest, &target, runs, seed, &out)?;
+            let result = offensive::vz::vz_fuzz(&eng, &engage, &guest, &target, runs, seed, &out)?;
             let _ = offensive::seal_action(
                 &engage,
                 &eng.engagement_id,
@@ -3351,8 +3350,7 @@ fn main() -> Result<()> {
             json,
         } => {
             let eng = offensive::load_engagement(&engage)?;
-            let result =
-                offensive::vz::vz_agent_test(&eng, &engage, &guest, &name, sleep_ms)?;
+            let result = offensive::vz::vz_agent_test(&eng, &engage, &guest, &name, sleep_ms)?;
             let _ = offensive::seal_action(
                 &engage,
                 &eng.engagement_id,

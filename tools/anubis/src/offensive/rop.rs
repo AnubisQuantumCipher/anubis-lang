@@ -225,8 +225,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("anubis-harness-{}", std::process::id()));
         let err = browser_harness_scaffold(&dir, "https://evil.example.com").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("ANUBIS_BROWSER_HARNESS_SCOPE"),
+            err.to_string().contains("ANUBIS_BROWSER_HARNESS_SCOPE"),
             "got {err}"
         );
     }

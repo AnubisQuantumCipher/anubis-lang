@@ -157,7 +157,11 @@ mod tests {
         let eng = Engagement::default_lab("recon-test", "lab-auth");
         // Use port 1 which is almost certainly closed — we're testing scope, not connectivity
         let result = recon_scan(&eng, "127.0.0.1", Some(&[1]));
-        assert!(result.is_ok(), "loopback must be in scope: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "loopback must be in scope: {:?}",
+            result.err()
+        );
         let v = result.unwrap();
         assert_eq!(v["host"].as_str(), Some("127.0.0.1"));
     }

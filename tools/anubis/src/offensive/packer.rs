@@ -113,7 +113,11 @@ mod tests {
         let data = vec![0x41; 8]; // "AAAAAAAA"
         let key = [0x20u8]; // XOR 0x41 ^ 0x20 = 0x61 = 'a'
         let packed = xor_pack(&data, &key);
-        assert!(packed.iter().all(|&b| b == 0x61), "single-byte key must cycle: {:?}", packed);
+        assert!(
+            packed.iter().all(|&b| b == 0x61),
+            "single-byte key must cycle: {:?}",
+            packed
+        );
     }
 
     #[test]
@@ -124,7 +128,10 @@ mod tests {
         let enc_hex = result["encoded_hex"].as_str().unwrap();
         let key = hex::decode(key_hex).unwrap();
         let enc = hex::decode(enc_hex).unwrap();
-        assert_eq!(result["original_len"].as_u64().unwrap(), original.len() as u64);
+        assert_eq!(
+            result["original_len"].as_u64().unwrap(),
+            original.len() as u64
+        );
         let decoded: Vec<u8> = enc
             .iter()
             .enumerate()
@@ -149,24 +156,36 @@ mod tests {
         std::fs::write(&input, b"lab payload content for testing").unwrap();
         let out = dir.join("packed");
         let result = pack_file(&input, &out).unwrap();
-        assert!(out.join("payload.bin.xor.pack").exists(), "packed file missing");
+        assert!(
+            out.join("payload.bin.xor.pack").exists(),
+            "packed file missing"
+        );
         assert!(out.join("unpack_stub.c").exists(), "stub file missing");
         assert_eq!(result["module"].as_str().unwrap(), "xor_pack");
-        assert!(!result["key_hex"].as_str().unwrap().is_empty(), "key must be non-empty");
+        assert!(
+            !result["key_hex"].as_str().unwrap().is_empty(),
+            "key must be non-empty"
+        );
         let packed = std::fs::read(out.join("payload.bin.xor.pack")).unwrap();
         let original = b"lab payload content for testing";
-        assert_ne!(&packed[..], &original[..], "packed must differ from original");
+        assert_ne!(
+            &packed[..],
+            &original[..],
+            "packed must differ from original"
+        );
         let key = hex::decode(result["key_hex"].as_str().unwrap()).unwrap();
         let unpacked = xor_pack(&packed, &key);
-        assert_eq!(&unpacked, &original[..], "unpack with key must recover original");
+        assert_eq!(
+            &unpacked,
+            &original[..],
+            "unpack with key must recover original"
+        );
     }
 
     #[test]
     fn pack_file_key_appears_in_stub() {
-        let dir = std::env::temp_dir().join(format!(
-            "anubis-packer-test-{}-stubkey",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("anubis-packer-test-{}-stubkey", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("test.bin");

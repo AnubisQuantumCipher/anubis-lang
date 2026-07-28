@@ -138,7 +138,10 @@ mod tests {
         let dir = test_engage("stub");
         phish_plan(&eng, &dir, "admin", "shipping").unwrap();
         let html = std::fs::read_to_string(dir.join("loot/phish/landing_lab_stub.html")).unwrap();
-        assert!(html.contains("NON-OPERATIONAL"), "stub must declare itself non-operational");
+        assert!(
+            html.contains("NON-OPERATIONAL"),
+            "stub must declare itself non-operational"
+        );
         assert!(html.contains("LAB"), "stub must be labeled as lab");
         assert!(
             !html.contains("<form") && !html.contains("<input"),
