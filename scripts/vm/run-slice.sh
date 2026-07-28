@@ -126,6 +126,10 @@ run native-auth bash scripts/run_native_authoritative_gate.sh
 run docs-drift bash scripts/run_docs_drift_gate.sh --out out/vm_docs_drift
 run walker     bash scripts/run_walker_completeness_gate.sh
 run formal     bash scripts/run_formal_gate.sh
+# The formal-kernel demo, under DEFAULT Safe verification. It was registered in NO pipeline — not
+# here, not audit_unified, not the seal checklist — so a 19/19 battery certified a tree whose
+# formal-kernel lane was red. The gate refuses to run under ANUBIS_WRAP_SAFETY=0.
+run formal-kernel bash scripts/run_formal_kernel_gate.sh
 # Into the LOG, not just stdout. The completion marker was echoed to the remote script's stdout
 # while the host checks `grep -c "^BATTERY_DONE" $HOME/battery.log` — a file it never reached. So
 # DONE_MARK was 0 on every run, and "battery did not reach BATTERY_DONE — it died partway" printed
@@ -151,7 +155,7 @@ NFAIL=${NFAIL:-0}
 # printed PASS with gates never executed. That is the "reported PASS while SKIPPED" class the seal
 # exists to prevent, sitting in the seal itself.
 EXPECTED_GATES="cargo-test tool-test clippy language turing security stdlib shadow seal dogfood \
-effect-sh capset-sh type-sh taint-sh stdlib-fc native-auth docs-drift walker formal"
+effect-sh capset-sh type-sh taint-sh stdlib-fc native-auth docs-drift walker formal formal-kernel"
 DONE_MARK=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -c "^BATTERY_DONE" "$HOME/battery.log" || true')
 RAN=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -oE "^EXIT=[0-9]+ .*" "$HOME/battery.log" | sed "s/^EXIT=[0-9]* //"' || true)
 MISSING=""

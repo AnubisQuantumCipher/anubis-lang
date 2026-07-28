@@ -12,6 +12,9 @@ pub(crate) mod capability;
 /// variant BREAKS THE BUILD until someone states what it can carry — the forcing function that
 /// keeps the false-accept class from reopening silently.
 pub mod carrier;
+/// Fall-through analysis: does a block definitely NOT continue to the next statement? Lets
+/// wrap-safety read an early-return guard the programmer already wrote.
+pub mod diverge;
 pub(crate) mod effects;
 pub mod loopctl;
 pub mod proptest;
@@ -6355,8 +6358,37 @@ fn analyze_function(
     // no modeled params are unchanged (wrapping remains the language semantics).
     if wrap_safety_enabled() && !ctx.solver_int_vars.is_empty() {
         let mut seen = BTreeSet::new();
+        // The assumption set is REFINED as it walks the body, because an early-return guard
+        // constrains everything after it:
+        //
+        //     if x == i64::MIN { return i64::MAX; }   // reaching the next line means x != i64::MIN
+        //     if x < 0 { return 0 - x; }              // ...so this negation cannot wrap
+        //
+        // Passing the same `assumptions` to every statement discarded that, and reported
+        // ANUBIS_WRAP_RISK with counterexample `x = i64::MIN` on a negation the source had already
+        // guarded. A checker that cannot read a guard the programmer wrote teaches people to delete
+        // the guard or reach for ANUBIS_WRAP_SAFETY=0 — the two worst outcomes available.
+        //
+        // Sound because it only adds facts true on the fall-through path: if the THEN arm cannot
+        // fall through, then control reaches the next statement only when the condition was false
+        // (whether it fell through, or came via an else that did not diverge). Symmetric for else.
+        // `block_diverges` answers `false` whenever it is unsure, so an uncertain arm adds nothing.
+        let mut asm: Vec<String> = assumptions.clone();
         for s in body {
-            collect_wrap_safety_from_stmt(ctx, s, &assumptions, &mut seen);
+            collect_wrap_safety_from_stmt(ctx, s, &asm, &mut seen);
+            if let Stmt::If { cond, then, else_ } = s {
+                let then_out = crate::middle::diverge::block_diverges(then);
+                let else_out = else_
+                    .as_ref()
+                    .is_some_and(|e| crate::middle::diverge::block_diverges(e));
+                if let Some(g) = wrap_safety_path_fact(ctx, cond) {
+                    if then_out && !else_out {
+                        asm = wrap_safety_with_path_facts(&asm, [format!("(not {g})")]);
+                    } else if else_out && !then_out {
+                        asm = wrap_safety_with_path_facts(&asm, [g]);
+                    }
+                }
+            }
         }
     }
 

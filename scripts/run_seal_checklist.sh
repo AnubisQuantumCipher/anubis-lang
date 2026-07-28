@@ -776,6 +776,14 @@ else
   refuse "native-authoritative prerequisite missing: z3 not on PATH"
 fi
 
+# The formal-kernel demo, under DEFAULT Safe verification. It was in no pipeline at all, so the seal
+# could pass while the demo it ships failed `anubis check`. The gate itself refuses to run under
+# ANUBIS_WRAP_SAFETY=0, so it cannot be made green by switching off the check it exercises.
+run_gate formal_kernel \
+  '^FORMAL_KERNEL_GATE: PASS\b' \
+  '^FORMAL_KERNEL_GATE: FAIL\b' \
+  -- bash scripts/run_formal_kernel_gate.sh
+
 run_gate selfhost \
   '^SELFHOST_GATE: PASS\b' \
   '^SELFHOST_GATE: FAIL\b' \

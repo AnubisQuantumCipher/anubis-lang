@@ -1,0 +1,21 @@
+// EXPECT: PASS
+//
+// i64::MIN behaviour stated explicitly rather than left implied. Negation has no fixed point at
+// the low end of two's complement: |i64::MIN| is not representable, so `abs_i` clamps and the
+// program asserts the clamp actually happens at run time.
+fn abs_i(x: i64) -> i64
+    ensures(result >= 0)
+{
+    if x == 0 - 9223372036854775807 - 1 {
+        return 9223372036854775807;
+    }
+    if x < 0 { return 0 - x; }
+    return x;
+}
+
+fn main() {
+    let lo = 0 - 9223372036854775807 - 1;
+    print(abs_i(lo));
+    print(abs_i(0 - 9223372036854775807));
+    print(abs_i(0));
+}

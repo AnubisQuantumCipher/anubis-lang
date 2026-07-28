@@ -41,6 +41,7 @@
 #   G22 Fixture preflight self-test (an ACCEPT that cannot reject is not a finding)
 #   G23 Carrier totality (a new Expr variant breaks the build until classified)
 #   G24 Promise coherence (the headline promise inherits the open-issues framing)
+#   G25 Formal kernel (the demo verifies under DEFAULT Safe settings, no wrap bypass)
 #
 # G16-G22 publish numbers the board cites and were, for most of their life, never run by CI.
 # They are listed here so the gap between "a gate exists" and "a gate runs" stays visible.
@@ -438,6 +439,22 @@ else
   gate "G24_promise_coherence" "FAIL" "promise drifted from the open-issues framing (see g24_promise.log)"
 fi
 
+# G25 — the formal-kernel demo, under DEFAULT Safe verification.
+#
+# This gate EXISTED and was registered nowhere: not in audit_unified, not in the VM battery, not in
+# the seal checklist. So the 19/19 board and the 24/24 audit both certified a tree in which the
+# formal-kernel lane was RED and nobody saw it — the demo failed `anubis check` with
+# ANUBIS_WRAP_RISK on a guarded negation. An unregistered gate is a gate that runs only when someone
+# remembers, which is the same as not having one.
+#
+# The gate itself refuses to run under ANUBIS_WRAP_SAFETY=0, so it cannot go green by disabling the
+# check it exists to exercise.
+if bash scripts/run_formal_kernel_gate.sh >"$OUT/g25_formal_kernel.log" 2>&1; then
+  gate "G25_formal_kernel" "PASS" "formal-kernel demo verifies under default Safe settings"
+else
+  gate "G25_formal_kernel" "FAIL" "formal-kernel lane red (see g25_formal_kernel.log)"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
@@ -449,7 +466,7 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do
@@ -468,7 +485,12 @@ done
 # Naming them keeps the property AND says which gate broke the rule, which the arithmetic never
 # could. `full` allows none: a full seal that cannot run a gate is not a full seal.
 case "$PROFILE" in
-  hosted) ALLOWED_EXTERNAL="G9_poc_kit G21_formal" ;;
+  # G21_formal is NO LONGER tolerated as external. It was, because CI had no Lean toolchain — so
+  # the board read green while the 162 theorems went unchecked, which is the exact shape of claim
+  # this repo exists to refuse. CI now provisions elan + the pinned Lean from `formal/lean-toolchain`
+  # (.github/workflows/ci.yml), so an absent toolchain is a configuration failure to fix, not a
+  # result to accept. G9_poc_kit stays external: it needs a built vuln binary, not a toolchain.
+  hosted) ALLOWED_EXTERNAL="G9_poc_kit" ;;
   *)      ALLOWED_EXTERNAL="" ;;
 esac
 UNEXPECTED_EXTERNAL=""

@@ -240,6 +240,69 @@ pub fn native_check_sat_model_budget(smt: &str, budget: u64) -> Option<NativeVer
     decide(smt, &NativeLimits::deterministic(budget))
 }
 
+/// The proof objects behind an `Unsat`, in formats an OUTSIDE checker can consume.
+///
+/// The solver already re-derives every RUP step in-process before returning `Unsat` — that is the
+/// fail-closed rule. But "the compiler checked a certificate" is a claim about the compiler; an
+/// evidence bundle that keeps only the verdict asks a reader to trust exactly the component under
+/// review. These fields let a third party re-run the refutation with `drat-trim`, `cake_lpr`, or any
+/// DIMACS/DRAT tool, with no Anubis binary in the loop.
+#[derive(Debug, Clone)]
+pub struct ProofArtifacts {
+    /// The exact SMT-LIB query that was decided.
+    pub smt: String,
+    /// The blasted CNF as DIMACS text — the clauses the refutation is *against*.
+    pub cnf_dimacs: String,
+    /// The RUP refutation as DRAT text, one derived clause per line, terminating in the empty clause.
+    pub proof_drat: String,
+    pub num_vars: usize,
+    pub num_clauses: usize,
+    pub steps: usize,
+    /// Which checker accepted it in-process, so a mismatch with an external tool is attributable.
+    pub checker: &'static str,
+    pub checker_version: &'static str,
+}
+
+fn cert_to_dimacs(cert: &lrat::UnsatCert) -> String {
+    let mut out = format!("p cnf {} {}\n", cert.num_vars, cert.original.len());
+    for c in &cert.original {
+        for l in c {
+            out.push_str(&l.to_string());
+            out.push(' ');
+        }
+        out.push_str("0\n");
+    }
+    out
+}
+
+fn cert_to_drat(cert: &lrat::UnsatCert) -> String {
+    let mut out = String::new();
+    for step in &cert.steps {
+        for l in &step.lits {
+            out.push_str(&l.to_string());
+            out.push(' ');
+        }
+        out.push_str("0\n");
+    }
+    out
+}
+
+/// Decide `smt`, and on a certificate-backed `Unsat` also hand back the CNF + refutation.
+///
+/// Runs the SAME `decide_formula` path as every other entry point — the bounds cannot be bypassed by
+/// asking for artifacts, which is why this threads an out-parameter instead of adding a second
+/// decision path. `None` artifacts mean the verdict was Sat, or the cert was declined/absent.
+pub fn native_prove_with_artifacts(smt: &str) -> Option<(NativeVerdict, Option<ProofArtifacts>)> {
+    let limits = NativeLimits::from_env();
+    let formula = parse::parse_smt2(smt)?;
+    if !fragment::is_proven_authoritative(&formula) {
+        return None;
+    }
+    let mut artifacts = None;
+    let v = decide_formula_inner(smt, &formula, &limits, Some(&mut artifacts))?;
+    Some((v, artifacts))
+}
+
 /// Parse, then decide under `limits`.
 fn decide(smt: &str, limits: &NativeLimits) -> Option<NativeVerdict> {
     let formula = parse::parse_smt2(smt)?;
@@ -252,6 +315,17 @@ fn decide_formula(
     smt: &str,
     formula: &bv::Formula,
     limits: &NativeLimits,
+) -> Option<NativeVerdict> {
+    decide_formula_inner(smt, formula, limits, None)
+}
+
+/// The single decision path. `artifacts_out`, when supplied, receives the CNF + refutation on a
+/// certificate-accepted `Unsat`; it never changes a verdict or relaxes a bound.
+fn decide_formula_inner(
+    smt: &str,
+    formula: &bv::Formula,
+    limits: &NativeLimits,
+    artifacts_out: Option<&mut Option<ProofArtifacts>>,
 ) -> Option<NativeVerdict> {
     let started = Instant::now();
     // BOUND 1 — pre-blast: decline an obligation whose CNF would be oversized, before allocating it.
@@ -298,6 +372,18 @@ fn decide_formula(
                 return None;
             }
             if check_proof(&cert) {
+                if let Some(slot) = artifacts_out {
+                    *slot = Some(ProofArtifacts {
+                        smt: smt.to_string(),
+                        cnf_dimacs: cert_to_dimacs(&cert),
+                        proof_drat: cert_to_drat(&cert),
+                        num_vars: cert.num_vars,
+                        num_clauses: cert.original.len(),
+                        steps: cert.steps.len(),
+                        checker: "anubis-solver::lrat::check_proof",
+                        checker_version: env!("CARGO_PKG_VERSION"),
+                    });
+                }
                 Some(NativeVerdict::Unsat)
             } else {
                 None
@@ -393,6 +479,60 @@ fn log_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsat_hands_back_a_checkable_cnf_and_refutation() {
+        // An evidence bundle that keeps only "status: UNSAT" asks the reader to trust the component
+        // under review. These are the objects that let someone re-run the refutation elsewhere, so
+        // the test asserts they are STRUCTURALLY USABLE, not merely non-empty:
+        //   - the DIMACS header agrees with the clause count actually emitted;
+        //   - the DRAT proof terminates in the empty clause (the refutation's whole point);
+        //   - the in-process checker re-accepts what was serialized.
+        let smt = "(set-logic QF_BV)\n(assert (not (= (_ bv5 64) (_ bv5 64))))\n(check-sat)\n";
+        let (verdict, art) = native_prove_with_artifacts(smt).expect("decided");
+        assert!(matches!(verdict, NativeVerdict::Unsat));
+        let art = art.expect("unsat must carry its refutation");
+
+        let header = art.cnf_dimacs.lines().next().unwrap();
+        assert!(header.starts_with("p cnf "), "DIMACS header: {header}");
+        let declared: usize = header.split_whitespace().nth(3).unwrap().parse().unwrap();
+        let body = art
+            .cnf_dimacs
+            .lines()
+            .skip(1)
+            .filter(|l| !l.is_empty())
+            .count();
+        assert_eq!(
+            declared, body,
+            "DIMACS header count must match emitted clauses"
+        );
+        assert_eq!(declared, art.num_clauses);
+
+        let last = art
+            .proof_drat
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .next_back()
+            .expect("proof has steps");
+        assert_eq!(
+            last.trim(),
+            "0",
+            "a refutation must end in the empty clause"
+        );
+        assert_eq!(art.checker, "anubis-solver::lrat::check_proof");
+        assert!(!art.checker_version.is_empty());
+    }
+
+    #[test]
+    fn sat_carries_no_refutation() {
+        // Artifacts are proof objects. A SAT verdict has none, and must not present anything that
+        // could be mistaken for one.
+        let smt = "(set-logic QF_BV)\n(declare-fun x () (_ BitVec 8))\n                   (assert (= x (_ bv7 8)))\n(check-sat)\n";
+        if let Some((verdict, art)) = native_prove_with_artifacts(smt) {
+            assert!(matches!(verdict, NativeVerdict::Sat(_)));
+            assert!(art.is_none(), "SAT must not carry a refutation");
+        }
+    }
 
     #[test]
     fn ground_true_equality_is_unsat_negated() {

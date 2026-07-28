@@ -39,7 +39,16 @@ fn abs_i(x: i64) -> i64
 }
 
 // Literal negation is an involution on nonzero codes (modeling ±var).
-fn lit_neg(l: i64) -> i64 {
+//
+// The domain constraint is load-bearing, not decoration. Negation is NOT total on i64: `0 - l` at
+// `l = i64::MIN` wraps back to i64::MIN, so an involution claim is false there. Without a contract
+// this function had no solver-modelable parameter at all, so the obligation was never raised — the
+// negation was unchecked rather than proved. Stating the domain makes it modelable, which makes the
+// obligation VISIBLE, and then discharges it.
+fn lit_neg(l: i64) -> i64
+    requires(l != 0 - 9223372036854775807 - 1)
+    ensures(result == 0 - l)
+{
     return 0 - l;
 }
 

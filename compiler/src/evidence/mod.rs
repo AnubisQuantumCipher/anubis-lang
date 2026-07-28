@@ -327,6 +327,77 @@ fn build_evidence_bundle_tree_inner(
                 mono_json = serde_json::to_value(&tainted.mono_specializations)
                     .map_err(|e| e.to_string())?;
                 // save smt and replay for gate7
+                // PROOF ARTIFACTS, not just verdicts.
+                //
+                // The bundle recorded solver status + the first SMT query + a replay flag. All of
+                // that is the compiler's own account of its work, so an auditor checking whether the
+                // proofs hold has to trust the component under audit. These files are the objects a
+                // THIRD PARTY can re-check with `drat-trim` / `cake_lpr` and no Anubis binary:
+                // the exact query, the exact blasted CNF, and the refutation over it.
+                //
+                // Produced by re-deciding each recorded query through the ordinary bounded path —
+                // not by tapping the hot checking path — so emitting evidence cannot change a
+                // verdict. An obligation that declines (out of fragment, over budget, or z3-decided)
+                // simply has no refutation to publish, and is recorded as such rather than omitted.
+                {
+                    let pdir = dir.join("analysis").join("proofs");
+                    let _ = std::fs::create_dir_all(&pdir);
+                    let mut index = Vec::new();
+                    for (i, c) in solver_checks.iter().enumerate() {
+                        let stem = format!("obligation_{i:04}");
+                        let _ = std::fs::write(pdir.join(format!("{stem}.smt2")), &c.smt);
+                        match anubis_solver::native_prove_with_artifacts(&c.smt) {
+                            Some((anubis_solver::NativeVerdict::Unsat, Some(a))) => {
+                                let _ =
+                                    std::fs::write(pdir.join(format!("{stem}.cnf")), &a.cnf_dimacs);
+                                let _ = std::fs::write(
+                                    pdir.join(format!("{stem}.drat")),
+                                    &a.proof_drat,
+                                );
+                                index.push(serde_json::json!({
+                                    "obligation": c.name,
+                                    "status": c.status,
+                                    "proof": "rup_refutation",
+                                    "smt": format!("analysis/proofs/{stem}.smt2"),
+                                    "cnf_dimacs": format!("analysis/proofs/{stem}.cnf"),
+                                    "proof_drat": format!("analysis/proofs/{stem}.drat"),
+                                    "num_vars": a.num_vars,
+                                    "num_clauses": a.num_clauses,
+                                    "steps": a.steps,
+                                    "checker": a.checker,
+                                    "checker_version": a.checker_version,
+                                    "replay": format!(
+                                        "drat-trim analysis/proofs/{stem}.cnf analysis/proofs/{stem}.drat"),
+                                }));
+                            }
+                            other => {
+                                // Named, not omitted: "no refutation here" is itself evidence, and a
+                                // silently missing row reads as if the obligation never existed.
+                                index.push(serde_json::json!({
+                                    "obligation": c.name,
+                                    "status": c.status,
+                                    "proof": match other {
+                                        Some((anubis_solver::NativeVerdict::Sat(_), _)) =>
+                                            "counterexample_no_refutation",
+                                        Some(_) => "unsat_without_published_certificate",
+                                        None => "declined_by_native_solver_deferred",
+                                    },
+                                    "smt": format!("analysis/proofs/{stem}.smt2"),
+                                }));
+                            }
+                        }
+                    }
+                    let _ = std::fs::write(
+                        dir.join("analysis").join("proofs.json"),
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "note": "Re-checkable proof objects. DIMACS CNF + DRAT refutation per \
+                                     proven obligation; verify with drat-trim or any DRAT checker. \
+                                     No Anubis binary required.",
+                            "obligations": index,
+                        }))
+                        .unwrap_or_default(),
+                    );
+                }
                 if let Some(first) = solver_checks.first() {
                     let _ = std::fs::write(dir.join("analysis").join("solver.smt2"), &first.smt);
                     let replay = if first.status == "FAIL" && first.model.is_some() {

@@ -1,0 +1,22 @@
+// EXPECT: PASS
+//
+// An EARLY-RETURN guard must discharge the wrap obligation after it. Reaching the second `if`
+// means the first guard was false, so `x != i64::MIN` holds and `0 - x` cannot wrap.
+//
+// This is the shape that produced a false ANUBIS_WRAP_RISK: the checker refined the arms of an
+// `if` but discarded what a diverging guard proved about everything AFTER it, and reported a
+// counterexample of x = i64::MIN on a negation the source had already excluded.
+fn abs_i(x: i64) -> i64
+    ensures(result >= 0)
+{
+    if x == 0 - 9223372036854775807 - 1 {
+        return 9223372036854775807;
+    }
+    if x < 0 { return 0 - x; }
+    return x;
+}
+
+fn main() {
+    print(abs_i(0 - 5));
+    print(abs_i(7));
+}

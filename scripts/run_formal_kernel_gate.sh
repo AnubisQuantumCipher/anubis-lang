@@ -39,6 +39,21 @@ fi
     || true
 } | tee "$OUT/instrument.txt"
 
+# The lane must be green under DEFAULT Safe verification. `ANUBIS_WRAP_SAFETY=0` turns off the
+# automatic overflow VCs entirely, so a board green under it certifies nothing about wrap safety —
+# and the temptation to reach for it is highest exactly when the lane is red for a real reason.
+#
+# The demo was red on `abs_i`'s `0 - x` until the checker learned to read the early-return guard the
+# source already had (i64::MIN clamp), and on `lit_neg` until its domain was stated. Neither was
+# fixed by disabling the check, and this refuses to let the next person try.
+case "${ANUBIS_WRAP_SAFETY:-1}" in
+  0|false|off|no|"")
+    echo "FORMAL_KERNEL_GATE: FAIL (ANUBIS_WRAP_SAFETY=${ANUBIS_WRAP_SAFETY} disables wrap-safety VCs;"
+    echo "  this lane must be green under DEFAULT Safe verification — a pass with the check off is not a pass)"
+    exit 1
+    ;;
+esac
+
 DIR=examples/programs/formal_kernel
 echo "=== formal_kernel check/run ==="
 "$ANUBIS" check "$DIR/formal_kernel.anb"
