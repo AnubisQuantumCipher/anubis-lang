@@ -804,6 +804,41 @@ It now breaks a gate rather than shipping: `run_walker_completeness_gate.sh` reg
 under the `partial-` contract (*match what you like, but do not half-read what you matched*), and
 re-planting the exact bug in a scratch copy turns that gate RED.
 
+### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
+
+`anubis check` reports the failures that enforce the entire promise — the security lanes — as a bare
+string with no file, line, or column, while a LEXER error in the same binary produces
+`file:line:col`, the source line, and a caret. Measured:
+
+```
+lexer :  lex_stray.anb:4:1: error: expected statement
+              4 | §
+                | ^
+semantic:  check failed: ANUBIS_SECRET_EXFILTRATION: secret `x` flows to egress `print` …
+```
+
+On a 500-line program the user is told a violation exists and left to find it. *"Everything it could
+not decide, it refused rather than assumed"* is half a promise when the refusal has no address.
+
+**The span is not missing.** `SemanticDiagnostic` carries `span: Option<(usize, usize)>`
+(`mod.rs:96-100`) and `lsp_analysis::analyze_source` already converts it to line/col for the editor.
+
+**A CLI-only fix was built, measured, and REVERTED — recorded because the reason is the finding.**
+Rendering those diagnostics revealed that every semantic diagnostic reports **1:1**: the checker
+emits the whole `ANUBIS_TYPECHECK` family as one diagnostic whose span is the start of file, not the
+violation site. A caret pointing at `fn main() {` when the violation is at `print(x)` is worse than
+no caret — it misleads with authority. Shipping it would have dressed a coarse span as precision.
+
+The attempt also produced a defect worth recording: printing `analyze_source`'s RE-DERIVED
+diagnostics *instead of* the authoritative `check_error` dropped `ANUBIS_ASSERTION_DISPROVED` from
+two fixtures (security 311 → **309**). A consumer substituting its own recomputation for the
+producer's answer — this file's disease sentence, committed by the lead, caught by the corpus before
+commit.
+
+**The real fix is compiler-side: give each semantic diagnostic the span of the construct that
+violated.** The CLI rendering is then a few lines and is worth having. Until then this is a named
+residual, not a papered-over one.
+
 ### Generics are a STRING HEURISTIC — two measured defects in opposite directions (OPEN 2026-07-28)
 
 `is_generic` (`compiler/src/middle/ty.rs:258`) decides whether a type annotation is a generic
