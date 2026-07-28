@@ -1,0 +1,10 @@
+// EXPECT: PASS
+// Over-rejection guard: the same authority mark remains valid on the function it governs.
+@verified
+fn governed() -> i64 {
+    return 1;
+}
+
+fn main() {
+    print(governed());
+}

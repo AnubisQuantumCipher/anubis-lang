@@ -300,6 +300,37 @@ never terminates is a check/run divergence of a different kind, and is being cha
     implicit expectation that the program is runnable, and a non-terminating accept is a distinct
     failure from a leaking accept.
 
+14. **AGGREGATE PATH SEEDERS do not charge gate tags — OPEN, runtime-witnessed (2026-07-27).**
+
+    The tag resolver (item 12) closed local bind, param, join, return and identity-forwarder. It did
+    NOT close the aggregate paths. These are **true accepts with runtime witnesses** — not check-only
+    fail-opens, which makes this strictly worse than item 12 was:
+
+    | shape | `check` | `run` |
+    |---|---|---|
+    | `let xs = [write_file]; xs[0](path, x)` | ACCEPT | rc=0, **file written** |
+    | `push(fs, write_file); fs[0](path, x)` | ACCEPT | rc=0, **file written** |
+    | `Box { g: write_file }; b.g(path, x)` | ACCEPT | rc=0, **file written** |
+    | the same three carrying `input` instead | ACCEPT | check fail-open |
+
+    **Discriminator:** `let g = write_file; g(...)` REJECTS. The identical call through a list
+    element, a pushed element, or a struct field does not. The difference is the container, and
+    nothing else.
+
+    Diagnosed holes, in the order they should be fixed: (1) index apply does not charge
+    container-seeded tags; (2) `push`/`insert` do not seed tags on mutation; (3) struct-field apply
+    charge is incomplete. Smallest fixtures exist at `scratchpad/fleet_20260726/adversary/r11/`
+    (`t02_local_list_write`, `t12_push_write`, `t12_struct_write`).
+
+    **Not a new keying kind.** The adversary's exhaustion judgment survives this, refined: aggregate
+    path seeders are an *implementation residual* of the SET/tag mechanism, not a sixth keying
+    family. Recorded so the distinction between "the mechanism is wrong" and "the mechanism is not
+    wired everywhere" stays visible.
+
+    Found by scoring 14 predictions that were fixed in writing BEFORE the tag resolver existed:
+    12 HIT, 1 MISS (this one — the list clause), 1 PARTIAL. The miss is recorded in the row where it
+    was predicted rather than reinterpreted after the fact.
+
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
 After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking

@@ -928,11 +928,31 @@ fn builtin_gate_tags_at_path_expr(
         return BuiltinGateTags::Unknown;
     }
     if let Some((root, path)) = flatten_access_path(expr) {
-        return scope
-            .get(&root)
-            .and_then(|binding| binding.field_builtin_gate_tags.get(&path))
-            .cloned()
-            .unwrap_or(BuiltinGateTags::Unknown);
+        let Some(binding) = scope.get(&root) else {
+            return BuiltinGateTags::Unknown;
+        };
+        if let Some(tags) = binding.field_builtin_gate_tags.get(&path) {
+            return tags.clone();
+        }
+        // An exact path miss is NOT automatically "no tag". A container built by `push`/`insert`
+        // records its elements under synthetic `_p{n}` slots, because the index an element lands
+        // at is a runtime property the seeder cannot know. Reading `fs[0]` then looked up the
+        // literal path "0", missed every `_p` slot, and returned Unknown — which charges nothing,
+        // so `push(fs, write_file); fs[0](p, x)` wrote the file under a green check.
+        //
+        // Fall back to the union of the SYNTHETIC slots only. That over-approximates within a
+        // mutated container — `fs[1]` is charged for a tag pushed at `fs[0]` — which is the
+        // fail-closed direction and unavoidable without tracking element counts. Confining it to
+        // `_p` slots is what keeps the over-approximation from spreading: a container built purely
+        // from a literal has no synthetic slots, so `[pure_fn, write_file][0]` stays index-precise
+        // and does not become a false reject.
+        let pushed = binding
+            .field_builtin_gate_tags
+            .iter()
+            .filter(|(key, _)| key.starts_with("_p"))
+            .map(|(_, tags)| tags.clone())
+            .reduce(BuiltinGateTags::union);
+        return pushed.unwrap_or(BuiltinGateTags::Unknown);
     }
     match expr {
         Expr::Index { base, index } => {
@@ -7018,6 +7038,35 @@ fn apply_container_mutation_taint(
         )
         .is_some()
     });
+    // BUILTIN gate tags are the fourth thing a push carries, and the one this seeder did not flow.
+    // Taint, secret and closures all reach the container root below; a pushed BUILTIN did not, so
+    // `let fs = []; push(fs, write_file); fs[0](p, x)` ACCEPTED and WROTE THE FILE, while the
+    // literal twin `let fs = [write_file]` rejects. Same container, same application, different
+    // entry route — the walker-parity failure this function's own comment describes, one lane over.
+    //
+    // Resolved here, before the mutable borrow, for the same reason `seed_lams` is. This is
+    // deliberately NARROWER than `builtin_gate_tags_of`: that needs a `SemanticContext` this
+    // function is not given, and threading one through purely to widen a seeder would fight the
+    // borrow pattern the doc comment above says is the reason these arguments stay unbundled. It
+    // covers the two shapes that actually carry a builtin into a container — a bare builtin name,
+    // and a local binding already holding one — and an expression-valued push stays unresolved
+    // rather than being guessed at.
+    let mut seed_tags: Vec<BuiltinGateTags> = Vec::new();
+    for v in value_args {
+        if let Expr::Var(n) = v {
+            let tags = match scope.get(n) {
+                Some(b) => b.builtin_gate_tags.clone(),
+                None => seed_builtin_gate_tags(n),
+            };
+            // `Unknown` is not stored: downstream it is indistinguishable from "no tag", and
+            // recording it would pin an unresolved push as Unknown across the whole container.
+            if let BuiltinGateTags::Known(t) = &tags {
+                if !t.is_empty() {
+                    seed_tags.push(tags);
+                }
+            }
+        }
+    }
     // Collect lambdas to seed *before* mutably borrowing the root binding.
     let mut seed_lams: Vec<Box<Expr>> = Vec::new();
     for v in value_args {
@@ -7044,6 +7093,15 @@ fn apply_container_mutation_taint(
             for lam in seed_lams {
                 let key = format!("_p{}", b.field_closures.len());
                 b.field_closures.insert(key, lam);
+            }
+            // Recorded per synthetic slot, matching the `_p{n}` scheme the closure seeder above
+            // uses, so both seeders describe the container the same way. A pushed element's index
+            // is a runtime property, and `builtin_gate_tags_at_path_expr` already unions a
+            // binding's recorded paths when the index is not a literal — which is exactly the
+            // `fs[0](...)` read-back this closes.
+            for tags in seed_tags {
+                let key = format!("_p{}", b.field_builtin_gate_tags.len());
+                b.field_builtin_gate_tags.insert(key, tags);
             }
         }
     }
@@ -11047,6 +11105,29 @@ fn analyze_expr_effect(
         // higher-order boundary; the closure-application callee/args ARE concrete call-site exprs and
         // are walked via `CallExpr`).
         Expr::CallExpr { callee, args } => {
+            // A BUILTIN stored in a container and applied through it — `let xs = [write_file];
+            // xs[0](p, x)` — is the aggregate twin of the bound-callable charge in the `Expr::Call`
+            // arm, and it was missing. The seeder already recorded the tag
+            // (`collect_container_builtin_gate_tags` keys array elements by index and struct fields
+            // by name), and the resolver already reads it back through
+            // `builtin_gate_tags_at_path_expr`; nothing ever ASKED at the application site. The arm
+            // below consults `field_closures` for a user function stored in a container and stops
+            // there, so a stored user fn was charged and a stored builtin was not.
+            //
+            // Measured before this: `let g = write_file; g(p, x)` REJECTS, while the identical call
+            // through a list element, a pushed element, or a struct field ACCEPTS *and writes the
+            // file* — a true accept with a runtime witness, not a check-only fail-open. The
+            // difference was the container and nothing else.
+            //
+            // `charge_applied_builtin_gate_tags` is a no-op on `Unknown`, so this cannot reject a
+            // container whose contents were not resolved — holding an opaque callable stays
+            // ACCEPT, and only a concretely-resolved gate tag is charged. That is the same
+            // unknown-is-not-a-violation rule the rest of the tag lane runs on, and it is what
+            // keeps a list of ordinary function values from becoming a false reject.
+            {
+                let tags = builtin_gate_tags_of(callee, scope, ctx);
+                charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+            }
             // A NAMED free function stored in a container field/element and applied via `b.f(args)` /
             // `arr[0](args)` must consult its interproc egress/sink summary — the aggregate twin of the
             // direct-call check in the `Expr::Call` arm. Resolve the field-stored `Var(fn)` via the

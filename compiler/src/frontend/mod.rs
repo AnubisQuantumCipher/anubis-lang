@@ -210,6 +210,22 @@ pub struct Attribute {
     pub args: Vec<AttrArg>,
 }
 
+const AUTHORITY_ATTRIBUTE_NAMES: &[&str] = &[
+    "research",
+    "exploit",
+    "poc",
+    "fuzz",
+    "emulation",
+    "proof",
+    "defensive",
+    "audit",
+    "verified",
+    "safe",
+    "agent",
+];
+
+const INERT_ATTRIBUTE_NAMES: &[&str] = &["cfg", "derive", "inline", ""];
+
 #[derive(Debug, Clone)]
 pub enum Item {
     Import {
@@ -1803,6 +1819,39 @@ impl Parser {
         r
     }
 
+    /// Diagnose attributes that are about to be discarded by a non-function item.
+    ///
+    /// An authority attribute is not merely syntax: it tells the author which policy governs the
+    /// function. Accepting one on an item that cannot carry attributes into the AST is therefore a
+    /// false claim. Inert item attributes remain accepted, and unknown names retain their existing
+    /// fail-closed diagnostic.
+    fn reject_non_fn_attributes(&mut self, attrs: &[Attribute]) {
+        for attr in attrs {
+            if AUTHORITY_ATTRIBUTE_NAMES.contains(&attr.name.as_str()) {
+                self.diagnostic(
+                    format!(
+                        "ANUBIS_MISPLACED_AUTHORITY_ATTRIBUTE: authority attribute `{}` has no \
+                         meaning on this item; move it onto the function it is meant to govern",
+                        attr.name
+                    )
+                    .as_str(),
+                    self.current_span(),
+                );
+            } else if !INERT_ATTRIBUTE_NAMES.contains(&attr.name.as_str()) {
+                self.diagnostic(
+                    format!(
+                        "ANUBIS_UNKNOWN_ATTRIBUTE: unknown attribute `{}`; an unrecognized \
+                         attribute is rejected rather than ignored, because an authority mark \
+                         that silently does nothing is worse than none",
+                        attr.name
+                    )
+                    .as_str(),
+                    self.current_span(),
+                );
+            }
+        }
+    }
+
     fn parse_output(mut self) -> ParseOutput {
         let mut items = vec![];
         while !self.at_eof() {
@@ -1816,52 +1865,7 @@ impl Parser {
             // fix had been applied to the item kind that stores attributes and not to the ones that
             // throw them away, which is the same one-of-N shape as everything else in this arc.
             if !self.check_keyword("fn") {
-                for a in &attrs {
-                    // OPEN (2026-07-27, unlanded): this rejects an attribute whose NAME is
-                    // unknown, but a KNOWN authority mark in a position that cannot carry it is
-                    // still accepted and then discarded with the rest. `@verified struct Config {}`
-                    // parses, means nothing, and tells its author it means something — "known" is
-                    // doing the work of "meaningful". The fix is to split this allowlist by WHERE
-                    // each attribute has meaning: authority marks (research/exploit/poc/fuzz/
-                    // emulation/proof/defensive/audit/verified/safe/agent) reject on a non-`fn`
-                    // item; inert ones (cfg/derive/inline) stay allowed.
-                    //
-                    // Written and then REVERTED rather than shipped: it is an ENFORCING change and
-                    // the corpus verdict-diff could not be run in that session. Measured risk is
-                    // low — all 38 authority-attribute uses in examples/ and stdlib/ are already on
-                    // `fn`, and derive/cfg/inline have 0 uses — but "low risk" is not the bar this
-                    // repo holds enforcing changes to. See scratchpad/fleet_20260726/
-                    // lead_handoff_r38.md.
-                    if !matches!(
-                        a.name.as_str(),
-                        "research"
-                            | "exploit"
-                            | "poc"
-                            | "fuzz"
-                            | "emulation"
-                            | "proof"
-                            | "defensive"
-                            | "audit"
-                            | "verified"
-                            | "safe"
-                            | "agent"
-                            | "cfg"
-                            | "derive"
-                            | "inline"
-                            | ""
-                    ) {
-                        self.diagnostic(
-                            format!(
-                                "ANUBIS_UNKNOWN_ATTRIBUTE: unknown attribute `{}`; an unrecognized \
-                                 attribute is rejected rather than ignored, because an authority \
-                                 mark that silently does nothing is worse than none",
-                                a.name
-                            )
-                            .as_str(),
-                            self.current_span(),
-                        );
-                    }
-                }
+                self.reject_non_fn_attributes(&attrs);
             }
             if self.check_keyword("fn") {
                 if let Some(item) = self.parse_fn(attrs, vis) {
@@ -1940,20 +1944,36 @@ impl Parser {
                 Token::Other(s) | Token::Keyword(s) | Token::Ident(s) => s.clone(),
                 _ => break,
             };
-            if !(s == "@"
-                || s.starts_with('@')
-                || matches!(
-                    s.as_str(),
-                    "safe"
-                        | "research"
-                        | "proof"
-                        | "audit"
-                        | "poc"
-                        | "fuzz"
-                        | "defensive"
-                        | "verified"
-                ))
-            {
+            // The lexer DROPS `@` (see `parse_stmt` — emitting it as a token regressed seven
+            // fixtures that depend on it being dropped), so an attribute reaches here as a BARE
+            // NAME. This list is therefore the entire set of attributes that can be written at all,
+            // and it was missing six of them: `cfg`, `derive`, `inline`, `exploit`, `emulation`,
+            // `agent`. `@cfg struct Config {}` arrived as `cfg struct Config {}`, fell straight
+            // through this guard, and died on "expected item" pointing at `cfg` — an attribute the
+            // allowlists elsewhere in this file explicitly call valid was unwritable anywhere.
+            //
+            // The six additions require the name to HEAD AN ITEM, unlike the original eight which
+            // are accepted bare. Without `@` surviving lexing there is nothing to distinguish an
+            // attribute from an ordinary identifier, and `cfg`/`inline`/`agent` are far more
+            // plausible variable names than `verified`/`research` are. Requiring the item keyword
+            // keeps a bare `cfg` used as a value from being silently eaten as an attribute, and
+            // leaves the original eight behaving exactly as before.
+            let bare_attribute = matches!(
+                s.as_str(),
+                "safe" | "research" | "proof" | "audit" | "poc" | "fuzz" | "defensive" | "verified"
+            );
+            let item_attribute = (AUTHORITY_ATTRIBUTE_NAMES.contains(&s.as_str())
+                || INERT_ATTRIBUTE_NAMES.contains(&s.as_str()))
+                && matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.token),
+                    Some(Token::Keyword(k))
+                        if matches!(
+                            k.as_str(),
+                            "fn" | "struct" | "enum" | "impl" | "trait" | "module" | "mod"
+                                | "import" | "pub"
+                        )
+                );
+            if !(s == "@" || s.starts_with('@') || bare_attribute || item_attribute) {
                 break;
             }
             self.bump();
@@ -1970,9 +1990,17 @@ impl Parser {
             if name.is_empty() {
                 let next = self.tokens.get(self.pos).map(|t| t.token.clone());
                 if let Some(Token::Ident(n) | Token::Keyword(n)) = next {
-                    // Only claim the identifier when it is being used in ATTRIBUTE position — either
-                    // it takes arguments, or it heads a block. Otherwise leave it alone: `@` before
-                    // an ordinary expression is not an attribute and must not be swallowed.
+                    // Only claim the identifier when it is being used in ATTRIBUTE position —
+                    // it takes arguments, it heads a block, or it decorates an ITEM. Otherwise
+                    // leave it alone: `@` before an ordinary expression is not an attribute and
+                    // must not be swallowed.
+                    //
+                    // The item case was missing, and `(`/`{` alone is not enough: in
+                    // `@cfg struct Config {}` the token after the name is the KEYWORD `struct`, so
+                    // `cfg` was never claimed, stayed in the stream, and the file failed to parse —
+                    // an argument-less attribute on any item was simply unwritable. Item keywords
+                    // cannot begin an expression in this position, so recognising them here cannot
+                    // swallow a real `@`-expression.
                     let after = self.tokens.get(self.pos + 1).map(|t| &t.token);
                     if matches!(after, Some(Token::LParen) | Some(Token::LBrace)) {
                         self.bump();
@@ -1981,20 +2009,8 @@ impl Parser {
                 }
             }
             if !name.is_empty()
-                && !matches!(
-                    name.as_str(),
-                    "safe"
-                        | "research"
-                        | "exploit"
-                        | "proof"
-                        | "audit"
-                        | "poc"
-                        | "fuzz"
-                        | "emulation"
-                        | "defensive"
-                        | "verified"
-                        | "agent"
-                )
+                && !AUTHORITY_ATTRIBUTE_NAMES.contains(&name.as_str())
+                && !INERT_ATTRIBUTE_NAMES.contains(&name.as_str())
             {
                 let hint = [
                     "research",
@@ -2019,7 +2035,7 @@ impl Parser {
                     message: format!(
                         "ANUBIS_UNKNOWN_ATTRIBUTE: unknown attribute `@{name}`{hint}; valid \
                          attributes are research, exploit, poc, fuzz, emulation, proof, defensive, \
-                         audit, verified, safe"
+                         audit, verified, safe, agent, cfg, derive, inline"
                     ),
                     span: Span::default(),
                 });
@@ -2444,6 +2460,7 @@ impl Parser {
                     methods.push(m);
                 }
             } else {
+                self.reject_non_fn_attributes(&attrs);
                 self.diagnostic("expected `fn` in impl block", self.current_span());
                 self.bump();
             }
@@ -2477,6 +2494,7 @@ impl Parser {
                     methods.push(m);
                 }
             } else {
+                self.reject_non_fn_attributes(&attrs);
                 self.diagnostic("expected `fn` in trait", self.current_span());
                 self.bump();
             }
@@ -2757,20 +2775,13 @@ impl Parser {
             // the AUTHORIZATION carrier for the research lane, so the one attribute a module-scoped
             // function most needs was the one it could not be given.
             let attrs = self.parse_attributes();
+            if !self.check_keyword("fn") {
+                self.reject_non_fn_attributes(&attrs);
+            }
             if self.check_keyword("fn") {
                 if let Some(item) = self.parse_fn(attrs, Visibility::Private) {
                     items.push(item);
                 }
-            } else if !attrs.is_empty() {
-                // An attribute was written and the item it decorates cannot carry it. Say so
-                // rather than dropping it: a silently discarded `@research(authorization: …)`
-                // would read as authorized to the author and unauthorized to the checker, which
-                // is the exact write-it-down-then-ignore-it failure this language exists to stop.
-                self.diagnostic(
-                    "attributes are only accepted on `fn` items inside a module",
-                    self.current_span(),
-                );
-                self.bump();
             } else if self.check_keyword("import") {
                 if let Some(item) = self.parse_import() {
                     items.push(item);
@@ -4593,6 +4604,62 @@ mod diagnostic_render_tests {
             assert!(rendered.contains("error:"));
             assert!(rendered.contains('^'));
         }
+    }
+}
+
+#[cfg(test)]
+mod misplaced_authority_attribute_tests {
+    use super::*;
+
+    fn messages(source: &str) -> Vec<String> {
+        parse_source_detailed(source)
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect()
+    }
+
+    #[test]
+    fn authority_attribute_on_non_fn_rejects_at_top_level_and_in_module() {
+        for source in [
+            "@verified struct Config {}",
+            "module m { @verified struct Config {} }",
+        ] {
+            assert!(messages(source).iter().any(|message| {
+                message.contains("ANUBIS_MISPLACED_AUTHORITY_ATTRIBUTE")
+                    && message.contains("verified")
+            }));
+        }
+    }
+
+    #[test]
+    fn authority_attribute_on_fn_remains_valid_at_top_level_and_in_module() {
+        for source in [
+            "@verified fn f() -> i64 { return 1; }",
+            "module m { @verified fn f() -> i64 { return 1; } }",
+        ] {
+            assert!(messages(source).is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn inert_non_fn_attribute_remains_valid_at_top_level_and_in_module() {
+        for source in [
+            "#[derive] struct Config {}",
+            "module m { #[derive] struct Config {} }",
+            "@cfg struct Config {}",
+            "module m { @inline struct Config {} }",
+        ] {
+            assert!(messages(source).is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn misplaced_impl_member_authority_gets_the_specific_diagnostic() {
+        let source = "struct S {} impl S { @verified struct Bad {} }";
+        assert!(messages(source)
+            .iter()
+            .any(|message| message.contains("ANUBIS_MISPLACED_AUTHORITY_ATTRIBUTE")));
     }
 }
 
