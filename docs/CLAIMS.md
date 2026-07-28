@@ -599,7 +599,7 @@ designed — the second time in this arc that declining to patch was the more us
 5. **Research elevation requires authorization** — bypass **CLOSED** (`e6ebfd2`); dual-use
    research remains intentional with explicit authorization, not a Safe free ride.  
 6. **Harness integrity + instrument fact — the two NAMED defects are closed; the CLASS is NOT
-   (re-opened 2026-07-28 by the 67-script audit, `scratchpad/fleet_20260726/harness_round1.md`).**
+   (re-opened 2026-07-28 by the 67-script audit, `docs/HARNESS_INTEGRITY_AUDIT_2026-07-28.md`).**
    Language fixtures defaulted
    **DEBUG** while security graded **RELEASE**, so the two headline numbers described two different
    compilers. Both gates now use one instrument cascade and `audit_unified.sh` exports `ANUBIS_BIN`
