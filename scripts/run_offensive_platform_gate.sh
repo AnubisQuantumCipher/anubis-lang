@@ -420,10 +420,15 @@ open(p,"w").write(json.dumps(d,indent=2))
 PY
   "$bin" engage-rehash --dir "$eng" >/dev/null
 
+  # Both branches used to record PASS, so this check was structurally incapable of failing and the
+  # headline `34/34` verified at most 33 things. Its own else-branch detail string admitted the
+  # listener lifecycle had already ended — i.e. it was a SKIP, booked as a pass. The adjacent
+  # t3_dns check is the control: it records FAIL in its else branch, so the shape was known-good
+  # ten lines away.
   if [[ -S "$eng/aop.sock" ]] || grep -q 'uds listener' "$out/listen.log"; then
     record "t3_uds" "PASS" "uds transport"
   else
-    record "t3_uds" "PASS" "uds configured (listener lifecycle ended)"
+    record "t3_uds" "FAIL" "no uds socket at $eng/aop.sock and no 'uds listener' in listen.log"
   fi
   if grep -q 'dns' "$out/listen.log"; then
     record "t3_dns" "PASS" "dns transport attempted"
