@@ -3276,6 +3276,10 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                             &mut paths,
                             &method_names,
                         );
+                        // Preserve a callable extracted into a local (`let f = p[0]; f(...)`).
+                        // The ordinary scan only sees the local callee and therefore cannot attach
+                        // the application to the formal's concrete path.
+                        scan_applied_param_local_aliases(body, pname, &mut applies, &mut paths);
                         if shadows {
                             shadowed.push(i);
                         } else if applies {
@@ -3516,6 +3520,39 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                             ctx.method_param_types.insert(name.clone(), None);
                         }
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_applied_param_local_aliases(
+    body: &[Stmt],
+    param: &str,
+    applies: &mut bool,
+    paths: &mut BTreeSet<String>,
+) {
+    let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+    for stmt in body {
+        match stmt {
+            Stmt::Let { name, init, .. } => {
+                if let Some((root, path)) = flatten_access_path(init) {
+                    if root == param {
+                        aliases.insert(name.clone(), path);
+                    }
+                }
+                if let Expr::Call { callee, .. } = init {
+                    if let Some(path) = aliases.get(callee) {
+                        *applies = true;
+                        paths.insert(path.clone());
+                    }
+                }
+            }
+            Stmt::ExprStmt(Expr::Call { callee, .. }) => {
+                if let Some(path) = aliases.get(callee) {
+                    *applies = true;
+                    paths.insert(path.clone());
                 }
             }
             _ => {}
@@ -11025,6 +11062,21 @@ fn analyze_expr_effect(
             if let Some(caps) = ctx.fn_declared_effects.get(sink_callee).cloned() {
                 for raw in caps {
                     apply_inherited_capability(raw, mode, effects, ctx);
+                }
+            }
+            // A local callable extracted from a container (`let f = xs[0]; f(...)`) carries the
+            // identity spine even when no single-name alias exists. Reuse the same capability
+            // inheritance gate used for direct callees; this closes local extraction/alias hops
+            // without adding another value-flow walker.
+            if let Some(binding) = scope.get(callee) {
+                if let FnIdentitySet::Known(names) = &binding.fn_identities {
+                    for name in names {
+                        if let Some(caps) = ctx.fn_declared_effects.get(name).cloned() {
+                            for raw in caps {
+                                apply_inherited_capability(raw, mode, effects, ctx);
+                            }
+                        }
+                    }
                 }
             }
             // Context-sensitive capability propagation for a container passed to a formal that the
