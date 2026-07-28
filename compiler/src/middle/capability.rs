@@ -756,16 +756,14 @@ fn resolve_sink_from_expr(
                 local_aliases.get(v).cloned()
             }
         }
-        Expr::Call { callee, .. } if all_fns.contains(callee) => {
-            returns_sink.get(callee).cloned()
-        }
+        Expr::Call { callee, .. } if all_fns.contains(callee) => returns_sink.get(callee).cloned(),
         Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
             resolve_sink_from_expr(then, local_aliases, all_fns, returns_sink)
                 .or_else(|| resolve_sink_from_expr(else_, local_aliases, all_fns, returns_sink))
         }
-        Expr::Match { arms, .. } => arms
-            .iter()
-            .find_map(|arm| resolve_sink_from_expr(&arm.body, local_aliases, all_fns, returns_sink)),
+        Expr::Match { arms, .. } => arms.iter().find_map(|arm| {
+            resolve_sink_from_expr(&arm.body, local_aliases, all_fns, returns_sink)
+        }),
         Expr::Block {
             tail: Some(tail), ..
         } => resolve_sink_from_expr(tail, local_aliases, all_fns, returns_sink),
@@ -813,9 +811,7 @@ fn body_returns_export_sink(
                 }
                 Stmt::ExprStmt(Expr::Call { callee, args }) if callee == "return" => {
                     if let Some(e) = args.first() {
-                        if let Some(s) =
-                            resolve_sink_from_expr(e, aliases, all_fns, returns_sink)
-                        {
+                        if let Some(s) = resolve_sink_from_expr(e, aliases, all_fns, returns_sink) {
                             return Some(s);
                         }
                     }
@@ -1474,15 +1470,20 @@ fn is_export_sink(callee: &str) -> bool {
 /// Resolve an init expression to an export-sink name through per-function `sink_aliases`,
 /// interproc `returns_export_sink`, if/match join, block tail, and container extraction.
 fn resolve_sink_init(init: &Expr, lin: &Lin) -> Option<String> {
-    resolve_sink_from_expr(init, &lin.sink_aliases, lin.all_fns, &lin.summary.returns_export_sink)
-        .or_else(|| {
-            if let Expr::Index { base, .. } = init {
-                if let Expr::Var(n) = base.as_ref() {
-                    return lin.container_sinks.get(n).cloned();
-                }
+    resolve_sink_from_expr(
+        init,
+        &lin.sink_aliases,
+        lin.all_fns,
+        &lin.summary.returns_export_sink,
+    )
+    .or_else(|| {
+        if let Expr::Index { base, .. } = init {
+            if let Expr::Var(n) = base.as_ref() {
+                return lin.container_sinks.get(n).cloned();
             }
-            None
-        })
+        }
+        None
+    })
 }
 
 /// Root variable of a place (`arr[i].f` → `arr`). Used for index/field NE stores.

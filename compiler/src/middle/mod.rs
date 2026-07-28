@@ -318,9 +318,12 @@ fn fn_alias_of_d(
         // GROK-SEKHMET established by measurement that ordinary secret VALUES already propagate
         // through this join while function references did not — a wiring gap, not a missing
         // mechanism. This is that wire.
-        Expr::If { then, else_, .. } => {
-            join_fn_alias([then.as_ref(), else_.as_ref()].into_iter(), scope, ctx, depth)
-        }
+        Expr::If { then, else_, .. } => join_fn_alias(
+            [then.as_ref(), else_.as_ref()].into_iter(),
+            scope,
+            ctx,
+            depth,
+        ),
         Expr::Match { arms, .. } => join_fn_alias(arms.iter().map(|a| &a.body), scope, ctx, depth),
         // A CALL whose callee RETURNS a function is still a function identity:
         // `fn get_key(){ return key; }` then `let g = get_key(); print(g())` leaked, while the
@@ -578,9 +581,11 @@ fn fn_identities_of_d(
             if candidates.is_empty() {
                 return FnIdentitySet::empty();
             }
-            candidates.into_iter().fold(FnIdentitySet::empty(), |set, candidate| {
-                set.union(fn_identities_of_d(candidate, scope, ctx, depth + 1))
-            })
+            candidates
+                .into_iter()
+                .fold(FnIdentitySet::empty(), |set, candidate| {
+                    set.union(fn_identities_of_d(candidate, scope, ctx, depth + 1))
+                })
         }
         Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
             fn_identities_of_d(inner, scope, ctx, depth + 1)
@@ -635,10 +640,7 @@ fn fn_identities_at_path_expr(
                     let Some(binding) = scope.get(&root) else {
                         return FnIdentitySet::Unknown;
                     };
-                    let mut values = binding
-                        .field_fn_identities
-                        .values()
-                        .cloned();
+                    let mut values = binding.field_fn_identities.values().cloned();
                     let Some(first) = values.next() else {
                         return FnIdentitySet::Unknown;
                     };
@@ -685,9 +687,7 @@ fn fn_identities_at_contract_path(
         Expr::StructLiteral { fields, .. } => fields
             .iter()
             .find(|(name, _)| name == head)
-            .map(|(_, child)| {
-                fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1)
-            })
+            .map(|(_, child)| fn_identities_at_contract_path(child, rest, scope, ctx, depth + 1))
             .unwrap_or(FnIdentitySet::Unknown),
         Expr::MapLiteral { entries, .. } => entries
             .iter()
@@ -1387,7 +1387,9 @@ fn eta_expand_fn_ref(
         scope.get(name).and_then(|b| b.fn_alias.clone())?
     };
     let arity = fn_params.get(&target)?.len();
-    let params: Vec<String> = (0..arity).map(|i| format!("{ETA_PARAM_PREFIX}{i}")).collect();
+    let params: Vec<String> = (0..arity)
+        .map(|i| format!("{ETA_PARAM_PREFIX}{i}"))
+        .collect();
     let args = params.iter().map(|p| Expr::Var(p.clone())).collect();
     Some(Expr::Lambda {
         params,
@@ -2363,15 +2365,9 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         .enumerate()
                         .map(|(index, param)| (param.clone(), index))
                         .collect();
-                    let shadowed = ctx
-                        .fn_param_shadowed
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_default();
-                    let mut applications = collect_unconditional_param_contract_applications(
-                        body,
-                        &param_indices,
-                    );
+                    let shadowed = ctx.fn_param_shadowed.get(name).cloned().unwrap_or_default();
+                    let mut applications =
+                        collect_unconditional_param_contract_applications(body, &param_indices);
                     applications.retain(|application| {
                         application
                             .param_indices
@@ -2850,10 +2846,11 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
             // elevator. Bare `_` rather than named bindings — an or-pattern must bind the same
             // variables in every alternative, and naming them here bought nothing.
             Pattern::Binding(_) | Pattern::Literal(_) | Pattern::StrLiteral(_) => false,
-            Pattern::Or(patterns) | Pattern::List(patterns) => {
-                patterns.iter().any(in_pattern)
-            }
-            Pattern::Struct { name: _name, fields } => fields
+            Pattern::Or(patterns) | Pattern::List(patterns) => patterns.iter().any(in_pattern),
+            Pattern::Struct {
+                name: _name,
+                fields,
+            } => fields
                 .iter()
                 .any(|(_field_name, nested)| in_pattern(nested)),
             Pattern::EnumVariant {
@@ -2907,12 +2904,7 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
                 then,
                 else_,
                 span: _,
-            } => {
-                in_pattern(pattern)
-                    || in_expr(scrutinee)
-                    || in_expr(then)
-                    || in_expr(else_)
-            }
+            } => in_pattern(pattern) || in_expr(scrutinee) || in_expr(then) || in_expr(else_),
             // The arm GUARD is a held expression too. Scrutinee and body were walked, the guard was
             // not, so `match n { x if (|| { @research { … } true })() => … }` elevated with no
             // authorization. Fourth position found in this walk, and the variant was named in every
@@ -2923,18 +2915,14 @@ fn body_has_mode_elevator(body: &[Stmt]) -> bool {
                 span: _,
             } => {
                 in_expr(scrutinee)
-                    || arms
-                        .iter()
-                        .any(|arm| {
-                            let crate::frontend::MatchArm {
-                                pattern,
-                                guard,
-                                body,
-                            } = arm;
-                            in_pattern(pattern)
-                                || guard.as_ref().is_some_and(in_expr)
-                                || in_expr(body)
-                        })
+                    || arms.iter().any(|arm| {
+                        let crate::frontend::MatchArm {
+                            pattern,
+                            guard,
+                            body,
+                        } = arm;
+                        in_pattern(pattern) || guard.as_ref().is_some_and(in_expr) || in_expr(body)
+                    })
             }
             Expr::Lambda { params: _, body } => in_expr(body),
 
@@ -5011,15 +4999,17 @@ fn merge_fn_alias_over(
             .collect();
         let mut fields = BTreeMap::new();
         for field in field_names {
-            let identities = effective.iter().fold(FnIdentitySet::empty(), |set, binding| {
-                set.union(
-                    binding
-                        .field_fn_identities
-                        .get(&field)
-                        .cloned()
-                        .unwrap_or(FnIdentitySet::Unknown),
-                )
-            });
+            let identities = effective
+                .iter()
+                .fold(FnIdentitySet::empty(), |set, binding| {
+                    set.union(
+                        binding
+                            .field_fn_identities
+                            .get(&field)
+                            .cloned()
+                            .unwrap_or(FnIdentitySet::Unknown),
+                    )
+                });
             fields.insert(field, identities);
         }
         if let Some(binding) = scope.get_mut(&name) {
@@ -5195,8 +5185,7 @@ fn specialize_int_call_ensures(
 /// Process-unique solver symbol for a direct call result used inline as another call's argument.
 /// The decimal prefix cannot be written as an Anubis identifier; the textual suffix keeps it
 /// distinct from the match-binding fresh-symbol namespace.
-static INLINE_CONTRACT_ARG_CTR: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static INLINE_CONTRACT_ARG_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Model `callee(args)` as a temporary integer result only when its declaration supplies enough
 /// information for the existing let-bound composition path: an integer return, non-empty `ensures`,
@@ -5221,13 +5210,8 @@ fn compose_inline_int_call_argument(
 
     let serial = INLINE_CONTRACT_ARG_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let fresh = format!("{serial}contractarg");
-    let concrete_ensures = specialize_int_call_ensures(
-        ctx,
-        callee,
-        inner_args,
-        Expr::Var(fresh.clone()),
-        true,
-    );
+    let concrete_ensures =
+        specialize_int_call_ensures(ctx, callee, inner_args, Expr::Var(fresh.clone()), true);
     if concrete_ensures.is_empty() {
         return None;
     }
@@ -5492,8 +5476,7 @@ fn discharge_carried_call_requires(
     outer_args: &[Expr],
     depth: u32,
 ) -> bool {
-    let Some((formal_names, applications)) =
-        ctx.fn_param_contract_apps.get(outer_callee).cloned()
+    let Some((formal_names, applications)) = ctx.fn_param_contract_apps.get(outer_callee).cloned()
     else {
         return true;
     };
@@ -5547,8 +5530,7 @@ fn discharge_resolved_call_requires_d(
         return true;
     };
     let direct = discharge_call_requires(ctx, assumptions, &candidate, args);
-    let carried =
-        discharge_carried_call_requires(ctx, assumptions, scope, &candidate, args, depth);
+    let carried = discharge_carried_call_requires(ctx, assumptions, scope, &candidate, args, depth);
     direct && carried
 }
 

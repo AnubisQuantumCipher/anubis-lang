@@ -1817,6 +1817,21 @@ impl Parser {
             // throw them away, which is the same one-of-N shape as everything else in this arc.
             if !self.check_keyword("fn") {
                 for a in &attrs {
+                    // OPEN (2026-07-27, unlanded): this rejects an attribute whose NAME is
+                    // unknown, but a KNOWN authority mark in a position that cannot carry it is
+                    // still accepted and then discarded with the rest. `@verified struct Config {}`
+                    // parses, means nothing, and tells its author it means something — "known" is
+                    // doing the work of "meaningful". The fix is to split this allowlist by WHERE
+                    // each attribute has meaning: authority marks (research/exploit/poc/fuzz/
+                    // emulation/proof/defensive/audit/verified/safe/agent) reject on a non-`fn`
+                    // item; inert ones (cfg/derive/inline) stay allowed.
+                    //
+                    // Written and then REVERTED rather than shipped: it is an ENFORCING change and
+                    // the corpus verdict-diff could not be run in that session. Measured risk is
+                    // low — all 38 authority-attribute uses in examples/ and stdlib/ are already on
+                    // `fn`, and derive/cfg/inline have 0 uses — but "low risk" is not the bar this
+                    // repo holds enforcing changes to. See scratchpad/fleet_20260726/
+                    // lead_handoff_r38.md.
                     if !matches!(
                         a.name.as_str(),
                         "research"

@@ -302,9 +302,26 @@ stored, passed, joined or returned.
 | **SET / summary** | effect rows, taint/secret labels, fn identities (singleton), gate tags | immune — the summary travels with the value |
 | **TOKEN** | capability linearity, NE seal | different disease entirely |
 
-The exhaustion claim is bounded to that definition and carries named falsifiers rather than being
-asserted. A surface that is neither name-keyed, set-keyed nor token-keyed would fall outside the audit
-and would falsify it; none has been found.
+**A falsification attempt was then run against it and FAILED** — stronger support than the original
+judgment was. The hunt looked for enforcement keyed on something other than a callable's identity
+and found four such kinds, none of which reopens the class:
+
+| other keying | examples | why it is not a carrier |
+|---|---|---|
+| **TYPE** | `secret<T>` / `tainted<T>` formals | value-label declaration, dual to the flow SET |
+| **ATTRIBUTE / MODE** | `@verified`, `@safe`, `@research`, `--allow-research` | selects which rule pack runs, not which function a value IS |
+| **ORDER / CFG position** | declassify before vs after egress; path conditions | label flow through the CFG |
+| **FILE / path** | package evidence binding, engagement allow-lists | artifact trust, not call identity |
+
+So the three-row table above is **not** the claim that all Anubis enforcement is NAME/SET/TOKEN on
+callables. That stronger claim is FALSE, and these four are why. The bounded claim is only about the
+carrier class — enforcement that keys on a callable's identity — and within it no surface was found
+that is neither name-keyed, set-keyed nor token-keyed.
+
+Named falsifiers, kept live: a true accept about WHICH FUNCTION RUNS under a carrier that is not
+reducible to a known name/tag/summary/token hole; enforcement keyed on dynamic string dispatch, a
+callee's import path, or a vtable slot index; or a type-keyed rule that is really callable identity
+in disguise — an `fn`-typed field obligation reimplementing name lookup.
 
 **Two agents converged independently on the sequencing**: one resolver first, then wire the defensive
 policy consumers to its exact/singleton result. The auditor declined to build a third
