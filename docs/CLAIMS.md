@@ -667,6 +667,37 @@ The distinction that resolves it, adopted from the adversary's round-24 judgment
 | what the user believes | certified | knows the residual | must fix or opt in |
 | clause 2 | **BROKEN** | honest **iff** the sentence scopes it | **held** |
 
+#### The promise is scoped to SAFE MODE, and the mode matrix says exactly how much that means
+
+An authorized mode attribute does not relax the monoids a little. Measured 2026-07-28 by firing
+six minimal probes — undeclared `write_file`, `print(secret)`, `sink(taint)`, `shell`, undeclared
+`send`, `assert(false)` — into each mode with its authorization present:
+
+| mode | write | secret | taint | shell | net | `assert(false)` |
+|---|---|---|---|---|---|---|
+| **safe** (no attribute) | REJECT | REJECT | REJECT | REJECT | REJECT | REJECT |
+| `@verified` | REJECT | REJECT | REJECT | REJECT | REJECT | REJECT |
+| `@proof` (cpu and metal-hybrid) | ACCEPT | ACCEPT | ACCEPT | ACCEPT | ACCEPT | REJECT |
+| `@research` (authorized) | ACCEPT | ACCEPT | ACCEPT | ACCEPT | ACCEPT | REJECT |
+| `@audit` (authorized) | ACCEPT | ACCEPT | ACCEPT | ACCEPT | ACCEPT | REJECT |
+| `@fuzz` (authorized) | ACCEPT | ACCEPT | ACCEPT | ACCEPT | ACCEPT | REJECT |
+
+Inside an authorized `@proof`/`@research`/`@audit`/`@fuzz` frame the effect, secret, taint and
+capability monoids are **not charged at all**. Only `assert` survives. `@verified` is a mark and
+relaxes nothing — it is not in this class.
+
+This is the design (research mode exists to permit what safe mode forbids), and it has a
+consequence the fixture counts do not show: **14 shipping `EXPECT: PASS` fixtures live inside
+those modes** (2 `@proof`, 10 `@research`, 1 `@audit`, 1 `@fuzz`). For each, no poison of the form
+*"this value must not reach a sink"* or *"this effect must be declared"* can fail while the
+fixture stays inside its mode. They remain poisonable by stripping the authorization or by a false
+`assert` — except `metal_backed_proof_parity`, which asserts nothing and is therefore a total
+tautology.
+
+So the promise sentence is not merely *scoped* to safe mode as a matter of wording. Outside safe
+mode there is no information-flow or capability claim to make, and a green board built partly from
+in-mode fixtures is greener than the safe-mode evidence alone supports. The number to carry is 14.
+
 **A silent deferral is an assumption of "no problem."** That is the whole defect — not the deferring.
 
 **Measured cost of the alternative.** Making `check` refuse every undischarged obligation was
