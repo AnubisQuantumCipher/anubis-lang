@@ -151,6 +151,46 @@ require_nonempty_corpus() {
   return 0
 }
 
+# assert_tested COUNT DESCRIPTION [COUNT2 DESCRIPTION2 ...]
+#
+# Coverage is part of a verdict, not decoration. A gate whose headline prints a coverage number it
+# never checks cannot distinguish "measured everything and it agreed" from "measured nothing".
+#
+# This is not hypothetical. `run_docs_drift_gate.sh` gated only on its FAILURE counter and printed
+# `Overall: PASS (0 stamps checked, 0 drift)` with exit 0 against an empty scan root — demonstrated
+# by counterexample 2026-07-28. Its scanner also skipped missing owned docs with a bare `continue`,
+# so an ordinary rename produced the same vacuous green, and two of its fifteen declared owned docs
+# were absent and silently skipped on the live tree.
+#
+# `require_nonempty_corpus` covers the fixture-corpus shape. This covers everything else a gate
+# counts: stamps, guards, scenarios, probes, assertions — any number a reader would take as
+# evidence that work happened.
+#
+# Result variable: GATE_COVERAGE_ERROR.
+assert_tested() {
+  GATE_COVERAGE_ERROR=""
+  if [[ $# -lt 2 || $(( $# % 2 )) -ne 0 ]]; then
+    GATE_COVERAGE_ERROR="assert_tested requires COUNT DESCRIPTION pairs"
+    echo "INVALID COVERAGE ASSERTION: $GATE_COVERAGE_ERROR - refusing to report PASS" >&2
+    return 2
+  fi
+  while [[ $# -gt 0 ]]; do
+    local count="$1" description="$2"
+    shift 2
+    if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      GATE_COVERAGE_ERROR="coverage counter is not a canonical non-negative integer: $description=$count"
+      echo "INVALID COVERAGE COUNT: $GATE_COVERAGE_ERROR - refusing to report PASS" >&2
+      return 2
+    fi
+    if [[ "$count" == "0" ]]; then
+      GATE_COVERAGE_ERROR="tested nothing: $description=0"
+      echo "VACUOUS GATE: $description is 0 - the gate tested nothing, refusing to report PASS" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 # finalize TOTAL PASSED FAILED [INCOMPLETE]
 # Result variables: GATE_FINAL_STATUS (PASS, FAIL, INCOMPLETE, or INVALID)
 # and GATE_FINAL_REASON.

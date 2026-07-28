@@ -43,8 +43,20 @@ LIVE_STAMP_FILES = {
     "docs/language/STDLIB_CORE.md",
 }
 
+# A line is exempt only if it disclaims being a CURRENT claim.
+#
+# "as of <date>" was removed 2026-07-28. It does not disclaim anything — it is how this project
+# writes a LIVE stamp, and it silently exempted every line that used it. LANGUAGE.md:546 read
+# "Gate: bash scripts/run_stdlib_failclosed_gate.sh (**86/86** as of 2026-07-27)" — a line that
+# names a gate you can run right now — while the corpus on disk was 104 and the gate measured
+# 104/104. The number was 18 short and the drift gate was green, because the scanner read the
+# phrase as "historical" and skipped it.
+#
+# Everything retained below says, unambiguously, "this WAS true, not IS true". Adding a marker
+# here is adding a way for a wrong number to stay green: require that the phrase be meaningless
+# on a line making a present-tense claim.
 DATED_LINE = re.compile(
-    r"as of |as-of|seal date|seal-date|historical|snapshot of|on this seal|"
+    r"seal date|seal-date|historical|snapshot of|on this seal|"
     r"at that seal|prior Phase|was true|dated seal|seal_r8|historical stamp|"
     r"snapshot only|CLAIMED 20\d{2}|partial CLAIMED 20\d{2}|~~.*~~",
     re.I,

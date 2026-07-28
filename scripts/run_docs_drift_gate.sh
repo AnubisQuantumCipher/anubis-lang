@@ -341,6 +341,26 @@ report = {
 Path(out, "docs_drift_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 PY
 
+# Coverage is part of the verdict. This gate printed
+#   DOCS_DRIFT_GATE: PASS / Overall: PASS (0 stamps checked, 0 drift)
+# with exit 0 against an empty scan root — demonstrated by counterexample 2026-07-28 — because the
+# verdict below reads only $FAILS and $STAMPS_CHECKED was decorative. A rename of an owned doc
+# produced the same vacuous green, and the seal consumes this gate by matching its PASS token.
+source "$ROOT/scripts/lib/gate_common.sh"
+if ! assert_tested "$STAMPS_CHECKED" "stamps_checked" "$CLAIM_GUARDS_CHECKED" "claim_guards_checked"; then
+  echo "DOCS_DRIFT_GATE: FAIL"
+  echo "Overall: FAIL (vacuous: $GATE_COVERAGE_ERROR)" >&2
+  exit 1
+fi
+
+# SCAN_RC was captured at the scan call and never read. A scanner that exits non-zero but leaves
+# parseable JSON with zero failures would have been reported as PASS.
+if [[ "$SCAN_RC" -ne 0 ]]; then
+  echo "DOCS_DRIFT_GATE: FAIL"
+  echo "Overall: FAIL (scanner exited $SCAN_RC)" >&2
+  exit 1
+fi
+
 if [[ "$FAILS" -eq 0 ]]; then
   echo "DOCS_DRIFT_GATE: PASS"
   echo "Overall: PASS ($STAMPS_CHECKED stamps checked, 0 drift)"

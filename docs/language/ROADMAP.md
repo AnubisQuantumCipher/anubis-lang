@@ -74,7 +74,7 @@ toolchains. Maturity is the *assembly*; the honesty about each boundary is what 
 > division** — all 8 comparators, equality, bitwise `& | ^ ~`, negate, add/sub, abs/min/max (ite), AND
 > both shifts (`<<`/`>>` un-deferred via z3-PROVEN encoder identities built only from proven ops).
 > Verdict-equivalent to z3 across the whole **445-file** corpus, 0 disagreements; z3 droppable for the
-> integer lane (**default-authoritative** as of 2026-07-25; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`). Every guarantee is proven-or-scoped; the named residuals are: **4** self-host the
+> integer lane (**default-authoritative** as of 2026-07-25; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0`). The named residuals are: **4** self-host the
 > checker's semantic engines (the largest remaining *engineering* effort; parse+codegen already
 > dogfooded) — **slice 1 LANDED**: **effect inference** is now Anubis-authored in
 > `selfhost/src/anubis_sh.anb` (the `effects` subcommand), reproducing the Rust engine's `caps_used ∪
