@@ -31,6 +31,14 @@ OUT=""
 # editing concurrently that would make it unrunnable; grading a commit is the answer for both.
 SCRIPT="scripts/audit_unified.sh"
 REPORT_NAME="gate_report.json"
+# Command run INSIDE the worktree before the graded script, for graders that expect a built binary
+# and a published pin rather than building one themselves.
+#
+# `audit_unified.sh` builds its own instrument at G4. The SEAL does not — it resolves an already
+# published pin and REFUSES if there is none, which is correct fail-closed behaviour and which
+# makes a pristine worktree unsealable without this. The refusal is the right design; the prepare
+# step is what lets a commit be sealed at all.
+PREPARE=""
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --out)    OUT="${2:?--out requires a directory}"; shift 2 ;;
     --script) SCRIPT="${2:?--script requires a path}"; shift 2 ;;
     --report) REPORT_NAME="${2:?--report requires a filename}"; shift 2 ;;
+    --prepare) PREPARE="${2:?--prepare requires a command}"; shift 2 ;;
     --)       shift; PASSTHRU=("$@"); break ;;
     *)        echo "ANUBIS_AUDIT_HEAD_ARGUMENT: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -75,6 +84,14 @@ git worktree add --detach "$WT" "$SHA" >/dev/null
 # under `set -e` killed the harness before it printed its own verdict. Written again, in the tool
 # built to grade the tools. A non-zero exit here is DATA, not failure.
 RC=0
+if [[ -n "$PREPARE" ]]; then
+  echo "[audit-head] prepare  : $PREPARE"
+  if ! ( cd "$WT" && eval "$PREPARE" ) >"$OUT/prepare.log" 2>&1; then
+    echo "ANUBIS_AUDIT_HEAD_PREPARE_FAILED: see $OUT/prepare.log" >&2
+    tail -20 "$OUT/prepare.log" >&2 || true
+    exit 4
+  fi
+fi
 (
   cd "$WT"
   # NOT `"${PASSTHRU[@]+"${PASSTHRU[@]}"}"` — the outer quotes turn an EMPTY array into one empty
