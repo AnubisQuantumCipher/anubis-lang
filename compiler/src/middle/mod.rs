@@ -3772,82 +3772,121 @@ fn scan_applied_param_local_aliases(
 /// Walk a function body flagging calls to names that are neither a user function, a reserved
 /// builtin, nor a local binding (parameter / let / for-variable / lambda-parameter / match-binding).
 /// Closure-valued locals are in `bound`, so `let f = |x| x; f(3)` is fine.
+/// Names bound to a value that CANNOT be callable, for builtin closure-position checking.
+///
+/// `let n = 3; map(xs, n)` panicked at runtime with `expected closure, got int` while `check`
+/// returned 0 — the literal-position check could not see through the binding. Tracking only
+/// bindings whose initializer is SYNTACTICALLY a non-callable literal keeps this exact: a name
+/// absent from the set is never reported, so an unknown value is DEFERRED rather than accused.
+/// Shadowing removes the name, because a rebind may make it callable.
+fn note_non_callable_binding(name: &str, init: &Expr, non_callable: &mut BTreeSet<String>) {
+    let is_lit = matches!(
+        init,
+        Expr::Literal(_) | Expr::StrLiteral(_) | Expr::Binary { .. } | Expr::ArrayLiteral { .. }
+    );
+    if is_lit {
+        non_callable.insert(name.to_string());
+    } else {
+        non_callable.remove(name);
+    }
+}
+
 fn check_calls_stmts(
     stmts: &[Stmt],
     fns: &BTreeSet<String>,
     bound: &mut BTreeSet<String>,
     ctx: &mut SemanticContext,
 ) {
+    let mut non_callable: BTreeSet<String> = BTreeSet::new();
+    check_calls_stmts_nc(stmts, fns, bound, &mut non_callable, ctx)
+}
+
+fn check_calls_stmts_nc(
+    stmts: &[Stmt],
+    fns: &BTreeSet<String>,
+    bound: &mut BTreeSet<String>,
+    non_callable: &mut BTreeSet<String>,
+    ctx: &mut SemanticContext,
+) {
     use crate::frontend::ForSource;
     for s in stmts {
         match s {
             Stmt::Let { name, init, .. } => {
-                check_calls_expr(init, fns, bound, ctx);
+                check_calls_expr_nc(init, fns, bound, non_callable, ctx);
+                note_non_callable_binding(name, init, non_callable);
                 bound.insert(name.clone());
             }
             Stmt::LetPattern { pattern, init, .. } => {
-                check_calls_expr(init, fns, bound, ctx);
+                check_calls_expr_nc(init, fns, bound, non_callable, ctx);
                 for n in pattern.bound_names() {
                     bound.insert(n);
                 }
             }
             Stmt::Assign { target, value } => {
-                check_calls_expr(target, fns, bound, ctx);
-                check_calls_expr(value, fns, bound, ctx);
+                check_calls_expr_nc(target, fns, bound, non_callable, ctx);
+                check_calls_expr_nc(value, fns, bound, non_callable, ctx);
             }
-            Stmt::ExprStmt(e) => check_calls_expr(e, fns, bound, ctx),
+            Stmt::ExprStmt(e) => check_calls_expr_nc(e, fns, bound, non_callable, ctx),
             Stmt::If { cond, then, else_ } => {
-                check_calls_expr(cond, fns, bound, ctx);
+                check_calls_expr_nc(cond, fns, bound, non_callable, ctx);
                 let mut b = bound.clone();
-                check_calls_stmts(then, fns, &mut b, ctx);
+                let nc = non_callable.clone();
+                check_calls_stmts_nc(then, fns, &mut b, &mut nc.clone(), ctx);
                 if let Some(e) = else_ {
                     let mut b = bound.clone();
-                    check_calls_stmts(e, fns, &mut b, ctx);
+                let nc = non_callable.clone();
+                    check_calls_stmts_nc(e, fns, &mut b, &mut nc.clone(), ctx);
                 }
             }
             Stmt::While { cond, body, .. } => {
-                check_calls_expr(cond, fns, bound, ctx);
+                check_calls_expr_nc(cond, fns, bound, non_callable, ctx);
                 let mut b = bound.clone();
-                check_calls_stmts(body, fns, &mut b, ctx);
+                let nc = non_callable.clone();
+                check_calls_stmts_nc(body, fns, &mut b, &mut nc.clone(), ctx);
             }
             Stmt::WhileLet {
                 pattern,
                 expr,
                 body,
             } => {
-                check_calls_expr(expr, fns, bound, ctx);
+                check_calls_expr_nc(expr, fns, bound, non_callable, ctx);
                 let mut b = bound.clone();
+                let nc = non_callable.clone();
                 for n in pattern.bound_names() {
                     b.insert(n);
                 }
-                check_calls_stmts(body, fns, &mut b, ctx);
+                check_calls_stmts_nc(body, fns, &mut b, &mut nc.clone(), ctx);
             }
             Stmt::Loop { body, .. } => {
                 let mut b = bound.clone();
-                check_calls_stmts(body, fns, &mut b, ctx);
+                let nc = non_callable.clone();
+                check_calls_stmts_nc(body, fns, &mut b, &mut nc.clone(), ctx);
             }
             Stmt::For {
                 var, source, body, ..
             } => {
                 match source {
                     ForSource::Range { start, end } => {
-                        check_calls_expr(start, fns, bound, ctx);
-                        check_calls_expr(end, fns, bound, ctx);
+                        check_calls_expr_nc(start, fns, bound, non_callable, ctx);
+                        check_calls_expr_nc(end, fns, bound, non_callable, ctx);
                     }
-                    ForSource::Collection { expr } => check_calls_expr(expr, fns, bound, ctx),
+                    ForSource::Collection { expr } => check_calls_expr_nc(expr, fns, bound, non_callable, ctx),
                 }
                 let mut b = bound.clone();
+                let nc = non_callable.clone();
                 b.insert(var.clone());
-                check_calls_stmts(body, fns, &mut b, ctx);
+                check_calls_stmts_nc(body, fns, &mut b, &mut nc.clone(), ctx);
             }
             Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
                 let mut b = bound.clone();
-                check_calls_stmts(body, fns, &mut b, ctx);
+                let nc = non_callable.clone();
+                check_calls_stmts_nc(body, fns, &mut b, &mut nc.clone(), ctx);
             }
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for blk in [gpu, cpu, prove].into_iter().flatten() {
                     let mut b = bound.clone();
-                    check_calls_stmts(blk, fns, &mut b, ctx);
+                let nc = non_callable.clone();
+                    check_calls_stmts_nc(blk, fns, &mut b, &mut nc.clone(), ctx);
                 }
             }
             Stmt::Break | Stmt::Continue | Stmt::SpecBlock { .. } => {}
@@ -3859,6 +3898,22 @@ fn check_calls_expr(
     e: &Expr,
     fns: &BTreeSet<String>,
     bound: &BTreeSet<String>,
+    ctx: &mut SemanticContext,
+) {
+    let empty: BTreeSet<String> = BTreeSet::new();
+    check_calls_expr_nc(e, fns, bound, &empty, ctx)
+}
+
+/// As `check_calls_expr`, plus the set of names known to hold a non-callable literal.
+///
+/// Kept as a separate entry point so the other call sites — which have no binding context — pass
+/// an EMPTY set and therefore report nothing extra. An empty set can only make this check quieter,
+/// never louder, so no caller can be made to over-reject by not knowing about it.
+fn check_calls_expr_nc(
+    e: &Expr,
+    fns: &BTreeSet<String>,
+    bound: &BTreeSet<String>,
+    non_callable: &BTreeSet<String>,
     ctx: &mut SemanticContext,
 ) {
     match e {
@@ -3873,8 +3928,63 @@ fn check_calls_expr(
                     span: None,
                 });
             }
+            // A builtin closure position holding a value that CANNOT be callable is a type error
+            // the runtime would otherwise discover by PANICKING:
+            //
+            //     thread '<unnamed>' panicked at: ANUBIS_TYPE_ERROR: expected closure, got int
+            //
+            // `check` returning 0 for such a program violates the promise sentence directly — a
+            // PASS is supposed to mean no way was found for the program to violate its contracts,
+            // and this one dies on its types. A panic is also strictly worse than a wrong answer:
+            // it denies the verdict rather than producing one.
+            //
+            // ORDER-AGNOSTIC BUILTINS ARE THE TRAP. `higher_order_closure_args("reduce")` returns
+            // `&[1, 2]` because `reduce(list, closure, seed)` and `reduce(list, seed, closure)` are
+            // BOTH legal — the map lists every position the closure MIGHT occupy, not every
+            // position it must. Charging each index independently rejects
+            // `reduce([1,2], |a,b| a + b, 0)`, which is correct code, and a false REJECT is worse
+            // for a user than a false accept: it breaks a working program.
+            //
+            // So for a multi-index builtin the obligation is "at least ONE of these positions is
+            // callable-shaped"; for a single-index builtin it is that position specifically.
+            let closure_idxs = effects::higher_order_closure_args(callee);
+            let not_callable = |a: &Expr| {
+                matches!(
+                    a,
+                    Expr::Literal(_)
+                        | Expr::StrLiteral(_)
+                        | Expr::Binary { .. }
+                        | Expr::ArrayLiteral { .. }
+                ) || matches!(a, Expr::Var(v) if non_callable.contains(v.as_str()))
+            };
+            if closure_idxs.len() > 1 {
+                let present: Vec<&Expr> = closure_idxs.iter().filter_map(|&i| args.get(i)).collect();
+                if !present.is_empty() && present.iter().all(|a| not_callable(a)) {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_TYPE_ERROR".into()),
+                        message: format!(
+                            "builtin `{callee}` expects a callable in one of arguments {closure_idxs:?}; none of them can be one"
+                        ),
+                        span: None,
+                    });
+                }
+            } else {
+                for &index in closure_idxs {
+                    if let Some(arg) = args.get(index) {
+                        if not_callable(arg) {
+                            ctx.diagnostics.push(SemanticDiagnostic {
+                                code: Some("ANUBIS_TYPE_ERROR".into()),
+                                message: format!(
+                                    "builtin `{callee}` argument {index} expects a callable value"
+                                ),
+                                span: None,
+                            });
+                        }
+                    }
+                }
+            }
             for a in args {
-                check_calls_expr(a, fns, bound, ctx);
+                check_calls_expr_nc(a, fns, bound, non_callable, ctx);
             }
         }
         Expr::CallExpr { callee, args } => {
