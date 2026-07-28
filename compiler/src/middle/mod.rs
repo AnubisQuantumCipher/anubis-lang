@@ -626,6 +626,18 @@ fn fn_identities_of_d(
             if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 {
                 return fn_identities_of_d(&args[0], scope, ctx, depth + 1);
             }
+            if matches!(callee.as_str(), "pop" | "last") && args.len() == 1 {
+                return fn_identities_carried_by_value(&args[0], scope, ctx);
+            }
+            if matches!(callee.as_str(), "get" | "remove") && args.len() >= 2 {
+                if let Some(index) = args.get(1).and_then(|index| match index {
+                    Expr::Literal(v) | Expr::StrLiteral(v) => Some(v.as_str()),
+                    _ => None,
+                }) {
+                    return fn_identities_at_contract_path(&args[0], index, scope, ctx, depth + 1);
+                }
+                return fn_identities_carried_by_value(&args[0], scope, ctx);
+            }
             if let Some((param_names, index)) = ctx.fn_returns_param.get(callee) {
                 if param_names.len() == args.len() {
                     if let Some(arg) = args.get(*index) {
