@@ -709,8 +709,7 @@ fn boot_with_kernel(
         let glob_value = proof_section
             .lines()
             .map(|l| l.trim())
-            .filter(|l| l.starts_with("__NET_GLOB__:") && !l.contains("$(") && !l.contains("~ #"))
-            .next_back()
+            .rfind(|l| l.starts_with("__NET_GLOB__:") && !l.contains("$(") && !l.contains("~ #"))
             .map(|l| l["__NET_GLOB__:".len()..].trim())
             .unwrap_or("");
 
@@ -722,25 +721,61 @@ fn boot_with_kernel(
             ));
         }
 
-        if glob_value == "/sys/class/net/lo" {
-            eprintln!(
-                "[anubis vz native-boot] ZERO-NIC PROOF VERIFIED. networkDevices={nic_count}."
-            );
-            eprintln!(
-                "  evidence  : virtio-net (0x1af4:0x1041) ABSENT from the guest PCI bus; \
+        // The verdict depends on WHICH POSTURE was derived, and getting this backwards makes the
+        // tool dishonest in both directions.
+        //
+        // A `PerHostnameEgress` guest is SUPPOSED to have a NIC. Reporting its `eth0` as "a VZ
+        // enforcement failure" would be a false alarm — and, worse, an earlier version reported
+        // `ZERO-NIC PROOF VERIFIED. networkDevices=1` for exactly that guest, which is the same
+        // sentence over the opposite fact.
+        //
+        // Splitting on posture also turns this into a self-validating instrument: the egress
+        // posture is the POSITIVE CONTROL. If a guest configured WITH a NIC does not report one,
+        // the probe cannot see NICs at all and its `lo`-only answer for an air-gapped guest means
+        // nothing. That was measured, not hypothesised — `CONFIG_VIRTIO_NET=m` and no module
+        // loader under `rdinit=/bin/sh` made every guest look air-gapped.
+        let lo_only = glob_value == "/sys/class/net/lo";
+        match posture {
+            NativePosture::ZeroNicAirGap => {
+                if !lo_only {
+                    return Err(anyhow!(
+                        "ANUBIS_VZNATIVE_NIC_DETECTED: /sys/class/net/* expanded to '{glob_value}', \
+                         which contains interfaces beyond loopback, in a guest configured with \
+                         networkDevices={nic_count}. This is a VZ enforcement failure or a config error."
+                    ));
+                }
+                eprintln!(
+                    "[anubis vz native-boot] ZERO-NIC PROOF VERIFIED. networkDevices={nic_count}."
+                );
+                eprintln!(
+                    "  evidence  : virtio-net (0x1af4:0x1041) ABSENT from the guest PCI bus; \
 /sys/class/net/* expanded to 'lo' only"
-            );
-            eprintln!("  instrument: /bin/busybox present, all probes executed, no 'not found'");
-            eprintln!(
-                "  basis     : hypervisor-enforced (VZ networkDevices=0 + guest-side PCI-bus confirmation)"
-            );
-        } else {
-            return Err(anyhow!(
-                "ANUBIS_VZNATIVE_NIC_DETECTED: /sys/class/net/* expanded to '{glob_value}', \
-                 which contains interfaces beyond loopback. The guest has network devices \
-                 despite networkDevices={nic_count} in the VZ config. This is a VZ enforcement \
-                 failure or a config error."
-            ));
+                );
+                eprintln!(
+                    "  instrument: /bin/busybox present, all probes executed, no 'not found'"
+                );
+                eprintln!(
+                    "  basis     : hypervisor-enforced (VZ networkDevices=0 + guest-side PCI-bus confirmation)"
+                );
+            }
+            NativePosture::PerHostnameEgress { .. } => {
+                if lo_only {
+                    return Err(anyhow!(
+                        "ANUBIS_VZNATIVE_PROBE_BLIND: the guest was configured with \
+                         networkDevices={nic_count} and reported LOOPBACK ONLY. The probe cannot \
+                         observe a NIC that is present, so its answer for an air-gapped guest \
+                         proves nothing. Refusing to treat this instrument as trustworthy."
+                    ));
+                }
+                eprintln!(
+                    "[anubis vz native-boot] EGRESS POSTURE CONFIRMED. networkDevices={nic_count}."
+                );
+                eprintln!("  evidence  : guest enumerated '{glob_value}'");
+                eprintln!(
+                    "  note      : this run is also the POSITIVE CONTROL for the zero-NIC probe — \
+it proves the probe can see a NIC when one exists"
+                );
+            }
         }
     }
     Ok(())
