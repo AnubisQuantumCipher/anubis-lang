@@ -1010,17 +1010,26 @@ pure callable in a list into a writer, break an `ensures`) — gives the honest 
 | verdict | count | meaning |
 |---|---|---|
 | REACHES_PATH | 72 | the poison rejects: the guarded path really is analyzed |
-| UNDERIVED | 25 | no strategy produced a twin — needs a hand-written one |
+| UNDERIVED | 25 | no strategy produced a twin — since hand-written: **24 REACHES, 1 tautology** |
 | MODE_ALLOWS | 5 | `@audit`/`@research`/`@fuzz`: the poison is *authorized*, not unseen |
 | OFFTOPIC_POISON | 1 | the derived poison does not touch the guarded path |
 | MODE_OR_OFFTOPIC | 1 | either of the above; not separable mechanically |
 | **BLIND_SHAPE** | **0** | **no safe-mode PASS fixture accepts a path-aligned poison** |
 
-So the pass side is no longer unaudited — but it is not fully audited either, and the number
-that matters is **25**, not 104. Those 25 are fixtures whose property no mechanical strategy
-could express (struct patterns, PoC lanes, implicit-flow locals, authority attributes); a human
-has to name the property and write the twin. They are counted as coverage today and their
-reachability is unknown.
+The 25 have since been hand-written — a named property and a poison violating it for each —
+and they came back **24 REACHES_PATH and 1 tautology**. Combined: **104/104 of the shipping PASS
+corpus is non-blind in safe mode**, every fixture carrying a property that something can violate.
+
+**The one exception is a fixture that cannot fail.** `metal_backed_proof_parity` runs under
+`@proof`, and inside that mode BOTH a secret sink and an undeclared write are accepted — only
+leaving the mode rejects. Its property cannot be violated without changing the mode, so it tests
+a tautology. It is counted as coverage today and earns nothing, and it is recorded here as one
+rather than folded into the 104.
+
+That distinction is the residual: a broad authorization mode (`@proof`, `@research`, `@audit`,
+`@fuzz`) can make a fixture unfalsifiable inside itself. How many others do so is not yet known.
+It is a question about the MODES, not about the fixtures — if a mode enforces nothing, no fixture
+written inside it can be evidence of anything.
 
 The boundary is itself a finding: **path-aligned poison derivation is ~75% mechanical and cannot
 be finished mechanically.** Deciding whether a poison is off-topic requires knowing what the
