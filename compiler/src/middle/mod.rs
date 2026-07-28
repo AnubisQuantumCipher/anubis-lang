@@ -643,7 +643,62 @@ fn fn_identities_of_d(
                 }
                 return FnIdentitySet::Unknown;
             }
-            if let Some((_param_names, returned)) = ctx.fn_sole_return.get(callee) {
+            if let Some((param_names, returned)) = ctx.fn_sole_return.get(callee) {
+                // A returned CLOSURE that captures a parameter carries that ARGUMENT's identity.
+                //
+                //     fn mk(xs) -> any { || { let f = xs[0]; f(…) } }
+                //     let g = mk([leak]); g();
+                //
+                // The lambda body IS analyzed — the same shape with no capture
+                // (`|| { leak(…) }`) rejects correctly. What was missing is that `xs` inside the
+                // body means the CALLER's argument, and at the point the body is walked the
+                // parameter has no identity, so the capture resolved to nothing and `g` came back
+                // Unknown.
+                //
+                // Resolving the argument at the captured parameter's position is the same move
+                // `fn_returns_param` makes for a forwarded value, applied to a DEFERRED one: the
+                // closure has not run yet, but whatever it will apply is decided here.
+                if std::env::var("ANUBIS_TRACE_CAP").is_ok() {
+                    eprintln!("[cap] callee={callee} sole_return_is_lambda={} params={param_names:?}", matches!(returned, Expr::Lambda { .. }));
+                }
+                if let Expr::Lambda { body, .. } = returned {
+                    if std::env::var("ANUBIS_TRACE_CAP").is_ok() {
+                        eprintln!("[cap2] body={:?}", format!("{body:?}").chars().take(160).collect::<String>());
+                    }
+                    let mut carried = FnIdentitySet::empty();
+                    for (i, pname) in param_names.iter().enumerate() {
+                        if expr_mentions_name(body, pname) {
+                            if let Some(arg) = args.get(i) {
+                                // BOTH resolutions, unioned. A captured parameter may be the
+                                // callable itself (`mk(leak)` -> `|| { f(…) }`) or a container
+                                // holding one (`mk([leak])` -> `|| { xs[0](…) }`), and the two
+                                // resolvers answer different questions:
+                                // `fn_identities_of_d` names the value, `carried_by_value` digs
+                                // into it. Using only the second closed the container form and
+                                // left the bare-callable form open.
+                                // Take whichever resolver KNOWS something, not their union.
+                                //
+                                // `FnIdentitySet::union` treats Unknown as an ANNIHILATOR, which is
+                                // correct where Unknown means "may be anything". Here it is wrong:
+                                // a captured argument is resolved two ways — name it, or dig into
+                                // it — and exactly one answers for any given shape. Unioning them
+                                // let the resolver that does not apply erase the one that does, so
+                                // `mk(leak)` came back Unknown while `mk([leak])` worked.
+                                let named = fn_identities_of_d(arg, scope, ctx, depth + 1);
+                                let dug = fn_identities_carried_by_value(arg, scope, ctx);
+                                let resolved = match (&named, &dug) {
+                                    (FnIdentitySet::Known(_), FnIdentitySet::Unknown) => named,
+                                    (FnIdentitySet::Unknown, FnIdentitySet::Known(_)) => dug,
+                                    _ => FnIdentitySet::union(named, dug),
+                                };
+                                carried = FnIdentitySet::union(carried, resolved);
+                            }
+                        }
+                    }
+                    if !matches!(carried, FnIdentitySet::Known(ref n) if n.is_empty()) {
+                        return carried;
+                    }
+                }
                 return fn_identities_of_d(returned, scope, ctx, depth + 1);
             }
             FnIdentitySet::Unknown
@@ -11298,6 +11353,59 @@ fn compute_returns_param_fixpoint(ctx: &mut SemanticContext) {
 /// params (`fn_returns_param`), which resolves to the ARG at that index and RECURSES, so nested
 /// forwarders (`fwd(fwd(|x| k))`) resolve too. Depth-capped purely as a cycle backstop; exceeding it
 /// returns None, which under-approximates and can only fail to reject, never false-reject.
+/// Every function NAME called anywhere inside an expression, bounded in depth.
+///
+/// Used to charge the capabilities of a returned closure's body at the point the closure is
+/// applied. Depth-bounded so a self-referential expression cannot spin; exceeding the bound simply
+/// stops collecting, which under-approximates and can never false-reject.
+fn collect_called_names(e: &Expr, out: &mut Vec<String>, depth: usize) {
+    if depth > 32 {
+        return;
+    }
+    match e {
+        Expr::Call { callee, args } => {
+            out.push(callee.clone());
+            for a in args {
+                collect_called_names(a, out, depth + 1);
+            }
+        }
+        Expr::CallExpr { callee, args } => {
+            collect_called_names(callee, out, depth + 1);
+            for a in args {
+                collect_called_names(a, out, depth + 1);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_called_names(body, out, depth + 1),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_called_names(lhs, out, depth + 1);
+            collect_called_names(rhs, out, depth + 1);
+        }
+        Expr::Index { base, index } => {
+            collect_called_names(base, out, depth + 1);
+            collect_called_names(index, out, depth + 1);
+        }
+        Expr::FieldAccess { base, .. } => collect_called_names(base, out, depth + 1),
+        Expr::ArrayLiteral { elements } => {
+            for el in elements {
+                collect_called_names(el, out, depth + 1);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            for st in stmts {
+                match st {
+                    Stmt::ExprStmt(x) => collect_called_names(x, out, depth + 1),
+                    Stmt::Let { init, .. } => collect_called_names(init, out, depth + 1),
+                    _ => {}
+                }
+            }
+            if let Some(t) = tail {
+                collect_called_names(t, out, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn resolve_closure_value(
     e: &Expr,
     scope: &BTreeMap<String, ScopeBinding>,
@@ -11918,6 +12026,33 @@ fn analyze_expr_effect(
                         if let Some(caps) = ctx.fn_declared_effects.get(name).cloned() {
                             for raw in caps {
                                 apply_inherited_capability(raw, mode, effects, ctx);
+                            }
+                        }
+                    }
+                }
+                // A binding resolved to a RETURNED CLOSURE carries its capabilities in the closure
+                // BODY, not in `fn_identities`.
+                //
+                //     fn mk(f) { return || { f(...) }; }
+                //     let g = mk(leak); g();
+                //
+                // `resolve_closure_value` beta-substitutes `mk`'s params and stores the resulting
+                // lambda in `closure_lambda`, so the body literally reads `leak(...)` — but this
+                // charge site only consulted `fn_identities`, which such a binding never gets. The
+                // TAINT lane already followed the closure and rejected the same shape; capability
+                // did not. One resolution, two consumers, one of them not reading it.
+                //
+                // Charging every declared capability the closure body CALLS is monotone: it can
+                // only add, and a body calling nothing pure-declared adds nothing.
+                if let Some(lam) = binding.closure_lambda.as_deref() {
+                    if let Expr::Lambda { body, .. } = lam {
+                        let mut callees: Vec<String> = Vec::new();
+                        collect_called_names(body, &mut callees, 0);
+                        for c in callees {
+                            if let Some(caps) = ctx.fn_declared_effects.get(&c).cloned() {
+                                for raw in caps {
+                                    apply_inherited_capability(raw, mode, effects, ctx);
+                                }
                             }
                         }
                     }
@@ -13333,6 +13468,36 @@ fn analyze_expr_effect(
         }
         _ => {}
     }
+}
+
+/// Whether an expression mentions a NAME anywhere — used to decide whether a returned closure
+/// captures a given parameter.
+///
+/// Deliberately syntactic and over-inclusive: a false "mentions" costs an extra identity union,
+/// which can only make the analysis charge MORE, while a false "does not mention" would drop a
+/// capture and reopen the leak. Erring toward the union is the fail-closed direction.
+fn expr_mentions_name(e: &Expr, name: &str) -> bool {
+    // Rendered rather than walked. This file has ~26 independent value-flow walkers and every one
+    // of them has, at some point, dropped a field through a `..` — the defect class this whole
+    // session has been closing. A NEW hand-written walker here would be a 27th chance to make the
+    // same mistake, for a question this coarse.
+    //
+    // The debug rendering names every `Var` it contains, so a word-boundary match over it is total
+    // by construction: a variant added to `Expr` tomorrow still prints its children, where a match
+    // arm would silently skip them.
+    // Both spellings, because a captured name appears in TWO shapes and matching one is a leak.
+    //
+    // `xs[0](…)` renders the capture as `Var("xs")`. But `f(…)` is `Expr::Call { callee: "f", … }`
+    // — the callee is a STRING FIELD, not a `Var` — so a `Var("f")` needle misses it entirely.
+    // That is exactly what happened: the container capture closed and the bare-callable capture
+    // stayed open, on a helper written minutes earlier to close both.
+    //
+    // Matching the bare quoted name covers both and is deliberately OVER-inclusive: a string
+    // literal `"f"` elsewhere in the body would also match, costing one extra identity union. That
+    // errs toward charging MORE, which is the fail-closed direction; the pure twins are what prove
+    // it does not over-reject.
+    let rendered = format!("{e:?}");
+    rendered.contains(&format!("\"{name}\""))
 }
 
 fn fn_identities_carried_by_value(
@@ -17100,8 +17265,24 @@ fn substitute_vars(e: &Expr, map: &BTreeMap<String, Expr>) -> Expr {
         // safely cloned by the catch-all: a mapped var hidden inside it makes the whole contract
         // non-modelable, so the gate rejects it fail-closed rather than mis-model it. If a new
         // modelable form is added to the gate, ADD IT HERE.
+        // The CALLEE NAME is substituted too, when the substitution binds it to another name.
+        //
+        // `Expr::Call` stores its callee as a `String`, not an `Expr`, so a map entry `f -> leak`
+        // rewrote every `Expr::Var("f")` and left `f(...)` untouched. Beta-substituting a returned
+        // closure therefore produced a body still calling `f`, and
+        //
+        //     fn mk(f) { return || { f(...) }; }   let g = mk(leak); g();
+        //
+        // charged nothing, while the same closure calling `leak` by name charged correctly. The
+        // callee position was the one place the substitution could not reach.
+        //
+        // Only a Var-to-Var rewrite applies: substituting a callee by a non-name expression has no
+        // meaning in this AST, so those are left alone rather than guessed at.
         Expr::Call { callee, args } => Expr::Call {
-            callee: callee.clone(),
+            callee: match map.get(callee) {
+                Some(Expr::Var(replacement)) => replacement.clone(),
+                _ => callee.clone(),
+            },
             args: args.iter().map(|a| substitute_vars(a, map)).collect(),
         },
         Expr::Index { base, index } => Expr::Index {
