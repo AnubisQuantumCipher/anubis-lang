@@ -125,6 +125,90 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
 3. **Self-host registry — HOST-FIXED; VM seal pending.**  
    Do not publish post-drift host fixpoint as sealed.
 
+### Phase 5 closed — builtin surface, and the instrument that was measuring it (2026-07-28)
+
+**Commit `1a19479`.** 213 builtins, every cell classified by the PAIR (`check`, `run`):
+
+| class | count | meaning |
+|---|---|---|
+| `FAIL_CLOSED_OK` | **179** | `check` refused — the fully honest cell |
+| `RUN_REFUSES` | **11** | `check` accepted, run refused with a structured `ANUBIS_*` code |
+| `RUNS` | **23** | ran; correctness not asserted by this matrix |
+| `CHECK_FA_CRASH` | **0** | — |
+| `RUN_FAILS_UNSTRUCTURED` | **0** | — |
+
+Reproduce: `bash scripts/classify_builtin_surface.sh <names> docs/evidence/builtin_surface_matrix.tsv`
+
+**The 13 cells previously filed as `CHECK_FA_CLEAN` were mislabelled by this repo's own
+instrument.** Its header asserted a stronger promise than the published one — *"a program that dies
+at runtime is one `check` should have rejected"*. Totality is not in the promise sentence, and a run
+that stops with a structured refusal did exactly what its second clause requires: it refused.
+Grading those as violations puts standing pressure on the next person to weaken the runtime until
+the board looks green. Nothing was forgiven in the fix: panics remain `CHECK_FA_CRASH`, and a
+non-zero exit with no `ANUBIS_` code is `RUN_FAILS_UNSTRUCTURED`.
+
+**Two of the thirteen were real and are closed.** `break`/`continue` outside any loop passed `check`
+and refused only at run time. `compiler/src/middle/loopctl.rs` rejects them with
+`ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP`; it matches all 15 `Stmt` variants with **no wildcard arm**,
+extending to statements the compile-time totality `carrier.rs` gives expressions. Deliberately
+conservative: a `break` inside a lambda is **not** reported — guessing there would cost a false
+rejection, which is worse than the runtime refusal that already exists.
+
+**Remaining 11 = published bounded residual** (`symbolic`, `sql`, `memcpy`, `argon2id_hash`,
+`hybrid_open`, `declassify`, `proof_input_{bool,u32,u64}`, `proof_commit_{bool,u32}`): proof-lane and
+native-lowering constructs with no run-lane implementation. Phase 5's own "Done when" permits an
+honest bounded residual; this is it. **Not claimed:** that `check` is complete about runnability.
+
+**Instrument defect, disclosed:** `anubis run` inside the classifier's `while read` loop inherited
+the loop's stdin and consumed names out of the list — a 213-name list measured 92 rows, and the
+missing 121 appeared not as failures but as if never asked about. Fixed with `</dev/null` on both
+legs plus a row-count conservation check that refuses to report unless it answered about every name.
+The published 177/13/23 was re-measured and found **correct** (the original run was backgrounded, so
+its stdin was already `/dev/null`) — verified, not assumed.
+
+**Enforcing change, verdict-diffed:** all **895** `.anb` under `tests/fixtures` + `examples`, pinned
+baseline vs new binary — 473 accept / 422 reject on both sides, **0** accept→reject and **0**
+reject→accept.
+
+---
+
+### Phase 6 — run_failclosed green as a WHOLE, and two ratchets that were lying (2026-07-28)
+
+**Commit `5040f41`.** `GATE: PASS_RUNTIME_FAILCLOSED_WHOLE` — 104 closed corpus, 11 permanent
+controls, 5 graduated, 2 enforcement, 23 doc_ok IEEE; `blocks_whole_open=0 open=0 unenumerated=0`.
+
+Two defects in this repo's own coverage ratchets, both introduced with the ratchet in Phase 3:
+
+1. **One floor file for five corpora.** `run_runtime_fixtures.sh` is a shared runner invoked over
+   five directories; a single floor ratcheted to the largest bucket (23) and then failed every
+   smaller one — `passed=23/23 failed=0 rc=1`. Floors are now keyed by directory+glob.
+2. **A ratchet pointed at the breakage instead of the ledger.** It ratcheted `open_count`; closing
+   the last three residuals drove it 3 → 0 and the gate failed *for fixing what it tracks*. It now
+   ratchets the TRACKED ledger, which must never shrink.
+
+Poison-tested rather than trusted: dropping a ledger row → `FLOOR: FAIL`; reopening a
+`BLOCKS_WHOLE_CLAIM` row → `claim_run_failclosed_as_a_whole: false` and the gate honestly degrades to
+`PASS_INSTRUMENTED`; restore → whole claim returns.
+
+**G24 promise coherence** (commit `646af26`, `scripts/run_promise_coherence_gate.sh`). Every
+restatement of the headline promise must carry, near it, a scope qualifier **and** a pointer to
+`docs/CLAIMS.md`; `CLAIMS.md` must itself keep the "no KNOWN defects" framing and a **non-empty**
+open-issues section — an empty list would make every qualifier vacuous, since pointing at nothing
+reads as "nothing is open". It caught a real drift on first run (`docs/HANDOFF.md:20` stated the
+promise with no scope qualifier); fixed in the doc, not the gate. Watched to fail four ways
+(self-test, framing removed, open-issues emptied, restatement count fallen).
+
+**Counts reconciled** (commit `ae74be4`): language **247/247** (raised from a historical 244/244),
+native corpus **898** (raised from 888)
+across `AGENTS.md`, `README.md`, `CLAIMS.md`. Two of the nine flagged stamps were **historical**
+records bound to commit `c7643e5` and pin `anubis-cf98ccebb4c1`; their numbers were left untouched
+and their existing historical framing moved onto the stamp's own line, because renumbering a past
+measurement to clear a gate would assert that a past run observed something it did not. That took
+live-checked stamps 37 → 35, the coverage floor caught it, and the floor was lowered in the same
+commit with the reason — the mechanism working, not being worked around.
+
+---
+
 ### `anubis run` fail-closed — the bounded residual (2026-07-27)
 
 Adopted verbatim from the agent that measured it, in preference to any whole-surface green number:
