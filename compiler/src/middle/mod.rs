@@ -3596,6 +3596,12 @@ fn scan_applied_param_local_aliases(
                     }
                 }
             }
+            Stmt::If { then, else_, .. } => {
+                scan_applied_param_local_aliases(then, param, applies, paths);
+                if let Some(branch) = else_ {
+                    scan_applied_param_local_aliases(branch, param, applies, paths);
+                }
+            }
             _ => {}
         }
     }
