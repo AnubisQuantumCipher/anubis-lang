@@ -750,18 +750,10 @@ run_gate docs_drift \
     --self-test
 
 
-# Instrument hygiene + suite freshness (adversary R46): fail closed if tools lie
-# or if the seal suite has not been run end-to-end within N commits.
-# --no-pin-use: meta-checks over scripts/ledgers, not anubis execution.
-run_gate instrument_hygiene \
-  '^INSTRUMENT_HYGIENE: PASS\b' \
-  '^INSTRUMENT_HYGIENE: FAIL\b' \
-  --no-pin-use -- bash scripts/instrument_hygiene.sh
-
-run_gate gate_run_freshness \
-  '^GATE_RUN_FRESHNESS: PASS\b' \
-  '^GATE_RUN_FRESHNESS: FAIL\b' \
-  --no-pin-use -- bash scripts/gate_run_freshness.sh
+# NOTE (R47): instrument_hygiene + gate_run_freshness run AFTER all required
+# content gates (see below, before final instrument re-check). Placing them
+# here deadlocked first-seal bootstrap: freshness required selfhost/taint/
+# capset_selfhost stamps that had not been produced yet in the same run.
 
 if command -v lake >/dev/null 2>&1 || [[ -x "$HOME/.elan/bin/lake" ]]; then
   if ! command -v lake >/dev/null 2>&1 && [[ -x "$HOME/.elan/bin/lake" ]]; then
@@ -848,6 +840,19 @@ if [[ "$PROFILE" == "full" ]]; then
     log "EXCLUDED selfhost_ddc: set ANUBIS_SEAL_DDC=1 to add this optional full-profile gate"
   fi
 fi
+
+# Instrument hygiene + suite freshness (adversary R46/R47): AFTER all required
+# content gates have stamped the ledger, so a first seal bootstraps in one run.
+# --no-pin-use: meta-checks over scripts/ledgers, not anubis execution.
+run_gate instrument_hygiene \
+  '^INSTRUMENT_HYGIENE: PASS\b' \
+  '^INSTRUMENT_HYGIENE: FAIL\b' \
+  --no-pin-use -- bash scripts/instrument_hygiene.sh
+
+run_gate gate_run_freshness \
+  '^GATE_RUN_FRESHNESS: PASS\b' \
+  '^GATE_RUN_FRESHNESS: FAIL\b' \
+  --no-pin-use -- bash scripts/gate_run_freshness.sh
 
 # ── Final instrument re-check ────────────────────────────────────────────────
 if [[ ! -f "$INSTRUMENT" || ! -s "$INSTRUMENT" ]]; then
