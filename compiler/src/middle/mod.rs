@@ -3541,6 +3541,8 @@ fn scan_applied_param_local_aliases(
                     if root == param {
                         aliases.insert(name.clone(), path);
                     }
+                } else if matches!(init, Expr::Var(root) if root == param) {
+                    aliases.insert(name.clone(), String::new());
                 }
                 if let Expr::Call { callee, .. } = init {
                     if let Some(path) = aliases.get(callee) {
@@ -3553,6 +3555,21 @@ fn scan_applied_param_local_aliases(
                 if let Some(path) = aliases.get(callee) {
                     *applies = true;
                     paths.insert(path.clone());
+                }
+            }
+            Stmt::ExprStmt(Expr::CallExpr { callee, .. }) => {
+                if let Some((root, suffix)) = flatten_access_path(callee) {
+                    if let Some(prefix) = aliases.get(&root) {
+                        *applies = true;
+                        let path = if prefix.is_empty() {
+                            suffix
+                        } else if suffix.is_empty() {
+                            prefix.clone()
+                        } else {
+                            format!("{prefix}.{suffix}")
+                        };
+                        paths.insert(path);
+                    }
                 }
             }
             _ => {}
