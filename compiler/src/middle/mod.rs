@@ -4060,14 +4060,47 @@ fn scan_applied_param_local_aliases_in(
                     //
                     // Resolving it here rather than adding `id` to a whitelist means every
                     // user-written forwarder works, including chains, without naming any of them.
-                    let from_param = args.first().is_some_and(|arg| match arg {
+                    // `identity(xs)` is a BUILTIN forwarder: it returns its argument unchanged,
+                    // so the alias takes the SAME path, not a wildcard element. The extractor
+                    // whitelist below records `*` because those builtins yield an ELEMENT; a
+                    // pass-through yields the container itself, and conflating the two would say
+                    // "some element of xs" where the truth is "xs".
+                    if callee == "identity" {
+                        if let Some(Expr::Var(root)) = args.first() {
+                            if root == param {
+                                aliases.insert(name.clone(), String::new());
+                            } else if let Some(prefix) = aliases.get(root).cloned() {
+                                aliases.insert(name.clone(), prefix);
+                            }
+                        }
+                    }
+                    // The container argument may itself be another derived-container call:
+                    // `take(drop(xs, 0), 1)`. Walk inward to the innermost NAME before deciding, so
+                    // a chain of these builtins resolves the same as one of them. Bounded so a
+                    // pathological nesting cannot spin.
+                    let mut inner: &Expr = args.first().unwrap_or(init);
+                    for _ in 0..16 {
+                        let Expr::Call { callee: c2, args: a2 } = inner else { break };
+                        if !matches!(
+                            c2.as_str(),
+                            "pop" | "last" | "first" | "get" | "remove" | "flatten" | "reverse"
+                                | "drop" | "zip" | "concat" | "take" | "chunk" | "unique"
+                                | "slice" | "sort" | "values" | "identity"
+                        ) {
+                            break;
+                        }
+                        let Some(next) = a2.first() else { break };
+                        inner = next;
+                    }
+                    let from_param = match inner {
                         Expr::Var(root) => root == param || aliases.contains_key(root),
                         _ => false,
-                    });
+                    };
                     if from_param
                         && matches!(
                             callee.as_str(),
                             "pop" | "last" | "flatten" | "reverse" | "drop" | "zip" | "concat"
+                                | "take" | "chunk" | "unique" | "slice" | "sort" | "values"
                         )
                     {
                         aliases.insert(name.clone(), "*".to_string());
