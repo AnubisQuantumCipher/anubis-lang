@@ -1215,20 +1215,46 @@ fn builtin_gate_tags_at_path(
         return builtin_gate_tags_of_d(value, scope, ctx, depth + 1);
     }
     if let Expr::Var(root) = value {
-        return scope
-            .get(root)
-            .and_then(|binding| binding.field_builtin_gate_tags.get(path))
-            .cloned()
-            .unwrap_or(BuiltinGateTags::Unknown);
+        let Some(binding) = scope.get(root) else {
+            return BuiltinGateTags::Unknown;
+        };
+        if let Some(found) = binding.field_builtin_gate_tags.get(path) {
+            return found.clone();
+        }
+        let (head, rest) = path.split_once('.').unwrap_or((path, ""));
+        if head == "*" {
+            let mut values =
+                binding
+                    .field_builtin_gate_tags
+                    .iter()
+                    .filter_map(|(candidate, tags)| {
+                        let (_, suffix) = candidate.split_once('.').unwrap_or((candidate, ""));
+                        (rest.is_empty() || suffix == rest || suffix.ends_with(&format!(".{rest}")))
+                            .then_some(tags.clone())
+                    });
+            let Some(first) = values.next() else {
+                return BuiltinGateTags::Unknown;
+            };
+            return values.fold(first, BuiltinGateTags::union);
+        }
+        return BuiltinGateTags::Unknown;
     }
     let (head, rest) = path.split_once('.').unwrap_or((path, ""));
     match value {
-        Expr::ArrayLiteral { elements } => head
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| elements.get(index))
-            .map(|child| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
-            .unwrap_or(BuiltinGateTags::Unknown),
+        Expr::ArrayLiteral { elements } => {
+            if head == "*" {
+                elements
+                    .iter()
+                    .map(|child| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
+                    .fold(BuiltinGateTags::empty(), BuiltinGateTags::union)
+            } else {
+                head.parse::<usize>()
+                    .ok()
+                    .and_then(|index| elements.get(index))
+                    .map(|child| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
+                    .unwrap_or(BuiltinGateTags::Unknown)
+            }
+        }
         Expr::StructLiteral { fields, .. } => fields
             .iter()
             .find(|(name, _)| name == head)
@@ -3630,6 +3656,15 @@ fn scan_applied_param_local_aliases(
                 } else if let Some((root, path)) = flatten_access_path(init) {
                     if root == param {
                         aliases.insert(name.clone(), path);
+                    } else if let Some(prefix) = aliases.get(&root).cloned() {
+                        let combined = if prefix.is_empty() {
+                            path
+                        } else if path.is_empty() {
+                            prefix
+                        } else {
+                            format!("{prefix}.{path}")
+                        };
+                        aliases.insert(name.clone(), combined);
                     }
                 } else if let Expr::Call { callee, args } = init {
                     let from_param = args
