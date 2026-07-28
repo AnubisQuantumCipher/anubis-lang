@@ -813,6 +813,12 @@ fn fn_identities_at_contract_path(
                 depth + 1,
             ))
         }),
+        Expr::Call { callee, .. } => {
+            if let Some((_, returned)) = ctx.fn_sole_return.get(callee) {
+                return fn_identities_at_contract_path(returned, path, scope, ctx, depth + 1);
+            }
+            FnIdentitySet::Unknown
+        }
         _ => FnIdentitySet::Unknown,
     }
 }
@@ -11714,6 +11720,17 @@ fn analyze_expr_effect(
                             .get(g)
                             .and_then(|b| b.closure_lambda.as_deref().cloned())
                             .or_else(|| eta_expand_fn_ref(g, scope, &ctx.fn_params)),
+                        Some(Expr::Call {
+                            callee: returned, ..
+                        }) => ctx
+                            .fn_returns_lambda
+                            .get(returned)
+                            .map(|(_, expr)| expr.clone())
+                            .or_else(|| {
+                                ctx.fn_sole_return
+                                    .get(returned)
+                                    .map(|(_, expr)| expr.clone())
+                            }),
                         _ => None,
                     };
                     if let Some(Expr::Lambda { params, body }) = resolved {
