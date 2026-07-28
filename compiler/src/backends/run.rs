@@ -4139,8 +4139,8 @@ pub fn builtin_arity_error(callee: &str, argc: usize) -> Option<String> {
         //   p8(1) · p16(1) · p32(1) · p64(1)
         //   let mut xs = [1,2]; pop(xs) · push(xs,3) · remove(xs,0) · insert(xs,0,9)
         //   declassify(1,"r")
-        "len" | "max" | "min" | "flat" | "pop" | "cyclic" | "proof_assert" | "p8" | "p16" | "p32"
-        | "p64" => Some(1),
+        "len" | "max" | "min" | "flat" | "pop" | "cyclic" | "proof_assert" | "p8" | "p16"
+        | "p32" | "p64" => Some(1),
         "declassify" | "push" | "remove" => Some(2),
         "insert" => Some(3),
         _ => None,
@@ -4183,6 +4183,61 @@ pub fn builtin_arity_error(callee: &str, argc: usize) -> Option<String> {
     Some(format!(
         "builtin `{callee}` cannot take {argc} argument(s); it lowers with {accepted:?}"
     ))
+}
+
+#[cfg(test)]
+mod builtin_arity_tests {
+    use super::builtin_arity_error;
+
+    /// Every name whose minimum arity was VERIFIED both ways — the deficient form fails at run and
+    /// a positive twin at the stated arity succeeds. Pinned so the table cannot quietly shrink.
+    ///
+    /// It shrank once already in spirit: `pop`/`push`/`insert`/`remove` were held out because a
+    /// one-liner probe could not express the `mut` binding they need, and the gap looked like a
+    /// property of the builtins rather than of the probe.
+    const VERIFIED_MINIMA: &[(&str, usize)] = &[
+        ("len", 1),
+        ("max", 1),
+        ("min", 1),
+        ("flat", 1),
+        ("pop", 1),
+        ("cyclic", 1),
+        ("proof_assert", 1),
+        ("p8", 1),
+        ("p16", 1),
+        ("p32", 1),
+        ("p64", 1),
+        ("declassify", 2),
+        ("push", 2),
+        ("remove", 2),
+        ("insert", 3),
+    ];
+
+    #[test]
+    fn verified_minima_reject_below_and_accept_at() {
+        for &(name, min) in VERIFIED_MINIMA {
+            for argc in 0..min {
+                assert!(
+                    builtin_arity_error(name, argc).is_some(),
+                    "`{name}` must reject {argc} argument(s); its verified minimum is {min}"
+                );
+            }
+            assert!(
+                builtin_arity_error(name, min).is_none(),
+                "`{name}` must ACCEPT its verified minimum of {min} — a rule that rejects the \
+                 correct call is worse for a user than one that misses a wrong call"
+            );
+        }
+    }
+
+    #[test]
+    fn a_builtin_the_lowerer_never_accepts_is_not_an_arity_error() {
+        // `emit_builtin_call` also refuses for reasons that are not the caller's fault at check
+        // time — an unsupported backend lane, a gated name. Reporting those as arity errors would
+        // turn this into a false-reject engine, so a name that lowers at NO count returns None.
+        assert!(builtin_arity_error("definitely_not_a_builtin_xyz", 0).is_none());
+        assert!(builtin_arity_error("definitely_not_a_builtin_xyz", 3).is_none());
+    }
 }
 
 fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
