@@ -43,6 +43,24 @@ use std::path::{Path, PathBuf};
 // For real RISC0 receipt + ID helpers (Gate 10)
 use sha2::Digest;
 
+#[cfg(feature = "prove")]
+fn risc0_metal_lane_selected() -> bool {
+    risc0_circuit_rv32im::prove::metal_lane_selected()
+}
+#[cfg(not(feature = "prove"))]
+fn risc0_metal_lane_selected() -> bool {
+    false
+}
+
+#[cfg(feature = "prove")]
+fn risc0_version() -> &'static str {
+    risc0_zkvm::VERSION
+}
+#[cfg(not(feature = "prove"))]
+fn risc0_version() -> &'static str {
+    "unavailable"
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "anubis",
@@ -3498,84 +3516,106 @@ fn main() -> Result<()> {
             evidence,
             out,
         } => {
-            println!(
-                "anubis prove {} --backend {} --lane {} (evidence={})",
-                input.display(),
-                backend,
-                lane,
-                evidence
-            );
-            let src = std::fs::read_to_string(&input)?;
-            // Resolve imports / project modules the SAME way `run` does, so a proof program can `import`
-            // shared modules (the shared-module design). A single file with no imports/deps short-circuits
-            // to the identical single-file AST (load_program_items early-returns), so existing single-file
-            // proofs are byte-for-byte unchanged; an imported module that cannot be lowered into the zkVM
-            // guest still fails closed at lower_program_to_guest (ANUBIS_UNSUPPORTED_GUEST_LOWERING) as
-            // before. NOTE: for a multi-module program, `src` (the entry file) is used below for the
-            // optional evidence bundle's claim re-derivation, so that bundle remains entry-scoped.
-            let (ast, _ws) = load_program_items(&input, &src)?;
-            let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
-            let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
-            let tainted = TaintPass::apply(typed.clone());
-            std::fs::create_dir_all(&out)?;
+            #[cfg(not(feature = "prove"))]
+            {
+                let _ = (
+                    &input,
+                    &backend,
+                    &lane,
+                    &metal_reference,
+                    &input_json,
+                    &input_file,
+                    &evidence,
+                    &out,
+                );
+                return Err(anyhow!(
+                    "this binary was built without the `prove` feature — proving is unavailable.\n\
+                     Rebuild with: cargo build -p anubis (default features include `prove`)"
+                ));
+            }
+            #[cfg(feature = "prove")]
+            {
+                println!(
+                    "anubis prove {} --backend {} --lane {} (evidence={})",
+                    input.display(),
+                    backend,
+                    lane,
+                    evidence
+                );
+                let src = std::fs::read_to_string(&input)?;
+                // Resolve imports / project modules the SAME way `run` does, so a proof program can `import`
+                // shared modules (the shared-module design). A single file with no imports/deps short-circuits
+                // to the identical single-file AST (load_program_items early-returns), so existing single-file
+                // proofs are byte-for-byte unchanged; an imported module that cannot be lowered into the zkVM
+                // guest still fails closed at lower_program_to_guest (ANUBIS_UNSUPPORTED_GUEST_LOWERING) as
+                // before. NOTE: for a multi-module program, `src` (the entry file) is used below for the
+                // optional evidence bundle's claim re-derivation, so that bundle remains entry-scoped.
+                let (ast, _ws) = load_program_items(&input, &src)?;
+                let mode = program_mode(&ast.items).unwrap_or(Mode::Safe);
+                let typed = typecheck(ast.clone(), mode).map_err(|e| anyhow!("{}", e))?;
+                let tainted = TaintPass::apply(typed.clone());
+                std::fs::create_dir_all(&out)?;
 
-            let proof_inputs =
-                proof_input::resolve_proof_inputs(input_json.as_deref(), input_file.as_deref())?;
-            // Persist canonical inputs for the prove child and evidence.
-            let proof_input_path = out.join("proof_input_canonical.json");
-            std::fs::write(&proof_input_path, &proof_inputs.canonical_json)?;
-            // Optional ANBP binary sidecar (magic + entries) for tooling that prefers blobs.
-            let anbp = proof_inputs.encode_anbp_blob();
-            let _ = proof_input::decode_anbp_header(&anbp)?;
-            std::fs::write(out.join("proof_input.anbp"), &anbp)?;
-            std::fs::write(
-                out.join("proof_input_meta.json"),
-                serde_json::to_string_pretty(&proof_inputs.metadata_json())?,
-            )?;
-            println!(
-                "proof inputs: mode={} sha256={} keys={:?}",
-                proof_inputs.mode,
-                &proof_inputs.sha256[..16.min(proof_inputs.sha256.len())],
-                proof_inputs.values.keys().collect::<Vec<_>>()
-            );
+                let proof_inputs = proof_input::resolve_proof_inputs(
+                    input_json.as_deref(),
+                    input_file.as_deref(),
+                )?;
+                // Persist canonical inputs for the prove child and evidence.
+                let proof_input_path = out.join("proof_input_canonical.json");
+                std::fs::write(&proof_input_path, &proof_inputs.canonical_json)?;
+                // Optional ANBP binary sidecar (magic + entries) for tooling that prefers blobs.
+                let anbp = proof_inputs.encode_anbp_blob();
+                let _ = proof_input::decode_anbp_header(&anbp)?;
+                std::fs::write(out.join("proof_input.anbp"), &anbp)?;
+                std::fs::write(
+                    out.join("proof_input_meta.json"),
+                    serde_json::to_string_pretty(&proof_inputs.metadata_json())?,
+                )?;
+                println!(
+                    "proof inputs: mode={} sha256={} keys={:?}",
+                    proof_inputs.mode,
+                    &proof_inputs.sha256[..16.min(proof_inputs.sha256.len())],
+                    proof_inputs.values.keys().collect::<Vec<_>>()
+                );
 
-            let is_risc0 = backend == "risc0";
-            let full_hybrid = prove_uses_full_hybrid(&backend);
-            let lane_normalized = lane.to_lowercase();
-            let force_cpu = lane_normalized == "cpu" || lane_normalized == "r0-disable-metal";
-            let force_metal = lane_normalized == "metal-hybrid" || lane_normalized == "metal";
-            let metal_ref = resolve_metal_reference(metal_reference.as_deref());
+                let is_risc0 = backend == "risc0";
+                let full_hybrid = prove_uses_full_hybrid(&backend);
+                let lane_normalized = lane.to_lowercase();
+                let force_cpu = lane_normalized == "cpu" || lane_normalized == "r0-disable-metal";
+                let force_metal = lane_normalized == "metal-hybrid" || lane_normalized == "metal";
+                let metal_ref = resolve_metal_reference(metal_reference.as_deref());
 
-            let artifact = lower_to_native(tainted, &ast.items, &out, "risc0_receipt", full_hybrid)
-                .map_err(|e| anyhow!("{}", e))?;
-            println!("lowered artifact: {}", artifact);
+                let artifact =
+                    lower_to_native(tainted, &ast.items, &out, "risc0_receipt", full_hybrid)
+                        .map_err(|e| anyhow!("{}", e))?;
+                println!("lowered artifact: {}", artifact);
 
-            // PCA honesty invariant: `prove` fails closed. It returns Err unless a FRESH receipt was
-            // generated AND cryptographically verified — a lowering/build/prove/verify failure must not
-            // masquerade as a successful proof. Only the risc0 backend produces a verifiable receipt, so
-            // any other backend can never satisfy this. This flag is set true ONLY on the verified-receipt
-            // path below; all failure evidence is still written first, then the Err is returned at the end.
-            let mut fresh_receipt_verified = false;
-            let mut prove_outcome_detail = format!(
+                // PCA honesty invariant: `prove` fails closed. It returns Err unless a FRESH receipt was
+                // generated AND cryptographically verified — a lowering/build/prove/verify failure must not
+                // masquerade as a successful proof. Only the risc0 backend produces a verifiable receipt, so
+                // any other backend can never satisfy this. This flag is set true ONLY on the verified-receipt
+                // path below; all failure evidence is still written first, then the Err is returned at the end.
+                let mut fresh_receipt_verified = false;
+                let mut prove_outcome_detail = format!(
                 "backend '{}' does not generate a verifiable ZK receipt (only --backend risc0 does)",
                 backend
             );
 
-            if is_risc0 {
-                // === TASK 1/2/4 hardening + Gate 11 lane: real derived ImageID + real receipt + explicit lane control ===
-                // --lane cpu  → R0_DISABLE_METAL=1 (CPU comparison lane, observed "cpu")
-                // --lane metal-hybrid → no R0_DISABLE (Metal-hybrid lane if Tier-2 + logs confirm, observed "metal-hybrid")
-                // --lane auto allowed for exploration but Gate 11 YES requires observed != unknown.
-                if force_cpu {
-                    std::env::set_var("R0_DISABLE_METAL", "1");
-                } else if force_metal {
-                    // Explicitly ensure absence so child observes metal path
-                    std::env::remove_var("R0_DISABLE_METAL");
-                } // auto: leave as-is (parent or probe decides; observed will be unknown if ambiguous)
-                  // Create a complete risc0 "methods" crate layout so `cargo build` runs risc0-build and emits real ANUBIS_ID + ELF.
-                let methods_dir = out.join("methods");
-                std::fs::create_dir_all(methods_dir.join("guest/src"))?;
-                let methods_cargo = r#"[workspace]
+                if is_risc0 {
+                    // === TASK 1/2/4 hardening + Gate 11 lane: real derived ImageID + real receipt + explicit lane control ===
+                    // --lane cpu  → R0_DISABLE_METAL=1 (CPU comparison lane, observed "cpu")
+                    // --lane metal-hybrid → no R0_DISABLE (Metal-hybrid lane if Tier-2 + logs confirm, observed "metal-hybrid")
+                    // --lane auto allowed for exploration but Gate 11 YES requires observed != unknown.
+                    if force_cpu {
+                        std::env::set_var("R0_DISABLE_METAL", "1");
+                    } else if force_metal {
+                        // Explicitly ensure absence so child observes metal path
+                        std::env::remove_var("R0_DISABLE_METAL");
+                    } // auto: leave as-is (parent or probe decides; observed will be unknown if ambiguous)
+                      // Create a complete risc0 "methods" crate layout so `cargo build` runs risc0-build and emits real ANUBIS_ID + ELF.
+                    let methods_dir = out.join("methods");
+                    std::fs::create_dir_all(methods_dir.join("guest/src"))?;
+                    let methods_cargo = r#"[workspace]
 
 [package]
 name = "methods"
@@ -3597,23 +3637,23 @@ path = "src/lib.rs"
 [patch.crates-io]
 risc0-circuit-rv32im = { path = "__ANUBIS_RISC0_VENDOR__" }
 "#
-                .replace(
-                    "__ANUBIS_RISC0_VENDOR__",
-                    &metal_ref.vendor.to_string_lossy(),
-                );
-                std::fs::write(methods_dir.join("Cargo.toml"), methods_cargo)?;
-                std::fs::create_dir_all(methods_dir.join("src"))?;
-                std::fs::write(
-                    methods_dir.join("src/lib.rs"),
-                    "pub fn _risc0_build_helper() {}\n",
-                )?;
-                std::fs::write(
-                    methods_dir.join("build.rs"),
-                    "fn main() { risc0_build::embed_methods(); }\n",
-                )?;
-                std::fs::write(
-                    methods_dir.join("guest/Cargo.toml"),
-                    r#"[workspace]
+                    .replace(
+                        "__ANUBIS_RISC0_VENDOR__",
+                        &metal_ref.vendor.to_string_lossy(),
+                    );
+                    std::fs::write(methods_dir.join("Cargo.toml"), methods_cargo)?;
+                    std::fs::create_dir_all(methods_dir.join("src"))?;
+                    std::fs::write(
+                        methods_dir.join("src/lib.rs"),
+                        "pub fn _risc0_build_helper() {}\n",
+                    )?;
+                    std::fs::write(
+                        methods_dir.join("build.rs"),
+                        "fn main() { risc0_build::embed_methods(); }\n",
+                    )?;
+                    std::fs::write(
+                        methods_dir.join("guest/Cargo.toml"),
+                        r#"[workspace]
 
 [package]
 name = "guest"
@@ -3623,47 +3663,47 @@ edition = "2021"
 [dependencies]
 risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] }
 "#,
-                )?;
-                // Compile the ACTUAL Anubis program into the guest: `anb_main()` runs in the
-                // zkVM and commits its result. risc0-build derives the ImageID from this guest's
-                // ELF, so the ImageID (and the receipt) is cryptographically bound to THIS
-                // program — not a fixed circuit.
-                //
-                // Fail closed: if the program cannot be lowered to a guest, refuse to prove. The
-                // former fallback substituted a trivial `env::read()/commit()` echo guest and
-                // proved THAT, which would let a lowering failure masquerade as a real, program-bound
-                // proof — exactly the honesty gap PCA verification must not permit.
-                let guest_src = match lower_program_to_guest(&ast.items) {
-                    Ok(s) => {
-                        println!(
+                    )?;
+                    // Compile the ACTUAL Anubis program into the guest: `anb_main()` runs in the
+                    // zkVM and commits its result. risc0-build derives the ImageID from this guest's
+                    // ELF, so the ImageID (and the receipt) is cryptographically bound to THIS
+                    // program — not a fixed circuit.
+                    //
+                    // Fail closed: if the program cannot be lowered to a guest, refuse to prove. The
+                    // former fallback substituted a trivial `env::read()/commit()` echo guest and
+                    // proved THAT, which would let a lowering failure masquerade as a real, program-bound
+                    // proof — exactly the honesty gap PCA verification must not permit.
+                    let guest_src = match lower_program_to_guest(&ast.items) {
+                        Ok(s) => {
+                            println!(
                             "guest: compiled from Anubis program (ImageID binds to this program)"
                         );
-                        s
-                    }
-                    Err(e) => {
-                        return Err(anyhow!(
+                            s
+                        }
+                        Err(e) => {
+                            return Err(anyhow!(
                             "ANUBIS_UNSUPPORTED_GUEST_LOWERING: this program cannot be compiled into \
                              a RISC0 guest, so `prove` cannot produce a program-bound receipt (a \
                              substitute echo guest would not prove this program): {}",
                             e
                         ));
-                    }
-                };
-                std::fs::write(methods_dir.join("guest/src/main.rs"), &guest_src)?;
+                        }
+                    };
+                    std::fs::write(methods_dir.join("guest/src/main.rs"), &guest_src)?;
 
-                // Honesty warning (proof-scaling boundary, docs/language/PROOF_SCALING.md): the ENTIRE
-                // program — every collected function reachable from main() — is lowered into the zkVM
-                // guest. Anubis does NOT slice the proof branch, so prover time and memory track total
-                // program size, not the size of the proven computation. Warn on a large lowering so an
-                // enormous workload is not a silent surprise. (This does not reduce cost — the dynamic,
-                // whole-program guest is an architectural boundary, not a bug.)
-                let guest_fn_count = ast
-                    .items
-                    .iter()
-                    .filter(|it| matches!(it, Item::Fn { .. }))
-                    .count();
-                if guest_src.len() > 262_144 || guest_fn_count > 256 {
-                    eprintln!(
+                    // Honesty warning (proof-scaling boundary, docs/language/PROOF_SCALING.md): the ENTIRE
+                    // program — every collected function reachable from main() — is lowered into the zkVM
+                    // guest. Anubis does NOT slice the proof branch, so prover time and memory track total
+                    // program size, not the size of the proven computation. Warn on a large lowering so an
+                    // enormous workload is not a silent surprise. (This does not reduce cost — the dynamic,
+                    // whole-program guest is an architectural boundary, not a bug.)
+                    let guest_fn_count = ast
+                        .items
+                        .iter()
+                        .filter(|it| matches!(it, Item::Fn { .. }))
+                        .count();
+                    if guest_src.len() > 262_144 || guest_fn_count > 256 {
+                        eprintln!(
                         "warning: lowering a large program to the zkVM guest ({} functions, {} KB of \
                          guest source). The WHOLE program becomes proving work — Anubis does not slice \
                          the proof branch, so prover cost tracks total program size, not the size of the \
@@ -3671,307 +3711,313 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                         guest_fn_count,
                         guest_src.len() / 1024
                     );
-                }
+                    }
 
-                println!(
+                    println!(
                     "Building risc0 methods (risc0-build will compute real ImageID from ELF)..."
                 );
-                let build_status = std::process::Command::new("cargo")
-                    .args(["build", "--release"])
-                    .current_dir(&methods_dir)
-                    .env("RISC0_DEV_MODE", "0") // enforce non-dev for A+
-                    .status();
-                let methods_build_success = build_status.as_ref().is_ok_and(|s| s.success());
+                    let build_status = std::process::Command::new("cargo")
+                        .args(["build", "--release"])
+                        .current_dir(&methods_dir)
+                        .env("RISC0_DEV_MODE", "0") // enforce non-dev for A+
+                        .status();
+                    let methods_build_success = build_status.as_ref().is_ok_and(|s| s.success());
 
-                let risc0_side = out.join("backend").join("risc0");
-                std::fs::create_dir_all(&risc0_side)?;
-                std::fs::create_dir_all(risc0_side.join("guest/src"))?;
+                    let risc0_side = out.join("backend").join("risc0");
+                    std::fs::create_dir_all(&risc0_side)?;
+                    std::fs::create_dir_all(risc0_side.join("guest/src"))?;
 
-                // Extract real ID + ELF (post real risc0-build)
-                let mut real_id = "NO_REAL_ID_DERIVED".to_string();
-                let mut guest_elf_path: Option<PathBuf> = None;
-                let build_root = methods_dir.join("target/release/build");
-                if let Ok(rd) = std::fs::read_dir(&build_root) {
-                    for e in rd.flatten() {
-                        let mrs = e.path().join("out/methods.rs");
-                        if mrs.exists() {
-                            if let Ok(txt) = std::fs::read_to_string(&mrs) {
-                                if let Some(words) = extract_anubis_id(&txt) {
-                                    real_id = words.join(" ");
-                                    let _ = std::fs::copy(
-                                        &mrs,
-                                        risc0_side.join("generated-methods.rs"),
-                                    );
+                    // Extract real ID + ELF (post real risc0-build)
+                    let mut real_id = "NO_REAL_ID_DERIVED".to_string();
+                    let mut guest_elf_path: Option<PathBuf> = None;
+                    let build_root = methods_dir.join("target/release/build");
+                    if let Ok(rd) = std::fs::read_dir(&build_root) {
+                        for e in rd.flatten() {
+                            let mrs = e.path().join("out/methods.rs");
+                            if mrs.exists() {
+                                if let Ok(txt) = std::fs::read_to_string(&mrs) {
+                                    if let Some(words) = extract_anubis_id(&txt) {
+                                        real_id = words.join(" ");
+                                        let _ = std::fs::copy(
+                                            &mrs,
+                                            risc0_side.join("generated-methods.rs"),
+                                        );
+                                    }
                                 }
                             }
-                        }
-                        let outp = e.path().join("out");
-                        if outp.exists() {
-                            if let Ok(od) = std::fs::read_dir(&outp) {
-                                for oe in od.flatten() {
-                                    let p = oe.path();
-                                    let n = p.file_name().unwrap_or_default().to_string_lossy();
-                                    if p.extension().is_some_and(|e| e == "elf")
-                                        || n.contains("guest")
-                                        || n.contains("elf")
-                                    {
-                                        let _ = std::fs::copy(&p, risc0_side.join("guest.elf"));
-                                        guest_elf_path = Some(risc0_side.join("guest.elf"));
+                            let outp = e.path().join("out");
+                            if outp.exists() {
+                                if let Ok(od) = std::fs::read_dir(&outp) {
+                                    for oe in od.flatten() {
+                                        let p = oe.path();
+                                        let n = p.file_name().unwrap_or_default().to_string_lossy();
+                                        if p.extension().is_some_and(|e| e == "elf")
+                                            || n.contains("guest")
+                                            || n.contains("elf")
+                                        {
+                                            let _ = std::fs::copy(&p, risc0_side.join("guest.elf"));
+                                            guest_elf_path = Some(risc0_side.join("guest.elf"));
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                // Also try riscv release guest binary location (common for risc0)
-                if guest_elf_path.is_none() {
-                    let rv = methods_dir.join("target/riscv32imac-unknown-none-elf/release/guest");
-                    if rv.exists() {
-                        let _ = std::fs::copy(&rv, risc0_side.join("guest.elf"));
-                        guest_elf_path = Some(risc0_side.join("guest.elf"));
-                    }
-                }
-                // risc0 specific riscv-guest .bin (from GUEST_ELF include_bytes path)
-                if guest_elf_path.is_none() || !risc0_side.join("guest.elf").exists() {
-                    let cand = methods_dir.join("target/riscv-guest/methods/guest/riscv32im-risc0-zkvm-elf/release/guest.bin");
-                    if cand.exists() {
-                        let _ = std::fs::copy(&cand, risc0_side.join("guest.elf"));
-                        guest_elf_path = Some(risc0_side.join("guest.elf"));
-                    }
-                }
-                if risc0_side.join("guest.elf").exists() {
-                    let _ = std::fs::copy(risc0_side.join("guest.elf"), out.join("guest.elf"));
-                }
-
-                // Copy guest source for hashing
-                let gsrc = methods_dir.join("guest/src/main.rs");
-                if gsrc.exists() {
-                    let _ = std::fs::copy(&gsrc, risc0_side.join("guest/src/main.rs"));
-                } else {
-                    std::fs::write(
-                        risc0_side.join("guest/src/main.rs"),
-                        "// risc0 guest from Anubis fixture\n",
-                    )?;
-                }
-
-                std::fs::write(risc0_side.join("image_id.txt"), &real_id)?;
-
-                // Copy canonical inputs into risc0 sidecar for the child prover.
-                let _ = std::fs::copy(
-                    &proof_input_path,
-                    risc0_side.join("proof_input_canonical.json"),
-                );
-                let _ = std::fs::copy(
-                    out.join("proof_input.anbp"),
-                    risc0_side.join("proof_input.anbp"),
-                );
-                let proof_outcome = run_risc0_proof_attempt(
-                    &risc0_side,
-                    guest_elf_path.as_deref(),
-                    Some(&proof_input_path),
-                );
-                // `fresh_receipt_generated` is set only when the child both PROVED and cryptographically
-                // VERIFIED the receipt (receipt_obj.verify(image_id_digest)? gates child_success), so it is
-                // exactly the "fresh receipt generated AND verified" success condition the arm requires.
-                fresh_receipt_verified = proof_outcome.fresh_receipt_generated;
-                prove_outcome_detail = proof_outcome.detail.clone();
-
-                let run_stamp = chrono::Utc::now().to_rfc3339();
-                // Gate 11: derive lane_observed mechanically from env + logs (never host assumption)
-                let verify_log_text =
-                    std::fs::read_to_string(risc0_side.join("receipt.verify.log"))
-                        .unwrap_or_default();
-                let prove_log_text =
-                    std::fs::read_to_string(risc0_side.join("prove.log")).unwrap_or_default();
-                let cpu_forced = std::env::var("R0_DISABLE_METAL").is_ok();
-                let observed_from_log = if verify_log_text.contains("lane_observed=metal-hybrid")
-                    || prove_log_text.contains("lane=metal-hybrid")
-                    || verify_log_text.contains("metal-hybrid lane")
-                {
-                    "metal-hybrid"
-                } else if verify_log_text.contains("lane_observed=cpu")
-                    || prove_log_text.contains("lane=cpu")
-                    || cpu_forced
-                {
-                    "cpu"
-                } else {
-                    "unknown"
-                };
-                let tier2 = !cpu_forced
-                    && (verify_log_text.contains("Tier2")
-                        || verify_log_text.contains("MTLArgumentBuffersTier")
-                        || prove_log_text.contains("metal-hybrid"));
-                let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
-                let metal_section = serde_json::json!({
-                    "enabled": true,
-                    "reference_path": metal_ref.root.to_string_lossy(),
-                    "vendored_patch_path": metal_ref.vendor.to_string_lossy(),
-                    "config_source": metal_ref.config_source,
-                    "patch_crates_io_active": prover_patch_active,
-                    "methods_patch_crates_io_active": true,
-                    "prover_patch_crates_io_active": prover_patch_active,
-                    "risc0_zkvm_version": "3.0.5",
-                    "risc0_zkp_version": "3.0.4",
-                    "risc0_circuit_rv32im_version": "4.0.4",
-                    "lane_requested": lane_normalized,
-                    "lane_observed": observed_from_log,
-                    "cpu_forced_by_r0_disable_metal": cpu_forced,
-                    "tier2_metal_available": tier2 || observed_from_log == "metal-hybrid",
-                    "external_r0vm_used": false,
-                    "observation_source": "env+receipt.verify.log+prove.log"
-                });
-                let input_meta = proof_inputs.metadata_json();
-                let guest_src_path = risc0_side.join("guest/src/main.rs");
-                let journal_path = risc0_side.join("journal.bin");
-                let journal_fields = {
-                    let jbytes = std::fs::read(&journal_path).unwrap_or_default();
-                    let gsrc = std::fs::read_to_string(&guest_src_path).unwrap_or_default();
-                    match proof_input::journal_fields_json(&jbytes, &gsrc) {
-                        Ok(v) => {
-                            let _ = std::fs::write(
-                                risc0_side.join("journal_decoded.json"),
-                                serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into()),
-                            );
-                            v
+                    // Also try riscv release guest binary location (common for risc0)
+                    if guest_elf_path.is_none() {
+                        let rv =
+                            methods_dir.join("target/riscv32imac-unknown-none-elf/release/guest");
+                        if rv.exists() {
+                            let _ = std::fs::copy(&rv, risc0_side.join("guest.elf"));
+                            guest_elf_path = Some(risc0_side.join("guest.elf"));
                         }
-                        Err(e) => serde_json::json!({
-                            "error": e.to_string(),
-                            "field_count": 0,
-                            "named": false,
-                            "fields": [],
-                        }),
                     }
-                };
-                let meta = serde_json::json!({
-                    "schema_version": "1.4",
-                    "backend": "risc0",
-                    "risc0_version": "3.0.5",
-                    "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
-                    "guest_source_sha256": sha256_of_file_or("missing", &risc0_side.join("guest/src/main.rs")),
-                    "guest_binding": "anubis-program",
-                    "guest_binding_note": "guest is compiled from the input Anubis program's main(); ImageID binds to program; journal = P(I) for parameterized inputs",
-                    "committed_journal_sha256": sha256_of_file_or("missing", &risc0_side.join("journal.bin")),
-                    "journal_fields": journal_fields,
-                    "image_id": real_id,
-                    "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
-                    "method_id_type": "risc0_image_id_u32x8",
-                    "image_id_is_placeholder": image_id_is_placeholder(&real_id),
-                    "receipt_sha256": sha256_of_file_or("derived", &risc0_side.join("receipt.bin")),
-                    "verify_status": proof_outcome.verify_status,
-                    "fresh_receipt_generated": proof_outcome.fresh_receipt_generated,
-                    "cache_used": false,
-                    "dev_mode": false,
-                    "mock_prover": false,
-                    "methods_build_success": methods_build_success,
-                    "prover": proof_outcome.prover,
-                    "proof_detail": &proof_outcome.detail,
-                    "receipt_generated_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
-                    "run_stamp": run_stamp,
-                    "receipt_verified_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
-                    "placeholder_image_id": image_id_is_placeholder(&real_id),
-                    "lane": lane.clone(),
-                    "lane_normalized": lane_normalized.clone(),
-                    "metal_hybrid": metal_section,
-                    "input_mode": input_meta["input_mode"],
-                    "input_source": input_meta["input_source"],
-                    "input_sha256": input_meta["input_sha256"],
-                    "input_redacted": input_meta["input_redacted"],
-                    "input_schema_version": input_meta["input_schema_version"],
-                    "input_keys": input_meta["input_keys"],
-                    "input_binary_magic": input_meta["input_binary_magic"],
-                    "parameterized": !proof_inputs.values.is_empty(),
-                });
-                std::fs::write(
-                    risc0_side.join("risc0_metadata.json"),
-                    serde_json::to_string_pretty(&meta)?,
-                )?;
-                std::fs::write(
-                    risc0_side.join("prove.log"),
-                    format!(
-                        "risc0 methods build success={}; proof status={}; {}",
-                        methods_build_success, proof_outcome.verify_status, proof_outcome.detail
-                    ),
-                )?;
-                println!("risc0 sidecars (REAL derived ID: {})", real_id);
+                    // risc0 specific riscv-guest .bin (from GUEST_ELF include_bytes path)
+                    if guest_elf_path.is_none() || !risc0_side.join("guest.elf").exists() {
+                        let cand = methods_dir.join("target/riscv-guest/methods/guest/riscv32im-risc0-zkvm-elf/release/guest.bin");
+                        if cand.exists() {
+                            let _ = std::fs::copy(&cand, risc0_side.join("guest.elf"));
+                            guest_elf_path = Some(risc0_side.join("guest.elf"));
+                        }
+                    }
+                    if risc0_side.join("guest.elf").exists() {
+                        let _ = std::fs::copy(risc0_side.join("guest.elf"), out.join("guest.elf"));
+                    }
 
-                // Force flat copies beside artifact for hybrid evidence + risc0_* for full sidecar coverage
-                let _ = std::fs::write(
-                    out.join("guest.elf"),
-                    std::fs::read(risc0_side.join("guest.elf")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(out.join("image_id.txt"), &real_id);
-                let _ = std::fs::write(
-                    out.join("generated-methods.rs"),
-                    std::fs::read(risc0_side.join("generated-methods.rs")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(
-                    out.join("risc0_receipt.bin"),
-                    std::fs::read(risc0_side.join("receipt.bin")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(out.join("risc0_image_id.txt"), &real_id);
-                let _ = std::fs::write(
-                    out.join("risc0_metadata.json"),
-                    std::fs::read(risc0_side.join("risc0_metadata.json")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(
-                    out.join("risc0_receipt.verify.log"),
-                    std::fs::read(risc0_side.join("receipt.verify.log")).unwrap_or_default(),
-                );
-                let _ = std::fs::write(
-                    out.join("guest_source.rs"),
-                    std::fs::read(risc0_side.join("guest/src/main.rs")).unwrap_or_default(),
-                );
-            }
+                    // Copy guest source for hashing
+                    let gsrc = methods_dir.join("guest/src/main.rs");
+                    if gsrc.exists() {
+                        let _ = std::fs::copy(&gsrc, risc0_side.join("guest/src/main.rs"));
+                    } else {
+                        std::fs::write(
+                            risc0_side.join("guest/src/main.rs"),
+                            "// risc0 guest from Anubis fixture\n",
+                        )?;
+                    }
 
-            // When --evidence is set, the bundle's manifest verdict (PASS/FAIL) also gates the exit:
-            // exit 0 must mean BOTH the proof and the evidence passed. Captured here, fed into the
-            // decision below. `None` = no bundle requested (the evidence gate is then vacuous).
-            let mut evidence_bundle_verdict: Option<String> = None;
-            if evidence {
-                let logs = vec![format!(
-                    "prove input: {} backend: {}",
-                    input.display(),
-                    backend
-                )];
-                let bundle = build_evidence_bundle(
-                    &src,
-                    mode_name(mode),
-                    Some(&artifact),
-                    logs,
-                    &out,
-                    Some(&format!("risc0-{}", backend)),
-                    None,
-                )
-                .map_err(|e| anyhow!("{}", e))?;
-                println!("evidence bundle: {}", bundle.dir.display());
-                println!("verdict: {}", bundle.manifest.verdict);
-                evidence_bundle_verdict = Some(bundle.manifest.verdict.clone());
-            }
-            // All failure evidence (risc0 sidecars, receipt/verify markers, metadata, flat copies, and
-            // the optional evidence bundle) has now been written. Fail closed with the STRONGEST invariant:
-            // exit 0 ONLY when a fresh receipt was generated AND verified, AND — if an evidence bundle was
-            // built — its manifest verdict is PASS. Either leg failing returns Err with a distinct code so
-            // a failed proof, or a passing proof with a FAILing evidence bundle, cannot be mistaken for a
-            // real one (the gate scripts' `if ! anubis prove …` checks rely on this).
-            if prove_exit_ok(fresh_receipt_verified, evidence_bundle_verdict.as_deref()) {
-                println!("prove complete");
-                Ok(())
-            } else if !fresh_receipt_verified {
-                Err(anyhow!(
+                    std::fs::write(risc0_side.join("image_id.txt"), &real_id)?;
+
+                    // Copy canonical inputs into risc0 sidecar for the child prover.
+                    let _ = std::fs::copy(
+                        &proof_input_path,
+                        risc0_side.join("proof_input_canonical.json"),
+                    );
+                    let _ = std::fs::copy(
+                        out.join("proof_input.anbp"),
+                        risc0_side.join("proof_input.anbp"),
+                    );
+                    let proof_outcome = run_risc0_proof_attempt(
+                        &risc0_side,
+                        guest_elf_path.as_deref(),
+                        Some(&proof_input_path),
+                    );
+                    // `fresh_receipt_generated` is set only when the child both PROVED and cryptographically
+                    // VERIFIED the receipt (receipt_obj.verify(image_id_digest)? gates child_success), so it is
+                    // exactly the "fresh receipt generated AND verified" success condition the arm requires.
+                    fresh_receipt_verified = proof_outcome.fresh_receipt_generated;
+                    prove_outcome_detail = proof_outcome.detail.clone();
+
+                    let run_stamp = chrono::Utc::now().to_rfc3339();
+                    // Gate 11: derive lane_observed mechanically from env + logs (never host assumption)
+                    let verify_log_text =
+                        std::fs::read_to_string(risc0_side.join("receipt.verify.log"))
+                            .unwrap_or_default();
+                    let prove_log_text =
+                        std::fs::read_to_string(risc0_side.join("prove.log")).unwrap_or_default();
+                    let cpu_forced = std::env::var("R0_DISABLE_METAL").is_ok();
+                    let observed_from_log = if verify_log_text
+                        .contains("lane_observed=metal-hybrid")
+                        || prove_log_text.contains("lane=metal-hybrid")
+                        || verify_log_text.contains("metal-hybrid lane")
+                    {
+                        "metal-hybrid"
+                    } else if verify_log_text.contains("lane_observed=cpu")
+                        || prove_log_text.contains("lane=cpu")
+                        || cpu_forced
+                    {
+                        "cpu"
+                    } else {
+                        "unknown"
+                    };
+                    let tier2 = !cpu_forced
+                        && (verify_log_text.contains("Tier2")
+                            || verify_log_text.contains("MTLArgumentBuffersTier")
+                            || prove_log_text.contains("metal-hybrid"));
+                    let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
+                    let metal_section = serde_json::json!({
+                        "enabled": true,
+                        "reference_path": metal_ref.root.to_string_lossy(),
+                        "vendored_patch_path": metal_ref.vendor.to_string_lossy(),
+                        "config_source": metal_ref.config_source,
+                        "patch_crates_io_active": prover_patch_active,
+                        "methods_patch_crates_io_active": true,
+                        "prover_patch_crates_io_active": prover_patch_active,
+                        "risc0_zkvm_version": "3.0.5",
+                        "risc0_zkp_version": "3.0.4",
+                        "risc0_circuit_rv32im_version": "4.0.4",
+                        "lane_requested": lane_normalized,
+                        "lane_observed": observed_from_log,
+                        "cpu_forced_by_r0_disable_metal": cpu_forced,
+                        "tier2_metal_available": tier2 || observed_from_log == "metal-hybrid",
+                        "external_r0vm_used": false,
+                        "observation_source": "env+receipt.verify.log+prove.log"
+                    });
+                    let input_meta = proof_inputs.metadata_json();
+                    let guest_src_path = risc0_side.join("guest/src/main.rs");
+                    let journal_path = risc0_side.join("journal.bin");
+                    let journal_fields = {
+                        let jbytes = std::fs::read(&journal_path).unwrap_or_default();
+                        let gsrc = std::fs::read_to_string(&guest_src_path).unwrap_or_default();
+                        match proof_input::journal_fields_json(&jbytes, &gsrc) {
+                            Ok(v) => {
+                                let _ = std::fs::write(
+                                    risc0_side.join("journal_decoded.json"),
+                                    serde_json::to_string_pretty(&v)
+                                        .unwrap_or_else(|_| "{}".into()),
+                                );
+                                v
+                            }
+                            Err(e) => serde_json::json!({
+                                "error": e.to_string(),
+                                "field_count": 0,
+                                "named": false,
+                                "fields": [],
+                            }),
+                        }
+                    };
+                    let meta = serde_json::json!({
+                        "schema_version": "1.4",
+                        "backend": "risc0",
+                        "risc0_version": "3.0.5",
+                        "guest_elf_sha256": sha256_of_file_or("missing", &risc0_side.join("guest.elf")),
+                        "guest_source_sha256": sha256_of_file_or("missing", &risc0_side.join("guest/src/main.rs")),
+                        "guest_binding": "anubis-program",
+                        "guest_binding_note": "guest is compiled from the input Anubis program's main(); ImageID binds to program; journal = P(I) for parameterized inputs",
+                        "committed_journal_sha256": sha256_of_file_or("missing", &risc0_side.join("journal.bin")),
+                        "journal_fields": journal_fields,
+                        "image_id": real_id,
+                        "image_id_source": "extracted from risc0-build methods.rs after cargo build (real ELF from Anubis program)",
+                        "method_id_type": "risc0_image_id_u32x8",
+                        "image_id_is_placeholder": image_id_is_placeholder(&real_id),
+                        "receipt_sha256": sha256_of_file_or("derived", &risc0_side.join("receipt.bin")),
+                        "verify_status": proof_outcome.verify_status,
+                        "fresh_receipt_generated": proof_outcome.fresh_receipt_generated,
+                        "cache_used": false,
+                        "dev_mode": false,
+                        "mock_prover": false,
+                        "methods_build_success": methods_build_success,
+                        "prover": proof_outcome.prover,
+                        "proof_detail": &proof_outcome.detail,
+                        "receipt_generated_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
+                        "run_stamp": run_stamp,
+                        "receipt_verified_at": if proof_outcome.fresh_receipt_generated { serde_json::Value::String(run_stamp.clone()) } else { serde_json::Value::Null },
+                        "placeholder_image_id": image_id_is_placeholder(&real_id),
+                        "lane": lane.clone(),
+                        "lane_normalized": lane_normalized.clone(),
+                        "metal_hybrid": metal_section,
+                        "input_mode": input_meta["input_mode"],
+                        "input_source": input_meta["input_source"],
+                        "input_sha256": input_meta["input_sha256"],
+                        "input_redacted": input_meta["input_redacted"],
+                        "input_schema_version": input_meta["input_schema_version"],
+                        "input_keys": input_meta["input_keys"],
+                        "input_binary_magic": input_meta["input_binary_magic"],
+                        "parameterized": !proof_inputs.values.is_empty(),
+                    });
+                    std::fs::write(
+                        risc0_side.join("risc0_metadata.json"),
+                        serde_json::to_string_pretty(&meta)?,
+                    )?;
+                    std::fs::write(
+                        risc0_side.join("prove.log"),
+                        format!(
+                            "risc0 methods build success={}; proof status={}; {}",
+                            methods_build_success,
+                            proof_outcome.verify_status,
+                            proof_outcome.detail
+                        ),
+                    )?;
+                    println!("risc0 sidecars (REAL derived ID: {})", real_id);
+
+                    // Force flat copies beside artifact for hybrid evidence + risc0_* for full sidecar coverage
+                    let _ = std::fs::write(
+                        out.join("guest.elf"),
+                        std::fs::read(risc0_side.join("guest.elf")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(out.join("image_id.txt"), &real_id);
+                    let _ = std::fs::write(
+                        out.join("generated-methods.rs"),
+                        std::fs::read(risc0_side.join("generated-methods.rs")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(
+                        out.join("risc0_receipt.bin"),
+                        std::fs::read(risc0_side.join("receipt.bin")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(out.join("risc0_image_id.txt"), &real_id);
+                    let _ = std::fs::write(
+                        out.join("risc0_metadata.json"),
+                        std::fs::read(risc0_side.join("risc0_metadata.json")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(
+                        out.join("risc0_receipt.verify.log"),
+                        std::fs::read(risc0_side.join("receipt.verify.log")).unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(
+                        out.join("guest_source.rs"),
+                        std::fs::read(risc0_side.join("guest/src/main.rs")).unwrap_or_default(),
+                    );
+                }
+
+                // When --evidence is set, the bundle's manifest verdict (PASS/FAIL) also gates the exit:
+                // exit 0 must mean BOTH the proof and the evidence passed. Captured here, fed into the
+                // decision below. `None` = no bundle requested (the evidence gate is then vacuous).
+                let mut evidence_bundle_verdict: Option<String> = None;
+                if evidence {
+                    let logs = vec![format!(
+                        "prove input: {} backend: {}",
+                        input.display(),
+                        backend
+                    )];
+                    let bundle = build_evidence_bundle(
+                        &src,
+                        mode_name(mode),
+                        Some(&artifact),
+                        logs,
+                        &out,
+                        Some(&format!("risc0-{}", backend)),
+                        None,
+                    )
+                    .map_err(|e| anyhow!("{}", e))?;
+                    println!("evidence bundle: {}", bundle.dir.display());
+                    println!("verdict: {}", bundle.manifest.verdict);
+                    evidence_bundle_verdict = Some(bundle.manifest.verdict.clone());
+                }
+                // All failure evidence (risc0 sidecars, receipt/verify markers, metadata, flat copies, and
+                // the optional evidence bundle) has now been written. Fail closed with the STRONGEST invariant:
+                // exit 0 ONLY when a fresh receipt was generated AND verified, AND — if an evidence bundle was
+                // built — its manifest verdict is PASS. Either leg failing returns Err with a distinct code so
+                // a failed proof, or a passing proof with a FAILing evidence bundle, cannot be mistaken for a
+                // real one (the gate scripts' `if ! anubis prove …` checks rely on this).
+                if prove_exit_ok(fresh_receipt_verified, evidence_bundle_verdict.as_deref()) {
+                    println!("prove complete");
+                    Ok(())
+                } else if !fresh_receipt_verified {
+                    Err(anyhow!(
                     "ANUBIS_PROVE_NO_VERIFIED_RECEIPT: prove did not produce a fresh, verified ZK \
                      receipt — failing closed. All available failure evidence was written under {}. \
                      detail: {}",
                     out.display(),
                     prove_outcome_detail
                 ))
-            } else {
-                Err(anyhow!(
+                } else {
+                    Err(anyhow!(
                     "ANUBIS_PROVE_EVIDENCE_BUNDLE_FAILED: a fresh receipt was generated and verified, but \
                      the evidence bundle manifest verdict is {} (expected PASS) — failing closed so exit 0 \
                      means BOTH the proof and the evidence passed. The bundle was written under {}.",
                     evidence_bundle_verdict.as_deref().unwrap_or("FAIL"),
                     out.display()
                 ))
+                }
             }
         }
         Commands::Risc0ProveChild {
@@ -3980,65 +4026,78 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             receipt,
             verify_log,
             proof_input,
-        } => run_risc0_prove_child(
-            &elf,
-            &image_id,
-            &receipt,
-            &verify_log,
-            proof_input.as_deref(),
-        ),
+        } => {
+            #[cfg(not(feature = "prove"))]
+            {
+                let _ = (&elf, &image_id, &receipt, &verify_log, &proof_input);
+                return Err(anyhow!(
+                    "this binary was built without the `prove` feature — risc0 proving is unavailable"
+                ));
+            }
+            #[cfg(feature = "prove")]
+            run_risc0_prove_child(
+                &elf,
+                &image_id,
+                &receipt,
+                &verify_log,
+                proof_input.as_deref(),
+            )
+        }
         Commands::VerifyReceipt { receipt, image_id } => {
-            println!(
-                "anubis verify-receipt --receipt {} --image-id {}",
-                receipt.display(),
-                image_id.display()
-            );
-            let receipt_data =
-                std::fs::read(&receipt).map_err(|e| anyhow!("read receipt: {}", e))?;
-            let id_data =
-                std::fs::read_to_string(&image_id).map_err(|e| anyhow!("read image_id: {}", e))?;
-
-            // === REAL RISC0 API (exact per task) ===
-            // Deserialize the actual receipt file.
-            // Deserialize/parse the actual ImageID/method ID.
-            // Call the real RISC0 verification method: receipt.verify(image_id)
-            // Exit nonzero on failure.
-            // Comments document the precise API call path.
-            if receipt_data.is_empty() {
-                return Err(anyhow!("receipt verify FAILED: empty receipt"));
+            #[cfg(not(feature = "prove"))]
+            {
+                let _ = (&receipt, &image_id);
+                return Err(anyhow!(
+                    "this binary was built without the `prove` feature — receipt verification is unavailable"
+                ));
             }
-            let _id_words = parse_image_id_words(&id_data)
-                .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
-
-            let journal_bytes = verify_risc0_receipt_bytes(&receipt_data, _id_words)
-                .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
-            let journal_sha = {
-                let mut hasher = sha2::Sha256::new();
-                hasher.update(&journal_bytes);
-                hex::encode(hasher.finalize())
-            };
-
-            // Write sibling journal.bin next to the input receipt for the parity checker to use.
-            if let Some(parent) = receipt.parent() {
-                let jpath = parent.join("journal.bin");
-                let _ = std::fs::write(&jpath, &journal_bytes);
+            #[cfg(feature = "prove")]
+            {
                 println!(
-                    "journal extracted: {} (sha256 {})",
-                    jpath.display(),
-                    journal_sha
+                    "anubis verify-receipt --receipt {} --image-id {}",
+                    receipt.display(),
+                    image_id.display()
                 );
-            } else {
-                let _ = std::fs::write("journal.bin", journal_bytes);
-            }
+                let receipt_data =
+                    std::fs::read(&receipt).map_err(|e| anyhow!("read receipt: {}", e))?;
+                let id_data = std::fs::read_to_string(&image_id)
+                    .map_err(|e| anyhow!("read image_id: {}", e))?;
 
-            std::fs::write(
+                if receipt_data.is_empty() {
+                    return Err(anyhow!("receipt verify FAILED: empty receipt"));
+                }
+                let _id_words = parse_image_id_words(&id_data)
+                    .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
+
+                let journal_bytes = verify_risc0_receipt_bytes(&receipt_data, _id_words)
+                    .map_err(|e| anyhow!("receipt verify FAILED: {}", e))?;
+                let journal_sha = {
+                    let mut hasher = sha2::Sha256::new();
+                    hasher.update(&journal_bytes);
+                    hex::encode(hasher.finalize())
+                };
+
+                if let Some(parent) = receipt.parent() {
+                    let jpath = parent.join("journal.bin");
+                    let _ = std::fs::write(&jpath, &journal_bytes);
+                    println!(
+                        "journal extracted: {} (sha256 {})",
+                        jpath.display(),
+                        journal_sha
+                    );
+                } else {
+                    let _ = std::fs::write("journal.bin", journal_bytes);
+                }
+
+                std::fs::write(
                 "verify.log",
                 format!(
                     "standalone verify PASSED using real risc0_zkvm::Receipt::verify(image_id) API\njournal_sha256={}\n",
                     journal_sha
                 ),
             )?;
-            Ok(())
+                Ok(())
+            }
         }
 
         Commands::Gate11MetalParity {
@@ -4215,8 +4274,8 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             let metal_hal_exists = metal_hal.exists();
             let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
             let r0_disable_metal = std::env::var("R0_DISABLE_METAL").is_ok();
-            let metal_lane_selected = risc0_circuit_rv32im::prove::metal_lane_selected();
-            let linked_risc0 = risc0_zkvm::VERSION == "3.0.5";
+            let metal_lane_selected = risc0_metal_lane_selected();
+            let linked_risc0 = risc0_version() == "3.0.5";
             let risc0_ready = linked_risc0
                 && reference_exists
                 && vendor_exists
@@ -4238,7 +4297,7 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
                 },
                 "risc0": {
                     "linked": linked_risc0,
-                    "risc0_zkvm_version": risc0_zkvm::VERSION,
+                    "risc0_zkvm_version": risc0_version(),
                     "risc0_circuit_rv32im_version": "4.0.4",
                     "ready": risc0_ready,
                 },
@@ -4481,11 +4540,16 @@ risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] 
             // A2: when the PCA claims a ZK receipt, cryptographically re-verify it against the
             // ImageID (re-derive, not re-trust). A tampered receipt, a wrong ImageID, or a
             // mismatched journal fails closed here.
+            #[cfg(feature = "prove")]
             if ok {
                 if let Err(e) = verify_bundle_zk_receipt(&bundle) {
                     eprintln!("zk receipt verification FAILED: {}", e);
                     ok = false;
                 }
+            }
+            #[cfg(not(feature = "prove"))]
+            if ok {
+                eprintln!("warning: ZK receipt re-verification skipped (binary built without `prove` feature)");
             }
             // Report (and optionally require) the signature.
             match pca_signature_status(&bundle).map_err(|e| anyhow!("{}", e))? {
@@ -4606,8 +4670,8 @@ fn build_capabilities_report(cli_ref: Option<&Path>, apple_native_only: bool) ->
     let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
     let methods_patch_active = cargo_tree_uses_vendor_patch(&metal_ref.vendor);
     let r0_disable_metal = std::env::var("R0_DISABLE_METAL").is_ok();
-    let metal_lane_selected = risc0_circuit_rv32im::prove::metal_lane_selected();
-    let linked_risc0 = risc0_zkvm::VERSION == "3.0.5";
+    let metal_lane_selected = risc0_metal_lane_selected();
+    let linked_risc0 = risc0_version() == "3.0.5";
     let is_macos = std::env::consts::OS == "macos";
     let is_apple_silicon = is_macos && std::env::consts::ARCH == "aarch64";
     let xcrun_metal_available = command_succeeds("xcrun", &["--find", "metal"]);
@@ -4675,7 +4739,7 @@ fn build_capabilities_report(cli_ref: Option<&Path>, apple_native_only: bool) ->
                 "reference_exists": reference_exists,
                 "vendor_cargo_exists": vendor_exists,
                 "metal_hal_exists": metal_hal_exists,
-                "risc0_zkvm_version": risc0_zkvm::VERSION,
+                "risc0_zkvm_version": risc0_version(),
                 "risc0_circuit_rv32im_version": "4.0.4",
                 "prover_patch_crates_io_active": prover_patch_active,
                 "methods_patch_crates_io_active": methods_patch_active,
@@ -4870,8 +4934,8 @@ fn build_runtime_probe_report(
     let prover_patch_active = cargo_metadata_uses_vendor_patch(&metal_ref.vendor);
     let methods_patch_active = cargo_tree_uses_vendor_patch(&metal_ref.vendor);
     let r0_disable_metal = std::env::var("R0_DISABLE_METAL").is_ok();
-    let metal_lane_selected = risc0_circuit_rv32im::prove::metal_lane_selected();
-    let linked_risc0 = risc0_zkvm::VERSION == "3.0.5";
+    let metal_lane_selected = risc0_metal_lane_selected();
+    let linked_risc0 = risc0_version() == "3.0.5";
     let risc0_ready = linked_risc0
         && reference_exists
         && vendor_exists
@@ -4908,7 +4972,7 @@ fn build_runtime_probe_report(
         "risc0": {
             "linked": linked_risc0,
             "ready": risc0_ready,
-            "risc0_zkvm_version": risc0_zkvm::VERSION,
+            "risc0_zkvm_version": risc0_version(),
             "risc0_circuit_rv32im_version": "4.0.4",
             "prover_patch_crates_io_active": prover_patch_active,
             "methods_patch_crates_io_active": methods_patch_active,
@@ -6323,6 +6387,7 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+#[cfg(feature = "prove")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Risc0ProofOutcome {
     verify_status: &'static str,
@@ -6331,18 +6396,17 @@ struct Risc0ProofOutcome {
     detail: String,
 }
 
+#[cfg(feature = "prove")]
 fn prove_uses_full_hybrid(backend: &str) -> bool {
     backend == "risc0"
 }
 
-/// Final `prove` exit decision (pure, unit-testable). Exit 0 (Ok) ONLY when a fresh receipt was
-/// generated AND verified, AND — if an evidence bundle was built (`evidence_verdict = Some(v)`) — its
-/// manifest verdict is exactly "PASS". `None` means no bundle was requested, so the evidence gate is
-/// vacuously satisfied. Any non-"PASS" verdict (incl. "FAIL" or an unexpected value) fails closed.
+#[cfg(feature = "prove")]
 fn prove_exit_ok(fresh_receipt_verified: bool, evidence_verdict: Option<&str>) -> bool {
     fresh_receipt_verified && matches!(evidence_verdict, None | Some("PASS"))
 }
 
+#[cfg(feature = "prove")]
 fn image_id_is_placeholder(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.is_empty()
@@ -6353,6 +6417,7 @@ fn image_id_is_placeholder(text: &str) -> bool {
         || trimmed.contains("PENDING")
 }
 
+#[cfg(feature = "prove")]
 fn parse_image_id_words(text: &str) -> Result<[u32; 8], String> {
     if image_id_is_placeholder(text) {
         return Err("image_id_unavailable_or_empty (smoke documented for absent metal ref)".into());
@@ -6374,6 +6439,7 @@ fn parse_image_id_words(text: &str) -> Result<[u32; 8], String> {
     Ok(parsed)
 }
 
+#[cfg(feature = "prove")]
 fn verify_risc0_receipt_bytes(receipt_data: &[u8], id_words: [u32; 8]) -> Result<Vec<u8>> {
     let receipt_obj: risc0_zkvm::Receipt =
         bincode::deserialize(receipt_data).map_err(|e| anyhow!("deserialize receipt: {}", e))?;
@@ -6384,12 +6450,14 @@ fn verify_risc0_receipt_bytes(receipt_data: &[u8], id_words: [u32; 8]) -> Result
     Ok(receipt_obj.journal.bytes.clone())
 }
 
+#[cfg(feature = "prove")]
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = sha2::Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())
 }
 
+#[cfg(feature = "prove")]
 /// A2: cryptographically re-verify the ZK receipt a PCA claims to carry. Nothing here is trusted
 /// from the recorded claim — it re-reads the bundle's own receipt, ImageID, and guest ELF and:
 ///   1. ties the ImageID to the bundle's guest ELF (`compute_image_id(elf) == ImageID`), which
@@ -6471,6 +6539,7 @@ fn verify_bundle_zk_receipt(bundle: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "prove")]
 fn classify_risc0_proof_result(
     child_success: bool,
     receipt_present: bool,
@@ -6489,6 +6558,7 @@ fn classify_risc0_proof_result(
     }
 }
 
+#[cfg(feature = "prove")]
 fn nonempty_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
@@ -6533,6 +6603,7 @@ fn gate11_tier2_metal_available(results: &[serde_json::Value]) -> bool {
     })
 }
 
+#[cfg(feature = "prove")]
 fn run_risc0_proof_attempt(
     risc0_side: &Path,
     guest_elf_path: Option<&Path>,
@@ -6627,6 +6698,7 @@ fn run_risc0_proof_attempt(
     outcome
 }
 
+#[cfg(feature = "prove")]
 fn run_risc0_prove_child(
     elf: &Path,
     image_id: &Path,
@@ -6813,12 +6885,12 @@ module nested {
         assert_eq!(program_mode(&itemless.items), None);
     }
 
-    // A2/A3: the ZK receipt binding is cryptographically re-verified. These exercise the crypto
-    // layer directly (past the structural hash layer) against the committed real-receipt fixture.
+    #[cfg(feature = "prove")]
     fn zk_fixture_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/zk_prove_bundle")
     }
 
+    #[cfg(feature = "prove")]
     fn stage_zk_bundle(tag: &str) -> PathBuf {
         let fix = zk_fixture_dir();
         let dir =
@@ -6838,6 +6910,7 @@ module nested {
         dir
     }
 
+    #[cfg(feature = "prove")]
     fn edit_pca(dir: &Path, key: &str, val: &str) {
         let mut pca: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("pca.json")).unwrap()).unwrap();
@@ -6850,6 +6923,7 @@ module nested {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn zk_receipt_reverifies_from_fixture() {
         let fix = zk_fixture_dir();
         if !fix.join("backend/risc0/receipt.bin").exists() {
@@ -6862,6 +6936,7 @@ module nested {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn zk_receipt_tamper_fails_closed() {
         if !zk_fixture_dir().join("backend/risc0/receipt.bin").exists() {
             panic!("missing committed zk receipt fixture");
@@ -6904,6 +6979,7 @@ module nested {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn prove_uses_full_hybrid_only_for_risc0_backend() {
         assert!(prove_uses_full_hybrid("risc0"));
         assert!(!prove_uses_full_hybrid("native"));
@@ -7495,6 +7571,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn failed_or_crashed_risc0_child_is_not_fresh_pass() {
         let outcome = classify_risc0_proof_result(false, true, true, true);
         assert_eq!(outcome.verify_status, "failed");
@@ -7506,6 +7583,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn prove_exit_ok_requires_both_proof_and_evidence() {
         // Strongest invariant: `prove` exits 0 ONLY when the proof verified AND (if an evidence bundle
         // was built) its manifest verdict is PASS.
@@ -7525,6 +7603,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn parse_image_id_words_rejects_malformed_and_placeholder_ids() {
         // Hostile inputs to the ImageID parser (the receipt binds to this ID — a lax parse would let a
         // placeholder/garbage ID masquerade as a real one). Every malformed form must fail closed.
@@ -7582,6 +7661,7 @@ fn main() {
     }
 
     #[test]
+    #[cfg(feature = "prove")]
     fn image_id_is_placeholder_truth_table() {
         assert!(image_id_is_placeholder(""));
         assert!(image_id_is_placeholder("   "));

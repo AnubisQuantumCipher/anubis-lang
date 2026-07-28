@@ -628,6 +628,13 @@ fn fn_identities_of_d(
                 }
                 return fn_identities_carried_by_value(&args[0], scope, ctx);
             }
+            if matches!(callee.as_str(), "fold" | "reduce") {
+                return args
+                    .iter()
+                    .skip(1)
+                    .map(|arg| fn_identities_of_d(arg, scope, ctx, depth + 1))
+                    .fold(FnIdentitySet::empty(), FnIdentitySet::union);
+            }
             if let Some((param_names, index)) = ctx.fn_returns_param.get(callee) {
                 if param_names.len() == args.len() {
                     if let Some(arg) = args.get(*index) {
@@ -816,6 +823,14 @@ fn fn_identities_at_contract_path(
         Expr::Call { callee, .. } => {
             if let Some((_, returned)) = ctx.fn_sole_return.get(callee) {
                 return fn_identities_at_contract_path(returned, path, scope, ctx, depth + 1);
+            }
+            FnIdentitySet::Unknown
+        }
+        Expr::CallExpr { callee, .. } => {
+            if let Expr::FieldAccess { field, .. } = callee.as_ref() {
+                if let Some((_, returned)) = ctx.method_sole_return.get(field) {
+                    return fn_identities_at_contract_path(returned, path, scope, ctx, depth + 1);
+                }
             }
             FnIdentitySet::Unknown
         }
@@ -3595,8 +3610,15 @@ fn scan_applied_param_local_aliases(
                     let from_param = args
                         .first()
                         .is_some_and(|arg| matches!(arg, Expr::Var(root) if root == param));
-                    if from_param && matches!(callee.as_str(), "pop" | "last") {
+                    if from_param
+                        && matches!(
+                            callee.as_str(),
+                            "pop" | "last" | "flatten" | "reverse" | "drop" | "zip" | "concat"
+                        )
+                    {
                         aliases.insert(name.clone(), "*".to_string());
+                    } else if from_param && callee == "first" {
+                        aliases.insert(name.clone(), "0".to_string());
                     } else if from_param && matches!(callee.as_str(), "get" | "remove") {
                         let path = args
                             .get(1)
@@ -3606,6 +3628,14 @@ fn scan_applied_param_local_aliases(
                             })
                             .unwrap_or_else(|| "*".to_string());
                         aliases.insert(name.clone(), path);
+                    }
+                }
+                if let Expr::Binary { lhs, rhs, .. } = init {
+                    let from_param = [lhs.as_ref(), rhs.as_ref()]
+                        .iter()
+                        .any(|arg| matches!(arg, Expr::Var(root) if root == param));
+                    if from_param {
+                        aliases.insert(name.clone(), "*".to_string());
                     }
                 }
                 if let Expr::Call { callee, .. } = init {
@@ -3621,6 +3651,19 @@ fn scan_applied_param_local_aliases(
                     collect_pattern_binding_paths(pattern, "", &mut binding_paths);
                     aliases.extend(binding_paths);
                 }
+            }
+            Stmt::WhileLet { pattern, expr, body } => {
+                if matches!(expr, Expr::Var(root) if root == param) {
+                    let mut binding_paths = BTreeMap::new();
+                    collect_pattern_binding_paths(pattern, "", &mut binding_paths);
+                    for (name, path) in binding_paths {
+                        if body_has_direct_callee(body, &name) {
+                            *applies = true;
+                            paths.insert(path);
+                        }
+                    }
+                }
+                scan_applied_param_local_aliases(body, param, applies, paths);
             }
             Stmt::ExprStmt(Expr::Call { callee, .. }) => {
                 if let Some(path) = aliases.get(callee) {
@@ -3648,6 +3691,14 @@ fn scan_applied_param_local_aliases(
                 if let Some(branch) = else_ {
                     scan_applied_param_local_aliases(branch, param, applies, paths);
                 }
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
+                scan_applied_param_local_aliases(body, param, applies, paths);
+            }
+            Stmt::For { body, .. }
+            | Stmt::ResearchBlock { body, .. }
+            | Stmt::ExploitBlock { body, .. } => {
+                scan_applied_param_local_aliases(body, param, applies, paths);
             }
             _ => {}
         }
@@ -11519,10 +11570,13 @@ fn analyze_expr_effect(
                     // data/collection/init operands) — over-approximation, fail-closed.
                     let mut elem_taint: Option<String> = None;
                     let mut elem_secret = false;
+                    let mut elem_callable_ids = FnIdentitySet::empty();
                     for (j, a) in args.iter().enumerate() {
                         if j == i {
                             continue;
                         }
+                        elem_callable_ids =
+                            elem_callable_ids.union(fn_identities_carried_by_value(a, scope, ctx));
                         if elem_taint.is_none() {
                             elem_taint = expr_taint_source_m(
                                 a,
@@ -11556,18 +11610,18 @@ fn analyze_expr_effect(
                         }
                         _ => None,
                     };
-                    if let Some(Expr::Lambda { params, body }) = resolved {
+                    if let Some(boxed) = resolved {
+                        let Expr::Lambda { params, body } = boxed.as_ref() else { continue };
                         let mut local = scope.clone();
                         for p in params {
-                            local.insert(
-                                p.clone(),
-                                labelled_param_binding(
-                                    p,
-                                    elem_taint.is_some(),
-                                    elem_taint.clone(),
-                                    elem_secret,
-                                ),
+                            let mut binding = labelled_param_binding(
+                                p,
+                                elem_taint.is_some(),
+                                elem_taint.clone(),
+                                elem_secret,
                             );
+                            binding.fn_identities = elem_callable_ids.clone();
+                            local.insert(p.clone(), binding);
                         }
                         analyze_expr_effect(body, mode, &local, effects, ctx);
                     } else if let Some(Expr::Var(fname)) = args.get(i) {
@@ -11744,29 +11798,17 @@ fn analyze_expr_effect(
                             }
                         }
                     }
-                    let resolved: Option<Expr> = match args.get(i) {
-                        Some(l @ Expr::Lambda { .. }) => Some(l.clone()),
-                        // A bare top-level fn NAME has no `closure_lambda`, so this returned `None`
-                        // and skipped the whole check — `app(key)` leaked while `app(|| key())` and
-                        // `let g = key; print(g())` both rejected. Eta-expand it into the lambda it
-                        // is equivalent to and let the existing descent do the work.
-                        Some(Expr::Var(g)) => scope
-                            .get(g)
-                            .and_then(|b| b.closure_lambda.as_deref().cloned())
-                            .or_else(|| eta_expand_fn_ref(g, scope, &ctx.fn_params)),
-                        Some(Expr::Call {
-                            callee: returned, ..
-                        }) => ctx
-                            .fn_returns_lambda
-                            .get(returned)
-                            .map(|(_, expr)| expr.clone())
-                            .or_else(|| {
-                                ctx.fn_sole_return
-                                    .get(returned)
-                                    .map(|(_, expr)| expr.clone())
-                            }),
-                        _ => None,
-                    };
+                    let resolved = args.get(i).and_then(|arg| {
+                        resolve_closure_value(
+                            arg,
+                            scope,
+                            &ctx.fn_returns_lambda,
+                            &ctx.fn_returns_param,
+                            &ctx.method_returns_lambda,
+                            &ctx.method_returns_param,
+                            0,
+                        )
+                    });
                     if let Some(Expr::Lambda { params, body }) = resolved {
                         // The callee applies this closure to ITS OWN parameters, which are bound to
                         // the caller's OTHER arguments — so the closure's params must carry those
@@ -16704,7 +16746,8 @@ fn scan_applied_param_stmts(
                         scan_applied_param_expr(end, p, applies, shadows, paths, method_names);
                     }
                     ForSource::Collection { expr } => {
-                        if matches!(expr, Expr::Var(root) if root == p)
+                        if (matches!(expr, Expr::Var(root) if root == p)
+                            || matches!(expr, Expr::Call { callee, args } if matches!(callee.as_str(), "values" | "entries" | "map_values") && args.iter().any(|a| matches!(a, Expr::Var(root) if root == p))))
                             && body_has_direct_callee(body, var)
                         {
                             *applies = true;
@@ -16788,6 +16831,20 @@ fn scan_applied_param_expr(
                     if v == p {
                         *applies = true;
                         paths.insert(String::new());
+                    }
+                }
+            }
+            // A HOF applies a closure to elements of its data argument. If that data argument is a
+            // formal container, the caller must charge every possible element identity at the call
+            // site even though the source-level lambda body is nested inside this call.
+            if !effects::higher_order_closure_args(callee).is_empty() {
+                for (j, arg) in args.iter().enumerate() {
+                    if effects::higher_order_closure_args(callee).contains(&j) {
+                        continue;
+                    }
+                    if matches!(arg, Expr::Var(v) if v == p) {
+                        *applies = true;
+                        paths.insert("*".to_string());
                     }
                 }
             }
@@ -16903,6 +16960,16 @@ fn scan_applied_param_expr(
             else_,
             ..
         } => {
+            if matches!(&**scrutinee, Expr::Var(root) if root == p) {
+                let mut binding_paths = BTreeMap::new();
+                collect_pattern_binding_paths(pattern, "", &mut binding_paths);
+                for (name, path) in binding_paths {
+                    if body_has_direct_callee_expr(then, &name) {
+                        *applies = true;
+                        paths.insert(path);
+                    }
+                }
+            }
             if pattern.bound_names().iter().any(|n| n == p) {
                 *shadows = true;
             }

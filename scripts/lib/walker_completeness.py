@@ -58,7 +58,12 @@ SIBLINGS = [
 
 
 def enum_variants(src: str, enum: str) -> dict[str, list[tuple[str, str]]]:
-    """{VariantName: [(field, type)]} for brace-struct variants of `enum`."""
+    """{VariantName: [(field, type)]} for brace and tuple variants of `enum`.
+
+    Tuple fields receive stable synthetic names (`_0`, `_1`, ...).  This matters for Pattern and
+    for AST additions such as a tuple carrier: a walker that matches the tuple form but only binds
+    one positional field must fail the same way as a brace-form walker.
+    """
     m = re.search(r"pub enum " + enum + r" \{(.*?)\n\}", src, re.S)
     if not m:
         return {}
@@ -66,6 +71,11 @@ def enum_variants(src: str, enum: str) -> dict[str, list[tuple[str, str]]]:
     for vm in re.finditer(r"\n    (\w+) \{(.*?)\n    \},", m.group(1), re.S):
         fields = re.findall(r"\n\s+(?:pub )?(\w+): ([^,\n]+)", vm.group(2))
         out[vm.group(1)] = [(f, t.strip()) for f, t in fields]
+    for vm in re.finditer(r"\n    (\w+)\(([^\n()]*)\),", m.group(1)):
+        if vm.group(1) in out:
+            continue
+        tys = [part.strip() for part in vm.group(2).split(",") if part.strip()]
+        out[vm.group(1)] = [(f"_{i}", ty) for i, ty in enumerate(tys)]
     return out
 
 
@@ -140,9 +150,11 @@ def check(fn: str, scope: str = "all") -> list[str]:
         variants.update({f"Stmt::{k}": v for k, v in enum_variants(ast, "Stmt").items()})
     if base in ("all", "expr"):
         variants.update({f"Expr::{k}": v for k, v in enum_variants(ast, "Expr").items()})
+    if base in ("all", "pattern"):
+        variants.update({f"Pattern::{k}": v for k, v in enum_variants(ast, "Pattern").items()})
     if not variants:
         raise SystemExit(
-            f"unknown scope `{scope}` for `{fn}` (use all|expr|stmt, optionally partial- prefixed)"
+            f"unknown scope `{scope}` for `{fn}` (use all|expr|stmt|pattern, optionally partial- prefixed)"
         )
     # `partial-` = the contract for a SPECIALISED walker: it need not match every variant, but
     # every variant it DOES match must bind all that variant's code-holding fields.
@@ -167,6 +179,8 @@ def check(fn: str, scope: str = "all") -> list[str]:
         # every arm in this walker that matches this variant
         pat = re.escape(vname) + r"\s*\{([^}]*)\}"
         arms = re.findall(pat, body)
+        tuple_arms = re.findall(re.escape(vname) + r"\s*\(([^)]*)\)", body)
+        arms.extend(tuple_arms)
         if not arms:
             if partial:
                 # A specialised walker is allowed not to match a variant; it is not allowed to
@@ -187,7 +201,15 @@ def check(fn: str, scope: str = "all") -> list[str]:
 
         # a field is OK if ANY arm binds it (arms may specialise)
         for f in code_fields:
-            bound = any(re.search(r"\b" + re.escape(f) + r"\b", a) for a in arms)
+            if f.startswith("_") and f[1:].isdigit():
+                index = int(f[1:])
+                bound = any(
+                    index < len([part for part in a.split(",") if part.strip()])
+                    and [part for part in a.split(",") if part.strip()][index].strip() != "_"
+                    for a in tuple_arms
+                )
+            else:
+                bound = any(re.search(r"\b" + re.escape(f) + r"\b", a) for a in arms)
             if not bound:
                 problems.append(
                     f"{fn}: {vname} never binds `{f}` — code can hide there "
