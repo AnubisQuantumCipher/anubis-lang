@@ -16776,6 +16776,16 @@ fn scan_applied_param_expr(
         } => {
             scan_applied_param_expr(scrutinee, p, applies, shadows, paths, method_names);
             for arm in arms {
+                if matches!(&**scrutinee, Expr::Var(root) if root == p) {
+                    let mut binding_paths = BTreeMap::new();
+                    collect_pattern_binding_paths(&arm.pattern, "", &mut binding_paths);
+                    for (name, path) in binding_paths {
+                        if body_has_direct_callee_expr(&arm.body, &name) {
+                            *applies = true;
+                            paths.insert(path);
+                        }
+                    }
+                }
                 if arm.pattern.bound_names().iter().any(|n| n == p) {
                     *shadows = true;
                 }
@@ -16816,6 +16826,20 @@ fn scan_applied_param_expr(
         Expr::Lambda { .. } => {}
         // Leaves (Var/Literal/StrLiteral/Symbolic/TaintSource/UnifiedBuffer/RawPtr/Other/…).
         _ => {}
+    }
+}
+
+fn body_has_direct_callee_expr(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Call { callee, .. } => callee == name,
+        Expr::CallExpr { callee, .. } => matches!(callee.as_ref(), Expr::Var(v) if v == name),
+        Expr::Block { stmts, tail } => {
+            body_has_direct_callee(stmts, name)
+                || tail
+                    .as_deref()
+                    .is_some_and(|t| body_has_direct_callee_expr(t, name))
+        }
+        _ => false,
     }
 }
 
