@@ -515,6 +515,46 @@ never terminates is a check/run divergence of a different kind, and is being cha
     **Status: the named tag factory is closed on a named pin; the callable story is NOT converged
     while i02 writes a file under a green check.** Both halves are the claim.
 
+    ---
+
+    **THE MUTATION/PLACE-STORE CLASS IS NOW CLOSED — i02 no longer writes its file (2026-07-28,
+    pin `anubis-b24f8202f4fc`).** The witness that defined this item — a user fn carrying
+    `uses(fs.write)` reaching an application site through `push`, in a `main` declaring no such
+    capability — went `check rc=0 ACCEPT` + file written → **`check rc=1`, `run rc=1`, file
+    ABSENT**.
+
+    **It closed by fixing the CONSUMER, not by adding a producer.** Two earlier attempts were
+    inert: `union_present` repaired the join algebra (necessary, insufficient — the adversary
+    predicted that and scored 5/5), and a mutation-producer seed compiled and did nothing. The
+    diagnosis: `fn_identities_of` is read by contract discharge (`mod.rs:6505`) while the
+    effect/taint sink path never queried `field_fn_identities` — **the producer was writing a map
+    the enforcing consumer never read.** That is this file's disease sentence verbatim, ninth
+    instance. The fix re-enters resolved user-fn identities at the existing `CallExpr` apply site
+    through `analyze_expr_effect`; it adds **no 27th walker** and does **not** merge label and tag
+    monoids.
+
+    **Graded independently by the adversary that found the class**, not by its author — 13 rows
+    flipped ACCEPT+file → REJECT: `p2_free_push`, `p2_free_insert`, `i01`–`i05`, `c02` (list
+    insert), `c05` (map place-assign), `c18` (struct-field place-assign), `e03` (map symbolic-key
+    assign), `e04` (loop push), `e14` (list index assign), `e15` (return-empty-then-push), `e17`.
+    Verdict: *"CLOSE IS REAL."* Corpus: security **311/311**, language **244/244**, stdlib
+    **104/104**, zero accept→reject flips.
+
+    **Still OPEN, and this close does not touch them:**
+
+    | residual | state |
+    |---|---|
+    | container as **PARAM** | **OPEN** — confirmed across list, map AND struct: all three ACCEPT+file as params while all three REJECT as returns. A class, not a row. |
+    | **extraction** (`pop`/`remove`) | OPEN — loses identity from an already-correct literal |
+    | **inline forwarder composition** (`[identity(leak)]`) | OPEN |
+    | `gu06`/`gu06b`/`gu06c` concrete-refresh | **over-rejection UNFIXED** — assigning a pure callable over a gated one at a concrete index still REJECTs; the adjudicated concrete-REPLACE rule did not fire |
+
+    **A disagreement is on the record rather than reconciled:** the auditor reports its own six
+    round-14 witnesses did NOT flip on the same binary where the adversary's equivalent shapes did.
+    One fixture set is malformed — the auditor's previous "red guard" applied a container ROOT and
+    could only ever type-error. Being resolved; recorded here because burying an instrument
+    disagreement cost this fleet a full round once already.
+
 19. **The purple report makes FALSE ATT&CK coverage claims — OPEN, operator-facing (2026-07-28).**
 
     `attck.rs` holds a catalog of 20 techniques, each carrying an `aop_surface` string
