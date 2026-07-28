@@ -3672,15 +3672,37 @@ fn scan_applied_param_local_aliases(
                             path
                         } else if path.is_empty() {
                             prefix
+                        } else if prefix == "*" {
+                            // A DERIVED CONTAINER collapses further access back to the wildcard.
+                            //
+                            // `let r = reverse(a)` records `*` — "any element of `a`". Indexing it
+                            // again, `let f = r[0]`, must still be "any element of `a`", NOT
+                            // `*.0`, which reads as "field 0 OF any element" and matches nothing.
+                            // That mismatch is why `zip`/`flatten`/`reverse`/`drop`/`+` stayed
+                            // open even though the alias itself was recorded correctly: the
+                            // producer was right and the path it composed was not.
+                            //
+                            // Collapsing is the FAIL-CLOSED direction — it unions every element of
+                            // the formal. For `zip` it over-approximates (a pair is not an element
+                            // of `a`), and over-approximating toward MORE charging is the safe
+                            // side; the must-stay-ACCEPT guards are what prove it does not
+                            // over-reject in practice.
+                            "*".to_string()
                         } else {
                             format!("{prefix}.{path}")
                         };
                         aliases.insert(name.clone(), combined);
                     }
                 } else if let Expr::Call { callee, args } = init {
-                    let from_param = args
-                        .first()
-                        .is_some_and(|arg| matches!(arg, Expr::Var(root) if root == param));
+                    // The container argument may be the formal ITSELF or an already-recorded ALIAS
+                    // of it. `let mut ys = xs; let f = pop(ys)` was invisible because this test
+                    // accepted only the formal by name, so one rebind hid every element builtin —
+                    // `pop`, `remove`, `first`, `last` alike. The alias map already holds `ys`;
+                    // it simply was not consulted here.
+                    let from_param = args.first().is_some_and(|arg| match arg {
+                        Expr::Var(root) => root == param || aliases.contains_key(root),
+                        _ => false,
+                    });
                     if from_param
                         && matches!(
                             callee.as_str(),
@@ -3750,10 +3772,16 @@ fn scan_applied_param_local_aliases(
                 if let Some((root, suffix)) = flatten_access_path(callee) {
                     if let Some(prefix) = aliases.get(&root) {
                         *applies = true;
+                        // Same derived-container collapse as the `let` path above. `ys[0](...)`
+                        // applied DIRECTLY, with no intermediate binding, composed `*.0` where the
+                        // `let f = ys[0]; f(...)` form composed `*` — so identical programs were
+                        // tracked or not depending on whether the author used a temporary.
                         let path = if prefix.is_empty() {
                             suffix
                         } else if suffix.is_empty() {
                             prefix.clone()
+                        } else if prefix == "*" {
+                            "*".to_string()
                         } else {
                             format!("{prefix}.{suffix}")
                         };
