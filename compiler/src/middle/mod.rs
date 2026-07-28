@@ -23115,6 +23115,8 @@ fn seed_effect_pattern(
     collect_pattern_binding_paths(pattern, "", &mut binding_paths);
     let mut scrutinee_fields = BTreeMap::new();
     collect_container_builtin_gate_tags(scrutinee, "", scope, ctx, &mut scrutinee_fields);
+    let mut scrutinee_identities = BTreeMap::new();
+    collect_container_fn_identities(scrutinee, "", scope, ctx, &mut scrutinee_identities);
     for n in pattern.bound_names() {
         let secret = secret || declared_secret.contains(&n);
         let taint = if taint.is_none() && declared_taint.contains(&n) {
@@ -23141,6 +23143,25 @@ fn seed_effect_pattern(
                 })
                 .collect()
         };
+        let fn_identities = if path.is_empty() {
+            fn_identities_of(scrutinee, scope, ctx)
+        } else {
+            fn_identities_at_contract_path(scrutinee, path, scope, ctx, 0)
+        };
+        let field_fn_identities = scrutinee_identities
+            .iter()
+            .filter_map(|(candidate, ids)| {
+                let prefix = if path.is_empty() {
+                    String::new()
+                } else {
+                    format!("{path}.")
+                };
+                candidate
+                    .strip_prefix(&prefix)
+                    .filter(|rest| !rest.is_empty())
+                    .map(|rest| (rest.to_string(), ids.clone()))
+            })
+            .collect();
         scope.insert(
             n.clone(),
             ScopeBinding {
@@ -23157,8 +23178,8 @@ fn seed_effect_pattern(
                 closure_lambda: None,
                 field_closures: BTreeMap::new(),
                 fn_alias: None,
-                fn_identities: FnIdentitySet::Unknown,
-                field_fn_identities: BTreeMap::new(),
+                fn_identities,
+                field_fn_identities,
                 builtin_gate_tags,
                 field_builtin_gate_tags,
                 secret,
