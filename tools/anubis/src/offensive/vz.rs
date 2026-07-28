@@ -367,15 +367,24 @@ pub fn vz_status() -> Result<Vec<VzGuest>> {
     Ok(guests)
 }
 
-fn legacy_vmctl_reported_network(value: &serde_json::Value) -> VzNetwork {
-    if value
-        .get("network_window_active")
-        .and_then(|active| active.as_bool())
-        .unwrap_or(false)
-    {
-        VzNetwork::Nat
-    } else {
-        VzNetwork::Off
+/// Decode the legacy vmctl network state, REFUSING when there is no evidence either way.
+///
+/// This returned `Off` for a missing or non-boolean `network_window_active`, which is the wrong
+/// direction: `Off` is the STRONGER isolation claim, and absence of evidence was being turned into
+/// evidence of absence. A vmctl that changed its field name, or a partial status record, would
+/// silently upgrade an unknown guest to "network off" — the same failure the Tart wrapper was
+/// making out loud until this session, one shim over.
+///
+/// Fail-closed here means refusing to answer, not answering "isolated".
+fn legacy_vmctl_reported_network(value: &serde_json::Value) -> Result<VzNetwork> {
+    match value.get("network_window_active").and_then(|a| a.as_bool()) {
+        Some(true) => Ok(VzNetwork::Nat),
+        Some(false) => Ok(VzNetwork::Off),
+        None => Err(anyhow!(
+            "ANUBIS_VZ_STATUS_NET_UNKNOWN: legacy vmctl status has no boolean \
+             `network_window_active`; refusing to report a network mode. Absence of evidence is \
+             not evidence of isolation — an unknown state must never be reported as `off`."
+        )),
     }
 }
 
@@ -390,7 +399,7 @@ fn vz_status_legacy_vmctl() -> Result<Vec<VzGuest>> {
         serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_VZ_STATUS_PARSE: {e}"))?;
     let mut guests = Vec::new();
     for v in vms {
-        let network = legacy_vmctl_reported_network(&v);
+        let network = legacy_vmctl_reported_network(&v)?;
         guests.push(VzGuest {
             name: v["name"].as_str().unwrap_or("").into(),
             role: VzRole::OffensiveLab,
@@ -444,13 +453,6 @@ fn legacy_vmctl_network_flag(network: &VzNetwork) -> &'static str {
     }
 }
 
-fn legacy_vmctl_effective_network(network: &VzNetwork) -> VzNetwork {
-    match network {
-        VzNetwork::Off | VzNetwork::LoopbackOnly => VzNetwork::Off,
-        VzNetwork::Nat => VzNetwork::Nat,
-    }
-}
-
 /// Resolve a requested top-level network mode into the exact Tart launch argv.
 /// Tart cannot structurally remove the NIC; only its default shared-NAT mode is admitted.
 fn tart_start_args(name: &str, network: &VzNetwork) -> Result<Vec<String>> {
@@ -467,20 +469,48 @@ fn tart_start_args(name: &str, network: &VzNetwork) -> Result<Vec<String>> {
     }
 }
 
+/// The network mode a legacy guest is ACTUALLY in, read back from vmctl status.
+///
+/// Used instead of echoing the requested mode, so an "already running" guest reports what it has
+/// rather than what was asked for. Propagates `ANUBIS_VZ_STATUS_NET_UNKNOWN` when status carries no
+/// evidence — refusing to answer is the fail-closed direction, since the alternative is inventing
+/// an isolation claim.
+fn legacy_vmctl_observed_network(name: &str) -> Result<VzNetwork> {
+    let guests = vz_status_legacy_vmctl()?;
+    guests
+        .into_iter()
+        .find(|g| g.name == name && g.running)
+        .map(|g| g.network)
+        .ok_or_else(|| {
+            anyhow!(
+                "ANUBIS_VZ_STATUS_NET_UNKNOWN: running guest `{name}` not present in legacy vmctl \
+                 status; refusing to report a network mode it was never observed to have."
+            )
+        })
+}
+
 /// Start a VZ guest if not already running and return the backend's effective network mode.
 pub fn vz_start(name: &str, network: &VzNetwork) -> Result<VzNetwork> {
     if legacy_vmctl_enabled() {
-        let effective = legacy_vmctl_effective_network(network);
         let net_flag = legacy_vmctl_network_flag(network);
         let output = run_vmctl(&["start", name, "--net", net_flag])?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             if err.contains("already running") {
-                return Ok(effective);
+                // ALREADY RUNNING — report the mode in effect, not the one just asked for.
+                //
+                // This returned the REQUESTED network derived from the caller's argument, so
+                // `vz-start --network off` against a guest already up with NAT answered `off`. The
+                // request was never applied — the VM was already running — and the label described
+                // an intention rather than a fact. That is the same defect as the Tart `--network
+                // off` lie, reached by a different route: a label produced without observing the
+                // thing it names.
+                return legacy_vmctl_observed_network(name);
             }
             return Err(anyhow!("ANUBIS_VZ_START: {err}"));
         }
-        return Ok(effective);
+        // Observe after a fresh start too, rather than trusting that vmctl honoured the flag.
+        return legacy_vmctl_observed_network(name);
     }
 
     let _ = tart_bin()?;
@@ -1298,21 +1328,16 @@ pub fn vz_stress_battery(eng: &Engagement, guest: &str, engage_dir: &Path) -> Re
     }
     let out_dir = engage_dir.join("loot/vz-stress");
     fs::create_dir_all(&out_dir)?;
-    // Prefer host release binary for the gate orchestration.
-    let host_bin = PathBuf::from(&root).join("target/release/anubis");
+    // Bind the gate to the exact invoking executable. A content-addressed verification pin must
+    // never be silently replaced by mutable shared `target/release/anubis`.
+    let host_bin =
+        std::env::current_exe().context("ANUBIS_VZ_STRESS: cannot resolve invoking executable")?;
     let mut cmd = Command::new("bash");
     cmd.arg(&script)
         .arg("--out")
         .arg(&out_dir)
         .env("ANUBIS_WORKSPACE_ROOT", &root)
-        .env(
-            "ANUBIS_BIN",
-            if host_bin.is_file() {
-                host_bin.display().to_string()
-            } else {
-                String::new()
-            },
-        )
+        .env("ANUBIS_BIN", host_bin.display().to_string())
         // Gate uses golden base; guest name hint is informational for meta.
         .env("ANUBIS_VZ_STRESS_GUEST_HINT", guest);
     let output = cmd
@@ -1534,22 +1559,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_vmctl_requested_modes_map_to_honest_effective_modes() {
+    fn legacy_vmctl_requested_modes_map_to_launch_flags_only() {
+        // The FLAG mapping is a request, and requests are all this may assert.
+        //
+        // A companion `legacy_vmctl_effective_network` used to map a requested mode to a reported
+        // one — `Off` in, `Off` out — and `vz_start` returned it verbatim. So asking for
+        // `--network off` on a guest that was ALREADY RUNNING with NAT answered `off`: the request
+        // was never applied and the label described an intention. Both the helper and the test
+        // asserting it are gone, because a tested helper that encodes the wrong inference is worse
+        // than an untested one — it looks like the behaviour was considered and blessed.
+        //
+        // What replaces it is observation: `legacy_vmctl_observed_network` reads the mode back
+        // from status, and refuses with ANUBIS_VZ_STATUS_NET_UNKNOWN when status has no evidence.
         assert_eq!(legacy_vmctl_network_flag(&VzNetwork::Off), "off");
-        assert_eq!(
-            legacy_vmctl_effective_network(&VzNetwork::Off),
-            VzNetwork::Off
-        );
         assert_eq!(legacy_vmctl_network_flag(&VzNetwork::LoopbackOnly), "off");
-        assert_eq!(
-            legacy_vmctl_effective_network(&VzNetwork::LoopbackOnly),
-            VzNetwork::Off
-        );
         assert_eq!(legacy_vmctl_network_flag(&VzNetwork::Nat), "nat");
-        assert_eq!(
-            legacy_vmctl_effective_network(&VzNetwork::Nat),
-            VzNetwork::Nat
-        );
     }
 
     #[test]
@@ -1557,9 +1581,16 @@ mod tests {
         let nat = serde_json::json!({"network_window_active": true});
         let off = serde_json::json!({"network_window_active": false});
         let missing = serde_json::json!({});
-        assert_eq!(legacy_vmctl_reported_network(&nat), VzNetwork::Nat);
-        assert_eq!(legacy_vmctl_reported_network(&off), VzNetwork::Off);
-        assert_eq!(legacy_vmctl_reported_network(&missing), VzNetwork::Off);
+        let wrong_type = serde_json::json!({"network_window_active": "yes"});
+        assert_eq!(legacy_vmctl_reported_network(&nat).unwrap(), VzNetwork::Nat);
+        assert_eq!(legacy_vmctl_reported_network(&off).unwrap(), VzNetwork::Off);
+        // Unknown must REFUSE, not claim the stronger isolation.
+        for unknown in [&missing, &wrong_type] {
+            let err = legacy_vmctl_reported_network(unknown)
+                .expect_err("unknown network state must not decode to a mode")
+                .to_string();
+            assert!(err.contains("ANUBIS_VZ_STATUS_NET_UNKNOWN"), "{err}");
+        }
     }
 
     #[test]
