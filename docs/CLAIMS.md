@@ -861,7 +861,22 @@ crash op gets the host-asserted marker; the hypervisor-enforced posture requires
 different subcommand that does not run the crash op.
 
 So the honest summary of research-mode isolation today is: *the weak claim is on the road everyone
-travels, and the strong one is on a road you have to know exists.* Receipts now carry
+travels, and the strong one is on a road you have to know exists.*
+
+**Merging the two roads is FEASIBLE and not blocked (assessed 2026-07-28).** The obstacle looked
+structural — staging a PoC into a zero-NIC guest cannot use SSH or rsync, because there is no
+network device by construction. It is not structural. `VZVirtioFileSystemDeviceConfiguration`
+exposes a host directory to the guest as a **virtio PCI filesystem device**, mounted with
+`mount -t virtiofs`. That is not a network device and does not appear in `networkDevices`, so a
+configuration with **zero NICs and one shared directory is structurally valid**: no IP, no DNS, no
+TCP, no UDP, and still able to read files the host staged before boot. Every required binding was
+checked present in the installed `objc2-virtualization 0.3.2`. Estimate: about a week, no wall in
+Apple's framework.
+
+That matters because it turns "the strong posture exists but nobody travels it" from a permanent
+architectural fact into ordinary unfinished work — and a receipt sealed on that path could carry
+`isolation_basis: hypervisor-enforced`, whose provenance is a **function of a checked artifact**
+(the posture is derived from the program's proven effect set) rather than a string the host chose. Receipts now carry
 `isolation_basis` (`host-asserted`) so the artifact says which one produced it — that field exists
 precisely so this asymmetry cannot be inferred away by a reader.
 
