@@ -598,7 +598,9 @@ designed — the second time in this arc that declining to patch was the more us
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
 5. **Research elevation requires authorization** — bypass **CLOSED** (`e6ebfd2`); dual-use
    research remains intentional with explicit authorization, not a Safe free ride.  
-6. **Harness integrity + instrument fact — CLOSED 2026-07-27.** Language fixtures defaulted
+6. **Harness integrity + instrument fact — the two NAMED defects are closed; the CLASS is NOT
+   (re-opened 2026-07-28 by the 67-script audit, `scratchpad/fleet_20260726/harness_round1.md`).**
+   Language fixtures defaulted
    **DEBUG** while security graded **RELEASE**, so the two headline numbers described two different
    compilers. Both gates now use one instrument cascade and `audit_unified.sh` exports `ANUBIS_BIN`
    after the build, so CI cannot publish two builds as one number.
@@ -612,6 +614,41 @@ designed — the second time in this arc that declining to patch was the more us
 
    Binaries are now published as content-addressed read-only pins (`scripts/publish_pin.sh`) so a
    rebuild cannot mutate the instrument an agent is mid-measurement on.
+
+   **Re-opened as a named residual (2026-07-28).** All 48 `scripts/run_*.sh` plus 19 support gates
+   (67 scripts, 11,605 lines) were audited against five questions, with every red claim handed to an
+   independent verifier told to refute it: 35 confirmed, 11 refuted. `scripts/lib/gate_common.sh` is
+   sound and its guards do fire — `parse_expectation` reads `EXPECT:` only from the leading comment
+   block and rejects symlink/empty/duplicate/conflicting headers; `require_nonempty_corpus` refuses
+   count 0; `finalize` refuses counters that do not sum. **The defect is ADOPTION: 13 of 48 gates
+   call it.** Four findings, the first two reproduced by the lead:
+
+   - **`run_docs_drift_gate.sh` reports PASS having tested nothing — DEMONSTRATED.** Its verdict
+     reads only the failure counter (`:344 if [[ "$FAILS" -eq 0 ]]`); `$STAMPS_CHECKED` is printed
+     in the headline and never asserted. Run against an empty scan root it prints
+     `DOCS_DRIFT_GATE: PASS` / `Overall: PASS (0 stamps checked, 0 drift)` and exits 0. Not
+     flag-only: `docs_drift_scan.py:165` skips a missing owned doc with a bare `continue`, so a
+     rename produces the same vacuous green — and **2 of its 15 declared owned docs
+     (`SPEC_1_0_FREEZE.md`, `TUTORIAL.md`) are absent and silently skipped today**, so every
+     published stamp count already excludes them. The seal consumes this gate by matching
+     `^DOCS_DRIFT_GATE: PASS` (`run_seal_checklist.sh:741`). `SCAN_RC` is captured at `:113` and
+     never read.
+   - **`run_shadow_diff.sh` is vacuous by construction** — it harvests `ANUBIS_SHADOW:` stderr lines
+     and there are **zero** such emit sites in the compiler, so it has no failing input.
+   - **`run_offensive_platform_gate.sh:423-427` records `t3_uds` PASS in BOTH branches** — one of
+     the `34/34` cannot fail. Scoped: it is the only instance in that file; the adjacent `t3_dns`
+     is its own control.
+   - **Test-filter validation is by substring** — `run_keychain_se_gate.sh:14,17` filter on
+     PREFIXES of the real test names, and libtest exits 0 when a filter matches zero tests. Same
+     shape in `run_vz_apply_gate.sh` and three `run_dx_gate.sh` checks, which grade on the string
+     `test result: ok`.
+
+   **Instrument provenance is the most common defect:** nine gates grade whatever sits at
+   `target/release/anubis` with no freshness or digest check, bypassing the pin mechanism above.
+
+   Not claimed closed. The fix that would close the class is a shared coverage assertion in
+   `gate_common.sh` that every gate calls with its own counter, enforced by the adoption check —
+   patching the four individually is how this class survived to the audit that found it.
 
 7. **Function-identity carrier — CLOSED 2026-07-27 (`0eb5977`).** A function reference reaching an
    application site through a container built by `push`/`insert` rather than a literal
