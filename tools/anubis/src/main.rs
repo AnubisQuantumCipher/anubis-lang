@@ -6833,16 +6833,36 @@ mod tests {
 
     #[test]
     fn vz_start_help_is_explicit_about_tart_nat_and_native_zero_nic() {
-        use clap::CommandFactory;
+        // Rendered in a thread with an EXPLICIT 32MB stack.
+        //
+        // `Cli::command()` builds the whole clap tree — 38 top-level subcommands with deep nesting
+        // — and `render_long_help` recurses over it. On the default 2MB test-thread stack that
+        // aborts the entire test PROCESS:
+        //
+        //     thread '…' has overflowed its stack
+        //     fatal runtime error: stack overflow, aborting
+        //
+        // which takes down every other test in the binary, so one help assertion made the whole
+        // suite unrunnable. `RUST_MIN_STACK` fixes it only for whoever remembers to export it —
+        // the gate does, an ad-hoc `cargo test` does not, and a test that passes or aborts
+        // depending on the caller's environment is not a test. Owning the stack here makes it
+        // reproducible for everyone.
+        let handle = std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                use clap::CommandFactory;
 
-        let mut command = Cli::command();
-        let vz_start = command
-            .find_subcommand_mut("vz-start")
-            .expect("vz-start subcommand");
-        let help = vz_start.render_long_help().to_string();
-        assert!(!help.contains("network-isolated by default"), "{help}");
-        assert!(help.contains("shared NAT"), "{help}");
-        assert!(help.contains("native-boot"), "{help}");
+                let mut command = Cli::command();
+                let vz_start = command
+                    .find_subcommand_mut("vz-start")
+                    .expect("vz-start subcommand");
+                let help = vz_start.render_long_help().to_string();
+                assert!(!help.contains("network-isolated by default"), "{help}");
+                assert!(help.contains("shared NAT"), "{help}");
+                assert!(help.contains("native-boot"), "{help}");
+            })
+            .expect("spawn help-render thread");
+        handle.join().expect("help render panicked or overflowed");
     }
 
     #[test]
