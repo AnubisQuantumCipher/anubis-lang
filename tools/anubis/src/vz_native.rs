@@ -368,34 +368,24 @@ fn boot_with_kernel(
         }
     }
 
-    // Pre-buffer probe commands. The pipe holds them until the guest's /bin/sh reads stdin.
-    {
-        let mut w = unsafe { std::fs::File::from_raw_fd(stdin_fds[1]) };
-        for cmd in [
-            "echo __ANUBIS_PROOF_START__",
-            "ip link show",
-            "ip addr show",
-            "ls /sys/class/net/ 2>/dev/null || echo NO_SYSFS",
-            "echo __ANUBIS_PROOF_DNS__",
-            "cat /etc/resolv.conf 2>&1 || echo NO_RESOLV_CONF",
-            "ping -c1 -W2 8.8.8.8 2>&1 || echo PING_FAILED",
-            "echo __ANUBIS_PROOF_END__",
-        ] {
-            writeln!(w, "{cmd}").map_err(|e| anyhow!("ANUBIS_VZNATIVE_STDIN_WRITE: {e}"))?;
-        }
-    } // w drops → closes stdin_fds[1] → guest sees EOF after commands
+    // stdin_fds[1] stays OPEN until the shell prompt appears in console output. The reader
+    // thread injects probe commands when it detects `# ` (busybox prompt), then closes the
+    // write end so the shell sees EOF after the last command.
+    let stdin_wr_fd = stdin_fds[1];
 
     let console_output = Arc::new(Mutex::new(String::new()));
     let done = Arc::new(AtomicBool::new(false));
     let vm_started = Arc::new(AtomicBool::new(false));
     let start_err: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-    // Background reader: drains guest console output, prints to stderr, signals done.
+    // Background reader: drains guest console output, injects probe commands on prompt.
     let out_for_reader = console_output.clone();
     let done_for_reader = done.clone();
     let stdout_rd_fd = stdout_fds[0];
     std::thread::spawn(move || {
         let mut f = unsafe { std::fs::File::from_raw_fd(stdout_rd_fd) };
+        let mut stdin_w: Option<std::fs::File> =
+            Some(unsafe { std::fs::File::from_raw_fd(stdin_wr_fd) });
         let mut buf = [0u8; 4096];
         loop {
             match std::io::Read::read(&mut f, &mut buf) {
@@ -405,6 +395,24 @@ fn boot_with_kernel(
                     eprint!("{s}");
                     let mut out = out_for_reader.lock().unwrap();
                     out.push_str(&s);
+
+                    if stdin_w.is_some() && out.contains("# ") {
+                        if let Some(mut w) = stdin_w.take() {
+                            for cmd in [
+                                "echo __ANUBIS_PROOF_START__",
+                                "ip link show",
+                                "ip addr show",
+                                "ls /sys/class/net/ 2>/dev/null || echo NO_SYSFS",
+                                "echo __ANUBIS_PROOF_DNS__",
+                                "cat /etc/resolv.conf 2>&1 || echo NO_RESOLV_CONF",
+                                "ping -c1 -W2 8.8.8.8 2>&1 || echo PING_FAILED",
+                                "echo __ANUBIS_PROOF_END__",
+                            ] {
+                                let _ = writeln!(w, "{cmd}");
+                            }
+                        }
+                    }
+
                     if out.contains("__ANUBIS_PROOF_END__") {
                         done_for_reader.store(true, Ordering::SeqCst);
                     }
