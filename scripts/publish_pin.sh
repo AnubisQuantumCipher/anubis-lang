@@ -50,6 +50,51 @@ if [[ "${1:-}" == "--current" ]]; then
   exit 0
 fi
 
+# Record the SOURCE-TREE hash alongside the binary hash.
+#
+# The staleness guard above catches a binary OLDER than its sources. It cannot catch the inverse
+# failure, which bit this session three times: `cargo build` reporting "Finished in 0.15s" — claiming
+# up to date — when the last real compile predates an edit. The binary is then NEWER than the
+# sources by mtime and still does not contain them, so every mtime-based check passes and an agent
+# scores a fix that is not in the binary. It was caught only because a "rebuilt" binary had a
+# content-hash IDENTICAL to the previous pin, which cannot happen after a real source change.
+#
+# With the source hash in the .meta, anyone can ask the question that actually matters:
+#   does this pin correspond to the tree I am looking at?
+# `--verify` answers it in one command.
+src_tree_hash() {
+  find compiler/src tools/anubis/src solver/src compiler/stdlib \
+    -type f \( -name '*.rs' -o -name '*.anb' \) 2>/dev/null \
+    | LC_ALL=C sort \
+    | xargs shasum -a 256 2>/dev/null \
+    | shasum -a 256 | cut -d' ' -f1
+}
+
+if [[ "${1:-}" == "--verify" ]]; then
+  if [[ ! -f "$CURRENT" ]]; then echo "no pin published yet" >&2; exit 1; fi
+  pin="$(cat "$CURRENT")"
+  # `|| true` is load-bearing: grep exits 1 on no-match, and under `set -euo pipefail` that kills
+  # the assignment before the diagnostic below can print — the guard would fail SILENTLY, which is
+  # the exact defect it exists to catch. This is the third time in one session that this shape was
+  # written by the person auditing it.
+  recorded="$(grep -E '^src_tree:' "$pin.meta" 2>/dev/null | awk '{print $2}' || true)"
+  actual="$(src_tree_hash || true)"
+  if [[ -z "$recorded" ]]; then
+    echo "STALE-UNKNOWN: $pin has no src_tree hash (published before this guard existed)" >&2
+    exit 2
+  fi
+  if [[ "$recorded" != "$actual" ]]; then
+    echo "PIN DOES NOT MATCH THE TREE" >&2
+    echo "  pin:        $pin" >&2
+    echo "  pin src:    $recorded" >&2
+    echo "  actual src: $actual" >&2
+    echo "The binary was NOT built from the current sources. Rebuild before measuring." >&2
+    exit 1
+  fi
+  echo "pin matches tree: $pin"
+  exit 0
+fi
+
 if [[ ! -x "$SRC" ]]; then
   echo "no release binary at $SRC — build first (lead only; agents must not run cargo build)" >&2
   exit 1
@@ -117,6 +162,7 @@ echo "$pin" > "$CURRENT.tmp.$$" && mv "$CURRENT.tmp.$$" "$CURRENT"
   echo "source: $SRC"
   echo "head:   $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "utc:    $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  echo "src_tree: $(src_tree_hash)"
 } | tee "$pin.meta"
 
 echo
