@@ -425,6 +425,46 @@ never terminates is a check/run divergence of a different kind, and is being cha
     (`Unknown ⊔ Known = Unknown`); `_w0` unreadable by the `_p` fallback; composite place assign at
     both a literal and a symbolic index.
 
+    **Every control-flow join site measured fail-open — 8 of 8 (2026-07-28,
+    `scratchpad/fleet_20260726/adversary_round16.md`).** Asked to enumerate rather than sample, the
+    adversary produced a runtime witness (green `check` **and** a file actually written) for every
+    join construct in the language:
+
+    | site | construct | witness |
+    |---|---|---|
+    | J-if | `Stmt::If` then/else | j01, j02 |
+    | J-if-&& | `if a && b` | j09 |
+    | J-if-\|\| | `if a \|\| b` | j10 |
+    | J-match | statement `match` | j03, j12 |
+    | J-iflet | `Stmt::IfLet` | j04 |
+    | J-while | `while` body vs snap | j05 |
+    | J-loop | `loop` | j07 |
+    | J-for | `for` | j06 |
+
+    The discriminator is what makes this a mechanism and not a list: `j08`, where the path exists on
+    **both** arms, REJECTS; `j01`, where the key is introduced on a **subset** of arms, ACCEPTS and
+    writes the file. The bug is absence-treated-as-`Unknown`, not the join itself.
+
+    **The same round bounded its own claim.** The value-lane twin was measured, not assumed: v01–v05
+    (if/match/while push of a secret, then egress) all **REJECT** — secret sticks to the container
+    root through the value merge and the egress fires. The join fail-open is a **tag-lane** property.
+    Do not narrow the value seeders on these grounds.
+
+    **The clearest evidence the class is still widening (2026-07-28,
+    `scratchpad/fleet_20260726/auditor_round12.md`).** After the gate-tag join was repaired in
+    `merge_fn_alias_over` (missing key contributes `Known(empty)`, `mod.rs:5973-5982`), the
+    **identity** join **fifteen lines above it in the same function** still converted a missing key
+    into `Unknown` (`mod.rs:5955`), and `FnIdentitySet::union` annihilates on `Unknown` while
+    `into_singleton` returns `None` for it — so the destroyed key charged nothing. A witness whose
+    field identity exists on only the `then` arm passed `check` (rc=0) and violated at `run`. Fixed
+    by `FnIdentitySet::union_present` (`mod.rs:238`), which treats **absence** as neutral while
+    preserving `union`'s annihilator for a genuinely unresolved value — deliberately not the
+    one-token `unwrap_or` swap, so ordinary resolver joins keep their meaning. **Unscored** pending a
+    post-patch pin.
+
+    Shape 1 survived its own fix by one lane, in the same function. That is what "factory" means
+    here, and it is why this item stays open until the convergence test below actually runs.
+
     **Falsifiable convergence test, adopted as stated:** close the `_p`/`_w` parity, the merge
     `unwrap_or(Unknown)`, composite place-assign projection, and the c05 extract-to-let — then run a
     full residual re-sweep. Converged means **zero ACCEPT+file**, with only over-rejections and
