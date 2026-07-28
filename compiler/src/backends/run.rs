@@ -4119,13 +4119,30 @@ pub fn builtin_arity_error(callee: &str, argc: usize) -> Option<String> {
     // a positive twin at the stated arity SUCCEEDS — `len([1])`, `max([1])`, `min([1])`,
     // `flat([[1]])`, `declassify(1,"r")` all run=0.
     //
-    // `pop`, `push`, `insert` and `remove` are deliberately ABSENT. They are mutation builtins
-    // whose positive twins failed at their stated arity in a one-liner probe — they need a `mut`
-    // binding — so their arity could not be verified the same way. An unverified entry here would
-    // be precisely the asserted-but-unmeasured claim this repo refuses.
+    // The MUTATION builtins were absent until their twins could be verified. Their positive forms
+    // failed in a one-liner probe because they need a `mut` binding, and an entry justified by a
+    // failed probe would have been an assertion. Re-probed correctly:
+    //
+    //     let mut xs = [1,2]; pop(xs)          run=0
+    //     let mut xs = [1,2]; push(xs,3)       run=0
+    //     let mut xs = [1,2]; insert(xs,0,9)   run=0
+    //     let mut xs = [1,2]; remove(xs,0)     run=0
+    //
+    // The instrument was wrong, not the builtins — the same "validate the instrument before the
+    // number" lesson that has come up at every layer today.
     let stated_min = match callee {
-        "len" | "max" | "min" | "flat" => Some(1),
-        "declassify" => Some(2),
+        // Each verified BOTH ways: the deficient form fails at run, and a positive twin at the
+        // stated arity succeeds. Names whose twin could not be made to succeed are ABSENT — an
+        // entry justified by a failed probe would be an assertion, not a measurement.
+        //
+        //   len([1]) · max([1]) · min([1]) · flat([[1]]) · cyclic(4) · proof_assert(true)
+        //   p8(1) · p16(1) · p32(1) · p64(1)
+        //   let mut xs = [1,2]; pop(xs) · push(xs,3) · remove(xs,0) · insert(xs,0,9)
+        //   declassify(1,"r")
+        "len" | "max" | "min" | "flat" | "pop" | "cyclic" | "proof_assert" | "p8" | "p16" | "p32"
+        | "p64" => Some(1),
+        "declassify" | "push" | "remove" => Some(2),
+        "insert" => Some(3),
         _ => None,
     };
     if let Some(min) = stated_min {
