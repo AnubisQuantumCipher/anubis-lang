@@ -59,10 +59,31 @@ def names_in(src, fn_signature_marker, end_marker="\n}\n"):
     b = block(src, fn_signature_marker, end_marker)
     return set(re.findall(r'"([a-zA-Z_][a-zA-Z0-9_]*)"', b))
 
+def const_names(src, const_marker):
+    """Names from a `const X: &[&str] = &[ ... ];` array.
+
+    The gate used to read these out of the FUNCTION bodies. The lists were later refactored into
+    consts, leaving `fn is_non_run_builtin` as a one-line `NON_RUN_BUILTINS.contains(&callee)` with
+    no string literals in it at all — so the extraction silently returned an EMPTY set and the gate
+    counted 196 where the real surface is 213, reporting 17 phantom `extra_in_sh`.
+
+    A producer/consumer split of the same kind this repo has been closing all day: the names moved,
+    the reader did not, and the failure looked like a drifted mirror rather than a blind gate.
+    Reading both the function AND the const means neither refactor can hide the surface again.
+    """
+    i = src.find(const_marker)
+    if i < 0:
+        return set()
+    end = src.index("];", i)
+    return set(re.findall(r'"([a-zA-Z_][a-zA-Z0-9_]*)"', src[i:end]))
+
 is_builtin_inline = names_in(run_src, "pub fn is_builtin_name(name: &str) -> bool {")
-is_non_run = names_in(run_src, "fn is_non_run_builtin(callee: &str) -> bool {")
-is_poc_kit = names_in(run_src, "fn is_poc_kit_builtin(callee: &str) -> bool {")
-is_proof_input = names_in(run_src, "fn is_proof_input_builtin(callee: &str) -> bool {")
+is_non_run = (names_in(run_src, "fn is_non_run_builtin(callee: &str) -> bool {")
+              | const_names(run_src, "const NON_RUN_BUILTINS: &[&str] = &["))
+is_poc_kit = (names_in(run_src, "fn is_poc_kit_builtin(callee: &str) -> bool {")
+              | const_names(run_src, "const POC_KIT_BUILTINS: &[&str] = &["))
+is_proof_input = (names_in(run_src, "fn is_proof_input_builtin(callee: &str) -> bool {")
+                  | const_names(run_src, "const PROOF_INPUT_BUILTINS: &[&str] = &["))
 
 run_all = emit_names | is_builtin_inline | is_non_run | is_poc_kit | is_proof_input
 
