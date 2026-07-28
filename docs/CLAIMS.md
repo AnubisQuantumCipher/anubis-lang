@@ -198,6 +198,37 @@ reads as "nothing is open". It caught a real drift on first run (`docs/HANDOFF.m
 promise with no scope qualifier); fixed in the doc, not the gate. Watched to fail four ways
 (self-test, framing removed, open-issues emptied, restatement count fallen).
 
+### Untyped assertion helpers cannot discharge their own guard — named residual (2026-07-28)
+
+**Commit `1e8f76b`.** `scripts/run_stdlib_gate.sh` went 7 pass/4 fail → **10 pass/1 fail**. The
+survivor is `edges_all_modules`, and it is published rather than papered over.
+
+`testing::assert_eq(a, b)` is `if a != b { assert(false); }`. Checked as a standalone function with
+**free** params, `assert(false)` genuinely IS reachable — the checker is correct, and an earlier
+reading of this as a false reject was wrong. The gap is that the helper states no precondition; the
+principled fix, `requires(a == b)`, does not work today because the params are **untyped** and an
+untyped equality is outside the modelable set, so the `requires` never becomes a solver assumption.
+
+Demonstrated in both directions rather than asserted:
+
+```
+fn helper(a, b)           requires(a == b)   ->  ANUBIS_ASSERTION_DISPROVED (requires not modelable)
+fn helper(a: u32, b: u32) requires(a == b)   ->  discharges; `anubis run` exits 0
+```
+
+Typing the helpers `u32` would break every string call site, so the real fix is generics on the
+assertion helpers — the already-named HM/generics/traits residual, not a new class. **Not claimed:**
+that `anubis run` verifies stdlib self-tests built on untyped assertion helpers.
+
+Two adjacent findings from the same gate, both fixed: `math_mul` had a genuine i64 wrap
+(`4294967295^2` ≈ 1.8e19 vs a 9.2e18 ceiling) and now carries the checker's own counterexample-derived
+bounds; and the crash-PoC step was calling `run --allow-research` **on the host**, which the runtime
+refuses — it now routes through `anubis vz exploit` into a disposable guest with the crash op sealed
+into the receipt chain (`seq=2`), guest discarded. Where nested virtualization is unavailable that
+lane records an explicit SKIP naming the reason: a crash PoC that never ran isolated is not evidence.
+
+---
+
 **Counts reconciled** (commit `ae74be4`): language **247/247** (raised from a historical 244/244),
 native corpus **898** (raised from 888)
 across `AGENTS.md`, `README.md`, `CLAIMS.md`. Two of the nine flagged stamps were **historical**
