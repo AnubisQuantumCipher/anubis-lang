@@ -1080,11 +1080,13 @@ It is not. The blueprint's last criterion is *"a fresh adversarial hunt over the
 returns no new form"*, and the widest hunt yet run says:
 
 ```
-routes tried    65
-expressible     65     zero MALFORMED — every probe COULD have rejected
-CLOSED          24
-YES_OPEN        41
+round 1:  routes tried  65   expressible  65   MALFORMED 0   CLOSED 24   YES_OPEN 41
+round 2:  routes tried 157   expressible 157   MALFORMED 0   CLOSED 71   YES_OPEN 86
 ```
+
+The instrument held as the hunt scaled: MALFORMED stayed at ZERO across 157 probes, so every one
+had a rejecting direct twin and no capability granted on its path. That column is what makes 86 a
+finding rather than a pile.
 
 Zero MALFORMED is what makes the number mean anything: each probe had a rejecting direct twin and
 no capability granted on the path, so 41 ACCEPTs are 41 findings rather than 41 badly-built
@@ -1101,6 +1103,13 @@ fixtures. Evidence: `scratchpad/fleet_20260726/adversary/p15r1/`.
 | 3 | option/let binders — `if let Some` / `while let Some` |
 | 3 | map iteration |
 | 2 | identity / generic pass-through |
+
+**A first repair attempt moved nothing.** An edit seeding callable identity for closure arguments
+in `analyze_expr_effect` (the builtin-HOF dispatch point, driven by
+`effects::higher_order_closure_args`) closed **0 of the 41**, measured on the post-edit pin. That
+is evidence about WHICH LANE decides these: every one of the ten shapes closed earlier went
+through the applied-parameter summary and the CAPABILITY charge, not the effect walker. Seeding
+identity into a map the deciding consumer never reads changes nothing `check` looks at.
 
 The ten closed shapes were a SUBSET of the class, not the class. This repo has recorded the lesson
 before, on this exact surface: *the higher-order surface is infinite whack-a-mole — fix the
