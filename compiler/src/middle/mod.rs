@@ -3569,6 +3569,19 @@ fn scan_applied_param_local_aliases(
                     }
                 } else if matches!(init, Expr::Var(root) if root == param) {
                     aliases.insert(name.clone(), String::new());
+                } else if let Expr::Call { callee, args } = init {
+                    let from_param = args.first().is_some_and(|arg| {
+                        matches!(arg, Expr::Var(root) if root == param)
+                    });
+                    if from_param && matches!(callee.as_str(), "pop" | "last") {
+                        aliases.insert(name.clone(), "*".to_string());
+                    } else if from_param && matches!(callee.as_str(), "get" | "remove") {
+                        let path = args.get(1).and_then(|index| match index {
+                            Expr::Literal(v) | Expr::StrLiteral(v) => Some(v.clone()),
+                            _ => None,
+                        }).unwrap_or_else(|| "*".to_string());
+                        aliases.insert(name.clone(), path);
+                    }
                 }
                 if let Expr::Call { callee, .. } = init {
                     if let Some(path) = aliases.get(callee) {
