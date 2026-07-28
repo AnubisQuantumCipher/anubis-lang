@@ -11667,6 +11667,22 @@ fn analyze_expr_effect(
                             .unwrap_or_else(|| builtin_gate_tags_of(arg, scope, ctx));
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
                         if let Some(paths) = applied_paths.as_ref().and_then(|by_param| by_param.get(&i)) {
+                            if paths.contains("*") {
+                                let mut closures = BTreeMap::new();
+                                collect_container_closures(arg, "", scope, ctx, &mut closures);
+                                for closure in closures.into_values() {
+                                    if let Expr::Lambda { params, body } = closure.as_ref() {
+                                        let mut local = scope.clone();
+                                        for p in params {
+                                            local.insert(
+                                                p.clone(),
+                                                labelled_param_binding(p, false, None, false),
+                                            );
+                                        }
+                                        analyze_expr_effect(body, mode, &local, effects, ctx);
+                                    }
+                                }
+                            }
                             for path in paths {
                                 let ids = if path.is_empty() {
                                     fn_identities_of(arg, scope, ctx)
