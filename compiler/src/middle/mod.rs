@@ -4080,12 +4080,32 @@ fn scan_applied_param_local_aliases_in(
                     // pathological nesting cannot spin.
                     let mut inner: &Expr = args.first().unwrap_or(init);
                     for _ in 0..16 {
-                        let Expr::Call { callee: c2, args: a2 } = inner else { break };
+                        let Expr::Call {
+                            callee: c2,
+                            args: a2,
+                        } = inner
+                        else {
+                            break;
+                        };
                         if !matches!(
                             c2.as_str(),
-                            "pop" | "last" | "first" | "get" | "remove" | "flatten" | "reverse"
-                                | "drop" | "zip" | "concat" | "take" | "chunk" | "unique"
-                                | "slice" | "sort" | "values" | "identity"
+                            "pop"
+                                | "last"
+                                | "first"
+                                | "get"
+                                | "remove"
+                                | "flatten"
+                                | "reverse"
+                                | "drop"
+                                | "zip"
+                                | "concat"
+                                | "take"
+                                | "chunk"
+                                | "unique"
+                                | "slice"
+                                | "sort"
+                                | "values"
+                                | "identity"
                         ) {
                             break;
                         }
@@ -4099,8 +4119,19 @@ fn scan_applied_param_local_aliases_in(
                     if from_param
                         && matches!(
                             callee.as_str(),
-                            "pop" | "last" | "flatten" | "reverse" | "drop" | "zip" | "concat"
-                                | "take" | "chunk" | "unique" | "slice" | "sort" | "values"
+                            "pop"
+                                | "last"
+                                | "flatten"
+                                | "reverse"
+                                | "drop"
+                                | "zip"
+                                | "concat"
+                                | "take"
+                                | "chunk"
+                                | "unique"
+                                | "slice"
+                                | "sort"
+                                | "values"
                         )
                     {
                         aliases.insert(name.clone(), "*".to_string());
@@ -4532,6 +4563,26 @@ fn check_calls_expr_nc(
                     message: format!("call to unknown function `{}`", callee),
                     span: None,
                 });
+            }
+            // ARITY, from the lowerer's own table.
+            //
+            // Measured over all 213 builtins with a zero-argument probe: 170 passed `check` and
+            // then failed at RUN, and 2 (`max`, `min`) PANICKED — a wrong-arity call reinterpreted
+            // as "max of an empty collection" and reported as a semantic error. `check` returning 0
+            // for a program that cannot even be lowered is a direct promise violation.
+            //
+            // The check consults `emit_builtin_call`'s existing arity guard rather than adding a
+            // table, so the checker and the lowerer cannot disagree about how many arguments a
+            // builtin takes. A second table would be a second producer of one fact — the exact
+            // shape of defect closed at four other layers today.
+            if crate::backends::run::is_builtin_name(callee) && !fns.contains(callee) {
+                if let Some(msg) = crate::backends::run::builtin_arity_error(callee, args.len()) {
+                    ctx.diagnostics.push(SemanticDiagnostic {
+                        code: Some("ANUBIS_ARITY_ERROR".into()),
+                        message: msg,
+                        span: None,
+                    });
+                }
             }
             // A builtin closure position holding a value that CANNOT be callable is a type error
             // the runtime would otherwise discover by PANICKING:
@@ -17819,7 +17870,19 @@ fn scan_applied_param_stmts(
     for s in body {
         match s {
             Stmt::Let { name, init, .. } => {
-                if name == p {
+                // `let f = f;` is an IDENTITY REBIND, not a shadow.
+                //
+                // The shadow flag exists to exclude a parameter whose value has been REPLACED, so
+                // the summary never charges a caller for something the callee overwrote. Rebinding
+                // a name to ITSELF replaces nothing — the value is identical — yet it set the flag
+                // and disabled the whole summary, so
+                //
+                //     fn app(f) { let f = f; let f = f; f(...) }
+                //
+                // laundered a callable through two no-op statements. Restricted to the exact
+                // self-reference: `let f = g` still shadows, as it must.
+                let self_rebind = matches!(init, Expr::Var(v) if v == p);
+                if name == p && !self_rebind {
                     *shadows = true;
                 }
                 scan_applied_param_expr(init, p, applies, shadows, paths, method_names);
@@ -17962,6 +18025,19 @@ fn scan_applied_param_expr(
                         *applies = true;
                         paths.insert(String::new());
                     }
+                }
+                // A LAMBDA in a HOF closure position is INVOKED by the builtin, so a formal applied
+                // inside its body is applied.
+                //
+                // `Expr::Lambda` is a deliberate no-op in this walker, because a lambda that is
+                // merely stored may never run and charging it would false-reject. That reasoning
+                // does not hold HERE: `times(1, || f(...))` and `each(xs, |x| f(...))` call the
+                // closure by definition, and the exclusion let them launder the capability —
+                // `times` with a direct NAME rejected while the same call through a formal did not.
+                //
+                // Gated on the closure POSITION of a known HOF, so a stored lambda is still exempt.
+                if let Some(Expr::Lambda { body, .. }) = args.get(j) {
+                    scan_applied_param_expr(body, p, applies, shadows, paths, method_names);
                 }
             }
             // A HOF applies a closure to elements of its data argument. If that data argument is a

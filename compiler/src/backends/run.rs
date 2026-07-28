@@ -4092,6 +4092,31 @@ fn collect_free_stmts(
 
 /// Dispatch a standard-library builtin call. Returns `None` if `callee` is not a builtin (so it
 /// falls through to a user-defined function call). `args` are already-lowered Rust expressions.
+/// Does calling `callee` with `argc` arguments fail the LOWERER's own arity check?
+///
+/// The checker used to know nothing about builtin arity, so `max()`, `len()`, `push()` and 167
+/// others passed `check` and then failed at runtime — 170 of 213 builtins, measured. That is a
+/// direct promise violation: a PASS is supposed to mean no way was found for the program to
+/// violate its contracts, and a program that cannot even be lowered is one `check` should reject.
+///
+/// This probes `emit_builtin_call` with placeholder arguments rather than introducing an arity
+/// TABLE. A second table would be a second producer of the same fact, free to drift from the one
+/// the runtime actually uses — which is the defect this repo has spent the day closing at every
+/// other layer. One source of truth, consulted twice.
+pub fn builtin_arity_error(callee: &str, argc: usize) -> Option<String> {
+    let placeholders: Vec<String> = (0..argc).map(|i| format!("__anb_arg{i}")).collect();
+    match emit_builtin_call(callee, &placeholders) {
+        Some(Err(e)) => {
+            let msg = e.to_string();
+            // ONLY arity. `emit_builtin_call` also refuses for reasons that are not the caller's
+            // fault at check time — an unsupported backend lane, a gated name — and rejecting on
+            // those would turn this into a false-reject engine.
+            msg.contains("expects").then_some(msg)
+        }
+        _ => None,
+    }
+}
+
 fn emit_builtin_call(callee: &str, args: &[String]) -> Option<Result<String>> {
     // Fixed-arity builtin → `anubis_fn(args...)`, with an arity check.
     fn fixed(fn_name: &str, callee: &str, args: &[String], arity: usize) -> Result<String> {
