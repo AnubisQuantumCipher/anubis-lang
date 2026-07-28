@@ -853,6 +853,26 @@ marker an auditor must take on the operator's word. Confinement on the native pa
 the hypervisor configuration and does not require trusting a string. Do not let the word
 "isolation" carry the second claim's weight on the first claim's evidence.
 
+**And the strong path is NOT the default one (2026-07-28).** `native-preflight` is a separate
+backend: `VzCmd::NativePreflight` / `NativeBoot` dispatch to `vz_native`, while `VzCmd::Exploit` and
+`VzCmd::Fuzz` go down the tart lifecycle. **There is no `--native` flag on `vz exploit` or
+`vz fuzz`, no shared dispatch path, and no fallback from tart to native.** An operator running a
+crash op gets the host-asserted marker; the hypervisor-enforced posture requires knowing to invoke a
+different subcommand that does not run the crash op.
+
+So the honest summary of research-mode isolation today is: *the weak claim is on the road everyone
+travels, and the strong one is on a road you have to know exists.* Receipts now carry
+`isolation_basis` (`host-asserted`) so the artifact says which one produced it — that field exists
+precisely so this asymmetry cannot be inferred away by a reader.
+
+**Attempts to anchor the tart marker were examined and rejected with a reason, not abandoned.** A
+guest co-signature, a nonce challenge, and a clone-derived binding all fail for the same structural
+reason: the host SSHes into the disposable guest with known credentials to stage, execute and
+scrape, so any key the guest holds is readable over that channel. There is no trust boundary to
+anchor to. A real co-signature needs a vTPM, a sealed enclave, or credentials the SSH user does not
+hold — the CoW clone has none, and the host owns the base image. That is an impossibility result
+under the current architecture, and it is why the answer is a label rather than a mechanism.
+
 ### Container-PARAM carrier — OPEN, and the boundary is the PATH, not the param (2026-07-28)
 
 A user function carrying `uses(fs.write)` reaches an application site through a **container passed
