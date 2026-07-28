@@ -996,9 +996,38 @@ and all 108 are dual-concern fixtures where the effect declaration is legitimate
 is for confidentiality. That heuristic is therefore correct for adversary launder claims and wrong
 as a corpus gate, and is not used as one.
 
-The 104 `EXPECT: PASS` fixtures have **not** had this treatment. Poisoning all of them is the
-outstanding question, and until it is run the honest statement is that the suite's pass side is
-unaudited for reachability.
+The 104 `EXPECT: PASS` fixtures have now had it, twice, and the two runs say different things.
+
+**Entry-point poison: 104/104 REACHES.** An unauthorized effect helper called from `main` is
+charged in every shipping PASS fixture, so the instrument is not dead on `main`. That is a weaker
+result than it sounds and the adversary said so unprompted: it does not show that the property
+path each fixture claims to guard was analyzed, only that *something* was.
+
+**Path-aligned poison** — a poison that violates the same property along the same construct,
+derived mechanically from the program text (strip a `declassify`, strip a `uses(...)`, turn a
+pure callable in a list into a writer, break an `ensures`) — gives the honest picture:
+
+| verdict | count | meaning |
+|---|---|---|
+| REACHES_PATH | 72 | the poison rejects: the guarded path really is analyzed |
+| UNDERIVED | 25 | no strategy produced a twin — needs a hand-written one |
+| MODE_ALLOWS | 5 | `@audit`/`@research`/`@fuzz`: the poison is *authorized*, not unseen |
+| OFFTOPIC_POISON | 1 | the derived poison does not touch the guarded path |
+| MODE_OR_OFFTOPIC | 1 | either of the above; not separable mechanically |
+| **BLIND_SHAPE** | **0** | **no safe-mode PASS fixture accepts a path-aligned poison** |
+
+So the pass side is no longer unaudited — but it is not fully audited either, and the number
+that matters is **25**, not 104. Those 25 are fixtures whose property no mechanical strategy
+could express (struct patterns, PoC lanes, implicit-flow locals, authority attributes); a human
+has to name the property and write the twin. They are counted as coverage today and their
+reachability is unknown.
+
+The boundary is itself a finding: **path-aligned poison derivation is ~75% mechanical and cannot
+be finished mechanically.** Deciding whether a poison is off-topic requires knowing what the
+fixture *meant*, and distinguishing "the shape was never walked" from "the poison is permitted
+under this mode" requires reading the mode attributes. `MODE_ALLOWS` is the trap: five fixtures
+accept a stripped `declassify` because their mode authorizes it, and scoring those as BLIND
+would have invented five defects that do not exist.
 
 ### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
 
