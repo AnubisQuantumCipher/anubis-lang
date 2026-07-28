@@ -60,6 +60,24 @@ WALKERS=(
   trifecta::walk_expr:partial-expr
 )
 
+# NOT REGISTERED, and the reason is the point.
+#
+# `seed_taint_pattern`, `seed_effect_pattern`, `seed_secret_pattern` and
+# `propagate_pattern_closures` all PASS `partial-expr` — and all four pass it VACUOUSLY.
+#
+# The first three match zero `Expr`, `Stmt` and `Pattern` variants by name, so there is no arm to
+# inspect and "OK" means only "nothing to look at". The fourth is subtler and nearly fooled me: its
+# sole match is `Expr::Var(sv)`, a TUPLE variant, while `enum_variants` parses only brace-struct
+# variants — so the checker tracks no fields for it and again has nothing to bind.
+#
+# A registry entry is a CLAIM that a walker is constrained. An entry a walker satisfies by having no
+# inspectable arms is the same defect as a gate that passes an empty corpus, which is the class this
+# harness exists to catch. Registering these four would take the count from 10 to 14 and constrain
+# nothing.
+#
+# Both gaps are real and named: a Pattern-aware contract, and tuple-variant field tracking. Neither
+# exists yet, so these four stay OUT.
+
 if [[ "${1:-}" == "--self-test" ]]; then
   # Plant the defect in a SCRATCH COPY, never in the live file.
   #
