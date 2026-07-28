@@ -174,7 +174,7 @@ fn anubis_tuple_hash(label: AnubisValue, parts: AnubisValue) -> AnubisValue {
     msg.extend_from_slice(&(lab.len() as u32).to_be_bytes());
     msg.extend_from_slice(&lab);
     msg.extend_from_slice(&(items.len() as u32).to_be_bytes());
-    for p in &items {
+    for p in items.iter() {
         let b = anubis_crypto_bytes(p);
         msg.extend_from_slice(&(b.len() as u32).to_be_bytes());
         msg.extend_from_slice(&b);

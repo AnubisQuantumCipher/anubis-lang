@@ -14,6 +14,14 @@ exception_reason() {
     scripts/check_metal_parity.sh) echo "hardware proof matrix finalized by gate11-metal-parity" ;;
     scripts/gate10_a15_reproduce.sh) echo "historical A15 reproduction driver" ;;
     scripts/publish_pin.sh) echo "publishes a content-addressed binary pin; its stale-source guard globs *.anb and says 'fail', which trips the candidate heuristic — it scores no fixtures" ;;
+    # The three META-tools. They are not gates and have no corpus: each takes ONE fixture pair and
+    # returns a classification (0 YES_OPEN / 2 CLOSED / 3 MALFORMED), which gates and agents then
+    # consume. `gate_common` exists to stop a CORPUS scorer reporting PASS over nothing; applied
+    # here it would demand a coverage assertion over a corpus that does not exist. Each carries a
+    # `--self-test` instead, and G22 runs one of them in the suite.
+    scripts/fixture_preflight.sh) echo "single-fixture classifier, not a corpus scorer; returns 0/2/3 for one pair and is guarded by --self-test (run as G22)" ;;
+    scripts/guard_reachability.sh) echo "single-fixture classifier (poison a guard, see if the analysis notices); returns 0/2/3 for one pair and is guarded by --self-test" ;;
+    scripts/instrument_hygiene.sh) echo "meta-check over the TOOLS rather than fixtures; scores no corpus and asserts on tool invariants" ;;
     scripts/run_author_diversity_gate.sh) echo "source authorship audit, not an Anubis fixture corpus" ;;
     scripts/run_check_confine_run_gate.sh) echo "fixed end-to-end confinement scenario" ;;
     scripts/run_dx_gate.sh) echo "fixed DX assertions; EXPECT text is test-runner input" ;;
