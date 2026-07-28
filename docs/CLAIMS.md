@@ -593,6 +593,63 @@ policy consumers to its exact/singleton result. The auditor declined to build a 
 builtin-identity mechanism on the grounds that it would overlap the effect-tag resolver already being
 designed — the second time in this arc that declining to patch was the more useful output.
 
+### The promise sentence — SCOPED, with a mandatory refuse-tier (2026-07-28)
+
+The completion promise was:
+
+> `anubis check` PASS ⇒ Anubis found no way to violate contracts, effects, capabilities or
+> information-flow — **and everything it could not decide, it refused rather than assumed.**
+
+**The second clause was false as written, and the code said so in its own comments.**
+`compiler/src/middle/mod.rs:273-274` states policy: *"Default-lane policy deliberately defers
+Unknown; it never invents a gate."* `:6789` — *"defers (fail-open, the documented residual)"*.
+`:7015` — *"DEFER the whole block (fully fail-open)"*. A deferral **is** an accept: the program
+compiles, runs, and does whatever it does.
+
+The distinction that resolves it, adopted from the adversary's round-24 judgment:
+
+| | `check` PASS + **silence** | PASS + **visible residual** | non-zero |
+|---|---|---|---|
+| what the user believes | certified | knows the residual | must fix or opt in |
+| clause 2 | **BROKEN** | honest **iff** the sentence scopes it | **held** |
+
+**A silent deferral is an assumption of "no problem."** That is the whole defect — not the deferring.
+
+**Measured cost of the alternative.** Making `check` refuse every undischarged obligation was
+costed, not guessed: ≥15 unit tests in `compiler/src/lib.rs` *require* fail-open ACCEPT by name,
+against ~485 on-disk fixtures — **order 10² currently-green accepts**, not five. Note the checker is
+already partly there: `obligation_undecided_is_unsound` (`mod.rs:12535-12541`) **fails closed** on
+solver UNKNOWN for `assert`/`ensures`/`requires@`/loop-invariants. The hole is *no obligation
+emitted at all* — PASS with empty proof work.
+
+**Adopted policy — three tiers:**
+
+| tier | classes | clause 2 |
+|---|---|---|
+| **A — MUST REFUSE** | unknown lexer character; malformed tokens; Unknown-by-destruction in the security lanes; emitted solver UNKNOWN on an obligation | true |
+| **B — deferred, NAMED** | unmodelable contract predicates; match-arm/lambda contract bodies; float/string model gaps; tag `Unknown` no-charge | true **only if named and visible** |
+| **C — runtime-enforced** | explicit runtime residual | true if labelled |
+
+**The scoped sentence, replacing the original:**
+
+> `anubis check` PASS means: every obligation class listed as **proved** was discharged or the check
+> failed; every class listed as **deferred** produced a **visible residual** — a diagnostic or a
+> report field — not a silent accept; and the source bytes were **fully tokenized** (unknown
+> characters refuse). Deferred classes are **not** "proved absent."
+
+**A-tier item 1 is CLOSED (`5cf2e05`).** The lexer's character dispatch ended in `_ => {}` — an
+unrecognized character was silently DELETED, so `check` certified a program that was not the program
+on disk (a file containing `U+00A7` passed with rc=0). Because identifiers are ASCII-only, every
+non-ASCII letter and non-ASCII whitespace such as `U+00A0` vanished the same way. It now emits a
+token, the parser refuses, and the user gets a span with a caret. `@` remains deliberately dropped —
+attributes lex as bare names — now explicit rather than an accident of the wildcard. Measured:
+security 311/311, language 244/244, stdlib 104/104, zero accept→reject flips.
+
+Remaining A-tier items are open and named. The B-tier residual list is the enumeration in
+`scratchpad/fleet_20260726/adversary_round24.md` with `path:LINE` per site and a "PASS with silence?"
+column. **Do not publish the original sentence over the current behaviour** — it is the one claim a
+stranger will quote back.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
