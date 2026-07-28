@@ -1352,6 +1352,7 @@ fn seal_vz_disposable_action(
         "body_ok": body_ok,
         "body_err": body_err,
         "isolation": "tart-disposable-guest",
+        "isolation_basis": "host-asserted",
         "extra": payload_extra,
         "scrape": scrape,
     });
