@@ -23,6 +23,12 @@ will refuse to let you end the turn while an agent is done-but-untasked.
 
 That sentence is the product. Every task below serves it.
 
+**It is deliberately not "cannot violate."** Green means **no KNOWN defects — not no defects**;
+absolute totality **is not established**, and a green board is exactly when a claim surface is most
+dangerous. The live open-issues list is [`docs/CLAIMS.md`](CLAIMS.md) — it is the single source of
+truth for current status, and this restatement inherits every limit recorded there rather than
+standing on its own.
+
 ### The disease (from `docs/CLAIMS.md`, the trust anchor)
 
 > **A user writes something down, or a producer computes a label, and a consumer ignores it or

@@ -40,6 +40,7 @@
 #   G21 Formal (Lean; EXTERNAL without elan/lake)
 #   G22 Fixture preflight self-test (an ACCEPT that cannot reject is not a finding)
 #   G23 Carrier totality (a new Expr variant breaks the build until classified)
+#   G24 Promise coherence (the headline promise inherits the open-issues framing)
 #
 # G16-G22 publish numbers the board cites and were, for most of their life, never run by CI.
 # They are listed here so the gap between "a gate exists" and "a gate runs" stays visible.
@@ -424,6 +425,19 @@ else
   gate "G23_carrier_totality" "FAIL" "carrier totality not enforced (see g23_carrier.log)"
 fi
 
+# G24 — Phase 6: the headline promise must INHERIT the open-issues framing.
+#
+# `CLAIMS.md` already says "green means no KNOWN defects — not no defects". The gap was that the
+# promise, restated in other docs, did not inherit it: a reader who meets the promise in HANDOFF.md
+# and never reaches CLAIMS.md leaves with a stronger claim than this repo can discharge. Registering
+# it here is the point — it caught a real drift in HANDOFF.md the first time it ran, and an
+# unregistered gate only catches things while someone remembers to run it.
+if bash scripts/run_promise_coherence_gate.sh >"$OUT/g24_promise.log" 2>&1; then
+  gate "G24_promise_coherence" "PASS" "every promise restatement carries scope + CLAIMS.md pointer"
+else
+  gate "G24_promise_coherence" "FAIL" "promise drifted from the open-issues framing (see g24_promise.log)"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
@@ -435,7 +449,7 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do
