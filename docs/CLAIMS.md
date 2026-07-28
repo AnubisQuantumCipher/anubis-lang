@@ -1070,6 +1070,43 @@ under this mode" requires reading the mode attributes. `MODE_ALLOWS` is the trap
 accept a stripped `declassify` because their mode authorizes it, and scoring those as BLIND
 would have invented five defects that do not exist.
 
+### VZ networking: the whole lifecycle now reports OBSERVED state, or refuses (2026-07-28)
+
+Source `e5649cb`, verified on one signed immutable pin
+`ae5b0d692db9a0c67376621c2f1a7c009b80ef78b76c5e87e3ead851254dbc5e`
+(`com.apple.security.virtualization=true`, mode 555).
+
+| surface | behaviour now |
+|---|---|
+| request CLI | typed `off\|loopback\|nat`; `typo` / `unknown` parse-fail |
+| Tart `off` / `loopback` | structural refuse — `ANUBIS_VZ_NET_STRUCTURAL` |
+| Tart explicit `nat` | canonical default argv, no `--net-softnet` |
+| inventory / status | **`unknown`** — Tart exposes no launch mode |
+| generic exec | **`unknown`** |
+| already-running start | **`unknown`** |
+| fresh controlled start | `nat` — we launched it, so we know |
+| stress metadata | `nat` |
+| help / docs / catalog | no "network isolated" or "no egress" overclaims |
+
+The rule underneath: **a label is honest only where the code OBSERVED or CAUSED the state.**
+Everywhere else it refuses. This morning `--network off` reported isolation it did not have, and
+`tart_reported_network()` returned a constant — the same defect twice, in opposite directions.
+
+Verification on that pin: 251/251 binary tests · Lean formal gate PASS · Tart live matrix PASS ·
+native guest-side `ZERO-NIC PROOF VERIFIED` · offensive stress 34/34 with SHA parity and
+`torn_down` · receipt chain `LAB_REAL_HMAC` · disposable-guest cleanup confirmed.
+
+**Explicit non-claims, which are what make the above readable:**
+
+1. The delegated independent review (`deleg_f0a99855`) **did not pass** — it died on HTTP 429 after
+   inspecting diffs. Local audit, tests and live evidence were used instead. A review that
+   terminated is not a review that approved.
+2. Legacy `vmctl` live enforcement is **UNAVAILABLE** — its installed launcher targets a missing
+   executable. Covered by Rust mapping and unknown-status tests only, never marked PASS.
+3. A stress guest's `git_head` can differ from the host pin source; the **binary SHA** is the
+   provenance pin, not the commit.
+4. Earlier pins are historical only.
+
 ### Native VZ: what a green `receipt-verify` does and does not establish (2026-07-28)
 
 The native path (`anubis vz native-boot`) now runs the language inside a hypervisor-enforced
