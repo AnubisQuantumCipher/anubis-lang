@@ -80,6 +80,11 @@ set -u
 # no-ops (runs zero checks, reports UNEXPECTED=0 vacuously). The golden image has coreutils.
 export PATH=/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/bin:$PATH
 export CARGO_BUILD_JOBS=6 RAYON_NUM_THREADS=6 CARGO_INCREMENTAL=0 RUST_MIN_STACK=67108864
+# Say WHERE we are rather than making every gate infer it. There is no nested virtualization here,
+# so gates whose lane needs a disposable guest must SKIP with a reason and score against a guest
+# floor — inferring that from `command -v tart` works today only because the image happens not to
+# carry tart, which is a coincidence, not a statement.
+export ANUBIS_IN_VM_GUEST=1
 ulimit -n 65536 2>/dev/null || true
 command -v timeout >/dev/null || { echo "FATAL: GNU timeout missing in guest — run: brew install coreutils"; exit 3; }
 cd "$HOME/anubis-lang"

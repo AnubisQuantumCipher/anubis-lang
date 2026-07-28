@@ -196,7 +196,23 @@ total=$((pass+fail))
 
 # Coverage ratchet (adversary R49): case total must not silently shrink.
 set +e
-assert_floor "stdlib_gate" "$total" "$ROOT/scripts/floors/stdlib_gate.count_floor"
+# The floor is keyed by whether the DISPOSABLE-GUEST LANE exists here, because the case count
+# legitimately differs between environments and one floor cannot describe both.
+#
+# On the host the crash PoC runs in a throwaway VM (11 cases). Inside the VM battery there is no
+# nested virtualization, so that lane is structurally unavailable and SKIPs (10 cases) — and a single
+# shared floor read that as `coverage fell: stdlib_gate=10, floor is 11`, failing a guest run where
+# every case that COULD run passed. Same shape as the shared runtime-fixture floor fixed earlier:
+# a number describing one environment consulted as if it described another.
+#
+# Keyed, both still ratchet: losing a case in either environment is still caught, and the SKIP keeps
+# its explicit reason in the report so an unavailable lane can never read as a pass.
+if [[ -z "${ANUBIS_IN_VM_GUEST:-}" ]] && command -v tart >/dev/null 2>&1; then
+  _floor_env="host_with_guest_lane"
+else
+  _floor_env="no_guest_lane"
+fi
+assert_floor "stdlib_gate[$_floor_env]" "$total" "$ROOT/scripts/floors/stdlib_gate.$_floor_env.count_floor"
 _floor_rc=$?
 set -e
 if [[ $_floor_rc -ne 0 ]]; then

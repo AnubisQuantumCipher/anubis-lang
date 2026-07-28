@@ -230,7 +230,7 @@ produced. **Claimed:** the fixpoint is measured, reproducible, and its movement 
 
 ---
 
-### Untyped assertion helpers cannot discharge their own guard — named residual (2026-07-28)
+### `std.testing` used the PROOF construct for RUNTIME assertions — CLOSED (2026-07-28)
 
 **Commit `1e8f76b`.** `scripts/run_stdlib_gate.sh` went 7 pass/4 fail → **10 pass/1 fail**. The
 survivor is `edges_all_modules`, and it is published rather than papered over.
@@ -248,9 +248,28 @@ fn helper(a, b)           requires(a == b)   ->  ANUBIS_ASSERTION_DISPROVED (req
 fn helper(a: u32, b: u32) requires(a == b)   ->  discharges; `anubis run` exits 0
 ```
 
-Typing the helpers `u32` would break every string call site, so the real fix is generics on the
-assertion helpers — the already-named HM/generics/traits residual, not a new class. **Not claimed:**
-that `anubis run` verifies stdlib self-tests built on untyped assertion helpers.
+**That diagnosis was wrong, and the correction is the finding.** The problem was never the type
+system — it was the CONSTRUCT. `assert(c)` is a PROOF obligation ("prove `c` on every path, refuse to
+build otherwise"); `panic(msg)` is a RUNTIME abort carrying no obligation. A test asserts a fact
+about ONE concrete run; it does not claim the fact is provable for all inputs, and `assert` claims
+exactly that. `std.testing`'s header has read "RUNTIME assertion helpers" since it was written — only
+its body disagreed, which is this repo's recurring producer/consumer split appearing between a
+module's docstring and its implementation.
+
+Both repairs tried first (`requires(a == b)`, typing the params `u32`) were attempts to make an
+obligation dischargeable that should never have existed. Switching the six helpers to `panic` gave up
+nothing verified: the obligation was never dischargeable and never intended, and a caller who wants
+the checker to PROVE something still writes `assert(...)` directly.
+
+Enforcement verified in BOTH directions, because this change could silently turn every test
+assertion into a no-op:
+
+```
+assert_eq(2 + 2, 5)  ->  rc=1, ANUBIS_PANIC "assert_eq: values differ"; the next line never runs
+assert_eq(2 + 2, 4)  ->  passes; edges_all_modules runs to completion
+```
+
+**`stdlib gate: PASS (11 pass, 0 fail)`**, up from 7/4 at the start of this arc.
 
 Two adjacent findings from the same gate, both fixed: `math_mul` had a genuine i64 wrap
 (`4294967295^2` ≈ 1.8e19 vs a 9.2e18 ceiling) and now carries the checker's own counterexample-derived
