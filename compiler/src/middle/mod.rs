@@ -3731,6 +3731,31 @@ fn scan_alias_expr_block(
                 }
             }
         }
+        // A binder body may itself be a binder. `match o { Some(inner) => match inner { Some(f) =>
+        // f(…) } }` puts a whole `Expr::Match` in the arm, and stopping at Block/Call meant the
+        // inner binder was never recorded — an `Option<Option<_>>` unwrap laundered a callable in
+        // two lines.
+        Expr::Match { scrutinee, arms, .. } => {
+            for arm in arms {
+                record_binder_aliases(&arm.pattern, scrutinee, param, aliases);
+                scan_alias_expr_block(&arm.body, param, applies, paths, fn_returns_param, aliases);
+            }
+        }
+        Expr::IfLet {
+            pattern,
+            scrutinee,
+            then,
+            else_,
+            ..
+        } => {
+            record_binder_aliases(pattern, scrutinee, param, aliases);
+            scan_alias_expr_block(then, param, applies, paths, fn_returns_param, aliases);
+            scan_alias_expr_block(else_, param, applies, paths, fn_returns_param, aliases);
+        }
+        Expr::If { then, else_, .. } => {
+            scan_alias_expr_block(then, param, applies, paths, fn_returns_param, aliases);
+            scan_alias_expr_block(else_, param, applies, paths, fn_returns_param, aliases);
+        }
         _ => {}
     }
 }

@@ -367,6 +367,18 @@ pub fn vz_status() -> Result<Vec<VzGuest>> {
     Ok(guests)
 }
 
+fn legacy_vmctl_reported_network(value: &serde_json::Value) -> VzNetwork {
+    if value
+        .get("network_window_active")
+        .and_then(|active| active.as_bool())
+        .unwrap_or(false)
+    {
+        VzNetwork::Nat
+    } else {
+        VzNetwork::Off
+    }
+}
+
 fn vz_status_legacy_vmctl() -> Result<Vec<VzGuest>> {
     let output = run_vmctl(&["status", "--json"])?;
     if !output.status.success() {
@@ -378,10 +390,7 @@ fn vz_status_legacy_vmctl() -> Result<Vec<VzGuest>> {
         serde_json::from_str(&raw).map_err(|e| anyhow!("ANUBIS_VZ_STATUS_PARSE: {e}"))?;
     let mut guests = Vec::new();
     for v in vms {
-        let net_active = v
-            .get("network_window_active")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
+        let network = legacy_vmctl_reported_network(&v);
         guests.push(VzGuest {
             name: v["name"].as_str().unwrap_or("").into(),
             role: VzRole::OffensiveLab,
@@ -391,11 +400,7 @@ fn vz_status_legacy_vmctl() -> Result<Vec<VzGuest>> {
             distribution: v["distribution"].as_str().unwrap_or("").into(),
             running: v["running"].as_bool().unwrap_or(false)
                 || v["status"].as_str() == Some("running"),
-            network: if net_active {
-                VzNetwork::Nat
-            } else {
-                VzNetwork::Off
-            },
+            network,
             backend: "legacy_vmctl".into(),
         });
     }
@@ -598,7 +603,7 @@ pub fn vz_exec(
         stdout,
         stderr,
         duration_ms: duration.as_millis() as u64,
-        network: VzNetwork::Nat,
+        network: tart_reported_network(),
         evidence_hash,
         backend: "tart".into(),
     })
@@ -611,6 +616,13 @@ fn vz_exec_legacy_vmctl(
     timeout_secs: u64,
 ) -> Result<VzExecResult> {
     let start = SystemTime::now();
+    let effective_network = vz_status_legacy_vmctl()?
+        .into_iter()
+        .find(|candidate| candidate.name == guest && candidate.running)
+        .ok_or_else(|| {
+            anyhow!("ANUBIS_VZ_GUEST_NOT_RUNNING: `{guest}` is not a running legacy vmctl guest")
+        })?
+        .network;
     let working_dir = cwd.unwrap_or(EXPORTS_PREFIX);
     let mut args = vec!["exec", "--name", guest, "--cwd", working_dir, "--timeout"];
     let timeout_s = timeout_secs.to_string();
@@ -632,7 +644,7 @@ fn vz_exec_legacy_vmctl(
         stdout,
         stderr,
         duration_ms: duration.as_millis() as u64,
-        network: VzNetwork::Off,
+        network: effective_network,
         evidence_hash,
         backend: "legacy_vmctl".into(),
     })
@@ -1318,7 +1330,7 @@ pub fn vz_stress_battery(eng: &Engagement, guest: &str, engage_dir: &Path) -> Re
         stdout,
         stderr,
         duration_ms: duration.as_millis() as u64,
-        network: VzNetwork::Nat,
+        network: tart_reported_network(),
         evidence_hash,
         backend: "tart-disposable-guest-gate".into(),
     };
@@ -1519,6 +1531,35 @@ mod tests {
             !args.iter().any(|arg| arg.starts_with("--net-softnet")),
             "ordinary Tart NAT must use the canonical shared-NAT path: {args:?}"
         );
+    }
+
+    #[test]
+    fn legacy_vmctl_requested_modes_map_to_honest_effective_modes() {
+        assert_eq!(legacy_vmctl_network_flag(&VzNetwork::Off), "off");
+        assert_eq!(
+            legacy_vmctl_effective_network(&VzNetwork::Off),
+            VzNetwork::Off
+        );
+        assert_eq!(legacy_vmctl_network_flag(&VzNetwork::LoopbackOnly), "off");
+        assert_eq!(
+            legacy_vmctl_effective_network(&VzNetwork::LoopbackOnly),
+            VzNetwork::Off
+        );
+        assert_eq!(legacy_vmctl_network_flag(&VzNetwork::Nat), "nat");
+        assert_eq!(
+            legacy_vmctl_effective_network(&VzNetwork::Nat),
+            VzNetwork::Nat
+        );
+    }
+
+    #[test]
+    fn legacy_vmctl_status_decodes_effective_network_for_exec_reporting() {
+        let nat = serde_json::json!({"network_window_active": true});
+        let off = serde_json::json!({"network_window_active": false});
+        let missing = serde_json::json!({});
+        assert_eq!(legacy_vmctl_reported_network(&nat), VzNetwork::Nat);
+        assert_eq!(legacy_vmctl_reported_network(&off), VzNetwork::Off);
+        assert_eq!(legacy_vmctl_reported_network(&missing), VzNetwork::Off);
     }
 
     #[test]
