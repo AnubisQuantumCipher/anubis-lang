@@ -4117,6 +4117,43 @@ fn scan_applied_param_local_aliases_in(
                 }
             }
             Stmt::ExprStmt(Expr::CallExpr { callee, .. }) => {
+                // A builtin extractor applied DIRECTLY, with no intermediate binding:
+                //
+                //     pop(xs)(...)          instead of   let f = pop(xs); f(...)
+                //
+                // The alias scanner records aliases only at `Stmt::Let`, so the `let` form was
+                // tracked and the direct form was not — the same "identical programs, different
+                // spelling" split as the earlier `ys[0](...)` case. `flatten_access_path` returns
+                // `None` for a `Call`, so this never reached the path below either.
+                if let Expr::Call { callee: c, args } = callee.as_ref() {
+                    if matches!(
+                        c.as_str(),
+                        "pop"
+                            | "last"
+                            | "first"
+                            | "get"
+                            | "remove"
+                            | "flatten"
+                            | "reverse"
+                            | "drop"
+                            | "zip"
+                            | "concat"
+                    ) {
+                        if let Some(Expr::Var(root)) = args.first() {
+                            if root == param {
+                                *applies = true;
+                                paths.insert("*".to_string());
+                            } else if let Some(prefix) = aliases.get(root).cloned() {
+                                *applies = true;
+                                paths.insert(if prefix.is_empty() {
+                                    "*".to_string()
+                                } else {
+                                    prefix
+                                });
+                            }
+                        }
+                    }
+                }
                 if let Some((root, suffix)) = flatten_access_path(callee) {
                     if let Some(prefix) = aliases.get(&root) {
                         *applies = true;
@@ -12103,8 +12140,8 @@ fn analyze_expr_effect(
                 //
                 // Charging every declared capability the closure body CALLS is monotone: it can
                 // only add, and a body calling nothing pure-declared adds nothing.
-                if let Some(lam) = binding.closure_lambda.as_deref() {
-                    if let Expr::Lambda { body, .. } = lam {
+                if let Some(Expr::Lambda { body, .. }) = binding.closure_lambda.as_deref() {
+                    {
                         let mut callees: Vec<String> = Vec::new();
                         collect_called_names(body, &mut callees, 0);
                         for c in callees {
