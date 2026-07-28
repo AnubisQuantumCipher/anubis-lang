@@ -3667,6 +3667,114 @@ fn scan_applied_param_local_aliases(
     fn_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
 ) {
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+    scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, &mut aliases)
+}
+
+/// As above, but CARRYING the alias map into nested blocks.
+///
+/// The recursion used to call the outer entry point, which starts with an EMPTY map — so an alias
+/// recorded in an enclosing scope was invisible inside any block. `match xs { ys => { let f =
+/// ys[0]; f(...) } }` bound `ys` in the arm and then lost it, and the same for every `if let` /
+/// `while let` binder whose body does the applying.
+///
+/// Nested scopes get the map by reference rather than a clone: an alias recorded inside a block is
+/// still a real alias of the same formal, and losing it on the way out is how `if let Some(m) = o`
+/// stayed open. Shadowing is handled where bindings are recorded, not by scoping the map.
+#[allow(clippy::too_many_arguments)]
+
+/// Record every name a PATTERN binds as an alias of the formal, when the scrutinee is the formal
+/// or an already-recorded alias of it.
+///
+/// `collect_pattern_binding_paths` already computes each bound name's path WITHIN the scrutinee;
+/// this composes that with the scrutinee's own path. A wildcard prefix collapses, for the same
+/// reason it does on the `let` path: an element of "any element" is still "any element".
+/// Walk an expression that stands in for a BLOCK — a match arm body, an `if let` branch — for
+/// alias purposes.
+///
+/// These positions hold either a `Block` of statements or a single expression, and the alias walk
+/// needs both: `match xs { ys => { let f = ys[0]; f() } }` puts the applying statements inside a
+/// Block, while `ys => ys[0](…)` applies directly with no statement at all.
+fn scan_alias_expr_block(
+    e: &Expr,
+    param: &str,
+    applies: &mut bool,
+    paths: &mut BTreeSet<String>,
+    fn_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
+    aliases: &mut BTreeMap<String, String>,
+) {
+    match e {
+        Expr::Block { stmts, .. } => {
+            scan_applied_param_local_aliases_in(stmts, param, applies, paths, fn_returns_param, aliases)
+        }
+        Expr::CallExpr { callee, .. } => {
+            if let Some((root, suffix)) = flatten_access_path(callee) {
+                if let Some(prefix) = aliases.get(&root) {
+                    *applies = true;
+                    let path = if prefix.is_empty() {
+                        suffix
+                    } else if suffix.is_empty() || prefix == "*" {
+                        prefix.clone()
+                    } else {
+                        format!("{prefix}.{suffix}")
+                    };
+                    if !path.is_empty() {
+                        paths.insert(path);
+                    }
+                }
+            }
+        }
+        Expr::Call { callee, .. } => {
+            if let Some(path) = aliases.get(callee) {
+                *applies = true;
+                if !path.is_empty() {
+                    paths.insert(path.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn record_binder_aliases(
+    pattern: &crate::frontend::Pattern,
+    scrutinee: &Expr,
+    param: &str,
+    aliases: &mut BTreeMap<String, String>,
+) {
+    let base = match flatten_access_path(scrutinee) {
+        Some((root, path)) if root == param => path,
+        Some((root, path)) => match aliases.get(&root) {
+            Some(prefix) if prefix == "*" => "*".to_string(),
+            Some(prefix) if prefix.is_empty() => path,
+            Some(prefix) if path.is_empty() => prefix.clone(),
+            Some(prefix) => format!("{prefix}.{path}"),
+            None => return,
+        },
+        None => return,
+    };
+    let mut binding_paths = BTreeMap::new();
+    collect_pattern_binding_paths(pattern, "", &mut binding_paths);
+    for (name, inner) in binding_paths {
+        let composed = if base == "*" {
+            "*".to_string()
+        } else if base.is_empty() {
+            inner
+        } else if inner.is_empty() {
+            base.clone()
+        } else {
+            format!("{base}.{inner}")
+        };
+        aliases.insert(name, composed);
+    }
+}
+fn scan_applied_param_local_aliases_in(
+    body: &[Stmt],
+    param: &str,
+    applies: &mut bool,
+    paths: &mut BTreeSet<String>,
+    fn_returns_param: &BTreeMap<String, (Vec<String>, usize)>,
+    aliases: &mut BTreeMap<String, String>,
+) {
     for stmt in body {
         match stmt {
             Stmt::Let { name, init, .. } => {
@@ -3723,7 +3831,22 @@ fn scan_applied_param_local_aliases(
                     // handles.
                     if let Expr::Call { args, .. } = init {
                         if let Some(arg) = args.get(*fwd_idx) {
-                            if let Some((root, path)) = flatten_access_path(arg) {
+                            // Chains do NOT come for free here: `flatten_access_path` has arms for
+                            // `Var`/`FieldAccess`/`Index` and returns `None` for a `Call`, so
+                            // `id(id(f))` stopped at the inner call and recorded nothing while
+                            // `id(f)` worked. Measured: depth 1 rejected, depth 2 and 3 accepted.
+                            //
+                            // Walk inward through successive forwarder layers first, then flatten
+                            // whatever is innermost. Bounded at 16 so a mutually-recursive pair of
+                            // forwarders cannot spin.
+                            let mut cur: &Expr = arg;
+                            for _ in 0..16 {
+                                let Expr::Call { callee: c, args: a } = cur else { break };
+                                let Some((_p, i)) = fn_returns_param.get(c.as_str()) else { break };
+                                let Some(next) = a.get(*i) else { break };
+                                cur = next;
+                            }
+                            if let Some((root, path)) = flatten_access_path(cur) {
                                 if root == param {
                                     aliases.insert(name.clone(), path);
                                 } else if let Some(prefix) = aliases.get(&root).cloned() {
@@ -3747,30 +3870,6 @@ fn scan_applied_param_local_aliases(
                     //
                     // Resolving it here rather than adding `id` to a whitelist means every
                     // user-written forwarder works, including chains, without naming any of them.
-                    // Resolve a forwarder CHAIN — `id(id(id(f)))` — by walking inward while each
-                    // layer is a known forwarder, then testing the innermost expression. Handling
-                    // only one layer closed `generic_id` and left `id_chain` open, which is the
-                    // same one-hop-versus-N-hop split that has appeared at every producer today.
-                    {
-                        let mut cur: &Expr = init;
-                        let mut depth = 0usize;
-                        while depth < 16 {
-                            let Expr::Call { callee: c, args: a } = cur else { break };
-                            let Some((_p, idx)) = fn_returns_param.get(c.as_str()) else { break };
-                            let Some(next) = a.get(*idx) else { break };
-                            cur = next;
-                            depth += 1;
-                        }
-                        if depth > 0 {
-                            if let Expr::Var(root) = cur {
-                                if root == param {
-                                    aliases.insert(name.clone(), String::new());
-                                } else if let Some(prefix) = aliases.get(root).cloned() {
-                                    aliases.insert(name.clone(), prefix);
-                                }
-                            }
-                        }
-                    }
                     let from_param = args.first().is_some_and(|arg| match arg {
                         Expr::Var(root) => root == param || aliases.contains_key(root),
                         _ => false,
@@ -3832,7 +3931,11 @@ fn scan_applied_param_local_aliases(
                         }
                     }
                 }
-                scan_applied_param_local_aliases(body, param, applies, paths, fn_returns_param);
+                // …and when the scrutinee is an ALIAS rather than the formal itself.
+                // `let mut cur = o; while let Some(f) = cur { f(…) }` bound `f` from `cur`, which
+                // this arm did not recognise because it compared only against the formal's name.
+                record_binder_aliases(pattern, expr, param, aliases);
+                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
             }
             Stmt::ExprStmt(Expr::Call { callee, .. }) => {
                 if let Some(path) = aliases.get(callee) {
@@ -3869,18 +3972,89 @@ fn scan_applied_param_local_aliases(
                 }
             }
             Stmt::If { then, else_, .. } => {
-                scan_applied_param_local_aliases(then, param, applies, paths, fn_returns_param);
+                scan_applied_param_local_aliases_in(then, param, applies, paths, fn_returns_param, aliases);
                 if let Some(branch) = else_ {
-                    scan_applied_param_local_aliases(branch, param, applies, paths, fn_returns_param);
+                    scan_applied_param_local_aliases_in(branch, param, applies, paths, fn_returns_param, aliases);
                 }
             }
             Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
-                scan_applied_param_local_aliases(body, param, applies, paths, fn_returns_param);
+                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
             }
-            Stmt::For { body, .. }
-            | Stmt::ResearchBlock { body, .. }
-            | Stmt::ExploitBlock { body, .. } => {
-                scan_applied_param_local_aliases(body, param, applies, paths, fn_returns_param);
+            // A FOR BINDER is an alias of an ELEMENT of whatever it iterates.
+            //
+            // `for f in xs { f(…) }` and `for xs in xss { for f in xs { f(…) } }` were invisible:
+            // the body was walked, but `f` was never recorded as naming an element of the formal,
+            // so the apply inside charged nothing. The binder takes the container's path with a
+            // wildcard element segment — "any element" — which is the same may-be-any rule `pop`
+            // and a dynamic index already use, and it chains, so the doubly-nested loop resolves
+            // by re-entering this arm.
+            Stmt::For {
+                var, source, body, ..
+            } => {
+                if let crate::frontend::ForSource::Collection { expr } = source {
+                    let base = match flatten_access_path(expr) {
+                        Some((root, path)) if root == param => Some(path),
+                        Some((root, path)) => aliases.get(&root).map(|prefix| {
+                            if prefix == "*" || path.is_empty() {
+                                prefix.clone()
+                            } else if prefix.is_empty() {
+                                path
+                            } else {
+                                format!("{prefix}.{path}")
+                            }
+                        }),
+                        // `for e in entries(m)` — a builtin over the formal yields elements of it.
+                        None => match expr {
+                            Expr::Call { args, .. } => args.first().and_then(|a| {
+                                match flatten_access_path(a) {
+                                    Some((root, _)) if root == param => Some(String::new()),
+                                    Some((root, _)) => aliases.get(&root).cloned(),
+                                    None => None,
+                                }
+                            }),
+                            _ => None,
+                        },
+                    };
+                    if let Some(_b) = base {
+                        // Every element of a container the formal owns is reached by the wildcard
+                        // segment; composing `b` with `*` would build `b.*`, which the consumer
+                        // does not resolve. `*` alone is correct and is what the element rules
+                        // elsewhere record.
+                        aliases.insert(var.clone(), "*".to_string());
+                    }
+                }
+                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
+            }
+            Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
+                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
+            }
+            // `if let` and `match` bodies were NEVER VISITED. A callable bound by either binder and
+            // applied inside the body was invisible, so `if let Some(m) = o { let f = m["k"]; f() }`
+            // and `match xs { ys => { let f = ys[0]; f() } }` both passed `check`.
+            //
+            // The binder itself is recorded the same way the `let` arm records one: from the
+            // scrutinee's path when the scrutinee is the formal or an existing alias.
+            // `if let` and `match` are EXPRESSIONS in this AST, so they reach the statement walk
+            // wrapped in `ExprStmt` — and neither was ever visited. A callable bound by either
+            // binder and applied inside the body was invisible, so
+            // `if let Some(m) = o { let f = m["k"]; f() }` and
+            // `match xs { ys => { let f = ys[0]; f() } }` both passed `check`.
+            Stmt::ExprStmt(Expr::IfLet {
+                pattern,
+                scrutinee,
+                then,
+                else_,
+                ..
+            }) => {
+                record_binder_aliases(pattern, scrutinee, param, aliases);
+                scan_alias_expr_block(then, param, applies, paths, fn_returns_param, aliases);
+                scan_alias_expr_block(else_, param, applies, paths, fn_returns_param, aliases);
+            }
+            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+                for arm in arms {
+                    record_binder_aliases(&arm.pattern, scrutinee, param, aliases);
+                    scan_alias_expr_block(&arm.body, param, applies, paths, fn_returns_param, aliases);
+                }
             }
             _ => {}
         }
