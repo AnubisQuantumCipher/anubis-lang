@@ -658,13 +658,7 @@ fn fn_identities_of_d(
                 // Resolving the argument at the captured parameter's position is the same move
                 // `fn_returns_param` makes for a forwarded value, applied to a DEFERRED one: the
                 // closure has not run yet, but whatever it will apply is decided here.
-                if std::env::var("ANUBIS_TRACE_CAP").is_ok() {
-                    eprintln!("[cap] callee={callee} sole_return_is_lambda={} params={param_names:?}", matches!(returned, Expr::Lambda { .. }));
-                }
                 if let Expr::Lambda { body, .. } = returned {
-                    if std::env::var("ANUBIS_TRACE_CAP").is_ok() {
-                        eprintln!("[cap2] body={:?}", format!("{body:?}").chars().take(160).collect::<String>());
-                    }
                     let mut carried = FnIdentitySet::empty();
                     for (i, pname) in param_names.iter().enumerate() {
                         if expr_mentions_name(body, pname) {
@@ -2289,7 +2283,11 @@ fn seed_loop_var_callable(
                     .fold(FnIdentitySet::empty(), FnIdentitySet::union)
             })
             .unwrap_or(FnIdentitySet::Unknown),
-        Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+        // CONCATENATION is a container expression too. `collect_container_fn_identities` gained a
+        // `Binary` arm, but this dispatcher only routed array and map LITERALS into it, so
+        // `return [] + [leak]` fell to `Unknown` while the identical `let xs = [] + [leak]`
+        // resolved. The collector knew how; nothing asked it.
+        Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } | Expr::Binary { .. } => {
             let mut ids = BTreeMap::new();
             collect_container_fn_identities(expr, "", scope, ctx, &mut ids);
             ids.into_values()
@@ -8879,6 +8877,37 @@ fn analyze_stmts(
                         .get(source)
                         .map(|binding| binding.field_fn_identities.clone())
                         .unwrap_or_default(),
+                    // A CONTAINER RETURNED BY A CALL. `collect_container_fn_identities` has arms
+                    // for literals, concatenation and branch/match joins, but none for a `Call`, so
+                    // `let xs = go(); xs[0](…)` resolved no element identities and the callable came
+                    // back laundered — while the identical container written inline resolved fine.
+                    //
+                    // Resolve the callee's sole return, beta-substituting its params by the call
+                    // args so a container built FROM an argument (`fn go(acc) { return acc + [leak] }`)
+                    // carries what the caller passed, then collect from that.
+                    //
+                    // ONE level only. A recursive accumulator (`go(n-1, acc + [leak])`) needs a
+                    // fixpoint over the return value and is left open deliberately rather than
+                    // half-resolved: under-approximating here misses a leak, and pretending to
+                    // resolve it would be worse.
+                    Expr::Call { callee, args } if ctx.fn_sole_return.contains_key(callee) => {
+                        let mut identities = BTreeMap::new();
+                        if let Some((pnames, ret)) = ctx.fn_sole_return.get(callee) {
+                            let mut sub: BTreeMap<String, Expr> = BTreeMap::new();
+                            for (pn, a) in pnames.iter().zip(args.iter()) {
+                                sub.insert(pn.clone(), a.clone());
+                            }
+                            let resolved = substitute_vars(ret, &sub);
+                            collect_container_fn_identities(
+                                &resolved,
+                                "",
+                                scope,
+                                ctx,
+                                &mut identities,
+                            );
+                        }
+                        identities
+                    }
                     _ => {
                         let mut identities = BTreeMap::new();
                         collect_container_fn_identities(init, "", scope, ctx, &mut identities);
