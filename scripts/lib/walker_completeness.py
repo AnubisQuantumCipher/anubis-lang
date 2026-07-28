@@ -35,12 +35,18 @@ the real evidence.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 AST = Path("compiler/src/frontend/mod.rs")
-MID = Path("compiler/src/middle/mod.rs")
+# Overridable so the self-test can plant its defect in a SCRATCH COPY instead of the live file.
+# The self-test used to `cp` mod.rs aside, mutate it in place, and restore it on exit — which
+# silently destroys any concurrent writer's work if they save inside that window. This project has
+# already lost an agent's in-progress work to exactly that shape once
+# (docs/COMMIT_5259227_CORRECTION.md); a *test* is not worth risking it a second time.
+MID = Path(os.environ.get("ANUBIS_WALKER_MID", "compiler/src/middle/mod.rs"))
 
 
 def enum_variants(src: str, enum: str) -> dict[str, list[tuple[str, str]]]:
@@ -77,13 +83,28 @@ def walker_body(src: str, fn: str) -> str:
     raise SystemExit(f"could not delimit `{fn}`")
 
 
-def check(fn: str) -> list[str]:
+def check(fn: str, scope: str = "all") -> list[str]:
+    """`scope` selects which enums this walker is RESPONSIBLE for.
+
+    Registering a second walker used to be impossible, and this is why: the check demanded every
+    walker bind every code-holding field of BOTH `Stmt` and `Expr`. An expression-only query like
+    `expr_taint_source_m` does not walk statements — that is its caller's job — so it scored 11
+    `Stmt::* is never matched` problems that are not defects, drowning the one that was
+    (`Expr::If never binds cond`). A gate whose output is mostly false positives gets one walker
+    registered and then abandoned, which is exactly what happened.
+
+    Scope is a claim about the walker's contract, not a way to silence it: `expr` still demands
+    TOTAL coverage of every code-holding `Expr` field.
+    """
     ast, mid = AST.read_text(), MID.read_text()
     body = walker_body(mid, fn)
-    variants = {
-        **{f"Stmt::{k}": v for k, v in enum_variants(ast, "Stmt").items()},
-        **{f"Expr::{k}": v for k, v in enum_variants(ast, "Expr").items()},
-    }
+    variants: dict = {}
+    if scope in ("all", "stmt"):
+        variants.update({f"Stmt::{k}": v for k, v in enum_variants(ast, "Stmt").items()})
+    if scope in ("all", "expr"):
+        variants.update({f"Expr::{k}": v for k, v in enum_variants(ast, "Expr").items()})
+    if not variants:
+        raise SystemExit(f"unknown scope `{scope}` for `{fn}` (use all|expr|stmt)")
 
     problems: list[str] = []
     for vname, fields in variants.items():
@@ -119,12 +140,16 @@ def check(fn: str) -> list[str]:
 
 
 def main() -> int:
+    # Each argument is `name` or `name:scope` (scope = all|expr|stmt, default all).
     walkers = sys.argv[1:] or ["body_has_mode_elevator"]
     all_problems: list[str] = []
-    for w in walkers:
-        p = check(w)
+    for spec in walkers:
+        w, _, scope = spec.partition(":")
+        scope = scope or "all"
+        p = check(w, scope)
         all_problems += p
-        print(f"{w}: {'OK' if not p else str(len(p)) + ' PROBLEM(S)'}")
+        label = w if scope == "all" else f"{w} [{scope}]"
+        print(f"{label}: {'OK' if not p else str(len(p)) + ' PROBLEM(S)'}")
         for x in p:
             print(f"  {x}")
     if all_problems:

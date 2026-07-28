@@ -14,13 +14,37 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 # --self-test reintroduces the real historical defect and proves the gate goes red, because a guard
 # nobody has watched fail is a guard taken on faith.
 
-WALKERS=(body_has_mode_elevator)
+# Each entry is `name` or `name:scope` (scope = all|expr|stmt).
+#
+# COVERAGE CAN ONLY INCREASE. This registry had exactly ONE walker for its whole life, while the
+# adversary censused TWENTY-SIX independent value-flow walkers whose count is RISING because every
+# parity fix spawns a twin (`scratchpad/fleet_20260726/adversary_round21.md`). The mechanism was
+# never the problem; adoption was — the same story as `scripts/lib/gate_common.sh`.
+#
+# The reason adoption was stuck: before the `scope` argument existed this check demanded every
+# walker bind every code-holding field of BOTH `Stmt` and `Expr`, so an expression-only query
+# scored eleven `Stmt::* is never matched` non-defects and drowned the one real finding. A gate
+# whose output is mostly false positives gets one walker registered and then abandoned.
+#
+# Adding a walker here is a claim that it must be TOTAL over its scope. Do not add one to make a
+# number look better — add it when it passes, and fix it first when it does not.
+WALKERS=(body_has_mode_elevator analyze_expr_effect:expr)
 
 if [[ "${1:-}" == "--self-test" ]]; then
-  BK="$(mktemp)"; cp compiler/src/middle/mod.rs "$BK"
-  trap 'cp "$BK" compiler/src/middle/mod.rs' EXIT
-  python3 - <<'PY'
-p='compiler/src/middle/mod.rs'; s=open(p).read()
+  # Plant the defect in a SCRATCH COPY, never in the live file.
+  #
+  # This self-test used to `cp` mod.rs aside, mutate it in place, and restore it from a trap. That
+  # is a silent data-loss window for any concurrent writer: an agent saving mod.rs between the
+  # backup and the restore has its work overwritten with no error and no diff. This repo has
+  # already lost in-progress work to exactly that shape once — docs/COMMIT_5259227_CORRECTION.md —
+  # and a gate's own self-test is the last place that should be able to cause it a second time.
+  SCRATCH="$(mktemp -t anubis_walker_mid).rs"
+  trap 'rm -f "$SCRATCH"' EXIT
+  cp compiler/src/middle/mod.rs "$SCRATCH"
+  export ANUBIS_WALKER_MID="$SCRATCH"
+  python3 - "$SCRATCH" <<'PY'
+import sys
+p=sys.argv[1]; s=open(p).read()
 old = """            Stmt::While {
                 cond,
                 body,
