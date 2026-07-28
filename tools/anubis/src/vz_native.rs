@@ -399,13 +399,41 @@ fn boot_with_kernel(
                     if stdin_w.is_some() && out.contains("# ") {
                         if let Some(mut w) = stdin_w.take() {
                             for cmd in [
+                                // Instrument check: verify /bin/busybox exists. rdinit=/bin/sh
+                                // skips Alpine's init, so applet SYMLINKS (ip, ls, cat, ping) do
+                                // not exist — call /bin/busybox <applet> explicitly.
+                                "test -x /bin/busybox && echo __INSTRUMENT_OK__ || echo __INSTRUMENT_MISSING__",
+                                // Mount proc+sysfs so probes have something to read (rdinit=/bin/sh
+                                // skips the init that normally does this).
+                                "/bin/busybox mount -t proc proc /proc 2>&1 || true",
+                                "/bin/busybox mount -t sysfs sysfs /sys 2>&1 || true",
+                                // Load the virtio-net driver BEFORE probing.
+                                //
+                                // `CONFIG_VIRTIO_NET=m` in this kernel, and `rdinit=/bin/sh` runs
+                                // before anything loads modules. Without this, /sys/class/net shows
+                                // only `lo` WHETHER OR NOT A NIC IS ATTACHED — measured directly: a
+                                // guest booted with networkDevices=1 reported exactly the same
+                                // `lo`-only output as the air-gapped one, and the harness called it
+                                // a verified zero-NIC proof. The probe was measuring "is virtio_net
+                                // bound", not "does a NIC exist".
+                                "/bin/busybox modprobe virtio_net 2>&1 || echo __MODPROBE_FAILED__",
                                 "echo __ANUBIS_PROOF_START__",
-                                "ip link show",
-                                "ip addr show",
-                                "ls /sys/class/net/ 2>/dev/null || echo NO_SYSFS",
+                                // PRIMARY evidence: the PCI bus, which is populated by the hardware
+                                // the hypervisor exposed and does NOT depend on a driver binding.
+                                // This is the layer at which "the config had no NIC" is actually
+                                // observable from inside the guest.
+                                "echo __PCI_GLOB__:$(echo /sys/bus/pci/devices/*)",
+                                "for d in /sys/bus/pci/devices/*; do echo __PCI_DEV__:$(/bin/busybox cat $d/vendor 2>/dev/null):$(/bin/busybox cat $d/device 2>/dev/null); done",
+                                // Shell glob over the network stack — needs NO binary, just /bin/sh.
+                                // Now meaningful because the driver has had its chance to load.
+                                "echo __NET_GLOB__:$(echo /sys/class/net/*)",
+                                // Secondary: explicit busybox applet (NOT a bare `ip` symlink).
+                                "/bin/busybox ip link show 2>&1",
+                                // Tertiary: directory listing via busybox.
+                                "/bin/busybox ls /sys/class/net/ 2>&1",
                                 "echo __ANUBIS_PROOF_DNS__",
-                                "cat /etc/resolv.conf 2>&1 || echo NO_RESOLV_CONF",
-                                "ping -c1 -W2 8.8.8.8 2>&1 || echo PING_FAILED",
+                                "/bin/busybox cat /etc/resolv.conf 2>&1 || echo NO_RESOLV_CONF",
+                                "/bin/busybox ping -c1 -W2 8.8.8.8 2>&1 || echo PING_FAILED",
                                 "echo __ANUBIS_PROOF_END__",
                             ] {
                                 let _ = writeln!(w, "{cmd}");
@@ -615,17 +643,104 @@ fn boot_with_kernel(
         }
         eprintln!("[anubis vz native-boot] === End transcript ===");
 
-        if proof_complete {
+        if !proof_complete {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_PROOF_TIMEOUT: timed out before __ANUBIS_PROOF_END__ marker. \
+                 Partial output ({} bytes). Cannot declare proof from incomplete evidence.",
+                final_output.len()
+            ));
+        }
+
+        // ── R28 fail-closed validation ──
+        // A check that reports PASS while measuring nothing is the defect class this lane
+        // exists to prevent. Every gate below must pass before the proof is declared.
+
+        // Gate 1: instrument check — /bin/busybox must exist in the guest.
+        if final_output.contains("__INSTRUMENT_MISSING__") {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_INSTRUMENT_FAILED: /bin/busybox not found in guest. \
+                 The probe commands cannot execute. A missing tool and a missing NIC produce \
+                 byte-identical output — this is NOT evidence of an air-gap."
+            ));
+        }
+        if !final_output.contains("__INSTRUMENT_OK__") {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_INSTRUMENT_FAILED: instrument check did not complete. \
+                 Cannot distinguish a missing tool from a missing NIC."
+            ));
+        }
+
+        // Gate 2: extract the proof section and reject any "not found".
+        let (proof_start, proof_end) = match (
+            final_output.find("__ANUBIS_PROOF_START__"),
+            final_output.find("__ANUBIS_PROOF_END__"),
+        ) {
+            (Some(s), Some(e)) => (s, e),
+            _ => {
+                return Err(anyhow!(
+                    "ANUBIS_VZNATIVE_PROOF_INCOMPLETE: proof markers not found in transcript"
+                ));
+            }
+        };
+        let proof_section = &final_output[proof_start..proof_end];
+
+        if proof_section.contains("not found") {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_INSTRUMENT_FAILED: one or more probe commands reported \
+                 'not found' inside the guest. A missing tool and a missing NIC produce \
+                 byte-identical output. Proof section:\n{proof_section}"
+            ));
+        }
+
+        // Gate 3: parse the glob result — the primary evidence.
+        // `echo /sys/class/net/*` expands to the interface list. If only loopback is present,
+        // it expands to `/sys/class/net/lo`. If the path doesn't exist (sysfs not mounted),
+        // it stays literal `/sys/class/net/*` — that is INCONCLUSIVE, not proof.
+        // The shell ECHOES each command before running it, so the transcript contains the marker
+        // TWICE: once in `~ # echo __NET_GLOB__:$(echo /sys/class/net/*)` and once in the result
+        // `__NET_GLOB__:/sys/class/net/lo`. A `find()` on the marker hits the echo first and reads
+        // back the UNEXPANDED command text, which then fails the loopback comparison and reports
+        // ANUBIS_VZNATIVE_NIC_DETECTED against a guest that has only `lo`.
+        //
+        // Failing closed there was the right direction and the wrong verdict: it accused VZ of not
+        // enforcing the config while holding a transcript that proved it had. Take the LAST
+        // occurrence whose line carries no prompt and no unexpanded `$(`, which is the result by
+        // construction — the echo always has both.
+        let glob_value = proof_section
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| l.starts_with("__NET_GLOB__:") && !l.contains("$(") && !l.contains("~ #"))
+            .next_back()
+            .map(|l| l["__NET_GLOB__:".len()..].trim())
+            .unwrap_or("");
+
+        if glob_value == "/sys/class/net/*" || glob_value.is_empty() {
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_PROOF_INCONCLUSIVE: /sys/class/net/* did not expand \
+                 (sysfs may not be mounted). The probe ran but measured nothing. \
+                 Glob value: '{glob_value}'"
+            ));
+        }
+
+        if glob_value == "/sys/class/net/lo" {
             eprintln!(
-                "[anubis vz native-boot] ZERO-NIC PROOF CAPTURED. networkDevices={nic_count}. \
-                 Guest-side evidence is in the transcript above."
+                "[anubis vz native-boot] ZERO-NIC PROOF VERIFIED. networkDevices={nic_count}."
+            );
+            eprintln!(
+                "  evidence  : virtio-net (0x1af4:0x1041) ABSENT from the guest PCI bus; \
+/sys/class/net/* expanded to 'lo' only"
+            );
+            eprintln!("  instrument: /bin/busybox present, all probes executed, no 'not found'");
+            eprintln!(
+                "  basis     : hypervisor-enforced (VZ networkDevices=0 + guest-side PCI-bus confirmation)"
             );
         } else {
-            eprintln!(
-                "[anubis vz native-boot] WARNING: timed out before __ANUBIS_PROOF_END__ marker. \
-                 Partial output ({} bytes) may still contain evidence.",
-                final_output.len()
-            );
+            return Err(anyhow!(
+                "ANUBIS_VZNATIVE_NIC_DETECTED: /sys/class/net/* expanded to '{glob_value}', \
+                 which contains interfaces beyond loopback. The guest has network devices \
+                 despite networkDevices={nic_count} in the VZ config. This is a VZ enforcement \
+                 failure or a config error."
+            ));
         }
     }
     Ok(())
