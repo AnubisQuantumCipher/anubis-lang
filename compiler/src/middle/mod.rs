@@ -190,6 +190,11 @@ struct ScopeBinding {
     /// Separate from `field_closures`: eta expansion is useful for body descent but loses the
     /// original set-valued identity required by contracts.
     field_fn_identities: BTreeMap<String, FnIdentitySet>,
+    /// Policy-neutral gate classes carried by a callable builtin value. Names are used only to seed
+    /// this domain; consumers inspect tags, so builtin and user-function namespaces never merge.
+    builtin_gate_tags: BuiltinGateTags,
+    /// Gate tags stored at concrete aggregate access paths, parallel to `field_fn_identities`.
+    field_builtin_gate_tags: BTreeMap<String, BuiltinGateTags>,
 }
 
 /// Set-valued identity of a first-class callable expression.
@@ -237,6 +242,53 @@ impl FnIdentitySet {
             Self::Known(candidates) if candidates.len() == 1 => candidates.into_iter().next(),
             Self::Known(_) | Self::Unknown => None,
         }
+    }
+}
+
+/// Security-relevant classes attached to a first-class builtin value. `Capability` carries the
+/// canonical effect id returned by the existing effect table; the remaining variants reuse the
+/// existing policy predicates. The set is a monoid under union.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum BuiltinGateTag {
+    Capability(String),
+    TaintSource,
+    Leg2Source,
+    SecretSource,
+    IntegritySink,
+    EgressSink,
+}
+
+/// `Known(empty)` is a proven pure/non-builtin value. `Unknown` means the callable identity could
+/// not be determined. Default-lane policy deliberately defers Unknown; it never invents a gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BuiltinGateTags {
+    Known(BTreeSet<BuiltinGateTag>),
+    Unknown,
+}
+
+impl Default for BuiltinGateTags {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl BuiltinGateTags {
+    fn empty() -> Self {
+        Self::Known(BTreeSet::new())
+    }
+
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Known(mut left), Self::Known(right)) => {
+                left.extend(right);
+                Self::Known(left)
+            }
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+        }
+    }
+
+    fn contains(&self, wanted: &BuiltinGateTag) -> bool {
+        matches!(self, Self::Known(tags) if tags.contains(wanted))
     }
 }
 
@@ -726,6 +778,365 @@ fn fn_identities_at_contract_path(
     }
 }
 
+/// Seed the builtin-value abstract domain from the existing policy tables. The name is discarded
+/// immediately; all later propagation and joins operate on tags. A user declaration shadows a
+/// builtin before this function is called.
+fn seed_builtin_gate_tags(name: &str) -> BuiltinGateTags {
+    if !crate::backends::run::is_builtin_name(name) {
+        return BuiltinGateTags::Unknown;
+    }
+    let mut tags = BTreeSet::new();
+    if let Some(capability) = effects::builtin_effect_of(name) {
+        tags.insert(BuiltinGateTag::Capability(capability.to_string()));
+    }
+    if is_io_taint_source(name) {
+        tags.insert(BuiltinGateTag::TaintSource);
+    }
+    if trifecta::is_leg2_source(name) {
+        tags.insert(BuiltinGateTag::Leg2Source);
+    }
+    if name == SECRET_SOURCE_NAME {
+        tags.insert(BuiltinGateTag::SecretSource);
+    }
+    if is_sink(name) {
+        tags.insert(BuiltinGateTag::IntegritySink);
+    }
+    if is_egress_sink(name) {
+        tags.insert(BuiltinGateTag::EgressSink);
+    }
+    BuiltinGateTags::Known(tags)
+}
+
+/// Resolve the gate tags a callable value may carry. Joins union known tag sets; any unresolved arm
+/// makes the result Unknown, which the default-lane policies defer. Depth exhaustion also returns
+/// Unknown, so recursion can only lose precision, never invent a gate.
+fn builtin_gate_tags_of(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> BuiltinGateTags {
+    builtin_gate_tags_of_d(expr, scope, ctx, 0)
+}
+
+fn builtin_gate_tags_of_d(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> BuiltinGateTags {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return BuiltinGateTags::Unknown;
+    }
+    match expr {
+        Expr::Var(name) => {
+            if let Some(binding) = scope.get(name) {
+                binding.builtin_gate_tags.clone()
+            } else if ctx.all_fns.contains(name) {
+                BuiltinGateTags::empty()
+            } else {
+                seed_builtin_gate_tags(name)
+            }
+        }
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            builtin_gate_tags_of_d(then, scope, ctx, depth + 1)
+                .union(builtin_gate_tags_of_d(else_, scope, ctx, depth + 1))
+        }
+        Expr::Match { arms, .. } => {
+            arms.iter().fold(BuiltinGateTags::empty(), |tags, arm| {
+                tags.union(builtin_gate_tags_of_d(&arm.body, scope, ctx, depth + 1))
+            })
+        }
+        Expr::Call { callee, args } => {
+            if matches!(callee.as_str(), "identity" | "secret_source") && args.len() == 1 {
+                return builtin_gate_tags_of_d(&args[0], scope, ctx, depth + 1);
+            }
+            if let Some((param_names, index)) = ctx.fn_returns_param.get(callee) {
+                if param_names.len() == args.len() {
+                    if let Some(arg) = args.get(*index) {
+                        return builtin_gate_tags_of_d(arg, scope, ctx, depth + 1);
+                    }
+                }
+                return BuiltinGateTags::Unknown;
+            }
+            if let Some((_param_names, returned)) = ctx.fn_sole_return.get(callee) {
+                return builtin_gate_tags_of_d(returned, scope, ctx, depth + 1);
+            }
+            BuiltinGateTags::Unknown
+        }
+        Expr::CallExpr { callee, args } => {
+            let Expr::FieldAccess { field, .. } = callee.as_ref() else {
+                return BuiltinGateTags::Unknown;
+            };
+            if let Some((param_names, index)) = ctx.method_returns_param.get(field) {
+                if param_names.len() == args.len() + 1 && *index > 0 {
+                    if let Some(arg) = args.get(*index - 1) {
+                        return builtin_gate_tags_of_d(arg, scope, ctx, depth + 1);
+                    }
+                }
+                return BuiltinGateTags::Unknown;
+            }
+            if let Some((_param_names, returned)) = ctx.method_sole_return.get(field) {
+                return builtin_gate_tags_of_d(returned, scope, ctx, depth + 1);
+            }
+            BuiltinGateTags::Unknown
+        }
+        Expr::Index { .. } | Expr::FieldAccess { .. } => {
+            builtin_gate_tags_at_path_expr(expr, scope, ctx, depth + 1)
+        }
+        Expr::Block { stmts, tail } => {
+            let mut candidates = Vec::new();
+            collect_block_fn_alias_candidates(stmts, tail.as_deref(), &mut candidates);
+            if candidates.is_empty() {
+                return BuiltinGateTags::empty();
+            }
+            candidates
+                .into_iter()
+                .fold(BuiltinGateTags::empty(), |tags, candidate| {
+                    tags.union(builtin_gate_tags_of_d(candidate, scope, ctx, depth + 1))
+                })
+        }
+        Expr::Tainted { inner, .. } | Expr::Declassify { inner, .. } => {
+            builtin_gate_tags_of_d(inner, scope, ctx, depth + 1)
+        }
+        Expr::Lambda { .. }
+        | Expr::Literal(_)
+        | Expr::StrLiteral(_)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::Cast { .. }
+        | Expr::Symbolic { .. }
+        | Expr::Assume(_)
+        | Expr::Assert(_)
+        | Expr::TaintSource { .. }
+        | Expr::UnifiedBuffer { .. }
+        | Expr::RawPtr { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::EnumConstruct { .. }
+        | Expr::MapLiteral { .. } => BuiltinGateTags::empty(),
+        Expr::Try(_) | Expr::Other(_) => BuiltinGateTags::Unknown,
+    }
+}
+
+fn builtin_gate_tags_at_path_expr(
+    expr: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> BuiltinGateTags {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return BuiltinGateTags::Unknown;
+    }
+    if let Some((root, path)) = flatten_access_path(expr) {
+        return scope
+            .get(&root)
+            .and_then(|binding| binding.field_builtin_gate_tags.get(&path))
+            .cloned()
+            .unwrap_or(BuiltinGateTags::Unknown);
+    }
+    match expr {
+        Expr::Index { base, index } => {
+            let key = match index.as_ref() {
+                Expr::Literal(value) | Expr::StrLiteral(value) => value.as_str(),
+                _ => {
+                    let Some(root) = access_chain_root(base) else {
+                        return BuiltinGateTags::Unknown;
+                    };
+                    let Some(binding) = scope.get(&root) else {
+                        return BuiltinGateTags::Unknown;
+                    };
+                    let mut values = binding.field_builtin_gate_tags.values().cloned();
+                    let Some(first) = values.next() else {
+                        return BuiltinGateTags::Unknown;
+                    };
+                    return values.fold(first, BuiltinGateTags::union);
+                }
+            };
+            builtin_gate_tags_at_path(base, key, scope, ctx, depth + 1)
+        }
+        Expr::FieldAccess { base, field, .. } => {
+            builtin_gate_tags_at_path(base, field, scope, ctx, depth + 1)
+        }
+        _ => BuiltinGateTags::Unknown,
+    }
+}
+
+fn builtin_gate_tags_at_path(
+    value: &Expr,
+    path: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    depth: u32,
+) -> BuiltinGateTags {
+    if depth > FN_ALIAS_MAX_DEPTH {
+        return BuiltinGateTags::Unknown;
+    }
+    if path.is_empty() {
+        return builtin_gate_tags_of_d(value, scope, ctx, depth + 1);
+    }
+    if let Expr::Var(root) = value {
+        return scope
+            .get(root)
+            .and_then(|binding| binding.field_builtin_gate_tags.get(path))
+            .cloned()
+            .unwrap_or(BuiltinGateTags::Unknown);
+    }
+    let (head, rest) = path.split_once('.').unwrap_or((path, ""));
+    match value {
+        Expr::ArrayLiteral { elements } => head
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| elements.get(index))
+            .map(|child| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
+            .unwrap_or(BuiltinGateTags::Unknown),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .find(|(name, _)| name == head)
+            .map(|(_, child)| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
+            .unwrap_or(BuiltinGateTags::Unknown),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .find_map(|(key, child)| match key {
+                Expr::StrLiteral(name) | Expr::Var(name) if name == head => Some(child),
+                _ => None,
+            })
+            .map(|child| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
+            .unwrap_or(BuiltinGateTags::Unknown),
+        Expr::EnumConstruct {
+            fields,
+            field_names,
+            ..
+        } => head
+            .parse::<usize>()
+            .ok()
+            .or_else(|| field_names.iter().position(|name| name == head))
+            .and_then(|index| fields.get(index))
+            .map(|child| builtin_gate_tags_at_path(child, rest, scope, ctx, depth + 1))
+            .unwrap_or(BuiltinGateTags::Unknown),
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            builtin_gate_tags_at_path(then, path, scope, ctx, depth + 1)
+                .union(builtin_gate_tags_at_path(else_, path, scope, ctx, depth + 1))
+        }
+        Expr::Match { arms, .. } => {
+            arms.iter().fold(BuiltinGateTags::empty(), |tags, arm| {
+                tags.union(builtin_gate_tags_at_path(
+                    &arm.body,
+                    path,
+                    scope,
+                    ctx,
+                    depth + 1,
+                ))
+            })
+        }
+        _ => BuiltinGateTags::Unknown,
+    }
+}
+
+fn collect_container_builtin_gate_tags(
+    init: &Expr,
+    prefix: &str,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+    out: &mut BTreeMap<String, BuiltinGateTags>,
+) {
+    let path = |segment: &str| {
+        if prefix.is_empty() {
+            segment.to_string()
+        } else {
+            format!("{prefix}.{segment}")
+        }
+    };
+    let entries: Vec<(String, &Expr)> = match init {
+        Expr::ArrayLiteral { elements } => elements
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (path(&index.to_string()), value))
+            .collect(),
+        Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .map(|(name, value)| (path(name), value.as_ref()))
+            .collect(),
+        Expr::MapLiteral { entries, .. } => entries
+            .iter()
+            .filter_map(|(key, value)| match key {
+                Expr::StrLiteral(name) | Expr::Var(name) => Some((path(name), value)),
+                _ => None,
+            })
+            .collect(),
+        Expr::EnumConstruct { fields, .. } => fields
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (path(&index.to_string()), value))
+            .collect(),
+        Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
+            collect_container_builtin_gate_tags(then, prefix, scope, ctx, out);
+            let mut other = BTreeMap::new();
+            collect_container_builtin_gate_tags(else_, prefix, scope, ctx, &mut other);
+            for (key, tags) in other {
+                out.entry(key)
+                    .and_modify(|current| *current = current.clone().union(tags.clone()))
+                    .or_insert(tags);
+            }
+            return;
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                let mut arm_values = BTreeMap::new();
+                collect_container_builtin_gate_tags(&arm.body, prefix, scope, ctx, &mut arm_values);
+                for (key, tags) in arm_values {
+                    out.entry(key)
+                        .and_modify(|current| *current = current.clone().union(tags.clone()))
+                        .or_insert(tags);
+                }
+            }
+            return;
+        }
+        _ => return,
+    };
+    for (key, value) in entries {
+        if matches!(
+            value,
+            Expr::ArrayLiteral { .. }
+                | Expr::StructLiteral { .. }
+                | Expr::MapLiteral { .. }
+                | Expr::EnumConstruct { .. }
+                | Expr::If { .. }
+                | Expr::IfLet { .. }
+                | Expr::Match { .. }
+        ) {
+            collect_container_builtin_gate_tags(value, &key, scope, ctx, out);
+        } else {
+            out.insert(key, builtin_gate_tags_of(value, scope, ctx));
+        }
+    }
+}
+
+/// Apply only concrete tags at an application site. Unknown is intentionally a no-op in the default
+/// lane: holding or applying an opaque HOF value is not evidence that a particular builtin gate was
+/// crossed. `fn_applies_param` and the HOF argument table provide the application witness.
+fn charge_applied_builtin_gate_tags(
+    tags: &BuiltinGateTags,
+    mode: Mode,
+    effects_out: &mut Vec<String>,
+    ctx: &mut SemanticContext,
+) {
+    let BuiltinGateTags::Known(tags) = tags else {
+        return;
+    };
+    for tag in tags {
+        match tag {
+            BuiltinGateTag::Capability(capability) => {
+                apply_inherited_capability(capability.clone(), mode, effects_out, ctx);
+            }
+            BuiltinGateTag::Leg2Source => ctx.applied_builtin_leg2 = true,
+            BuiltinGateTag::SecretSource => ctx.applied_builtin_secret = true,
+            BuiltinGateTag::TaintSource
+            | BuiltinGateTag::IntegritySink
+            | BuiltinGateTag::EgressSink => {}
+        }
+    }
+}
+
 /// Recursively collect closures stored ANYWHERE inside a container literal, keyed by a dotted ACCESS
 /// PATH (struct field names, list indices, map string keys, joined by `.`): `Outer { inner: Inner {
 /// f: g } }` → `"inner.f"`; `[Box { f: g }]` → `"0.f"`; `{ "k": g }` → `"k"`; `Box { f: g }` → `"f"`.
@@ -1166,6 +1577,8 @@ fn seed_body_local_lambdas(body: &Expr, scope: &mut BTreeMap<String, ScopeBindin
                         fn_alias: None,
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
+                        builtin_gate_tags: BuiltinGateTags::Unknown,
+                        field_builtin_gate_tags: BTreeMap::new(),
                         secret: false,
                     });
                     entry.closure_lambda = Some(lam);
@@ -1259,6 +1672,8 @@ fn seed_loop_var_callable(
                     fn_alias: None,
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
+                    builtin_gate_tags: BuiltinGateTags::Unknown,
+                    field_builtin_gate_tags: BTreeMap::new(),
                     secret: false,
                 },
             );
@@ -1285,6 +1700,8 @@ fn seed_loop_var_callable(
             fn_alias: None,
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
             secret: false,
         });
     b.closure_lambda = Some(lam);
@@ -1640,6 +2057,10 @@ struct SemanticContext {
     taint_traces: Vec<TaintTrace>,
     solver_obligations: Vec<SolverObligation>,
     diagnostics: Vec<SemanticDiagnostic>,
+    /// Application-site witnesses produced by the builtin gate-tag resolver for the function
+    /// currently being analyzed. Reset per item; never part of its declared/inferred effect row.
+    applied_builtin_leg2: bool,
+    applied_builtin_secret: bool,
     /// NON-BLOCKING warnings (informational). Never feed the `diagnostics`
     /// Err-gate — a warning informs the developer without failing the check. Surfaced on the CLI and in
     /// the evidence bundle. Operator directive 2026-07-20: implicit information flow (a branch on a
@@ -3338,6 +3759,8 @@ fn analyze_function(
     // the lambda arm of `check_expr_semantics` clears it around a closure body. `None` for no `-> T`.
     ctx.current_fn_return = ret.map(|r| r.to_string());
     ctx.current_fn = Some(name.to_string());
+    ctx.applied_builtin_leg2 = false;
+    ctx.applied_builtin_secret = false;
 
     // Generic-instantiation arity over this function's signature annotations (`fn f(p: Pair<u32>)` or
     // `-> Pair<u32>` when `Pair` declares two parameters). Shadow-gated inside the helper.
@@ -3425,6 +3848,8 @@ fn analyze_function(
                         fn_alias: None,
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
+                        builtin_gate_tags: BuiltinGateTags::Unknown,
+                        field_builtin_gate_tags: BTreeMap::new(),
                         secret: false,
                     },
                 )
@@ -3520,6 +3945,8 @@ fn analyze_function(
                     fn_alias: None,
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
+                    builtin_gate_tags: BuiltinGateTags::Unknown,
+                    field_builtin_gate_tags: BTreeMap::new(),
                     // A `secret<T>` param qualifier auto-labels the parameter as secret (the
                     // confidentiality dual of the `tainted<T>` param seeded above), so a secret
                     // arriving via a param needs no `secret_source(..)` call — an egress of it is
@@ -3994,7 +4421,7 @@ fn analyze_function(
             .iter()
             .map(|(k, v)| (k.clone(), v.effects.clone()))
             .collect();
-        let legs = trifecta::scan_legs(
+        let mut legs = trifecta::scan_legs(
             body,
             params,
             &ctx.secret_fns,
@@ -4002,6 +4429,13 @@ fn analyze_function(
             &ctx.all_fns,
             &fn_effects,
         );
+        if ctx.applied_builtin_leg2 {
+            legs.leg2_untrusted
+                .get_or_insert_with(|| "applied taint-source builtin value".to_string());
+        }
+        if ctx.applied_builtin_secret {
+            legs.secret_present = true;
+        }
         let (has_fs_read, has_net_send, has_shell) = {
             let row = ctx.fn_effect_rows.get(name);
             let held = |cap: &str| {
@@ -5012,9 +5446,35 @@ fn merge_fn_alias_over(
                 });
             fields.insert(field, identities);
         }
+        let builtin_gate_tags = effective
+            .iter()
+            .fold(BuiltinGateTags::empty(), |tags, binding| {
+                tags.union(binding.builtin_gate_tags.clone())
+            });
+        let builtin_field_names: BTreeSet<String> = effective
+            .iter()
+            .flat_map(|binding| binding.field_builtin_gate_tags.keys().cloned())
+            .collect();
+        let mut builtin_fields = BTreeMap::new();
+        for field in builtin_field_names {
+            let tags = effective
+                .iter()
+                .fold(BuiltinGateTags::empty(), |tags, binding| {
+                    tags.union(
+                        binding
+                            .field_builtin_gate_tags
+                            .get(&field)
+                            .cloned()
+                            .unwrap_or(BuiltinGateTags::Unknown),
+                    )
+                });
+            builtin_fields.insert(field, tags);
+        }
         if let Some(binding) = scope.get_mut(&name) {
             binding.fn_identities = identities;
             binding.field_fn_identities = fields;
+            binding.builtin_gate_tags = builtin_gate_tags;
+            binding.field_builtin_gate_tags = builtin_fields;
         }
     }
 }
@@ -6616,6 +7076,8 @@ fn labelled_param_binding(
         fn_alias: None,
         fn_identities: FnIdentitySet::Unknown,
         field_fn_identities: BTreeMap::new(),
+        builtin_gate_tags: BuiltinGateTags::Unknown,
+        field_builtin_gate_tags: BTreeMap::new(),
         secret,
     }
 }
@@ -7011,6 +7473,7 @@ fn analyze_stmts(
                 }
                 let fal = fn_alias_of(init, scope, ctx);
                 let fn_identities = fn_identities_of(init, scope, ctx);
+                let builtin_gate_tags = builtin_gate_tags_of(init, scope, ctx);
                 let field_fn_identities = match init {
                     Expr::Var(source) => scope
                         .get(source)
@@ -7020,6 +7483,17 @@ fn analyze_stmts(
                         let mut identities = BTreeMap::new();
                         collect_container_fn_identities(init, "", scope, ctx, &mut identities);
                         identities
+                    }
+                };
+                let field_builtin_gate_tags = match init {
+                    Expr::Var(source) => scope
+                        .get(source)
+                        .map(|binding| binding.field_builtin_gate_tags.clone())
+                        .unwrap_or_default(),
+                    _ => {
+                        let mut tags = BTreeMap::new();
+                        collect_container_builtin_gate_tags(init, "", scope, ctx, &mut tags);
+                        tags
                     }
                 };
                 scope.insert(
@@ -7032,6 +7506,8 @@ fn analyze_stmts(
                         fn_alias: fal,
                         fn_identities,
                         field_fn_identities,
+                        builtin_gate_tags,
+                        field_builtin_gate_tags,
                         secret: init_secret.is_some() || explicit_secret,
                     },
                 );
@@ -8200,6 +8676,7 @@ fn analyze_stmts(
                         // reassignment resolves through the CURRENT target — no stale-alias false reject.
                         let fal = fn_alias_of(value, scope, ctx);
                         let fn_identities = fn_identities_of(value, scope, ctx);
+                        let builtin_gate_tags = builtin_gate_tags_of(value, scope, ctx);
                         // Refresh the container-closure paths so a reassignment `b = Box { f: h }`
                         // (h capturing a secret) is tracked — otherwise the stale field-closure of the
                         // ORIGINAL container hid the new closure's captured secret from the egress check
@@ -8232,6 +8709,17 @@ fn analyze_stmts(
                                 identities
                             }
                         };
+                        let new_field_builtin_gate_tags = match value {
+                            Expr::Var(source) => scope
+                                .get(source)
+                                .map(|binding| binding.field_builtin_gate_tags.clone())
+                                .unwrap_or_default(),
+                            _ => {
+                                let mut tags = BTreeMap::new();
+                                collect_container_builtin_gate_tags(value, "", scope, ctx, &mut tags);
+                                tags
+                            }
+                        };
                         if let Some(b) = scope.get_mut(name) {
                             b.closure_arity = ca;
                             b.closure_lambda = cl;
@@ -8239,6 +8727,8 @@ fn analyze_stmts(
                             b.fn_identities = fn_identities;
                             b.field_closures = new_fclos;
                             b.field_fn_identities = new_field_fn_identities;
+                            b.builtin_gate_tags = builtin_gate_tags;
+                            b.field_builtin_gate_tags = new_field_builtin_gate_tags;
                         }
                     }
                 }
@@ -8949,6 +9439,8 @@ fn analyze_stmts(
                         fn_alias: None,
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
+                        builtin_gate_tags: BuiltinGateTags::Unknown,
+                        field_builtin_gate_tags: BTreeMap::new(),
                         secret: secret_src,
                     },
                 );
@@ -9620,6 +10112,8 @@ fn scope_with_closure_params(
                 fn_alias: None,
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
                 secret: false,
             },
         );
@@ -9742,6 +10236,15 @@ fn analyze_expr_effect(
                 .get(callee)
                 .and_then(|b| b.fn_alias.as_deref())
                 .unwrap_or(callee.as_str());
+            // A local callable binding may carry builtin gate tags even when it has no user-function
+            // alias. Charge only that stored, concrete value; direct builtin names continue through the
+            // existing name-keyed arms below and are not double-counted.
+            let bound_gate_tags = scope
+                .get(callee)
+                .map(|binding| binding.builtin_gate_tags.clone());
+            if let Some(tags) = &bound_gate_tags {
+                charge_applied_builtin_gate_tags(tags, mode, effects, ctx);
+            }
             if sink_callee == "shell"
                 || sink_callee == "exec"
                 || sink_callee == "system"
@@ -9815,7 +10318,11 @@ fn analyze_expr_effect(
                     apply_inherited_capability(raw, mode, effects, ctx);
                 }
             }
-            if is_sink(sink_callee) {
+            if is_sink(sink_callee)
+                || bound_gate_tags.as_ref().is_some_and(|tags| {
+                    tags.contains(&BuiltinGateTag::IntegritySink)
+                })
+            {
                 effects.push(format!("sink:{}", sink_callee));
                 for arg in args {
                     if let Some(source) = expr_taint_source_m(
@@ -9853,7 +10360,12 @@ fn analyze_expr_effect(
             // `declassify(x, policy, reason)`, so the release hatch is built in (a MALFORMED declassify
             // does NOT hatch — AST-shape keyed, matching the taint side). Safe-mode; independent of
             // `is_sink` so it also covers egress builtins (`http_post`, `connect`) not in that set.
-            if mode == Mode::Safe && is_egress_sink(sink_callee) {
+            if mode == Mode::Safe
+                && (is_egress_sink(sink_callee)
+                    || bound_gate_tags.as_ref().is_some_and(|tags| {
+                        tags.contains(&BuiltinGateTag::EgressSink)
+                    }))
+            {
                 for arg in args {
                     if let Some(source) = expr_secret_source_m(
                         arg,
@@ -9895,6 +10407,9 @@ fn analyze_expr_effect(
             if let Some(sink_params) = ctx.param_sinks.get(resolved_callee).cloned() {
                 for i in sink_params {
                     if let Some(arg) = args.get(i) {
+                        let builtin_source = builtin_gate_tags_of(arg, scope, ctx)
+                            .contains(&BuiltinGateTag::TaintSource)
+                            .then(|| "return value of a taint-source builtin".to_string());
                         if let Some(source) = expr_taint_source_m(
                             arg,
                             scope,
@@ -9902,7 +10417,9 @@ fn analyze_expr_effect(
                             &ctx.param_return_taint,
                             &ctx.method_tainting_fns,
                             &ctx.place_types(),
-                        ) {
+                        )
+                        .or(builtin_source)
+                        {
                             let declassified = expr_is_declassified(arg, scope);
                             ctx.taint_traces.push(TaintTrace {
                                 source: source.clone(),
@@ -10074,6 +10591,10 @@ fn analyze_expr_effect(
             // real builtin (not a local binding and not a user fn — which is analyzed on its own).
             if !scope.contains_key(callee) && !ctx.all_fns.contains(callee) {
                 for &i in effects::higher_order_closure_args(callee) {
+                    if let Some(arg) = args.get(i) {
+                        let tags = builtin_gate_tags_of(arg, scope, ctx);
+                        charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+                    }
                     // The closure param(s) stand for the COLLECTION ELEMENT the builtin binds to them
                     // (`each([input()], |x| shell(x))` runs with x = the tainted element). Compute the
                     // element's label once = union of the taint/secret of every NON-closure argument (the
@@ -10242,6 +10763,10 @@ fn analyze_expr_effect(
             // spuriously charged (no false reject). Cloned out of `ctx` first to free the borrow.
             if let Some(applied) = ctx.fn_applies_param.get(callee).cloned() {
                 for i in applied {
+                    if let Some(arg) = args.get(i) {
+                        let tags = builtin_gate_tags_of(arg, scope, ctx);
+                        charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+                    }
                     let resolved: Option<Expr> = match args.get(i) {
                         Some(l @ Expr::Lambda { .. }) => Some(l.clone()),
                         // A bare top-level fn NAME has no `closure_lambda`, so this returned `None`
@@ -10315,6 +10840,8 @@ fn analyze_expr_effect(
                                     fn_alias: None,
                                     fn_identities: FnIdentitySet::Unknown,
                                     field_fn_identities: BTreeMap::new(),
+                                    builtin_gate_tags: BuiltinGateTags::Unknown,
+                                    field_builtin_gate_tags: BTreeMap::new(),
                                     secret: arg_secret,
                                 },
                             );
@@ -19322,6 +19849,8 @@ fn walk_block_taint(
                         fn_alias: None,
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
+                        builtin_gate_tags: BuiltinGateTags::Unknown,
+                        field_builtin_gate_tags: BTreeMap::new(),
                         secret: false,
                     },
                 );
@@ -19626,6 +20155,8 @@ fn walk_block_secret(
                         fn_alias: None,
                         fn_identities: FnIdentitySet::Unknown,
                         field_fn_identities: BTreeMap::new(),
+                        builtin_gate_tags: BuiltinGateTags::Unknown,
+                        field_builtin_gate_tags: BTreeMap::new(),
                         secret: secret_src,
                     },
                 );
@@ -19827,7 +20358,12 @@ fn expr_taint_source_m(
                 .and_then(|b| b.fn_alias.as_deref())
                 .unwrap_or(callee.as_str());
             // C4: an I/O read is itself a taint source (untrusted input), even with clean args.
-            if is_io_taint_source(callee) {
+            let aliased_builtin_source = scope.get(callee).is_some_and(|binding| {
+                binding
+                    .builtin_gate_tags
+                    .contains(&BuiltinGateTag::TaintSource)
+            });
+            if is_io_taint_source(callee) || aliased_builtin_source {
                 Some(format!("io source `{callee}`"))
             } else if tainting_fns.contains(resolved) {
                 Some(format!("return value of `{}`", resolved))
@@ -21075,6 +21611,8 @@ fn seed_one_let(
             fn_alias: None,
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
             // This scope feeds the INTEGRITY return summary only; secrecy has its own parallel
             // seeder (`seed_one_let_secret`, feeding `compute_secret_fns`), so it is not seeded here.
             secret: false,
@@ -21126,6 +21664,8 @@ fn seed_taint_pattern(
                 fn_alias: None,
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
                 secret: false,
             },
         );
@@ -21235,6 +21775,8 @@ fn seed_effect_let(
             fn_alias: None,
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
             secret: init_secret || explicit_secret,
         },
     );
@@ -21288,6 +21830,8 @@ fn seed_effect_pattern(
                 fn_alias: None,
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
                 secret,
             },
         );
@@ -21339,6 +21883,8 @@ fn seed_stmt_local_lambdas(stmt: &Stmt, scope: &mut BTreeMap<String, ScopeBindin
                     fn_alias: None,
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
+                    builtin_gate_tags: BuiltinGateTags::Unknown,
+                    field_builtin_gate_tags: BTreeMap::new(),
                     secret: false,
                 });
             e.closure_lambda = Some(lam);
@@ -21435,6 +21981,8 @@ fn seed_declared_pattern_binders(
             fn_alias: None,
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
             secret: false,
         });
         mark(b);
@@ -21821,6 +22369,8 @@ fn seed_qualifier_params(params: &[(String, String)], scope: &mut BTreeMap<Strin
                     fn_alias: None,
                     fn_identities: FnIdentitySet::Unknown,
                     field_fn_identities: BTreeMap::new(),
+                    builtin_gate_tags: BuiltinGateTags::Unknown,
+                    field_builtin_gate_tags: BTreeMap::new(),
                     secret,
                 },
             );
@@ -22068,6 +22618,8 @@ fn seed_one_let_secret(
             fn_alias: None,
             fn_identities: FnIdentitySet::Unknown,
             field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
             secret,
         },
     );
@@ -22181,6 +22733,8 @@ fn seed_secret_pattern(
                 fn_alias: None,
                 fn_identities: FnIdentitySet::Unknown,
                 field_fn_identities: BTreeMap::new(),
+                builtin_gate_tags: BuiltinGateTags::Unknown,
+                field_builtin_gate_tags: BTreeMap::new(),
                 secret,
             },
         );
@@ -22325,6 +22879,8 @@ fn body_returns_secret(
                             fn_alias: None,
                             fn_identities: FnIdentitySet::Unknown,
                             field_fn_identities: BTreeMap::new(),
+                            builtin_gate_tags: BuiltinGateTags::Unknown,
+                            field_builtin_gate_tags: BTreeMap::new(),
                             secret: false,
                         });
                         b.secret = true;
@@ -24668,6 +25224,8 @@ mod fn_identity_spine_tests {
             fn_alias: None,
             fn_identities: identities,
             field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: BuiltinGateTags::Unknown,
+            field_builtin_gate_tags: BTreeMap::new(),
         }
     }
 
@@ -24913,5 +25471,120 @@ mod inline_contract_composition_tests {
         };
         assert!(compose_inline_int_call_argument(&mut ctx, &call).is_none());
         assert!(ctx.solver_int_vars.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod builtin_gate_tag_tests {
+    use super::*;
+
+    fn binding(tags: BuiltinGateTags) -> ScopeBinding {
+        ScopeBinding {
+            info: BindingInfo {
+                name: "fixture".into(),
+                ty: None,
+                mode: "safe".into(),
+                tainted: false,
+                taint_source: None,
+                declassified: false,
+                span: None,
+            },
+            closure_arity: None,
+            closure_lambda: None,
+            secret: false,
+            field_closures: BTreeMap::new(),
+            fn_alias: None,
+            fn_identities: FnIdentitySet::Unknown,
+            field_fn_identities: BTreeMap::new(),
+            builtin_gate_tags: tags,
+            field_builtin_gate_tags: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn bare_source_builtin_seeds_source_and_leg2_tags() {
+        let tags = builtin_gate_tags_of(
+            &Expr::Var("input".into()),
+            &BTreeMap::new(),
+            &SemanticContext::default(),
+        );
+        assert!(tags.contains(&BuiltinGateTag::TaintSource));
+        assert!(tags.contains(&BuiltinGateTag::Leg2Source));
+    }
+
+    #[test]
+    fn pure_builtin_is_known_empty() {
+        assert_eq!(
+            builtin_gate_tags_of(
+                &Expr::Var("len".into()),
+                &BTreeMap::new(),
+                &SemanticContext::default(),
+            ),
+            BuiltinGateTags::empty()
+        );
+    }
+
+    #[test]
+    fn alias_chain_preserves_tags() {
+        let ctx = SemanticContext::default();
+        let mut scope = BTreeMap::new();
+        let first = builtin_gate_tags_of(&Expr::Var("input".into()), &scope, &ctx);
+        scope.insert("a".into(), binding(first));
+        let second = builtin_gate_tags_of(&Expr::Var("a".into()), &scope, &ctx);
+        scope.insert("b".into(), binding(second));
+        assert!(builtin_gate_tags_of(&Expr::Var("b".into()), &scope, &ctx)
+            .contains(&BuiltinGateTag::TaintSource));
+    }
+
+    #[test]
+    fn join_unions_gate_classes() {
+        let expr = Expr::If {
+            cond: Box::new(Expr::Literal("true".into())),
+            then: Box::new(Expr::Var("write_file".into())),
+            else_: Box::new(Expr::Var("send".into())),
+            span: Span::default(),
+        };
+        let tags = builtin_gate_tags_of(&expr, &BTreeMap::new(), &SemanticContext::default());
+        assert!(tags.contains(&BuiltinGateTag::Capability("fs.write".into())));
+        assert!(tags.contains(&BuiltinGateTag::Capability("net.send".into())));
+    }
+
+    #[test]
+    fn container_element_resolves_tags() {
+        let expr = Expr::Index {
+            base: Box::new(Expr::ArrayLiteral {
+                elements: vec![Expr::Var("input".into())],
+            }),
+            index: Box::new(Expr::Literal("0".into())),
+        };
+        assert!(builtin_gate_tags_of(&expr, &BTreeMap::new(), &SemanticContext::default())
+            .contains(&BuiltinGateTag::TaintSource));
+    }
+
+    #[test]
+    fn returned_builtin_resolves_tags() {
+        let mut ctx = SemanticContext::default();
+        ctx.fn_sole_return.insert(
+            "get".into(),
+            (Vec::new(), Expr::Var("input".into())),
+        );
+        let call = Expr::Call {
+            callee: "get".into(),
+            args: Vec::new(),
+        };
+        assert!(builtin_gate_tags_of(&call, &BTreeMap::new(), &ctx)
+            .contains(&BuiltinGateTag::TaintSource));
+    }
+
+    #[test]
+    fn unresolved_value_stays_unknown() {
+        assert_eq!(
+            builtin_gate_tags_of(
+                &Expr::Var("dynamic_callable".into()),
+                &BTreeMap::new(),
+                &SemanticContext::default(),
+            ),
+            BuiltinGateTags::Unknown
+        );
     }
 }
