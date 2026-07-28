@@ -150,14 +150,16 @@ bash scripts/audit_unified.sh          # the full gate set
 bash scripts/run_formal_gate.sh        # the Lean theorem check
 ```
 
-**Current CI is red, and that is not hidden.** The most recent completed run reports
-`15/21 passed, 4 failed, 2 external` — `G1_fmt`, `G2_clippy`, `G3_test` and
-`G18_native_authoritative` are failing, and two gates (`G9_poc_kit`, `G21_formal`) cannot execute on
-the hosted runner at all, so **the Lean proofs are not machine-checked in CI** — only locally or on
-a dedicated runner. Re-derive rather than trust this paragraph:
+**3. CI does not run every gate, and the build is not always green.** Two of the declared gates
+cannot execute on the hosted runner at all — `G9_poc_kit` needs a dedicated Tart/VZ runner, and
+`G21_formal` reports *"lake/elan not installed on this runner; Lean proofs NOT checked here"*. So
+**the Lean theorem count above is verified by running the gate locally, not by CI.** The badge at the
+top of this page is the live build state; it has been red during active development, and the gate
+report says which gates rather than the badge. Check both rather than trusting this paragraph:
 
 ```bash
 gh run list --workflow anubis-ci --status completed --limit 1 --json conclusion,displayTitle
+bash scripts/audit_unified.sh          # the same gate set, locally, with a per-gate verdict
 ```
 
 The phase-by-phase arc lives in [`docs/language/ROADMAP.md`](docs/language/ROADMAP.md); the
