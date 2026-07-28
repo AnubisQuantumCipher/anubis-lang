@@ -40,7 +40,7 @@ pub struct VzGuest {
     pub disk_gib: u32,
     pub distribution: String,
     pub running: bool,
-    pub network: VzNetwork,
+    pub network: ReportedVzNetwork,
     /// Backend that reported this guest (`tart` or `legacy_vmctl`).
     #[serde(default = "default_backend_tart")]
     pub backend: String,
@@ -71,6 +71,29 @@ pub enum VzNetwork {
     Nat,
 }
 
+/// Network state carried by status and evidence outputs.
+///
+/// This is deliberately distinct from [`VzNetwork`], the finite request type accepted by Clap.
+/// Tart does not expose launch-time networking through `list` or `get`, so reporting needs an
+/// honest `unknown` state that can never become a requestable launch mode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportedVzNetwork {
+    Off,
+    Nat,
+    Unknown,
+}
+
+impl ReportedVzNetwork {
+    pub fn as_report_name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Nat => "nat",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 impl VzNetwork {
     pub fn as_cli_name(&self) -> &'static str {
         match self {
@@ -89,7 +112,7 @@ pub struct VzExecResult {
     pub stdout: String,
     pub stderr: String,
     pub duration_ms: u64,
-    pub network: VzNetwork,
+    pub network: ReportedVzNetwork,
     pub evidence_hash: String,
     #[serde(default = "default_backend_tart")]
     pub backend: String,
@@ -360,7 +383,9 @@ pub fn vz_status() -> Result<Vec<VzGuest>> {
                 .unwrap_or("local")
                 .into(),
             running,
-            network: tart_reported_network(),
+            // Tart inventory does not expose launch-time networking. This guest may have been
+            // started externally, bridged, or with Softnet, so inventory cannot assert NAT.
+            network: tart_inventory_reported_network(),
             backend: "tart".into(),
         });
     }
@@ -376,10 +401,10 @@ pub fn vz_status() -> Result<Vec<VzGuest>> {
 /// making out loud until this session, one shim over.
 ///
 /// Fail-closed here means refusing to answer, not answering "isolated".
-fn legacy_vmctl_reported_network(value: &serde_json::Value) -> Result<VzNetwork> {
+fn legacy_vmctl_reported_network(value: &serde_json::Value) -> Result<ReportedVzNetwork> {
     match value.get("network_window_active").and_then(|a| a.as_bool()) {
-        Some(true) => Ok(VzNetwork::Nat),
-        Some(false) => Ok(VzNetwork::Off),
+        Some(true) => Ok(ReportedVzNetwork::Nat),
+        Some(false) => Ok(ReportedVzNetwork::Off),
         None => Err(anyhow!(
             "ANUBIS_VZ_STATUS_NET_UNKNOWN: legacy vmctl status has no boolean \
              `network_window_active`; refusing to report a network mode. Absence of evidence is \
@@ -442,8 +467,20 @@ pub fn find_offensive_guest(preferred: Option<&str>) -> Result<VzGuest> {
     })
 }
 
-fn tart_reported_network() -> VzNetwork {
-    VzNetwork::Nat
+fn tart_inventory_reported_network() -> ReportedVzNetwork {
+    ReportedVzNetwork::Unknown
+}
+
+fn tart_generic_exec_reported_network() -> ReportedVzNetwork {
+    ReportedVzNetwork::Unknown
+}
+
+fn tart_already_running_reported_network() -> ReportedVzNetwork {
+    ReportedVzNetwork::Unknown
+}
+
+fn tart_controlled_reported_network() -> ReportedVzNetwork {
+    ReportedVzNetwork::Nat
 }
 
 fn legacy_vmctl_network_flag(network: &VzNetwork) -> &'static str {
@@ -475,7 +512,7 @@ fn tart_start_args(name: &str, network: &VzNetwork) -> Result<Vec<String>> {
 /// rather than what was asked for. Propagates `ANUBIS_VZ_STATUS_NET_UNKNOWN` when status carries no
 /// evidence — refusing to answer is the fail-closed direction, since the alternative is inventing
 /// an isolation claim.
-fn legacy_vmctl_observed_network(name: &str) -> Result<VzNetwork> {
+fn legacy_vmctl_observed_network(name: &str) -> Result<ReportedVzNetwork> {
     let guests = vz_status_legacy_vmctl()?;
     guests
         .into_iter()
@@ -490,7 +527,7 @@ fn legacy_vmctl_observed_network(name: &str) -> Result<VzNetwork> {
 }
 
 /// Start a VZ guest if not already running and return the backend's effective network mode.
-pub fn vz_start(name: &str, network: &VzNetwork) -> Result<VzNetwork> {
+pub fn vz_start(name: &str, network: &VzNetwork) -> Result<ReportedVzNetwork> {
     if legacy_vmctl_enabled() {
         let net_flag = legacy_vmctl_network_flag(network);
         let output = run_vmctl(&["start", name, "--net", net_flag])?;
@@ -520,7 +557,9 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<VzNetwork> {
     if guest_is_running(name)? {
         // Warm-check SSH so "started" means operable, not merely listed.
         if guest_ip(name).is_ok() && guest_home(name).is_ok() {
-            return Ok(tart_reported_network());
+            // No launch occurred in this invocation. Tart exposes no launch-mode evidence, so the
+            // requested `nat` cannot be promoted to an observed effective state.
+            return Ok(tart_already_running_reported_network());
         }
         // Listed running but SSH dead — fall through is wrong; try stop+start once.
         let _ = tart_capture(&["stop", name]);
@@ -541,7 +580,7 @@ pub fn vz_start(name: &str, network: &VzNetwork) -> Result<VzNetwork> {
                 if !ip.is_empty() {
                     // Soft SSH probe (may take a few seconds after IP appears).
                     if guest_home(name).is_ok() {
-                        return Ok(tart_reported_network());
+                        return Ok(tart_controlled_reported_network());
                     }
                 }
             }
@@ -633,7 +672,8 @@ pub fn vz_exec(
         stdout,
         stderr,
         duration_ms: duration.as_millis() as u64,
-        network: tart_reported_network(),
+        // SSH proves command transport, not how this arbitrary guest was launched.
+        network: tart_generic_exec_reported_network(),
         evidence_hash,
         backend: "tart".into(),
     })
@@ -1355,7 +1395,8 @@ pub fn vz_stress_battery(eng: &Engagement, guest: &str, engage_dir: &Path) -> Re
         stdout,
         stderr,
         duration_ms: duration.as_millis() as u64,
-        network: tart_reported_network(),
+        // The disposable gate launches Tart through the canonical shared-NAT path itself.
+        network: tart_controlled_reported_network(),
         evidence_hash,
         backend: "tart-disposable-guest-gate".into(),
     };
@@ -1460,6 +1501,8 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         "stress_gate_script": gate_script.as_ref().map(|p| p.display().to_string()),
         "stress_gate_script_present": gate_script.is_some(),
         "default_network": "off",
+        "default_network_semantics": "requested fail-closed default; Tart refuses until --network nat is explicit",
+        "tart_supported_network": "nat",
         // Each capability reports the predicate that actually governs the command it names.
         //
         // These all previously reported `offensive_ready` — "tart exists, the golden image exists, a
@@ -1495,6 +1538,8 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         },
         "policy": {
             "network_default": "off",
+            "network_default_semantics": "fail-closed request; not an effective Tart mode",
+            "tart_supported_network": "nat",
             "crash_isolated": true,
             // Collected when --engage is passed. `vz exploit` and `vz fuzz` now REQUIRE
             // --engage (ANUBIS_VZ_ENGAGE_REQUIRED), scrape the guest BEFORE teardown
@@ -1531,6 +1576,35 @@ pub fn vz_snapshot(guest: &str, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tart_inventory_and_generic_exec_report_unknown_network() {
+        assert_eq!(
+            tart_inventory_reported_network(),
+            ReportedVzNetwork::Unknown
+        );
+        assert_eq!(
+            tart_generic_exec_reported_network(),
+            ReportedVzNetwork::Unknown
+        );
+        assert_eq!(
+            serde_json::to_string(&ReportedVzNetwork::Unknown).unwrap(),
+            "\"unknown\""
+        );
+    }
+
+    #[test]
+    fn newly_launched_tart_and_stress_report_nat() {
+        assert_eq!(tart_controlled_reported_network(), ReportedVzNetwork::Nat);
+    }
+
+    #[test]
+    fn already_running_tart_guest_reports_unknown_network() {
+        assert_eq!(
+            tart_already_running_reported_network(),
+            ReportedVzNetwork::Unknown
+        );
+    }
 
     #[test]
     fn tart_start_policy_rejects_structurally_unenforceable_modes() {
@@ -1582,8 +1656,14 @@ mod tests {
         let off = serde_json::json!({"network_window_active": false});
         let missing = serde_json::json!({});
         let wrong_type = serde_json::json!({"network_window_active": "yes"});
-        assert_eq!(legacy_vmctl_reported_network(&nat).unwrap(), VzNetwork::Nat);
-        assert_eq!(legacy_vmctl_reported_network(&off).unwrap(), VzNetwork::Off);
+        assert_eq!(
+            legacy_vmctl_reported_network(&nat).unwrap(),
+            ReportedVzNetwork::Nat
+        );
+        assert_eq!(
+            legacy_vmctl_reported_network(&off).unwrap(),
+            ReportedVzNetwork::Off
+        );
         // Unknown must REFUSE, not claim the stronger isolation.
         for unknown in [&missing, &wrong_type] {
             let err = legacy_vmctl_reported_network(unknown)
@@ -1605,6 +1685,10 @@ mod tests {
         // Does not require tart to be installed — just that the JSON shape is honest.
         if let Ok(report) = vz_doctor() {
             assert_eq!(report["canonical_backend"], "tart");
+            assert_eq!(report["default_network"], "off");
+            assert_eq!(report["tart_supported_network"], "nat");
+            assert_eq!(report["policy"]["network_default"], "off");
+            assert_eq!(report["policy"]["tart_supported_network"], "nat");
             assert!(report["policy"]["canonical_cli"]
                 .as_str()
                 .unwrap()

@@ -924,7 +924,7 @@ enum Commands {
         json: bool,
     },
 
-    /// Run an exploit module inside a VZ sandbox (crash + network isolated).
+    /// Run an exploit in a crash-isolated Tart guest (shared NAT; native-boot is zero-NIC).
     VzExploit {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
@@ -937,7 +937,7 @@ enum Commands {
         out: PathBuf,
     },
 
-    /// Fuzz a target inside a VZ guest (no host crash risk, no egress).
+    /// Fuzz in a crash-isolated Tart guest (shared NAT; native-boot is zero-NIC).
     VzFuzz {
         #[arg(short, long, default_value = "out/engagements/lab")]
         engage: PathBuf,
@@ -3226,7 +3226,9 @@ fn main() -> Result<()> {
                 let mut val = report.clone();
                 val["defaults"] = serde_json::json!({
                     "guest_name": defaults.guest_name,
-                    "network": format!("{:?}", defaults.network),
+                    "requested_network": defaults.network.as_cli_name(),
+                    "tart_supported_network": "nat",
+                    "tart_default_result": "refused until --network nat is explicit",
                     "timeout_secs": defaults.timeout_secs,
                     "sync_sources": defaults.sync_sources,
                     "auto_build": defaults.auto_build,
@@ -3457,7 +3459,7 @@ fn main() -> Result<()> {
             let effective = offensive::vz::vz_start(&guest, &network)?;
             println!(
                 "guest `{guest}` started (effective_network={})",
-                effective.as_cli_name()
+                effective.as_report_name()
             );
             Ok(())
         }
@@ -6815,20 +6817,32 @@ mod tests {
 
     #[test]
     fn vz_start_rejects_unknown_network_mode_at_argument_parse() {
-        let err = Cli::try_parse_from([
-            "anubis",
-            "vz-start",
-            "--guest",
-            "unit-guest",
-            "--network",
-            "typo",
-        ])
-        .expect_err("unknown network mode must not silently coerce to off");
-        let rendered = err.to_string();
-        assert!(rendered.contains("invalid value 'typo'"), "got {rendered}");
-        for allowed in ["off", "loopback", "nat"] {
-            assert!(rendered.contains(allowed), "got {rendered}");
-        }
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                for rejected in ["typo", "unknown"] {
+                    let err = Cli::try_parse_from([
+                        "anubis",
+                        "vz-start",
+                        "--guest",
+                        "unit-guest",
+                        "--network",
+                        rejected,
+                    ])
+                    .expect_err("unrequestable network mode must fail argument parsing");
+                    let rendered = err.to_string();
+                    assert!(
+                        rendered.contains(&format!("invalid value '{rejected}'")),
+                        "got {rendered}"
+                    );
+                    for allowed in ["off", "loopback", "nat"] {
+                        assert!(rendered.contains(allowed), "got {rendered}");
+                    }
+                }
+            })
+            .expect("spawn large-stack CLI parse test")
+            .join()
+            .expect("large-stack CLI parse test panicked");
     }
 
     #[test]
@@ -6860,6 +6874,17 @@ mod tests {
                 assert!(!help.contains("network-isolated by default"), "{help}");
                 assert!(help.contains("shared NAT"), "{help}");
                 assert!(help.contains("native-boot"), "{help}");
+
+                for command_name in ["vz-exploit", "vz-fuzz"] {
+                    let subcommand = command
+                        .find_subcommand_mut(command_name)
+                        .expect("VZ offensive subcommand");
+                    let help = subcommand.render_long_help().to_string();
+                    assert!(help.contains("shared NAT"), "{command_name}: {help}");
+                    assert!(help.contains("native-boot"), "{command_name}: {help}");
+                    assert!(!help.contains("network isolated"), "{command_name}: {help}");
+                    assert!(!help.contains("no egress"), "{command_name}: {help}");
+                }
             })
             .expect("spawn help-render thread");
         handle.join().expect("help render panicked or overflowed");

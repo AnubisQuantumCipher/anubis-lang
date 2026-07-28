@@ -141,13 +141,14 @@ Deeper: [`docs/APPLE_NATIVE.md`](APPLE_NATIVE.md) · [`docs/TRUST_BOUNDARIES.md`
 
 Anubis carries an **engagement-scoped** offensive platform for authorized security work — because a
 proof-of-concept is *also* evidence, and every offensive action is logged as a hash-chained receipt
-you can verify. It runs, by design, inside disposable, network-isolated VZ guests.
+you can verify. It runs, by design, inside disposable, crash-isolated VZ guests. The Tart wrapper
+uses shared NAT; true zero-NIC isolation is a separate native-VZ path.
 
 | | Status | |
 |---|---|---|
 | **Bounty-grade PoC kit** | ✅ | cyclic patterns (`pattern-create`/`pattern-offset`), `p64` packing, `gadget-search`, a `target_run` harness, and **mutation fuzzing of local binaries** (`anubis fuzz`, real process crashes → crash evidence) |
 | **Engagement platform (AOP)** | ✅ | scoped workspaces (`engage-init`, authorization charter), an HTTP/JSON C2 listener, beacon `agent-generate`, task queue, and a fail-closed action-receipt hash chain (`receipt-verify`) |
-| **Isolated execution** | 🟡 | Host control plane `vz-status`/`vz-start`/`vz-exec`/… drives **Tart**. Live offensive work runs inside crash-isolated guests rather than on the host — but the *receipt's* isolation marker is host-written and forgeable (see the box above), so treat it as an operational safety control, not an attestation |
+| **Isolated execution** | 🟡 | Host control plane `vz-status`/`vz-start`/`vz-exec`/… drives **Tart shared-NAT guests**. Omitted `vz-start --network` requests the fail-closed default `off`, which Tart refuses because it cannot remove the NIC; pass `--network nat` explicitly for Tart. True zero-NIC requires `anubis vz native-boot`. Tart inventory reports `unknown` when Tart exposes no launch-mode evidence; `unknown` must never be read as `off`. Live offensive work is crash-isolated from the host, but the *receipt's* isolation marker is host-written and forgeable (see the box above), so treat it as an operational safety control, not an attestation |
 | **Reporting** | ✅ | `anubis bounty-report` turns an evidence bundle into a structured responsible-disclosure report |
 | **High-risk primitives** | 🟡 | process injection is **PLAN_ONLY by default**; live inject requires double authorization. SMB/WinRM lateral remains **PLAN_ONLY** (never executes) |
 

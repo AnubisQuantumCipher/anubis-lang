@@ -867,7 +867,7 @@ fn wait_for_ip(name: &str) -> Result<String> {
     if tart_capture(&[s("ip"), name.into()]).is_err() {
         let bin = tart_bin()?;
         Command::new(bin)
-            .args(["run", name, "--no-graphics"])
+            .args(tart_base_run_args(name, true))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

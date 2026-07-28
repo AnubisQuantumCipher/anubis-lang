@@ -215,7 +215,7 @@ pub fn catalog() -> Vec<ModuleInfo> {
             name: "vz_exec",
             side: "operator",
             risk: "high",
-            description: "Execute command inside VZ guest — crash + network isolated (T8)",
+            description: "Execute inside a crash-isolated Tart guest — shared NAT (T8)",
         },
         ModuleInfo {
             name: "vz_exploit",
@@ -299,6 +299,31 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(names.len(), before, "duplicate module names in catalog");
+    }
+
+    #[test]
+    fn tart_module_descriptions_do_not_claim_network_isolation() {
+        for module in catalog()
+            .into_iter()
+            .filter(|module| module.name.starts_with("vz_"))
+        {
+            let description = module.description.to_ascii_lowercase();
+            assert!(
+                !description.contains("network isolated") && !description.contains("no egress"),
+                "{} overclaims Tart isolation: {}",
+                module.name,
+                module.description
+            );
+        }
+        let exec = catalog()
+            .into_iter()
+            .find(|module| module.name == "vz_exec")
+            .expect("vz_exec catalog entry");
+        assert!(
+            exec.description.contains("shared NAT"),
+            "{}",
+            exec.description
+        );
     }
 
     #[test]

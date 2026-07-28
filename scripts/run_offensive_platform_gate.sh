@@ -42,6 +42,23 @@ parse_args() {
   printf '%s\n' "$out"
 }
 
+resolve_anubis_bin() {
+  if [[ -n "${ANUBIS_BIN:-}" ]]; then
+    if [[ ! -x "$ANUBIS_BIN" ]]; then
+      echo "FAIL: ANUBIS_BIN is not executable: $ANUBIS_BIN" >&2
+      return 1
+    fi
+    printf '%s\n' "$ANUBIS_BIN"
+  elif [[ -x target/release/anubis ]]; then
+    printf '%s\n' target/release/anubis
+  elif [[ -x target/debug/anubis ]]; then
+    printf '%s\n' target/debug/anubis
+  else
+    echo "FAIL: build anubis first or set ANUBIS_BIN" >&2
+    return 1
+  fi
+}
+
 run_in_guest() {
   local out="$1"
   local base="${ANUBIS_VM_BASE:-anubis-xcode}"
@@ -52,7 +69,7 @@ run_in_guest() {
   local keep="${ANUBIS_OFFENSIVE_GATE_KEEP_GUEST:-0}"
   local guest="anubis-offensive-gate-$$"
   local guest_out="out/offensive_gate_guest"
-  local host_bin="$ROOT/target/release/anubis"
+  local host_bin=""
   local binary_sha=""
   local guest_sha_line=""
   local guest_sha=""
@@ -91,8 +108,7 @@ run_in_guest() {
     echo "prereq_missing" >"$teardown_file"
     return 2
   fi
-  if [[ ! -x "$host_bin" ]]; then
-    echo "PREREQ_MISSING: build target/release/anubis before the guest gate" >&2
+  if ! host_bin="$(resolve_anubis_bin)"; then
     echo "prereq_missing" >"$teardown_file"
     return 2
   fi
@@ -178,6 +194,7 @@ test -x target/release/anubis
 export ANUBIS_VZ_GUEST=1
 export ANUBIS_OFFENSIVE_GATE_IN_GUEST=1
 export ANUBIS_ISOLATION=tart-disposable-guest
+export ANUBIS_BIN=target/release/anubis
 # Never inherit host force-witness into the guest battery.
 unset ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS || true
 touch "$HOME/.anubis-vz-guest" 2>/dev/null || true
@@ -275,14 +292,7 @@ run_local_gate() {
   fi
 
   local bin=""
-  if [[ -x target/release/anubis ]]; then
-    bin=target/release/anubis
-  elif [[ -x target/debug/anubis ]]; then
-    bin=target/debug/anubis
-  else
-    echo "FAIL: build anubis first"
-    exit 1
-  fi
+  bin="$(resolve_anubis_bin)" || return 1
 
   local eng="$out/engagement"
   rm -rf "$eng"
@@ -806,14 +816,7 @@ run_host_isolation_witness() {
   mkdir -p "$out"
 
   local bin=""
-  if [[ -x target/release/anubis ]]; then
-    bin=target/release/anubis
-  elif [[ -x target/debug/anubis ]]; then
-    bin=target/debug/anubis
-  else
-    echo "FAIL: build anubis first" >&2
-    return 1
-  fi
+  bin="$(resolve_anubis_bin)" || return 1
 
   # Absolute: no guest markers on host witness path.
   rm -f "${HOME}/.anubis-vz-guest" 2>/dev/null || true
