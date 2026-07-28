@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP
+//
+// The nested shape -- an `if` is not a loop, so descending through it must still report. This is the
+// case that makes the check worth a walker instead of a glance at the top level of the body.
+fn main() {
+    if 1 == 1 {
+        continue;
+    }
+}

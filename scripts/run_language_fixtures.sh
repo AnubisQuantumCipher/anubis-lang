@@ -162,7 +162,11 @@ finalize "$total" "$passed" "$failed" 0
 final_rc=$?
 # Coverage ratchet. `finalize` proves every fixture that RAN passed; it cannot notice that fewer
 # fixtures ran than last time. A corpus that shrinks reports a smaller, greener number.
-assert_floor "language_fixtures" "$total" "$ROOT/examples/lang/.fixture_count_floor"
+# The floor lives NEXT TO the corpus it describes. It used to sit in examples/lang/ while
+# FIXTURE_DIR is tests/fixtures/language_core -- so three fixtures added to examples/lang were never
+# run, and the gate still reported "244/244 PASS". A green board that never saw the thing is the
+# worst reading a gate can produce, and the filename was the only clue it was possible.
+assert_floor "language_fixtures" "$total" "$FIXTURE_DIR/.fixture_count_floor"
 floor_rc=$?
 set -e
 overall="$GATE_FINAL_STATUS"

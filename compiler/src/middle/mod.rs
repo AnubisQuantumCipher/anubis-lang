@@ -13,6 +13,7 @@ pub(crate) mod capability;
 /// keeps the false-accept class from reopening silently.
 pub mod carrier;
 pub(crate) mod effects;
+pub mod loopctl;
 pub mod proptest;
 /// Security research HIR types (Phase 3 stubs — profiles, scoped targets, effect IR).
 pub mod research_profile;
@@ -5572,6 +5573,18 @@ fn analyze_function(
         let fns = ctx.all_fns.clone();
         let mut bound: BTreeSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
         check_calls_stmts(body, &fns, &mut bound, ctx);
+    }
+
+    // `break`/`continue` with no loop to act on. The runtime already refuses these with
+    // ANUBIS_UNSUPPORTED_NATIVE_LOWERING, so nothing unsound was happening -- but it is a static
+    // property (there is no loop, and no input makes one appear), and `check` accepting a program
+    // that cannot run is the gap this closes.
+    for kw in crate::middle::loopctl::unenclosed_loop_control(body) {
+        ctx.diagnostics.push(SemanticDiagnostic {
+            code: Some("ANUBIS_LOOP_CONTROL_OUTSIDE_LOOP".into()),
+            message: format!("`{}` in function `{}` has no enclosing loop", kw, name),
+            span: Some((span.start, span.end)),
+        });
     }
 
     let mut scope = BTreeMap::<String, ScopeBinding>::new();
