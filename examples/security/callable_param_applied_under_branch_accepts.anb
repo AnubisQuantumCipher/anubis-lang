@@ -1,0 +1,5 @@
+// EXPECT: PASS
+// Must-stay-ACCEPT twin of callable_param_applied_under_branch_rejects.
+fn pure_fn(p: string, x: string) { }
+fn app(xs: any, b: bool) { if b { xs[0]("/tmp/branch.txt", "x"); } }
+fn main() { app([pure_fn], true); }

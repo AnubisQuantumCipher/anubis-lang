@@ -919,16 +919,44 @@ is applied"*, though `fn_applied_param_paths` (`:2709`) exists to hold exactly t
 **Three fixes have compiled and moved nothing** — a `param_sinks` extension (wrong consumer: the
 witness violates a CAPABILITY, not a taint sink) and two projection attempts. Under repair.
 
-**Seven further shapes were swept out and are ACCEPT today**, none of them previously named:
-method-formal param, `for f in xs` over a param, nested `xs[0][0]`, `let f = xs[0]` then apply,
-`let ys = xs` alias, call-under-`match`/`if`, and `xs = [leak]` reassign-after-pure-arg. The
-adversary predicts most fall out of a projection that is **total over apply sites** rather than one
-aimed at the list-index form. Extraction (`pop`/`remove`) and inline forwarder composition remain
-separately named.
+**Seven further shapes were swept out**, none of them previously named. Re-measured 2026-07-28 on
+pin `anubis-7941bf779ef7`, each with its must-stay-ACCEPT pure twin, because a leak-only score
+cannot tell a correct fix from one that always charges:
 
-**The callable story is therefore NOT closed**, and the guard set for the pending fix has a stated
-weakness worth repeating: all eleven must-stay-ACCEPT guards pass today, so **a no-op fix passes
-every one of them**. A guard set that a no-op satisfies proves nothing.
+| shape | leak | pure twin |
+|---|---|---|
+| nested `xs[0][0]` | rc=1 REJECT | rc=0 ACCEPT |
+| `let f = xs[0]` then apply | rc=1 REJECT | rc=0 ACCEPT |
+| call under `match`/`if` | rc=1 REJECT | rc=0 ACCEPT |
+| `for f in xs` over a param | rc=1 REJECT | rc=0 ACCEPT |
+| `let ys = xs` alias | rc=1 REJECT | rc=0 ACCEPT |
+| `xs = [leak]` reassign-after-pure-arg | rc=1 REJECT | rc=0 ACCEPT |
+| method-formal param | rc=0 **ACCEPT — still open** | — |
+
+The adversary's prediction that most fall out of a projection **total over apply sites**, rather
+than one aimed at the list-index form, held: six of seven closed, and they closed through five
+producer edits (literal, param, loop binder, extraction, assignment) rather than seven fixes.
+
+**Three of these seven had no witness in the corpus when this section first claimed they were
+ACCEPT.** `nested`, `let f = xs[0]` and call-under-`match` were named from reading the compiler, not
+from a run. They were built and measured for this revision and all three reject. An unbacked ACCEPT
+in the trust anchor is the same defect as a gate that passes an empty corpus, and it sat here for
+several rounds.
+
+**`xs = [leak]` reassign-after-pure-arg is WITHDRAWN as a finding rather than closed.** Its
+fixture declared `uses(fs.write)` on both the forwarder and `main`, so the write was authorized and
+ACCEPT was the only verdict available — no compiler change could ever have made that file reject.
+The properly-formed witness (declarations stripped) rejects. Third malformed fixture this session
+after the root guard and the round-14 set, all with the same shape: **the test granted the thing it
+was trying to catch.** An ACCEPT is evidence of a defect only once the fixture has been read and a
+rejection confirmed available.
+
+**The callable story is therefore not closed**, but the residual is now two named shapes rather than
+a class: **method-formal namespace** and **interprocedural forwarder** (`s_inline_fwd`), plus
+`for_param_lambda`, which both reviewers read as the same producer/consumer shape at a lambda rather
+than a named fn. The guard weakness stated earlier still applies to any fix aimed at them: all
+must-stay-ACCEPT guards pass today, so **a no-op fix passes every one of them** — which is why each
+close above is recorded with its pure twin and not alone.
 
 ### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
 

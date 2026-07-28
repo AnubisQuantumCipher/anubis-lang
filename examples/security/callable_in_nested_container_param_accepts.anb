@@ -1,0 +1,7 @@
+// EXPECT: PASS
+// Must-stay-ACCEPT twin of callable_in_nested_container_param_rejects. A pure callable at the
+// same nested path must NOT be charged. Without this, a fix that always charges scores
+// identically to a correct one.
+fn pure_fn(p: string, x: string) { }
+fn app(xs: any) { xs[0][0]("/tmp/nested.txt", "x"); }
+fn main() { app([[pure_fn]]); }
