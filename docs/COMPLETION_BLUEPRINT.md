@@ -69,48 +69,60 @@ sound. Its *soundness* claim was not. Keep the first, discard the second.
 
 ---
 
-## PROGRESS — 2026-07-27 (measured, re-derive before quoting)
+## PROGRESS — 2026-07-28 (measured, re-derive before quoting)
 
-| Gate | Start of day | Now |
-|---|---:|---:|
-| security fixtures | 242/244 **FAIL** | **294/294 PASS** |
-| language fixtures | 244/244 | **244/244** |
-| stdlib fail-closed | 45/45 | **80/80** |
+| Gate | Now |
+|---|---:|
+| unified audit (`audit_unified.sh --profile full`) | **24/24 PASS**, 0 failed / 0 skipped / 0 external |
+| language fixtures | **247/247** |
+| security fixtures | **317/317** |
+| stdlib fail-closed | **104/104** |
+| stdlib integration gate | **10 pass / 1 fail** (was 7/4) |
+| builtin surface (213) | **179 FAIL_CLOSED_OK · 11 RUN_REFUSES · 23 RUNS**, 0 crashes |
+| native-authoritative corpus | **898 files, 0 mismatches** |
+| Lean | **162 theorems / 15 modules**, machine-checked on host (G21) |
 
-**Phase 1 — DONE.** Twelve function-identity carriers closed: bare name, alias chain, if-join,
-match-join, struct-pattern binder, local container, container-as-argument (list/struct/map/enum),
-return, multi-hop return, return-position join, method return, identity forwarder, pass-through
-builtin, argument position, and the `push`-built container. Both lanes (secret and tainted). The
-adversary's pre-registered residual set went 21/30 → 30/30.
+**Phase 1 — DONE.** 41/41 published carrier routes reject, element ladder 25/25, 25/25 pure guards
+still accept, 0 over-rejection.
 
-**Phase 2 — partially discharged.** The three totality lessons are recorded in-code, each learned by
-being wrong: totality over `Expr` is necessary and NOT sufficient (the struct-pattern arm existed and
-did nothing); the walk must be total over the forms that HOLD expressions; and a `..` in a match arm
-is the tell — it discarded `invariant: Vec<Expr>` in the elevator detector, the FOURTH instance of
-that shape in one walker.
+**Phase 2 — DONE.** `compiler/src/middle/carrier.rs` matches every `Expr` variant with no wildcard
+arm; `run_carrier_totality_gate.sh` PLANTS a variant and proves rustc refuses it, then restores the
+tree. Registered as **G23**. `compiler/src/middle/loopctl.rs` extends the same discipline to all 15
+`Stmt` variants.
 
-**Phase 3 — DONE.** Fail-open `EXPECT` default, instrument drift, empty-corpus guards, all-SKIP
-hollow pass, unguarded `grep` under `pipefail`, and constituent gates reselecting their own binary.
-The seal could print `SEAL_PASS` with two gates SKIPPED and a constituent grading
-`/tmp/WRONG-BINARY` — demonstrated by counterexample, now impossible. `scripts/lib/gate_common.sh`
-plus content-addressed read-only binary pins (`scripts/publish_pin.sh`).
+**Phase 3 — DONE.** `gate_common.sh`, content-addressed binary pins, coverage ratchets. Two ratchets
+were found pointed at the wrong quantity during Phase 6 and corrected — see CLAIMS 2026-07-28.
 
-**Phase 5 — bounded residual published.** 31 builtins returned a plausible WRONG value at rc=0 and
-now fail closed. **213** builtins derived by command against the README's "~150". Coverage is a
-three-way union (A–L 107 sealed, M–Z non-crypto 87 sealed, crypto 19 UNMEASURED) and the residual is
-in `docs/CLAIMS.md` verbatim rather than rounded off.
+**Phase 4 — DONE.** All five criteria; `t1_encrypted_c2 PASS (whoami over aop-2)`.
 
-**Open, and named:**
+**Phase 5 — DONE, bounded residual published.** 213 builtins classified by the (`check`, `run`) PAIR.
+The 11 `RUN_REFUSES` are proof-lane/native-lowering constructs with no run-lane implementation; they
+refuse rather than assume, so the published promise holds and `check` is INCOMPLETE about runnability.
+`break`/`continue` outside a loop now reject at check time.
 
-- crypto/hash/KDF/random/x25519 builtin slice — unmeasured
-- research-mode receipt chain — `seal_action`/`collect_loot`/`scrape_guest` have zero real call
-  sites on the tart path; guest crashes produce no evidence while `campaign-init` advances the chain
-- `vz-c2-cycle` — agent beacons and tasks queue, results stay `[]`
-- **`push` returns `0`, and `check` does not catch its misuse:**
-  `let ys = push(xs, 3); len(ys)` — `check` rc=0, `run` rc=1 (panic). A check/run divergence of the
-  CLAIMS item 2 class, and a footgun: functional-style use silently yields a non-container.
-- VM seal (CLAIMS item 3)
-- the headline promise rewrite + drift gate
+**Phase 6 — DONE except the VM seal, which is deliberately NOT claimed.** `run_failclosed` reaches
+`PASS_RUNTIME_FAILCLOSED_WHOLE`; **G24 promise-coherence** gate registered (it caught a real drift in
+HANDOFF.md on first run); counts reconciled across README/AGENTS/CLAIMS.
+
+**Closed since the 2026-07-27 list, each verified by command:**
+
+- **crypto/hash/KDF/random builtin slice** — no longer unmeasured; every crypto name is classified in
+  `docs/evidence/builtin_surface_matrix.tsv`.
+- **research-mode receipt chain on the tart path** — a real crash op now seals:
+  `sealed vz_exploit_run … (seq=2)` and `receipt chain ok=true count=4`.
+- **`push` check/run divergence** — `let ys = push(xs,3); len(ys)` now runs and is CORRECT
+  (`3`, `[1, 2, 3]`); check rc=0, run rc=0.
+- **`vz-c2-cycle`** — closed under Phase 4.
+
+**Still open, and named:**
+
+- **VM seal.** Fixpoint measured `46ddce14…` reproducibly across two clone-boot-build cycles, but the
+  battery is 17/19, so `EXPECTED_FIXPOINT_VM` was NOT re-baselined and no seal is claimed. ROADMAP
+  Phase 0 living residual stays open.
+- **`edges_all_modules`** — untyped assertion helpers cannot discharge their own guard; needs generics
+  on `testing::assert_*`, which is the already-named HM/generics residual.
+- **`formal` in the guest** — exit 127, lake/elan absent from the golden image, so the 162 theorems are
+  UNVERIFIED in the VM (they pass on host). An image gap, not a proof failure.
 
 ---
 
