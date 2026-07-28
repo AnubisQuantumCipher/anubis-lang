@@ -44,6 +44,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/selfhost_ddc_gate}"
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 
@@ -400,8 +401,19 @@ note "manifest: $OUT/ddc_manifest.json"
 
 {
   echo "selfhost_ddc_gate pass=$pass fail=$fail"
-  echo "cA=rustc/LLVM  cB=$CC/non-LLVM  input=$SELF  agreed_output_sha256=$OUTPUT_SHA"
 } | tee -a "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "selfhost_ddc_gate" "$_cases" "$ROOT/scripts/floors/selfhost_ddc_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
+
 
 # Required-check floor: cannot PASS without the load-bearing steps actually scoring PASS
 # (Seshat T2 — hollow green when core checks never ran).

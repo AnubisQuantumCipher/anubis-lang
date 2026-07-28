@@ -221,9 +221,15 @@ done
 set +e
 finalize "$total" "$passed" "$failed" "$timed_out"
 final_rc=$?
+assert_floor "stdlib_failclosed" "$total" "$ROOT/tests/fixtures/stdlib/.failclosed_count_floor"
+floor_rc=$?
 set -e
 overall="$GATE_FINAL_STATUS"
 [[ "$overall" == "PASS" ]] || overall="FAIL"
+if [[ $floor_rc -ne 0 ]]; then
+  overall="FAIL"
+  echo "Overall: FAIL ($GATE_FLOOR_ERROR)" >&2
+fi
 
 if command -v jq >/dev/null 2>&1; then
   jq --arg overall "$overall" --argjson total "$total" --argjson passed "$passed" --argjson failed "$failed" \
@@ -238,7 +244,7 @@ echo "Overall: $overall ($passed/$total) timed_out=$timed_out"
 echo "Instrument: $ANUBIS_BIN mtime=$bin_mtime"
 
 if [[ "$overall" != "PASS" ]]; then
-  if [[ $timed_out -gt 0 && $failed -eq 0 ]]; then
+  if [[ $timed_out -gt 0 && $failed -eq 0 && $floor_rc -eq 0 ]]; then
     exit 2
   fi
   exit 1

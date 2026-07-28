@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/essence_spine_gate}"
 mkdir -p "$OUT"
 ANUBIS="${ANUBIS:-$ROOT/target/release/anubis}"
@@ -156,6 +157,18 @@ fi
 
 note ""
 note "pass=$pass fail=$fail"
+
+# Coverage ratchet (adversary R49): pillar total must not silently shrink.
+_cases=$((pass + fail))
+set +e
+assert_floor "essence_spine_gate" "$_cases" "$ROOT/scripts/floors/essence_spine_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "ESSENCE_SPINE_GATE: FAIL ($fail pillars red)"
   exit 1

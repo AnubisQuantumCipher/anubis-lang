@@ -12,6 +12,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/selfhost_dogfood_gate}"
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -113,6 +114,17 @@ done
 
 note "G2_semantic: DELEGATED -> run_selfhost_gate.sh (fixpoint+binary) + run_selfhost_fulllang_gate.sh"
 echo "dogfood_gate pass=$pass fail=$fail" | tee -a "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49): case total must not silently shrink.
+_cases=$((pass + fail))
+set +e
+assert_floor "selfhost_dogfood_gate" "$_cases" "$ROOT/scripts/floors/selfhost_dogfood_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
 if [[ "$fail" -gt 0 ]]; then
   echo "SELFHOST_DOGFOOD_GATE: FAIL ($pass pass / $fail fail)"; exit 1
 fi

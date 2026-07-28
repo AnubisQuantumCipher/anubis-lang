@@ -12,6 +12,7 @@ cd "$ROOT"
 GATE_EVIDENCE_ROOT="$ROOT"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/gate_evidence.sh"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/poc_kit}"
 if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then
   OUT="$2"
@@ -337,5 +338,14 @@ print(json.dumps(data, indent=2))
 PY
 
 echo "Report: $report"
+# Coverage ratchet (adversary R49): case total must not silently shrink.
+set +e
+assert_floor "poc_kit_gate" "$total" "$ROOT/scripts/floors/poc_kit_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($total cases; $GATE_FLOOR_ERROR)" >&2
+  verdict=FAIL
+fi
 echo "Overall: $verdict ($pass/$total)"
 [[ "$verdict" == "PASS" ]]

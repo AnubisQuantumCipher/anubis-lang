@@ -385,6 +385,9 @@ done
 # If all timed out with zero fails: overall is TIMEOUT (not PASS) — cry-wolf free.
 set +e
 finalize "$total" "$passed" "$failed" "$timed_out"
+# Coverage ratchet: corpus must not silently shrink (assert_tested/finalize only see this run).
+assert_floor "runtime_fixtures" "$total" "$ROOT/tests/fixtures/runtime/.fixture_count_floor"
+floor_rc=$?
 set -e
 case "$GATE_FINAL_STATUS" in
   PASS) overall="PASS" ;;
@@ -394,6 +397,10 @@ case "$GATE_FINAL_STATUS" in
     ;;
   *) overall="FAIL" ;;
 esac
+if [[ $floor_rc -ne 0 ]]; then
+  overall="FAIL"
+  echo "Overall: FAIL ($GATE_FLOOR_ERROR)" >&2
+fi
 
 _t=$(jq_tmp "$report")
 jq --arg overall "$overall" --argjson total "$total" --argjson passed "$passed" \

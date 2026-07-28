@@ -12,6 +12,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/selfhost_gate}"
 if [[ "$OUT" != /* ]]; then OUT="$ROOT/$OUT"; fi
 
@@ -373,6 +374,17 @@ fi
   echo "selfhost_gate pass=$pass fail=$fail"
   echo "bootstrap: stage0(host) → stage1 → stage2 → stage3; seal=cmp(stage2,stage3) + binary fixpoint"
 } | tee -a "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "selfhost_gate" "$_cases" "$ROOT/scripts/floors/selfhost_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
 
 if [[ "$fail" -gt 0 ]]; then
   echo "SELFHOST_GATE: FAIL ($pass pass / $fail fail)"

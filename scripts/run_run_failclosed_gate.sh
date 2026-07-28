@@ -309,6 +309,17 @@ fi
 echo "report: $report"
 echo
 
+# Coverage ratchet (adversary R49): open inventory total must not silently shrink.
+# open_count is the enumerated open surface size printed in inventory.
+set +e
+assert_floor "run_failclosed_gate" "$open_count" "$ROOT/scripts/floors/run_failclosed_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL (open_count=$open_count; $GATE_FLOOR_ERROR)" >&2
+  overall="FAIL"
+fi
+
 if [[ "$overall" == "FAIL" ]]; then
   echo "GATE: FAIL — instrumented surface is not all green"
   exit 1

@@ -4,6 +4,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/power_gate}"
 if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then OUT="$2"; fi
 REF="${ANUBIS_RISC0_METAL_REFERENCE:-/Users/sicarii/Desktop/metal-hybrid-prover}"
@@ -139,5 +140,15 @@ open("$OUT/report.json","w").write(json.dumps({
   "binary":"$BIN","note":"Anubis power gate — language+proof+receipts"
 }, indent=2))
 PY
+# Coverage ratchet (adversary R49): case total must not silently shrink.
+set +e
+assert_floor "power_gate" "$total" "$ROOT/scripts/floors/power_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($total cases; $GATE_FLOOR_ERROR)" >&2
+  verdict=FAIL
+fi
+
 echo "Overall: $verdict ($pass/$total)"
 [[ "$verdict" == PASS ]]

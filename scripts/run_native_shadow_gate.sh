@@ -28,6 +28,17 @@ native_only=$(grep -c '^NATIVE_ONLY$' "$LOG" || true)
 disagree=$(grep -c '^DISAGREE$' "$LOG" || true)
 total=$((agree + defer + native_only + disagree))
 
+# Coverage ratchet (adversary R49): file corpus size ($n) must not silently shrink.
+set +e
+assert_floor "native_shadow_gate" "$n" "$ROOT/scripts/floors/native_shadow_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($n files; $GATE_FLOOR_ERROR)" >&2
+  echo "NATIVE_SHADOW_GATE: FAIL (coverage floor)"
+  exit 1
+fi
+
 echo "NATIVE_SHADOW over $n files, $total obligations:"
 echo "  AGREE       = $agree   (native decided, matched z3)"
 echo "  NATIVE_ONLY = $native_only   (native decided, z3 unknown/errored)"

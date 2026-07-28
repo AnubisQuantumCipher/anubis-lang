@@ -121,9 +121,20 @@ for f in "${files[@]}"; do
 done
 
 {
-  echo "fulllang_gate pass=$pass fail=$fail skip=$skip timed_out=$timed_out"
-  echo "oracle: host \`anubis run\` vs self-host compile->rustc->run over examples/*.anb"
+  echo "selfhost_fulllang_gate pass=$pass fail=$fail"
 } | tee -a "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "selfhost_fulllang_gate" "$_cases" "$ROOT/scripts/floors/selfhost_fulllang_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
+
 
 set +e
 finalize "${#files[@]}" "$((pass + skip))" "$fail" "$timed_out"

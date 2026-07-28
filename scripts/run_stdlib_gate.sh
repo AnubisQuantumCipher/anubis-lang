@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/stdlib_gate}"
 mkdir -p "$OUT"
 
@@ -172,6 +173,18 @@ else
 fi
 
 total=$((pass+fail))
+
+# Coverage ratchet (adversary R49): case total must not silently shrink.
+set +e
+assert_floor "stdlib_gate" "$total" "$ROOT/scripts/floors/stdlib_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($total cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+  total=$((pass+fail))
+fi
+
 if [[ "$fail" -eq 0 ]]; then
   verdict=PASS
 else

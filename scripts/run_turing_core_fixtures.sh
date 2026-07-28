@@ -78,8 +78,14 @@ done
 set +e
 finalize "$total" "$pass" "$fail" 0
 final_rc=$?
+assert_floor "turing_core_fixtures" "$total" "$REPO/tests/fixtures/turing_core/.fixture_count_floor"
+floor_rc=$?
 set -e
 verdict="$GATE_FINAL_STATUS"; [ "$verdict" = PASS ] || verdict=FAIL
+if [ "$floor_rc" -ne 0 ]; then
+  verdict=FAIL
+  echo "Overall: FAIL ($GATE_FLOOR_ERROR)" >&2
+fi
 echo "" >> "$report"
 echo "  ]," >> "$report"
 echo "  \"total\": $total, \"passed\": $pass, \"failed\": $fail," >> "$report"

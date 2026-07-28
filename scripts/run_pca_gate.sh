@@ -10,7 +10,9 @@
 # Rebuilds the binary first so a stale release can't mask a regression. The verdict is derived from
 # observed exit codes / values, never defaulted.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 OUT_DIR="out/pca_gate"
 if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then OUT_DIR="$2"; fi
@@ -72,4 +74,14 @@ jq '.verdict = "FAIL"' "$OUT_DIR/b_signed/pca.json" > "$OUT_DIR/b_signed_tampere
 "$BIN" verify "$OUT_DIR/b_signed_tampered" >/dev/null 2>&1; step "$?" 1 tamper_signed_claim_fails
 
 echo "Report: $OUT_DIR"
+# Coverage ratchet (adversary R49): case total must not silently shrink.
+set +e
+assert_floor "pca_gate" "$total" "$ROOT/scripts/floors/pca_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($total cases; $GATE_FLOOR_ERROR)" >&2
+  echo "Overall: FAIL ($pass/$total) coverage floor"
+  exit 1
+fi
 if [[ $pass -eq $total ]]; then echo "Overall: PASS ($pass/$total)"; else echo "Overall: FAIL ($pass/$total)"; exit 1; fi

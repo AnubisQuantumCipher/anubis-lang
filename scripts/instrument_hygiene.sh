@@ -124,54 +124,92 @@ fi
 rm -rf "$TD"
 
 # --- 9. Prospective: count-reporting gates must have a floor ---
-# General question (not a pattern list of known bugs): if a gate prints a score,
-# does its source refuse vacuous green?
-mkdir -p adversary/r43
+# A gate "reports a count" only if it prints a shrinkable aggregate (Overall N/M,
+# pass=/fail= summary, total++, stamps_checked, files scanned). Bare PASS/FAIL tokens
+# and hollow `Overall: $overall` are NOT count reporters (adversary R47/R48 split).
+# `assert_tested` / `require_nonempty_corpus` are NOT floors (count==0 only).
+mkdir -p scratchpad/fleet_20260726/adversary/r43
 python3 - <<'PY' > /tmp/ih_gate_floors_run.out
 import re
 from pathlib import Path
+
+def reports_shrinkable_count(t: str) -> bool:
+    if re.search(r"stamps_checked|STAMPS_CHECKED", t):
+        return True
+    if re.search(r"Overall:.*\(\$pass/\$total\)|Overall:.*\(\$passed/\$total\)|Overall: \$verdict \(\$pass/\$total\)", t):
+        return True
+    if re.search(r"echo \"Overall:.*\(\$pass/\$total\)", t):
+        return True
+    if "total=$((total + 1))" in t or "total=$((total+1))" in t:
+        return True
+    # pass/fail summaries (echo, note, tee)
+    if re.search(r"pass=\$pass fail=\$fail", t) and re.search(r"pass=\$\(\(pass", t):
+        return True
+    if re.search(r"#fixtures\[@\]", t) and re.search(r"Overall:|passed|total", t):
+        return True
+    if re.search(r'\bn=\$\(.*find|\bn=\$\(.*wc', t) and re.search(r"\$n\b", t):
+        return True
+    # total=0 ... total=$((total+1)) style even without Overall
+    if re.search(r"\btotal=0\b", t) and re.search(r"total=\$\(\(total", t):
+        return True
+    if re.search(r"total=\$\(\(pass\+fail\)\)|total=\$\(\(agree", t):
+        return True
+    if re.search(r'jq -r [\'"]\.total', t):
+        return True
+    if re.search(r"\bn=0\b", t) and re.search(r"n=\$\(\(n\+1\)\)|n=\$\(\(n \+ 1\)\)", t):
+        return True
+    return False
+
 paths = sorted(Path("scripts").glob("run_*gate*.sh")) + sorted(Path("scripts").glob("run_*fixtures*.sh"))
 seen = set()
 rows = []
+bait = []
 for p in paths:
     if p.name in seen:
         continue
     seen.add(p.name)
     t = p.read_text(errors="replace")
-    reports = bool(re.search(
+    generous = bool(re.search(
         r"Overall:|stamps_checked|fixtures=\(|passed=|fail=|total=|over [0-9]+ fixtures|pass=\$\(|green\)",
         t,
     ))
-    # `assert_tested` and `require_nonempty_corpus` are NOT floors. They catch a gate that tested
-    # NOTHING (count == 0); a floor catches one that tested LESS THAN BEFORE. Counting them here
-    # was too generous by exactly the distinction that made `assert_floor` necessary — the
-    # docs-drift gate had `assert_tested`, went from 42 stamps to 30, and reported PASS.
+    reports = reports_shrinkable_count(t)
     has_floor = bool(re.search(r"assert_floor|_floor\b|ratchet", t))
     if reports:
         rows.append((p.name, has_floor))
+    elif generous:
+        bait.append(p.name)
 missing = [a for a, b in rows if not b]
-Path("scratchpad/fleet_20260726/adversary/r43/gate_floor_missing.list").write_text(
-    "\n".join(missing) + ("\n" if missing else "")
-)
-Path("scratchpad/fleet_20260726/adversary/r43/gate_floor_inventory.tsv").write_text(
+out = Path("scratchpad/fleet_20260726/adversary/r43")
+out.mkdir(parents=True, exist_ok=True)
+(out / "gate_floor_missing.list").write_text("\n".join(missing) + ("\n" if missing else ""))
+(out / "gate_floor_false_positive.list").write_text("\n".join(bait) + ("\n" if bait else ""))
+(out / "gate_floor_inventory.tsv").write_text(
     "script\thas_floor\n" + "\n".join(f"{a}\t{int(b)}" for a, b in rows) + "\n"
 )
 print(
     f"count_reporting_gates={len(rows)} "
     f"with_floor={sum(1 for _, b in rows if b)} "
-    f"missing_floor={len(missing)}"
+    f"missing_floor={len(missing)} "
+    f"false_positive_bait={len(bait)}"
 )
 for m in missing:
     print(f"MISSING_FLOOR {m}")
+for b in bait:
+    print(f"FALSE_POSITIVE {b}")
 raise SystemExit(0 if not missing else 2)
 PY
 floor_rc=$?
 cat /tmp/ih_gate_floors_run.out
 if [[ "$floor_rc" -eq 0 ]]; then
-  ok "every count-reporting gate has require_nonempty/assert_tested/FLOOR"
+  ok "every genuine count-reporting gate has assert_floor / floor / ratchet"
 else
   miss=$(grep -c '^MISSING_FLOOR' /tmp/ih_gate_floors_run.out || true)
-  bad "count-reporting gates missing a floor: $miss (scratchpad/fleet_20260726/adversary/r43/gate_floor_missing.list)"
+  bad "genuine count-reporting gates missing a floor: $miss (scratchpad/fleet_20260726/adversary/r43/gate_floor_missing.list)"
+fi
+bait_n=$(grep -c '^FALSE_POSITIVE' /tmp/ih_gate_floors_run.out || true)
+if [[ "${bait_n:-0}" -gt 0 ]]; then
+  ok "detector excluded $bait_n PASS-token/hollow-Overall bait (see gate_floor_false_positive.list)"
 fi
 
 # --- 10. Docs drift coverage floor file must exist and be numeric >0 ---

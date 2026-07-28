@@ -13,7 +13,9 @@
 # by the Metal prove path, see A0). Rebuilds the binary first so a stale release can't mask a
 # regression. The verdict is derived from observed exit codes / values, never defaulted.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 OUT_DIR="out/prove_gate"
 if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then OUT_DIR="$2"; fi
@@ -78,5 +80,15 @@ step "$(jq -r '.zk_present' "$NB/pca.json")" false no_receipt_zk_absent
 
 rm -rf "$COLD" "$CORRUPT" "$WRONGID"
 echo "Report: $OUT_DIR"
+# Coverage ratchet (adversary R49): case total must not silently shrink.
+set +e
+assert_floor "prove_gate" "$total" "$ROOT/scripts/floors/prove_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($total cases; $GATE_FLOOR_ERROR)" >&2
+  echo "Overall: FAIL ($pass/$total) coverage floor"
+  exit 1
+fi
 echo "Overall: $([[ $pass -eq $total ]] && echo PASS || echo FAIL) ($pass/$total)"
 [[ $pass -eq $total ]] || exit 1

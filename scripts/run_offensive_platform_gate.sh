@@ -19,6 +19,7 @@ cd "$ROOT"
 GATE_EVIDENCE_ROOT="$ROOT"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/gate_evidence.sh"
+source "$ROOT/scripts/lib/gate_common.sh"
 
 OFFENSIVE_EXPECTED_GUEST_TOTAL=34
 OFFENSIVE_EXPECTED_WITNESS_TOTAL=5
@@ -781,6 +782,16 @@ report = {
 print(json.dumps(report, indent=2))
 open(os.path.join(out, "report.json"), "w").write(json.dumps(report, indent=2) + "\n")
 PY
+  # Coverage ratchet (adversary R49): guest battery total must not silently shrink.
+  # Separate floor from host-witness (5) so the two modes do not collide.
+  set +e
+  assert_floor "offensive_platform_gate_guest" "$total" "$ROOT/scripts/floors/offensive_platform_gate_guest.count_floor"
+  _floor_rc=$?
+  set -e
+  if [[ $_floor_rc -ne 0 ]]; then
+    echo "FLOOR: FAIL ($total cases; $GATE_FLOOR_ERROR)" >&2
+    verdict=FAIL
+  fi
   echo "Overall: $verdict ($pass/$total) isolation=$isolation expected=$OFFENSIVE_EXPECTED_GUEST_TOTAL"
   [[ "$verdict" == PASS ]]
 }
@@ -917,6 +928,15 @@ report = {
 print(json.dumps(report, indent=2))
 open(os.path.join(out, "report.json"), "w").write(json.dumps(report, indent=2) + "\n")
 PY
+  # Coverage ratchet (adversary R49): host-witness total must not silently shrink.
+  set +e
+  assert_floor "offensive_platform_gate_witness" "$total" "$ROOT/scripts/floors/offensive_platform_gate_witness.count_floor"
+  _floor_rc=$?
+  set -e
+  if [[ $_floor_rc -ne 0 ]]; then
+    echo "FLOOR: FAIL ($total cases; $GATE_FLOOR_ERROR)" >&2
+    verdict=FAIL
+  fi
   echo "Overall: $verdict ($pass/$total) isolation=$isolation expected=$OFFENSIVE_EXPECTED_WITNESS_TOTAL"
   echo "G14_MODE: host-isolation-witness (exactly ${OFFENSIVE_EXPECTED_WITNESS_TOTAL}/${OFFENSIVE_EXPECTED_WITNESS_TOTAL} required)"
   [[ "$verdict" == PASS ]]

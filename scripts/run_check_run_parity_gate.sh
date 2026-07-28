@@ -457,6 +457,16 @@ if [[ "$partition_rc" -ne 0 ]]; then
   exit 2
 fi
 
+# Coverage ratchet on corpus files visited (total), not just compared survivors.
+set +e
+assert_floor "check_run_parity" "$total" "$ROOT/scripts/floors/check_run_parity_gate.count_floor"
+floor_rc=$?
+set -e
+if [[ $floor_rc -ne 0 ]]; then
+  echo "GATE: FAIL — $GATE_FLOOR_ERROR"
+  exit 1
+fi
+
 # Hollow PASS guard: if every file timed out or crashed, compared==0 and divergences==0
 # previously printed PASS with no evidence (Seshat T2 / fleet load spike class).
 if [[ "$compared" -eq 0 ]]; then

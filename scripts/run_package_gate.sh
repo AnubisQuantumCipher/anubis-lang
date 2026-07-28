@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT="${1:-out/package_gate}"
 mkdir -p "$OUT"
 
@@ -196,6 +197,17 @@ fi
   echo "package_gate pass=$pass fail=$fail"
   for d in "${detail[@]}"; do echo "  $d"; done
 } | tee "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "package_gate" "$_cases" "$ROOT/scripts/floors/package_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
 
 if [[ "$fail" -gt 0 ]]; then
   exit 1

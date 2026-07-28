@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/gate_common.sh"
 OUT_ARG="${1:-out/dx_gate}"
 # Absolute so subshells `cd` elsewhere still write logs correctly.
 if [[ "$OUT_ARG" = /* ]]; then
@@ -221,6 +222,17 @@ fi
   echo "dx_gate pass=$pass fail=$fail"
   for d in "${detail[@]}"; do echo "  $d"; done
 } | tee "$OUT/summary.txt"
+
+# Coverage ratchet (adversary R49) — outside | tee so fail+= is not lost in a subshell.
+_cases=$((pass + fail))
+set +e
+assert_floor "dx_gate" "$_cases" "$ROOT/scripts/floors/dx_gate.count_floor"
+_floor_rc=$?
+set -e
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "FLOOR: FAIL ($_cases cases; $GATE_FLOOR_ERROR)" >&2
+  fail=$((fail + 1))
+fi
 
 if [[ "$fail" -gt 0 ]]; then
   echo "DX_GATE: FAIL" | tee -a "$OUT/summary.txt"
