@@ -69,7 +69,7 @@ Absence of a red row is **not** evidence of absence.
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 898 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 900 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -198,35 +198,42 @@ reads as "nothing is open". It caught a real drift on first run (`docs/HANDOFF.m
 promise with no scope qualifier); fixed in the doc, not the gate. Watched to fail four ways
 (self-test, framing removed, open-issues emptied, restatement count fallen).
 
-### VM seal — fixpoint MEASURED and reproducible, deliberately NOT re-baselined (2026-07-28)
+### VM seal — SEALED on a fully green battery, 19/19 (2026-07-28)
 
-`scripts/vm/run-slice.sh` run twice end-to-end in a disposable tart guest cloned from
-`anubis-xcode` (8 vCPU, host never builds).
+`scripts/vm/run-slice.sh`, disposable tart guest cloned from `anubis-xcode` (8 vCPU; the host never
+builds). Final run:
 
-| | |
-|---|---|
-| self-host seal (`run_selfhost_gate.sh`) | **EXIT=0** — stage2 == stage3 |
-| VM binary fixpoint, run 1 | `46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60` |
-| VM binary fixpoint, run 2 | `46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60` |
-| recorded baseline (2026-07-24) | `189ac49618ccf193008ba81648caeb37657a348f7c39d111ffd6aad9a6b95fc8` |
-| battery gates green | 17 of 19 |
+```
+gate failures : 0
+VM fixpoint   : 46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60
+expected      : 46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60
+  ✓ fixpoint matches baseline
+PASS — all gates green, fixpoint unchanged.
+```
 
-The digest is **stable across two independent clone-boot-build cycles**, so the move from the
-2026-07-24 baseline is the expected consequence of the compiler changing this arc, not drift.
+**All 20 gates `EXIT=0`** — cargo-test, tool-test, clippy, build-rel, language 247/247, turing,
+security 317/317, stdlib 10/10 (guest lane), shadow, seal (stage2 == stage3), dogfood,
+effect/capset/type/taint self-host (0 disagreements each), stdlib-fc 104/104, native-auth,
+docs-drift, walker, **formal**.
 
-**`EXPECTED_FIXPOINT_VM` is deliberately NOT updated, and the seal is NOT claimed.** That file
-encodes the digest a **green** battery produces — every entry in its re-baseline log says so — and
-this battery is not green:
+**`formal` had never executed in the guest before this.** It was exit **127 — toolchain absent**: the
+golden image carried no lake/elan, so the 162 Lean theorems were only ever machine-checked on the
+host. elan + Lean v4.32.0 are now installed in `anubis-xcode` and `FORMAL_GATE: PASS` there. An
+absent toolchain reported as a failed proof sends the reader to debug the wrong thing, so
+`run-slice.sh` now names exit 127 separately from a failed check.
 
-- `stdlib` — the published `edges_all_modules` residual above (10 pass / 1 fail after this arc's
-  fixes, up from 7/4);
-- `formal` — **exit 127, toolchain absent**: the golden image carries no lake/elan, so the 162 Lean
-  theorems were **not checked in the guest** on this run. Unverified here, *not* disproved; they are
-  machine-checked on the host (`FORMAL_GATE: PASS`, G21 of the 24/24 audit).
+**The re-baseline was held back twice before being taken.** This same digest was measured with the
+battery at 17/19 and again at 18/19, and `EXPECTED_FIXPOINT_VM` was NOT written either time — that
+file records the digest a **green** battery produces, and writing it on a red board puts a number
+behind the word "sealed" that no green run ever made. It was written only once the board was green.
 
-Re-baselining on a red battery would put a digest behind the word "sealed" that no green run ever
-produced. **Claimed:** the fixpoint is measured, reproducible, and its movement is accounted for.
-**Not claimed:** a VM seal. The ROADMAP Phase 0 living residual stays open.
+**Reproducible before it was written:** the identical digest came out of **four** independent
+clone→boot→build cycles in throwaway guests (`.64.7`, `.64.3`, `.64.5`, `.64.6`). A digest seen once
+is a measurement; seen four times across disposable guests, it is a fixpoint.
+
+**Claimed:** stage2 == stage3 self-host reproduction, a reproducible VM binary fixpoint, and every
+gate in the battery green in a disposable guest. **Not claimed:** trusting-trust closure, or that a
+green battery means no defects — see "Green means no KNOWN defects" above.
 
 ---
 

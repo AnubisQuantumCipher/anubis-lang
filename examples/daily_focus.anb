@@ -1,0 +1,42 @@
+// A small Safe-mode Anubis program: total completed tasks, then classify the day.
+// Expected stdout:
+// 10
+// 20
+
+enum DayStatus {
+    OnTrack { completed: u32, planned: u32 },
+    NeedsAttention(u32),
+}
+
+fn total_tasks(tasks: list) -> u32 {
+    let total = 0;
+    for task in tasks {
+        total = total + task;
+    }
+    return total;
+}
+
+fn assess(completed: u32, planned: u32) -> DayStatus {
+    if completed == planned {
+        return DayStatus::OnTrack { completed: completed, planned: planned };
+    }
+    return DayStatus::NeedsAttention(completed);
+}
+
+fn score(status: DayStatus) -> u32 {
+    return match status {
+        DayStatus::OnTrack { completed: done, planned: target } => done + target,
+        DayStatus::NeedsAttention(done) => done,
+    };
+}
+
+fn main() {
+    let task_batches = [3, 5, 2];
+    let completed = total_tasks(task_batches);
+    let status = assess(completed, 10);
+    let day_score = score(status);
+
+    print(completed);
+    print(day_score);
+    return day_score;
+}
