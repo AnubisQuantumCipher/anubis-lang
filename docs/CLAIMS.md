@@ -737,6 +737,43 @@ digest, rather than exfiltrating them. A digest is evidence; a core dump is a li
 system whose identity is proving without revealing, scraping raw crash state to the host is
 architecturally backwards.
 
+### Generics are a STRING HEURISTIC — two measured defects in opposite directions (OPEN 2026-07-28)
+
+`is_generic` (`compiler/src/middle/ty.rs:258`) decides whether a type annotation is a generic
+parameter — and therefore erased and compatible with anything — from the SHAPE OF THE STRING:
+
+```rust
+if t.contains('<') { return true; }
+!t.is_empty() && t.len() <= 2 && t.chars().all(|c| c.is_ascii_uppercase())
+```
+
+Both halves are wrong, in opposite directions. Measured on pin `anubis-791cfaf79812`, each with a
+discriminating control:
+
+| # | program | rc | should be |
+|---|---|---:|---|
+| 1 | `fn pick<Item>(a: Item) -> Item` … `pick(1)` | **1 REJECT** `ANUBIS_TYPE_MISMATCH: expects Item, got u32` | ACCEPT |
+| 1c | `fn pick<T>(a: T) -> T` … `pick(1)` — identical but a 1-char param | **0 ACCEPT** | ACCEPT |
+| 2 | `let x: Option<u32> = "hello"` | **0 ACCEPT** | REJECT |
+| 2c | `let x: u32 = "hello"` | **1 REJECT** `ANUBIS_TYPE_MISMATCH` | REJECT |
+
+**(1) OVER-rejection in the enforcing path.** `t.len() <= 2` means `T` and `U` are type parameters
+but `Item`, `Key` and `Value` are not. A valid, running program is rejected *because its type
+parameter has more than two characters*. The only difference between rows 1 and 1c is the length of
+a name.
+
+**(2) UNDER-rejection — a type-lane soundness hole.** Any annotation containing `<` is called
+generic, hence erased, hence compatible with everything, so a concrete instantiation accepts a value
+of an unrelated type. `Option<u32> = "hello"` type-checks; `u32 = "hello"` does not.
+
+**Not fixed by a better heuristic.** Widening "generic" to any capitalised identifier would make a
+concrete struct named `Point` erasable — trading an over-rejection for a worse under-rejection. The
+sound fix consults the DECLARED parameter list (`ctx.fn_generics`, `mod.rs:2868`) rather than
+guessing from the string, which means threading context into a leaf module. Recorded here rather
+than half-fixed by the person who found it while the type lane's owner is mid-repair elsewhere.
+
+Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
