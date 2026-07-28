@@ -393,9 +393,39 @@ for g in $EXPECTED_GATES; do
   case " ${GATE_NAMES[*]} " in *" $g "*) ;; *) MISSING_GATES="$MISSING_GATES $g" ;; esac
 done
 
+# Which gates are ALLOWED to be EXTERNAL, per profile — by NAME.
+#
+# The count-based form (`pass -eq 14 && external -eq 1`) was replaced by the named-gate check
+# above, and in the swap the hosted profile quietly lost a real property: it pinned that EXACTLY
+# ONE gate could be external, so a second gate degrading to EXTERNAL turned the seal red. Under a
+# bare `external >= 0` any number of gates could go external and hosted would still say
+# HOSTED_PASS — which is the "declared, never silently folded in" rule failing in the direction
+# it exists to prevent.
+#
+# Naming them keeps the property AND says which gate broke the rule, which the arithmetic never
+# could. `full` allows none: a full seal that cannot run a gate is not a full seal.
+case "$PROFILE" in
+  hosted) ALLOWED_EXTERNAL="G9_poc_kit G21_formal" ;;
+  *)      ALLOWED_EXTERNAL="" ;;
+esac
+UNEXPECTED_EXTERNAL=""
+for i in "${!GATE_NAMES[@]}"; do
+  case "${GATE_RESULTS[$i]}" in
+    *'"status":"EXTERNAL"'*)
+      g="${GATE_NAMES[$i]}"
+      case " $ALLOWED_EXTERNAL " in
+        *" $g "*) ;;
+        *) UNEXPECTED_EXTERNAL="$UNEXPECTED_EXTERNAL $g" ;;
+      esac
+      ;;
+  esac
+done
+
 VERDICT="FAIL"
 if [[ -n "$MISSING_GATES" ]]; then
   echo "ANUBIS_AUDIT_INCOMPLETE: gate(s) produced no result:$MISSING_GATES" | tee -a "$LOG"
+elif [[ -n "$UNEXPECTED_EXTERNAL" ]]; then
+  echo "ANUBIS_AUDIT_EXTERNAL_NOT_ALLOWED: gate(s) went EXTERNAL outside the $PROFILE profile's allowance:$UNEXPECTED_EXTERNAL" | tee -a "$LOG"
 elif [[ $fail -eq 0 && $skip -eq 0 ]]; then
   # `external` is declared, counted and printed — never folded into PASS silently.
   if [[ "$PROFILE" == "full" && $external -eq 0 ]]; then

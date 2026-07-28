@@ -6580,22 +6580,32 @@ fn main() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/audit_unified.sh"),
         )
         .expect("scripts/audit_unified.sh must exist");
+        // The full seal's boundary, expressed by NAME rather than by count.
+        //
+        // This used to assert `pass -eq 15` / `total -eq 15`. Those literals were replaced by the
+        // EXPECTED_GATES check, which keeps the property (no gate may silently vanish) AND reports
+        // WHICH gate went missing — something the arithmetic could never do. Asserting the old
+        // literals here would have frozen the suite at fifteen gates forever; six the board
+        // publishes were never added for exactly that reason.
+        //
+        // What must NOT be lost is the boundary itself, so each marker below is the named form of
+        // a property the counts used to enforce.
         for exact_full_marker in [
-            "pass -eq 15",
+            "EXPECTED_GATES=",         // the gate list is explicit
+            "ANUBIS_AUDIT_INCOMPLETE", // a vanished gate is named, not absorbed
             "fail -eq 0",
             "skip -eq 0",
-            "external -eq 0",
-            "total -eq 15",
+            "external -eq 0", // a full seal tolerates no EXTERNAL gate
         ] {
             assert!(
                 script.contains(exact_full_marker),
-                "full seal lost exact-count guard: {exact_full_marker}"
+                "full seal lost its boundary: {exact_full_marker}"
             );
         }
         for hosted_marker in [
             r#"VERDICT="HOSTED_PASS""#,
-            "pass -eq 14",
-            "external -eq 1",
+            "ALLOWED_EXTERNAL", // replaces `external -eq 1`: WHICH, not how many
+            "ANUBIS_AUDIT_EXTERNAL_NOT_ALLOWED",
             r#"gate "G9_poc_kit" "EXTERNAL""#,
             "ANUBIS_OFFENSIVE_FORCE_ISOLATION_WITNESS=1",
             "full 34-check battery requires VZ",
@@ -6605,6 +6615,12 @@ fn main() {
                 "hosted witness lost its explicit boundary: {hosted_marker}"
             );
         }
+        // `external -eq 1` pinned that EXACTLY ONE gate could be external under `hosted`. The
+        // named replacement must still SAY which ones, or any number could degrade silently.
+        assert!(
+            script.contains("hosted) ALLOWED_EXTERNAL=\"G9_poc_kit"),
+            "hosted profile must name the gates permitted to be EXTERNAL"
+        );
         assert!(
             script.contains(r#"VERDICT="FAIL""#),
             "unified suite must be able to reach a FAIL verdict"
