@@ -309,14 +309,25 @@ fi
 echo "report: $report"
 echo
 
-# Coverage ratchet (adversary R49): open inventory total must not silently shrink.
-# open_count is the enumerated open surface size printed in inventory.
+# Coverage ratchet (adversary R49): the TRACKED surface must not silently shrink.
+#
+# This ratcheted `open_count` — the number of residuals still OPEN — and that is inverted. A floor
+# says "this number may rise, never fall", which is right for how many surfaces we LOOKED AT and
+# exactly backwards for how many are BROKEN: closing the last three residuals drove open_count 3 -> 0
+# and the gate failed for the act of fixing what it exists to track. Whoever hit that next would
+# have reopened a residual to get the board green.
+#
+# What must never shrink is the LEDGER: every surface ever named stays named, whether it is open,
+# closed, or an accepted by-design residual. Dropping a row is how a surface stops being watched, and
+# that is the regression a floor can actually detect here.
+tracked_count="$(jq '[.open_named_residuals[]?] | length' "$INVENTORY")"
+echo "ratchet: tracked_surfaces=$tracked_count (open=$open_count — open MAY fall, tracked MAY NOT)"
 set +e
-assert_floor "run_failclosed_gate" "$open_count" "$ROOT/scripts/floors/run_failclosed_gate.count_floor"
+assert_floor "run_failclosed_gate" "$tracked_count" "$ROOT/scripts/floors/run_failclosed_gate.count_floor"
 _floor_rc=$?
 set -e
 if [[ $_floor_rc -ne 0 ]]; then
-  echo "FLOOR: FAIL (open_count=$open_count; $GATE_FLOOR_ERROR)" >&2
+  echo "FLOOR: FAIL (tracked_count=$tracked_count; $GATE_FLOOR_ERROR)" >&2
   overall="FAIL"
 fi
 

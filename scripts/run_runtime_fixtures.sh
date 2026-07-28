@@ -386,7 +386,20 @@ done
 set +e
 finalize "$total" "$passed" "$failed" "$timed_out"
 # Coverage ratchet: corpus must not silently shrink (assert_tested/finalize only see this run).
-assert_floor "runtime_fixtures" "$total" "$ROOT/tests/fixtures/runtime/.fixture_count_floor"
+# The floor is PER-CORPUS, keyed by the directory and glob actually run.
+#
+# This runner is shared: `run_run_failclosed_gate.sh` invokes it over five different buckets
+# (closed_corpus, permanent_controls, graduated_open, enforcement, doc_ok), each a different
+# directory with a different fixture count. A single floor file ratchets to the LARGEST bucket and
+# then fails every smaller one — `passed=23/23 failed=0 rc=1`, a bucket where nothing is wrong.
+#
+# I introduced exactly that defect adding the ratchet, and it is the same shape the ratchet exists
+# to catch: a number that describes one thing being read as if it described another. Keying the
+# floor to the corpus makes each bucket ratchet against its own history.
+_floor_key="$(printf '%s|%s' "$FIXTURE_DIR" "$GLOB_PAT" | tr -c 'A-Za-z0-9' '_' | sed 's/__*/_/g;s/^_//;s/_$//')"
+mkdir -p "$ROOT/scripts/floors"
+assert_floor "runtime_fixtures[$FIXTURE_DIR $GLOB_PAT]" "$total" \
+  "$ROOT/scripts/floors/runtime_${_floor_key}.count_floor"
 floor_rc=$?
 set -e
 case "$GATE_FINAL_STATUS" in

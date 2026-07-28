@@ -1,0 +1,6 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_INVALID_ARGUMENT
+// MUST_NOT_EXIST: after_substr_negative.txt
+fn main() {
+    print(substr("hello", -3, 2));
+}

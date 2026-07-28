@@ -1,0 +1,10 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_MISSING_KEY
+// MUST_NOT_EXIST: after_missing_key.txt
+//
+// A missing field must REFUSE rather than invent `Int(0)`. A dynamic record read that fabricates a
+// zero is indistinguishable from a real zero at every later use, so the mistake compounds silently.
+fn main() {
+    let m = {"a": 1};
+    print(m["zzz"]);
+}

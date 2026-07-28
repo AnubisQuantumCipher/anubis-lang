@@ -1,0 +1,5 @@
+// EXPECT: FAIL
+// ERROR_CONTAINS: ANUBIS_IO_ERROR
+fn main() uses(fs.write) {
+    write_file("/proc/cannot", "x");
+}
