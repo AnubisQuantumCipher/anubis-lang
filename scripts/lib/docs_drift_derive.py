@@ -48,7 +48,12 @@ def derive_stdlib_modules(root: Path) -> Tuple[int, str]:
 
 
 def derive_native_corpus(root: Path) -> Tuple[int, str]:
-    cmd = "find examples tests/fixtures -name '*.anb' | wc -l"
+    # TRACKED files, not the working tree. A published number has to be reproducible by someone who
+    # clones this repo, and `find` counts whatever happens to be sitting in the directory — so an
+    # untracked scratch program under examples/ silently moved the claim (898 -> 900 -> 901 in one
+    # afternoon), and every one of those moves demanded a docs edit for a file no third party would
+    # ever receive. `git ls-files` counts exactly what a clone gets.
+    cmd = "git ls-files 'examples/*.anb' 'examples/**/*.anb' 'tests/fixtures/*.anb' 'tests/fixtures/**/*.anb' | wc -l"
     return int(_run(root, cmd).split()[-1]), cmd
 
 

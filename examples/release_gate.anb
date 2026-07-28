@@ -1,0 +1,68 @@
+// A small release-readiness gate: count checks, classify the release, print a decision.
+// Expected stdout:
+// SHIP Anubis 0.1: 4/4 checks; confidence=8
+
+struct Release {
+    name: string,
+    required_checks: i64,
+    health: i64,
+}
+
+enum Gate {
+    Ship { name: string, confidence: i64 },
+    Hold { name: string, missing: i64 },
+}
+
+// This tiny function is the proof-carrying core: the checker proves its contract.
+fn proven_double(value: i64) -> i64
+    requires(value >= 0)
+    requires(value < 4611686018427387904)
+    ensures(result == value + value)
+{
+    return value + value;
+}
+
+fn passed_checks(checks: list) -> i64 {
+    let passed = 0;
+    for check in checks {
+        if check == 1 {
+            passed = passed + 1;
+        }
+    }
+    return passed;
+}
+
+fn decide(release: Release, passed: i64) -> Gate {
+    let missing = release.required_checks - passed;
+    if missing == 0 && release.health >= 80 {
+        return Gate::Ship {
+            name: release.name,
+            confidence: proven_double(passed),
+        };
+    }
+    return Gate::Hold {
+        name: release.name,
+        missing: missing,
+    };
+}
+
+fn main() {
+    let release = Release {
+        name: "Anubis 0.1",
+        required_checks: 4,
+        health: 92,
+    };
+    let checks = [1, 1, 1, 1];
+    let passed = passed_checks(checks);
+    let gate = decide(release, passed);
+
+    match gate {
+        Gate::Ship { name: name, confidence: confidence } => {
+            print("SHIP ${name}: ${passed}/${release.required_checks} checks; confidence=${confidence}");
+        },
+        Gate::Hold { name: name, missing: missing } => {
+            print("HOLD ${name}: ${missing} checks missing");
+        },
+    }
+    return passed;
+}
