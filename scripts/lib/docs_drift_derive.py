@@ -92,6 +92,33 @@ def _all_quoted_surface(text: str) -> set:
     return set(re.findall(r'"([a-z][a-z0-9_]*)"', text))
 
 
+def _const_str_slices(src: str) -> Dict[str, str]:
+    """Module-level `const NAME: &[&str] = &[ ... ];` blocks, by name.
+
+    A predicate that hoists its name list into a const is semantically identical to
+    one that inlines it, so the derive must follow the indirection. Without this, an
+    ordinary refactor silently drops names from a PUBLISHED count while the language
+    surface is unchanged — the gate then reports drift that does not exist, and the
+    tempting "fix" is to edit the doc to match a number the parser invented.
+    """
+    blocks: Dict[str, str] = {}
+    for m in re.finditer(r"const\s+([A-Z][A-Z0-9_]*)\s*:\s*&\[&str\]\s*=\s*&\[", src):
+        start = m.end()
+        end = src.find("];", start)
+        if end > 0:
+            blocks[m.group(1)] = src[start:end]
+    return blocks
+
+
+def _names_with_consts(body: str, consts: Dict[str, str]) -> set:
+    """Quoted names in a predicate body, plus those of any const slice it references."""
+    names = _all_quoted_surface(body)
+    for const_name, const_body in consts.items():
+        if re.search(rf"\b{const_name}\b", body):
+            names |= _all_quoted_surface(const_body)
+    return names
+
+
 def derive_builtins(root: Path) -> Tuple[int, str]:
     """Live deduplicated union of five functions in run.rs (BUILTINS.md / AGENTS method).
 
@@ -113,13 +140,15 @@ def derive_builtins(root: Path) -> Tuple[int, str]:
     # emit + is_builtin_name: arm/matches style (avoid anubis_* format strings)
     for fn in ("emit_builtin_call", "is_builtin_name"):
         union |= _match_arm_and_matches_names(_fn_body(src, fn))
-    # small name sets: all quoted surface identifiers
+    # small name sets: all quoted surface identifiers, following const slices the
+    # predicate references (a hoisted list is still the live surface).
+    consts = _const_str_slices(src)
     for fn in (
         "is_proof_input_builtin",
         "is_poc_kit_builtin",
         "is_non_run_builtin",
     ):
-        union |= _all_quoted_surface(_fn_body(src, fn))
+        union |= _names_with_consts(_fn_body(src, fn), consts)
 
     # Drop pure noise that can appear as string literals in match contexts
     union -= {"true", "false", "main"}

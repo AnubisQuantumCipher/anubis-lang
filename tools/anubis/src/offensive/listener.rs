@@ -4,6 +4,7 @@ use super::console;
 use super::crypto;
 use super::dns_codec::{self, DnsKind};
 use super::engagement::{Engagement, Role};
+use super::modules;
 use super::protocol::{
     Beacon, BeaconResponse, EncryptedEnvelope, Task, TaskResult, PROTOCOL_V1, PROTOCOL_V2,
 };
@@ -330,6 +331,9 @@ fn handle_http(
                 .and_then(|x| x.as_str())
                 .ok_or_else(|| anyhow!("module required"))?
                 .to_string();
+            if !is_valid_agent_module(&module) {
+                return Err(anyhow!("unknown agent module: {}", module));
+            }
             let args = v
                 .get("args")
                 .and_then(|a| a.as_array())
@@ -921,6 +925,55 @@ pub fn queue_task_file(
         .open(&inbox)?;
     writeln!(f, "{}", serde_json::to_string(&line)?)?;
     Ok(inbox)
+}
+
+fn is_valid_agent_module(name: &str) -> bool {
+    modules::catalog()
+        .iter()
+        .any(|m| m.name == name && m.side == "agent")
+}
+
+#[cfg(test)]
+mod module_validation_tests {
+    use super::*;
+
+    #[test]
+    fn all_catalog_agent_modules_accepted() {
+        for m in modules::catalog() {
+            if m.side != "agent" {
+                continue;
+            }
+            assert!(
+                is_valid_agent_module(m.name),
+                "over-rejection: catalog agent module `{}` rejected by listener validation",
+                m.name,
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_module_rejected() {
+        assert!(
+            !is_valid_agent_module("nonexistent_exploit_module"),
+            "unknown module name must be rejected",
+        );
+    }
+
+    #[test]
+    fn operator_only_module_rejected() {
+        let operator_modules: Vec<&str> = modules::catalog()
+            .iter()
+            .filter(|m| m.side == "operator")
+            .map(|m| m.name)
+            .collect();
+        for name in &operator_modules {
+            assert!(
+                !is_valid_agent_module(name),
+                "operator-only module `{}` must not be accepted as agent task",
+                name,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

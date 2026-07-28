@@ -3766,29 +3766,25 @@ fn emit_safe_run_stmt(stmt: &Stmt, indent: usize, out: &mut String, ctx: &EmitCt
 /// Phase-3 C3: capability I/O (`read_file`/`write_file`/`open`/`send`/`connect`/`time`/`rand`) is
 /// no longer rejected here — those emit real stdlib calls via `emit_builtin_call`. Shell/exec/sql
 /// and pure analysis constructs remain non-run.
+///
+/// CLAIMS-15: these arrays are the single source of truth for the carrier-immunity barrier.
+/// The test `gated_builtins_must_not_lower_in_emit_builtin_call` iterates them directly —
+/// adding a name here automatically protects it against value-position carrier bypass.
+const NON_RUN_BUILTINS: &[&str] = &[
+    "symbolic", "assume", "assert", "taint_source", "declassify",
+    "sink", "shell", "exec", "system", "memcpy", "sql",
+];
+
+const POC_KIT_BUILTINS: &[&str] = &[
+    "p8", "p16", "p32", "p64", "cyclic", "target_run", "flat",
+];
+
 fn is_non_run_builtin(callee: &str) -> bool {
-    matches!(
-        callee,
-        "symbolic"
-            | "assume"
-            | "assert"
-            | "taint_source"
-            | "declassify"
-            | "sink"
-            | "shell"
-            | "exec"
-            | "system"
-            | "memcpy"
-            | "sql" // `http_get`/`http_post` lower via `anubis_http_*` (cleartext http:// only).
-                    // `shell`/`exec` remain non-run by design.
-    )
+    NON_RUN_BUILTINS.contains(&callee)
 }
 
 fn is_poc_kit_builtin(callee: &str) -> bool {
-    matches!(
-        callee,
-        "p8" | "p16" | "p32" | "p64" | "cyclic" | "target_run" | "flat"
-    )
+    POC_KIT_BUILTINS.contains(&callee)
 }
 
 fn is_proof_input_builtin(callee: &str) -> bool {
@@ -4395,6 +4391,14 @@ fn var_as_value(name: &str, ctx: &EmitCtx) -> Result<String> {
             "AnubisValue::Closure(std::rc::Rc::new(move |__args: Vec<AnubisValue>| -> AnubisValue { match __args.first() { Some(a) => a.len_val(), None => panic!(\"ANUBIS_ARITY: builtin `len` cannot take 0 argument(s)\") } }))"
                 .to_string(),
         );
+    }
+    // CLAIMS-15: gated builtins must never become first-class values.
+    // `assert` is excluded — its lowering (anubis_assert) is benign (panics on false, no exfiltration).
+    if (is_non_run_builtin(name) && name != "assert") || is_poc_kit_builtin(name) {
+        return Err(unsupported_run(format!(
+            "gated builtin `{}` cannot be used as a first-class value",
+            name
+        )));
     }
     // Any other stdlib builtin → a closure dispatching on argument count across every arity the
     // builtin accepts (probed through `emit_builtin_call`, e.g. `range` takes 2 or 3).
@@ -8652,32 +8656,34 @@ mod run_tests {
 
     // ── CLAIMS-15: carrier immunity for gated builtins ──────────────────────
     //
-    // `var_as_value` wraps any name with an `emit_builtin_call` arm into a
-    // closure.  Gated builtins (`is_non_run_builtin` ∪ `is_poc_kit_builtin`)
-    // are kept OUT of `emit_builtin_call` so that carrier forms like
-    // `let f = shell; f("cmd")` cannot compile.
+    // Two guards prevent gated builtins from becoming first-class values:
     //
-    // Adding a gated builtin to `emit_builtin_call` closes the call-site gate
-    // (Surface 1) while silently opening the value-position carrier (Surface 2).
-    // The MODE key (`--allow-research`) is call-site only and cannot protect
-    // value-position bindings.
+    //   1. PREDICATE in `var_as_value`: rejects gated names before probing
+    //      `emit_builtin_call`, so `let f = shell` is a compile error regardless
+    //      of whether `emit_builtin_call` has an arm for `shell`.
+    //
+    //   2. THIS TEST: verifies that gated names have no lowering in
+    //      `emit_builtin_call`.  Without this, removing the `var_as_value`
+    //      guard (thinking it redundant) silently reopens the carrier.
+    //
+    // Both derive from `NON_RUN_BUILTINS` and `POC_KIT_BUILTINS` — adding a
+    // gated name to those arrays automatically protects it in both guards.
+    //
+    // `assert` is excluded: it has a benign lowering (`anubis_assert` — panics
+    // on false, no data exfiltration) and is already in `emit_builtin_call`.
+    // Its AST node is `Expr::Assert`, not `Expr::Call`, so the call-site gate
+    // in `safe_run_expr` is never reached — the carrier for `assert` is open
+    // but harmless.
     //
     // To add runtime behavior for a gated builtin, put it in `safe_run_expr`
     // (call-site dispatch), NOT `emit_builtin_call`.  See `p8`..`flat` and
     // `target_run` in `safe_run_expr` for the pattern.
-    //
-    // `assert` is excluded: it has a benign lowering (`anubis_assert` — panics
-    // on false, no data exfiltration) and is already in `emit_builtin_call`.
     #[test]
     fn gated_builtins_must_not_lower_in_emit_builtin_call() {
-        let carrier_critical: &[&str] = &[
-            // is_non_run_builtin (minus assert — benign, already lowered)
-            "symbolic", "assume", "taint_source", "declassify", "sink",
-            "shell", "exec", "system", "memcpy", "sql",
-            // is_poc_kit_builtin
-            "p8", "p16", "p32", "p64", "cyclic", "target_run", "flat",
-        ];
-        for name in carrier_critical {
+        for &name in NON_RUN_BUILTINS.iter().chain(POC_KIT_BUILTINS) {
+            if name == "assert" {
+                continue;
+            }
             for arity in 0..=6usize {
                 let args: Vec<String> =
                     (0..arity).map(|i| format!("__a{i}")).collect();
