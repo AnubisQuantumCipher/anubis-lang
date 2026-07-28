@@ -64,7 +64,7 @@ Absence of a red row is **not** evidence of absence.
 | Surface | Observation | Repro / boundary |
 |---|---|---|
 | **Security fixtures** | Lead gate **317/317 PASS**. Live disk inventory **317** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
-| **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
+| **Language core** | **244/244 PASS** — but see the float-lane residual below; measured 243/244 twice on 2026-07-28 | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
@@ -1069,6 +1069,35 @@ fixture *meant*, and distinguishing "the shape was never walked" from "the poiso
 under this mode" requires reading the mode attributes. `MODE_ALLOWS` is the trap: five fixtures
 accept a stripped `declassify` because their mode authorizes it, and scoring those as BLIND
 would have invented five defects that do not exist.
+
+### The float contract lane is NON-DETERMINISTIC at the solver budget (OPEN 2026-07-28)
+
+`float_contract_monotonicity_accepts` proves `0 < x < 1 ⇒ x*x < x` in QF_FP Float64/RNE. Whether
+it proves it depends on z3's search path, not on the program:
+
+```
+isolated, load 4.9   rc=1 rc=1 rc=1      31.2s 31.4s 31.3s
+isolated, load 3.7   rc=0                (same pin, same fixture, minutes apart)
+full corpus run      243/244 twice
+```
+
+`Z3_ARGS` is `["-in", "-smt2", "-t:10000", "-T:20"]` — a 10s soft and 20s hard budget per query,
+hardcoded. The obligation sits close enough to that ceiling that the same binary on the same input
+lands on either side of it.
+
+**This makes `244/244` a number that is not reliably true**, and it has been cited as one. The
+measured value on 2026-07-28 was 243/244 on two clean runs.
+
+Two things are worth separating. The compiler's behaviour is CORRECT: it fails closed with
+*"solver could not decide this contract within its time budget … an undecided postcondition is not
+a proof"*, so a timeout surfaces as a red fixture and never as a false accept. The GATE's behaviour
+is not acceptable: a corpus whose verdict depends on solver luck cannot be a seal input.
+
+Not fixed here. Raising `Z3_ARGS` is a global change affecting every obligation in the language and
+needs its own verdict-diff over the full corpus — exactly the discipline that would be violated by
+tuning a constant to make one fixture green. The options, in order of preference: measure a
+SUCCESSFUL run's actual time and set a budget with real headroom; restate the obligation as the
+compiler's own error suggests; or give the FP lane its own budget separate from the integer lane.
 
 ### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
 
