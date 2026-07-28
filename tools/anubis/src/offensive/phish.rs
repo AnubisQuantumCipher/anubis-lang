@@ -88,6 +88,65 @@ pub fn phish_plan(
     Ok(plan)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+
+    fn test_engage(suffix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "anubis-phish-test-{}-{}",
+            std::process::id(),
+            suffix,
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn phish_plan_writes_artifacts() {
+        let eng = Engagement::default_lab("phish-test", "lab-auth");
+        let dir = test_engage("artifacts");
+        phish_plan(&eng, &dir, "developer", "password_reset").unwrap();
+        assert!(dir.join("loot/phish/campaign_plan.json").exists());
+        assert!(dir.join("loot/phish/landing_lab_stub.html").exists());
+    }
+
+    #[test]
+    fn phish_plan_is_never_executed() {
+        let eng = Engagement::default_lab("phish-test", "lab-auth");
+        let dir = test_engage("noexec");
+        let plan = phish_plan(&eng, &dir, "user", "invoice").unwrap();
+        assert_eq!(plan["status"].as_str(), Some("PLAN_ONLY"));
+        assert_eq!(plan["executed"].as_bool(), Some(false));
+        assert_eq!(plan["module"].as_str(), Some("phish_plan"));
+    }
+
+    #[test]
+    fn phish_plan_empty_inputs_use_defaults() {
+        let eng = Engagement::default_lab("phish-test", "lab-auth");
+        let dir = test_engage("defaults");
+        let plan = phish_plan(&eng, &dir, "", "").unwrap();
+        assert_eq!(plan["target_role"].as_str(), Some("user"));
+        assert_eq!(plan["theme"].as_str(), Some("password_reset"));
+    }
+
+    #[test]
+    fn phish_stub_html_is_non_operational() {
+        let eng = Engagement::default_lab("phish-test", "lab-auth");
+        let dir = test_engage("stub");
+        phish_plan(&eng, &dir, "admin", "shipping").unwrap();
+        let html = std::fs::read_to_string(dir.join("loot/phish/landing_lab_stub.html")).unwrap();
+        assert!(html.contains("NON-OPERATIONAL"), "stub must declare itself non-operational");
+        assert!(html.contains("LAB"), "stub must be labeled as lab");
+        assert!(
+            !html.contains("<form") && !html.contains("<input"),
+            "stub must not collect credentials"
+        );
+    }
+}
+
 fn pretexts(theme: &str) -> Vec<&'static str> {
     match theme {
         "password_reset" => vec![

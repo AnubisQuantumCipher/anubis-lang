@@ -373,23 +373,35 @@ never terminates is a check/run divergence of a different kind, and is being cha
     this arc exists to close. **Not enforced, not probed, not tested** — that is the honest status,
     and it should stay written that way until a predicate and a regression barrier exist.
 
-16. **The dual-use surface is 91% UNPROBED — stated, not implied (2026-07-28).**
+16. **The dual-use surface — module gap CLOSED, ~77% unprobed by security examination
+    (2026-07-28).**
 
-    Three rounds on that lane characterized one narrow vertical: `emit_builtin_call` →
-    `var_as_value` → carrier immunity → MODE-as-carrier → the item-15 barrier. That vertical is
-    well-understood. **Everything else is not**, and the measured figure is ~24,200 of ~26,700 lines
-    (`tools/anubis/src/offensive/` alone is 28 files / 9,964 lines, most of it untouched:
-    `listener.rs`, `engagement.rs`, `scope.rs`, `isolation.rs`, `receipts.rs`, `domain_packs.rs`,
-    `dns_codec.rs`).
+    Three rounds characterized one narrow vertical: `emit_builtin_call` → `var_as_value` → carrier
+    immunity → MODE-as-carrier → the item-15 barrier. Then four rounds (R16–R19) closed the
+    module-level gap: all 8 previously-untested offensive modules now have tests.
 
-    Written down because "unprobed" recorded beats "probed" assumed. A green board on a lane where
-    91% was never examined is a statement about the 9%.
+    **Measured state (R20 — re-derived, not assumed):**
+    - 24/24 offensive modules have at least one test (was 16/24).
+    - 142 test functions across `tools/anubis/src/offensive/` (92 pre-existing + 50 authored R16–R19).
+    - 137 pub fns across 24 modules.
+    - 7 security probes authored R16–R19: scope enforcement (recon), false-coverage finding (purple),
+      credential guard + PLAN_ONLY (phish), inject auth + plan-only default (persistence), output
+      safety (rop). Pre-existing security-relevant tests exist in scope (8), isolation (4),
+      run_capability (8), engagement (6), receipts (4) — not audited for probe quality.
 
-    **Predicted class for the remainder, from the agent that probed the 9%: NAME-KEYED DISPATCH.**
-    An enumeration in one place, a consumer in another, strings as the connecting key, no shared
-    enum enforcing parity. That is precisely the shape of the C2 task-parser defect already found and
-    fixed. Named candidates: ATT&CK technique IDs, persistence mechanism names, malleable profile
-    fields. A prediction made before probing, so it can be scored.
+    **Under-probed modules** (test:pub-fn ratio < 0.5): crypto (2/11), dns_codec (3/14),
+    engagement (6/18), vz (7/15), isolation (4/7), exploit (1/3) — 68 pub fns, most unexercised.
+
+    The original "91% unprobed" was derived from the module-level gap. The corrected figure by
+    lens: **0% modules untested** (gap closed), **~50% pub fns unexercised** (est. 69/137 covered
+    by test count ratio — imprecise without `cargo tarpaulin`), **~77% unprobed by security
+    examination** (est. ~32 of 137 pub fns covered by security-relevant tests: 7 authored + ~25
+    pre-existing in scope/isolation/run_capability/engagement/receipts). Line-level coverage
+    unknown.
+
+    **Predicted class — NAME-KEYED DISPATCH — partially confirmed.** The `catalog_round_trips_
+    through_map_action` test (attck.rs) closes the ATT&CK technique surface. Persistence mechanism
+    names and malleable profile fields remain unprobed predictions.
 
 17. **`build` and `run` disagree on research CONSENT — mechanism gap, outcome currently agrees
     (2026-07-28).**

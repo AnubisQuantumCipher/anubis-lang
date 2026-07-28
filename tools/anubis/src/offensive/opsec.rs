@@ -157,6 +157,73 @@ pub fn score_engagement(eng: &Engagement) -> Value {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+
+    #[test]
+    fn default_lab_scores_below_100() {
+        let eng = Engagement::default_lab("opsec-test", "lab-auth");
+        let result = score_engagement(&eng);
+        let score = result["score"].as_i64().unwrap();
+        // default_lab has kill_date=2099 (-3), token_auth_enabled=false (-5) → max 92
+        assert!(score < 100, "default lab should have deductions: {score}");
+        assert!(score > 60, "default lab with encryption should be decent: {score}");
+    }
+
+    #[test]
+    fn missing_authorization_is_critical_deduction() {
+        let mut eng = Engagement::default_lab("opsec-test", "lab-auth");
+        eng.authorization = String::new();
+        // validate_live will reject empty auth, so score_engagement doesn't call it.
+        // But score_engagement doesn't call validate_live — it checks directly.
+        let result = score_engagement(&eng);
+        let findings = result["findings"].as_array().unwrap();
+        let has_no_auth = findings.iter().any(|f| {
+            f["code"].as_str() == Some("NO_AUTHORIZATION")
+                && f["severity"].as_str() == Some("critical")
+        });
+        assert!(has_no_auth, "missing auth must produce critical finding");
+        let score = result["score"].as_i64().unwrap();
+        assert!(score <= 60, "no auth should drop score hard: {score}");
+    }
+
+    #[test]
+    fn non_loopback_c2_penalized() {
+        let mut eng = Engagement::default_lab("opsec-test", "lab-auth");
+        eng.c2_bind = "0.0.0.0:4444".into();
+        let result = score_engagement(&eng);
+        let findings = result["findings"].as_array().unwrap();
+        let has_c2 = findings
+            .iter()
+            .any(|f| f["code"].as_str() == Some("C2_NON_LOOPBACK"));
+        assert!(has_c2, "non-loopback C2 must produce finding");
+    }
+
+    #[test]
+    fn live_inject_penalized() {
+        let mut eng = Engagement::default_lab("opsec-test", "lab-auth");
+        eng.allow_live_inject = true;
+        let result = score_engagement(&eng);
+        let findings = result["findings"].as_array().unwrap();
+        let has_inject = findings
+            .iter()
+            .any(|f| f["code"].as_str() == Some("LIVE_INJECT_ENABLED"));
+        assert!(has_inject, "allow_live_inject must produce finding");
+    }
+
+    #[test]
+    fn elite_checklist_has_12_items() {
+        let cl = elite_checklist();
+        assert_eq!(cl.len(), 12, "elite checklist count: {}", cl.len());
+        for item in &cl {
+            assert!(item["id"].as_str().is_some(), "each item needs an id");
+            assert!(item["item"].as_str().is_some(), "each item needs text");
+        }
+    }
+}
+
 fn finding(sev: &str, code: &str, msg: &str) -> Value {
     json!({ "severity": sev, "code": code, "message": msg })
 }

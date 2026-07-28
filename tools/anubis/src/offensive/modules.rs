@@ -280,3 +280,72 @@ pub fn print_catalog() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_nonempty() {
+        let cat = catalog();
+        assert!(!cat.is_empty(), "catalog must not be empty");
+    }
+
+    #[test]
+    fn catalog_no_duplicate_names() {
+        let cat = catalog();
+        let mut names: Vec<&str> = cat.iter().map(|m| m.name).collect();
+        names.sort();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(names.len(), before, "duplicate module names in catalog");
+    }
+
+    #[test]
+    fn catalog_risk_values_are_valid() {
+        let valid = ["low", "medium", "high", "critical"];
+        for m in catalog() {
+            assert!(
+                valid.contains(&m.risk),
+                "module {} has invalid risk {:?} — expected one of {:?}",
+                m.name,
+                m.risk,
+                valid
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_side_values_are_valid() {
+        let valid = ["agent", "operator", "both"];
+        for m in catalog() {
+            assert!(
+                valid.contains(&m.side),
+                "module {} has invalid side {:?} — expected one of {:?}",
+                m.name,
+                m.side,
+                valid
+            );
+        }
+    }
+
+    #[test]
+    fn list_json_round_trips_catalog() {
+        let cat = catalog();
+        let v = list_json();
+        assert_eq!(v["schema_version"].as_str(), Some("1.0"));
+        let mods = v["modules"].as_array().unwrap();
+        assert_eq!(
+            mods.len(),
+            cat.len(),
+            "list_json module count must equal catalog count"
+        );
+        for (i, m) in mods.iter().enumerate() {
+            assert_eq!(
+                m["name"].as_str(),
+                Some(cat[i].name),
+                "module {i} name mismatch in round-trip"
+            );
+        }
+    }
+}

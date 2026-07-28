@@ -192,3 +192,201 @@ fn render_md(report: &Value) -> String {
 fn _ensure_out(out: &Path) -> Result<()> {
     fs::create_dir_all(out).map_err(|e| anyhow!("out: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offensive::engagement::Engagement;
+    use std::path::PathBuf;
+
+    fn test_dirs(suffix: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "anubis-purple-test-{}-{}",
+            std::process::id(),
+            suffix,
+        ));
+        let engage = base.join("engage");
+        let out = base.join("out");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(engage.join("evidence/receipts")).unwrap();
+        fs::create_dir_all(&out).unwrap();
+        (engage, out)
+    }
+
+    #[test]
+    fn empty_engagement_has_zero_covered_techniques() {
+        let (engage, out) = test_dirs("empty");
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        let report = purple_report(&eng, &engage, &out).unwrap();
+        let covered = report["techniques_covered"].as_array().unwrap();
+        assert!(
+            covered.is_empty(),
+            "no receipts → no covered techniques, got: {:?}",
+            covered
+        );
+        let covered_detail = report["covered_detail"].as_array().unwrap();
+        assert!(covered_detail.is_empty());
+    }
+
+    #[test]
+    fn exploit_action_maps_to_t1203_only() {
+        let (engage, out) = test_dirs("exploit");
+        fs::write(
+            engage.join("evidence/receipts/chain.jsonl"),
+            r#"{"seq":1,"action":"vz_exploit_run","payload":{}}"#,
+        )
+        .unwrap();
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        let report = purple_report(&eng, &engage, &out).unwrap();
+        let covered: Vec<&str> = report["techniques_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            covered.contains(&"T1203"),
+            "vz_exploit_run must map to T1203: {:?}",
+            covered
+        );
+        assert_eq!(
+            covered.len(),
+            1,
+            "vz_exploit_run must map to ONLY T1203, got {:?} — false coverage",
+            covered
+        );
+    }
+
+    #[test]
+    fn c2_cycle_action_maps_to_c2_and_exfil_only() {
+        let (engage, out) = test_dirs("c2cycle");
+        fs::write(
+            engage.join("evidence/receipts/chain.jsonl"),
+            r#"{"seq":1,"action":"vz_c2_cycle","payload":{}}"#,
+        )
+        .unwrap();
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        let report = purple_report(&eng, &engage, &out).unwrap();
+        let covered: Vec<&str> = report["techniques_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(covered.contains(&"T1071"), "c2 must map to T1071: {:?}", covered);
+        assert!(covered.contains(&"T1041"), "c2 must map to T1041: {:?}", covered);
+        assert_eq!(
+            covered.len(),
+            2,
+            "vz_c2_cycle must map to ONLY T1071+T1041, got {:?} — false coverage",
+            covered
+        );
+    }
+
+    #[test]
+    fn not_claimed_techniques_absent_from_report() {
+        let (engage, out) = test_dirs("notclaimed");
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        let report = purple_report(&eng, &engage, &out).unwrap();
+        let gaps: Vec<&str> = report["detection_gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v["id"].as_str())
+            .collect();
+        let covered: Vec<&str> = report["covered_detail"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v["id"].as_str())
+            .collect();
+        assert!(
+            !gaps.contains(&"T1486"),
+            "T1486 (not_claimed) must not appear in gaps: {:?}",
+            gaps
+        );
+        assert!(
+            !gaps.contains(&"T1003"),
+            "T1003 (not_claimed) must not appear in gaps: {:?}",
+            gaps
+        );
+        assert!(
+            !covered.contains(&"T1486"),
+            "T1486 must not appear in covered"
+        );
+        assert!(
+            !covered.contains(&"T1003"),
+            "T1003 must not appear in covered"
+        );
+    }
+
+    #[test]
+    fn tampered_chain_still_produces_coverage_without_warning() {
+        let (engage, out) = test_dirs("tampered");
+        fs::write(
+            engage.join("evidence/receipts/chain.jsonl"),
+            // Invalid chain (no prev_hash/receipt_hash/mac) but purple_report still reads it
+            r#"{"seq":1,"action":"vz_exploit_run","payload":{}}
+{"seq":2,"action":"lateral ssh","payload":{}}"#,
+        )
+        .unwrap();
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        let report = purple_report(&eng, &engage, &out).unwrap();
+        let covered: Vec<&str> = report["techniques_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        // This test documents the FINDING: purple_report produces coverage claims
+        // from an unverified chain. An operator who adds fake entries to chain.jsonl
+        // gets false coverage in the purple report without any warning.
+        // If this test fails because verify_chain validation was added, GOOD — remove
+        // this test and replace with a test that verify_chain failure causes purple_report
+        // to either fail or annotate the report.
+        assert!(
+            covered.contains(&"T1203"),
+            "purple reads unverified chain actions: {:?}",
+            covered
+        );
+        assert!(
+            covered.contains(&"T1021.004"),
+            "purple reads unverified chain actions: {:?}",
+            covered
+        );
+    }
+
+    #[test]
+    fn actions_jsonl_contributes_to_coverage() {
+        let (engage, out) = test_dirs("actionsjsonl");
+        fs::write(
+            engage.join("evidence/actions.jsonl"),
+            r#"{"kind":"recon scan","ts":1234}"#,
+        )
+        .unwrap();
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        let report = purple_report(&eng, &engage, &out).unwrap();
+        let covered: Vec<&str> = report["techniques_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            covered.contains(&"T1595"),
+            "actions.jsonl recon must map to T1595: {:?}",
+            covered
+        );
+    }
+
+    #[test]
+    fn report_writes_json_and_markdown() {
+        let (engage, out) = test_dirs("files");
+        let eng = Engagement::default_lab("purple-test", "lab-auth");
+        purple_report(&eng, &engage, &out).unwrap();
+        assert!(out.join("purple_report.json").exists());
+        assert!(out.join("purple_report.md").exists());
+        let md = fs::read_to_string(out.join("purple_report.md")).unwrap();
+        assert!(md.contains("Purple Team Report"));
+    }
+}
