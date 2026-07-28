@@ -804,6 +804,48 @@ It now breaks a gate rather than shipping: `run_walker_completeness_gate.sh` reg
 under the `partial-` contract (*match what you like, but do not half-read what you matched*), and
 re-planting the exact bug in a scratch copy turns that gate RED.
 
+### Container-PARAM carrier — OPEN, and the boundary is the PATH, not the param (2026-07-28)
+
+A user function carrying `uses(fs.write)` reaches an application site through a **container passed
+as a parameter**, in a `main` that declares no such capability. The same container **returned** and
+applied locally REJECTS. One identical value, two paths, opposite verdicts — this file's disease
+sentence at an interprocedural boundary.
+
+| shape | verdict |
+|---|---|
+| `app([leak])`, callee does `xs[0](…)` | **ACCEPT** |
+| `app({k: leak})`, callee does `m["k"](…)` | **ACCEPT** |
+| `app(Box{g: leak})`, callee does `b.g(…)` | **ACCEPT** |
+| the same three RETURNED, applied in `main` | **REJECT** — all three |
+
+**The discriminating pair narrows it to one hop.** These differ only in whether the callable sits
+at a path inside the argument:
+
+```
+app(leak)     bare callable param, applied directly     check rc=1  REJECT   works
+app([leak])   callable inside a CONTAINER param         check rc=0  ACCEPT   leaks
+```
+
+So the capability charge **already crosses the call boundary**; it fails only for a callable at a
+PATH within the argument. Parameter bindings are seeded with empty `field_closures` /
+`field_fn_identities` (`mod.rs:4466-4477`) while the return path projects them — and the applied
+-parameter summary evidently records *"param 0 is applied"* rather than *"param 0's element at `[0]`
+is applied"*, though `fn_applied_param_paths` (`:2709`) exists to hold exactly that.
+
+**Three fixes have compiled and moved nothing** — a `param_sinks` extension (wrong consumer: the
+witness violates a CAPABILITY, not a taint sink) and two projection attempts. Under repair.
+
+**Seven further shapes were swept out and are ACCEPT today**, none of them previously named:
+method-formal param, `for f in xs` over a param, nested `xs[0][0]`, `let f = xs[0]` then apply,
+`let ys = xs` alias, call-under-`match`/`if`, and `xs = [leak]` reassign-after-pure-arg. The
+adversary predicts most fall out of a projection that is **total over apply sites** rather than one
+aimed at the list-index form. Extraction (`pop`/`remove`) and inline forwarder composition remain
+separately named.
+
+**The callable story is therefore NOT closed**, and the guard set for the pending fix has a stated
+weakness worth repeating: all eleven must-stay-ACCEPT guards pass today, so **a no-op fix passes
+every one of them**. A guard set that a no-op satisfies proves nothing.
+
 ### Semantic diagnostics carry NO location — the refusal has no address (OPEN 2026-07-28)
 
 `anubis check` reports the failures that enforce the entire promise — the security lanes — as a bare
