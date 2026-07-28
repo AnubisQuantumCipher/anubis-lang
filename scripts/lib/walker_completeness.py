@@ -47,6 +47,14 @@ AST = Path("compiler/src/frontend/mod.rs")
 # already lost an agent's in-progress work to exactly that shape once
 # (docs/COMMIT_5259227_CORRECTION.md); a *test* is not worth risking it a second time.
 MID = Path(os.environ.get("ANUBIS_WALKER_MID", "compiler/src/middle/mod.rs"))
+# Sibling modules that own their own `walk_expr`. The census found 26 value-flow walkers; three of
+# them live outside mod.rs, and the gate could not register them for the simple reason that it only
+# ever read one file. A registry that cannot reach a walker is not a judgement about that walker.
+SIBLINGS = [
+    Path("compiler/src/middle/effects.rs"),
+    Path("compiler/src/middle/capability.rs"),
+    Path("compiler/src/middle/trifecta.rs"),
+]
 
 
 def enum_variants(src: str, enum: str) -> dict[str, list[tuple[str, str]]]:
@@ -64,6 +72,33 @@ def enum_variants(src: str, enum: str) -> dict[str, list[tuple[str, str]]]:
 def holds_code(ty: str) -> bool:
     """A field that can contain an expression or statement — i.e. somewhere code can hide."""
     return "Expr" in ty or "Stmt" in ty or "MatchArm" in ty or "ForSource" in ty
+
+
+def source_for(fn: str) -> str:
+    """The file that defines `fn` — MID first, then the sibling modules.
+
+    A walker is identified by NAME, not by file, so the registry does not have to encode where a
+    function happens to live today.
+    """
+    # Qualified form `module::fn` disambiguates. THREE sibling modules each define `walk_expr`,
+    # so an unqualified lookup would silently pick whichever file happened to be searched first —
+    # a gate quietly grading a different walker than the registry names. Refuse instead.
+    if "::" in fn:
+        modname, _, bare = fn.rpartition("::")
+        for cand in [MID, *SIBLINGS]:
+            if cand.is_file() and cand.stem == modname and f"fn {bare}(" in cand.read_text():
+                return cand.read_text()
+        raise SystemExit(f"walker `{fn}`: no module `{modname}` defining `fn {bare}(`")
+
+    hits = [c for c in [MID, *SIBLINGS] if c.is_file() and f"fn {fn}(" in c.read_text()]
+    if len(hits) > 1:
+        names = ", ".join(f"{h.stem}::{fn}" for h in hits)
+        raise SystemExit(
+            f"walker `{fn}` is AMBIGUOUS across {len(hits)} modules — qualify it: {names}"
+        )
+    if not hits:
+        raise SystemExit(f"walker `{fn}` not found in {MID} or {[str(x) for x in SIBLINGS]}")
+    return hits[0].read_text()
 
 
 def walker_body(src: str, fn: str) -> str:
@@ -96,8 +131,9 @@ def check(fn: str, scope: str = "all") -> list[str]:
     Scope is a claim about the walker's contract, not a way to silence it: `expr` still demands
     TOTAL coverage of every code-holding `Expr` field.
     """
-    ast, mid = AST.read_text(), MID.read_text()
-    body = walker_body(mid, fn)
+    ast = AST.read_text()
+    # `source_for` resolves a qualified `module::fn`; the body lookup needs the BARE name.
+    body = walker_body(source_for(fn), fn.rpartition('::')[2])
     variants: dict = {}
     base = scope[len("partial-"):] if scope.startswith("partial-") else scope
     if base in ("all", "stmt"):
@@ -165,8 +201,14 @@ def main() -> int:
     walkers = sys.argv[1:] or ["body_has_mode_elevator"]
     all_problems: list[str] = []
     for spec in walkers:
-        w, _, scope = spec.partition(":")
-        scope = scope or "all"
+        # Split on a trailing SCOPE only. `partition(":")` split inside the `::` of a qualified
+        # name like `effects::walk_expr`, silently turning the module into the walker name.
+        SCOPES = {"all", "expr", "stmt", "partial-expr", "partial-stmt", "partial-all"}
+        w, scope = spec, "all"
+        if ":" in spec:
+            head, _, tail = spec.rpartition(":")
+            if tail in SCOPES and head:
+                w, scope = head, tail
         p = check(w, scope)
         all_problems += p
         label = w if scope == "all" else f"{w} [{scope}]"

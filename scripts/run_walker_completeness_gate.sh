@@ -50,6 +50,14 @@ WALKERS=(
   # the one real finding), which is exactly why this contract exists.
   stmt_value_secret:partial-stmt
   stmt_value_taint:partial-stmt
+  # The three sibling modules that own their own `walk_expr`. They were unregisterable for a
+  # trivial reason — the checker only ever read middle/mod.rs — not because of anything about the
+  # walkers. Names are QUALIFIED because all three define `walk_expr`; an unqualified lookup would
+  # silently grade whichever file was searched first, which is a gate quietly measuring a different
+  # walker than the registry names. Unqualified now refuses and lists the candidates.
+  effects::walk_expr:partial-expr
+  capability::walk_expr:partial-expr
+  trifecta::walk_expr:partial-expr
 )
 
 if [[ "${1:-}" == "--self-test" ]]; then
