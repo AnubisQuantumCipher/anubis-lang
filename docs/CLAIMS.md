@@ -690,6 +690,53 @@ Remaining A-tier items are open and named. The B-tier residual list is the enume
 column. **Do not publish the original sentence over the current behaviour** — it is the one claim a
 stranger will quote back.
 
+### Research mode — crash operations produce tamper-evident receipts (PHASE 4 CLOSED 2026-07-28)
+
+Written by the offensive lane that measured it; adopted close to verbatim.
+
+A green `receipt-verify` proves the chain is intact: every entry's HMAC-SHA256 links to the previous,
+every MAC verifies with the engagement key, and no entry was inserted, deleted or reordered. The
+chain is append-only and schema-versioned.
+
+Crash operations (`vz exploit`, `vz fuzz`) now **require** `--engage` (`ANUBIS_VZ_ENGAGE_REQUIRED`).
+Without an engagement directory they bail before cloning a guest, so the stub-identity path that
+silently discarded evidence is unreachable. With `--engage` the disposable guest is scraped BEFORE
+teardown (`scrape_disposable_guest`) and the action is sealed (`seal_vz_disposable_action` →
+`seal_action`). The sealed receipt embeds the PoC path and SHA-256, guest identity, isolation model
+(`tart-disposable-guest`), body success/failure, and scrape metadata.
+
+**Measured 2026-07-28** in disposable guest `anubis-vz-ephemeral-3996` cloned from `anubis-xcode`,
+confirmed torn down via `tart list`:
+
+| step | count | tip |
+|---|---:|---|
+| `campaign-init` (control — writes a Markdown playbook) | 1 → 2 | `2092ed12` |
+| `vz exploit --engage` (crash op) | 2 → 3 | `3e12992e` |
+| `vz-c2-cycle` | 3 → 4 | full task results |
+
+This inverts the defect the blueprint recorded: a Markdown file used to advance the chain while a
+SIGABRT and 14 unique crashes left `receipt-verify` byte-identical. The crash op now produces **more**
+evidence than the control. `vz-c2-cycle` exits 0 with all five recon modules returning on the first
+poll, and the agent correctly reports `"os":"darwin"` — the blueprint's `"os":"linux"` lead was
+measured and **refuted**.
+
+**What a green `receipt-verify` does NOT prove:**
+
+1. **That the claimed PoC actually executed.** The receipt names the file and its SHA-256; it does
+   not embed a transcript or attest that the guest ran that file.
+2. **That crash artifacts survived teardown.** Core dumps, ASAN reports and fuzz corpora stay in the
+   disposable guest and are destroyed at `tart delete`. The receipt proves *an operation happened
+   and was scraped*; it does not preserve the artifact.
+3. **That the guest was freshly cloned and isolated.** `uptime: "up 25 secs"` is evidence of a fresh
+   clone, not a cryptographic binding.
+
+**Crash isolation is not an air-gap.** No zero-NIC claim without `native-preflight`.
+
+Residual 2 has an adopted design and is not yet built: hash artifacts **in-guest** and seal the
+digest, rather than exfiltrating them. A digest is evidence; a core dump is a liability — for a
+system whose identity is proving without revealing, scraping raw crash state to the host is
+architecturally backwards.
+
 ### Open — boundary honesty / process (not silent overclaims)
 
 4. **VZ isolation is SAFETY, not SECURITY** — host-forgeable markers; operator is trust root.  
