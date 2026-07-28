@@ -287,6 +287,7 @@ pub fn native_boot(
     allow_hosts: &[String],
     staging_dir: Option<&str>,
     run_in_guest: Option<&str>,
+    engage_dir: Option<&str>,
 ) -> Result<()> {
     if run_in_guest.is_some() && staging_dir.is_none() {
         return Err(anyhow!(
@@ -306,8 +307,19 @@ pub fn native_boot(
     if let Some(cmd) = run_in_guest {
         eprintln!("[anubis vz native-boot] run     : {cmd}");
     }
+    if let Some(dir) = engage_dir {
+        eprintln!("[anubis vz native-boot] engage  : {dir} (receipt chain append)");
+    }
     eprintln!("[anubis vz native-boot] posture : {}", posture.label());
-    boot_with_kernel(&posture, program, kernel, initrd, staging_dir, run_in_guest)
+    boot_with_kernel(
+        &posture,
+        program,
+        kernel,
+        initrd,
+        staging_dir,
+        run_in_guest,
+        engage_dir,
+    )
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -318,6 +330,7 @@ fn boot_with_kernel(
     initrd: Option<&str>,
     staging_dir: Option<&str>,
     run_in_guest: Option<&str>,
+    engage_dir: Option<&str>,
 ) -> Result<()> {
     use block2::RcBlock;
     use objc2::rc::Retained;
@@ -954,53 +967,102 @@ it proves the probe can see a NIC when one exists"
             };
 
         // ── Guest run validation ──
-        let (run_exit_code, run_output_excerpt) = if run_in_guest.is_some() {
-            let run_section = final_output.find("__ANUBIS_RUN_START__").and_then(|s| {
-                final_output
-                    .find("__ANUBIS_RUN_END__")
-                    .map(|e| &final_output[s..e])
-            });
-            if let Some(section) = run_section {
-                let exit_code = section
-                    .lines()
-                    .find_map(|l| l.trim().strip_prefix("__RUN_EXIT__:"))
-                    .and_then(|v| v.trim().parse::<i32>().ok());
-                if let Some(code) = exit_code {
-                    let output: String = section
-                        .lines()
-                        .filter(|l| {
-                            !l.contains("__ANUBIS_RUN_START__")
-                                && !l.contains("__RUN_EXIT__:")
-                                && !l.contains("~ #")
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let excerpt = if output.len() > 4096 {
-                        format!("{}...[truncated at 4096]", &output[..4096])
-                    } else {
-                        output
-                    };
-                    eprintln!(
-                        "[anubis vz native-boot] GUEST RUN COMPLETE: exit={code}, \
-                         output={} bytes",
-                        excerpt.len()
-                    );
-                    (Some(code), excerpt)
-                } else {
-                    return Err(anyhow!(
-                        "ANUBIS_VZNATIVE_RUN_EXIT_MISSING: guest run markers present but \
-                         __RUN_EXIT__ not found or not parseable."
-                    ));
+        // Five fields: exit_code, output, run_started, run_completed, crash_classification.
+        // A crash op (PoC that kills the target or the guest kernel) must produce a receipt,
+        // not an error — the crash IS the finding.
+        let (run_exit_code, run_output_excerpt, run_started, run_completed, crash_classification) =
+            if run_in_guest.is_some() {
+                let start_pos = final_output.find("__ANUBIS_RUN_START__");
+                let end_pos = final_output.find("__ANUBIS_RUN_END__");
+
+                match (start_pos, end_pos) {
+                    (Some(s), Some(e)) => {
+                        let section = &final_output[s..e];
+                        let exit_code = section
+                            .lines()
+                            .find_map(|l| l.trim().strip_prefix("__RUN_EXIT__:"))
+                            .and_then(|v| v.trim().parse::<i32>().ok());
+                        if let Some(code) = exit_code {
+                            let output: String = section
+                                .lines()
+                                .filter(|l| {
+                                    !l.contains("__ANUBIS_RUN_START__")
+                                        && !l.contains("__RUN_EXIT__:")
+                                        && !l.contains("~ #")
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let excerpt = if output.len() > 4096 {
+                                format!("{}...[truncated at 4096]", &output[..4096])
+                            } else {
+                                output
+                            };
+                            let classification = if code == 0 {
+                                "clean"
+                            } else if code > 128 {
+                                "target_signal"
+                            } else {
+                                "target_nonzero"
+                            };
+                            eprintln!(
+                                "[anubis vz native-boot] GUEST RUN COMPLETE: exit={code}, \
+                                 classification={classification}, output={} bytes",
+                                excerpt.len()
+                            );
+                            (Some(code), excerpt, true, true, classification)
+                        } else {
+                            return Err(anyhow!(
+                                "ANUBIS_VZNATIVE_RUN_EXIT_MISSING: guest run markers \
+                                 present but __RUN_EXIT__ not found or not parseable."
+                            ));
+                        }
+                    }
+                    (Some(s), None) => {
+                        // Run started but guest died before __ANUBIS_RUN_END__.
+                        // This is either a guest kernel crash (PoC killed the kernel —
+                        // a BIGGER finding than a process crash) or infrastructure death.
+                        let after_start = &final_output[s..];
+                        let output: String = after_start
+                            .lines()
+                            .filter(|l| !l.contains("__ANUBIS_RUN_START__") && !l.contains("~ #"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let excerpt = if output.len() > 4096 {
+                            format!("{}...[truncated at 4096]", &output[..4096])
+                        } else {
+                            output
+                        };
+                        let classification =
+                            if excerpt.contains("Kernel panic") || excerpt.contains("kernel BUG") {
+                                "guest_kernel_crash"
+                            } else if excerpt.contains("Segmentation fault")
+                                || excerpt.contains("SIGSEGV")
+                                || excerpt.contains("SIGBUS")
+                                || excerpt.contains("SIGABRT")
+                                || excerpt.contains("core dumped")
+                            {
+                                "target_signal"
+                            } else {
+                                "ambiguous"
+                            };
+                        eprintln!(
+                            "[anubis vz native-boot] GUEST RUN INCOMPLETE: no __RUN_EXIT__, \
+                             classification={classification}, output={} bytes",
+                            excerpt.len()
+                        );
+                        (None, excerpt, true, false, classification)
+                    }
+                    (None, _) => {
+                        return Err(anyhow!(
+                            "ANUBIS_VZNATIVE_RUN_MARKERS_MISSING: --run-in-guest was given \
+                             but __ANUBIS_RUN_START__ not found in transcript. The guest \
+                             died before reaching the run phase."
+                        ));
+                    }
                 }
             } else {
-                return Err(anyhow!(
-                    "ANUBIS_VZNATIVE_RUN_MARKERS_MISSING: --run-in-guest was given but \
-                     __ANUBIS_RUN_START__/__ANUBIS_RUN_END__ not found in transcript."
-                ));
-            }
-        } else {
-            (None, String::new())
-        };
+                (None, String::new(), false, false, "not_applicable")
+            };
 
         // ── Post-run artifact scan ──
         let artifact_hashes: Vec<(String, String)> = if run_in_guest.is_some() {
@@ -1086,15 +1148,24 @@ it proves the probe can see a NIC when one exists"
                 "configured": run_in_guest.is_some(),
                 "command": run_in_guest.unwrap_or(""),
                 "exit_code": run_exit_code,
+                "run_started": run_started,
+                "run_completed": run_completed,
+                "crash_classification": crash_classification,
+                "crash_signal": run_exit_code.filter(|c| *c > 128).map(|c| c - 128),
+                "evidence_of": match crash_classification {
+                    "target_signal" | "guest_kernel_crash" => "finding",
+                    "target_nonzero" => "finding",
+                    "clean" | "not_applicable" => "nothing",
+                    _ => "ambiguous",
+                },
                 "output_excerpt": run_output_excerpt,
                 "artifacts": artifact_hashes.iter().map(|(n, h)| {
                     serde_json::json!({"name": n, "sha256": h})
                 }).collect::<Vec<_>>(),
-                "honest_limit": "output returned over a host-mounted VirtioFS share is \
-                    host-observable. The guest was isolated (zero-NIC, hypervisor-enforced) \
-                    while producing it, but the host can read the share contents during and \
-                    after execution. This is a smaller claim than 'the output was produced \
-                    in a sealed environment the host could not observe'."
+                "honest_limit": "crash_classification is heuristic: exit > 128 is \
+                    interpreted as signal death (Unix convention), but a program can \
+                    exit(139) deliberately. guest_kernel_crash is detected by string \
+                    matching 'Kernel panic' in output. An auditor applies judgment."
             },
             "transcript_sha256": transcript_sha256,
             "transcript_bytes": final_output.len()
@@ -1104,6 +1175,26 @@ it proves the probe can see a NIC when one exists"
             "{}",
             serde_json::to_string_pretty(&receipt).unwrap_or_default()
         );
+
+        if let Some(eng) = engage_dir {
+            let eng_path = std::path::Path::new(eng);
+            let engagement_id = eng_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("native-boot");
+            let sealed = crate::offensive::receipts::seal_action(
+                eng_path,
+                engagement_id,
+                "vz_native_boot",
+                "forge",
+                receipt,
+            )?;
+            eprintln!(
+                "[anubis vz native-boot] receipt chained: seq={}, tip={}",
+                sealed.seq,
+                &sealed.receipt_hash[..16]
+            );
+        }
     }
     Ok(())
 }
@@ -1116,6 +1207,7 @@ fn boot_with_kernel(
     _initrd: Option<&str>,
     _staging_dir: Option<&str>,
     _run_in_guest: Option<&str>,
+    _engage_dir: Option<&str>,
 ) -> Result<()> {
     Err(anyhow!(
         "ANUBIS_VZNATIVE_UNSUPPORTED_HOST: native-boot requires Apple Silicon macOS"

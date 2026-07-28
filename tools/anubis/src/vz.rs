@@ -214,6 +214,11 @@ pub enum VzCmd {
         /// Requires --staging-dir. Output and exit status are captured in the receipt.
         #[arg(long)]
         run_in_guest: Option<String>,
+        /// Engagement directory — when set, the native-boot receipt is appended to the
+        /// offensive receipt chain (evidence/receipts/chain.jsonl) so `receipt-verify`
+        /// COUNT and TIP advance.
+        #[arg(long)]
+        engage: Option<String>,
     },
     /// Fuzz a **local binary** in a DISPOSABLE guest (clone → boot → sync target binary →
     /// `anubis fuzz --target … --runs …` inside → SCRAPE evidence → SEAL into engagement receipt
@@ -672,6 +677,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             allow_host,
             staging_dir,
             run_in_guest,
+            engage,
         } => crate::vz_native::native_boot(
             &program,
             &kernel,
@@ -679,6 +685,7 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             &allow_host,
             staging_dir.as_deref(),
             run_in_guest.as_deref(),
+            engage.as_deref(),
         ),
         VzCmd::Fuzz {
             target,
