@@ -55,10 +55,24 @@ LIVE_STAMP_FILES = {
 # Everything retained below says, unambiguously, "this WAS true, not IS true". Adding a marker
 # here is adding a way for a wrong number to stay green: require that the phrase be meaningless
 # on a line making a present-tense claim.
+# A measurement bound to a NAMED PIN is a record of that artifact, not a claim about the tree.
+#
+# This is admitted where "as of <date>" was refused, and the difference is the whole point: a date
+# does not say WHAT was measured, so a stale number under one stays wrong and unfalsifiable. A
+# content-addressed pin says exactly which binary produced the number, and anyone can check it by
+# re-running that pin. `anubis-cf98ccebb4c1` measured 311/311 and always will; rewriting it to
+# today's 317/317 would not be refreshing a stamp, it would be falsifying a record.
+#
+# The exemption is deliberately tied to the 12-hex pin form and nothing looser. A line claiming to
+# describe "the pinned binary" WITHOUT naming which pin gets no exemption — it is unfalsifiable in
+# the same way "as of" was, and the fix is to name the pin.
+PIN_BOUND = re.compile(r"anubis-[0-9a-f]{12}")
+
 DATED_LINE = re.compile(
     r"seal date|seal-date|historical|snapshot of|on this seal|"
     r"at that seal|prior Phase|was true|dated seal|seal_r8|historical stamp|"
-    r"snapshot only|CLAIMED 20\d{2}|partial CLAIMED 20\d{2}|~~.*~~",
+    r"snapshot only|CLAIMED 20\d{2}|partial CLAIMED 20\d{2}|~~.*~~|"
+    r"measured at this close|at the time of this close",
     re.I,
 )
 
@@ -139,7 +153,7 @@ FIXPOINT_EVIDENCE = re.compile(
 
 
 def is_dated(line: str) -> bool:
-    return bool(DATED_LINE.search(line))
+    return bool(DATED_LINE.search(line)) or bool(PIN_BOUND.search(line))
 
 
 def extract_pair_after(line: str, keyword: re.Pattern[str]) -> str | None:

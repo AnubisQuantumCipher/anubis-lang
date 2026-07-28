@@ -63,13 +63,13 @@ Absence of a red row is **not** evidence of absence.
 
 | Surface | Observation | Repro / boundary |
 |---|---|---|
-| **Security fixtures** | Lead gate **311/311 PASS**. Live disk inventory **311** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
+| **Security fixtures** | Lead gate **317/317 PASS**. Live disk inventory **317** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
 | **Language core** | **244/244 PASS** | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 882 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 888 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
 | Ordinary Safe `run` | Vault contacts EXIT=0 post-PTAH | Proof/shell non-run by design (§2 B) |
@@ -187,7 +187,8 @@ the distinction `sqrt("x")` FAILS while `sqrt(-1.0)` still returns NaN.
     a function-valued formal merely because the receiver expression mentioned a formal, which
     accounted for the three method-shaped flips.
 
-    Verdict-diff on the pinned binary: security 311/311; language 244/244. Zero accept→reject flips.
+    Verdict-diff measured at this close on the then-current pin: security 311/311; language
+    244/244. Zero accept→reject flips.
 
 ### The singleton contract policy — documented residual (2026-07-27)
 
@@ -231,7 +232,8 @@ never terminates is a check/run divergence of a different kind, and is being cha
     precondition rejects. Getting that backwards is what flipped nine fixtures in the first spine
     attempt.
 
-    Verdict-diff on the pinned binary: security 311/311; language 244/244. Zero accept→reject flips.
+    Verdict-diff measured at this close on the then-current pin: security 311/311; language
+    244/244. Zero accept→reject flips.
 
 12. **The bare-builtin carrier defeats the LETHAL TRIFECTA detector — CLOSED (2026-07-27).**
 
@@ -240,7 +242,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
     a monoid; names are only the SEED; join is UNION, so a value that is `input` on one branch and
     pure on the other keeps the tag. `Known(∅)` proves a value carries no gate class and `Unknown`
     means unresolved — an unknown value is not assumed to violate, so a builtin bound but never
-    applied still ACCEPTS. Measured: security 311/311 with the held RED now rejecting and zero
+    applied still ACCEPTS. Measured at this close: security 311/311 with the held RED now rejecting and zero
     accept→reject flips among the 308 that predate it; language 244/244; compiler lib 731/731. Commit
     `c7643e5`.
 
@@ -549,7 +551,7 @@ never terminates is a check/run divergence of a different kind, and is being cha
     flipped ACCEPT+file → REJECT: `p2_free_push`, `p2_free_insert`, `i01`–`i05`, `c02` (list
     insert), `c05` (map place-assign), `c18` (struct-field place-assign), `e03` (map symbolic-key
     assign), `e04` (loop push), `e14` (list index assign), `e15` (return-empty-then-push), `e17`.
-    Verdict: *"CLOSE IS REAL."* Corpus: security **311/311**, language **244/244**, stdlib
+    Verdict: *"CLOSE IS REAL."* Corpus measured at this close: security **311/311**, language **244/244**, stdlib
     **104/104**, zero accept→reject flips.
 
     **Still OPEN, and this close does not touch them:**
@@ -695,7 +697,7 @@ on disk (a file containing `U+00A7` passed with rc=0). Because identifiers are A
 non-ASCII letter and non-ASCII whitespace such as `U+00A0` vanished the same way. It now emits a
 token, the parser refuses, and the user gets a span with a caret. `@` remains deliberately dropped —
 attributes lex as bare names — now explicit rather than an accident of the wildcard. Measured:
-security 311/311, language 244/244, stdlib 104/104, zero accept→reject flips.
+Measured at this close: security 311/311, language 244/244, stdlib 104/104, zero accept→reject flips.
 
 Remaining A-tier items are open and named. The B-tier residual list is the enumeration in
 `scratchpad/fleet_20260726/adversary_round24.md` with `path:LINE` per site and a "PASS with silence?"
@@ -807,7 +809,7 @@ taint), and the recursion is structural so depth is not a special case.
 | `g_if05`, `g_if05t`, `g_nested_public` | ACCEPT | ACCEPT (controls held) |
 | `w1`, `w5b`, `p2_free_push` | REJECT | REJECT (earlier closes held) |
 
-security 311/311, language 244/244, zero accept→reject flips.
+Measured at this close: security 311/311, language 244/244, zero accept→reject flips.
 
 **The repair reproduced its own defect once, and that is worth recording.** The first recursive
 helper matched `Stmt::If { then, else_, .. }` and discarded `cond` — the identical `..` shape just
@@ -1142,7 +1144,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **311/311** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **317/317** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 882 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |

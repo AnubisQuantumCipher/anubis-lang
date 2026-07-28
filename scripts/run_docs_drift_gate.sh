@@ -353,6 +353,43 @@ if ! assert_tested "$STAMPS_CHECKED" "stamps_checked" "$CLAIM_GUARDS_CHECKED" "c
   exit 1
 fi
 
+# Coverage RATCHET. `assert_tested` catches a gate that tests NOTHING; it cannot catch one that
+# quietly tests LESS.
+#
+# Demonstrated on this gate 2026-07-28: adding two exemptions to the scanner took it from 42 stamps
+# to 30 — a 29% loss of coverage — and it reported `PASS (30 stamps checked, 0 drift)` with no
+# indication anything had changed. Every exemption was justified on review, and that is exactly the
+# problem: the justified case and the careless case produce identical output. An exemption is the
+# one edit that makes a gate greener by making it check less, so it is the one edit that must not be
+# silent.
+#
+# The floor lives in a tracked file. Raising it is automatic. LOWERING it requires editing that file
+# in a commit someone can see, which is the whole mechanism — the same shape as the repo's rule that
+# formal-verification coverage can only increase.
+FLOOR_FILE="$ROOT/docs/.docs_drift_coverage_floor"
+if [[ -f "$FLOOR_FILE" ]]; then
+  FLOOR="$(tr -dc '0-9' < "$FLOOR_FILE")"
+  if [[ -z "$FLOOR" ]]; then
+    echo "DOCS_DRIFT_GATE: FAIL"
+    echo "Overall: FAIL (coverage floor file is unparseable — refusing to grade)" >&2
+    exit 1
+  fi
+  if [[ "$STAMPS_CHECKED" -lt "$FLOOR" ]]; then
+    echo "DOCS_DRIFT_GATE: FAIL"
+    echo "Overall: FAIL (coverage fell: $STAMPS_CHECKED stamps checked, floor is $FLOOR)" >&2
+    echo "  A stamp stopped being checked. Either a doc lost a live claim, or an exemption grew." >&2
+    echo "  If the loss is correct, lower $FLOOR_FILE in the same commit and say why." >&2
+    exit 1
+  fi
+  if [[ "$STAMPS_CHECKED" -gt "$FLOOR" ]]; then
+    echo "$STAMPS_CHECKED" > "$FLOOR_FILE"
+    echo "coverage ratchet raised: $FLOOR -> $STAMPS_CHECKED"
+  fi
+else
+  echo "$STAMPS_CHECKED" > "$FLOOR_FILE"
+  echo "coverage floor initialised at $STAMPS_CHECKED"
+fi
+
 # SCAN_RC was captured at the scan call and never read. A scanner that exits non-zero but leaves
 # parseable JSON with zero failures would have been reported as PASS.
 if [[ "$SCAN_RC" -ne 0 ]]; then

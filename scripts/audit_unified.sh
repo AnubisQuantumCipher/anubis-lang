@@ -9,8 +9,8 @@
 #   bash scripts/audit_unified.sh [--out DIR]
 #   bash scripts/audit_unified.sh --profile hosted [--out DIR]
 #
-# The default `full` profile executes all 15 gates and passes only at 15/15 with
-# zero failures, skips, or external gates. The `hosted` profile exists for
+# The default `full` profile executes all 22 gates and passes only when EVERY named gate in
+# EXPECTED_GATES reported, with zero failures, skips, or external gates. The `hosted` profile exists for
 # stock GitHub macOS runners, which cannot provide nested Apple virtualization
 # or a Tart golden image. It runs every host-verifiable gate, marks G9
 # `EXTERNAL`, pins G14 to its non-executing host isolation witness, and emits
@@ -32,6 +32,16 @@
 #   G13 Lang power trio gate
 #   G14 Offensive platform gate (T1-T7)
 #   G15 Dogfood: examples/feel/* programs run
+#   G16 Docs drift (published stamps match a re-measurement)
+#   G17 Stdlib fail-closed
+#   G18 Native-authoritative fragment bound
+#   G19 Walker completeness (no `..` discards a field code can hide in)
+#   G20 gate_common adoption
+#   G21 Formal (Lean; EXTERNAL without elan/lake)
+#   G22 Fixture preflight self-test (an ACCEPT that cannot reject is not a finding)
+#
+# G16-G22 publish numbers the board cites and were, for most of their life, never run by CI.
+# They are listed here so the gap between "a gate exists" and "a gate runs" stays visible.
 #
 # Each gate is fail-closed: a missing tool, nonzero exit, or unexpected output
 # is FAIL. The overall verdict is PASS only if every gate passes.
@@ -348,6 +358,23 @@ else
   gate "G21_formal" "EXTERNAL" "lake/elan not installed on this runner; Lean proofs NOT checked here"
 fi
 
+# G22 — the harness that decides whether an ACCEPT can be a finding at all.
+#
+# Four instruments failed SILENTLY in a single session: a `$?` read after a command substitution
+# that reported a working fix as inert, three stale-binary scorings, and a fixture preflight that
+# aborted before printing its own verdict. Every one was caught by accident.
+#
+# `fixture_preflight.sh --self-test` plants the `w06b` fixture verbatim — a witness that declared
+# the very capability it was written to catch, and was therefore carried as an open defect for four
+# rounds — and proves the harness calls it MALFORMED rather than grading it. The gate exists
+# because a preflight nobody has watched fail is a preflight taken on faith, which is the exact
+# thing it was built to stop doing to fixtures.
+if bash scripts/fixture_preflight.sh --self-test >"$OUT/g22_preflight.log" 2>&1; then
+  gate "G22_fixture_preflight" "PASS" "preflight reaches a defined verdict and catches malformed witnesses"
+else
+  gate "G22_fixture_preflight" "FAIL" "fixture preflight self-test red (see g22_preflight.log)"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
@@ -359,7 +386,7 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do
