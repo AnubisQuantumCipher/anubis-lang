@@ -3575,6 +3575,13 @@ fn scan_applied_param_local_aliases(
                     }
                 }
             }
+            Stmt::LetPattern { pattern, init, .. } => {
+                if matches!(init, Expr::Var(root) if root == param) {
+                    let mut binding_paths = BTreeMap::new();
+                    collect_pattern_binding_paths(pattern, "", &mut binding_paths);
+                    aliases.extend(binding_paths);
+                }
+            }
             Stmt::ExprStmt(Expr::Call { callee, .. }) => {
                 if let Some(path) = aliases.get(callee) {
                     *applies = true;
