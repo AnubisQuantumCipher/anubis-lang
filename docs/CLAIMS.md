@@ -1070,6 +1070,40 @@ under this mode" requires reading the mode attributes. `MODE_ALLOWS` is the trap
 accept a stripped `declassify` because their mode authorizes it, and scoring those as BLIND
 would have invented five defects that do not exist.
 
+### Native VZ: what a green `receipt-verify` does and does not establish (2026-07-28)
+
+The native path (`anubis vz native-boot`) now runs the language inside a hypervisor-enforced
+zero-NIC guest and chains the result. Measured end to end:
+
+| link | evidence | negative control |
+|---|---|---|
+| zero-NIC | virtio-net `0x1af4:0x1041` ABSENT from the guest's own PCI bus | egress posture makes it APPEAR and the probe reports `eth0` |
+| instrument live | virtio-console `0x1af4:0x1043` present in BOTH postures | a probe that cannot see a NIC is refused as `PROBE_BLIND` |
+| staging | canary CONTENT HASH computed inside the guest | no `--staging-dir` gives mount 255, empty glob |
+| the language ran | `anubis check` in-guest, exit 0 | — |
+| crash vs death | `clean` / `target_nonzero` / `target_signal` + `evidence_of` | exit 0 / 42 / 139 each classify differently |
+| chain advances | `count=1 tip=d3174939…` -> `count=4`, tip per run | — |
+| artifacts survive | guest hash `526f5e1d…` reproduced host-side, 0 VM processes | — |
+
+**What it does NOT establish**, and this is the part that matters:
+
+> The receipt chain proves INTERNAL CONSISTENCY. It does not prove HOST HONESTY, REMOTE
+> ATTESTATION, ARTIFACT TAMPER-FREEDOM, or CLASSIFICATION CORRECTNESS. The chain is as trustworthy
+> as the host that captured it.
+
+Plus one the receipt states about itself, beside the inference it qualifies: `crash_classification`
+is heuristic — `exit > 128` is read as signal death by Unix convention, but a program can
+`exit(139)` deliberately.
+
+So the isolation is hypervisor-enforced and confirmed by the guest; everything DOWNSTREAM of the
+guest passes through the host and inherits the host's trustworthiness. That is a smaller claim than
+"the guest was isolated and we know what happened in it", and it is the one being made.
+
+**This replaces a claim that was false this morning.** `--network off` on the Tart wrapper reported
+`network: off` while running full shared NAT — four call sites labelled a NAT-connected guest as
+isolated. Any evidence produced under that flag carried an isolation claim the hypervisor never
+enforced. It now refuses and names the path that does enforce it.
+
 ### The callable false-accept class is WIDER than the ten shapes — 41 open routes (OPEN 2026-07-28)
 
 Ten carrier shapes were closed on 2026-07-28, each with a rejecting discriminator AND a guard that
