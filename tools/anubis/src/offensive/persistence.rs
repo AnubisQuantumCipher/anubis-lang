@@ -371,3 +371,156 @@ fn _touch(p: &Path) -> Result<()> {
     f.write_all(b"")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_engage_dir(suffix: &str) -> (PathBuf, Engagement) {
+        let dir = std::env::temp_dir().join(format!(
+            "anubis-persist-test-{}-{}",
+            std::process::id(),
+            suffix
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut eng = Engagement::default_lab("persist-test", "test-auth");
+        eng.allowed_paths.push(dir.display().to_string());
+        eng.rehash();
+        (dir, eng)
+    }
+
+    fn fake_agent(dir: &Path) -> PathBuf {
+        let bin = dir.join("fake-agent");
+        fs::write(&bin, b"#!/bin/sh\necho agent").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = fs::metadata(&bin).unwrap().permissions();
+            p.set_mode(0o755);
+            fs::set_permissions(&bin, p).unwrap();
+        }
+        bin
+    }
+
+    #[test]
+    fn generate_launch_agent_produces_valid_plist() {
+        let (dir, eng) = test_engage_dir("plist");
+        let agent = fake_agent(&dir);
+        let plist_path = generate_launch_agent(&eng, &dir, &agent, "com.test.agent").unwrap();
+
+        assert!(plist_path.exists(), "plist file should exist");
+        let plist = fs::read_to_string(&plist_path).unwrap();
+        assert!(plist.contains("<key>Label</key>"), "missing Label key");
+        assert!(
+            plist.contains("<string>com.test.agent</string>"),
+            "wrong label value"
+        );
+        assert!(plist.contains("<key>RunAtLoad</key>"), "missing RunAtLoad");
+        assert!(
+            plist.contains(&agent.canonicalize().unwrap().display().to_string()),
+            "plist should reference the agent binary"
+        );
+
+        let install = dir.join("persistence/install_launchagent.sh");
+        assert!(install.exists(), "install script should exist");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&install).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "install script must be executable");
+        }
+
+        let meta_path = dir.join("persistence/persistence_meta.json");
+        assert!(meta_path.exists(), "metadata JSON should exist");
+        let meta: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(meta["kind"], "macos_launch_agent");
+        assert_eq!(meta["label"], "com.test.agent");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn generate_launch_agent_default_label() {
+        let (dir, eng) = test_engage_dir("deflabel");
+        let agent = fake_agent(&dir);
+        let plist_path = generate_launch_agent(&eng, &dir, &agent, "").unwrap();
+        let plist = fs::read_to_string(&plist_path).unwrap();
+        let expected_label = format!("com.anubis.aop.{}", eng.engagement_id);
+        assert!(
+            plist.contains(&expected_label),
+            "empty label should use engagement_id: expected {expected_label}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn generate_launch_agent_missing_binary() {
+        let (dir, eng) = test_engage_dir("missingbin");
+        let missing = dir.join("nonexistent-agent");
+        let err = generate_launch_agent(&eng, &dir, &missing, "test").unwrap_err();
+        assert!(
+            err.to_string().contains("ANUBIS_PERSIST_AGENT_MISSING"),
+            "got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_plan_without_double_auth_returns_plan_only() {
+        let (dir, eng) = test_engage_dir("planonly");
+        let sc_path = dir.join("test.bin");
+        fs::write(&sc_path, b"\xcc\xcc\xcc\xcc").unwrap();
+
+        let r = inject_plan(&eng, &dir, 0, &sc_path, false).unwrap();
+        assert_eq!(r["status"], "PLAN_ONLY");
+        assert_eq!(r["executed"], false);
+        assert_eq!(r["required"]["cli_present"], false);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_plan_missing_shellcode() {
+        let (dir, eng) = test_engage_dir("missingsc");
+        let missing = dir.join("no-such.bin");
+        let err = inject_plan(&eng, &dir, 0, &missing, true).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ANUBIS_INJECT_SHELLCODE_MISSING"),
+            "got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_plan_empty_shellcode() {
+        let (dir, mut eng) = test_engage_dir("emptysc");
+        eng.program = "red_team".into();
+        eng.rehash();
+        let sc_path = dir.join("empty.bin");
+        fs::write(&sc_path, b"").unwrap();
+        let err = inject_plan(&eng, &dir, 0, &sc_path, true).unwrap_err();
+        assert!(
+            err.to_string().contains("ANUBIS_INJECT_EMPTY_SHELLCODE"),
+            "got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_plan_oversized_shellcode() {
+        let (dir, mut eng) = test_engage_dir("bigsc");
+        eng.program = "red_team".into();
+        eng.rehash();
+        let sc_path = dir.join("big.bin");
+        fs::write(&sc_path, vec![0xCC; 5 * 1024 * 1024]).unwrap();
+        let err = inject_plan(&eng, &dir, 0, &sc_path, true).unwrap_err();
+        assert!(
+            err.to_string().contains("ANUBIS_INJECT_TOO_LARGE"),
+            "got {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

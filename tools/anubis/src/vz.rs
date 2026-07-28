@@ -1302,6 +1302,22 @@ fn scrape_disposable_guest(user: &str, ip: &str) -> serde_json::Value {
         "ls -la /tmp/anubis-vz-evidence 2>/dev/null || echo ANUBIS_VZ_SCRAPE_NO_EVIDENCE_DIR",
         "ANUBIS_VZ_SCRAPE_EVIDENCE_LS_FAILED",
     );
+    // Artifact digest manifest: hash every file in the evidence directory IN-GUEST so nothing
+    // raw crosses the boundary. Three distinct states in the receipt:
+    //   "artifact_digests": "file1  <sha>\nfile2  <sha>"  — artifacts existed and were hashed
+    //   "artifact_digests": ""                            — evidence dir exists but is empty
+    //   "artifact_digests": "ANUBIS_VZ_SCRAPE_..."       — scrape command itself failed
+    // An empty string and a failure marker are distinguishable; a silent skip is not possible.
+    let artifact_digests = cap_or_marker(
+        user,
+        ip,
+        "if [ -d /tmp/anubis-vz-evidence ]; then \
+             find /tmp/anubis-vz-evidence -type f -exec shasum -a 256 {} + 2>/dev/null || \
+             find /tmp/anubis-vz-evidence -type f -exec sha256sum {} + 2>/dev/null || \
+             echo ANUBIS_VZ_SCRAPE_NO_SHA_TOOL; \
+         else echo ANUBIS_VZ_SCRAPE_NO_EVIDENCE_DIR; fi",
+        "ANUBIS_VZ_SCRAPE_ARTIFACT_DIGEST_FAILED",
+    );
     serde_json::json!({
         "uname": uname,
         "hostname": hostname,
@@ -1310,6 +1326,7 @@ fn scrape_disposable_guest(user: &str, ip: &str) -> serde_json::Value {
         "poc_log_tail": poc_log_tail,
         "poc_log_sha256": poc_log_sha256,
         "evidence_ls": evidence_ls,
+        "artifact_digests": artifact_digests,
     })
 }
 
