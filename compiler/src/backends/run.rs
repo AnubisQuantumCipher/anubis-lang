@@ -8700,4 +8700,52 @@ mod run_tests {
             }
         }
     }
+
+    // ── CLAIMS-15 layer 2: var_as_value structural guard ─────────────────
+    //
+    // The test above guards the data layer (emit_builtin_call must not have
+    // an arm for a gated name). This test guards the control layer: even if
+    // someone adds such an arm, var_as_value must reject the name before
+    // probing emit_builtin_call.
+    //
+    // Without this, removing the var_as_value guard (thinking it redundant
+    // because is_builtin_name catches gated names at a later step) silently
+    // reopens the carrier the moment someone adds an emit_builtin_call arm.
+    #[test]
+    fn var_as_value_rejects_gated_builtins() {
+        let fns = std::collections::BTreeSet::new();
+        let fn_arities = std::collections::BTreeMap::new();
+        let methods = std::collections::BTreeMap::new();
+        let locals = std::collections::BTreeSet::new();
+        let struct_field_types = std::collections::BTreeMap::new();
+        let mono: Vec<MonoEmitSpec> = Vec::new();
+        let fn_param_types = std::collections::BTreeMap::new();
+        let mono_sites: MonoSitesByCaller = std::collections::BTreeMap::new();
+        let mono_cursors = std::collections::BTreeMap::new();
+        let ctx = EmitCtx {
+            allow_research: false,
+            fns: &fns,
+            fn_arities: &fn_arities,
+            methods: &methods,
+            locals: &locals,
+            struct_field_types: &struct_field_types,
+            mono: &mono,
+            fn_param_types: &fn_param_types,
+            current_fn: None,
+            mono_sites_by_caller: &mono_sites,
+            mono_cursors: &mono_cursors,
+        };
+        for &name in NON_RUN_BUILTINS.iter().chain(POC_KIT_BUILTINS) {
+            if name == "assert" {
+                continue;
+            }
+            let result = var_as_value(name, &ctx);
+            assert!(
+                result.is_err(),
+                "CLAIMS-15 VIOLATION: var_as_value accepted gated builtin `{name}` \
+                 as a first-class value.  The carrier path is open: \
+                 `let f = {name}; f(...)` compiles without --allow-research.",
+            );
+        }
+    }
 }

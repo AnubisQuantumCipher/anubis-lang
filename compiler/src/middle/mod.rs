@@ -9023,12 +9023,17 @@ fn analyze_stmts(
                 // stale clean state); CLEARING it when the RHS is clean/declassified is sound
                 // straight-line, and the branch/loop taint MERGE refines it across control flow.
                 if let Expr::Var(name) = target {
+                    let reassigned_ids = fn_identities_of(value, scope, ctx);
+                    let mut reassigned_fields = BTreeMap::new();
+                    collect_container_fn_identities(value, "", scope, ctx, &mut reassigned_fields);
                     if let Some(b) = scope.get_mut(name) {
                         b.info.tainted = value_taint.is_some();
                         b.info.taint_source = value_taint.clone();
                         if value_taint.is_some() {
                             b.info.declassified = false;
                         }
+                        b.fn_identities = reassigned_ids;
+                        b.field_fn_identities = reassigned_fields;
                     }
                 } else if let (Some(src), Some(root)) = (&value_taint, assign_target_root(target)) {
                     // A non-`Var` place-assignment (`buf[0] = k`, `obj.f = k`) is a MAY-update of the ROOT
