@@ -135,6 +135,15 @@ for deferred in Ashr SignExtend Udiv Urem Sdiv Srem; do
   echo "$TAGS" | grep -qw "\"$deferred\"" && { echo "DRIFT: deferred op '$deferred' is listed in PROVEN_OP_TAGS (unproven wiring admitted)"; drift_fail=1; }
 done
 
+# Coverage ratchet on the verdict-equivalence corpus. "0 mismatches over $n files" is only as
+# strong as $n, and nothing else notices if $n falls.
+assert_floor "native_authoritative" "$n" "$ROOT/.gate_floors/native_authoritative.floor"
+_floor_rc=$?
+if [ $_floor_rc -ne 0 ]; then
+  echo "NATIVE_AUTHORITATIVE_GATE: FAIL ($GATE_FLOOR_ERROR)" >&2
+  exit 1
+fi
+
 if [ "$mismatches" = 0 ] && [ "$disagreements" = 0 ] && [ "$demo_fail" = 0 ] && [ "$drift_fail" = 0 ]; then
   echo "NATIVE_AUTHORITATIVE_GATE: PASS (cert suite + fragment/TCB-drop demo + verdict-equivalent on $n files, mismatches=0 disagreements=0; default native z3-hidden proves/rejects; opt-out=0 restores z3 dependence; danger op fails closed; allow-list ↔ Lean; DEFAULT=native-authoritative)"
   exit 0

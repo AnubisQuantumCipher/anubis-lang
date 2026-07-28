@@ -151,6 +151,16 @@ echo ""
 echo "CAPSET_SELFHOST over $n fixtures: AGREE=$agree DISAGREE=$disagree SKIP=$skip ANOMALY=$anomaly | marker ok=$expect_ok bad=$expect_bad"
 set +e
 finalize "$n" "$((agree + skip))" "$((disagree + anomaly_rows))" 0
+
+# Coverage ratchet. `finalize` proves the fixtures that RAN agreed; it cannot notice that fewer
+# ran than last time. A self-host comparison over a shrinking corpus reports "0 disagreements"
+# with perfect confidence about less and less.
+assert_floor "capset_selfhost" "$n" "$ROOT/.gate_floors/capset_selfhost.floor"
+_floor_rc=$?
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "CAPSET_SELFHOST_GATE: FAIL ($GATE_FLOOR_ERROR)" >&2
+  exit 1
+fi
 final_rc=$?
 set -e
 if [[ "$final_rc" -ne 0 ]]; then

@@ -99,6 +99,16 @@ set +e
 finalize "$n" "$expect_ok" "$expect_bad" 0
 expect_rc=$?
 finalize "$n" "$agree" "$disagree" 0
+
+# Coverage ratchet. `finalize` proves the fixtures that RAN agreed; it cannot notice that fewer
+# ran than last time. A self-host comparison over a shrinking corpus reports "0 disagreements"
+# with perfect confidence about less and less.
+assert_floor "effect_selfhost" "$n" "$ROOT/.gate_floors/effect_selfhost.floor"
+_floor_rc=$?
+if [[ $_floor_rc -ne 0 ]]; then
+  echo "EFFECT_SELFHOST_GATE: FAIL ($GATE_FLOOR_ERROR)" >&2
+  exit 1
+fi
 diff_rc=$?
 set -e
 if [ "$expect_rc" -ne 0 ] || [ "$diff_rc" -ne 0 ]; then
