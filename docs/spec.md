@@ -1,5 +1,23 @@
 # Anubis Language Specification (v0.1 authoritative for MVP)
 
+> ## ⚠️ Superseded — this is the 2026-07-05 v0.1 MVP spec
+>
+> This document has been superseded **twice** and is kept only as a record of the original design
+> intent. It is not the specification of the language you have checked out, and its "authoritative"
+> in the title refers to the v0.1 MVP, not to today's tree.
+>
+> **Read instead, in order of authority:**
+>
+> | | Document | Role |
+> |---|---|---|
+> | 1 | [`LANGUAGE.md`](../LANGUAGE.md) | the language reference — **wins on any conflict** |
+> | 2 | [`docs/language/SPEC.md`](language/SPEC.md) | the normative sketch for modes, evidence, contracts |
+> | 3 | [`docs/language/SPEC_1_0_FREEZE.md`](language/SPEC_1_0_FREEZE.md) | what is frozen for 1.0, and the explicit residuals |
+>
+> Note the near-collision: **`docs/spec.md` (this file, obsolete)** versus
+> **`docs/language/SPEC.md` (current)**. If you arrived here from a search result, you almost
+> certainly wanted the other one.
+
 ## Philosophy
 Dual Mastery: elite for offensive research/POCs + elite for verifiable sovereign systems.
 Sovereign by default. Judgment native. Hybrid power (CPU + Metal + prove). Agent synergistic. Responsible & reproducible.

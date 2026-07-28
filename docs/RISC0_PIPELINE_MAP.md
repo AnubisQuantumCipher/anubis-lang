@@ -1,5 +1,16 @@
 # Anubis RISC0 Pipeline Map (as of 2026-07-05)
 
+> ## ⚠️ Dated snapshot — the *file map* is useful, the *status* is not
+>
+> This is a **2026-07-05 internal cartography** of the RISC0 guest/host/verifier code path. The
+> file-by-file map is what it is for. The "Current State Summary" immediately below — including
+> *"Fresh end-to-end receipt … was not demonstrated"* — describes that date only and is contradicted
+> by later evidence in this repository.
+>
+> For current status read [`docs/CLAIMS.md`](CLAIMS.md) and
+> [`docs/proof/RISC0_PARAMETERIZED_PROOFS_STATUS.md`](proof/RISC0_PARAMETERIZED_PROOFS_STATUS.md);
+> re-derive with `bash scripts/run_prove_gate.sh`.
+
 ## Current State Summary
 RISC0 integration is **PARTIAL** (real derived ImageID from risc0-build + real Receipt.verify API + strict tamper + dev detection achieved; full passing cryptographic fresh receipt limited in current hybrid emit/prove wiring). See latest A15 gate10_risc0_hardening report.
 

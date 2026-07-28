@@ -2,6 +2,19 @@
 
 Anubis is **A+ only** when **all mandatory gates** below pass with reproducible artifacts and A15 hostile audit produces no mandatory failures.
 
+> **Coverage note (2026-07-28).** This file specifies **GATE 1–15**. The runner now executes **22**
+> gates — `scripts/audit_unified.sh` declares `G1_fmt … G22_fixture_preflight` — so G16–G22
+> (docs-drift, stdlib fail-closed, native-authoritative, walker-completeness, gate-common adoption,
+> formal, fixture-preflight) are enforced in CI **without** being specified here. Treat the runner as
+> the operative list and this document as the written contract for the first fifteen:
+>
+> ```bash
+> grep -o 'EXPECTED_GATES="[^"]*"' scripts/audit_unified.sh   # the gates actually required
+> ```
+>
+> Also note **GATE 2** below is frozen text describing the 2026-07-06 minimum-language-core slice,
+> which the executable core has long since passed.
+
 ## GATE 1 — Clean build
 ```bash
 cargo fmt --check
