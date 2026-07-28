@@ -286,7 +286,14 @@ pub fn native_boot(
     initrd: Option<&str>,
     allow_hosts: &[String],
     staging_dir: Option<&str>,
+    run_in_guest: Option<&str>,
 ) -> Result<()> {
+    if run_in_guest.is_some() && staging_dir.is_none() {
+        return Err(anyhow!(
+            "ANUBIS_VZNATIVE_RUN_REQUIRES_STAGING: --run-in-guest requires --staging-dir \
+             (the command runs against files on the VirtioFS share)"
+        ));
+    }
     let posture = derive_native_posture(program, allow_hosts)?;
     eprintln!("[anubis vz native-boot] program : {program}");
     eprintln!("[anubis vz native-boot] kernel  : {kernel}");
@@ -296,8 +303,11 @@ pub fn native_boot(
     if let Some(dir) = staging_dir {
         eprintln!("[anubis vz native-boot] staging : {dir} (VirtioFS tag \"anubis\")");
     }
+    if let Some(cmd) = run_in_guest {
+        eprintln!("[anubis vz native-boot] run     : {cmd}");
+    }
     eprintln!("[anubis vz native-boot] posture : {}", posture.label());
-    boot_with_kernel(&posture, program, kernel, initrd, staging_dir)
+    boot_with_kernel(&posture, program, kernel, initrd, staging_dir, run_in_guest)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -307,6 +317,7 @@ fn boot_with_kernel(
     kernel: &str,
     initrd: Option<&str>,
     staging_dir: Option<&str>,
+    run_in_guest: Option<&str>,
 ) -> Result<()> {
     use block2::RcBlock;
     use objc2::rc::Retained;
@@ -384,6 +395,8 @@ fn boot_with_kernel(
     } else {
         String::new()
     };
+
+    let run_in_guest_owned: Option<String> = run_in_guest.map(|s| s.to_string());
 
     // stdin_fds[1] stays OPEN until the shell prompt appears in console output. The reader
     // thread injects probe commands when it detects `# ` (busybox prompt), then closes the
@@ -464,10 +477,16 @@ fn boot_with_kernel(
                                 // boundary, not just that a filename appeared.
                                 "/bin/busybox sha256sum /mnt/anubis/__canary__ 2>&1; echo __STAGING_CANARY_EXIT__:$?",
                                 "echo __STAGING_PROBE_END__",
-                                "echo __ANUBIS_PROOF_END__",
                             ] {
                                 let _ = writeln!(w, "{cmd}");
                             }
+                            if let Some(ref run_cmd) = run_in_guest_owned {
+                                let _ = writeln!(w, "echo __ANUBIS_RUN_START__");
+                                let _ = writeln!(w, "{run_cmd} 2>&1");
+                                let _ = writeln!(w, "echo __RUN_EXIT__:$?");
+                                let _ = writeln!(w, "echo __ANUBIS_RUN_END__");
+                            }
+                            let _ = writeln!(w, "echo __ANUBIS_PROOF_END__");
                         }
                     }
 
@@ -934,6 +953,82 @@ it proves the probe can see a NIC when one exists"
                 (false, false, String::new(), String::new())
             };
 
+        // ── Guest run validation ──
+        let (run_exit_code, run_output_excerpt) = if run_in_guest.is_some() {
+            let run_section = final_output.find("__ANUBIS_RUN_START__").and_then(|s| {
+                final_output
+                    .find("__ANUBIS_RUN_END__")
+                    .map(|e| &final_output[s..e])
+            });
+            if let Some(section) = run_section {
+                let exit_code = section
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("__RUN_EXIT__:"))
+                    .and_then(|v| v.trim().parse::<i32>().ok());
+                if let Some(code) = exit_code {
+                    let output: String = section
+                        .lines()
+                        .filter(|l| {
+                            !l.contains("__ANUBIS_RUN_START__")
+                                && !l.contains("__RUN_EXIT__:")
+                                && !l.contains("~ #")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let excerpt = if output.len() > 4096 {
+                        format!("{}...[truncated at 4096]", &output[..4096])
+                    } else {
+                        output
+                    };
+                    eprintln!(
+                        "[anubis vz native-boot] GUEST RUN COMPLETE: exit={code}, \
+                         output={} bytes",
+                        excerpt.len()
+                    );
+                    (Some(code), excerpt)
+                } else {
+                    return Err(anyhow!(
+                        "ANUBIS_VZNATIVE_RUN_EXIT_MISSING: guest run markers present but \
+                         __RUN_EXIT__ not found or not parseable."
+                    ));
+                }
+            } else {
+                return Err(anyhow!(
+                    "ANUBIS_VZNATIVE_RUN_MARKERS_MISSING: --run-in-guest was given but \
+                     __ANUBIS_RUN_START__/__ANUBIS_RUN_END__ not found in transcript."
+                ));
+            }
+        } else {
+            (None, String::new())
+        };
+
+        // ── Post-run artifact scan ──
+        let artifact_hashes: Vec<(String, String)> = if run_in_guest.is_some() {
+            if let Some(dir) = staging_dir {
+                let mut hashes = Vec::new();
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name == "__canary__" {
+                            continue;
+                        }
+                        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                            if let Ok(bytes) = std::fs::read(entry.path()) {
+                                let hash = hex::encode(Sha256::digest(&bytes));
+                                hashes.push((name, hash));
+                            }
+                        }
+                    }
+                }
+                hashes.sort_by(|a, b| a.0.cmp(&b.0));
+                hashes
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
         // ── Receipt emission ──
         // The receipt carries the evidence, not a boolean. An auditor re-derives the posture
         // from the program, verifies the kernel hash against a known-good build, and reads
@@ -987,6 +1082,20 @@ it proves the probe can see a NIC when one exists"
                 "canary_match": staging_canary_match,
                 "staging_glob": staging_glob_value
             },
+            "run": {
+                "configured": run_in_guest.is_some(),
+                "command": run_in_guest.unwrap_or(""),
+                "exit_code": run_exit_code,
+                "output_excerpt": run_output_excerpt,
+                "artifacts": artifact_hashes.iter().map(|(n, h)| {
+                    serde_json::json!({"name": n, "sha256": h})
+                }).collect::<Vec<_>>(),
+                "honest_limit": "output returned over a host-mounted VirtioFS share is \
+                    host-observable. The guest was isolated (zero-NIC, hypervisor-enforced) \
+                    while producing it, but the host can read the share contents during and \
+                    after execution. This is a smaller claim than 'the output was produced \
+                    in a sealed environment the host could not observe'."
+            },
             "transcript_sha256": transcript_sha256,
             "transcript_bytes": final_output.len()
         });
@@ -1006,6 +1115,7 @@ fn boot_with_kernel(
     _kernel: &str,
     _initrd: Option<&str>,
     _staging_dir: Option<&str>,
+    _run_in_guest: Option<&str>,
 ) -> Result<()> {
     Err(anyhow!(
         "ANUBIS_VZNATIVE_UNSUPPORTED_HOST: native-boot requires Apple Silicon macOS"

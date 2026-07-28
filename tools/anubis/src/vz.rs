@@ -210,6 +210,10 @@ pub enum VzCmd {
         /// Host directory to expose to the guest as a VirtioFS share (tag "anubis").
         #[arg(long)]
         staging_dir: Option<String>,
+        /// Shell command to execute inside the guest after staging is verified.
+        /// Requires --staging-dir. Output and exit status are captured in the receipt.
+        #[arg(long)]
+        run_in_guest: Option<String>,
     },
     /// Fuzz a **local binary** in a DISPOSABLE guest (clone → boot → sync target binary →
     /// `anubis fuzz --target … --runs …` inside → SCRAPE evidence → SEAL into engagement receipt
@@ -667,12 +671,14 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
             initrd,
             allow_host,
             staging_dir,
+            run_in_guest,
         } => crate::vz_native::native_boot(
             &program,
             &kernel,
             initrd.as_deref(),
             &allow_host,
             staging_dir.as_deref(),
+            run_in_guest.as_deref(),
         ),
         VzCmd::Fuzz {
             target,
