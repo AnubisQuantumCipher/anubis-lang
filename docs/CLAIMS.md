@@ -732,10 +732,17 @@ measured and **refuted**.
 
 **Crash isolation is not an air-gap.** No zero-NIC claim without `native-preflight`.
 
-Residual 2 has an adopted design and is not yet built: hash artifacts **in-guest** and seal the
-digest, rather than exfiltrating them. A digest is evidence; a core dump is a liability — for a
-system whose identity is proving without revealing, scraping raw crash state to the host is
-architecturally backwards.
+Residual 2 — CLOSED (`bfbff02`, measured `2026-07-28`). `scrape_disposable_guest` hashes every
+file in `/tmp/anubis-vz-evidence/` **in-guest** via `find -exec shasum -a 256 {} +` and seals
+the digest manifest into the receipt. Three states are distinguishable: non-empty hash manifest
+(artifacts existed and were hashed), empty string (evidence directory exists but contains no
+files), and `ANUBIS_VZ_SCRAPE_*` marker (directory absent or SSH command failed). Empirically
+verified in a disposable macOS guest: crash op receipt carries
+`"artifact_digests":"d17848a9...  /tmp/anubis-vz-evidence/poc.log"`, a fresh guest with no
+evidence directory returns `ANUBIS_VZ_SCRAPE_NO_EVIDENCE_DIR`, and an empty evidence directory
+returns the empty string. Chain verifies (`receipt-verify --json → ok:true`). Raw crash data
+never crosses the guest boundary. An auditor holding an exported artifact can verify it against
+the sealed digest; the receipt proves what the scrape found, not what the guest actually did.
 
 ### Secret-selected constants — direct form CLOSED, nested form OPEN and it reconstructs N BITS (2026-07-28)
 
@@ -773,8 +780,29 @@ let x = if true { if secret_source(1) > 0 { 1 } else { 2 } } else { 0 };   print
    nested with `let z = …; z`:      REJECT   (statement seeder sees it)
 ```
 
-The label survives `Expr::Block`'s tail (`mod.rs:22186`); it dies when the inner `if` is the last
-statement of the block with no parsed tail, so the block value is never exposed. Under repair.
+**CLOSED at arbitrary depth (`1689a69`).** `parse_expr_block` treats a bare `if` as a STATEMENT
+(`frontend/mod.rs:2616`, `parse_if_stmt` at `:3454`), so a nested final `if` is `Stmt::If` and never
+an `ExprStmt` — the tail lookup found nothing, which is also why the `let`-bound variant already
+rejected (its inner `let` goes through the statement seeder). Both label lanes now union the
+condition with both arm values when extracting a block's value (`mod.rs:22216` secret, `:21533`
+taint), and the recursion is structural so depth is not a special case.
+
+| probe | before | after |
+|---|---|---|
+| `g_if06`, `g_if06_nested_observes` | ACCEPT | **REJECT** |
+| depth-2 | ACCEPT, run printed `1` | **REJECT** `ANUBIS_SECRET_EXFILTRATION` |
+| depth-3 | — | **REJECT** |
+| `g_if05`, `g_if05t`, `g_nested_public` | ACCEPT | ACCEPT (controls held) |
+| `w1`, `w5b`, `p2_free_push` | REJECT | REJECT (earlier closes held) |
+
+security 311/311, language 244/244, zero accept→reject flips.
+
+**The repair reproduced its own defect once, and that is worth recording.** The first recursive
+helper matched `Stmt::If { then, else_, .. }` and discarded `cond` — the identical `..` shape just
+fixed in `Expr::If`, in the code written to fix it. Three occurrences of one shape in a single day.
+It now breaks a gate rather than shipping: `run_walker_completeness_gate.sh` registers both helpers
+under the `partial-` contract (*match what you like, but do not half-read what you matched*), and
+re-planting the exact bug in a scratch copy turns that gate RED.
 
 ### Generics are a STRING HEURISTIC — two measured defects in opposite directions (OPEN 2026-07-28)
 
