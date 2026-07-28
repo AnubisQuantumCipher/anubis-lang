@@ -1070,6 +1070,27 @@ under this mode" requires reading the mode attributes. `MODE_ALLOWS` is the trap
 accept a stripped `declassify` because their mode authorizes it, and scoring those as BLIND
 would have invented five defects that do not exist.
 
+### Phase 4 done-when: all five criteria met, with the residual named (2026-07-28)
+
+| blueprint criterion | evidence |
+|---|---|
+| a crash op produces at least as much evidence as `campaign-init` | `clean` / `target_nonzero` / `target_signal` + `evidence_of`, measured at exits 0 / 42 / 139 |
+| `receipt-verify` COUNT and TIP advance after a guest run | `count=1 tip=d3174939…` → `count=4`, tip advancing per run |
+| artifacts present on the host after teardown | guest-computed `526f5e1d…` reproduced host-side, 0 VM processes |
+| `vz-c2-cycle` returns results | `t1_encrypted_c2  PASS  (whoami over aop-2)` — listener + agent + task dispatch, `"ok":true` |
+| the residual is stated | four named limits, below |
+
+**`vz_c2_cycle` remains marked `PARTIAL` in the capability map, and that marking is correct.** The
+criterion asks whether the C2 cycle returns results; it does, on the tart lane, with the gate's own
+record above. `PARTIAL` marks something stronger and separate: there is no NATIVE-lane C2, so a C2
+cycle cannot yet run inside the hypervisor-enforced zero-NIC posture. Meeting the criterion does
+not upgrade the marking, and the marking is not evidence the criterion failed.
+
+What an auditor still cannot conclude from a green run: the receipt chain proves INTERNAL
+CONSISTENCY, not host honesty, remote attestation, artifact tamper-freedom, or classification
+correctness. `crash_classification` is heuristic — `exit > 128` is read as signal death by Unix
+convention, and a program can `exit(139)` deliberately.
+
 ### VZ networking: the whole lifecycle now reports OBSERVED state, or refuses (2026-07-28)
 
 Source `e5649cb`, verified on one signed immutable pin
