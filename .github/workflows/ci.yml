@@ -49,6 +49,33 @@ jobs:
           Z3DIR="$(find . -maxdepth 1 -type d -name 'z3-4.15.4*' | head -1)"
           echo "$PWD/$Z3DIR/bin" >> "$GITHUB_PATH"
           "$PWD/$Z3DIR/bin/z3" --version
+      # Lean is a RELEASE DEPENDENCY, not a separate historical check. Without it installed,
+      # `audit_unified.sh` degrades G21_formal to EXTERNAL and the board still reads green — so CI
+      # was certifying a tree whose 162 theorems it had never checked. The toolchain version is read
+      # from `formal/lean-toolchain` rather than hardcoded, so the pin cannot drift away from the
+      # proofs it is meant to build.
+      - name: Cache elan / Lean toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            formal/.lake
+          key: elan-${{ runner.os }}-${{ hashFiles('formal/lean-toolchain', 'formal/lakefile.toml') }}
+      - name: Install elan + pinned Lean (version from formal/lean-toolchain)
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(tr -d '[:space:]' < formal/lean-toolchain)"
+          if [ ! -x "$HOME/.elan/bin/lake" ]; then
+            curl -sSf https://elan.lean-lang.org/elan-init.sh \
+              | sh -s -- -y --default-toolchain "$TOOLCHAIN"
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/elan" toolchain install "$TOOLCHAIN" || true
+          "$HOME/.elan/bin/lake" --version
+      # Declared separately from the aggregate so a red formal lane is legible in the job list
+      # instead of being one line inside a 24-gate summary.
+      - name: Lean formal gate (162 theorems machine-checked)
+        run: bash scripts/run_formal_gate.sh
       - name: Run host-verifiable gates with an explicit external VZ boundary
         run: bash scripts/audit_unified.sh --profile hosted --out out/ci_gate
       - name: Upload hosted gate report

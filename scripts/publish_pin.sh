@@ -62,9 +62,27 @@ fi
 # With the source hash in the .meta, anyone can ask the question that actually matters:
 #   does this pin correspond to the tree I am looking at?
 # `--verify` answers it in one command.
+# What the pin BINDS. This covered only the compiler/CLI/solver/stdlib inputs, which is enough to
+# say "this binary was built from this code" and NOT enough for the claim actually made about it:
+# "this binary was checked by THESE Lean proofs and THESE gates". A `formal/*.lean` edit or a change
+# to a gate script moved what the seal means while the pin kept reporting a match.
+#
+# So the sealed manifest includes the proofs and the three scripts that decide whether a seal is
+# earned. Anything listed here, when it changes, correctly invalidates the pin.
+PIN_SRC_DIRS=(compiler/src tools/anubis/src solver/src compiler/stdlib formal)
+PIN_SRC_FILES=(
+  scripts/run_formal_gate.sh
+  scripts/run_native_authoritative_gate.sh
+  scripts/run_formal_kernel_gate.sh
+)
+
 src_tree_hash() {
-  find compiler/src tools/anubis/src solver/src compiler/stdlib \
-    -type f \( -name '*.rs' -o -name '*.anb' \) 2>/dev/null \
+  {
+    find "${PIN_SRC_DIRS[@]}" \
+      -type f \( -name '*.rs' -o -name '*.anb' -o -name '*.lean' \
+                  -o -name 'lean-toolchain' -o -name 'lakefile.toml' \) 2>/dev/null
+    for f in "${PIN_SRC_FILES[@]}"; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
+  } \
     | LC_ALL=C sort \
     | xargs shasum -a 256 2>/dev/null \
     | shasum -a 256 | cut -d' ' -f1
@@ -123,9 +141,12 @@ fi
 # Escape hatch is explicit and loud, never silent: ANUBIS_PIN_ALLOW_STALE=1.
 if [[ "${ANUBIS_PIN_ALLOW_STALE:-0}" != "1" ]]; then
   stale_src=""
-  for d in compiler/src tools/anubis/src solver/src compiler/stdlib; do
+  # Same set as `src_tree_hash` — deliberately, and this is the whole point: two lists describing
+  # "the sealed sources" that can drift apart is the producer/consumer split this repo keeps finding.
+  for d in "${PIN_SRC_DIRS[@]}"; do
     [[ -d "$d" ]] || continue
-    found="$(find "$d" -type f \( -name '*.rs' -o -name '*.anb' \) -newer "$SRC" -print 2>/dev/null | head -1)"
+    found="$(find "$d" -type f \( -name '*.rs' -o -name '*.anb' -o -name '*.lean' \
+              -o -name 'lean-toolchain' -o -name 'lakefile.toml' \) -newer "$SRC" -print 2>/dev/null | head -1)"
     if [[ -n "$found" ]]; then stale_src="$found"; break; fi
   done
   if [[ -n "$stale_src" ]]; then
