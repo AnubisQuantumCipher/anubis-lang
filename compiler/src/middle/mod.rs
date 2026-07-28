@@ -3652,7 +3652,11 @@ fn scan_applied_param_local_aliases(
                     aliases.extend(binding_paths);
                 }
             }
-            Stmt::WhileLet { pattern, expr, body } => {
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
                 if matches!(expr, Expr::Var(root) if root == param) {
                     let mut binding_paths = BTreeMap::new();
                     collect_pattern_binding_paths(pattern, "", &mut binding_paths);
@@ -11610,12 +11614,11 @@ fn analyze_expr_effect(
                         }
                         _ => None,
                     };
-                    if let Some(boxed) = resolved {
-                        let Expr::Lambda { params, body } = boxed.as_ref() else { continue };
+                    if let Some(Expr::Lambda { params, body }) = resolved {
                         let mut local = scope.clone();
                         for p in params {
                             let mut binding = labelled_param_binding(
-                                p,
+                                p.as_str(),
                                 elem_taint.is_some(),
                                 elem_taint.clone(),
                                 elem_secret,
@@ -11809,7 +11812,10 @@ fn analyze_expr_effect(
                             0,
                         )
                     });
-                    if let Some(Expr::Lambda { params, body }) = resolved {
+                    if let Some(boxed) = resolved {
+                        let Expr::Lambda { params, body } = boxed.as_ref() else {
+                            continue;
+                        };
                         // The callee applies this closure to ITS OWN parameters, which are bound to
                         // the caller's OTHER arguments — so the closure's params must carry those
                         // arguments' labels. Binding them unlabelled (as this did) meant
@@ -11851,7 +11857,7 @@ fn analyze_expr_effect(
                                 .is_some();
                         }
                         let mut local = scope.clone();
-                        for pp in &params {
+                        for pp in params {
                             local.insert(
                                 pp.clone(),
                                 ScopeBinding {
