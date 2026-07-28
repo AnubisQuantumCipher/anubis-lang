@@ -64,12 +64,12 @@ Absence of a red row is **not** evidence of absence.
 | Surface | Observation | Repro / boundary |
 |---|---|---|
 | **Security fixtures** | Lead gate **317/317 PASS**. Live disk inventory **317** `.anb`; **published red list EMPTY** (0 `EXPECT: FAIL` still check-PASS this pass) | Green ≠ no bugs. Re-enumerate command below. |
-| **Language core** | **244/244 PASS** — but see the float-lane residual below; measured 243/244 twice on 2026-07-28 | pin `ANUBIS_BIN` (§6) |
+| **Language core** | **247/247 PASS** — but see the float-lane residual below; measured 243/244 twice on 2026-07-28 | pin `ANUBIS_BIN` (§6) |
 | **Stdlib fail-closed** | **104/104 PASS** | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/…` |
 | **Capset selfhost** | **5/5 PASS** | `bash scripts/run_capset_selfhost_gate.sh` |
 | **Taint / type / effect selfhost** | **0 disagreements** each | lead-verified |
 | **Formal gate** | **PASS** — every theorem machine-checked; **no `sorry` / `admit` / free `axiom`** | `bash scripts/run_formal_gate.sh`; Lean **162 theorems / 15 modules** (comment-stripped) |
-| **Native authoritative** | **PASS over 888 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
+| **Native authoritative** | **PASS over 898 files, 0 mismatches** | `bash scripts/run_native_authoritative_gate.sh` |
 | **Unified gate suite** | **22/22 PASS** at commit `4e7ee94` — 0 failed, 0 skipped, 0 external, `tree_state: clean` | `bash scripts/audit_head.sh --rev <sha>` — grades a COMMIT in a throwaway worktree, not the live tree |
 | Research elevation | Bare `@research` **without** authorization → REJECT | Live: `research_block_without_authorization_rejects.anb` EXIT=1 |
 | Unknown attributes | **Fail closed** | Live: `unknown_attribute_rejects.anb` EXIT=1 |
@@ -244,7 +244,8 @@ never terminates is a check/run divergence of a different kind, and is being cha
     pure on the other keeps the tag. `Known(∅)` proves a value carries no gate class and `Unknown`
     means unresolved — an unknown value is not assumed to violate, so a builtin bound but never
     applied still ACCEPTS. Measured at this close: security 311/311 with the held RED now rejecting and zero
-    accept→reject flips among the 308 that predate it; language 244/244; compiler lib 731/731. Commit
+    accept→reject flips among the 308 that predate it; language 244/244 (historical stamp, measured at
+    this close); compiler lib 731/731. Commit
     `c7643e5`.
 
     **With this, all five NAME-keyed leaking surfaces from the 19-surface census are closed.**
@@ -523,7 +524,8 @@ never terminates is a check/run divergence of a different kind, and is being cha
 
     `FnIdentitySet::union_present` (item text above) was therefore necessary but is **not**
     sufficient. Lead measurements on the post-fix pin `anubis-cf98ccebb4c1`: security **311/311**,
-    language **244/244**, `cargo test --release -p anubis` **200 passed / 0 failed** — so the fix
+    language **244/244** on `anubis-cf98ccebb4c1`, `cargo test --release -p anubis` **200 passed / 0
+    failed** — so the fix
     bought no regression, and no claim that it closed the carrier class. Re-scoring of i01–i05 on
     that pin is in flight.
 
@@ -1490,7 +1492,7 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Evidence bundle + tamper detection | package gate path `scripts/run_package_gate.sh` (seal history); unit evidence/tamper tests | Re-run package gate for live CI claims |
 | RISC0 receipt path (in-process) | prove/verify path + A15 gate history; shape + `Receipt::verify` API | Hosted Metal proving **not claimed** |
 | Metal parity (local Apple Silicon) | local Tier-2 parity history in A15 / doctor | Not hosted GPU prove |
-| Language core (fixtures + repro) | **244/244** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
+| Language core (fixtures + repro) | **247/247** on pinned instrument; `scripts/run_language_fixtures.sh` | Seal must set `ANUBIS_BIN` to same binary as security (CLAIMS §7); default is still DEBUG `cargo run` |
 | Backend portability / doctor / CLI | `anubis doctor`; DX gate history 15/15 | — |
 | Ordinary `anubis run` Safe subset | SPEC_1_0 frozen surface; e.g. hello fixtures; vault contacts `run` EXIT=0 post-PTAH | Research/exploit needs `--allow-research` + VZ where required; **proof/shell constructs are non-run by design** (CLAIMS open §2 (B)); (R) preflight false-rejects **closed**; *check ≠ run for proof/shell* is a named product residual, not a checker gap |
 | Phases 0–10 "DONE / At DoD" as total soundness | **not claimed as current** | Historical narrative in `docs/language/ROADMAP.md` | **Named residual:** published reds empty ≠ Class D / D1–D6 closed; green board is not COMPLETE |
