@@ -112,6 +112,15 @@ run effect-sh  bash scripts/run_effect_selfhost_gate.sh
 run capset-sh  bash scripts/run_capset_selfhost_gate.sh
 run type-sh    bash scripts/run_type_selfhost_gate.sh
 run taint-sh   bash scripts/run_taint_selfhost_gate.sh
+# Gates the seal advertises but never ran. A seal that does not execute these certifies a board
+# whose headline numbers it never checked: 162 Lean theorems, the 104/104 fail-closed stdlib
+# matrix, the 882-file native-authoritative corpus, the docs-drift stamps, and walker totality.
+# `run_stdlib_gate.sh` above is the fixed-scenario integration gate — NOT the fail-closed matrix.
+run stdlib-fc  bash scripts/run_stdlib_failclosed_gate.sh --out out/vm_stdlib_failclosed
+run native-auth bash scripts/run_native_authoritative_gate.sh
+run docs-drift bash scripts/run_docs_drift_gate.sh --out out/vm_docs_drift
+run walker     bash scripts/run_walker_completeness_gate.sh
+run formal     bash scripts/run_formal_gate.sh
 echo "BATTERY_DONE"
 REMOTE
 
@@ -121,6 +130,23 @@ ssh "${SSHOPTS[@]}" "${USER_}@${IP}" \
 VMFP=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep "binary_fixpoint sha256" "$HOME/battery.log" | grep -oE "[0-9a-f]{64}" | head -1' || true)
 NFAIL=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -cE "^EXIT=[1-9]" "$HOME/battery.log" || true')
 NFAIL=${NFAIL:-0}
+
+# A gate that never RAN is not a gate that passed.
+#
+# The verdict below counted failures and nothing else, and `BATTERY_DONE` was echoed by the guest
+# and never checked by the host. If the battery died partway — dropped SSH, guest OOM, a gate
+# hanging past a timeout — every gate after the death simply produced no line. Failures counted
+# ZERO, and if the death came after the seal gate the fixpoint was already recorded, so the slice
+# printed PASS with gates never executed. That is the "reported PASS while SKIPPED" class the seal
+# exists to prevent, sitting in the seal itself.
+EXPECTED_GATES="cargo-test tool-test clippy language turing security stdlib shadow seal dogfood \
+effect-sh capset-sh type-sh taint-sh stdlib-fc native-auth docs-drift walker formal"
+DONE_MARK=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -c "^BATTERY_DONE" "$HOME/battery.log" || true')
+RAN=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -oE "^EXIT=[0-9]+ .*" "$HOME/battery.log" | sed "s/^EXIT=[0-9]* //"' || true)
+MISSING=""
+for g in $EXPECTED_GATES; do
+  printf '%s\n' "$RAN" | grep -qx "$g" || MISSING="$MISSING $g"
+done
 
 # Collect the Ammit cargo-test evidence (the real VM-produced libtest JSON) back to the host BEFORE
 # the clone is torn down — unconditional, since a failing run is itself evidence Ammit should weigh
@@ -136,6 +162,14 @@ echo "      VM fixpoint   : ${VMFP:-<none>}"
 echo "      expected      : $EXPECTED"
 rc=0
 [ "$NFAIL" = 0 ] || { echo "  ✗ $NFAIL gate(s) failed"; rc=1; }
+if [ "${DONE_MARK:-0}" = 0 ]; then
+  echo "  ✗ battery did not reach BATTERY_DONE — it died partway; gates after the death never ran"
+  rc=1
+fi
+if [ -n "$MISSING" ]; then
+  echo "  ✗ gate(s) produced NO result (never ran):$MISSING"
+  rc=1
+fi
 if [ -z "${VMFP:-}" ]; then echo "  ✗ no fixpoint produced (seal did not run/finish)"; rc=1
 elif [ "$VMFP" != "$EXPECTED" ]; then
   echo "  ✗ FIXPOINT MOVED — investigate (real defect, or a deliberate re-baseline: update EXPECTED_FIXPOINT_VM)"; rc=1
