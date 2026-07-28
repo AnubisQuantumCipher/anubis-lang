@@ -1864,6 +1864,25 @@ fn collect_container_fn_identities(
             .enumerate()
             .map(|(index, value)| (path(&index.to_string()), value))
             .collect(),
+        // CONCATENATION builds a container from two containers, so its identities are the union
+        // of both sides. Without this arm `xs = xs + [leak]` recorded nothing while the otherwise
+        // identical `xs = [leak]` recorded correctly — the callable was laundered by an append.
+        //
+        // Descending into both operands rather than only the literal side matters: the leak may be
+        // on either, and `xs + [leak]` and `[leak] + xs` are the same program.
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_container_fn_identities(lhs, prefix, scope, ctx, out);
+            let mut other = BTreeMap::new();
+            collect_container_fn_identities(rhs, prefix, scope, ctx, &mut other);
+            for (key, identities) in other {
+                out.entry(key)
+                    .and_modify(|current| {
+                        *current = current.clone().union(identities.clone());
+                    })
+                    .or_insert(identities);
+            }
+            return;
+        }
         Expr::If { then, else_, .. } | Expr::IfLet { then, else_, .. } => {
             collect_container_fn_identities(then, prefix, scope, ctx, out);
             let mut other = BTreeMap::new();
@@ -3379,7 +3398,13 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         // Preserve a callable extracted into a local (`let f = p[0]; f(...)`).
                         // The ordinary scan only sees the local callee and therefore cannot attach
                         // the application to the formal's concrete path.
-                        scan_applied_param_local_aliases(body, pname, &mut applies, &mut paths, &ctx.fn_returns_param);
+                        scan_applied_param_local_aliases(
+                            body,
+                            pname,
+                            &mut applies,
+                            &mut paths,
+                            &ctx.fn_returns_param,
+                        );
                         if shadows {
                             shadowed.push(i);
                         } else if applies {
@@ -3587,6 +3612,22 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                 &mut paths,
                                 &method_names,
                             );
+                            // Methods need the LOCAL-ALIAS scan too. The free-function path has
+                            // called it since the extraction work; the method path never did, so
+                            // `impl S { fn go(self, xs) { let f = xs[i]; f(…) } }` recorded no path
+                            // while the byte-identical free function recorded one.
+                            //
+                            // Separate registries, same projection — which is the rule this repo
+                            // holds: sharing a helper is not sharing a namespace, and the
+                            // never-merge rule exists because `recv.method(args)` once claimed a
+                            // free function's identities.
+                            scan_applied_param_local_aliases(
+                                body,
+                                pname,
+                                &mut applies,
+                                &mut paths,
+                                &ctx.fn_returns_param,
+                            );
                             if !shadows && applies {
                                 method_applied.push(i);
                                 if !paths.is_empty() {
@@ -3680,8 +3721,6 @@ fn scan_applied_param_local_aliases(
 /// Nested scopes get the map by reference rather than a clone: an alias recorded inside a block is
 /// still a real alias of the same formal, and losing it on the way out is how `if let Some(m) = o`
 /// stayed open. Shadowing is handled where bindings are recorded, not by scoping the map.
-#[allow(clippy::too_many_arguments)]
-
 /// Record every name a PATTERN binds as an alias of the formal, when the scrutinee is the formal
 /// or an already-recorded alias of it.
 ///
@@ -3703,9 +3742,14 @@ fn scan_alias_expr_block(
     aliases: &mut BTreeMap<String, String>,
 ) {
     match e {
-        Expr::Block { stmts, .. } => {
-            scan_applied_param_local_aliases_in(stmts, param, applies, paths, fn_returns_param, aliases)
-        }
+        Expr::Block { stmts, .. } => scan_applied_param_local_aliases_in(
+            stmts,
+            param,
+            applies,
+            paths,
+            fn_returns_param,
+            aliases,
+        ),
         Expr::CallExpr { callee, .. } => {
             if let Some((root, suffix)) = flatten_access_path(callee) {
                 if let Some(prefix) = aliases.get(&root) {
@@ -3735,7 +3779,9 @@ fn scan_alias_expr_block(
         // f(…) } }` puts a whole `Expr::Match` in the arm, and stopping at Block/Call meant the
         // inner binder was never recorded — an `Option<Option<_>>` unwrap laundered a callable in
         // two lines.
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             for arm in arms {
                 record_binder_aliases(&arm.pattern, scrutinee, param, aliases);
                 scan_alias_expr_block(&arm.body, param, applies, paths, fn_returns_param, aliases);
@@ -3792,6 +3838,7 @@ fn record_binder_aliases(
         aliases.insert(name, composed);
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn scan_applied_param_local_aliases_in(
     body: &[Stmt],
     param: &str,
@@ -3866,8 +3913,12 @@ fn scan_applied_param_local_aliases_in(
                             // forwarders cannot spin.
                             let mut cur: &Expr = arg;
                             for _ in 0..16 {
-                                let Expr::Call { callee: c, args: a } = cur else { break };
-                                let Some((_p, i)) = fn_returns_param.get(c.as_str()) else { break };
+                                let Expr::Call { callee: c, args: a } = cur else {
+                                    break;
+                                };
+                                let Some((_p, i)) = fn_returns_param.get(c.as_str()) else {
+                                    break;
+                                };
                                 let Some(next) = a.get(*i) else { break };
                                 cur = next;
                             }
@@ -3960,7 +4011,14 @@ fn scan_applied_param_local_aliases_in(
                 // `let mut cur = o; while let Some(f) = cur { f(…) }` bound `f` from `cur`, which
                 // this arm did not recognise because it compared only against the formal's name.
                 record_binder_aliases(pattern, expr, param, aliases);
-                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
+                scan_applied_param_local_aliases_in(
+                    body,
+                    param,
+                    applies,
+                    paths,
+                    fn_returns_param,
+                    aliases,
+                );
             }
             Stmt::ExprStmt(Expr::Call { callee, .. }) => {
                 if let Some(path) = aliases.get(callee) {
@@ -3997,13 +4055,34 @@ fn scan_applied_param_local_aliases_in(
                 }
             }
             Stmt::If { then, else_, .. } => {
-                scan_applied_param_local_aliases_in(then, param, applies, paths, fn_returns_param, aliases);
+                scan_applied_param_local_aliases_in(
+                    then,
+                    param,
+                    applies,
+                    paths,
+                    fn_returns_param,
+                    aliases,
+                );
                 if let Some(branch) = else_ {
-                    scan_applied_param_local_aliases_in(branch, param, applies, paths, fn_returns_param, aliases);
+                    scan_applied_param_local_aliases_in(
+                        branch,
+                        param,
+                        applies,
+                        paths,
+                        fn_returns_param,
+                        aliases,
+                    );
                 }
             }
             Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
-                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
+                scan_applied_param_local_aliases_in(
+                    body,
+                    param,
+                    applies,
+                    paths,
+                    fn_returns_param,
+                    aliases,
+                );
             }
             // A FOR BINDER is an alias of an ELEMENT of whatever it iterates.
             //
@@ -4030,13 +4109,13 @@ fn scan_applied_param_local_aliases_in(
                         }),
                         // `for e in entries(m)` — a builtin over the formal yields elements of it.
                         None => match expr {
-                            Expr::Call { args, .. } => args.first().and_then(|a| {
-                                match flatten_access_path(a) {
+                            Expr::Call { args, .. } => {
+                                args.first().and_then(|a| match flatten_access_path(a) {
                                     Some((root, _)) if root == param => Some(String::new()),
                                     Some((root, _)) => aliases.get(&root).cloned(),
                                     None => None,
-                                }
-                            }),
+                                })
+                            }
                             _ => None,
                         },
                     };
@@ -4048,10 +4127,24 @@ fn scan_applied_param_local_aliases_in(
                         aliases.insert(var.clone(), "*".to_string());
                     }
                 }
-                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
+                scan_applied_param_local_aliases_in(
+                    body,
+                    param,
+                    applies,
+                    paths,
+                    fn_returns_param,
+                    aliases,
+                );
             }
             Stmt::ResearchBlock { body, .. } | Stmt::ExploitBlock { body, .. } => {
-                scan_applied_param_local_aliases_in(body, param, applies, paths, fn_returns_param, aliases);
+                scan_applied_param_local_aliases_in(
+                    body,
+                    param,
+                    applies,
+                    paths,
+                    fn_returns_param,
+                    aliases,
+                );
             }
             // `if let` and `match` bodies were NEVER VISITED. A callable bound by either binder and
             // applied inside the body was invisible, so `if let Some(m) = o { let f = m["k"]; f() }`
@@ -4075,10 +4168,19 @@ fn scan_applied_param_local_aliases_in(
                 scan_alias_expr_block(then, param, applies, paths, fn_returns_param, aliases);
                 scan_alias_expr_block(else_, param, applies, paths, fn_returns_param, aliases);
             }
-            Stmt::ExprStmt(Expr::Match { scrutinee, arms, .. }) => {
+            Stmt::ExprStmt(Expr::Match {
+                scrutinee, arms, ..
+            }) => {
                 for arm in arms {
                     record_binder_aliases(&arm.pattern, scrutinee, param, aliases);
-                    scan_alias_expr_block(&arm.body, param, applies, paths, fn_returns_param, aliases);
+                    scan_alias_expr_block(
+                        &arm.body,
+                        param,
+                        applies,
+                        paths,
+                        fn_returns_param,
+                        aliases,
+                    );
                 }
             }
             _ => {}
@@ -4151,7 +4253,7 @@ fn check_calls_stmts_nc(
                 check_calls_stmts_nc(then, fns, &mut b, &mut nc.clone(), ctx);
                 if let Some(e) = else_ {
                     let mut b = bound.clone();
-                let nc = non_callable.clone();
+                    let nc = non_callable.clone();
                     check_calls_stmts_nc(e, fns, &mut b, &mut nc.clone(), ctx);
                 }
             }
@@ -4187,7 +4289,9 @@ fn check_calls_stmts_nc(
                         check_calls_expr_nc(start, fns, bound, non_callable, ctx);
                         check_calls_expr_nc(end, fns, bound, non_callable, ctx);
                     }
-                    ForSource::Collection { expr } => check_calls_expr_nc(expr, fns, bound, non_callable, ctx),
+                    ForSource::Collection { expr } => {
+                        check_calls_expr_nc(expr, fns, bound, non_callable, ctx)
+                    }
                 }
                 let mut b = bound.clone();
                 let nc = non_callable.clone();
@@ -4202,7 +4306,7 @@ fn check_calls_stmts_nc(
             Stmt::HybridBlock { gpu, cpu, prove } => {
                 for blk in [gpu, cpu, prove].into_iter().flatten() {
                     let mut b = bound.clone();
-                let nc = non_callable.clone();
+                    let nc = non_callable.clone();
                     check_calls_stmts_nc(blk, fns, &mut b, &mut nc.clone(), ctx);
                 }
             }
@@ -4275,7 +4379,8 @@ fn check_calls_expr_nc(
                 ) || matches!(a, Expr::Var(v) if non_callable.contains(v.as_str()))
             };
             if closure_idxs.len() > 1 {
-                let present: Vec<&Expr> = closure_idxs.iter().filter_map(|&i| args.get(i)).collect();
+                let present: Vec<&Expr> =
+                    closure_idxs.iter().filter_map(|&i| args.get(i)).collect();
                 if !present.is_empty() && present.iter().all(|a| not_callable(a)) {
                     ctx.diagnostics.push(SemanticDiagnostic {
                         code: Some("ANUBIS_TYPE_ERROR".into()),
@@ -12485,7 +12590,7 @@ fn analyze_expr_effect(
                                 },
                             );
                         }
-                        analyze_expr_effect(&body, mode, &local, effects, ctx);
+                        analyze_expr_effect(body, mode, &local, effects, ctx);
                     }
                 }
             }
