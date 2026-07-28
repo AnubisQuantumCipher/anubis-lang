@@ -121,7 +121,13 @@ run native-auth bash scripts/run_native_authoritative_gate.sh
 run docs-drift bash scripts/run_docs_drift_gate.sh --out out/vm_docs_drift
 run walker     bash scripts/run_walker_completeness_gate.sh
 run formal     bash scripts/run_formal_gate.sh
-echo "BATTERY_DONE"
+# Into the LOG, not just stdout. The completion marker was echoed to the remote script's stdout
+# while the host checks `grep -c "^BATTERY_DONE" $HOME/battery.log` — a file it never reached. So
+# DONE_MARK was 0 on every run, and "battery did not reach BATTERY_DONE — it died partway" printed
+# on runs where all 19 gates demonstrably ran (MISSING was empty). A guard that fires on a perfect
+# run is worse than no guard: it teaches the operator to skip the line where a real death would
+# appear.
+echo "BATTERY_DONE" | tee -a "$LOG"
 REMOTE
 
 echo "[5/6] collect results"
@@ -161,7 +167,17 @@ echo "      gate failures : $NFAIL"
 echo "      VM fixpoint   : ${VMFP:-<none>}"
 echo "      expected      : $EXPECTED"
 rc=0
+# A gate that exited 127 did not FAIL — the tool it needs is absent from the guest image (the formal
+# gate needs lake/elan, which the golden image does not carry). It still blocks the slice, and it
+# must: this battery exists because "a seal that does not execute these certifies a board whose
+# headline numbers it never checked", and 162 Lean theorems is one of those numbers. But reporting
+# an absent toolchain as a failed proof sends whoever reads it to debug the wrong thing.
+ABSENT=$(ssh "${SSHOPTS[@]}" "${USER_}@${IP}" 'grep -E "^EXIT=127 " "$HOME/battery.log" | sed "s/^EXIT=127 //" | tr "\n" " "' || true)
 [ "$NFAIL" = 0 ] || { echo "  ✗ $NFAIL gate(s) failed"; rc=1; }
+if [ -n "${ABSENT// /}" ]; then
+  echo "      of those, TOOLCHAIN ABSENT (exit 127), not a failed check:$ABSENT"
+  echo "      -> the guest image lacks the tool; the claim those gates certify is UNVERIFIED here, not disproved"
+fi
 if [ "${DONE_MARK:-0}" = 0 ]; then
   echo "  ✗ battery did not reach BATTERY_DONE — it died partway; gates after the death never ran"
   rc=1
