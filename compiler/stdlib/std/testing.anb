@@ -1,41 +1,67 @@
-// std.testing — runtime assertion helpers for Anubis programs and stdlib self-tests.
+// std.testing — RUNTIME assertion helpers for Anubis programs and stdlib self-tests.
+//
+// These use `panic`, not `assert`, and the distinction is the whole point of the module.
+//
+// `assert(c)` is a PROOF construct: it asks the checker to prove `c` holds on every path, and
+// `anubis run` refuses to build when it cannot. `panic(msg)` is a RUNTIME construct: it aborts if
+// control ever reaches it, and carries no proof obligation.
+//
+// Written with `assert`, every helper here was `if <negation> { assert(false); }` — and each is
+// checked as a STANDALONE function over FREE parameters, where the negation is satisfiable and
+// `assert(false)` therefore genuinely IS reachable. The checker was right to refuse, which meant
+// the stdlib's own self-tests could not be built at all:
+//
+//     ANUBIS_ASSERTION_DISPROVED: refusing to build — 5 assertion(s) disproved by counterexample
+//
+// The obvious repair, `requires(a == b)`, does not work: these params are UNTYPED, an untyped
+// equality is outside the modelable set, so the precondition never becomes a solver assumption.
+// Typing them `u32` would break every string call site. But neither repair was the right one —
+// the construct was. A test asserts a fact about ONE concrete run; it does not claim the fact is
+// provable for all inputs, and `assert` claims exactly that.
+//
+// So nothing verified was given up here. The proof obligation was never dischargeable and was never
+// intended: the file header has said "runtime" since it was written, and only the body disagreed.
+// A caller who wants the checker to PROVE something still writes `assert(...)` directly — that
+// construct is unchanged and remains the strong one.
 
 pub fn assert_true(cond) {
-    assert(cond);
+    if !cond {
+        panic("assert_true: condition was false");
+    }
     return true;
 }
 
 pub fn assert_eq(a, b) {
     if a != b {
-        assert(false);
+        panic("assert_eq: values differ");
     }
     return true;
 }
 
 pub fn assert_ne(a, b) {
     if a == b {
-        assert(false);
+        panic("assert_ne: values are equal");
     }
     return true;
 }
 
 pub fn assert_lt(a, b) {
     if !(a < b) {
-        assert(false);
+        panic("assert_lt: left is not less than right");
     }
     return true;
 }
 
 pub fn assert_le(a, b) {
     if !(a <= b) {
-        assert(false);
+        panic("assert_le: left is not less than or equal to right");
     }
     return true;
 }
 
 pub fn assert_gt(a, b) {
     if !(a > b) {
-        assert(false);
+        panic("assert_gt: left is not greater than right");
     }
     return true;
 }
