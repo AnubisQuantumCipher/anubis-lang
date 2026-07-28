@@ -25,13 +25,21 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 
 REV="HEAD"
 OUT=""
+# Which gate script to run inside the worktree. Defaults to the unified suite; `--script` lets the
+# SEAL — or any other whole-repo grader — get the same immunity from a moving tree. The seal cannot
+# use a dirty-tree refusal the way `audit_unified.sh` does, because on a repo with four agents
+# editing concurrently that would make it unrunnable; grading a commit is the answer for both.
+SCRIPT="scripts/audit_unified.sh"
+REPORT_NAME="gate_report.json"
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --rev) REV="${2:?--rev requires a revision}"; shift 2 ;;
-    --out) OUT="${2:?--out requires a directory}"; shift 2 ;;
-    --)    shift; PASSTHRU=("$@"); break ;;
-    *)     echo "ANUBIS_AUDIT_HEAD_ARGUMENT: unknown argument '$1'" >&2; exit 2 ;;
+    --rev)    REV="${2:?--rev requires a revision}"; shift 2 ;;
+    --out)    OUT="${2:?--out requires a directory}"; shift 2 ;;
+    --script) SCRIPT="${2:?--script requires a path}"; shift 2 ;;
+    --report) REPORT_NAME="${2:?--report requires a filename}"; shift 2 ;;
+    --)       shift; PASSTHRU=("$@"); break ;;
+    *)        echo "ANUBIS_AUDIT_HEAD_ARGUMENT: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
 
@@ -50,6 +58,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo "[audit-head] script   : $SCRIPT"
 echo "[audit-head] revision : $SHORT ($SHA)"
 echo "[audit-head] worktree : $WT"
 echo "[audit-head] report   : $OUT"
@@ -71,16 +80,16 @@ RC=0
   # NOT `"${PASSTHRU[@]+"${PASSTHRU[@]}"}"` — the outer quotes turn an EMPTY array into one empty
   # argument, which `audit_unified.sh` rejects as `unknown argument ''` before printing a single
   # line. Measured: argc=1, arg=[]. The unquoted form expands to nothing, which is what is meant.
-  ANUBIS_AUDIT_ALLOW_DIRTY=1 bash scripts/audit_unified.sh --out "$WT/audit_out" ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+  ANUBIS_AUDIT_ALLOW_DIRTY=1 bash "$SCRIPT" --out "$WT/audit_out" ${PASSTHRU[@]+"${PASSTHRU[@]}"}
 ) || RC=$?
 
 if [[ -d "$WT/audit_out" ]]; then
   cp -R "$WT/audit_out/." "$OUT/" 2>/dev/null || true
   # Stamp the report with the revision it actually graded. A report that does not name its commit
   # is the same defect as a measurement that does not name its pin.
-  if [[ -f "$OUT/gate_report.json" ]] && command -v jq >/dev/null 2>&1; then
+  if [[ -f "$OUT/$REPORT_NAME" ]] && command -v jq >/dev/null 2>&1; then
     jq --arg rev "$SHA" --arg short "$SHORT" '. + {graded_revision: $rev, graded_revision_short: $short}' \
-      "$OUT/gate_report.json" > "$OUT/gate_report.json.tmp" && mv "$OUT/gate_report.json.tmp" "$OUT/gate_report.json"
+      "$OUT/$REPORT_NAME" > "$OUT/$REPORT_NAME.tmp" && mv "$OUT/$REPORT_NAME.tmp" "$OUT/$REPORT_NAME"
   fi
 fi
 
@@ -90,8 +99,8 @@ fi
 # all — the suite died on argument parsing before its first line. A wrapper that reports a grade it
 # did not obtain is the exact defect class this repo has spent the day closing, and it appeared in
 # the tool written to grade the graders. A missing report is now a hard error with its own code.
-if [[ ! -f "$OUT/gate_report.json" ]]; then
-  echo "ANUBIS_AUDIT_HEAD_NO_REPORT: the suite produced no gate_report.json for $SHORT." >&2
+if [[ ! -f "$OUT/$REPORT_NAME" ]]; then
+  echo "ANUBIS_AUDIT_HEAD_NO_REPORT: $SCRIPT produced no $REPORT_NAME for $SHORT." >&2
   echo "  Nothing was graded. Do not read the exit code as a verdict." >&2
   exit 3
 fi
