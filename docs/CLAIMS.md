@@ -1104,12 +1104,24 @@ fixtures. Evidence: `scratchpad/fleet_20260726/adversary/p15r1/`.
 | 3 | map iteration |
 | 2 | identity / generic pass-through |
 
-**A first repair attempt moved nothing.** An edit seeding callable identity for closure arguments
-in `analyze_expr_effect` (the builtin-HOF dispatch point, driven by
-`effects::higher_order_closure_args`) closed **0 of the 41**, measured on the post-edit pin. That
-is evidence about WHICH LANE decides these: every one of the ten shapes closed earlier went
-through the applied-parameter summary and the CAPABILITY charge, not the effect walker. Seeding
-identity into a map the deciding consumer never reads changes nothing `check` looks at.
+**The first repair closed 7 of 41 — and I first reported it as 0, wrongly.** The HOF edit was
+measured against a STALE BINARY; `publish_pin --verify` had passed at the time of the build but the
+rescore ran against an older pin. Re-measured on a fresh pin:
+
+```
+R1 open (41) after the HOF edit:  CLOSED 7   still open 34
+map_ho · each_ho · filter_ho · reduce_ho · any_ho · sort_by_ho · count_ho   all now REJECT
+```
+
+That is the fifth stale-binary measurement this session and the first that produced a WRONG
+PUBLISHED NUMBER rather than a caught one. Recorded rather than quietly corrected, because the
+lesson is that `--verify` passing at BUILD time says nothing about which binary a later command
+resolved.
+
+The lane question it appeared to answer is still answered, just by better evidence: the decider is
+the **capability** charge (`apply_inherited_capability`, `mod.rs:26311`) reached through the
+applied-parameter consumer, not the taint/secret blocks — those can only emit
+`ANUBIS_INTERPROC_SINK`/`EXFILTRATION` and could never move a capability route.
 
 The ten closed shapes were a SUBSET of the class, not the class. This repo has recorded the lesson
 before, on this exact surface: *the higher-order surface is infinite whack-a-mole — fix the
