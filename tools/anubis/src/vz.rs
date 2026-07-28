@@ -565,6 +565,14 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
                      --allow-research to acknowledge. The blast radius is the disposable guest, not the host."
                 );
             }
+            if engage.is_none() {
+                bail!(
+                    "ANUBIS_VZ_ENGAGE_REQUIRED: `vz exploit` requires --engage <dir> so crash \
+                     evidence is sealed into the receipt chain. Without it, the disposable guest \
+                     is discarded and the operator cannot prove what happened. Run \
+                     `anubis engage-init` first, then pass its directory."
+                );
+            }
             let identity = resolve_vz_engagement(engage.as_deref())?;
             let poc_sha = file_sha256_hex(Path::new(&poc)).unwrap_or_else(|_| "sha-unavailable".into());
             disposable(&base, keep, |name, ip| {
@@ -654,6 +662,14 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
         } => {
             if !allow_research {
                 bail!("ANUBIS_VZ_RESEARCH_REQUIRED: `anubis vz fuzz` runs offensive code — pass --allow-research.");
+            }
+            if engage.is_none() {
+                bail!(
+                    "ANUBIS_VZ_ENGAGE_REQUIRED: `vz fuzz` requires --engage <dir> so crash \
+                     evidence is sealed into the receipt chain. Without it, the disposable guest \
+                     is discarded and the operator cannot prove what happened. Run \
+                     `anubis engage-init` first, then pass its directory."
+                );
             }
             let host_target = Path::new(&target);
             if !host_target.is_file() {

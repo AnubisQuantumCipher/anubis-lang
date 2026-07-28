@@ -1421,15 +1421,15 @@ pub fn vz_doctor() -> Result<serde_json::Value> {
         "policy": {
             "network_default": "off",
             "crash_isolated": true,
-            // NOT collected. The tart path stages files into the guest and runs commands there, but
-            // nothing scrapes results back or seals an action into the engagement receipt chain —
-            // there is no `seal_action` / loot-collection call on this path at all. Measured
-            // directly: `vz exploit` and `vz fuzz` produced a SIGABRT and 14 unique crashes inside
-            // disposable guests and left `receipt-verify` byte-identical, while `campaign-init`,
-            // which only writes a Markdown file, advanced the chain. Hardcoding `true` here claimed
-            // the opposite of what the lane measurably does.
-            "evidence_collected": false,
-            "evidence_gap": "tart path stages and executes but does not scrape results or seal receipts",
+            // Collected when --engage is passed. `vz exploit` and `vz fuzz` now REQUIRE
+            // --engage (ANUBIS_VZ_ENGAGE_REQUIRED), scrape the guest BEFORE teardown
+            // (scrape_disposable_guest), and seal into the receipt chain
+            // (seal_vz_disposable_action → seal_action). vz-c2-cycle seals via its
+            // caller in main.rs. Remaining gap: scrape captures a fixed 4 KiB tail of
+            // poc.log + uname/hostname/uptime; crash artifacts (core dumps, ASAN logs,
+            // fuzz corpus) stay in the guest and are lost at teardown.
+            "evidence_collected": true,
+            "evidence_gap": "scrape is poc.log tail + host metadata; crash artifacts (cores, ASAN, corpus) stay in guest",
             "host_never_executes_payloads": true,
             "canonical_cli": "anubis vz status|run|exec|exploit|fuzz  (and top-level vz-* aliases)",
             "stress_is": "scripts/run_offensive_platform_gate.sh (disposable Tart guest, 34-check battery)",
