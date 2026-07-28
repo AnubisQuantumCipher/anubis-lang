@@ -66,6 +66,33 @@ if [[ -f "$CURRENT" ]]; then
   fi
 fi
 
+# FAIL CLOSED: a binary older than its own sources cannot contain them.
+#
+# This is not hypothetical. On 2026-07-28 a patch failed to compile, cargo left the PREVIOUS binary
+# in place, and the mtime check above happily called it "newer than the current pin" and published
+# it. The pin was then named as the post-fix instrument for a fix it did not contain. An agent
+# scoring on it would have measured zero flips, been correct about the measurement, and wrong about
+# the world — and the conclusion would have been "the fix is dead code" rather than "the build
+# failed". A stale instrument that LOOKS fresh is worse than an obviously missing one.
+#
+# Escape hatch is explicit and loud, never silent: ANUBIS_PIN_ALLOW_STALE=1.
+if [[ "${ANUBIS_PIN_ALLOW_STALE:-0}" != "1" ]]; then
+  stale_src=""
+  for d in compiler/src tools/anubis/src solver/src compiler/stdlib; do
+    [[ -d "$d" ]] || continue
+    found="$(find "$d" -type f \( -name '*.rs' -o -name '*.anb' \) -newer "$SRC" -print 2>/dev/null | head -1)"
+    if [[ -n "$found" ]]; then stale_src="$found"; break; fi
+  done
+  if [[ -n "$stale_src" ]]; then
+    echo "REFUSING to publish a stale pin." >&2
+    echo "  $stale_src" >&2
+    echo "  is NEWER than $SRC" >&2
+    echo "The binary predates its own source: the last build failed, or was never run." >&2
+    echo "Build successfully first. Override only if you know why: ANUBIS_PIN_ALLOW_STALE=1" >&2
+    exit 1
+  fi
+fi
+
 mkdir -p "$PIN_DIR"
 sha="$(shasum -a 256 "$SRC" | cut -d' ' -f1)"
 short="${sha:0:12}"
