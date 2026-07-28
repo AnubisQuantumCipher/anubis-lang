@@ -80,3 +80,9 @@ tests/fixtures/stdlib/_scratch_clean.txt
 # Content-addressed binary pins are build outputs — the CURRENT marker and .meta are tracked.
 vm/pins/anubis-*
 !vm/pins/*.meta
+
+# Guest kernel images for the native zero-NIC lane. 19MB of third-party binaries with no
+# upstream checksum; vm/kernels/PROVENANCE.md pins them by hash and records how to re-fetch.
+vm/kernels/vmlinuz-*
+vm/kernels/initramfs-*
+vm/kernels/config-*

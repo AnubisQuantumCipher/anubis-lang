@@ -189,6 +189,11 @@ pub enum VzCmd {
         /// Allow-list a hostname for egress (repeatable). Only meaningful for a net-using program.
         #[arg(long = "allow-host")]
         allow_host: Vec<String>,
+        /// Host directory to expose to the guest as a VirtioFS share (tag "anubis"). The guest
+        /// mounts it with `mount -t virtiofs anubis /mnt`. Works with zero NICs — the shared
+        /// directory is a virtio PCI device, not a network device.
+        #[arg(long)]
+        staging_dir: Option<String>,
     },
     /// NATIVE boot: same posture as native-preflight, with a real kernel (+ optional initrd).
     /// Spawns the DNS-pinned egress frame pump for net-using programs. Requires signed binary.
@@ -202,6 +207,9 @@ pub enum VzCmd {
         initrd: Option<String>,
         #[arg(long = "allow-host")]
         allow_host: Vec<String>,
+        /// Host directory to expose to the guest as a VirtioFS share (tag "anubis").
+        #[arg(long)]
+        staging_dir: Option<String>,
     },
     /// Fuzz a **local binary** in a DISPOSABLE guest (clone → boot → sync target binary →
     /// `anubis fuzz --target … --runs …` inside → SCRAPE evidence → SEAL into engagement receipt
@@ -644,13 +652,15 @@ pub fn run_vz_cmd(action: VzCmd) -> Result<()> {
         VzCmd::NativePreflight {
             program,
             allow_host,
-        } => crate::vz_native::native_preflight(&program, &allow_host),
+            staging_dir,
+        } => crate::vz_native::native_preflight(&program, &allow_host, staging_dir.as_deref()),
         VzCmd::NativeBoot {
             program,
             kernel,
             initrd,
             allow_host,
-        } => crate::vz_native::native_boot(&program, &kernel, initrd.as_deref(), &allow_host),
+            staging_dir,
+        } => crate::vz_native::native_boot(&program, &kernel, initrd.as_deref(), &allow_host, staging_dir.as_deref()),
         VzCmd::Fuzz {
             target,
             iterations,

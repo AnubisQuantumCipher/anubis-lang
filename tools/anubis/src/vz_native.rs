@@ -98,22 +98,27 @@ pub fn derive_native_posture(program: &str, allow_hosts: &[String]) -> Result<Na
     }
 }
 
-/// `anubis vz native-preflight <program> [--allow-host H]...` — derive the posture, build the native
-/// VZ configuration it implies, and prove (via `validateWithError:` + `VZVirtualMachine` init) that
-/// the entitlement is present and the confinement is structurally valid. Never boots a guest.
-pub fn native_preflight(program: &str, allow_hosts: &[String]) -> Result<()> {
+/// `anubis vz native-preflight <program> [--allow-host H] [--staging-dir DIR]...`
+///
+/// Derive the posture, build the native VZ configuration it implies (including a VirtioFS shared
+/// directory when `--staging-dir` is given), and prove (via `validateWithError:` +
+/// `VZVirtualMachine` init) that the entitlement is present and the confinement is structurally
+/// valid. Never boots a guest.
+pub fn native_preflight(program: &str, allow_hosts: &[String], staging_dir: Option<&str>) -> Result<()> {
     let posture = derive_native_posture(program, allow_hosts)?;
 
     eprintln!("[anubis vz native-preflight] backend : objc2-virtualization (native, no tart)");
     eprintln!("[anubis vz native-preflight] program : {program}");
     eprintln!("[anubis vz native-preflight] posture : {}", posture.label());
+    if let Some(dir) = staging_dir {
+        eprintln!("[anubis vz native-preflight] staging : {dir} (VirtioFS tag \"anubis\")");
+    }
     match &posture {
         NativePosture::ZeroNicAirGap => eprintln!(
             "  enforcement : FULLY ENFORCED — the guest has no network interface at all (structural \
              air-gap the instant it boots). This is what tart's --net-host cannot express."
         ),
         NativePosture::PerHostnameEgress { allow_hosts } => {
-            // Policy compiles here (DNS pin + deny-all when empty). Live fd pump attaches at native-boot.
             match crate::vz_egress_gateway::EgressPolicy::from_allow_hosts(allow_hosts) {
                 Ok(pol) => eprintln!(
                     "  enforcement : SUBSTRATE ENFORCED / GATEWAY POLICY COMPILED — \
@@ -130,11 +135,16 @@ pub fn native_preflight(program: &str, allow_hosts: &[String]) -> Result<()> {
         }
     }
 
-    build_validate_instantiate(&posture)?;
+    build_validate_instantiate(&posture, staging_dir)?;
 
+    let nic_count = match &posture {
+        NativePosture::ZeroNicAirGap => 0,
+        NativePosture::PerHostnameEgress { .. } => 1,
+    };
+    let share_count: usize = if staging_dir.is_some() { 1 } else { 0 };
     eprintln!(
-        "[anubis vz native-preflight] OK — com.apple.security.virtualization entitlement present on \
-         this binary; derived confinement is structurally valid and instantiable."
+        "[anubis vz native-preflight] OK — entitlement present; config valid \
+         (networkDevices={nic_count}, directorySharingDevices={share_count})."
     );
     Ok(())
 }
@@ -142,17 +152,17 @@ pub fn native_preflight(program: &str, allow_hosts: &[String]) -> Result<()> {
 // ── Native VZ config construction (Apple Silicon macOS only) ─────────────────────────────────────
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn build_validate_instantiate(posture: &NativePosture) -> Result<()> {
+fn build_validate_instantiate(posture: &NativePosture, staging_dir: Option<&str>) -> Result<()> {
     use objc2::rc::Retained;
     use objc2::AnyThread;
     use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
     use objc2_virtualization::{
-        VZFileHandleNetworkDeviceAttachment, VZLinuxBootLoader, VZNetworkDeviceConfiguration,
+        VZDirectorySharingDeviceConfiguration, VZFileHandleNetworkDeviceAttachment,
+        VZLinuxBootLoader, VZNetworkDeviceConfiguration, VZSharedDirectory,
+        VZSingleDirectoryShare, VZVirtioFileSystemDeviceConfiguration,
         VZVirtioNetworkDeviceConfiguration, VZVirtualMachine, VZVirtualMachineConfiguration,
     };
 
-    // A placeholder kernel keeps the boot loader structurally well-formed for validation; the
-    // entitlement + posture proof does not require a real bzImage (that is `native-boot`).
     let kpath = std::env::temp_dir().join("anubis-vznative-preflight-kernel");
     if std::fs::metadata(&kpath).is_err() {
         std::fs::write(&kpath, b"placeholder-not-a-real-kernel")
@@ -173,13 +183,9 @@ fn build_validate_instantiate(posture: &NativePosture) -> Result<()> {
 
         match posture {
             NativePosture::ZeroNicAirGap => {
-                // Leave networkDevices at its empty default: no NIC exists in the guest.
                 debug_assert_eq!(cfg.networkDevices().count(), 0);
             }
             NativePosture::PerHostnameEgress { .. } => {
-                // The guest's only link to the world is one end of a host-held datagram socketpair.
-                // The userspace egress gateway (STAGED) would read/write L2 frames on the host fd and
-                // permit only frames whose resolved destination is on the allow-list.
                 let mut fds = [0i32; 2];
                 let rc = libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr());
                 if rc != 0 {
@@ -205,7 +211,36 @@ fn build_validate_instantiate(posture: &NativePosture) -> Result<()> {
             }
         }
 
-        // Structural validation AND the entitlement gate (validateWithError enforces both).
+        if let Some(dir) = staging_dir {
+            let abs = std::fs::canonicalize(dir)
+                .map_err(|e| anyhow!("ANUBIS_VZNATIVE_STAGING_DIR: canonicalize `{dir}`: {e}"))?;
+            if !abs.is_dir() {
+                return Err(anyhow!(
+                    "ANUBIS_VZNATIVE_STAGING_DIR: `{dir}` is not a directory"
+                ));
+            }
+            let ns_dir = NSString::from_str(&abs.to_string_lossy());
+            let dir_url = NSURL::fileURLWithPath(&ns_dir);
+            let shared = VZSharedDirectory::initWithURL_readOnly(
+                VZSharedDirectory::alloc(),
+                &dir_url,
+                false,
+            );
+            let share = VZSingleDirectoryShare::initWithDirectory(
+                VZSingleDirectoryShare::alloc(),
+                &shared,
+            );
+            let tag = NSString::from_str("anubis");
+            let fs_dev = VZVirtioFileSystemDeviceConfiguration::initWithTag(
+                VZVirtioFileSystemDeviceConfiguration::alloc(),
+                &tag,
+            );
+            fs_dev.setShare(Some(&share));
+            let fs_super: Retained<VZDirectorySharingDeviceConfiguration> = fs_dev.into_super();
+            let arr = NSArray::from_retained_slice(&[fs_super]);
+            cfg.setDirectorySharingDevices(&arr);
+        }
+
         cfg.validateWithError().map_err(|e| {
             let d = e.localizedDescription().to_string();
             if d.contains("com.apple.security.virtualization") {
@@ -220,7 +255,6 @@ fn build_validate_instantiate(posture: &NativePosture) -> Result<()> {
             }
         })?;
 
-        // Instantiation is the second entitlement checkpoint; a success here is definitive.
         let _vm: Retained<VZVirtualMachine> =
             VZVirtualMachine::initWithConfiguration(VZVirtualMachine::alloc(), &cfg);
     }
@@ -228,7 +262,7 @@ fn build_validate_instantiate(posture: &NativePosture) -> Result<()> {
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn build_validate_instantiate(_posture: &NativePosture) -> Result<()> {
+fn build_validate_instantiate(_posture: &NativePosture, _staging_dir: Option<&str>) -> Result<()> {
     Err(anyhow!(
         "ANUBIS_VZNATIVE_UNSUPPORTED_HOST: the native objc2-virtualization backend requires Apple \
          Silicon macOS (aarch64-apple-darwin). Use `anubis vz confine` for the host-independent \
@@ -236,7 +270,7 @@ fn build_validate_instantiate(_posture: &NativePosture) -> Result<()> {
     ))
 }
 
-/// `anubis vz native-boot <program> --kernel PATH [--initrd PATH] [--allow-host H]...`
+/// `anubis vz native-boot <program> --kernel PATH [--initrd PATH] [--allow-host H] [--staging-dir DIR]`
 ///
 /// Builds the same posture as `native-preflight`, attaches a real kernel/initrd, and **starts**
 /// the guest. For `PerHostnameEgress`, spawns a host-side frame pump that applies
@@ -248,6 +282,7 @@ pub fn native_boot(
     kernel: &str,
     initrd: Option<&str>,
     allow_hosts: &[String],
+    staging_dir: Option<&str>,
 ) -> Result<()> {
     let posture = derive_native_posture(program, allow_hosts)?;
     eprintln!("[anubis vz native-boot] program : {program}");
@@ -255,17 +290,27 @@ pub fn native_boot(
     if let Some(i) = initrd {
         eprintln!("[anubis vz native-boot] initrd  : {i}");
     }
+    if let Some(dir) = staging_dir {
+        eprintln!("[anubis vz native-boot] staging : {dir} (VirtioFS tag \"anubis\")");
+    }
     eprintln!("[anubis vz native-boot] posture : {}", posture.label());
-    boot_with_kernel(&posture, kernel, initrd)
+    boot_with_kernel(&posture, kernel, initrd, staging_dir)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn boot_with_kernel(posture: &NativePosture, kernel: &str, initrd: Option<&str>) -> Result<()> {
+fn boot_with_kernel(
+    posture: &NativePosture,
+    kernel: &str,
+    initrd: Option<&str>,
+    staging_dir: Option<&str>,
+) -> Result<()> {
     use objc2::rc::Retained;
     use objc2::AnyThread;
     use objc2_foundation::{NSArray, NSFileHandle, NSString, NSURL};
     use objc2_virtualization::{
-        VZFileHandleNetworkDeviceAttachment, VZLinuxBootLoader, VZNetworkDeviceConfiguration,
+        VZDirectorySharingDeviceConfiguration, VZFileHandleNetworkDeviceAttachment,
+        VZLinuxBootLoader, VZNetworkDeviceConfiguration, VZSharedDirectory,
+        VZSingleDirectoryShare, VZVirtioFileSystemDeviceConfiguration,
         VZVirtioNetworkDeviceConfiguration, VZVirtualMachine, VZVirtualMachineConfiguration,
     };
     use std::sync::Arc;
@@ -320,7 +365,7 @@ fn boot_with_kernel(posture: &NativePosture, kernel: &str, initrd: Option<&str>)
                 let host_fh = NSFileHandle::initWithFileDescriptor_closeOnDealloc(
                     NSFileHandle::alloc(),
                     fds[0],
-                    false, // pump owns close
+                    false,
                 );
                 let attach = VZFileHandleNetworkDeviceAttachment::initWithFileHandle(
                     VZFileHandleNetworkDeviceAttachment::alloc(),
@@ -333,6 +378,36 @@ fn boot_with_kernel(posture: &NativePosture, kernel: &str, initrd: Option<&str>)
                 cfg.setNetworkDevices(&arr);
                 let _ = fds[1];
             }
+        }
+
+        if let Some(dir) = staging_dir {
+            let abs = std::fs::canonicalize(dir)
+                .map_err(|e| anyhow!("ANUBIS_VZNATIVE_STAGING_DIR: canonicalize `{dir}`: {e}"))?;
+            if !abs.is_dir() {
+                return Err(anyhow!(
+                    "ANUBIS_VZNATIVE_STAGING_DIR: `{dir}` is not a directory"
+                ));
+            }
+            let ns_dir = NSString::from_str(&abs.to_string_lossy());
+            let dir_url = NSURL::fileURLWithPath(&ns_dir);
+            let shared = VZSharedDirectory::initWithURL_readOnly(
+                VZSharedDirectory::alloc(),
+                &dir_url,
+                false,
+            );
+            let share = VZSingleDirectoryShare::initWithDirectory(
+                VZSingleDirectoryShare::alloc(),
+                &shared,
+            );
+            let tag = NSString::from_str("anubis");
+            let fs_dev = VZVirtioFileSystemDeviceConfiguration::initWithTag(
+                VZVirtioFileSystemDeviceConfiguration::alloc(),
+                &tag,
+            );
+            fs_dev.setShare(Some(&share));
+            let fs_super: Retained<VZDirectorySharingDeviceConfiguration> = fs_dev.into_super();
+            let arr = NSArray::from_retained_slice(&[fs_super]);
+            cfg.setDirectorySharingDevices(&arr);
         }
 
         cfg.validateWithError().map_err(|e| {
@@ -367,19 +442,26 @@ fn boot_with_kernel(posture: &NativePosture, kernel: &str, initrd: Option<&str>)
             );
         }
 
+        let nic_count = cfg.networkDevices().count();
+        let share_count = cfg.directorySharingDevices().count();
         let _vm: Retained<VZVirtualMachine> =
             VZVirtualMachine::initWithConfiguration(VZVirtualMachine::alloc(), &cfg);
         eprintln!(
-            "[anubis vz native-boot] VM instantiated with live posture. \
-             Zero-NIC air-gap is structural; egress pump enforces DNS-pinned policy when net-using. \
-             Provide a real bootable kernel for guest userspace."
+            "[anubis vz native-boot] VM instantiated (networkDevices={nic_count}, \
+             directorySharingDevices={share_count}). Zero-NIC air-gap is structural; \
+             egress pump enforces DNS-pinned policy when net-using."
         );
     }
     Ok(())
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn boot_with_kernel(_posture: &NativePosture, _kernel: &str, _initrd: Option<&str>) -> Result<()> {
+fn boot_with_kernel(
+    _posture: &NativePosture,
+    _kernel: &str,
+    _initrd: Option<&str>,
+    _staging_dir: Option<&str>,
+) -> Result<()> {
     Err(anyhow!(
         "ANUBIS_VZNATIVE_UNSUPPORTED_HOST: native-boot requires Apple Silicon macOS"
     ))
