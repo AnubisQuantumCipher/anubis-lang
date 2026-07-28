@@ -784,6 +784,13 @@ run_gate formal_kernel \
   '^FORMAL_KERNEL_GATE: FAIL\b' \
   -- bash scripts/run_formal_kernel_gate.sh
 
+# The correspondence map is a claim surface, so it is sealed like one: every cited theorem and path
+# must resolve, and the TCB list must be non-empty.
+run_gate proof_correspondence \
+  '^PROOF_CORRESPONDENCE_GATE: PASS\b' \
+  '^PROOF_CORRESPONDENCE_GATE: FAIL\b' \
+  -- bash scripts/run_proof_correspondence_gate.sh
+
 run_gate selfhost \
   '^SELFHOST_GATE: PASS\b' \
   '^SELFHOST_GATE: FAIL\b' \

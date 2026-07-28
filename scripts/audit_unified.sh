@@ -42,6 +42,7 @@
 #   G23 Carrier totality (a new Expr variant breaks the build until classified)
 #   G24 Promise coherence (the headline promise inherits the open-issues framing)
 #   G25 Formal kernel (the demo verifies under DEFAULT Safe settings, no wrap bypass)
+#   G26 Proof correspondence (the AST->…->runtime evidence map and TCB list stay true)
 #
 # G16-G22 publish numbers the board cites and were, for most of their life, never run by CI.
 # They are listed here so the gap between "a gate exists" and "a gate runs" stays visible.
@@ -455,6 +456,19 @@ else
   gate "G25_formal_kernel" "FAIL" "formal-kernel lane red (see g25_formal_kernel.log)"
 fi
 
+# G26 — the source-to-proof correspondence map must stay TRUE.
+#
+# `docs/PROOF_CORRESPONDENCE.md` states which links in AST -> VC -> SMT -> parser -> CNF ->
+# certificate -> runtime carry evidence and which are TCB. A stale TCB list is worse than none: it
+# reads as an assurance while describing a repo that no longer exists. This checks every cited Lean
+# theorem and every cited path still resolves, and that the TCB section is non-empty — "nothing is
+# trusted" must never be reachable by deleting a list.
+if bash scripts/run_proof_correspondence_gate.sh >"$OUT/g26_correspondence.log" 2>&1; then
+  gate "G26_proof_correspondence" "PASS" "every cited theorem/path resolves; TCB enumerated"
+else
+  gate "G26_proof_correspondence" "FAIL" "correspondence map cites something that no longer exists (see g26_correspondence.log)"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
@@ -466,7 +480,7 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality G24_promise_coherence G25_formal_kernel G26_proof_correspondence"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do
