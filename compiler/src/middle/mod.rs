@@ -11027,6 +11027,29 @@ fn analyze_expr_effect(
                     apply_inherited_capability(raw, mode, effects, ctx);
                 }
             }
+            // Context-sensitive capability propagation for a container passed to a formal that the
+            // callee applies. Project the argument's callable identities and inherit only the
+            // candidate's declared capabilities at this call site; a pure container therefore stays
+            // accepted, while `app([leak])` charges the caller for `leak`'s fs.write.
+            if let Some(applied_params) = ctx.param_sinks.get(sink_callee).cloned() {
+                for i in applied_params {
+                    if let Some(arg) = args.get(i) {
+                        let mut projected = BTreeMap::new();
+                        collect_container_fn_identities(arg, "", scope, ctx, &mut projected);
+                        for ids in projected.values() {
+                            if let FnIdentitySet::Known(names) = ids {
+                                for name in names {
+                                    if let Some(caps) = ctx.fn_declared_effects.get(name).cloned() {
+                                        for raw in caps {
+                                            apply_inherited_capability(raw, mode, effects, ctx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if is_sink(sink_callee)
                 || bound_gate_tags.as_ref().is_some_and(|tags| {
                     tags.contains(&BuiltinGateTag::IntegritySink)
@@ -11189,6 +11212,34 @@ fn analyze_expr_effect(
                                             "safe mode tainted flow: a closure capturing `{}` is passed into parameter {} of `{}`, which applies it and reaches a sink without declassify",
                                             source, i, callee
                                         ),
+                                        span: None,
+                                    });
+                                }
+                            }
+                        } else {
+                            // A container-valued formal may be applied inside the callee (`xs[0](..)`).
+                            // Project the same callable identities used by return containers at this
+                            // call boundary, then charge candidates whose declared/effect summary reaches
+                            // a sink. This is the existing consumer path; no parallel walker is added.
+                            let mut projected = BTreeMap::new();
+                            collect_container_fn_identities(arg, "", scope, ctx, &mut projected);
+                            let candidates: BTreeSet<String> = projected
+                                .values()
+                                .filter_map(|ids| match ids {
+                                    FnIdentitySet::Known(names) => Some(names.clone()),
+                                    FnIdentitySet::Unknown => None,
+                                })
+                                .flatten()
+                                .collect();
+                            if candidates.iter().any(|name| {
+                                ctx.fn_effect_rows
+                                    .get(name)
+                                    .is_some_and(|row| row.effects.iter().any(|e| is_sink(e)))
+                            }) {
+                                if mode == Mode::Safe {
+                                    ctx.diagnostics.push(SemanticDiagnostic {
+                                        code: Some("ANUBIS_INTERPROC_SINK".into()),
+                                        message: format!("safe mode callable container passed into parameter {} of `{}` reaches a sink", i, callee),
                                         span: None,
                                     });
                                 }
@@ -11490,6 +11541,24 @@ fn analyze_expr_effect(
                             })
                             .unwrap_or_else(|| builtin_gate_tags_of(arg, scope, ctx));
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
+                        if let Some(paths) = applied_paths.as_ref().and_then(|by_param| by_param.get(&i)) {
+                            for path in paths {
+                                let ids = if path.is_empty() || path == "*" {
+                                    fn_identities_of(arg, scope, ctx)
+                                } else {
+                                    fn_identities_at_contract_path(arg, path, scope, ctx, 0)
+                                };
+                                if let FnIdentitySet::Known(names) = ids {
+                                    for name in names {
+                                        if let Some(caps) = ctx.fn_declared_effects.get(&name).cloned() {
+                                            for raw in caps {
+                                                apply_inherited_capability(raw, mode, effects, ctx);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     let resolved: Option<Expr> = match args.get(i) {
                         Some(l @ Expr::Lambda { .. }) => Some(l.clone()),
