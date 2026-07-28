@@ -2141,6 +2141,27 @@ fn seed_loop_var_callable(
     let crate::frontend::ForSource::Collection { expr } = source else {
         return;
     };
+    // Loop elements inherit the complete identity union of the source container.  Element order
+    // may be dynamic, so collapsing to one path is unsound; union is the conservative known result.
+    let identities = match expr {
+        Expr::Var(root) => scope
+            .get(root)
+            .map(|binding| {
+                binding
+                    .field_fn_identities
+                    .values()
+                    .cloned()
+                    .fold(FnIdentitySet::empty(), FnIdentitySet::union)
+            })
+            .unwrap_or(FnIdentitySet::Unknown),
+        Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+            let mut ids = BTreeMap::new();
+            collect_container_fn_identities(expr, "", scope, ctx, &mut ids);
+            ids.into_values()
+                .fold(FnIdentitySet::empty(), FnIdentitySet::union)
+        }
+        _ => FnIdentitySet::Unknown,
+    };
     let elem = match expr {
         Expr::Var(root) => any_effectful_field_closure(root, scope),
         Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
@@ -2177,7 +2198,9 @@ fn seed_loop_var_callable(
         }
         _ => None,
     };
-    let Some(lam) = elem else { return };
+    if elem.is_none() && matches!(identities, FnIdentitySet::Unknown) {
+        return;
+    }
     let b = scope
         .entry(var.to_string())
         .or_insert_with(|| ScopeBinding {
@@ -2200,7 +2223,10 @@ fn seed_loop_var_callable(
             field_builtin_gate_tags: BTreeMap::new(),
             secret: false,
         });
-    b.closure_lambda = Some(lam);
+    if let Some(lam) = elem {
+        b.closure_lambda = Some(lam);
+    }
+    b.fn_identities = identities;
 }
 
 /// Every closure a multi-candidate initializer (`if` / `match` / `if let` / block in value position)
