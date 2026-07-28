@@ -434,6 +434,43 @@ never terminates is a check/run divergence of a different kind, and is being cha
     Recorded because "we fixed three things" is not the same claim as "the class is closed", and
     this arc has repeatedly found the second to be false right after the first was true.
 
+19. **The purple report makes FALSE ATT&CK coverage claims — OPEN, operator-facing (2026-07-28).**
+
+    `attck.rs` holds a catalog of 20 techniques, each carrying an `aop_surface` string
+    (the PRODUCER), and `map_action()` maps an observed action to technique IDs (the CONSUMER). They
+    enumerate independently. Between them sits a **dead loop** that computes the catalog lookup and
+    discards it (`let _ = tech.id;`), with a comment recording that the dynamic lookup was abandoned
+    for "a concrete mapping table for reliability" — a hand-coded `contains()` keyword chain that
+    does not cover the catalog.
+
+    | direction | witness | effect |
+    |---|---|---|
+    | **false positive** | `map_action("attck_catalog")` → `["T1083"]`, because `"attck_catalog".contains("cat")` | the purple report claims *File and Directory Discovery was exercised* when the operator only ran the ATT&CK **documentation** module |
+    | **false positive** | `"listen HTTP/DoH/mTLS"` matches `"ls"` inside `"mtls"` | a C2 listener is reported as file discovery |
+    | **false negative** | `map_action("engage-init")` → `[]` | T1583 shows as a detection GAP even when the engagement performed it |
+
+    `purple.rs:57` builds coverage from these mappings, so both directions corrupt the
+    operator-facing debrief. A false coverage claim in a purple-team report is worse than a missing
+    one: it asserts an adversary behaviour was tested when it was not.
+
+    **Three more instances of the same shape**, none currently breaking: `modules.rs` catalog vs
+    `agent.rs:run_module` (independent enumerations, agree today, no validation either way);
+    `listener.rs` queues any string as a module name unvalidated; and evidence `kind` strings use
+    underscores (`engage_init`) while `aop_surface` uses hyphens (`engage-init`) — so even reviving
+    the dead loop would not match.
+
+    **Fix shape: a PARITY TEST, not a shared enum.** Too many independent string sources (evidence
+    files, CLI commands, ATT&CK IDs, agent module names) to unify; a round-trip test asserting every
+    catalog technique is reachable through `map_action` fails today for T1583 and T1059 and would
+    catch future catalog additions. Substring collisions need word-boundary matching rather than
+    bare `contains`.
+
+    Found by an agent scoring its own pre-registered prediction **1 of 3** and reporting both
+    refutations plainly: `persistence.rs` has no dispatch surface at all, and `malleable.rs` is a
+    typed struct — though its `transform` field turns out to be validated-but-never-read, with the
+    listener hard-coding its headers independently. A different disease, recorded here so it is not
+    lost.
+
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
 After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
