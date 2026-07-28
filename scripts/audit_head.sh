@@ -68,7 +68,10 @@ git worktree add --detach "$WT" "$SHA" >/dev/null
 RC=0
 (
   cd "$WT"
-  ANUBIS_AUDIT_ALLOW_DIRTY=1 bash scripts/audit_unified.sh --out "$WT/audit_out" "${PASSTHRU[@]+"${PASSTHRU[@]}"}"
+  # NOT `"${PASSTHRU[@]+"${PASSTHRU[@]}"}"` — the outer quotes turn an EMPTY array into one empty
+  # argument, which `audit_unified.sh` rejects as `unknown argument ''` before printing a single
+  # line. Measured: argc=1, arg=[]. The unquoted form expands to nothing, which is what is meant.
+  ANUBIS_AUDIT_ALLOW_DIRTY=1 bash scripts/audit_unified.sh --out "$WT/audit_out" ${PASSTHRU[@]+"${PASSTHRU[@]}"}
 ) || RC=$?
 
 if [[ -d "$WT/audit_out" ]]; then
@@ -79,6 +82,18 @@ if [[ -d "$WT/audit_out" ]]; then
     jq --arg rev "$SHA" --arg short "$SHORT" '. + {graded_revision: $rev, graded_revision_short: $short}' \
       "$OUT/gate_report.json" > "$OUT/gate_report.json.tmp" && mv "$OUT/gate_report.json.tmp" "$OUT/gate_report.json"
   fi
+fi
+
+# Refuse to say "graded" when nothing was graded.
+#
+# The first run of this script printed `graded b731a49 -> ... (rc=1)` having produced NO report at
+# all — the suite died on argument parsing before its first line. A wrapper that reports a grade it
+# did not obtain is the exact defect class this repo has spent the day closing, and it appeared in
+# the tool written to grade the graders. A missing report is now a hard error with its own code.
+if [[ ! -f "$OUT/gate_report.json" ]]; then
+  echo "ANUBIS_AUDIT_HEAD_NO_REPORT: the suite produced no gate_report.json for $SHORT." >&2
+  echo "  Nothing was graded. Do not read the exit code as a verdict." >&2
+  exit 3
 fi
 
 echo "[audit-head] graded $SHORT -> $OUT (rc=$RC)"

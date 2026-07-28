@@ -94,7 +94,15 @@ mkdir -p "$OUT"
 # Nothing in a 22-gate suite is worth reporting if the thing under test changed while it ran. This
 # refuses rather than producing a verdict about a moving target. Override is explicit and is
 # RECORDED IN THE REPORT, so a dirty run can never be mistaken later for a clean one.
-DIRTY="$(git status --porcelain 2>/dev/null | grep -vE '^\?\?' | head -20)"
+# `|| true` is LOAD-BEARING: a clean tree makes `grep -v` match nothing and exit 1, and under
+# `set -euo pipefail` that kills the script HERE — at the dirty check — before the suite prints a
+# single line. The wrapper then reported a grade for a run that never happened.
+#
+# This is the third time this session that a checking tool died on a non-zero exit meaning "found
+# nothing" rather than "failed": once in `publish_pin --verify`, once in `fixture_preflight.sh`,
+# now here. In a grading tool a non-zero exit is DATA. `set -e` cannot tell the difference, so
+# every such pipeline has to say so explicitly.
+DIRTY="$(git status --porcelain 2>/dev/null | grep -vE '^\?\?' | head -20 || true)"
 AUDIT_TREE_STATE="clean"
 if [[ -n "$DIRTY" ]]; then
   if [[ "${ANUBIS_AUDIT_ALLOW_DIRTY:-0}" == "1" ]]; then
