@@ -467,6 +467,11 @@ run_gate() {
   if [[ "$final" == "PASS" ]]; then
     gate_pass=$((gate_pass + 1))
     GATE_ROWS+=("$name|PASS|$_v_reason|rc=$rc")
+    # Suite-freshness ledger: stamp each green gate at HEAD so gate_run_freshness
+    # can fail closed if the suite is not run end-to-end for >N commits.
+    if [[ -x "$ROOT/scripts/gate_run_freshness.sh" ]]; then
+      bash "$ROOT/scripts/gate_run_freshness.sh" --stamp "$name" >/dev/null 2>&1 || true
+    fi
   else
     gate_fail=$((gate_fail + 1))
     GATE_ROWS+=("$name|FAIL|$_v_reason|rc=$rc")
@@ -743,6 +748,20 @@ run_gate docs_drift \
   --no-pin-use -- bash scripts/run_docs_drift_gate.sh \
     --out "$SEAL_OUT/gates/docs_drift" \
     --self-test
+
+
+# Instrument hygiene + suite freshness (adversary R46): fail closed if tools lie
+# or if the seal suite has not been run end-to-end within N commits.
+# --no-pin-use: meta-checks over scripts/ledgers, not anubis execution.
+run_gate instrument_hygiene \
+  '^INSTRUMENT_HYGIENE: PASS\b' \
+  '^INSTRUMENT_HYGIENE: FAIL\b' \
+  --no-pin-use -- bash scripts/instrument_hygiene.sh
+
+run_gate gate_run_freshness \
+  '^GATE_RUN_FRESHNESS: PASS\b' \
+  '^GATE_RUN_FRESHNESS: FAIL\b' \
+  --no-pin-use -- bash scripts/gate_run_freshness.sh
 
 if command -v lake >/dev/null 2>&1 || [[ -x "$HOME/.elan/bin/lake" ]]; then
   if ! command -v lake >/dev/null 2>&1 && [[ -x "$HOME/.elan/bin/lake" ]]; then

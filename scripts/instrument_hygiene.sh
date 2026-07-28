@@ -142,17 +142,18 @@ for p in paths:
         r"Overall:|stamps_checked|fixtures=\(|passed=|fail=|total=|over [0-9]+ fixtures|pass=\$\(|green\)",
         t,
     ))
-    has_floor = bool(re.search(
-        r"FLOOR|floor|ratchet|assert_tested|require_nonempty_corpus",
-        t,
-    ))
+    # `assert_tested` and `require_nonempty_corpus` are NOT floors. They catch a gate that tested
+    # NOTHING (count == 0); a floor catches one that tested LESS THAN BEFORE. Counting them here
+    # was too generous by exactly the distinction that made `assert_floor` necessary — the
+    # docs-drift gate had `assert_tested`, went from 42 stamps to 30, and reported PASS.
+    has_floor = bool(re.search(r"assert_floor|_floor\b|ratchet", t))
     if reports:
         rows.append((p.name, has_floor))
 missing = [a for a, b in rows if not b]
-Path("adversary/r43/gate_floor_missing.list").write_text(
+Path("scratchpad/fleet_20260726/adversary/r43/gate_floor_missing.list").write_text(
     "\n".join(missing) + ("\n" if missing else "")
 )
-Path("adversary/r43/gate_floor_inventory.tsv").write_text(
+Path("scratchpad/fleet_20260726/adversary/r43/gate_floor_inventory.tsv").write_text(
     "script\thas_floor\n" + "\n".join(f"{a}\t{int(b)}" for a, b in rows) + "\n"
 )
 print(
@@ -170,7 +171,7 @@ if [[ "$floor_rc" -eq 0 ]]; then
   ok "every count-reporting gate has require_nonempty/assert_tested/FLOOR"
 else
   miss=$(grep -c '^MISSING_FLOOR' /tmp/ih_gate_floors_run.out || true)
-  bad "count-reporting gates missing a floor: $miss (adversary/r43/gate_floor_missing.list)"
+  bad "count-reporting gates missing a floor: $miss (scratchpad/fleet_20260726/adversary/r43/gate_floor_missing.list)"
 fi
 
 # --- 10. Docs drift coverage floor file must exist and be numeric >0 ---
@@ -206,6 +207,21 @@ if [[ -f "$SEC_FLOOR_FILE" ]]; then
 else
   echo "$PASS_N $FAIL_N" > "$SEC_FLOOR_FILE"
   ok "security corpus floor initialised PASS=$PASS_N FAIL=$FAIL_N"
+fi
+
+
+# --- 12. Suite freshness (seal end-to-end must not go stale) ---
+# Consumed by seal via `run_gate instrument_hygiene` and `run_gate gate_run_freshness`.
+if [[ -x scripts/gate_run_freshness.sh ]]; then
+  if bash scripts/gate_run_freshness.sh >/tmp/ih_fresh.out 2>&1; then
+    ok "gate_run_freshness PASS (suite stamps within max commits)"
+  else
+    # Surface the reason; this is a hard fail (not warn) — commit N+1 fails closed.
+    bad "gate_run_freshness FAIL (suite not run end-to-end recently, or unconfigured)"
+    tail -8 /tmp/ih_fresh.out | sed 's/^/    | /'
+  fi
+else
+  bad "scripts/gate_run_freshness.sh missing"
 fi
 
 if [[ "$fails" -gt 0 ]]; then
