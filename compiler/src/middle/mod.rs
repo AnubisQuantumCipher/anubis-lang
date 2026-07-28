@@ -707,11 +707,16 @@ fn fn_identities_at_path_expr(
         return FnIdentitySet::Unknown;
     }
     if let Some((root, path)) = flatten_access_path(expr) {
-        return scope
-            .get(&root)
-            .and_then(|binding| binding.field_fn_identities.get(&path))
-            .cloned()
-            .unwrap_or(FnIdentitySet::Unknown);
+        if let Some(binding) = scope.get(&root) {
+            if let Some(found) = binding.field_fn_identities.get(&path) {
+                return found.clone();
+            }
+            let mut values = binding.field_fn_identities.values().cloned();
+            if let Some(first) = values.next() {
+                return values.fold(first, FnIdentitySet::union);
+            }
+        }
+        return FnIdentitySet::Unknown;
     }
     match expr {
         Expr::Index { base, index } => {
@@ -7553,6 +7558,14 @@ fn apply_container_mutation_taint(
             matches!(&tags, BuiltinGateTags::Known(found) if !found.is_empty()).then_some(tags)
         })
         .collect();
+    // Preserve named user-function identity through mutation producers, exactly as literal
+    // containers do.  The synthetic path is intentional: an index read may be dynamic, and the
+    // path resolver unions these slots rather than dropping the stored identity.
+    let seed_identities: Vec<FnIdentitySet> = value_args
+        .iter()
+        .map(|value| fn_identities_of(value, scope, ctx))
+        .filter(|ids| !matches!(ids, FnIdentitySet::Known(found) if found.is_empty()))
+        .collect();
     // Collect lambdas to seed *before* mutably borrowing the root binding.
     let mut seed_lams: Vec<Box<Expr>> = Vec::new();
     for v in value_args {
@@ -7591,6 +7604,10 @@ fn apply_container_mutation_taint(
                     b.field_builtin_gate_tags.len()
                 );
                 b.field_builtin_gate_tags.insert(key, tags);
+            }
+            for identities in seed_identities {
+                let key = format!("_p{}", b.field_fn_identities.len());
+                b.field_fn_identities.insert(key, identities);
             }
         }
     }
@@ -9036,11 +9053,12 @@ fn analyze_stmts(
                             .chain(assigned_fields.values().cloned()),
                     );
                     let assigned_path = flatten_access_path(target).map(|(_, path)| path);
+                    let assigned_identity = fn_identities_of(value, scope, ctx);
                     if let Some(b) = scope.get_mut(root) {
-                        match assigned_path {
+                        match assigned_path.as_ref() {
                             Some(path) => {
                                 b.field_builtin_gate_tags.retain(|key, _| {
-                                    !(key == &path
+                                    !(key == path
                                         || key.starts_with(&format!("{path}."))
                                         || path.starts_with(&format!("{key}.")))
                                 });
@@ -9071,6 +9089,31 @@ fn analyze_stmts(
                                             );
                                         }
                                     }
+                                }
+                            }
+                        }
+                        match assigned_path {
+                            Some(path) => {
+                                b.field_closures.retain(|key, _| {
+                                    !(key == &path
+                                        || key.starts_with(&format!("{path}."))
+                                        || path.starts_with(&format!("{key}.")))
+                                });
+                                b.field_fn_identities.retain(|key, _| {
+                                    !(key == &path
+                                        || key.starts_with(&format!("{path}."))
+                                        || path.starts_with(&format!("{key}.")))
+                                });
+                                b.field_fn_identities.insert(path, assigned_identity);
+                            }
+                            None => {
+                                for identities in b.field_fn_identities.values_mut() {
+                                    *identities = identities.clone().union(assigned_identity.clone());
+                                }
+                                if b.field_fn_identities.is_empty()
+                                    && !matches!(&assigned_identity, FnIdentitySet::Known(found) if found.is_empty())
+                                {
+                                    b.field_fn_identities.insert("_p0".to_string(), assigned_identity);
                                 }
                             }
                         }
@@ -11843,6 +11886,23 @@ fn analyze_expr_effect(
                 callee.as_ref(),
                 Expr::Index { .. } | Expr::FieldAccess { .. }
             ) {
+                // A mutation producer records named user-function identities in the same field map
+                // used by the contract spine. Re-enter the existing direct-call effect consumer for
+                // each resolved candidate; do not create a parallel sink walker.
+                if let FnIdentitySet::Known(candidates) = fn_identities_of(callee, scope, ctx) {
+                    for candidate in candidates {
+                        analyze_expr_effect(
+                            &Expr::Call {
+                                callee: candidate,
+                                args: args.clone(),
+                            },
+                            mode,
+                            scope,
+                            effects,
+                            ctx,
+                        );
+                    }
+                }
                 if let Some(lam) = resolve_applied_container_lambda(callee, scope, ctx) {
                     if let Expr::Lambda { params, body } = lam.as_ref() {
                         let mut local = scope.clone();
@@ -21537,14 +21597,22 @@ fn expr_taint_source_m(
                 )
             })
         }
-        Expr::If { then, else_, .. } => expr_taint_source_m(
-            then,
+        Expr::If { cond, then, else_, .. } => expr_taint_source_m(
+            cond,
             scope,
             tainting_fns,
             param_return_taint,
             method_tainting_fns,
             struct_fields,
         )
+        .or_else(|| expr_taint_source_m(
+            then,
+            scope,
+            tainting_fns,
+            param_return_taint,
+            method_tainting_fns,
+            struct_fields,
+        ))
         .or_else(|| {
             expr_taint_source_m(
                 else_,
@@ -22221,14 +22289,22 @@ fn expr_secret_source_m(
                 )
             })
         }
-        Expr::If { then, else_, .. } => expr_secret_source_m(
-            then,
+        Expr::If { cond, then, else_, .. } => expr_secret_source_m(
+            cond,
             scope,
             secret_fns,
             param_return_taint,
             method_secret_fns,
             struct_fields,
         )
+        .or_else(|| expr_secret_source_m(
+            then,
+            scope,
+            secret_fns,
+            param_return_taint,
+            method_secret_fns,
+            struct_fields,
+        ))
         .or_else(|| {
             expr_secret_source_m(
                 else_,
@@ -24161,8 +24237,9 @@ fn expr_param_flow(expr: &Expr, flow: &BTreeMap<String, BTreeSet<usize>>) -> BTr
             s.extend(expr_param_flow(else_, flow));
             s
         }
-        Expr::If { then, else_, .. } => {
-            let mut s = expr_param_flow(then, flow);
+        Expr::If { cond, then, else_, .. } => {
+            let mut s = expr_param_flow(cond, flow);
+            s.extend(expr_param_flow(then, flow));
             s.extend(expr_param_flow(else_, flow));
             s
         }

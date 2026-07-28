@@ -28,7 +28,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 #
 # Adding a walker here is a claim that it must be TOTAL over its scope. Do not add one to make a
 # number look better — add it when it passes, and fix it first when it does not.
-WALKERS=(body_has_mode_elevator analyze_expr_effect:expr)
+WALKERS=(
+  body_has_mode_elevator
+  analyze_expr_effect:expr
+  # Registered 2026-07-28 once they reached zero problems. All three had discarded `Expr::If.cond`
+  # through a `..` while `Expr::IfLet` thirty lines above bound and consulted its scrutinee — one
+  # shape, three functions, and the effect lane clean. That gap was a real leak: a `let` whose init
+  # was a secret-SELECTED constant passed `check` and printed the value. Registering them means a
+  # future `..` in this position breaks the GATE rather than reopening the leak.
+  expr_taint_source_m:expr
+  expr_secret_source_m:expr
+  expr_param_flow:expr
+)
 
 if [[ "${1:-}" == "--self-test" ]]; then
   # Plant the defect in a SCRATCH COPY, never in the live file.
