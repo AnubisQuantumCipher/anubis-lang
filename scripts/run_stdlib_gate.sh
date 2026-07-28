@@ -149,7 +149,27 @@ fi
 # 5) std.pwn gold crash (optional if vuln_local present)
 if [[ -x poc_kit/bin/vuln_local ]]; then
   # PoC prints crash flag on first pure-numeric line (`1`); isolation banners must not count.
-  if "$BIN" run examples/security/poc_stdlib_overflow.anb --allow-research --out "$OUT/poc" >"$OUT/poc.log" 2>&1 \
+  # The crash PoC runs in a DISPOSABLE GUEST, never on the host. `run --allow-research` on the host
+  # is refused by the runtime itself (ANUBIS_RESEARCH_HOST_FORBIDDEN) — this gate was still calling
+  # it, so the step failed for the right reason and the gate read it as a defect in the PoC.
+  #
+  # Inside the VM battery there is no nested virtualization, so the isolated lane is unavailable.
+  # That is recorded as an explicit SKIP with its reason rather than counted: a crash PoC that never
+  # ran isolated is not evidence, and calling a host run "isolated" would be fabrication.
+  if [[ -z "${ANUBIS_IN_VM_GUEST:-}" ]] && command -v tart >/dev/null 2>&1; then
+    # `vz exploit` requires --engage so the crash op is SEALED into the receipt chain. That is the
+    # point of the flag: without it the guest is discarded and nobody can prove what happened, so
+    # the gate mints a real engagement rather than reaching for a bypass.
+    "$BIN" engage-init --dir "$OUT/engagement" --name stdlib-gate \
+      --authorization local-lab-charter >"$OUT/engage_init.log" 2>&1 || true
+    _poc_cmd=("$BIN" vz exploit examples/security/poc_stdlib_overflow.anb --allow-research \
+      --base anubis-xcode --engage "$OUT/engagement")
+  else
+    _poc_cmd=()
+  fi
+  if [[ ${#_poc_cmd[@]} -eq 0 ]]; then
+    note "poc_stdlib_overflow: SKIP (no disposable-guest lane here: nested virtualization unavailable in the VM battery; host --allow-research is forbidden and is NOT a substitute)"
+  elif "${_poc_cmd[@]}" >"$OUT/poc.log" 2>&1 \
     && stdout_lines "$OUT/poc.log" | head -1 | grep -qx '1' \
     && grep -qE 'crashed:[[:space:]]*1|verdict:[[:space:]]*IMPACT' "$OUT/poc.log"; then
     pass=$((pass+1))
