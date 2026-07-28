@@ -11638,8 +11638,10 @@ fn analyze_expr_effect(
                         charge_applied_builtin_gate_tags(&tags, mode, effects, ctx);
                         if let Some(paths) = applied_paths.as_ref().and_then(|by_param| by_param.get(&i)) {
                             for path in paths {
-                                let ids = if path.is_empty() || path == "*" {
+                                let ids = if path.is_empty() {
                                     fn_identities_of(arg, scope, ctx)
+                                } else if path == "*" {
+                                    fn_identities_carried_by_value(arg, scope, ctx)
                                 } else {
                                     fn_identities_at_contract_path(arg, path, scope, ctx, 0)
                                 };
@@ -12444,6 +12446,33 @@ fn analyze_expr_effect(
             }
         }
         _ => {}
+    }
+}
+
+fn fn_identities_carried_by_value(
+    value: &Expr,
+    scope: &BTreeMap<String, ScopeBinding>,
+    ctx: &SemanticContext,
+) -> FnIdentitySet {
+    match value {
+        Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+            let mut fields = BTreeMap::new();
+            collect_container_fn_identities(value, "", scope, ctx, &mut fields);
+            fields
+                .into_values()
+                .fold(FnIdentitySet::empty(), FnIdentitySet::union)
+        }
+        Expr::Var(root) => scope
+            .get(root)
+            .map(|binding| {
+                binding
+                    .field_fn_identities
+                    .values()
+                    .cloned()
+                    .fold(FnIdentitySet::empty(), FnIdentitySet::union)
+            })
+            .unwrap_or(FnIdentitySet::Unknown),
+        _ => FnIdentitySet::Unknown,
     }
 }
 
@@ -16553,6 +16582,12 @@ fn scan_applied_param_stmts(
                         scan_applied_param_expr(end, p, applies, shadows, paths, method_names);
                     }
                     ForSource::Collection { expr } => {
+                        if matches!(expr, Expr::Var(root) if root == p)
+                            && body_has_direct_callee(body, var)
+                        {
+                            *applies = true;
+                            paths.insert("*".to_string());
+                        }
                         scan_applied_param_expr(expr, p, applies, shadows, paths, method_names)
                     }
                 }
@@ -16583,6 +16618,25 @@ fn scan_applied_param_stmts(
             Stmt::Break | Stmt::Continue => {}
         }
     }
+}
+
+fn body_has_direct_callee(body: &[Stmt], name: &str) -> bool {
+    body.iter().any(|stmt| match stmt {
+        Stmt::ExprStmt(Expr::Call { callee, .. }) => callee == name,
+        Stmt::ExprStmt(Expr::CallExpr { callee, .. }) => {
+            matches!(callee.as_ref(), Expr::Var(v) if v == name)
+        }
+        Stmt::If { then, else_, .. } => {
+            body_has_direct_callee(then, name)
+                || else_.as_deref().is_some_and(|b| body_has_direct_callee(b, name))
+        }
+        Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::ResearchBlock { body, .. }
+        | Stmt::ExploitBlock { body, .. } => body_has_direct_callee(body, name),
+        _ => false,
+    })
 }
 
 /// Expression half of `scan_applied_param_stmts`. A nested `Lambda` is a HARD STOP (deferred body).
