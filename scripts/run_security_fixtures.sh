@@ -173,9 +173,17 @@ done
 set +e
 finalize "$total" "$passed" "$failed" 0
 final_rc=$?
+# Coverage ratchet. `finalize` proves every fixture that RAN passed; it cannot notice that fewer
+# fixtures ran than last time. A corpus that shrinks reports a smaller, greener number.
+assert_floor "security_fixtures" "$total" "$ROOT/examples/security/.fixture_count_floor"
+floor_rc=$?
 set -e
 overall="$GATE_FINAL_STATUS"
 [[ "$overall" == "PASS" ]] || overall="FAIL"
+if [[ $floor_rc -ne 0 ]]; then
+  overall="FAIL"
+  echo "Overall: FAIL ($GATE_FLOOR_ERROR)" >&2
+fi
 
 jq --arg overall "$overall" --argjson total "$total" --argjson passed "$passed" --argjson failed "$failed" \
   '. + {total: $total, passed: $passed, failed: $failed, overall_verdict: $overall}' \

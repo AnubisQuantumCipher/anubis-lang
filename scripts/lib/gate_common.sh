@@ -229,3 +229,54 @@ finalize() {
   GATE_FINAL_STATUS="PASS"
   return 0
 }
+
+# assert_floor NAME COUNT FLOOR_FILE
+#
+# A coverage RATCHET. `assert_tested` catches a gate that tested NOTHING; it cannot catch one that
+# quietly tests LESS, and the difference is not academic — the docs-drift gate silently went from
+# 42 stamps to 30 (a 29% loss) and reported `PASS (30 stamps checked, 0 drift)` with nothing to
+# indicate anything had changed. Every exemption that caused it was justified on review, which is
+# precisely the problem: the justified case and the careless case produce identical output.
+#
+# Raising the floor is automatic. LOWERING it means editing a tracked file in a visible commit,
+# which is the whole mechanism — the same shape as this repo's rule that formal-verification
+# coverage can only increase.
+#
+# Returns 0 if COUNT >= FLOOR (raising the floor when it grew), 1 otherwise.
+assert_floor() {
+  GATE_FLOOR_ERROR=""
+  if [[ $# -ne 3 ]]; then
+    GATE_FLOOR_ERROR="assert_floor requires NAME COUNT FLOOR_FILE"
+    echo "INVALID FLOOR ASSERTION: $GATE_FLOOR_ERROR - refusing to report PASS" >&2
+    return 2
+  fi
+  local name="$1" count="$2" file="$3"
+  if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    GATE_FLOOR_ERROR="$name count is not a canonical non-negative integer: '$count'"
+    echo "INVALID FLOOR COUNT: $GATE_FLOOR_ERROR - refusing to report PASS" >&2
+    return 2
+  fi
+  if [[ ! -f "$file" ]]; then
+    printf '%s\n' "$count" > "$file"
+    echo "coverage floor initialised: $name=$count ($file)"
+    return 0
+  fi
+  local floor
+  floor="$(tr -dc '0-9' < "$file")"
+  if [[ -z "$floor" ]]; then
+    GATE_FLOOR_ERROR="floor file is unparseable: $file"
+    echo "INVALID FLOOR FILE: $GATE_FLOOR_ERROR - refusing to grade" >&2
+    return 2
+  fi
+  if [[ "$count" -lt "$floor" ]]; then
+    GATE_FLOOR_ERROR="coverage fell: $name=$count, floor is $floor"
+    echo "COVERAGE REGRESSION: $GATE_FLOOR_ERROR" >&2
+    echo "  Something stopped being checked. If the loss is correct, lower $file in the same commit and say why." >&2
+    return 1
+  fi
+  if [[ "$count" -gt "$floor" ]]; then
+    printf '%s\n' "$count" > "$file"
+    echo "coverage ratchet raised: $name $floor -> $count"
+  fi
+  return 0
+}

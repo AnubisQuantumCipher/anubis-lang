@@ -8,6 +8,12 @@ set -uo pipefail
 #   3. measuring a binary that does not match the pin / tree (stale scoring)
 #   4. uses(…) on non-leak path misread as a finding when it authorizes the effect
 #
+# R43 prospective addition:
+#   5. Every gate that reports a numeric score/count must assert a floor
+#      (require_nonempty_corpus / assert_tested / FLOOR file) — docs drift lost 29%
+#      coverage and stayed green until a ratchet existed.
+#   6. Security EXPECT PASS/FAIL corpus size must not silently shrink.
+#
 # This is a meta-check: it does not grade fixtures. It grades the *tools* we grade with.
 # exit 0 PASS, 1 FAIL.
 
@@ -21,16 +27,11 @@ echo "INSTRUMENT_HYGIENE"
 # --- 1. pin verify must be runnable and reported honestly ---
 if bash scripts/publish_pin.sh --verify >/tmp/ih_pin.out 2>&1; then
   ok "publish_pin --verify PASS (pin matches tree)"
-  pin_ok=1
 else
-  # Not a hard fail of the instrument: drift is allowed if agents pin-measure.
-  # Hard fail only if --verify itself is silent or exit-ambiguous.
   if grep -q 'PIN DOES NOT MATCH\|pin matches\|PIN MATCH' /tmp/ih_pin.out; then
     ok "publish_pin --verify prints an explicit mismatch/match (no silent pass)"
-    pin_ok=0
   else
     bad "publish_pin --verify produced no explicit verdict"
-    pin_ok=0
   fi
 fi
 
@@ -42,8 +43,7 @@ else
   bad "current pin missing or not executable"
 fi
 
-# --- 3. $? discipline demo: capture exit BEFORE other commands ---
-# (documents the anti-pattern; fails if a wrapper loses the code)
+# --- 3. $? discipline: capture exit BEFORE other commands ---
 rc=0
 false || rc=$?
 _=$(basename /tmp/x 2>/dev/null)
@@ -53,7 +53,7 @@ else
   bad "\$? lost after intervening command (rc=$rc)"
 fi
 
-# --- 4. fixture_preflight must not use set -e (grep the source) ---
+# --- 4. fixture_preflight must not use set -e ---
 if grep -qE '^set -e' scripts/fixture_preflight.sh 2>/dev/null; then
   bad "fixture_preflight.sh still has set -e (will abort on direct REJECT)"
 else
@@ -65,10 +65,10 @@ if ANUBIS_BIN="${ANUBIS_BIN:-$PIN}" bash scripts/fixture_preflight.sh --self-tes
   ok "fixture_preflight --self-test PASS"
 else
   bad "fixture_preflight --self-test FAIL"
-  cat /tmp/ih_pf.out | tail -5
+  tail -5 /tmp/ih_pf.out
 fi
 
-# --- 6. guard_reachability --self-test if present ---
+# --- 6. guard_reachability --self-test ---
 if [[ -x scripts/guard_reachability.sh ]]; then
   if ANUBIS_BIN="${ANUBIS_BIN:-$PIN}" bash scripts/guard_reachability.sh --self-test >/tmp/ih_gr.out 2>&1; then
     ok "guard_reachability --self-test PASS"
@@ -76,11 +76,10 @@ if [[ -x scripts/guard_reachability.sh ]]; then
     bad "guard_reachability --self-test FAIL"
   fi
 else
-  ok "guard_reachability not present (skip)"
+  bad "guard_reachability.sh missing"
 fi
 
-# --- 7. preflight defined exit codes only: 0/2/3, never bare 1 from harness abort ---
-# smoke: w06b-style MALFORMED
+# --- 7. preflight defined exit codes: w06b-style -> MALFORMED 3, not abort 1 ---
 TD=$(mktemp -d)
 cat > "$TD/d.anb" <<'EOF'
 fn leak(p: string, x: string) uses(fs.write) { write_file(p, x); }
@@ -99,7 +98,7 @@ if [[ "$rc" -eq 3 ]]; then
 elif [[ "$rc" -eq 1 ]]; then
   bad "preflight aborted with rc=1 on authorized uses path"
 else
-  bad "preflight unexpected rc=$rc on w06b-style (out=$(cat /tmp/ih_w06.out))"
+  bad "preflight unexpected rc=$rc on w06b-style"
 fi
 rm -rf "$TD"
 
@@ -123,6 +122,91 @@ else
   ok "uses_on_path boundary: leak-only uses not MALFORMED (rc=$rc)"
 fi
 rm -rf "$TD"
+
+# --- 9. Prospective: count-reporting gates must have a floor ---
+# General question (not a pattern list of known bugs): if a gate prints a score,
+# does its source refuse vacuous green?
+mkdir -p adversary/r43
+python3 - <<'PY' > /tmp/ih_gate_floors_run.out
+import re
+from pathlib import Path
+paths = sorted(Path("scripts").glob("run_*gate*.sh")) + sorted(Path("scripts").glob("run_*fixtures*.sh"))
+seen = set()
+rows = []
+for p in paths:
+    if p.name in seen:
+        continue
+    seen.add(p.name)
+    t = p.read_text(errors="replace")
+    reports = bool(re.search(
+        r"Overall:|stamps_checked|fixtures=\(|passed=|fail=|total=|over [0-9]+ fixtures|pass=\$\(|green\)",
+        t,
+    ))
+    has_floor = bool(re.search(
+        r"FLOOR|floor|ratchet|assert_tested|require_nonempty_corpus",
+        t,
+    ))
+    if reports:
+        rows.append((p.name, has_floor))
+missing = [a for a, b in rows if not b]
+Path("adversary/r43/gate_floor_missing.list").write_text(
+    "\n".join(missing) + ("\n" if missing else "")
+)
+Path("adversary/r43/gate_floor_inventory.tsv").write_text(
+    "script\thas_floor\n" + "\n".join(f"{a}\t{int(b)}" for a, b in rows) + "\n"
+)
+print(
+    f"count_reporting_gates={len(rows)} "
+    f"with_floor={sum(1 for _, b in rows if b)} "
+    f"missing_floor={len(missing)}"
+)
+for m in missing:
+    print(f"MISSING_FLOOR {m}")
+raise SystemExit(0 if not missing else 2)
+PY
+floor_rc=$?
+cat /tmp/ih_gate_floors_run.out
+if [[ "$floor_rc" -eq 0 ]]; then
+  ok "every count-reporting gate has require_nonempty/assert_tested/FLOOR"
+else
+  miss=$(grep -c '^MISSING_FLOOR' /tmp/ih_gate_floors_run.out || true)
+  bad "count-reporting gates missing a floor: $miss (adversary/r43/gate_floor_missing.list)"
+fi
+
+# --- 10. Docs drift coverage floor file must exist and be numeric >0 ---
+if [[ -f docs/.docs_drift_coverage_floor ]]; then
+  fl=$(tr -dc '0-9' < docs/.docs_drift_coverage_floor)
+  if [[ -n "$fl" && "$fl" -gt 0 ]]; then
+    ok "docs drift coverage floor present and >0 ($fl)"
+  else
+    bad "docs drift coverage floor unparseable or zero"
+  fi
+else
+  bad "docs/.docs_drift_coverage_floor missing"
+fi
+
+# --- 11. Security EXPECT PASS/FAIL corpus size floor (ratchet) ---
+PASS_N=$(rg -l '^// EXPECT: PASS' examples/security --glob '*.anb' 2>/dev/null | wc -l | tr -d ' ')
+FAIL_N=$(rg -l '^// EXPECT: FAIL' examples/security --glob '*.anb' 2>/dev/null | wc -l | tr -d ' ')
+SEC_FLOOR_FILE="examples/security/.corpus_expect_floor"
+if [[ -f "$SEC_FLOOR_FILE" ]]; then
+  FLOOR_PASS=$(awk '{print $1}' "$SEC_FLOOR_FILE" | tr -dc '0-9')
+  FLOOR_FAIL=$(awk '{print $2}' "$SEC_FLOOR_FILE" | tr -dc '0-9')
+  FLOOR_PASS=${FLOOR_PASS:-0}
+  FLOOR_FAIL=${FLOOR_FAIL:-0}
+  if [[ "$PASS_N" -lt "$FLOOR_PASS" || "$FAIL_N" -lt "$FLOOR_FAIL" ]]; then
+    bad "security corpus shrank: PASS $PASS_N (floor $FLOOR_PASS) FAIL $FAIL_N (floor $FLOOR_FAIL)"
+  else
+    ok "security corpus floors held (PASS $PASS_N>=$FLOOR_PASS FAIL $FAIL_N>=$FLOOR_FAIL)"
+    if [[ "$PASS_N" -gt "$FLOOR_PASS" || "$FAIL_N" -gt "$FLOOR_FAIL" ]]; then
+      echo "$PASS_N $FAIL_N" > "$SEC_FLOOR_FILE"
+      ok "security corpus floor ratchet raised to PASS=$PASS_N FAIL=$FAIL_N"
+    fi
+  fi
+else
+  echo "$PASS_N $FAIL_N" > "$SEC_FLOOR_FILE"
+  ok "security corpus floor initialised PASS=$PASS_N FAIL=$FAIL_N"
+fi
 
 if [[ "$fails" -gt 0 ]]; then
   echo "INSTRUMENT_HYGIENE: FAIL ($fails)"
