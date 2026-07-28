@@ -6962,6 +6962,7 @@ fn apply_container_mutation_taint(
     method_tainting_fns: &BTreeSet<String>,
     method_secret_fns: &BTreeSet<String>,
     struct_fields: &PlaceTypes<'_>,
+    ctx: &SemanticContext,
 ) {
     // Free-call form: `push(xs, v)` / `insert(xs, k, v)` — container is args[0], values in args[1..].
     // Method form: `xs.push(v)` / `xs.insert(k, v)` — container is receiver, values in all args.
@@ -7053,18 +7054,58 @@ fn apply_container_mutation_taint(
     // rather than being guessed at.
     let mut seed_tags: Vec<BuiltinGateTags> = Vec::new();
     for v in value_args {
-        if let Expr::Var(n) = v {
-            let tags = match scope.get(n) {
-                Some(b) => b.builtin_gate_tags.clone(),
-                None => seed_builtin_gate_tags(n),
-            };
-            // `Unknown` is not stored: downstream it is indistinguishable from "no tag", and
-            // recording it would pin an unresolved push as Unknown across the whole container.
-            if let BuiltinGateTags::Known(t) = &tags {
-                if !t.is_empty() {
-                    seed_tags.push(tags);
+        match v {
+            Expr::Var(n) => {
+                let tags = match scope.get(n) {
+                    Some(b) => b.builtin_gate_tags.clone(),
+                    None => seed_builtin_gate_tags(n),
+                };
+                // `Unknown` is not stored: downstream it is indistinguishable from "no tag", and
+                // recording it would pin an unresolved push as Unknown across the whole container.
+                if let BuiltinGateTags::Known(t) = &tags {
+                    if !t.is_empty() {
+                        seed_tags.push(tags);
+                    }
+                }
+                // A pushed LOCAL may itself be a container: `let b = Box { g: write_file };
+                // push(xs, b); xs[0].g(p, x)` wrote the file, because only the root tag travelled
+                // and the root of a struct is `Known(∅)` — the tag lived on the FIELD path. Carry
+                // the source's recorded paths too, so the field survives the hop.
+                if let Some(source) = scope.get(n) {
+                    for tags in source.field_builtin_gate_tags.values() {
+                        if let BuiltinGateTags::Known(t) = tags {
+                            if !t.is_empty() {
+                                seed_tags.push(tags.clone());
+                            }
+                        }
+                    }
                 }
             }
+            // A pushed COMPOSITE EXPRESSION — `push(xs, Box { g: write_file })`,
+            // `insert(xs, 0, [write_file])` — never reached the seeder at all, because it only
+            // looked at `Expr::Var`. The value lane recursively inspects every value argument
+            // (`container_element_taint`/`_secret` above), and this is that recursion for tags:
+            // collect the composite's own paths and carry their tags onto the container.
+            //
+            // Union-onto-the-root rather than path-preserving: the pushed element's index is a
+            // runtime property, so a nested path like `_p0.g` cannot be reconstructed reliably.
+            // Charging the union at any read of the mutated container is the fail-closed direction,
+            // and it is confined to `_p` slots exactly as the bare-builtin push is.
+            Expr::ArrayLiteral { .. }
+            | Expr::StructLiteral { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::EnumConstruct { .. } => {
+                let mut nested = BTreeMap::new();
+                collect_container_builtin_gate_tags(v, "", scope, ctx, &mut nested);
+                for tags in nested.values() {
+                    if let BuiltinGateTags::Known(t) = tags {
+                        if !t.is_empty() {
+                            seed_tags.push(tags.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     // Collect lambdas to seed *before* mutably borrowing the root binding.
@@ -7271,6 +7312,7 @@ fn analyze_stmts(
                     &ctx.method_tainting_fns,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    ctx,
                 );
                 // mark known after unknown check so later stmts see it
                 ctx.known_bindings.insert(name.clone());
@@ -7858,6 +7900,7 @@ fn analyze_stmts(
                     &ctx.method_tainting_fns,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    ctx,
                 );
                 // #69: SEED taint/secret from the initializer. Before this the arm labelled nothing
                 // (not even inserting the bound names into `scope`), so a destructured secret/tainted
@@ -8340,6 +8383,7 @@ fn analyze_stmts(
                     &ctx.method_tainting_fns,
                     &ctx.method_secret_fns,
                     &ctx.place_types(),
+                    ctx,
                 );
                 check_expr_semantics(expr, scope, ctx);
                 // A bare `match`/`if`-expression statement (or a `return <expr>` — parsed as
@@ -8473,6 +8517,43 @@ fn analyze_stmts(
                     if value_secret {
                         if let Some(b) = scope.get_mut(root) {
                             b.secret = true;
+                        }
+                    }
+                    // TAG dual of the same place assignment, and the one gap in this class that is
+                    // worse than a fail-open. `xs[0] = write_file` / `b.g = write_file` overwrote a
+                    // path whose recorded tag stayed whatever the ORIGINAL element had — typically
+                    // `Known(∅)`, which does not mean "unresolved", it means PROVEN to carry no gate
+                    // class. So the tag lane did not defer on the new value, it positively asserted
+                    // the wrong answer about it, and the later `xs[0](p, x)` charged nothing.
+                    //
+                    // Two writes, in this order, because either alone is unsound:
+                    //   - the assigned path is refreshed from the new value, so a gated builtin
+                    //     written into a place is charged at the later apply;
+                    //   - any path that is a PREFIX or EXTENSION of it is dropped to `Unknown`,
+                    //     because writing `b.g` invalidates what was recorded about `b.g.inner`,
+                    //     and writing `xs[0]` says nothing certain about `xs` as a whole any more.
+                    //     Dropping to Unknown defers; leaving the stale entry would keep asserting.
+                    //
+                    // A non-literal index has no single path to refresh, so the root's recorded
+                    // paths are dropped to Unknown wholesale — the fail-closed direction, and the
+                    // same trade the symbolic-index read already makes.
+                    let assigned_tags = builtin_gate_tags_of(value, scope, ctx);
+                    let assigned_path = flatten_access_path(target).map(|(_, path)| path);
+                    if let Some(b) = scope.get_mut(root) {
+                        match assigned_path {
+                            Some(path) => {
+                                b.field_builtin_gate_tags.retain(|key, _| {
+                                    !(key == &path
+                                        || key.starts_with(&format!("{path}."))
+                                        || path.starts_with(&format!("{key}.")))
+                                });
+                                b.field_builtin_gate_tags.insert(path, assigned_tags);
+                            }
+                            None => {
+                                for tags in b.field_builtin_gate_tags.values_mut() {
+                                    *tags = BuiltinGateTags::Unknown;
+                                }
+                            }
                         }
                     }
                 }

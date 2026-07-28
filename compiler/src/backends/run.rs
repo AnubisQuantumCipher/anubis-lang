@@ -8649,4 +8649,49 @@ mod run_tests {
             );
         }
     }
+
+    // ── CLAIMS-15: carrier immunity for gated builtins ──────────────────────
+    //
+    // `var_as_value` wraps any name with an `emit_builtin_call` arm into a
+    // closure.  Gated builtins (`is_non_run_builtin` ∪ `is_poc_kit_builtin`)
+    // are kept OUT of `emit_builtin_call` so that carrier forms like
+    // `let f = shell; f("cmd")` cannot compile.
+    //
+    // Adding a gated builtin to `emit_builtin_call` closes the call-site gate
+    // (Surface 1) while silently opening the value-position carrier (Surface 2).
+    // The MODE key (`--allow-research`) is call-site only and cannot protect
+    // value-position bindings.
+    //
+    // To add runtime behavior for a gated builtin, put it in `safe_run_expr`
+    // (call-site dispatch), NOT `emit_builtin_call`.  See `p8`..`flat` and
+    // `target_run` in `safe_run_expr` for the pattern.
+    //
+    // `assert` is excluded: it has a benign lowering (`anubis_assert` — panics
+    // on false, no data exfiltration) and is already in `emit_builtin_call`.
+    #[test]
+    fn gated_builtins_must_not_lower_in_emit_builtin_call() {
+        let carrier_critical: &[&str] = &[
+            // is_non_run_builtin (minus assert — benign, already lowered)
+            "symbolic", "assume", "taint_source", "declassify", "sink",
+            "shell", "exec", "system", "memcpy", "sql",
+            // is_poc_kit_builtin
+            "p8", "p16", "p32", "p64", "cyclic", "target_run", "flat",
+        ];
+        for name in carrier_critical {
+            for arity in 0..=6usize {
+                let args: Vec<String> =
+                    (0..arity).map(|i| format!("__a{i}")).collect();
+                assert!(
+                    emit_builtin_call(name, &args).is_none(),
+                    "CLAIMS-15 VIOLATION: gated builtin `{name}` gained a lowering \
+                     in emit_builtin_call (arity {arity}).  This opens the \
+                     builtin-carrier class: `let f = {name}; f(...)` compiles via \
+                     var_as_value, bypassing the call-site gate.  --allow-research \
+                     cannot protect value-position bindings.  To add runtime \
+                     behavior for `{name}`, gate it in safe_run_expr, NOT \
+                     emit_builtin_call.",
+                );
+            }
+        }
+    }
 }
