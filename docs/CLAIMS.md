@@ -409,6 +409,31 @@ never terminates is a check/run divergence of a different kind, and is being cha
     the site says the two paths should match; the mechanism is inference on one side and explicit
     consent on the other.
 
+18. **The tag lane has a standing DEFECT FACTORY — three shapes, still widening (2026-07-28).**
+
+    Asked for a judgment on whether item 14's class is converging, the adversary said **NO**, and
+    named why. Three recurring shapes account for every finding since the tag resolver landed:
+
+    | shape | what it is |
+    |---|---|
+    | **Unknown by DESTRUCTION** | a join or write that *produces* `Unknown` by discarding a known operand, rather than defaulting to it because nothing was known. `Unknown` charges nothing, so this deletes evidence while looking conservative. |
+    | **Synthetic key invisible to the reader** | a producer records a slot under a prefix the consumer's fallback filter does not scan (`_p` vs `_w`). |
+    | **Composite projection, root only** | an assignment or bind stores the RHS's root tag and never projects its nested field paths. |
+
+    Measured instances, all **ACCEPT + file written** under a green check, all found *after* the
+    first member of the class was closed: `merge_fn_alias_over` annihilating a branch arm's tag
+    (`Unknown ⊔ Known = Unknown`); `_w0` unreadable by the `_p` fallback; composite place assign at
+    both a literal and a symbolic index.
+
+    **Falsifiable convergence test, adopted as stated:** close the `_p`/`_w` parity, the merge
+    `unwrap_or(Unknown)`, composite place-assign projection, and the c05 extract-to-let — then run a
+    full residual re-sweep. Converged means **zero ACCEPT+file**, with only over-rejections and
+    documented leniency remaining, and the auditor's matrix shedding rows for two consecutive rounds
+    without new ranked ones appearing.
+
+    Recorded because "we fixed three things" is not the same claim as "the class is closed", and
+    this arc has repeatedly found the second to be false right after the first was true.
+
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
 After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
