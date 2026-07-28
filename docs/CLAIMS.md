@@ -1104,6 +1104,38 @@ guest passes through the host and inherits the host's trustworthiness. That is a
 isolated. Any evidence produced under that flag carried an isolation claim the hypervisor never
 enforced. It now refuses and names the path that does enforce it.
 
+### Carrier class: 40 of 41 CLOSED — the one residual, named precisely (2026-07-28)
+
+The 41 published-open carrier routes stand at **40 CLOSED, 1 open**, with 25 must-stay-ACCEPT pure
+guards passing and zero over-rejection, security 317/317. The element-materialization ladder is
+25/25.
+
+**The residual is `rec_build_then_app`, and it is a summary-shape problem, not a missing rule:**
+
+```
+fn go(n, acc) { if n <= 0 { acc } else { go(n - 1, acc + [leak]) } }
+let xs = go(2, []); xs[0](…)          check PASSES
+```
+
+Traced to `fn_sole_return`. Its `.or_else` accepts an `If`/`Match` TAIL expression only when
+`tv.len() == 1`, and `expr_tail_values` PEELS an `If` into both branch values — so `tv.len() == 2`
+and `go` never enters the map at all. Every downstream resolver then has nothing to read.
+
+Two rules were added and both work; neither can fire because the summary is absent:
+
+- `fn_identities_carried_by_value` now handles `Expr::Binary`, so a container built by `+` resolves.
+  The NON-recursive form of the same program (`return acc + [leak];`) closed on this alone.
+- a recursive builder over-approximates by unioning every container literal in its return, bounded
+  and gated on self-reference.
+
+Loosening the `tv.len() == 1` guard would fix it, and that guard is read by four lanes — the
+forwarder lane depends on unanimity, and this file's recorded history includes a case where
+loosening `unanimous_forwarded_return` broke the lane it exists for. So it needs its own
+full-corpus verdict-diff rather than a same-session edit.
+
+Published as a bounded residual with the mechanism, the file, the exact predicate, and the reason
+it was not changed — not as an unexplained red.
+
 ### The callable false-accept class is WIDER than the ten shapes — 41 open routes (OPEN 2026-07-28)
 
 Ten carrier shapes were closed on 2026-07-28, each with a rejecting discriminator AND a guard that

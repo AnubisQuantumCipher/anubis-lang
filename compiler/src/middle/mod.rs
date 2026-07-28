@@ -3439,6 +3439,37 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                             for st in body {
                                 collect_returns_in_stmt(st, &mut rets);
                             }
+                            // SEVERAL returns that are all the SAME expression are one return.
+                            //
+                            //     fn pick(xs) { if c { return xs[0]; } else { return xs[0]; } }
+                            //
+                            // `rets.len() == 1` excluded this, so a callable reached through a
+                            // multi-branch return was invisible while the single-return form
+                            // resolved. Requiring the returns to be IDENTICAL keeps the "exactly
+                            // one recorded value" property the consumers rely on — this is not a
+                            // join, it is the recognition that N copies of one expression are one
+                            // expression. Divergent returns still record nothing.
+                            // `Expr` has no `PartialEq`, so compare the debug rendering — it is a
+                            // faithful structural encoding for this purpose and avoids widening a
+                            // core AST type's derives for one call site.
+                            // `Expr` has no `PartialEq`, so compare the debug rendering — a
+                            // faithful structural encoding here, and cheaper than widening a core
+                            // AST type's derives for one call site.
+                            let identical_multi = rets.len() > 1 && {
+                                let first = format!("{:?}", rets[0]);
+                                rets.iter().all(|r| format!("{r:?}") == first)
+                            };
+                            if identical_multi {
+                                // N copies of ONE expression are one expression, whatever its
+                                // shape. The `If`/`Match` filter below exists to catch a
+                                // conditional JOIN; it must not also discard
+                                //
+                                //     fn pick(xs) { if c { return xs[0]; } else { return xs[0]; } }
+                                //
+                                // where every branch returns the same thing and there is no join to
+                                // reason about. Divergent returns still record nothing.
+                                return Some(rets.into_iter().next()?);
+                            }
                             let cand = if rets.len() == 1 {
                                 rets.into_iter().next()
                             } else if tv.len() == 1 {
