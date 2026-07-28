@@ -2729,6 +2729,8 @@ struct SemanticContext {
     /// This is the FIXPOINT result (direct/HOF applies + transitive forwarding); the raw direct+edges
     /// are collected in `register_program_surface` and closed by `compute_applies_param_fixpoint`.
     fn_applies_param: BTreeMap<String, Vec<usize>>,
+    method_applies_param: BTreeMap<String, Vec<usize>>,
+    method_applied_param_paths: BTreeMap<String, BTreeMap<usize, BTreeSet<String>>>,
     /// Exact access paths applied from a formal at the declaration site. An empty path is the formal
     /// itself; concrete dotted paths represent indexed/field callables. Kept separate from the
     /// whole-param fixpoint so transitive unknowns remain conservative without erasing direct-path
@@ -3480,6 +3482,38 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                         // prove, a capability set has a well-defined conservative join: if any impl's `m`
                         // may reach `shell`, a call to `m` must be charged `shell`. Union can only
                         // over-charge (reject), never under-charge (accept).
+                        let mut method_applied = Vec::new();
+                        let mut method_paths = BTreeMap::new();
+                        let method_names = ctx.declared_method_names.clone();
+                        for (i, (pname, _)) in params.iter().enumerate() {
+                            if i == 0 {
+                                continue;
+                            }
+                            let (mut applies, mut shadows) = (false, false);
+                            let mut paths = BTreeSet::new();
+                            scan_applied_param_stmts(
+                                body,
+                                pname,
+                                &mut applies,
+                                &mut shadows,
+                                &mut paths,
+                                &method_names,
+                            );
+                            if !shadows && applies {
+                                method_applied.push(i);
+                                if !paths.is_empty() {
+                                    method_paths.insert(i, paths);
+                                }
+                            }
+                        }
+                        if !method_applied.is_empty() {
+                            ctx.method_applies_param
+                                .insert(name.clone(), method_applied);
+                        }
+                        if !method_paths.is_empty() {
+                            ctx.method_applied_param_paths
+                                .insert(name.clone(), method_paths);
+                        }
                         if !declared_effects.is_empty() {
                             ctx.method_declared_effects
                                 .entry(name.clone())
@@ -12358,6 +12392,38 @@ fn analyze_expr_effect(
                                         ),
                                         span: None,
                                     });
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(applied) = ctx.method_applies_param.get(field).cloned() {
+                    let method_paths = ctx.method_applied_param_paths.get(field).cloned();
+                    for index in applied {
+                        let Some(arg) = args.get(index.saturating_sub(1)) else {
+                            continue;
+                        };
+                        let paths = method_paths
+                            .as_ref()
+                            .and_then(|by_param| by_param.get(&index));
+                        if let Some(paths) = paths {
+                            for path in paths {
+                                let ids = if path.is_empty() {
+                                    fn_identities_of(arg, scope, ctx)
+                                } else if path == "*" {
+                                    fn_identities_carried_by_value(arg, scope, ctx)
+                                } else {
+                                    fn_identities_at_contract_path(arg, path, scope, ctx, 0)
+                                };
+                                if let FnIdentitySet::Known(names) = ids {
+                                    for candidate in names {
+                                        if let Some(caps) = ctx.fn_declared_effects.get(&candidate)
+                                        {
+                                            for raw in caps.clone() {
+                                                apply_inherited_capability(raw, mode, effects, ctx);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
