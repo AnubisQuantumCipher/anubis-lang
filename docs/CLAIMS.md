@@ -198,6 +198,38 @@ reads as "nothing is open". It caught a real drift on first run (`docs/HANDOFF.m
 promise with no scope qualifier); fixed in the doc, not the gate. Watched to fail four ways
 (self-test, framing removed, open-issues emptied, restatement count fallen).
 
+### VM seal — fixpoint MEASURED and reproducible, deliberately NOT re-baselined (2026-07-28)
+
+`scripts/vm/run-slice.sh` run twice end-to-end in a disposable tart guest cloned from
+`anubis-xcode` (8 vCPU, host never builds).
+
+| | |
+|---|---|
+| self-host seal (`run_selfhost_gate.sh`) | **EXIT=0** — stage2 == stage3 |
+| VM binary fixpoint, run 1 | `46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60` |
+| VM binary fixpoint, run 2 | `46ddce145e96a8971f5988bc8ef1b49c3af20544f62cb2822df67a1f9447ba60` |
+| recorded baseline (2026-07-24) | `189ac49618ccf193008ba81648caeb37657a348f7c39d111ffd6aad9a6b95fc8` |
+| battery gates green | 17 of 19 |
+
+The digest is **stable across two independent clone-boot-build cycles**, so the move from the
+2026-07-24 baseline is the expected consequence of the compiler changing this arc, not drift.
+
+**`EXPECTED_FIXPOINT_VM` is deliberately NOT updated, and the seal is NOT claimed.** That file
+encodes the digest a **green** battery produces — every entry in its re-baseline log says so — and
+this battery is not green:
+
+- `stdlib` — the published `edges_all_modules` residual above (10 pass / 1 fail after this arc's
+  fixes, up from 7/4);
+- `formal` — **exit 127, toolchain absent**: the golden image carries no lake/elan, so the 162 Lean
+  theorems were **not checked in the guest** on this run. Unverified here, *not* disproved; they are
+  machine-checked on the host (`FORMAL_GATE: PASS`, G21 of the 24/24 audit).
+
+Re-baselining on a red battery would put a digest behind the word "sealed" that no green run ever
+produced. **Claimed:** the fixpoint is measured, reproducible, and its movement is accounted for.
+**Not claimed:** a VM seal. The ROADMAP Phase 0 living residual stays open.
+
+---
+
 ### Untyped assertion helpers cannot discharge their own guard — named residual (2026-07-28)
 
 **Commit `1e8f76b`.** `scripts/run_stdlib_gate.sh` went 7 pass/4 fail → **10 pass/1 fail**. The
