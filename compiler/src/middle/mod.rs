@@ -8,6 +8,10 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub(crate) mod capability;
+/// Compile-time carrier classification. TOTAL over `Expr` with no wildcard arm, so adding a
+/// variant BREAKS THE BUILD until someone states what it can carry — the forcing function that
+/// keeps the false-accept class from reopening silently.
+pub mod carrier;
 pub(crate) mod effects;
 pub mod proptest;
 /// Security research HIR types (Phase 3 stubs — profiles, scoped targets, effect IR).
@@ -3468,7 +3472,7 @@ fn register_program_surface(items: &[Item], ctx: &mut SemanticContext) {
                                 //
                                 // where every branch returns the same thing and there is no join to
                                 // reason about. Divergent returns still record nothing.
-                                return Some(rets.into_iter().next()?);
+                                return rets.into_iter().next();
                             }
                             let cand = if rets.len() == 1 {
                                 rets.into_iter().next()

@@ -9,7 +9,7 @@
 #   bash scripts/audit_unified.sh [--out DIR]
 #   bash scripts/audit_unified.sh --profile hosted [--out DIR]
 #
-# The default `full` profile executes all 22 gates and passes only when EVERY named gate in
+# The default `full` profile executes all 23 gates and passes only when EVERY named gate in
 # EXPECTED_GATES reported, with zero failures, skips, or external gates. The `hosted` profile exists for
 # stock GitHub macOS runners, which cannot provide nested Apple virtualization
 # or a Tart golden image. It runs every host-verifiable gate, marks G9
@@ -39,6 +39,7 @@
 #   G20 gate_common adoption
 #   G21 Formal (Lean; EXTERNAL without elan/lake)
 #   G22 Fixture preflight self-test (an ACCEPT that cannot reject is not a finding)
+#   G23 Carrier totality (a new Expr variant breaks the build until classified)
 #
 # G16-G22 publish numbers the board cites and were, for most of their life, never run by CI.
 # They are listed here so the gap between "a gate exists" and "a gate runs" stays visible.
@@ -411,6 +412,18 @@ else
   gate "G22_fixture_preflight" "FAIL" "fixture preflight self-test red (see g22_preflight.log)"
 fi
 
+# G23 — Phase 2: adding an `Expr` variant BREAKS THE BUILD until its carrier class is stated.
+#
+# The blueprint's Phase-2 criterion that no ordinary test can express. The false-accept class was
+# never a list of bugs but a shape space that kept growing, and nothing forced the next person
+# adding a binder or container form to write its consumer. `carrier.rs` matches every variant with
+# no wildcard arm; this gate PLANTS one and proves rustc refuses it, then restores the tree.
+if bash scripts/run_carrier_totality_gate.sh >"$OUT/g23_carrier.log" 2>&1; then
+  gate "G23_carrier_totality" "PASS" "an unclassified Expr variant fails to compile"
+else
+  gate "G23_carrier_totality" "FAIL" "carrier totality not enforced (see g23_carrier.log)"
+fi
+
 # ── Report ──
 echo "" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
@@ -422,7 +435,7 @@ echo "========================================" | tee -a "$LOG"
 # editing magic numbers in two places, which is why six gates the board publishes were never
 # added. Naming them keeps the property AND says which one is missing instead of just that the
 # arithmetic no longer works.
-EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight"
+EXPECTED_GATES="G1_fmt G2_clippy G3_test G4_build_release G5_language_fixtures G6_turing_core G7_pca G8_security_fixtures G9_poc_kit G10_prove G11_enum_match G12_for_in G13_lang_trio G14_offensive G15_dogfood_feel G16_docs_drift G17_stdlib_failclosed G18_native_authoritative G19_walker_completeness G20_gate_common_adoption G21_formal G22_fixture_preflight G23_carrier_totality"
 
 MISSING_GATES=""
 for g in $EXPECTED_GATES; do
