@@ -21526,7 +21526,24 @@ fn expr_taint_source_m(
                 method_tainting_fns,
                 struct_fields,
             );
-            tail.as_ref().and_then(|t| {
+            fn stmt_value_taint(list: &[Stmt], local: &BTreeMap<String, ScopeBinding>, tainting_fns: &BTreeSet<String>, param_return_taint: &BTreeMap<String, BTreeSet<usize>>, method_tainting_fns: &BTreeSet<String>, struct_fields: &PlaceTypes<'_>) -> Option<String> {
+                let Some(last) = list.last() else { return None };
+                match last {
+                    Stmt::ExprStmt(expr) => expr_taint_source_m(expr, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields),
+                    Stmt::If { cond, then, else_ } => {
+                        expr_taint_source_m(cond, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields)
+                            .or_else(|| stmt_value_taint(then, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields))
+                            .or_else(|| else_.as_deref().and_then(|e| stmt_value_taint(e, local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields)))
+                    }
+                    _ => None,
+                }
+            };
+            tail.as_deref()
+                .or_else(|| stmts.last().and_then(|stmt| match stmt {
+                    Stmt::ExprStmt(expr) => Some(expr),
+                    _ => None,
+                }))
+                .and_then(|t| {
                 expr_taint_source_m(
                     t,
                     &local,
@@ -21535,7 +21552,8 @@ fn expr_taint_source_m(
                     method_tainting_fns,
                     struct_fields,
                 )
-            })
+                })
+                .or_else(|| stmt_value_taint(stmts, &local, tainting_fns, param_return_taint, method_tainting_fns, struct_fields))
         }
         Expr::Match {
             scrutinee, arms, ..
@@ -22193,7 +22211,24 @@ fn expr_secret_source_m(
                 method_secret_fns,
                 struct_fields,
             );
-            tail.as_ref().and_then(|t| {
+            fn stmt_value_secret(list: &[Stmt], local: &BTreeMap<String, ScopeBinding>, secret_fns: &BTreeSet<String>, param_return_taint: &BTreeMap<String, BTreeSet<usize>>, method_secret_fns: &BTreeSet<String>, struct_fields: &PlaceTypes<'_>) -> Option<String> {
+                let Some(last) = list.last() else { return None };
+                match last {
+                    Stmt::ExprStmt(expr) => expr_secret_source_m(expr, local, secret_fns, param_return_taint, method_secret_fns, struct_fields),
+                    Stmt::If { cond, then, else_ } => {
+                        expr_secret_source_m(cond, local, secret_fns, param_return_taint, method_secret_fns, struct_fields)
+                            .or_else(|| stmt_value_secret(then, local, secret_fns, param_return_taint, method_secret_fns, struct_fields))
+                            .or_else(|| else_.as_deref().and_then(|e| stmt_value_secret(e, local, secret_fns, param_return_taint, method_secret_fns, struct_fields)))
+                    }
+                    _ => None,
+                }
+            };
+            tail.as_deref()
+                .or_else(|| stmts.last().and_then(|stmt| match stmt {
+                    Stmt::ExprStmt(expr) => Some(expr),
+                    _ => None,
+                }))
+                .and_then(|t| {
                 expr_secret_source_m(
                     t,
                     &local,
@@ -22202,7 +22237,8 @@ fn expr_secret_source_m(
                     method_secret_fns,
                     struct_fields,
                 )
-            })
+                })
+                .or_else(|| stmt_value_secret(stmts, &local, secret_fns, param_return_taint, method_secret_fns, struct_fields))
         }
         Expr::Match {
             scrutinee, arms, ..
