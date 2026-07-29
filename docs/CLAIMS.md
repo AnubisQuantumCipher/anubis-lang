@@ -55,7 +55,11 @@ total." Residual composition shapes may still exist (e.g. D5 generic field insta
 struct-lit IF-at-construction from earlier HORUS census) without a current published red row.
 Absence of a red row is **not** evidence of absence.
 
-### Currently green (re-stamped 2026-07-27 GROK-MAAT round 8 — not a total-soundness claim)
+### Latest sealed baseline (re-stamped 2026-07-27 GROK-MAAT round 8 — not current working source or a total-soundness claim)
+
+This table is a dated baseline, not the live dirty-tree release status. Source-only repairs and
+verification-pending rows later in this document do not become current release claims until a fresh
+immutable pin and the required seal are recorded.
 
 **Tip commits:** `ec65724` (unknown attr fail-closed) · `e6ebfd2` (research auth bypass) ·
 `c9415b7` (D4) · `f9fc7a7` (D1/D2/D3). Live instrument: `./target/release/anubis` (mtime
@@ -132,6 +136,12 @@ Counting rules: **Lean = 162 / 15**. **Builtins ≈ 213** (five-function union).
    flipped: a status line that contradicts a section of the same document is the disease this file
    exists to catch, and it survived here for a day.
 
+4. **Permanent external/TCB residuals — OPEN and named.** Keychain/Secure Enclave enforcement
+   remains dependent on OS signing, entitlements, hardware, and the Apple security boundary;
+   Softnet hostname policy retains the HARD post-pin DNS-rebind residual; DDC is not TT-total;
+   hosted CI does not prove Metal execution; and native general free/signed non-power-of-two
+   division remains deferred. Unit or hosted greens must not silently close these boundaries.
+
 ### Phase 5 closed — builtin surface, and the instrument that was measuring it (2026-07-28)
 
 **Commit `1a19479`.** 213 builtins, every cell classified by the PAIR (`check`, `run`):
@@ -180,6 +190,11 @@ reject→accept.
 ---
 
 ### Phase 6 — run_failclosed green as a WHOLE, and two ratchets that were lying (2026-07-28)
+
+> **Historical result only.** This records what commit `5040f41` measured at that point in time;
+> it is not a present-tense whole-runtime claim. The current inventory and gate verdict control.
+> While any `OPEN`, `UNENUMERATED`, semantics-only, or uncovered non-run row remains, the strongest
+> available verdict is `PASS_INSTRUMENTED`, not `PASS_RUNTIME_FAILCLOSED_WHOLE`.
 
 **Commit `5040f41`.** `GATE: PASS_RUNTIME_FAILCLOSED_WHOLE` — 104 closed corpus, 11 permanent
 controls, 5 graduated, 2 enforcement, 23 doc_ok IEEE; `blocks_whole_open=0 open=0 unenumerated=0`.
@@ -1099,6 +1114,30 @@ never terminates is a check/run divergence of a different kind, and is being cha
     `field_fn_identities` on the place-assign path and the consumer on that same path ignores it.
     Not a missing analysis — a written label that nothing reads.
 
+    **Row 6, refined by source reading 2026-07-29 — it is worse than "the consumer ignores it".**
+    The producer at `:10311-10336` writes `field_fn_identities` into the **effect** walker's scope.
+    The **confidentiality** walker `walk_block_secret` (`mod.rs:22697-23100`) builds its own
+    `ScopeBinding`s and, across those 400 lines, mentions `field_closures` and
+    `field_fn_identities` **exactly once each — both as `BTreeMap::new()` initializers**
+    (`:22877`, `:22880`). It never populates them and never reads them.
+
+    ```
+    awk 'NR>=22697 && NR<=23100' compiler/src/middle/mod.rs | grep -n 'field_fn_identities'
+    #  -> 22880:  field_fn_identities: BTreeMap::new(),      (the only occurrence)
+    ```
+
+    So the secret lane does not hold a **stale** function identity — **it holds none at all**, and
+    every `b.f = key` / `let g = b.f; g()` resolution in the confidentiality direction is decided
+    against an empty map. That is why the entire §3.1 class leaks toward `print`/`net.send` while
+    the capability lane (which does carry identity) rejects the same shapes — the discriminator the
+    verifiers observed and could not explain from the write site alone.
+
+    **Consequence for the fix:** this is not "wire the consumer to the producer." The
+    confidentiality walker needs the identity lane *at all* — either by sharing the effect walker's
+    scope or by running the same `fn_identities_of` / `collect_container_fn_identities` maintenance
+    on `Stmt::Let` and both `Stmt::Assign` arms. Both `Assign` arms in that walker currently update
+    only `b.secret` (`:22748-22783`). Estimating this as a small patch would be wrong.
+
     **Row 8 is the Phase-2 discipline not having reached this walker.** `carrier.rs` and
     `loopctl.rs` were made total so a new variant fails to compile; `place_struct_type` still ends
     in `_ => None`, and `Expr::Index` fell straight through it. The fix shape already exists in the
@@ -1123,9 +1162,11 @@ never terminates is a check/run divergence of a different kind, and is being cha
     unaffected and carry the full record, but the summary I first read was produced by a broken
     reducer — recorded because a silently-empty aggregate is exactly the failure this file tracks.
 
-### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
+### HISTORICAL, SUPERSEDED BY ITEM 21 — carrier class judged EXHAUSTED as a callee-identity class (2026-07-27)
 
-After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
+The following dated judgment was falsified on 2026-07-29 by item 21's place-assignment,
+control-flow, container, and call-site witnesses. It is retained only as historical evidence of the
+claim that failed. After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
 surfaces closed, the adversary's judgment — requested explicitly as a judgment, not a measurement:
 
 **The carrier class is exhausted as a CALLEE/VALUE-IDENTITY class.** Its definition: enforcement that
@@ -1678,13 +1719,15 @@ guest passes through the host and inherits the host's trustworthiness. That is a
 isolated. Any evidence produced under that flag carried an isolation claim the hypervisor never
 enforced. It now refuses and names the path that does enforce it.
 
-### Carrier class: 40 of 41 CLOSED — the one residual, named precisely (2026-07-28)
+### HISTORICAL, SUPERSEDED BY ITEM 21 — carrier class measured 40 of 41 closed (2026-07-28)
 
-The 41 published-open carrier routes stand at **40 CLOSED, 1 open**, with 25 must-stay-ACCEPT pure
-guards passing and zero over-rejection, security 317/317. The element-materialization ladder is
-25/25.
+At this dated snapshot, the 41 published-open carrier routes stood at **40 CLOSED, 1 open**, with
+25 must-stay-ACCEPT pure guards passing and zero over-rejection, security 317/317. The
+element-materialization ladder was 25/25. Item 21 later falsified this as a current class-level
+closure with place-assignment, control-flow, container, and call-site true accepts.
 
-**The residual is `rec_build_then_app`, and it is a summary-shape problem, not a missing rule:**
+**The one residual in this historical snapshot was `rec_build_then_app`; item 21 names the larger
+current open inventory.** Its mechanism was a summary-shape problem, not a missing rule:
 
 ```
 fn go(n, acc) { if n <= 0 { acc } else { go(n - 1, acc + [leak]) } }
@@ -1710,7 +1753,10 @@ full-corpus verdict-diff rather than a same-session edit.
 Published as a bounded residual with the mechanism, the file, the exact predicate, and the reason
 it was not changed — not as an unexplained red.
 
-### The callable false-accept class is WIDER than the ten shapes — 41 open routes (OPEN 2026-07-28)
+### Historical widening snapshot — 41 open routes before the historical 40/41 result above (2026-07-28)
+
+This section records the discovery census that preceded the then-current 40-closed/1-open result
+above. Both snapshots are superseded by item 21; neither is a present-tense count.
 
 Ten carrier shapes were closed on 2026-07-28, each with a rejecting discriminator AND a guard that
 rejects poison. Red inventory zero, both held fixtures rejecting, security 317/317. On that
@@ -1870,7 +1916,7 @@ of an unrelated type. `Option<u32> = "hello"` type-checks; `u32 = "hello"` does 
 concrete struct named `Point` erasable — trading an over-rejection for a worse under-rejection. The
 sound fix consults the DECLARED parameter list (`ctx.fn_generics`, `mod.rs:2868`) rather than
 guessing from the string, which means threading context into a leaf module. Recorded here rather
-than half-fixed by the person who found it while the type lane's owner is mid-repair elsewhere.
+than half-fixed without the required compiler-lane ownership and full-corpus verdict diff.
 
 Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
 
@@ -1924,8 +1970,39 @@ Fixtures: `scratchpad/fleet_20260726/w19/generics/g1..g4`.
      shape in `run_vz_apply_gate.sh` and three `run_dx_gate.sh` checks, which grade on the string
      `test result: ok`.
 
-   **Instrument provenance is the most common defect:** nine gates grade whatever sits at
-   `target/release/anubis` with no freshness or digest check, bypassing the pin mechanism above.
+   **Status update 2026-07-29 — do not read the historical bullets above as current closure.**
+
+   - **Docs drift: locally CLOSED and directly re-run.** The canonical gate now requires a non-zero
+     tested count, enforces a 40-stamp coverage floor, and passes `--require-owned-files` for the live
+     repository so a renamed/missing owned document is a failure rather than a skipped file. An
+     empty scan root exits 1 with `tested nothing`; semantic drift writes a machine-readable FAIL
+     report, symlinked parent directories are rejected, and the full test passes under
+     `PYTHONOPTIMIZE=1`. The canonical self-test reported 40 stamps and zero drift.
+   - **Shadow and `t3_uds`: source repairs are present; verification remains pending.** Shadow now
+     has emit sites and labels a zero-diagnostic run `VACUOUS`; the UDS case no longer records PASS
+     in both branches. Neither is promoted here to VM-sealed closure.
+   - **Filtered Rust tests: source repair present, current-source build verification pending.**
+     `assert_rust_tests_exercised` sums passed tests across libtest harnesses and rejects missing,
+     failed, malformed-positive, truncated, or zero-test summaries. `assert_anubis_tests_exercised` likewise rejects `0/0`, partial,
+     duplicate, malformed, and mixed valid-plus-malformed CLI summaries. Coverage floors require a
+     canonical integer and update by temporary-file rename. The shared microbench is 22/22. Keychain
+     uses exact names; VZ-apply and DX call the shared assertions. Synthetic VZ/DX zero-test runs are
+     rejected, but no fresh project build was performed in this host lane.
+
+   - **LSP harness lifecycle: locally CLOSED and pinned-binary re-run.** The reader has a real
+     deadline; success requires shutdown response ID 3, server exit 0, no forced termination, exact
+     capability/diagnostic/hover shapes, and stable binary identity. Protocol controls are 6/6 and
+     the frozen-pin roundtrip exited 0 with `completion_ok=True` and `forced_termination=False`.
+
+   - **Runtime evidence identity: source repair present; integrated build/probe/seal pending.** The
+     isolated runtime-hash module is 7/7, but `tools/anubis` has not been rebuilt from the current
+     working source and runtime-probe/runtime-plan schema 1.1 has not been VM-sealed. The behavior in
+     `docs/CLI.md` describes the source contract, not a current-source release verdict.
+
+   **Instrument provenance is the most common defect:** the 2026-07-28 census found nine gates
+   grading whatever sat at `target/release/anubis` with no freshness or digest check. VZ-apply and
+   DX now resolve a published/explicit pin and record identity; the remaining population has not
+   been re-enumerated here and stays open rather than inheriting a guessed count.
 
    Not claimed closed. The fix that would close the class is a shared coverage assertion in
    `gate_common.sh` that every gate calls with its own counter, enforced by the adoption check —
@@ -1986,18 +2063,18 @@ on every taint / secret / capability / effect row** until OPUS5's queue is empty
 | Claim | Evidence (command + observation) | Boundary |
 |-------|----------------------------------|----------|
 | Evidence-native compiler/toolchain | `cargo build -p anubis` (workspace); CI sealed suite on branch | Not a claim about every possible target triple |
-| Safe taint enforcement | security **317/317** (lead) / red list empty live; D1–D4 closed; taint selfhost **0 disagreements** | **PARTIAL as total** — green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
+| Safe taint enforcement | security **317/317** (lead) / red list empty live; original D1–D4 fixture shapes reject; taint selfhost **0 disagreements** | **PARTIAL as total** — item 21 reopens broader composition/carrier routes; green = **no KNOWN defects**, not no defects. Stdlib **104/104** |
 | Declassification policy | declassify accept/reject fixture pairs under `tests/fixtures` / security fixtures | Lab policy surface, not a full IFC type system; shell declassify accept is check-policy only (`run` non-run by design — CLAIMS open §2) |
 | Solver correctness (supported int fragment) | **lead-verified:** `bash scripts/run_native_authoritative_gate.sh` → **PASS, 882 files, 0 mismatches** | Division deferred; var×var mul claimed; opt-out `ANUBIS_NATIVE_AUTHORITATIVE=0` |
 | Wrap-safety VCs (AoRTE-lite) + CEX possible fix | **CLAIMED 2026-07-25; free×free closed 2026-07-25** | On modelable ints: auto wrap-safety for `+`/`-`, **var×const `*`**, and **free×free `*`** via **offline interval product** (no SMT smul hang): bounded factors → prove; unbounded → `ANUBIS_WRAP_RISK` + possible fix; opt-out `ANUBIS_WRAP_SAFETY=0`; unit `cargo test -p anubis-compiler --lib wrap_safety` → 6+; see [`SPARK_VS_ANUBIS.md`](SPARK_VS_ANUBIS.md) | Residual: free `ensures(result == x*y)` posts can still be slow under native-authoritative (separate from wrap-safety); compound factors only offline-proved for simple `bvadd`/`bvsub`/const/var shapes |
-| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + D1–D4 call/match places; **security 311/311** lead / red list empty | Residual: full PC-join; composition shapes may remain (D5/D6 family) |
+| Implicit secret→public (PC) + explicit secret→public (Safe) | **CLAIMED 2026-07-25 for cited fixtures; PARTIAL as total IFC** | Method formals + declared returns + R1 + original D1–D4 call/match fixture shapes; **security 311/311** lead / red list empty | Residual: full PC-join plus item 21's reopened place-assignment, control-flow, container, and call-site routes |
 | Symbolic-index secret-capturing closure application | **CLAIMED 2026-07-25** | `arr[idx](…)` with non-literal `idx` fail-closed when container holds secret/taint-capturing element (j1 twin of `let g = arr[i]`); unit `symbolic_index_secret_capturing_list_application_fails_closed`; clean symbolic still accepts | Residual: full PC-join; untyped formals still interproc |
 | Nested container closure application (`outer[0][0]`, `b.fs[i]`, bind + mid-bind) | **CLAIMED 2026-07-25** | Nested Index/FieldAccess CallExpr + **bind** (`let g = outer[i][0]; g(0)`) + **intermediate mid-bind** (`let mid = outer[0]; mid[0](0)` re-keys `field_closures`; symbolic mid union-projects first segments fail-closed); unit `nested_container_closure_application_fails_closed` (apply + bind + mid lit/sym/clean); clean nested still accepts | Residual: full PC-join not claimed |
 | if-expr-built containers seed `field_closures` (incl. nested `Stmt::If` + let-inner) | **CLAIMED 2026-07-25** | `collect_container_closures` walks `Expr::If`/`Match`/`Block`; nested bare `if` as `Stmt::If`; unit `nested_container_closure_application_fails_closed` | Residual: full PC-join not claimed |
 | `push`/`insert` seed capturing lambdas into `field_closures` (free + method) | **CLAIMED 2026-07-25** | `apply_container_mutation_taint` seeds pushed/inserted lambdas; concrete path miss fail-closes via `any_capturing_field_closure`; free `push(arr, lam)` + method `arr.push(lam)`; unit cases in `nested_container_closure_application_fails_closed` | Residual: full PC-join; HO rebind beyond push/insert seed |
 | Verified causal capability spend | **CLAIMED 2026-07-25 for cited units; PARTIAL as total Safe capability** | Verified privileged builtins require a **live matching-kind** token at the effect (`cap_acquire("kind")` → effect spends it); wrong kind / no token → `ANUBIS_EFFECT_UNAUTHORIZED`; double-spend → `ANUBIS_CAPABILITY_REUSE`; **ambient interproc caller-pays** (units `interproc_caller_pays_*`); fixtures `cap_causal_*` | Safe declaration-gated (`uses`); Cluster F inheritance closed for its mechanism — **other capability false accepts remain** (CLAIMS open §1); map/struct-field linear-closure residual |
 | Non-exportable linear capabilities (shared visitor + store-then-project + interproc container stores + peel-of-param + deep HO linear closures) | **CLAIMED 2026-07-25** | Local mint + export sinks → `ANUBIS_CAPABILITY_EXPORT`; causal spend without token-as-arg OK; `cap_export` peels; **interproc** formals + headers; **closure capture** export-seal; **store-then-project** + **interproc formal-container mutation**; **peel-of-param**; **deep HO linear closures** (named + **list containers** `arr[0](…)`; free Live caps MOVE into binding/container; double apply / use-after-move → `ANUBIS_CAPABILITY_REUSE`; units `linear_closure_*`); dual matrix; `cargo test -p anubis-compiler --lib middle::capability::tests` | Residual: map/struct-field linear-closure containers |
-| Keychain / Secure Enclave bind for NE caps (macOS) | **CLAIMED 2026-07-25 (signed Keychain path)** | Soft: `__anubis_cap_ne_soft:…` (`ANUBIS_KEYCHAIN_CAPS=0`); Keychain: `__anubis_cap_ne_kc:…` via Security.framework; SE: `__anubis_cap_ne_se:…` when `ANUBIS_KEYCHAIN_SE=1` and hardware allows; `keychain_se_probe` 0/1/2; **signed path** `compile_sign_and_run_source` (codesign with Apple Development or ad-hoc + safe CLI entitlements, no restricted SE key that AMFI-kills); unit `keychain_se_signed_run_binds_keychain` requires `kc:`/`se:` under Development identity; gate `bash scripts/run_keychain_se_gate.sh`; entitlement derive for packaging profiles | Residual: **App Store / notarized .app packaging**; restricted `com.apple.developer.secure-enclave` provisioning UX (CLI signed path omits that key deliberately); zkVM guest soft-only |
+| Keychain / Secure Enclave bind for NE caps (macOS) | **CLAIMED 2026-07-25 (signed Keychain path)** | Soft: `__anubis_cap_ne_soft:…` (`ANUBIS_KEYCHAIN_CAPS=0`); Keychain: `__anubis_cap_ne_kc:…` via Security.framework; SE: `__anubis_cap_ne_se:…` when `ANUBIS_KEYCHAIN_SE=1` and hardware allows; `keychain_se_probe` 0/1/2; **signed path** `compile_sign_and_run_source` (codesign with Apple Development or ad-hoc + safe CLI entitlements, no restricted SE key that AMFI-kills); unit `keychain_se_signed_run_binds_keychain` requires `kc:`/`se:` under Development identity; gate `bash scripts/run_keychain_se_gate.sh`; entitlement derive for packaging profiles | **Permanent residual / not claimed:** a signed CLI Keychain bind and optional SE handle do not establish hardware-isolated, nonexportable storage. Restricted-SE provisioning, hardware-isolation evidence, notarized/App Store packaging, and zkVM SE binding remain outside the claim |
 | Native CDCL Unsat RUP certificate | **re-run 2026-07-25:** `cargo test -p anubis-solver lrat` → **16 passed**; `check_proof` required for every `NativeVerdict::Unsat` | Pure independent RUP; division deferred |
 | Native solver as compiler **default** (no env) | **CLAIMED 2026-07-25** | `native_authoritative()` default ON; soak `out/native_default_flip_soak_20260725/`; decision `out/native_default_flip_seal_20260725/DECISION.md`; gate PASS post-flip |
 | Native authoritative **var×var mul** | **CLAIMED 2026-07-25** | `mulVar_correct` in BitBlast.lean + schoolbook `blast.rs::var_mul` + fragment admits; `run_native_authoritative_gate.sh` PASS |
@@ -2058,7 +2135,7 @@ jq gate_report.json                # pass=15 fail=0 (A15 frontdoor seal on disk)
 | Stranger 2 | `7c5bf06` | 9/9 | 6/6 | 34/34 |
 
 Agreed hashes (Phase 9 witness date only): binary fixpoint `9030e24b…`, macOS repro `c94fd5b1…`, Linux hermetic `6211f8c9…`, DDC output `3830edc6…`.  
-**Post-2026-07-26 registry work deliberately re-baselined the self-host binary; that new host value is unsealed — do not cite it as a seal.** Re-seal under VM before any new public fixpoint claim.  
+**The post-2026-07-26 registry host value was re-sealed in VM on 2026-07-29:** 22/22 gates, fixpoint `46ddce14…ba60` matching `scripts/vm/EXPECTED_FIXPOINT_VM`; see the dated status rows above. The Phase 9 hashes remain evidence for their witness date only and are not the current fixpoint.  
 See [`language/phase9_independent_witness/WITNESS.md`](language/phase9_independent_witness/WITNESS.md) and [`WITNESS_2.md`](language/phase9_independent_witness/WITNESS_2.md).
 
 ### Essence spine (identity re-check)
