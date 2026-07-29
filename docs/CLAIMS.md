@@ -520,8 +520,22 @@ never terminates is a check/run divergence of a different kind, and is being cha
 
     Rows 6–8 may be ONE mechanism rather than three: the value lane covers all of them with a single
     conservative rule — an unsummarized builtin result carries any labelled argument — and the tag
-    resolver has no equivalent. That is being tested rather than assumed. One chain, c05
-    (map→struct→push→field), remains ACCEPT and may fall to row 8.
+    resolver has no equivalent. That is being tested rather than assumed.
+
+    **c05 no longer ACCEPTS (re-measured 2026-07-29 at `4b83507b`).** This entry previously read
+    "one chain, c05 (map→struct→push→field), remains ACCEPT and may fall to row 8". It now exits 1.
+    Checked rather than inferred from the exit code — `anubis check` on
+    `scratchpad/fleet_20260726/adversary/r12/c05_map_struct_push.anb` reports
+    `ANUBIS_EFFECT_FORBIDDEN_IN_MODE: safe mode file_write (via callee \`uses(fs.write)\`)`, a real
+    enforcement verdict and not a type error on a malformed fixture (the failure mode that wasted a
+    round on the auditor's earlier red guard).
+
+    **This does NOT close row 8, and the distinction matters.** The catch is in the EFFECT lane under
+    safe mode; row 8 is about the TAG lane discarding paths through map extraction. A chain that one
+    lane refuses tells you nothing about whether the other lane carries the label — that is the
+    "both-accept = benign symmetric blind spot" reasoning run in reverse. Row 8 stays open until the
+    tag lane is measured directly. Recorded now because leaving a published ACCEPT standing against a
+    measured REJECT is the same fabrication as the converse.
 
     Every remaining row is a fail-open DEFERRAL, not a misclassification.
 
@@ -557,7 +571,23 @@ never terminates is a check/run divergence of a different kind, and is being cha
     immunity → MODE-as-carrier → the item-15 barrier. Then four rounds (R16–R19) closed the
     module-level gap: all 8 previously-untested offensive modules now have tests.
 
-    **Measured state (R20 — re-derived, not assumed):**
+    **SUPERSEDED 2026-07-29 — the surface grew by 10 modules at `4b83507b`.** The R20 figures below
+    described a 24-module surface. Re-derived by command against the current tree:
+
+    | quantity | R20 | now | how |
+    |---|---:|---:|---|
+    | offensive modules (excl. `mod.rs`) | 24 | **37** | `ls tools/anubis/src/offensive/*.rs` |
+    | modules with ≥1 test | 24 | **36** | `grep -l '#\[test\]'` — the one without is `protocol.rs` |
+    | `#[test]` functions | 142 | **215** | `grep -h '#\[test\]' *.rs \| wc -l` |
+    | `pub fn` | 137 | **170** | `grep -h '^pub fn ' *.rs \| wc -l` |
+
+    **The derived percentages below are STALE and are not restated here.** "~77% unprobed by security
+    examination" was an estimate over 137 pub fns with a hand-judged numerator; re-deriving it needs
+    the same judgment applied to 170, which is a measurement someone has to make rather than a number
+    to scale. Recorded as stale rather than silently rescaled — rescaling an estimate by a ratio is
+    how a guess acquires false precision. The hard counts above are current; the percentage is not.
+
+    **Prior R20 state, retained for the derivation below:**
     - 24/24 offensive modules have at least one test (was 16/24).
     - 142 test functions across `tools/anubis/src/offensive/` (92 pre-existing + 50 authored R16–R19).
     - 137 pub fns across 24 modules.

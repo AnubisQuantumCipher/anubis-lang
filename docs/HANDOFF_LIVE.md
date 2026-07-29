@@ -130,24 +130,48 @@ tests pass while checking nothing, which is the "244/244 PASS with zero fixtures
 
 ---
 
-## 3. THE BOARD — every number measured on the current binary
+## 3. THE BOARD — re-measured 2026-07-29 at `4b83507b`
 
-| gate | result | command |
-|---|---|---|
-| security fixtures | **311/311** | `bash scripts/run_security_fixtures.sh` |
-| language fixtures | **244/244** | `bash scripts/run_language_fixtures.sh` |
-| compiler lib | **736/736** | `cargo test --release -p anubis-compiler --lib` |
-| anubis tool | 194/194 | `cargo test --release -p anubis` |
-| stdlib fail-closed | 104/104 | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/x` |
-| capset selfhost | 5/5 | `bash scripts/run_capset_selfhost_gate.sh` |
-| native-authoritative | 882 files, 0 mismatches | `bash scripts/run_native_authoritative_gate.sh` |
-| formal gate | PASS | `bash scripts/run_formal_gate.sh` |
-| docs drift | 33 stamps, 0 drift | `bash scripts/run_docs_drift_gate.sh` |
-| adversary guards | G1–G8 ACCEPT, a00–a03 + c01–c04 REJECT, c05 open | `bash scratchpad/fleet_20260726/score_r12.sh` |
+The previous snapshot predated the trust-spine commits and the offensive slice; **every row below
+was re-run**, not carried forward. Where a row moved, the old value is shown so the drift is legible.
 
-**Pin:** `vm/pins/anubis-c84978756eec` @ head `b3a8c2f` — **STALE**, predates the monotone fix.
-`scripts/publish_pin.sh` was blocked in my session; **codex is authorized to run it.** Publish a
-fresh one after the next build and SAY SO to the agents.
+| gate | result | was | command |
+|---|---|---|---|
+| security fixtures | **317/317** | 311/311 | `ANUBIS_BIN=./target/release/anubis bash scripts/run_security_fixtures.sh` |
+| language fixtures | **252/252** | 244/244 | `ANUBIS_BIN=./target/release/anubis bash scripts/run_language_fixtures.sh` |
+| compiler lib | **760/760** | 736/736 | `cargo test --release -p anubis-compiler --lib` |
+| anubis tool | **332/332** (6 suites, 0 warnings) | 194/194 | `cargo test --release -p anubis` |
+| stdlib fail-closed | **104/104**, `timed_out=0` | 104/104 | `ANUBIS_BIN=./target/release/anubis bash scripts/run_stdlib_failclosed_gate.sh --out out/x` |
+| capset selfhost | **AGREE=4 DISAGREE=0 SKIP=1** | "5/5" | `bash scripts/run_capset_selfhost_gate.sh` |
+| native-authoritative | **906 files, 0 mismatches, 0 disagreements** | 882 files | `bash scripts/run_native_authoritative_gate.sh` |
+| formal gate | **PASS** — Lean 4.32.0, 18 jobs, no `sorry`/`admit`/`axiom` | PASS | `bash scripts/run_formal_gate.sh` |
+| docs drift | **39 stamps, 0 drift** | 33 stamps | `bash scripts/run_docs_drift_gate.sh` |
+| offensive platform | **34/34 PASS**, `isolation=tart-disposable-guest` | — | `bash scripts/run_offensive_platform_gate.sh` |
+| adversary guards | **g01–g08 ACCEPT; a00–a03 + c01–c05 all REJECT** | c05 open | `bash scratchpad/fleet_20260726/score_r12.sh` |
+| **VM battery** | **22/22 EXIT=0, `gate failures : 0`, fixpoint unchanged** | 19/19 | `bash scripts/vm/run-slice.sh` |
+
+**Two rows are corrections, not just refreshes:**
+
+- **capset selfhost was published as "5/5"** and the gate actually reads `AGREE=4 DISAGREE=0 SKIP=1`.
+  Five fixtures exist; four agree and one SKIPs. "5/5" reads as five agreements. Under this repo's own
+  rule — *SKIPPED is never PASS* — the honest cell names the skip.
+- **c05 now REJECTS.** `docs/CLAIMS.md` item 14 records "chain c05 (map→struct→push→field) remains
+  ACCEPT and may fall to row 8"; on this binary `c05_map_struct_push.anb` exits 1. It rejects for the
+  *right* reason, checked rather than assumed — `ANUBIS_EFFECT_FORBIDDEN_IN_MODE: safe mode file_write
+  (via callee \`uses(fs.write)\`)`, not a type error on a malformed fixture. **Caveat before anyone
+  calls row 8 closed:** the catch is in the EFFECT lane under safe mode. Item 14 row 8 is about the
+  TAG lane discarding map-extraction paths, and one lane catching a chain does not prove the other
+  lane carries it. Treat this as "the c05 chain no longer accepts", not "row 8 is closed".
+
+**VM battery detail (guest `anubis-run-14791`, 2026-07-29):** all 22 gates `EXIT=0` — cargo-test,
+tool-test, clippy, build-rel, language, turing, security, stdlib, shadow, seal, dogfood, effect-sh,
+capset-sh, type-sh, taint-sh, stdlib-fc, native-auth, docs-drift, walker, formal, formal-kernel,
+correspondence. Fixpoint `46ddce14…ba60` == `scripts/vm/EXPECTED_FIXPOINT_VM`, **unchanged** — the
+offensive slice is the CLI tool, not `anubis_sh.anb`, so no re-baseline is implied.
+
+**Pin:** `vm/pins/anubis-c84978756eec` @ head `b3a8c2f` — **STALE**, predates both the monotone fix
+and the offensive slice. `scripts/publish_pin.sh` still needs running against `4b83507b`; publish and
+SAY SO to the agents, since every agent measurement straddles two binaries until then.
 
 ---
 
@@ -157,7 +181,7 @@ fresh one after the next build and SAY SO to the agents.
 |---|---|---|
 | 12 | bare-builtin carrier | **CLOSED** `c7643e5` |
 | 13 | `run` aborted on non-terminating accept | **CLOSED** |
-| 14 | aggregate path seeders | **PARTIAL** — 5 shapes closed, 6 matrix rows open, c05 open |
+| 14 | aggregate path seeders | **PARTIAL** — 5 shapes closed, 6 matrix rows open. **c05 now REJECTS** (2026-07-29, via the EFFECT lane in safe mode — see §3; this does NOT by itself close tag-lane row 8) |
 | 15 | research-lane immunity ACCIDENTAL | OPEN — barrier exists, predicate does not (task #27) |
 | 16 | 91% of dual-use surface unprobed | OPEN, stated |
 | 17 | `build`/`run` research-consent gap | OPEN, low |
