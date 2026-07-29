@@ -1012,6 +1012,76 @@ never terminates is a check/run divergence of a different kind, and is being cha
     (`free ≈ 11.2 GiB` vs the guard's `20480 MiB`), and this repo does not commit code that has not
     passed its verify step.
 
+21. **SIX items published as CLOSED are OPEN — 30 true accepts with runtime witnesses, survived
+    adversarial refutation (2026-07-29). This is the largest open item on the list.**
+
+    **Method.** Eleven agents, each told to FALSIFY rather than confirm: six assigned one
+    published-CLOSED item, five hunting the named-open residuals. ~192 probes, all written outside
+    the repo, all run against `./target/release/anubis`. **Every finding was then handed to an
+    independent verifier instructed to REFUTE it and to default to refuted when uncertain.**
+    43 raw findings → **31 survived refutation, 30 of them TRUE ACCEPTS** (12 were refuted and are
+    discarded). The verifiers judged most as *not* covered by any published item; one is recorded as
+    outright falsifying the item it was tested against.
+
+    **All six falsification surfaces came back BROKEN. Not one closure held.**
+
+    | item | published as | actual |
+    |---|---|---|
+    | 7 (2nd list) | Function-identity carrier CLOSED `0eb5977` | **BROKEN** — 9 TA |
+    | 10 | `requires` through fn-value carrier CLOSED | **BROKEN** — 6 TA |
+    | 11 | Nested-call argument `requires` CLOSED | **BROKEN** — 1 TA + 2 deferrals |
+    | 12 | Bare-builtin carrier / trifecta CLOSED `c7643e5` | **BROKEN** — 5 TA |
+    | 1 | Composition residuals D1–D6 closed | **BROKEN** — 15 TA |
+    | 2 | check/run divergence (R) CLOSED | **BROKEN** — 1 TA |
+
+    **The single mechanism behind most of it: PLACE-ASSIGNMENT.** Item 7 closed the *read* carriers
+    and left every *write* carrier open. All of these `check` green and `run` prints the secret:
+
+    ```anubis
+    struct Box { f: u64 }
+    fn key() -> secret<i64> { return 42; }
+    fn main() { let b = Box { f: plain }; b.f = key; let g = b.f; print(g()); }
+    ```
+
+    …and the same for `fs[0] = key`, `m["k"] = key`, `o.i.f = key`, whole-struct pass after the
+    write, the integrity dual (tainted fn → `shell`), and secret → `net.send`. It is **not**
+    interprocedural-only. This is the write-lane re-exposing latent unsoundness in a lane that was
+    audited only for reads — a pattern this repo has already hit in the field-write trilogy.
+
+    **The most alarming single witness:** wrapping item 10's *own corpus fixture* in `if 1 == 1 { }`
+    flips its verdict REJECT → ACCEPT with a runtime witness. The fixture that certifies the closure
+    is defeated by a trivially-true conditional.
+
+    **Item 12 was closed in the SOURCE direction only.** The sink direction still launders: a bare
+    `write_file` / `shell` passed as a callable parameter writes attacker-controlled content on a
+    green check, and *all four* duals of the pinned REJECT fixtures ACCEPT.
+
+    **Item 1's D1–D6 closure does not survive contact with containers.** 15 true accepts: for-loop
+    binder over records, `xs[0].k`, `m["a"].k`, untyped parameter, declared `list<S>` parameter,
+    factory with no declared return type, lambda-bound factory, `mk()[0].k`, closure stored in a
+    struct field then applied, index at the root of a nested path, push-then-read-back,
+    `while` with a variable index — plus taint-lane duals reaching `fs.write` and `net.send`.
+
+    **What this means for the completeness question.** The engineering board is green — language
+    252/252, security 317/317, stdlib 104/104, native-authoritative 906/0, formal PASS, VM seal
+    22/22 fixpoint unchanged. **None of that is the language promise.** Against
+    *`anubis check` PASS ⇒ the program cannot violate its stated contracts, effects, capabilities or
+    information-flow policy at runtime*, the answer is **NO**, and it is not close: 30 programs pass
+    `check` and violate at runtime. `docs/language/ROADMAP.md` already says freestanding
+    "Phase N DONE" is false as a soundness claim; this is the measurement behind that sentence.
+
+    **The lesson is about the CLOSURES, not the defects.** Six independent items, each closed by a
+    real fix with a real fixture, each still open — because the fix was verified against the
+    positions its fixture happened to occupy. A corpus stops offering counterexamples long before a
+    class is closed, and **a green board is exactly when that is least visible.** Closing these
+    one carrier at a time will reproduce the same outcome; the fix has to be positional totality
+    (the `carrier.rs` / `loopctl.rs` shape from Phase 2), applied to the write lane and to
+    call-site discharge.
+
+    Raw probes and verifier transcripts:
+    `subagents/workflows/wf_849c0fb2-478/` (journal.jsonl + per-agent jsonl). Findings are recorded
+    here as MEASURED, not yet triaged into individual fixes; no fix is claimed.
+
 ### The carrier class — judged EXHAUSTED as a callee-identity class (2026-07-27)
 
 After 19 surfaces audited, two rounds of pre-registered predictions scored, and four of five leaking
