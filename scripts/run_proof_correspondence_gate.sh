@@ -47,6 +47,36 @@ fi
 
 checked=0; failed=0
 
+# 0. The theorem COUNT the document states must be the comment-stripped count.
+#    This existed as an unchecked number for as long as the document has claimed
+#    "Counts here are re-derived by the gate; do not hand-edit them" — and it was
+#    WRONG: the doc said 163, which is what a naive `grep -c '^\s*theorem'` returns
+#    because one theorem sits inside a `/- ... -/` block comment. The gate verified
+#    that each NAMED theorem exists and never looked at the aggregate, so a document
+#    about proof correspondence overclaimed its own proof count, and asserted the gate
+#    had derived it. Producer and consumer disagreeing while the consumer claims they
+#    agree is the exact disease this repo tracks.
+lean_count="$(python3 - <<'PY'
+import re, glob
+n = 0
+for f in glob.glob('formal/Anubis/*.lean'):
+    s = re.sub(r'/-.*?-/', '', open(f).read(), flags=re.S)
+    n += len(re.findall(r'^\s*theorem ', s, re.M))
+print(n)
+PY
+)"
+doc_count="$(grep -oE 'ships [0-9]+ machine-checked Lean theorems' "$DOC" | grep -oE '[0-9]+' | head -1)"
+checked=$((checked+1))
+if [[ -z "$doc_count" ]]; then
+  echo "  MISS theorem-count — $DOC no longer states 'ships N machine-checked Lean theorems'"
+  failed=$((failed+1))
+elif [[ "$doc_count" != "$lean_count" ]]; then
+  echo "  MISS theorem-count — $DOC says $doc_count, comment-stripped formal/**.lean has $lean_count"
+  failed=$((failed+1))
+else
+  echo "  ok   theorem-count $lean_count (comment-stripped)"
+fi
+
 # 1. Lean theorems cited in backticks that look like identifiers ending in a known suffix.
 #    Only names that actually appear as `theorem <name>` somewhere are treated as citations, so
 #    ordinary prose in backticks is not mistaken for one.
