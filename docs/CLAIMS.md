@@ -587,6 +587,37 @@ never terminates is a check/run divergence of a different kind, and is being cha
     to scale. Recorded as stale rather than silently rescaled — rescaling an estimate by a ratio is
     how a guess acquires false precision. The hard counts above are current; the percentage is not.
 
+    **REPLACED 2026-07-29 by a mechanical metric — the REFUSAL-PROBE count.** The old figure could
+    not be re-derived by anyone else, because "security-relevant" was a judgment held in one agent's
+    head. This one has a stated, reproducible criterion: a test is a **refusal probe** if its body
+    contains `expect_err`, `unwrap_err`, `is_err()`, `assert!(!`, or an `ANUBIS_[A-Z_]+` error code —
+    i.e. it asserts the system *refuses* something, rather than that a feature works. Measured
+    against **HEAD, not the working tree** (`git show HEAD:<file>`), because a published count must
+    describe what a clone gets — the mistake `489f5826` already corrected once.
+
+    | quantity | at HEAD `8c31d958` |
+    |---|---:|
+    | offensive modules with code (excl. `mod.rs`) | 37 |
+    | `pub fn` | 171 |
+    | `#[test]` functions | 219 |
+    | **refusal probes** | **79 (36.1% of tests)** |
+    | **modules asserting NO refusal anywhere** | **10** |
+
+    The 10: `crypto` (11 pub fns / 2 tests), `evasion` (7/6), `exploit` (2/1), `infrastructure`
+    (5/5), `lolbas` (1/3), `opsec` (2/5), `payloads` (5/6), `postex` (4/5), `privesc` (6/6),
+    `reporting` (4/4).
+
+    **What this says that the old percentage did not.** For an offensive platform the safety story
+    *is* the refusals — authorization gating, PLAN_ONLY defaults, isolation, scope enforcement. A
+    module whose tests never assert a refusal has its guard surface untested no matter how many
+    tests it has: `privesc` has 6 tests and 0 of them check that anything is denied. **Six of the
+    ten are from the 10-module slice in `4b83507b`** — that slice added functionality tests and no
+    guard tests, which is exactly the gap item 19a then found by hand in `malleable.rs`. This metric
+    would have pointed at it in advance.
+
+    Re-derive with the criterion above; it is a dozen lines of `git show` + regex and needs no
+    judgment call.
+
     **Prior R20 state, retained for the derivation below:**
     - 24/24 offensive modules have at least one test (was 16/24).
     - 142 test functions across `tools/anubis/src/offensive/` (92 pre-existing + 50 authored R16–R19).
