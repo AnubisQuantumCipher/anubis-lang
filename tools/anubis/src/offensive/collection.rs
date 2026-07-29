@@ -12,6 +12,16 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+fn content_preview(content: &str) -> String {
+    content.chars().take(200).collect()
+}
+
+fn clipboard_content_evidence(content: &[u8]) -> (usize, String, String) {
+    let hash = hex::encode(Sha256::digest(content));
+    let preview = content_preview(&String::from_utf8_lossy(content));
+    (content.len(), hash, preview)
+}
+
 /// Clipboard capture (macOS pbpaste / Linux xclip).
 ///
 /// Captures current clipboard contents. Maps to T1115.
@@ -27,15 +37,14 @@ pub fn clipboard_capture(eng: &Engagement) -> Result<Value> {
     let output = Command::new(cmd).args(args).output();
     match output {
         Ok(o) if o.status.success() => {
-            let content = String::from_utf8_lossy(&o.stdout).to_string();
-            let hash = hex::encode(Sha256::digest(content.as_bytes()));
+            let (content_length, hash, preview) = clipboard_content_evidence(&o.stdout);
             Ok(json!({
                 "schema": "aop-collection-v1",
                 "module": "clipboard_capture",
                 "engagement_id": eng.engagement_id,
-                "content_length": content.len(),
+                "content_length": content_length,
                 "content_sha256": hash,
-                "content_preview": &content[..content.len().min(200)],
+                "content_preview": preview,
                 "attck": ["T1115"],
                 "executed": true,
             }))
@@ -262,6 +271,24 @@ mod tests {
         let eng = Engagement::default_lab("collect-test", "lab-auth");
         let result = clipboard_capture(&eng);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn clipboard_preview_truncates_at_a_character_boundary() {
+        let content = format!("{}’suffix", "a".repeat(199));
+        let preview = content_preview(&content);
+        assert_eq!(preview.chars().count(), 200);
+        assert!(preview.ends_with('’'));
+    }
+
+    #[test]
+    fn clipboard_evidence_hashes_raw_bytes_not_lossy_preview_text() {
+        let raw = [0xff, b'a', 0x00, 0xfe];
+        let (length, hash, preview) = clipboard_content_evidence(&raw);
+        assert_eq!(length, raw.len());
+        assert_eq!(hash, hex::encode(Sha256::digest(raw)));
+        assert_ne!(hash, hex::encode(Sha256::digest(preview.as_bytes())));
+        assert!(preview.contains('\u{fffd}'));
     }
 
     #[test]

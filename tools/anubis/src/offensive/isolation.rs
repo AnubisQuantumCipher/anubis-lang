@@ -263,6 +263,7 @@ pub fn require_fuzz_allowed(target: &Path) -> Result<()> {
 
 /// JSON status for doctor / gates.
 pub fn isolation_status_json() -> serde_json::Value {
+    let host_forbidden_aop = crate::Commands::required_vz_actions();
     json!({
         "in_vz_guest": in_vz_guest(),
         "poc_lab_host_override": false,
@@ -272,12 +273,8 @@ pub fn isolation_status_json() -> serde_json::Value {
             "poc_kit_host_lab_gold_allowed": false,
             "all_research_and_fuzz_require_vz": true,
         },
-        "host_forbidden_aop": [
-            "listen", "agent-generate", "task-queue",
-            "inject-plan", "lateral-ssh", "lateral-smb",
-            "exploit-run", "persist-launchagent", "pack-xor",
-            "recon-scan", "string-scramble"
-        ],
+        "host_forbidden_aop": host_forbidden_aop,
+        "host_forbidden_policy_source": "Commands::required_vz_action (exhaustive macro table)",
         "host_allowed_poc_kit": [],
         "host_allowed_control_plane": [
             "engage-init", "engage-status", "engage-rehash",
@@ -288,7 +285,6 @@ pub fn isolation_status_json() -> serde_json::Value {
             "phish-plan", "lolbas-catalog",
             "malleable-init", "malleable-validate",
             "purple-report", "receipt-verify",
-            "recon-hostinfo",
             "bounty-report", "research-pack-*",
             "pattern-*", "gadget-*",
             "browser-harness", "exploit-new", "module-list",
@@ -323,6 +319,29 @@ mod tests {
     }
 
     #[test]
+    fn isolation_status_uses_the_exhaustive_command_policy_catalog() {
+        let status = isolation_status_json();
+        let forbidden = status["host_forbidden_aop"]
+            .as_array()
+            .expect("forbidden array");
+        assert_eq!(forbidden.len(), 60, "guest-only command count changed");
+        assert!(forbidden.iter().any(|action| action == "recon-hostinfo"));
+        let allowed = status["host_allowed_control_plane"]
+            .as_array()
+            .expect("allowed array");
+        for action in forbidden {
+            assert!(
+                !allowed.contains(action),
+                "action appears both forbidden and allowed: {action}"
+            );
+        }
+        assert_eq!(
+            status["host_forbidden_policy_source"],
+            "Commands::required_vz_action (exhaustive macro table)"
+        );
+    }
+
+    #[test]
     fn host_forbid_message_is_stable_code() {
         // When not in guest, require_vz must fail closed with the stable code.
         // (May pass if this process is genuinely a VZ guest — still asserts code shape.)
@@ -348,17 +367,66 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         let expected = [
-            "listen",
-            "agent-generate",
-            "task-queue",
-            "inject-plan",
-            "lateral-ssh",
-            "lateral-smb",
+            "CollectionKeylogPlan",
+            "CollectionScreenPlan",
+            "InfraC2Guide",
+            "InfraDomainFrontingPlan",
+            "InfraRedirectorPlan",
+            "PayloadCyclic",
+            "PayloadDeliveryPlan",
+            "PayloadOffset",
+            "PayloadShellcodePlan",
+            "PostexCleanup",
+            "PostexPersistencePlan",
+            "ReportAttckCoverage",
+            "agent_generate",
+            "collection_archive_loot",
+            "collection_clipboard",
+            "collection_stage_files",
+            "credential_env_scan",
+            "credential_hash_test",
+            "credential_keychain_plan",
+            "credential_report",
+            "credential_spray_plan",
+            "credential_ssh_key_audit",
+            "discovery_ad_enum",
+            "discovery_cloud_metadata",
+            "discovery_file_discovery",
+            "discovery_network_enum",
+            "discovery_process_enum",
+            "discovery_service_banner",
+            "discovery_system_enum",
+            "evasion_assessment",
+            "evasion_codesign_check",
+            "evasion_security_enum",
+            "exfil_assessment",
+            "exfil_dns_encode",
+            "exfil_http_stage",
             "exploit-run",
+            "infra_c2_check",
+            "infra_health",
+            "inject-plan",
+            "lateral_smb_plan",
+            "lateral_ssh",
+            "listen",
+            "pack_xor",
+            "payload_encode",
             "persist-launchagent",
-            "pack-xor",
-            "recon-scan",
+            "postex_assessment",
+            "postex_persistence_enum",
+            "privesc_cron_enum",
+            "privesc_enum",
+            "privesc_kernel_plan",
+            "privesc_sudo_audit",
+            "privesc_suid_enum",
+            "privesc_writable_path",
+            "recon-hostinfo",
+            "recon_scan",
+            "report_executive_summary",
+            "report_markdown",
+            "report_technical",
             "string-scramble",
+            "task_queue",
         ];
         let mut sorted_forbidden = forbidden.clone();
         sorted_forbidden.sort();
@@ -366,8 +434,7 @@ mod tests {
         sorted_expected.sort();
         assert_eq!(
             sorted_forbidden, sorted_expected,
-            "host_forbidden_aop drifted from pinned set — update BOTH the gate call \
-             in main.rs AND this test when adding/removing an offensive command"
+            "host_forbidden_aop drifted from the macro-defined command policy"
         );
     }
 
@@ -382,7 +449,7 @@ mod tests {
         assert!(status["policy"]["all_research_and_fuzz_require_vz"]
             .as_bool()
             .unwrap());
-        assert!(status["host_allowed_control_plane"]
+        assert!(!status["host_allowed_control_plane"]
             .as_array()
             .unwrap()
             .iter()

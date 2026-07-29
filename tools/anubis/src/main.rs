@@ -8,6 +8,7 @@ mod evidence_verify;
 mod offensive;
 mod poc_kit;
 mod proof_input;
+mod runtime_reference_hash;
 mod vz;
 mod vz_apply;
 mod vz_egress_gateway;
@@ -39,6 +40,9 @@ use anubis_compiler::{
 use anyhow::anyhow;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use runtime_reference_hash::{
+    runtime_reference_hashes, TREE_HASH_ALGORITHM, TREE_HASH_SNAPSHOT_CONSISTENCY,
+};
 use std::path::{Path, PathBuf};
 // For real RISC0 receipt + ID helpers (Gate 10)
 use sha2::Digest;
@@ -1395,6 +1399,162 @@ enum Commands {
     },
 }
 
+macro_rules! define_command_vz_policy {
+    ($( $pattern:pat => $action:expr ),+ $(,)?) => {
+        impl Commands {
+            /// Return the mandatory disposable-VZ action label for every guest-only command.
+            /// This match is intentionally total: adding a command must make an isolation decision.
+            fn required_vz_action(&self) -> Option<&'static str> {
+                match self {
+                    $( $pattern => $action, )+
+                }
+            }
+
+            /// Enumerate the action labels from the exact same exhaustive policy table.
+            pub(crate) fn required_vz_actions() -> Vec<&'static str> {
+                const POLICIES: &[Option<&'static str>] = &[$($action),+];
+                let mut actions: Vec<&'static str> =
+                    POLICIES.iter().filter_map(|action| *action).collect();
+                actions.sort_unstable();
+                actions.dedup();
+                actions
+            }
+        }
+    };
+}
+
+define_command_vz_policy! {
+            Commands::Package { .. } => None,
+            Commands::Trust { .. } => None,
+            Commands::ResearchPack { .. } => None,
+            Commands::CryptoDoctor { .. } => None,
+            Commands::Vz { .. } => None,
+            Commands::Doc { .. } => None,
+            Commands::Repl { .. } => None,
+            Commands::Lsp { .. } => None,
+            Commands::Selfhost { .. } => None,
+            Commands::Test { .. } => None,
+            Commands::Fmt { .. } => None,
+            Commands::Build { .. } => None,
+            Commands::Check { .. } => None,
+            Commands::Fuzz { .. } => None,
+            Commands::BountyReport { .. } => None,
+            Commands::EngageInit { .. } => None,
+            Commands::EngageRehash { .. } => None,
+            Commands::EngageStatus { .. } => None,
+            Commands::Listen { .. } => Some("listen"),
+            Commands::AgentGenerate { .. } => Some("agent_generate"),
+            Commands::TaskQueue { .. } => Some("task_queue"),
+            Commands::OperatorTokenIssue { .. } => None,
+            Commands::OperatorTokenRevoke { .. } => None,
+            Commands::ModuleList { .. } => None,
+            Commands::ExploitNew { .. } => None,
+            Commands::ExploitRun { .. } => Some("exploit-run"),
+            Commands::OffensiveDoctor { .. } => None,
+            Commands::PersistLaunchagent { .. } => Some("persist-launchagent"),
+            Commands::InjectPlan { .. } => Some("inject-plan"),
+            Commands::LateralSsh { .. } => Some("lateral_ssh"),
+            Commands::LateralSmb { .. } => Some("lateral_smb_plan"),
+            Commands::PatternCreate { .. } => None,
+            Commands::PatternOffset { .. } => None,
+            Commands::GadgetSearch { .. } => None,
+            Commands::BrowserHarness { .. } => None,
+            Commands::PackXor { .. } => Some("pack_xor"),
+            Commands::StringScramble { .. } => Some("string-scramble"),
+            Commands::ReceiptVerify { .. } => None,
+            Commands::AttckCatalog { .. } => None,
+            Commands::AttckMap { .. } => None,
+            Commands::OpsecScore { .. } => None,
+            Commands::ReconHostinfo { .. } => Some("recon-hostinfo"),
+            Commands::ReconScan { .. } => Some("recon_scan"),
+            Commands::MalleableInit { .. } => None,
+            Commands::MalleableValidate { .. } => None,
+            Commands::CampaignInit { .. } => None,
+            Commands::CampaignStatus { .. } => None,
+            Commands::PurpleReport { .. } => None,
+            Commands::PhishPlan { .. } => None,
+            Commands::LolbasCatalog { .. } => None,
+            Commands::VzStatus { .. } => None,
+            Commands::VzDoctor { .. } => None,
+            Commands::VzExec { .. } => None,
+            Commands::VzExploit { .. } => None,
+            Commands::VzFuzz { .. } => None,
+            Commands::VzAgentTest { .. } => None,
+            Commands::VzC2Cycle { .. } => None,
+            Commands::VzStress { .. } => None,
+            Commands::VzStart { .. } => None,
+            Commands::VzStop { .. } => None,
+            Commands::VzSync { .. } => None,
+            Commands::VzTestSuite { .. } => None,
+            Commands::VzSnapshot { .. } => None,
+            Commands::CredentialHashTest { .. } => Some("credential_hash_test"),
+            Commands::CredentialSshKeyAudit { .. } => Some("credential_ssh_key_audit"),
+            Commands::CredentialSprayPlan { .. } => Some("credential_spray_plan"),
+            Commands::CredentialEnvScan { .. } => Some("credential_env_scan"),
+            Commands::CredentialKeychainPlan { .. } => Some("credential_keychain_plan"),
+            Commands::CredentialReport { .. } => Some("credential_report"),
+            Commands::PrivescSuidEnum { .. } => Some("privesc_suid_enum"),
+            Commands::PrivescSudoAudit { .. } => Some("privesc_sudo_audit"),
+            Commands::PrivescWritablePath { .. } => Some("privesc_writable_path"),
+            Commands::PrivescCronEnum { .. } => Some("privesc_cron_enum"),
+            Commands::PrivescKernelPlan { .. } => Some("privesc_kernel_plan"),
+            Commands::PrivescEnum { .. } => Some("privesc_enum"),
+            Commands::DiscoverySystemEnum { .. } => Some("discovery_system_enum"),
+            Commands::DiscoveryNetworkEnum { .. } => Some("discovery_network_enum"),
+            Commands::DiscoveryProcessEnum { .. } => Some("discovery_process_enum"),
+            Commands::DiscoveryFileDiscovery { .. } => Some("discovery_file_discovery"),
+            Commands::DiscoveryServiceBanner { .. } => Some("discovery_service_banner"),
+            Commands::DiscoveryCloudMetadata { .. } => Some("discovery_cloud_metadata"),
+            Commands::DiscoveryAdEnum { .. } => Some("discovery_ad_enum"),
+            Commands::CollectionClipboard { .. } => Some("collection_clipboard"),
+            Commands::CollectionStageFiles { .. } => Some("collection_stage_files"),
+            Commands::CollectionScreenPlan { .. } => Some("CollectionScreenPlan"),
+            Commands::CollectionKeylogPlan { .. } => Some("CollectionKeylogPlan"),
+            Commands::CollectionArchiveLoot { .. } => Some("collection_archive_loot"),
+            Commands::EvasionSecurityEnum { .. } => Some("evasion_security_enum"),
+            Commands::EvasionAssessment { .. } => Some("evasion_assessment"),
+            Commands::EvasionCodesignCheck { .. } => Some("evasion_codesign_check"),
+            Commands::ExfilDnsEncode { .. } => Some("exfil_dns_encode"),
+            Commands::ExfilHttpStage { .. } => Some("exfil_http_stage"),
+            Commands::ExfilAssessment { .. } => Some("exfil_assessment"),
+            Commands::InfraC2Check { .. } => Some("infra_c2_check"),
+            Commands::InfraC2Guide { .. } => Some("InfraC2Guide"),
+            Commands::InfraHealth { .. } => Some("infra_health"),
+            Commands::InfraRedirectorPlan { .. } => Some("InfraRedirectorPlan"),
+            Commands::InfraDomainFrontingPlan { .. } => Some("InfraDomainFrontingPlan"),
+            Commands::PostexPersistenceEnum { .. } => Some("postex_persistence_enum"),
+            Commands::PostexPersistencePlan { .. } => Some("PostexPersistencePlan"),
+            Commands::PostexCleanup { .. } => Some("PostexCleanup"),
+            Commands::PostexAssessment { .. } => Some("postex_assessment"),
+            Commands::PayloadCyclic { .. } => Some("PayloadCyclic"),
+            Commands::PayloadOffset { .. } => Some("PayloadOffset"),
+            Commands::PayloadEncode { .. } => Some("payload_encode"),
+            Commands::PayloadShellcodePlan { .. } => Some("PayloadShellcodePlan"),
+            Commands::PayloadDeliveryPlan { .. } => Some("PayloadDeliveryPlan"),
+            Commands::ReportAttckCoverage { .. } => Some("ReportAttckCoverage"),
+            Commands::ReportExecutiveSummary { .. } => Some("report_executive_summary"),
+            Commands::ReportTechnical { .. } => Some("report_technical"),
+            Commands::ReportMarkdown { .. } => Some("report_markdown"),
+            Commands::ModuleCatalog { .. } => None,
+            Commands::Prove { .. } => None,
+            Commands::Risc0ProveChild { .. } => None,
+            Commands::VerifyReceipt { .. } => None,
+            Commands::Gate11MetalParity { .. } => None,
+            Commands::Doctor { .. } => None,
+            Commands::Capabilities { .. } => None,
+            Commands::Entitlements { .. } => None,
+            Commands::RuntimeProbe { .. } => None,
+            Commands::RuntimePlan { .. } => None,
+            Commands::Run { .. } => None,
+            Commands::Verify { .. } => None,
+            Commands::EvidenceVerify { .. } => None,
+            Commands::Validate { .. } => None,
+            Commands::Keygen { .. } => None,
+            Commands::Sign { .. } => None,
+            Commands::Report { .. } => None,
+}
+
+
 /// Security research domain pack actions (host control plane).
 #[derive(Subcommand, Debug)]
 enum ResearchPackCmd {
@@ -2160,6 +2320,9 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+    // Evaluate the total policy for every command. Guest-only arms consume the one-shot
+    // capability exactly once inside their handler; this lookup is classification only.
+    let _command_vz_policy = cli.command.required_vz_action();
 
     match cli.command {
         Commands::Package { action } => run_package_cmd(action),
@@ -2977,7 +3140,7 @@ fn main() -> Result<()> {
             os,
             sleep_ms,
         } => {
-            offensive::require_vz_offensive("agent-generate")?;
+            offensive::require_vz_offensive("agent_generate")?;
             let eng = offensive::load_engagement(&engage)?;
             let bin = offensive::agent::agent_generate(offensive::agent::AgentGenerateOpts {
                 engage: &eng,
@@ -3008,7 +3171,7 @@ fn main() -> Result<()> {
             operator,
             token,
         } => {
-            offensive::require_vz_offensive("task-queue")?;
+            offensive::require_vz_offensive("task_queue")?;
             let eng = offensive::load_engagement(&engage)?;
             let tok = if token.trim().is_empty() {
                 None
@@ -3271,7 +3434,7 @@ fn main() -> Result<()> {
             user,
             cmd,
         } => {
-            offensive::require_vz_offensive("lateral-ssh")?;
+            offensive::require_vz_offensive("lateral_ssh")?;
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_ssh(&eng, &host, &user, &cmd)?;
             let _ = offensive::seal_action(
@@ -3285,7 +3448,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::LateralSmb { engage, host } => {
-            offensive::require_vz_offensive("lateral-smb")?;
+            offensive::require_vz_offensive("lateral_smb_plan")?;
             let eng = offensive::load_engagement(&engage)?;
             let rep = offensive::lateral::lateral_smb_plan(&eng, &host)?;
             let _ = offensive::seal_action(
@@ -3319,7 +3482,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PackXor { engage, input } => {
-            offensive::require_vz_offensive("pack-xor")?;
+            offensive::require_vz_offensive("pack_xor")?;
             let eng = offensive::load_engagement(&engage)?;
             eng.assert_path(&input)?;
             let packs = engage.join("packs");
@@ -3427,6 +3590,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ReconHostinfo { engage } => {
+            offensive::require_vz_offensive("recon-hostinfo")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::recon::recon_hostinfo(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
@@ -3437,7 +3601,7 @@ fn main() -> Result<()> {
             host,
             ports,
         } => {
-            offensive::require_vz_offensive("recon-scan")?;
+            offensive::require_vz_offensive("recon_scan")?;
             let eng = offensive::load_engagement(&engage)?;
             let port_list: Option<Vec<u16>> = if ports.trim().is_empty() {
                 None
@@ -3901,6 +4065,7 @@ fn main() -> Result<()> {
         // ── T10: Expanded offensive module handlers ──
 
         Commands::CredentialHashTest { engage, hash, wordlist } => {
+            offensive::require_vz_offensive("credential_hash_test")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::hash_test(&eng, &hash, &wordlist)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_hash_test", "operator", r.clone());
@@ -3908,6 +4073,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CredentialSshKeyAudit { engage } => {
+            offensive::require_vz_offensive("credential_ssh_key_audit")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::ssh_key_audit(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_ssh_key_audit", "operator", r.clone());
@@ -3915,6 +4081,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CredentialSprayPlan { engage, protocol, targets, users, lockout_threshold } => {
+            offensive::require_vz_offensive("credential_spray_plan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::spray_plan(&eng, &protocol, &targets, &users, lockout_threshold)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_spray_plan", "operator", r.clone());
@@ -3922,6 +4089,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CredentialEnvScan { engage } => {
+            offensive::require_vz_offensive("credential_env_scan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::env_credential_scan(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_env_scan", "operator", r.clone());
@@ -3929,6 +4097,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CredentialKeychainPlan { engage } => {
+            offensive::require_vz_offensive("credential_keychain_plan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::keychain_enum_plan(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_keychain_plan", "operator", r.clone());
@@ -3936,6 +4105,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CredentialReport { engage } => {
+            offensive::require_vz_offensive("credential_report")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::credential::credential_report(&eng, &engage)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "credential_report", "operator", r.clone());
@@ -3944,6 +4114,7 @@ fn main() -> Result<()> {
         }
 
         Commands::PrivescSuidEnum { engage } => {
+            offensive::require_vz_offensive("privesc_suid_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::suid_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_suid_enum", "operator", r.clone());
@@ -3951,6 +4122,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PrivescSudoAudit { engage } => {
+            offensive::require_vz_offensive("privesc_sudo_audit")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::sudo_audit(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_sudo_audit", "operator", r.clone());
@@ -3958,6 +4130,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PrivescWritablePath { engage } => {
+            offensive::require_vz_offensive("privesc_writable_path")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::writable_path_audit(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_writable_path", "operator", r.clone());
@@ -3965,6 +4138,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PrivescCronEnum { engage } => {
+            offensive::require_vz_offensive("privesc_cron_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::cron_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_cron_enum", "operator", r.clone());
@@ -3972,6 +4146,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PrivescKernelPlan { engage } => {
+            offensive::require_vz_offensive("privesc_kernel_plan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::kernel_exploit_plan(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_kernel_plan", "operator", r.clone());
@@ -3979,6 +4154,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PrivescEnum { engage } => {
+            offensive::require_vz_offensive("privesc_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::privesc::privesc_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "privesc_enum", "operator", r.clone());
@@ -3987,6 +4163,7 @@ fn main() -> Result<()> {
         }
 
         Commands::DiscoverySystemEnum { engage } => {
+            offensive::require_vz_offensive("discovery_system_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::system_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_system_enum", "operator", r.clone());
@@ -3994,6 +4171,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::DiscoveryNetworkEnum { engage } => {
+            offensive::require_vz_offensive("discovery_network_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::network_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_network_enum", "operator", r.clone());
@@ -4001,6 +4179,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::DiscoveryProcessEnum { engage } => {
+            offensive::require_vz_offensive("discovery_process_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::process_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_process_enum", "operator", r.clone());
@@ -4008,6 +4187,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::DiscoveryFileDiscovery { engage, search_root } => {
+            offensive::require_vz_offensive("discovery_file_discovery")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::file_discovery(&eng, &search_root)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_file_discovery", "operator", r.clone());
@@ -4015,6 +4195,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::DiscoveryServiceBanner { engage, host, ports } => {
+            offensive::require_vz_offensive("discovery_service_banner")?;
             let eng = offensive::load_engagement(&engage)?;
             let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
             let r = offensive::discovery::service_banner(&eng, &host, &port_list)?;
@@ -4023,6 +4204,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::DiscoveryCloudMetadata { engage } => {
+            offensive::require_vz_offensive("discovery_cloud_metadata")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::cloud_metadata_plan(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_cloud_metadata", "operator", r.clone());
@@ -4030,6 +4212,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::DiscoveryAdEnum { engage, domain } => {
+            offensive::require_vz_offensive("discovery_ad_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::discovery::ad_enum_plan(&eng, &domain)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "discovery_ad_enum", "operator", r.clone());
@@ -4038,6 +4221,7 @@ fn main() -> Result<()> {
         }
 
         Commands::CollectionClipboard { engage } => {
+            offensive::require_vz_offensive("collection_clipboard")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::collection::clipboard_capture(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_clipboard", "operator", r.clone());
@@ -4045,6 +4229,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CollectionStageFiles { engage, source, patterns, max_file_size } => {
+            offensive::require_vz_offensive("collection_stage_files")?;
             let eng = offensive::load_engagement(&engage)?;
             let pat_list: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
             let r = offensive::collection::stage_files(&eng, &engage, &source, &pat_list, max_file_size)?;
@@ -4053,18 +4238,21 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::CollectionScreenPlan { engage } => {
+            offensive::require_vz_offensive("CollectionScreenPlan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::collection::screen_capture_plan(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::CollectionKeylogPlan { engage } => {
+            offensive::require_vz_offensive("CollectionKeylogPlan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::collection::keylog_plan(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::CollectionArchiveLoot { engage, out } => {
+            offensive::require_vz_offensive("collection_archive_loot")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::collection::archive_loot(&eng, &engage, &out)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "collection_archive_loot", "operator", r.clone());
@@ -4073,6 +4261,7 @@ fn main() -> Result<()> {
         }
 
         Commands::EvasionSecurityEnum { engage } => {
+            offensive::require_vz_offensive("evasion_security_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::evasion::security_product_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_security_enum", "operator", r.clone());
@@ -4080,6 +4269,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::EvasionAssessment { engage } => {
+            offensive::require_vz_offensive("evasion_assessment")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::evasion::evasion_assessment(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_assessment", "operator", r.clone());
@@ -4087,6 +4277,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::EvasionCodesignCheck { engage, binary } => {
+            offensive::require_vz_offensive("evasion_codesign_check")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::evasion::codesign_check(&eng, &binary)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "evasion_codesign_check", "operator", r.clone());
@@ -4095,6 +4286,7 @@ fn main() -> Result<()> {
         }
 
         Commands::ExfilDnsEncode { engage, data, domain } => {
+            offensive::require_vz_offensive("exfil_dns_encode")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::exfil::dns_encode(&eng, data.as_bytes(), &domain)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_dns_encode", "operator", r.clone());
@@ -4102,6 +4294,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ExfilHttpStage { engage, source, max_files } => {
+            offensive::require_vz_offensive("exfil_http_stage")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::exfil::http_stage(&eng, &source, max_files)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_http_stage", "operator", r.clone());
@@ -4109,6 +4302,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ExfilAssessment { engage } => {
+            offensive::require_vz_offensive("exfil_assessment")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::exfil::exfil_assessment(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "exfil_assessment", "operator", r.clone());
@@ -4117,6 +4311,7 @@ fn main() -> Result<()> {
         }
 
         Commands::InfraC2Check { engage, port } => {
+            offensive::require_vz_offensive("infra_c2_check")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::infrastructure::c2_listener_check(&eng, port)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "infra_c2_check", "operator", r.clone());
@@ -4124,12 +4319,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::InfraC2Guide { engage } => {
+            offensive::require_vz_offensive("InfraC2Guide")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::infrastructure::c2_framework_guide(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::InfraHealth { engage, ports } => {
+            offensive::require_vz_offensive("infra_health")?;
             let eng = offensive::load_engagement(&engage)?;
             let port_list: Vec<u16> = ports.split(',').filter_map(|s| s.trim().parse().ok()).collect();
             let r = offensive::infrastructure::infra_health(&eng, &port_list)?;
@@ -4139,12 +4336,14 @@ fn main() -> Result<()> {
         }
 
         Commands::InfraRedirectorPlan { engage } => {
+            offensive::require_vz_offensive("InfraRedirectorPlan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::infrastructure::redirector_plan(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::InfraDomainFrontingPlan { engage } => {
+            offensive::require_vz_offensive("InfraDomainFrontingPlan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::infrastructure::domain_fronting_plan(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
@@ -4152,6 +4351,7 @@ fn main() -> Result<()> {
         }
 
         Commands::PostexPersistenceEnum { engage } => {
+            offensive::require_vz_offensive("postex_persistence_enum")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::postex::persistence_enum(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_persistence_enum", "operator", r.clone());
@@ -4159,18 +4359,21 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PostexPersistencePlan { engage, mechanism } => {
+            offensive::require_vz_offensive("PostexPersistencePlan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::postex::persistence_implant_plan(&eng, &mechanism)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::PostexCleanup { engage } => {
+            offensive::require_vz_offensive("PostexCleanup")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::postex::cleanup_checklist(&eng, &engage)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::PostexAssessment { engage } => {
+            offensive::require_vz_offensive("postex_assessment")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::postex::postex_assessment(&eng)?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "postex_assessment", "operator", r.clone());
@@ -4179,18 +4382,21 @@ fn main() -> Result<()> {
         }
 
         Commands::PayloadCyclic { engage, length } => {
+            offensive::require_vz_offensive("PayloadCyclic")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::payloads::cyclic_pattern(&eng, length)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::PayloadOffset { engage, value } => {
+            offensive::require_vz_offensive("PayloadOffset")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::payloads::pattern_offset(&eng, &value)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::PayloadEncode { engage, data, encodings } => {
+            offensive::require_vz_offensive("payload_encode")?;
             let eng = offensive::load_engagement(&engage)?;
             let enc_list: Vec<String> = encodings.split(',').map(|s| s.trim().to_string()).collect();
             let r = offensive::payloads::encode_payload(&eng, data.as_bytes(), &enc_list)?;
@@ -4199,12 +4405,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::PayloadShellcodePlan { engage, arch, os } => {
+            offensive::require_vz_offensive("PayloadShellcodePlan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::payloads::shellcode_plan(&eng, &arch, &os)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::PayloadDeliveryPlan { engage } => {
+            offensive::require_vz_offensive("PayloadDeliveryPlan")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::payloads::delivery_plan(&eng)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
@@ -4212,12 +4420,14 @@ fn main() -> Result<()> {
         }
 
         Commands::ReportAttckCoverage { engage } => {
+            offensive::require_vz_offensive("ReportAttckCoverage")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::reporting::attck_coverage_report(&eng, &[])?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         Commands::ReportExecutiveSummary { engage } => {
+            offensive::require_vz_offensive("report_executive_summary")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::reporting::executive_summary(&eng, &engage, &[])?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_executive_summary", "operator", r.clone());
@@ -4225,6 +4435,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ReportTechnical { engage } => {
+            offensive::require_vz_offensive("report_technical")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::reporting::technical_report(&eng, &engage, &[])?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_technical", "operator", r.clone());
@@ -4232,6 +4443,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ReportMarkdown { engage, title } => {
+            offensive::require_vz_offensive("report_markdown")?;
             let eng = offensive::load_engagement(&engage)?;
             let r = offensive::reporting::markdown_report(&eng, &engage, &title, &[])?;
             let _ = offensive::seal_action(&engage, &eng.engagement_id, "report_markdown", "operator", r.clone());
@@ -5668,6 +5880,8 @@ fn build_runtime_probe_report(
     require_metal: bool,
 ) -> Result<serde_json::Value> {
     let metal_ref = resolve_metal_reference(cli_ref);
+    let reference_hashes =
+        runtime_reference_hashes(&metal_ref.root, &metal_ref.vendor, &metal_ref.config_source);
     let vendor_cargo = metal_ref.vendor.join("Cargo.toml");
     let metal_hal = metal_ref.vendor.join("src/prove/hal/metal.rs");
     let reference_exists = metal_ref.root.exists();
@@ -5682,6 +5896,7 @@ fn build_runtime_probe_report(
         && reference_exists
         && vendor_exists
         && metal_hal_exists
+        && reference_hashes.complete
         && prover_patch_active;
     let metal_ready = risc0_ready && metal_lane_selected && !r0_disable_metal;
     let status = if (!require_risc0 || risc0_ready) && (!require_metal || metal_ready) {
@@ -5691,7 +5906,7 @@ fn build_runtime_probe_report(
     };
 
     Ok(serde_json::json!({
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "tool": "anubis",
         "report": "runtime-probe",
         "status": status,
@@ -5728,8 +5943,15 @@ fn build_runtime_probe_report(
             "metal_hal_exists": metal_hal_exists,
             "reference_git_commit": git_output_trimmed(&metal_ref.root, &["rev-parse", "HEAD"]),
             "reference_git_dirty": git_dirty(&metal_ref.root),
-            "reference_tree_hash": hash_tree_or_missing(&metal_ref.root),
-            "vendor_tree_hash": hash_tree_or_missing(&metal_ref.vendor),
+            "reference_tree_hash": reference_hashes.reference_tree_hash,
+            "reference_tree_hash_scope": reference_hashes.reference_tree_hash_scope,
+            "reference_tree_hash_algorithm": TREE_HASH_ALGORITHM,
+            "reference_tree_hash_complete": reference_hashes.reference_tree_hash_complete,
+            "reference_tree_hash_snapshot_consistency": TREE_HASH_SNAPSHOT_CONSISTENCY,
+            "vendor_tree_hash": reference_hashes.vendor_tree_hash,
+            "vendor_tree_hash_scope": reference_hashes.vendor_tree_hash_scope,
+            "vendor_tree_hash_algorithm": TREE_HASH_ALGORITHM,
+            "vendor_tree_hash_complete": reference_hashes.vendor_tree_hash_complete,
             "r0_disable_metal": r0_disable_metal,
             "lane_observed": if metal_lane_selected && !r0_disable_metal { "metal-hybrid" } else { "cpu-or-disabled" },
             "ready": metal_ready,
@@ -5747,6 +5969,7 @@ fn compact_runtime_probe_report(report: &serde_json::Value) -> serde_json::Value
     serde_json::json!({
         "schema_version": report["schema_version"].clone(),
         "status": report["status"].clone(),
+        "requirements": report["requirements"].clone(),
         "host": report["host"].clone(),
         "risc0": {
             "linked": report["risc0"]["linked"].clone(),
@@ -5764,7 +5987,14 @@ fn compact_runtime_probe_report(report: &serde_json::Value) -> serde_json::Value
             "reference_git_commit": report["metal_hybrid"]["reference_git_commit"].clone(),
             "reference_git_dirty": report["metal_hybrid"]["reference_git_dirty"].clone(),
             "reference_tree_hash": report["metal_hybrid"]["reference_tree_hash"].clone(),
+            "reference_tree_hash_scope": report["metal_hybrid"]["reference_tree_hash_scope"].clone(),
+            "reference_tree_hash_algorithm": report["metal_hybrid"]["reference_tree_hash_algorithm"].clone(),
+            "reference_tree_hash_complete": report["metal_hybrid"]["reference_tree_hash_complete"].clone(),
+            "reference_tree_hash_snapshot_consistency": report["metal_hybrid"]["reference_tree_hash_snapshot_consistency"].clone(),
             "vendor_tree_hash": report["metal_hybrid"]["vendor_tree_hash"].clone(),
+            "vendor_tree_hash_scope": report["metal_hybrid"]["vendor_tree_hash_scope"].clone(),
+            "vendor_tree_hash_algorithm": report["metal_hybrid"]["vendor_tree_hash_algorithm"].clone(),
+            "vendor_tree_hash_complete": report["metal_hybrid"]["vendor_tree_hash_complete"].clone(),
             "lane_observed": report["metal_hybrid"]["lane_observed"].clone(),
             "ready": report["metal_hybrid"]["ready"].clone(),
         },
@@ -5789,13 +6019,26 @@ fn write_runtime_probe_evidence(out: &Path, report: &serde_json::Value) -> Resul
 
 fn render_runtime_probe_markdown(report: &serde_json::Value) -> String {
     format!(
-        "# Anubis Runtime Probe\n\nstatus: {}\nhost: {}/{}\nmetal_reference: {}\nobserved_lane: {}\n\n## Truth Rules\n\n- Runtime probe is capability evidence, not proof execution.\n- A PASS here never means a RISC0 receipt was generated or verified.\n- Receipt truth still requires `risc0_zkvm::Receipt::verify(image_id)`.\n",
+        "# Anubis Runtime Probe\n\nstatus: {}\nhost: {}/{}\nrequirements: risc0={} metal={}\nrisc0_ready: {}\nmetal_ready: {}\nmetal_reference: {}\nreference_hash_scope: {}\nreference_hash_algorithm: {}\nreference_hash_complete: {}\nobserved_lane: {}\n\n## Truth Rules\n\n- Runtime probe is capability evidence, not proof execution.\n- A PASS here never means a RISC0 receipt was generated or verified.\n- Receipt truth still requires `risc0_zkvm::Receipt::verify(image_id)`.\n",
         report["status"].as_str().unwrap_or("unknown"),
         report["host"]["os"].as_str().unwrap_or("unknown"),
         report["host"]["arch"].as_str().unwrap_or("unknown"),
+        report["requirements"]["require_risc0"].as_bool().unwrap_or(false),
+        report["requirements"]["require_metal"].as_bool().unwrap_or(false),
+        report["risc0"]["ready"].as_bool().unwrap_or(false),
+        report["metal_hybrid"]["ready"].as_bool().unwrap_or(false),
         report["metal_hybrid"]["reference_path"]
             .as_str()
             .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_scope"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_algorithm"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_complete"]
+            .as_bool()
+            .unwrap_or(false),
         report["metal_hybrid"]["lane_observed"]
             .as_str()
             .unwrap_or("unknown")
@@ -5815,6 +6058,18 @@ fn print_runtime_probe_summary(report: &serde_json::Value) {
         report["metal_hybrid"]["reference_path"]
             .as_str()
             .unwrap_or("unknown")
+    );
+    println!(
+        "reference hash: scope={} algorithm={} complete={}",
+        report["metal_hybrid"]["reference_tree_hash_scope"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_algorithm"]
+            .as_str()
+            .unwrap_or("unknown"),
+        report["metal_hybrid"]["reference_tree_hash_complete"]
+            .as_bool()
+            .unwrap_or(false)
     );
     println!(
         "observed lane: {}",
@@ -5854,7 +6109,9 @@ fn build_runtime_plan_report(
     };
     let include_probe = apple_native || backend == "risc0" || metal_reference.is_some();
     let runtime_probe = if include_probe {
-        let full_probe = build_runtime_probe_report(metal_reference, false, false)?;
+        let require_risc0 = backend == "risc0";
+        let require_metal = require_risc0 && matches!(lane.as_str(), "metal" | "metal-hybrid");
+        let full_probe = build_runtime_probe_report(metal_reference, require_risc0, require_metal)?;
         compact_runtime_probe_report(&full_probe)
     } else {
         serde_json::Value::Null
@@ -5987,7 +6244,7 @@ fn build_runtime_plan_report(
     }
 
     Ok(serde_json::json!({
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "tool": "anubis",
         "graph_family": "anubis-umpg-v1",
         "status": "plan-only",
@@ -6929,43 +7186,6 @@ fn git_dirty(root: &Path) -> serde_json::Value {
         }),
         _ => serde_json::Value::Null,
     }
-}
-
-fn hash_tree_or_missing(root: &Path) -> String {
-    if !root.exists() {
-        return "MISSING".into();
-    }
-    let mut files = vec![];
-    for entry in walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
-        let path = entry.path();
-        if !entry.file_type().is_file() || should_skip_tree_hash_path(path) {
-            continue;
-        }
-        files.push(path.to_path_buf());
-    }
-    files.sort();
-
-    let mut hasher = sha2::Sha256::new();
-    for path in files {
-        if let Ok(rel) = path.strip_prefix(root) {
-            hasher.update(rel.to_string_lossy().as_bytes());
-        }
-        if let Ok(bytes) = std::fs::read(&path) {
-            hasher.update(&bytes);
-        }
-    }
-    hex::encode(hasher.finalize())
-}
-
-fn should_skip_tree_hash_path(path: &Path) -> bool {
-    path.components().any(|component| {
-        let part = component.as_os_str().to_string_lossy();
-        matches!(part.as_ref(), ".git" | "target" | ".DS_Store")
-    })
 }
 
 fn resolve_metal_reference(cli_ref: Option<&Path>) -> MetalReferenceConfig {
@@ -8178,7 +8398,7 @@ module nested {
         let report = build_runtime_probe_report(Some(&root), false, false)
             .expect("probe should produce report for fake reference");
 
-        assert_eq!(report["schema_version"], "1.0");
+        assert_eq!(report["schema_version"], "1.1");
         assert_eq!(report["tool"], "anubis");
         assert_eq!(report["status"].as_str().unwrap(), "PASS");
         assert_eq!(
@@ -8188,6 +8408,27 @@ module nested {
         assert_eq!(report["metal_hybrid"]["reference_exists"], true);
         assert_eq!(report["metal_hybrid"]["vendor_cargo_exists"], true);
         assert_eq!(report["metal_hybrid"]["metal_hal_exists"], true);
+        assert_eq!(
+            report["metal_hybrid"]["reference_tree_hash_scope"],
+            "reference-root-excluding-.git-target-.DS_Store"
+        );
+        assert_eq!(
+            report["metal_hybrid"]["reference_tree_hash_algorithm"],
+            TREE_HASH_ALGORITHM
+        );
+        assert_eq!(report["metal_hybrid"]["reference_tree_hash_complete"], true);
+        assert_eq!(
+            report["metal_hybrid"]["vendor_tree_hash_scope"],
+            runtime_reference_hash::VENDOR_TREE_HASH_SCOPE
+        );
+        assert_eq!(
+            report["metal_hybrid"]["vendor_tree_hash_algorithm"],
+            TREE_HASH_ALGORITHM
+        );
+        assert_eq!(report["metal_hybrid"]["vendor_tree_hash_complete"], true);
+        let markdown = render_runtime_probe_markdown(&report);
+        assert!(markdown.contains(TREE_HASH_ALGORITHM));
+        assert!(markdown.contains("reference_hash_complete: true"));
         assert_eq!(report["truth"]["capability_evidence_not_proof"], true);
         assert_eq!(report["truth"]["receipt_verified"], false);
     }
@@ -8200,21 +8441,42 @@ module nested {
             .expect("anubis crate should live under tools/anubis");
         let source_path = workspace_root.join("examples/risc0_receipt.anb");
         let src = std::fs::read_to_string(&source_path).expect("fixture source should exist");
+        // The report promises a COMPLETE hash of the requested Metal reference. The old test
+        // passed a hard-coded /tmp path without creating it, so it was green only on hosts carrying
+        // stale state and correctly failed in a clean VM. Build the smallest real reference tree,
+        // exactly as the adjacent runtime-probe test does.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let metal_reference = temp.path().join("metal-hybrid-prover");
+        let vendor = metal_reference.join("vendor/risc0-circuit-rv32im");
+        std::fs::create_dir_all(vendor.join("src/prove/hal")).expect("create fake vendor");
+        std::fs::write(metal_reference.join("Cargo.toml"), "[workspace]\n").expect("root cargo");
+        std::fs::write(vendor.join("Cargo.toml"), "[package]\nname='fake'\n")
+            .expect("vendor cargo");
+        std::fs::write(vendor.join("src/prove/hal/metal.rs"), "// fake metal hal\n")
+            .expect("metal hal");
         let report = build_runtime_plan_report(
             &source_path,
             &src,
             "risc0",
             "metal-hybrid",
             true,
-            Some(Path::new("/tmp/test-metal-prover")),
+            Some(&metal_reference),
         )
         .expect("runtime plan should be produced for valid source");
 
-        assert_eq!(report["schema_version"], "1.0");
+        assert_eq!(report["schema_version"], "1.1");
         assert_eq!(report["graph_family"], "anubis-umpg-v1");
         assert_eq!(report["status"], "plan-only");
         assert_eq!(report["backend"]["requested"], "risc0");
         assert_eq!(report["backend"]["lane"], "metal-hybrid");
+        assert_eq!(
+            report["runtime_probe"]["requirements"]["require_risc0"],
+            true
+        );
+        assert_eq!(
+            report["runtime_probe"]["requirements"]["require_metal"],
+            true
+        );
         assert_eq!(report["nodes"][0]["id"], "parse");
         assert_eq!(report["nodes"][1]["dependencies"][0], "parse");
         assert_eq!(report["nodes"][6]["id"], "risc0-prove");
@@ -8224,6 +8486,18 @@ module nested {
         assert_eq!(report["trust"]["strict_lanes_fail_closed"], true);
         assert!(report["runtime_probe"].is_object());
         assert_eq!(report["runtime_probe"]["truth"]["receipt_verified"], false);
+        assert_eq!(
+            report["runtime_probe"]["metal_hybrid"]["reference_tree_hash_scope"],
+            "reference-root-excluding-.git-target-.DS_Store"
+        );
+        assert_eq!(
+            report["runtime_probe"]["metal_hybrid"]["reference_tree_hash_algorithm"],
+            TREE_HASH_ALGORITHM
+        );
+        assert_eq!(
+            report["runtime_probe"]["metal_hybrid"]["reference_tree_hash_complete"],
+            true
+        );
         assert_eq!(report["probe_status"], report["runtime_probe"]["status"]);
         assert_eq!(report["trust"]["probe_output_is_not_proof_truth"], true);
         assert_eq!(
@@ -8742,5 +9016,169 @@ fn main() {
         let j2 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
         assert_ne!(j1, j2);
         // In sealer: id+verify but journals differ → not PASS
+    }
+}
+
+#[cfg(test)]
+mod offensive_isolation_parity_tests {
+    /// Secondary defense-in-depth smoke test over handler source. The primary isolation
+    /// mechanism is `Commands::required_vz_action`: its match is total, so a new command
+    /// cannot compile until its host/guest policy is classified explicitly.
+    /// load-bearing operational claim — offensive execution happens in a disposable
+    /// guest, and calling a host run "isolated" is fabrication.
+    ///
+    /// CLAIMS-20: the ten modules added in `4b83507b` shipped with 48 handler call
+    /// sites and ZERO guards, and `discovery-system-enum` was demonstrated executing
+    /// on the host. Nothing failed, because nothing was checking. This test is that
+    /// check, and it reads the real source so it cannot drift from what ships.
+    ///
+    /// Deliberately NOT an allow-list of "host-safe" commands. A `Command::new` grep
+    /// finds 17 host-touching functions and misses `discovery::system_enum` — the one
+    /// proven to execute — because it shells out through a helper. An exemption list
+    /// built that way would have shipped the demonstrated hole. The AOP surface is
+    /// guest-only as a class; if a genuinely pure command ever needs exempting, add it
+    /// here BY NAME with a reason, so the exemption is reviewable.
+    const EXEMPT_HANDLERS: &[(&str, &str)] = &[];
+
+    const OFFENSIVE_MODULES: &[&str] = &[
+        "credential",
+        "privesc",
+        "discovery",
+        "collection",
+        "evasion",
+        "exfil",
+        "infrastructure",
+        "postex",
+        "payloads",
+        "reporting",
+    ];
+
+    /// Split `main.rs` into handler arms, keyed by command name.
+    ///
+    /// Segments run from one `        Commands::` header to the next, so this covers
+    /// BOTH block arms (`=> {  }`) and single-expression arms (`=> run_x(a),`). An
+    /// earlier version matched only lines ending in `=> {` and saw 86 of 128 arms —
+    /// the 42 single-expression arms would have been skipped silently, and a future
+    /// offensive command written in that form would have passed unchecked.
+    fn handler_arms(src: &str) -> Vec<(String, String)> {
+        let dispatch_end = src
+            .find("\nfn build_capabilities_report")
+            .expect("main dispatch terminator");
+        let src = &src[..dispatch_end];
+        let lines: Vec<&str> = src.split('\n').collect();
+        let mut starts: Vec<usize> = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("        Commands::") {
+                starts.push(i);
+            }
+        }
+        let mut arms = Vec::new();
+        for (k, &i) in starts.iter().enumerate() {
+            let name = lines[i]
+                .trim_start()
+                .trim_start_matches("Commands::")
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            let end = starts.get(k + 1).copied().unwrap_or(lines.len());
+            arms.push((name, lines[i..end].join("\n")));
+        }
+        arms
+    }
+
+    #[test]
+    fn every_offensive_handler_requires_a_vz_guest() {
+        let src = include_str!("main.rs");
+        let arms = handler_arms(src);
+        // Self-calibrating: the parser must see exactly as many arms as there are
+        // `Commands::` headers. A magic threshold here is how an extractor silently
+        // half-works — this one already did, at 86 of 128.
+        let headers = src
+            .split('\n')
+            .filter(|l| l.starts_with("        Commands::"))
+            .count();
+        assert_eq!(
+            arms.len(),
+            headers,
+            "extractor saw {} arms but {} Commands:: headers exist — the instrument \
+             broke, not the code under test",
+            arms.len(),
+            headers
+        );
+
+        let mut ungated = Vec::new();
+        for (name, body) in &arms {
+            let touches = OFFENSIVE_MODULES
+                .iter()
+                .any(|m| body.contains(&format!("offensive::{m}::")));
+            if !touches {
+                continue;
+            }
+            if EXEMPT_HANDLERS.iter().any(|(h, _)| h == name) {
+                continue;
+            }
+            if !body.contains("require_vz_offensive") {
+                ungated.push(name.clone());
+            }
+        }
+
+        assert!(
+            ungated.is_empty(),
+            "CLAIMS-20: {} offensive handler(s) reach an offensive module without \
+             calling require_vz_offensive, so they execute on the HOST while the \
+             platform claims guest-only isolation: {:?}",
+            ungated.len(),
+            ungated,
+        );
+    }
+
+    /// Guards the exemption list itself: an entry naming a handler that no longer
+    /// exists is a stale excuse that would silently cover a future handler of the
+    /// same name.
+    #[test]
+    fn exemptions_name_real_handlers_and_carry_a_reason() {
+        let src = include_str!("main.rs");
+        let arms = handler_arms(src);
+        for (handler, reason) in EXEMPT_HANDLERS {
+            assert!(
+                !reason.trim().is_empty(),
+                "exemption for `{handler}` has no reason recorded"
+            );
+            assert!(
+                arms.iter().any(|(n, _)| n == handler),
+                "stale exemption: `{handler}` ({reason}) is excused but no such handler exists"
+            );
+        }
+    }
+
+    /// The pre-existing offensive commands were already gated; this pins that they
+    /// stay gated, so a refactor cannot quietly drop the older half of the surface.
+    #[test]
+    fn legacy_offensive_commands_remain_gated() {
+        let src = include_str!("main.rs");
+        for action in [
+            "listen",
+            "agent_generate",
+            "exploit-run",
+            "persist-launchagent",
+            "inject-plan",
+            "lateral_ssh",
+            "lateral_smb_plan",
+            "task_queue",
+            "pack_xor",
+            "string-scramble",
+            "recon-hostinfo",
+            "recon_scan",
+        ] {
+            assert!(
+                src.contains(&format!("require_vz_offensive(\"{action}\")")),
+                "`{action}` lost its VZ isolation guard"
+            );
+            assert!(
+                src.contains(&format!("Some(\"{action}\")")),
+                "`{action}` lost its total pre-dispatch VZ classification"
+            );
+        }
     }
 }

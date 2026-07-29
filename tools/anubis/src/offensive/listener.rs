@@ -59,10 +59,13 @@ pub fn listener_start_with(eng: &Engagement, engage_dir: &Path, opts: ListenOpts
 
     fs::create_dir_all(engage_dir.join("listeners"))?;
     fs::create_dir_all(engage_dir.join("tasks"))?;
-    let profile = malleable::load_from_engage(engage_dir);
-    let mut initial_state = State::default();
-    initial_state.profile = profile;
-    let state = Arc::new(Mutex::new(initial_state));
+    // Fail closed: an invalid profile refuses the listener rather than silently coming up
+    // unprofiled while the operator believes their traffic shaping is live.
+    let profile = malleable::load_from_engage(engage_dir)?;
+    let state = Arc::new(Mutex::new(State {
+        profile,
+        ..Default::default()
+    }));
 
     let use_mtls = opts.mtls || eng.mtls_listen;
     if use_mtls && !eng.mtls_ready {
@@ -260,7 +263,9 @@ fn handle_http(
             let resp = process_beacon(eng, engage_dir, state, &beacon)?;
             let profile = state.lock().unwrap().profile.clone();
             let out = encode_response(eng, &beacon.agent_id, &resp, profile.as_ref())?;
-            let extra = profile.as_ref().map_or(String::new(), |p| p.format_server_headers());
+            let extra = profile
+                .as_ref()
+                .map_or(String::new(), |p| p.format_server_headers());
             write_raw_profiled(stream, 200, out.as_bytes(), &extra)?;
         }
         ("POST", "/result") => {
@@ -760,7 +765,7 @@ fn encode_response(
     };
 
     if let Some(p) = profile {
-        let transformed = p.apply_transform(raw.as_bytes());
+        let transformed = p.apply_transform(raw.as_bytes())?;
         Ok(String::from_utf8_lossy(&transformed).into_owned())
     } else {
         Ok(raw)
