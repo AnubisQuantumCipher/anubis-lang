@@ -13,6 +13,8 @@ GATE_EVIDENCE_ROOT="$ROOT"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/gate_evidence.sh"
 source "$ROOT/scripts/lib/gate_common.sh"
+# shellcheck source=lib/host_resource_guard.sh
+source "$ROOT/scripts/lib/host_resource_guard.sh"
 OUT="${1:-out/poc_kit}"
 if [[ "${1:-}" == "--out" && -n "${2:-}" ]]; then
   OUT="$2"
@@ -24,6 +26,8 @@ run_in_disposable_guest() {
   local base="${ANUBIS_VM_BASE:-anubis-xcode}"
   local key="${ANUBIS_VM_KEY:-$HOME/.ssh/tart_anubis}"
   local user_="${ANUBIS_VM_USER:-admin}"
+  local cpu=4
+  local mem=8192
   local guest="anubis-poc-kit-gate-$$"
   local guest_out="out/poc_kit_guest"
   local host_bin="$ROOT/target/release/anubis"
@@ -76,8 +80,9 @@ run_in_disposable_guest() {
       [[ -n "$tf" ]] && echo "no_guest" >"$tf"
       return 0
     fi
+    anubis_guard_clear_kept "$g"
     local stop_rc=0 del_rc=0
-    tart stop "$g" >/dev/null 2>&1 || stop_rc=$?
+    tart stop "$g" --timeout 5 >/dev/null 2>&1 || stop_rc=$?
     tart delete "$g" >/dev/null 2>&1 || del_rc=$?
     if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]]; then
       [[ -n "$tf" ]] && echo "torn_down" >"$tf"
@@ -88,9 +93,11 @@ run_in_disposable_guest() {
   }
   trap cleanup_poc_guest EXIT
 
+  anubis_guard_preflight "$cpu" "$mem"
+  anubis_guard_start_caffeinate $$
   echo "[poc-kit] isolation=tart-disposable-guest base=$base guest=$guest"
   tart clone "$base" "$guest" >/dev/null
-  tart set "$guest" --cpu 4 --memory 8192 >/dev/null
+  tart set "$guest" --cpu "$cpu" --memory "$mem" >/dev/null
   tart run "$guest" --no-graphics >/dev/null 2>&1 &
 
   for _ in $(seq 1 75); do

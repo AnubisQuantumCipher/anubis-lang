@@ -20,6 +20,8 @@ GATE_EVIDENCE_ROOT="$ROOT"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/gate_evidence.sh"
 source "$ROOT/scripts/lib/gate_common.sh"
+# shellcheck source=lib/host_resource_guard.sh
+source "$ROOT/scripts/lib/host_resource_guard.sh"
 
 OFFENSIVE_EXPECTED_GUEST_TOTAL=34
 OFFENSIVE_EXPECTED_WITNESS_TOTAL=5
@@ -63,7 +65,10 @@ run_in_guest() {
   local out="$1"
   local base="${ANUBIS_VM_BASE:-anubis-xcode}"
   local cpu="${ANUBIS_OFFENSIVE_GATE_VM_CPU:-8}"
-  local mem="${ANUBIS_OFFENSIVE_GATE_VM_MEM:-24576}"
+  # RAM CEILING — see scripts/vm/run-slice.sh for why 12288 and not 24576: a 24 GiB
+  # guest plus the normal host process load left 755 MB free and starved WindowServer
+  # past its watchdog, which is what caused the 2026-07-24/26/28 unclean restarts.
+  local mem="${ANUBIS_OFFENSIVE_GATE_VM_MEM:-12288}"
   local key="${ANUBIS_VM_KEY:-$HOME/.ssh/tart_anubis}"
   local user_="${ANUBIS_VM_USER:-admin}"
   local keep="${ANUBIS_OFFENSIVE_GATE_KEEP_GUEST:-0}"
@@ -127,11 +132,13 @@ run_in_guest() {
       return 0
     fi
     if [[ "$k" == "1" ]]; then
+      anubis_guard_mark_kept "$g"
       echo "[offensive-gate] keeping guest $g"
       [[ -n "$tf" ]] && echo "kept" >"$tf"
     else
+      anubis_guard_clear_kept "$g"
       local stop_rc=0 del_rc=0
-      tart stop "$g" >/dev/null 2>&1 || stop_rc=$?
+      tart stop "$g" --timeout 5 >/dev/null 2>&1 || stop_rc=$?
       tart delete "$g" >/dev/null 2>&1 || del_rc=$?
       if [[ $stop_rc -eq 0 && $del_rc -eq 0 ]]; then
         [[ -n "$tf" ]] && echo "torn_down" >"$tf"
@@ -143,6 +150,8 @@ run_in_guest() {
   }
   trap cleanup_offensive_guest EXIT
 
+  anubis_guard_preflight "$cpu" "$mem"
+  anubis_guard_start_caffeinate $$
   echo "[offensive-gate] isolation=tart-disposable-guest base=$base guest=$guest"
   tart clone "$base" "$guest" >/dev/null
   tart set "$guest" --cpu "$cpu" --memory "$mem" >/dev/null

@@ -24,21 +24,36 @@ set -euo pipefail
 
 BASE="${ANUBIS_VM_BASE:-anubis-xcode}"      # provisioned golden image to clone from
 CPU="${ANUBIS_VM_CPU:-8}"                    # vCPU CEILING — do not raise past 8 (re-arms the watchdog)
-MEM="${ANUBIS_VM_MEM:-24576}"                # MiB
+# RAM CEILING — do not raise past 12288. The vCPU cap above stops CPU starvation but
+# said nothing about memory, and that hole caused three unclean restarts (2026-07-24
+# panic, 07-26 panic, 07-28 WindowServer watchdog kill + power-button reset). At the
+# old 24576 the guest reached ~21 GiB RSS while the host carried ~880 processes, and
+# host free RAM measured 755 MB — WindowServer then missed its watchdog check-in
+# (40 s) and any sleep/power transition blew its 35 s callback deadline → panic.
+# Free RAM jumped straight back to 22 GiB the instant that guest exited. 12288 keeps
+# >=36 GiB for the host, and 12 GiB / CARGO_BUILD_JOBS=6 below is ~2 GiB per rustc.
+MEM="${ANUBIS_VM_MEM:-12288}"                # MiB
 REPO="${ANUBIS_REPO:-/Users/sicarii/anubis-lang}"
 KEY="${ANUBIS_VM_KEY:-$HOME/.ssh/tart_anubis}"
 USER_="admin"
 EXPECTED_FILE="$REPO/scripts/vm/EXPECTED_FIXPOINT_VM"
 SSHOPTS=(-i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15)
+# shellcheck source=../lib/host_resource_guard.sh
+source "$REPO/scripts/lib/host_resource_guard.sh"
 
 KEEP=0
 for a in "$@"; do case "$a" in --keep) KEEP=1;; *) echo "unknown arg: $a"; exit 2;; esac; done
 
 RUN="anubis-run-$$"
 cleanup() {
-  if [ "$KEEP" = 1 ]; then echo "[keep] clone left running: $RUN (ip $(tart ip "$RUN" 2>/dev/null || echo '?'))"; return; fi
+  if [ "$KEEP" = 1 ]; then
+    anubis_guard_mark_kept "$RUN"
+    echo "[keep] clone left running: $RUN (ip $(tart ip "$RUN" 2>/dev/null || echo '?'))"
+    return
+  fi
+  anubis_guard_clear_kept "$RUN"
   echo "[cleanup] stop + delete $RUN"
-  tart stop "$RUN" >/dev/null 2>&1 || true
+  tart stop "$RUN" --timeout 5 >/dev/null 2>&1 || true
   tart delete "$RUN" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -49,6 +64,8 @@ tart list 2>/dev/null | awk '{print $2}' | grep -qx "$BASE" || { echo "FATAL: go
 [ -f "$EXPECTED_FILE" ] || { echo "FATAL: missing $EXPECTED_FILE"; exit 1; }
 EXPECTED=$(grep -oE '[0-9a-f]{64}' "$EXPECTED_FILE" | head -1)
 [ -n "$EXPECTED" ] || { echo "FATAL: no fixpoint hash in $EXPECTED_FILE"; exit 1; }
+anubis_guard_preflight "$CPU" "$MEM"
+anubis_guard_start_caffeinate $$
 
 echo "[1/6] clone $BASE -> $RUN (APFS CoW, instant)"
 tart clone "$BASE" "$RUN"
